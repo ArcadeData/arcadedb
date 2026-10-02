@@ -136,6 +136,14 @@ class Issue8908SystemProcedureInterceptionTest {
   }
 
   @Test
+  void aBoltOnlyCallFollowedByAWriteIsLeftToTheEngine() {
+    for (final String query : new String[] { "CALL db.ping() CREATE (:X)", "CALL dbms.info() YIELD name MATCH (n) DELETE n",
+        "CALL dbms.components() YIELD name SET x.y = 1", "CALL db.ping() MERGE (:X)" })
+      assertThat(BoltSystemProcedures.isSystemCall(BoltSystemProcedures.normalize(query), query.contains("ping") ? "db.ping"
+          : query.contains("info") ? "dbms.info" : "dbms.components")).as(query).isFalse();
+  }
+
+  @Test
   void leadingCommentsDoNotHideTheStatement() {
     assertThat(BoltSystemProcedures.normalize("// probe\nCALL db.labels()")).isEqualTo("call db.labels()");
     assertThat(BoltSystemProcedures.normalize("/* a */ /* b */\n CALL db.ping()")).isEqualTo("call db.ping()");

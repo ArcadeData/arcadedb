@@ -110,7 +110,9 @@ public class Issue8908CallUnionLoadCsvIT extends BaseBoltServerTest {
       assertThat(rows.getFirst().get("s").asString()).isEqualTo("show current user dbms.components db.ping");
 
       // Shapes the engine now answers for the schema procedures
-      assertThat(session.run("CALL db.labels() YIELD label RETURN label ORDER BY label").list()).isNotNull();
+      session.run("CREATE (:Zzz8908Label {a: 1})").consume();
+      assertThat(session.run("CALL db.labels() YIELD label WHERE label = 'Zzz8908Label' RETURN label ORDER BY label")
+          .list()).extracting(r -> r.get("label").asString()).containsExactly("Zzz8908Label");
     }
   }
 }

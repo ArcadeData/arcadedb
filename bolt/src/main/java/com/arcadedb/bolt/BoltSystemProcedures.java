@@ -54,6 +54,8 @@ final class BoltSystemProcedures {
   private static final Object[] NO_ARGS       = new Object[0];
   private static final String   CALL_PREFIX   = "call ";
   private static final String   ITEM          = "(?:collect\\(\\w+\\)|\\w+)(?: as \\w+)?";
+  private static final Pattern  WRITE_TAIL    = Pattern.compile(
+      " (?:create|merge|set|delete|detach|remove|foreach|call|load|match|optional) ");
   private static final Pattern  CALL_TAIL     = Pattern.compile(
       " ?(?:\\( ?\\))?(?: yield (?:\\*|" + ITEM + "(?:, ?" + ITEM + ")*))?(?: return " + ITEM + "(?:, ?" + ITEM + ")*)? ?;?");
   private static final String   LABELS        = DbLabels.NAME.toLowerCase(Locale.ROOT);
@@ -156,14 +158,18 @@ final class BoltSystemProcedures {
    * {@code db.ping}). Unlike the schema procedures these exist nowhere but in the Bolt interception, so a statement
    * declined here would fail in the engine as an unknown procedure; what follows the call is therefore left to the
    * tail handling (YIELD / WHERE / UNWIND, as Neo4j Browser sends it). Only the anchoring and the token boundary are
-   * required, which is what keeps a mere mention of the name elsewhere in a larger statement out (issue #8908).
+   * required (plus no write or further-reading clause in the tail), which is what keeps a mere mention of the name elsewhere in a larger statement out (issue #8908).
    */
   static boolean isSystemCall(final String normalized, final String procedureName) {
     final int end = endOfCallName(normalized, procedureName);
     if (end < 0)
       return false;
-    return end == normalized.length() || normalized.charAt(end) == '(' || normalized.charAt(end) == ' '
-        || normalized.charAt(end) == ';';
+    if (end != normalized.length() && normalized.charAt(end) != '(' && normalized.charAt(end) != ' '
+        && normalized.charAt(end) != ';')
+      return false;
+    // The tail stays open (YIELD / WHERE / UNWIND / RETURN) but never a clause that writes or calls on: serving
+    // those here would drop them silently, whereas the engine refuses them loudly.
+    return !WRITE_TAIL.matcher(normalized).region(end, normalized.length()).find();
   }
 
   /**
