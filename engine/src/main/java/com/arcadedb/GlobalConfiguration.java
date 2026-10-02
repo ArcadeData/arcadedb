@@ -205,7 +205,9 @@ public enum GlobalConfiguration {
   DATE_TIME_FORMAT("arcadedb.dateTimeFormat", SCOPE.DATABASE, "Default date time format using Java SimpleDateFormat syntax",
       String.class, "yyyy-MM-dd HH:mm:ss"),
 
-  TX_WAL("arcadedb.txWAL", SCOPE.DATABASE, "Uses the WAL", Boolean.class, true),
+  TX_WAL("arcadedb.txWAL", SCOPE.DATABASE,
+      "Uses the WAL. Not honored for replicated transactions on an HA node: replication ships the WAL, so every replicated commit writes it",
+      Boolean.class, true),
 
   TX_WAL_FLUSH("arcadedb.txWalFlush", SCOPE.DATABASE,
       "Flushes the WAL on disk at commit time. It can be 0 = no flush, 1 = flush without metadata and 2 = full flush (fsync)",
