@@ -153,8 +153,32 @@ class Issue8920SignedZeroTest extends TestHelper {
     assertThat(BinaryComparator.withNegativeZeros(new Object[] { 1.5d, "a" })).isNull();
   }
 
-  private List<Integer> sql(final String statement) {
-    return ids(database.query("sql", statement + " ORDER BY id"));
+  @Test
+  void floatPropertyAndCompositeKeysTreatTheZerosAsOne() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE F");
+      database.command("sql", "CREATE PROPERTY F.id INTEGER");
+      database.command("sql", "CREATE PROPERTY F.g STRING");
+      database.command("sql", "CREATE PROPERTY F.v FLOAT");
+      database.command("sql", "CREATE INDEX ON F (g, v) NOTUNIQUE");
+      database.command("sql", "CREATE VERTEX TYPE FH");
+      database.command("sql", "CREATE PROPERTY FH.id INTEGER");
+      database.command("sql", "CREATE PROPERTY FH.v FLOAT");
+      database.command("sql", "CREATE INDEX ON FH (v) NOTUNIQUE_HASH");
+      database.command("sql", "INSERT INTO F SET id = 1, g = 'a', v = 0.0");
+      database.command("sql", "INSERT INTO F SET id = 2, g = 'a', v = ?", -0.0f);
+      database.command("sql", "INSERT INTO FH SET id = 1, v = 0.0");
+      database.command("sql", "INSERT INTO FH SET id = 2, v = ?", -0.0f);
+    });
+    assertThat(sql("SELECT id FROM F WHERE g = 'a' AND v = 0.0")).containsExactly(1, 2);
+    assertThat(sql("SELECT id FROM F WHERE g = 'a' AND v = ?", -0.0f)).containsExactly(1, 2);
+    assertThat(sql("SELECT id FROM FH WHERE v = 0.0")).containsExactly(1, 2);
+    assertThat(sql("SELECT id FROM FH WHERE v IN [-0.0]")).containsExactly(1, 2);
+    assertThat(sql("SELECT id FROM FH WHERE v NOT IN [-0.0]")).isEmpty();
+  }
+
+  private List<Integer> sql(final String statement, final Object... params) {
+    return ids(database.query("sql", statement + " ORDER BY id", params));
   }
 
   private List<Integer> sqlParam(final String statement, final Object param) {

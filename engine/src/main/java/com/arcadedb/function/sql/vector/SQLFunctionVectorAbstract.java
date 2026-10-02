@@ -27,6 +27,7 @@ import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.parser.Identifier;
+import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.IntHashSet;
 
 import java.util.ArrayList;
@@ -225,6 +226,11 @@ public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
       return allowedBucketIds;
     final Object hintTypeName = context.getVariable(CommandContext.PARTITION_PRUNED_TYPE_NAME_VAR);
     if (!(hintTypeName instanceof String hintType) || !hintType.equals(typeName))
+      return allowedBucketIds;
+    // The hint is derived from the buckets of the FROM type alone, while the allow-list now covers its sub-types too (issue #8958):
+    // intersecting would drop their records, so a type with sub-types is not narrowed
+    final DocumentType type = context.getDatabase().getSchema().getType(typeName);
+    if (type != null && !type.getSubTypes().isEmpty())
       return allowedBucketIds;
     final Object hintIds = context.getVariable(CommandContext.PARTITION_PRUNED_BUCKET_FILE_IDS_VAR);
     if (!(hintIds instanceof IntHashSet hintSet) || hintSet.isEmpty())

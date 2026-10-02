@@ -100,7 +100,8 @@ public final class IndexKeyEquality {
       return Double.hashCode(d + 0.0d);
     if (element instanceof Float f)
       return Float.hashCode(f + 0.0f);
-    // an array element (BINARY, a vector) hashes by content as stored, as Arrays.deepHashCode does, without a wrapper
+    // an array element (BINARY, a vector) hashes by content as stored, as Arrays.deepHashCode does, without a wrapper; keep it
+    // aligned with the Objects.deepEquals fallback of sameValue
     if (element instanceof byte[] a)
       return Arrays.hashCode(a);
     if (element instanceof float[] a)

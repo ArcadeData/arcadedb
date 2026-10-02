@@ -113,6 +113,14 @@ class Issue8919FloatRangeBoundTest extends TestHelper {
         .isEqualTo(sql("SELECT id FROM N WHERE v BETWEEN 16777217 AND 16777219"));
   }
 
+  @Test
+  void cypherIntegerBoundAboveTwoToThe53OnADoubleAgreesBetweenIndexAndScan() {
+    for (final String type : new String[] { "I", "N" }) {
+      assertThat(cypher("MATCH (n:" + type + ") WHERE n.d = 9007199254740993 RETURN n.id AS id")).as(type + " =").isEmpty();
+      assertThat(cypher("MATCH (n:" + type + ") WHERE n.d < 9007199254740993 RETURN n.id AS id")).as(type + " <").containsExactly(1, 2, 3);
+    }
+  }
+
   private List<Integer> sql(final String statement) {
     return ids(database.query("sql", statement + " ORDER BY id"));
   }
