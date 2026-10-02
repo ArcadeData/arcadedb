@@ -167,7 +167,7 @@ public class BucketIndexBuilder extends IndexBuilder<Index> {
           throw new SchemaException(
               "Cannot create the index on type '" + typeName + "." + actualPropertyName + "' because the property does not exist");
 
-        keyTypes[i++] = isByItem ? Type.STRING : property.getType();
+        keyTypes[i++] = isByItem ? TypeIndexBuilder.listItemKeyType(property, indexType) : property.getType();
       }
 
       // Carry a caller-supplied logical name onto the metadata (mirrors TypeIndexBuilder#create): a bucket sub-index

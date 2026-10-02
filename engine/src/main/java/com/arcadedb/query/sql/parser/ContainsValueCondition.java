@@ -23,6 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.IndexSearchInfo;
+import com.arcadedb.query.sql.executor.QueryOperatorEquals;
 import com.arcadedb.query.sql.executor.Result;
 
 import java.util.ArrayList;
@@ -51,7 +52,7 @@ public class ContainsValueCondition extends BooleanExpression {
         return false;
       } else {
         final Object rightValue = expression.execute(currentRecord, context);
-        return map.containsValue(rightValue);//TODO type conversions...?
+        return containsValue(map, rightValue);
       }
 
     }
@@ -71,9 +72,22 @@ public class ContainsValueCondition extends BooleanExpression {
         return false;
       } else {
         final Object rightValue = expression.execute(currentRecord, context);
-        return map.containsValue(rightValue);//TODO type conversions...?
+        return containsValue(map, rightValue);
       }
 
+    }
+    return false;
+  }
+
+  /**
+   * Compares the values the way CONTAINS compares list items, so {@code 7} finds a stored {@code 7.0} as the index
+   * over the declared {@code OF} type does (issue #8890); {@link Map#containsValue} answered by plain
+   * {@code equals()}, where an Integer never equals a Double.
+   */
+  private static boolean containsValue(final Map<?, ?> map, final Object rightValue) {
+    for (final Object value : map.values()) {
+      if (value == null ? rightValue == null : QueryOperatorEquals.equals(value, rightValue))
+        return true;
     }
     return false;
   }

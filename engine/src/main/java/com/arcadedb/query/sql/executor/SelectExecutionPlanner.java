@@ -3474,7 +3474,9 @@ public class SelectExecutionPlanner {
           }
         }
       } else {
-        // Must be an aggregate function
+        // Must be an aggregate function, over every value: the engine does not count DISTINCT ones (issue #8889)
+        if (funcCall.isDistinct())
+          return false;
         final String aggFuncName = funcName.toLowerCase(Locale.ROOT);
         final AggregationType aggType = switch (aggFuncName) {
           case "avg" -> AggregationType.AVG;

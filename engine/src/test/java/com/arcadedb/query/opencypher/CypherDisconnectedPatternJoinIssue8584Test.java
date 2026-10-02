@@ -168,8 +168,10 @@ class CypherDisconnectedPatternJoinIssue8584Test extends TestHelper {
   void hashJoinKeepsTheCypherEqualityAcrossJavaTypes() {
     final List<String> pairs = assertSameAsFilteredProduct("MATCH (a:Item), (b:Item) WHERE a.x = b.y RETURN a.id AS a, b.id AS b",
         "a.x = b.y");
-    // 1 = 1 = 1.0, a float through its decimal form, -0.0 = 0.0, 2^53 + 1 = 2^53 as doubles, lists element-wise, dates
-    assertThat(pairs).contains("0/0", "0/1", "0/2", "1/0", "2/1", "3/3", "4/4", "7/7", "8/8", "9/9", "10/10", "11/11");
+    // 1 = 1 = 1.0, a float through its decimal form, -0.0 = 0.0, lists element-wise, dates
+    assertThat(pairs).contains("0/0", "0/1", "0/2", "1/0", "2/1", "3/3", "4/4", "7/7", "8/8", "10/10", "11/11");
+    // a long past 2^53 is not the double that rounds to its neighbour: 2^53 + 1 <> 2^53.0 (issue #8888)
+    assertThat(pairs).doesNotContain("9/9");
     // NaN and null equal nothing, a number no string
     assertThat(pairs).noneMatch(p -> p.startsWith("5/") || p.startsWith("6/") || p.endsWith("/5") || p.endsWith("/6"));
     assertThat(pairs).doesNotContain("12/12");
@@ -220,8 +222,8 @@ class CypherDisconnectedPatternJoinIssue8584Test extends TestHelper {
   }
 
   @Test
-  void aDoubleAtTwoToTheFiftyThirdStandsForSeveralLongs() {
-    // Item 9's y is the double 2^53, which the long 2^53 + 1 widens to: a seek of the single long 2^53 would miss it
+  void aDoubleAtTwoToTheFiftyThirdIsNotTheNextLong() {
+    // Item 9's y is the double 2^53, which the long 2^53 + 1 used to widen to: the two are different numbers (issue #8888)
     database.transaction(() -> {
       final VertexType big = database.getSchema().createVertexType("BigNum");
       big.createProperty("n", Type.LONG);
@@ -229,10 +231,12 @@ class CypherDisconnectedPatternJoinIssue8584Test extends TestHelper {
       for (int i = 0; i < 200; i++)
         database.newVertex("BigNum").set("id", i).set("n", (long) i).save();
       database.newVertex("BigNum").set("id", 1000).set("n", 9007199254740993L).save();
+      database.newVertex("BigNum").set("id", 1001).set("n", 9007199254740992L).save();
     });
     final String query = "MATCH (i:Item), (b:BigNum) WHERE b.n = i.y RETURN i.id AS a, b.id AS b";
     assertThat(plan(query)).contains("IndexNestedLoopJoin(b:BigNum)");
-    assertThat(assertSameAsFilteredProduct(query, "b.n = i.y")).contains("9/1000");
+    final List<String> pairs = assertSameAsFilteredProduct(query, "b.n = i.y");
+    assertThat(pairs).contains("9/1001").doesNotContain("9/1000");
   }
 
   @Test
