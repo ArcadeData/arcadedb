@@ -19,6 +19,8 @@
 package com.arcadedb.server.support;
 
 import com.arcadedb.Constants;
+import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
@@ -41,6 +43,7 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.concurrent.Semaphore;
+import java.util.logging.Level;
 import java.util.function.Supplier;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
@@ -63,10 +66,13 @@ public class SupportService implements AutoCloseable {
   private final SupportConfiguration   configuration;
   private final SupportBundleManager   bundles;
   private final SupportScreenshots     screenshots = new SupportScreenshots();
+  private final SupportConnector       connector   = new SupportConnector(this);
   private final ZoneId                 zone;
   private volatile long                maxZipBytes;
   private volatile Supplier<List<Path>> logFiles;
   private final long                   retryDelayMs;
+  private volatile long                lastRegisteredAt;
+  private SupportAutoRegistration      autoRegistration;
 
   /** {@code fingerprint}: the portal, the client id and a hash of the key, so a changed key or portal never reads a stale answer. */
   private record CachedWhoami(String fingerprint, String json, long at) {
@@ -117,8 +123,46 @@ public class SupportService implements AutoCloseable {
     return screenshots;
   }
 
+  public SupportConnector getConnector() {
+    return connector;
+  }
+
+  /**
+   * Starts the daemon that registers this server as an installation without Studio (see {@link SupportAutoRegistration}), if it
+   * is registered with a key and {@code arcadedb.support.autoRegister} is not turned off. Never throws: a server must start
+   * whatever happens here.
+   */
+  public synchronized void startAutoRegistration() {
+    if (autoRegistration == null)
+      startAutoRegistration(SupportAutoRegistration.Timing.defaults());
+  }
+
+  /** For tests: starts the loop with these timings, replacing one that is running. */
+  synchronized void startAutoRegistration(final SupportAutoRegistration.Timing timing) {
+    try {
+      if (autoRegistration != null)
+        autoRegistration.close();
+      autoRegistration = new SupportAutoRegistration(timing,
+          () -> server.getConfiguration().getValueAsBoolean(GlobalConfiguration.SUPPORT_AUTO_REGISTER),
+          () -> configuration.get() != null, this::registerInstallation, () -> lastRegisteredAt,
+          message -> LogManager.instance().log(this, Level.WARNING, "Support: %s", message));
+      autoRegistration.start();
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(this, Level.FINE, "Automatic registration in the support portal was not started: %s",
+          e.getClass().getSimpleName());
+    }
+  }
+
   @Override
   public void close() {
+    final SupportAutoRegistration auto;
+    synchronized (this) {
+      auto = autoRegistration;
+      autoRegistration = null;
+    }
+    if (auto != null)
+      auto.close();
+    connector.close();
     bundles.close();
   }
 
@@ -309,7 +353,10 @@ public class SupportService implements AutoCloseable {
   public String registerInstallation() {
     final SupportPortalClient client = requireClient();
     final JSONObject diagnostics = new SupportDiagnostics(server).build(new SupportRedactor.Session());
-    return client.registerInstallation(new JSONObject().put("diagnostics", diagnostics).toString());
+    final String answer = client.registerInstallation(new JSONObject().put("diagnostics", diagnostics).toString());
+    // Shared with the automatic registration, so a registration by Studio or the connect flow is not repeated at once
+    lastRegisteredAt = System.currentTimeMillis();
+    return answer;
   }
 
   // ---------------------------------------------------------------------------------------------- preview

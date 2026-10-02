@@ -79,6 +79,12 @@ public class Console {
   private static final String               LOCAL_PREFIX             = "local:";
   private static final String               SQL_LANGUAGE             = "SQL";
   private static final String               HISTORY_FILE             = ".history";
+  private static final String               CONNECT_PORTAL           = "connect portal";
+  private static final String               CONNECT_PORTAL_USAGE_SHORT = "connect portal remote:<host>[:<port>] <user> [<password>]";
+  private static final String               CONNECT_PORTAL_USAGE     = "Syntax: connect portal [remote:<host>[:<port>] <user> [<password>]]";
+  private static final long                 PORTAL_POLL_INTERVAL_MS  = 2_000L;
+  /** The server gives up on an unapproved code by itself; the console stops this long after its expiry too. */
+  private static final long                 PORTAL_WAIT_SLACK_MS     = 30_000L;
   private final        Terminal             terminal;
   private final        TerminalParser       parser                   = new TerminalParser();
   private              ConsoleOutput        output;
@@ -97,6 +103,7 @@ public class Console {
   private              long                 transactionBatchSize     = 0L;
   protected            long                 currentOperationsInBatch = 0L;
   private              RemoteServer         remoteServer;
+  private              long                 portalPollIntervalMs     = PORTAL_POLL_INTERVAL_MS;
   private              boolean              batchMode                = false;
   private              boolean              failAtEnd                = false;
   // VOLATILE: SET FROM THE ASYNC WORKER THREADS IN asyncMode, READ BY main() TO PICK THE EXIT CODE
@@ -161,7 +168,7 @@ public class Console {
     LineReader getLineReader() {
         if (lineReader == null) {
             final Completer completer = new StringsCompleter("align database", "begin", "rollback", "commit", "check database", "close",
-                    "connect", "create database", "create user", "drop database", "drop user", "export", "import", "help", "info types",
+                    "connect", "connect portal", "create database", "create user", "drop database", "drop user", "export", "import", "help", "info types",
                     "list databases", "load", "exit", "quit", "set", "match", "select", "insert into", "update", "delete", "pwd");
 
             lineReader = LineReaderBuilder.builder().terminal(terminal).parser(parser)
@@ -377,6 +384,8 @@ public class Console {
                 executeRollback();
             else if (lineLowerCase.startsWith("list databases"))
                 executeListDatabases(lineTrimmed.substring("list databases".length()).trim());
+            else if (lineLowerCase.equals(CONNECT_PORTAL) || lineLowerCase.startsWith(CONNECT_PORTAL + " "))
+                executeConnectPortal(lineTrimmed.substring(CONNECT_PORTAL.length()).trim());
             else if (lineLowerCase.startsWith("connect "))
                 executeConnect(lineTrimmed.substring("connect".length()).trim());
             else if (lineLowerCase.startsWith("create database "))
@@ -628,6 +637,105 @@ public class Console {
 
         outputLine(3, "Database '%s' connected", databaseName);
         flushOutput();
+    }
+
+    /**
+     * {@code connect portal [remote:<host>[:<port>] <user> [<password>]]}: connects THE SERVER to the ArcadeDB customer portal
+     * without Studio, with the device authorization flow. The server asks the portal for a code, this prints the address to open
+     * (on any machine: the approving browser does not need to reach the server) and the code, and waits until a person who
+     * administers a workspace approves it there. The server then receives the workspace key itself, stores it and registers
+     * itself as an installation. The key never passes through the console.
+     * <p>
+     * Needs the root user of the server, like the {@code /api/v1/server/support/connect} routes it calls. Without a URL it uses
+     * the remote server the console is already connected to. Ctrl-C ends the wait on the server too.
+     */
+    private void executeConnectPortal(final String args) {
+        if (!args.isEmpty()) {
+            if (!args.toLowerCase(Locale.ENGLISH).startsWith(REMOTE_PREFIX))
+                throw new ConsoleException(CONNECT_PORTAL_USAGE);
+            connectToRemoteServer(args, false);
+        } else if (getRemoteServer() == null)
+            throw new ConsoleException("Not connected to a remote server. Use `" + CONNECT_PORTAL_USAGE_SHORT
+                    + "`, or connect to a remote database first");
+
+        final RemoteServer server = getRemoteServer();
+        final JSONObject started = server.startPortalConnect();
+        final long expiresIn = started.getLong("expiresIn", 600L);
+        outputLine(3, "Open %s and approve. Code: %s. Waiting...", started.getString("verifyUrl", ""),
+                started.getString("userCode", ""));
+        flushOutput();
+
+        // CTRL-C (OR A KILL) ENDS THE WAIT ON THE SERVER TOO, SO THE NEXT `connect portal` IS NOT REFUSED AS "IN PROGRESS"
+        final Thread cancelOnExit = new Thread(() -> {
+            try {
+                server.cancelPortalConnect();
+            } catch (final RuntimeException e) {
+                // THE SERVER IS GONE OR THE WAIT ALREADY ENDED: NOTHING LEFT TO CANCEL
+            }
+        }, "connect-portal-cancel");
+        Runtime.getRuntime().addShutdownHook(cancelOnExit);
+        try {
+            final long giveUpAt = System.currentTimeMillis() + expiresIn * 1_000L + PORTAL_WAIT_SLACK_MS;
+            JSONObject status;
+            do {
+                Thread.sleep(portalPollIntervalMs);
+                status = server.portalConnectStatus();
+            } while ("pending".equals(status.getString("status", "")) && System.currentTimeMillis() < giveUpAt);
+            reportPortalOutcome(status);
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            server.cancelPortalConnect();
+            throw new ConsoleException("Connection to the portal cancelled");
+        } finally {
+            try {
+                Runtime.getRuntime().removeShutdownHook(cancelOnExit);
+            } catch (final IllegalStateException e) {
+                // THE JVM IS ALREADY SHUTTING DOWN: THE HOOK IS RUNNING
+            }
+        }
+        flushOutput();
+    }
+
+    private void reportPortalOutcome(final JSONObject status) {
+        switch (status.getString("status", "")) {
+        case "connected" -> {
+            outputLine(3, "Connected to workspace '%s'", status.getString("workspaceName", ""));
+            final JSONObject registration = status.has("registration") ? status.getJSONObject("registration") : null;
+            if (registration == null)
+                return;
+            if (registration.has("error")) {
+                outputLine(3, "The key is stored, but registering this server as an installation failed: %s",
+                        registration.getString("message", registration.getString("error", "")));
+                return;
+            }
+            final String name = registration.getString("name", "");
+            if ("created".equals(registration.getString("status", "")))
+                outputLine(3, "Registered this server as installation '%s'. It has no seat yet: assign it in the portal", name);
+            else
+                outputLine(3, "This server is already registered as installation '%s'", name);
+            final List<String> differs = new ArrayList<>();
+            if (registration.has("differs"))
+                for (final Object field : registration.getJSONArray("differs").toList())
+                    differs.add(String.valueOf(field));
+            if (!differs.isEmpty())
+                outputLine(3, "%d field(s) differ from what the portal has (%s): see the installation in the portal", differs.size(),
+                        String.join(", ", differs));
+        }
+        case "denied" -> throw new ConsoleException("The connection was denied in the portal. Nothing was connected");
+        case "expired" -> throw new ConsoleException("The code expired before it was approved. Run `connect portal` again");
+        case "cancelled", "none" -> throw new ConsoleException("The connection to the portal was cancelled");
+        case "error" -> {
+            final JSONObject error = status.has("error") ? status.getJSONObject("error") : null;
+            throw new ConsoleException("The connection to the portal failed: "
+                    + (error == null ? "unknown error" : error.getString("message", error.getString("error", "unknown error"))));
+        }
+        default -> throw new ConsoleException("The portal did not answer in time. Run `connect portal` again");
+        }
+    }
+
+    /** For tests: how often the console asks the server for the state of the connection. */
+    void setPortalPollIntervalMs(final long intervalMs) {
+        this.portalPollIntervalMs = intervalMs;
     }
 
     private void executeCreateDatabase(final String url) {
@@ -1358,6 +1466,7 @@ public class Console {
         outputLine(1, "check database                                    -> check database integrity");
         outputLine(1, "commit                                            -> commits current transaction");
         outputLine(1, "connect <path>|remote:<url> <user> [<pw>]         -> connects to a database");
+        outputLine(1, "connect portal [remote:<url> <user> [<pw>]]       -> connects the server to the ArcadeDB portal (support)");
         outputLine(1, "close                                             -> disconnects a database");
         outputLine(1, "create database <path>|remote:<url> <user> [<pw>] -> creates a new database");
         outputLine(1, "create user <user> identified by [<pw>] [grant connect to <db>*] -> creates a user");

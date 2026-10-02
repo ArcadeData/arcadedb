@@ -193,6 +193,8 @@ function loadSupport(refresh) {
       supportLoaded = true;
       $("#supportContent").show();
       renderSupportAll();
+      // The installation is completed at most once a day, whoever opens the tab; it only fills blank fields
+      if (supportStatus.registered && !supportStatus.portalError && supportStatus.instanceId) supportAutoSync(supportStatus.instanceId);
     })
     .fail(function (jqXHR) {
       supportLoaded = false;
@@ -303,7 +305,13 @@ function renderSupportOverview() {
       '<div class="support-hint">Guaranteed first-response times, with the logs and a diagnostics snapshot of this server attached to every issue.</div>';
     html += "</div></div>";
     html +=
-      '<p style="font-size: 0.88rem;">Register this server with the <b>Client ID</b> and <b>Client key</b> of your workspace (create a key in the ArcadeDB customer portal) to open issues from here and to follow the replies.</p>';
+      '<p style="font-size: 0.88rem;">Connect this server to the <b>workspace</b> of your company in the ArcadeDB customer portal to open issues from here and to follow the replies. The server is also added to your installations.</p>';
+    html += '<div id="supportConnect">' + supportConnectHtml() + "</div>";
+    html += '<details class="support-advanced mt-3">';
+    html +=
+      '<summary style="font-size: 0.84rem; cursor: pointer;">Advanced / offline server: paste a Client ID and key</summary>';
+    html +=
+      '<p class="mt-2" style="font-size: 0.86rem;">For a server that cannot open a browser: create a key in the customer portal (Studio keys) and paste its <b>Client ID</b> and <b>Client key</b>.</p>';
     html += '<div class="row g-2 align-items-end">';
     html +=
       '<div class="col-md-4"><label class="form-label mb-1" for="supportClientId" style="font-size: 0.82rem;">Client ID</label>' +
@@ -316,6 +324,7 @@ function renderSupportOverview() {
       '<button class="btn btn-sm btn-primary" id="supportRegisterBtn" onclick="supportRegister()"><i class="fa fa-link"></i> Register</button></div>';
     html += "</div>";
     html += '<div id="supportVerifyResult" class="mt-2"></div>';
+    html += "</details>";
     if (s.canWriteConfig === false)
       html +=
         '<div class="alert alert-warning py-2 mt-2" style="font-size: 0.84rem;"><i class="fa fa-triangle-exclamation"></i> The configuration directory of this server is not writable. ' +
@@ -336,6 +345,8 @@ function renderSupportOverview() {
   } else html += supportStatusPanelHtml(s);
 
   $("#supportViewOverview").html(html);
+  // A connection started before the page was reloaded is still waiting on the server
+  if (!s.registered && !supportConnect) supportConnectResume();
 }
 
 /** The registered state: one line ("Support Active") that expands to the details nobody needs after the first minute. */
@@ -449,13 +460,13 @@ function supportInstallationHtml() {
     html += '<i class="fa fa-circle-check support-ok"></i> ' + what + (r.name ? ": <b>" + supportEsc(r.name) + "</b>" : "") + ".";
     if (r.differs && r.differs.length)
       html += ' <span class="support-hint">Differs from what the portal has, left as it is: ' + supportEsc(r.differs.join(", ")) + ".</span>";
-  } else html += '<span class="support-hint">Add this server to the installations of your workspace in the portal, with its version and environment.</span>';
+  } else html += '<span class="support-hint">Synchronize adds this server to the installations of your workspace in the portal, or completes its blank fields.</span>';
   html += "</div>";
   html +=
     '<button class="btn btn-sm btn-outline-primary" id="supportSyncBtn"' +
     (supportInstallationBusy ? " disabled" : "") +
     '><i class="fa fa-cloud-arrow-up"></i> ' +
-    (r && r.status ? "Synchronize" : "Register this server in the portal") +
+    "Synchronize" +
     "</button>";
   return html;
 }

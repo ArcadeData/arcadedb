@@ -18,6 +18,10 @@
  */
 package com.arcadedb;
 
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.Locale;
 import java.util.UUID;
 import java.util.regex.Pattern;
@@ -29,9 +33,13 @@ import java.util.regex.Pattern;
  * Format: {@code adb-} followed by a canonical lowercase UUID, exactly 40 characters, e.g.
  * {@code adb-123e4567-e89b-12d3-a456-426614174000}. It is NOT a credential and is never used for authentication.
  * <p>
- * The server persists it in the file {@code instance.id} of its configuration directory. That file is node-local: it is
- * never replicated between HA nodes. Note that copying a configuration directory to create a new node duplicates the
- * id, so delete {@code instance.id} from the copy (or set {@code arcadedb.instance.id}) before starting it.
+ * The server persists it in the file {@code .instance.id} of its databases directory (the directory that survives a
+ * restart wherever the data does), falling back to the file {@code instance.id} of the configuration directory, which is
+ * where older versions kept it. The file also records the name of the server that created it: when a volume or a
+ * directory is cloned to create another node the names differ, a new id is generated and the log says so. The file is
+ * node-local: it is never replicated between HA nodes. A server with no persistent directory (a container without a
+ * volume) can instead set {@code arcadedb.instance.derived=true} to get an id computed from the cluster and server names
+ * ({@link #derive(String, String)}), or set {@code arcadedb.instance.id}.
  */
 public final class InstanceId {
   public static final String PREFIX = "adb-";
@@ -62,5 +70,31 @@ public final class InstanceId {
 
   public static String generate() {
     return PREFIX + UUID.randomUUID();
+  }
+
+  /** Fixed namespace of the name-based ids ({@link #derive}): never change it, it would change every derived id. */
+  private static final UUID DERIVED_NAMESPACE = UUID.fromString("3f6d2a52-7c1e-4b8a-9d44-0a1c5e7f2b90");
+
+  /**
+   * The id of a server that has no persistent directory: a name-based UUID (version 5, RFC 4122) of
+   * {@code <clusterName>/<serverName>}, so the same server gets the same id on every start with no file. SHA-1 is used
+   * because the version 5 definition asks for it: the id is an identifier, never a credential.
+   */
+  public static String derive(final String clusterName, final String serverName) {
+    final byte[] name = ((clusterName == null ? "" : clusterName) + "/" + (serverName == null ? "" : serverName)).getBytes(
+        StandardCharsets.UTF_8);
+    final MessageDigest sha1;
+    try {
+      sha1 = MessageDigest.getInstance("SHA-1");
+    } catch (final NoSuchAlgorithmException e) {
+      throw new IllegalStateException("SHA-1 is not available", e);
+    }
+    sha1.update(ByteBuffer.allocate(16).putLong(DERIVED_NAMESPACE.getMostSignificantBits())
+        .putLong(DERIVED_NAMESPACE.getLeastSignificantBits()).array());
+    final byte[] hash = sha1.digest(name);
+    hash[6] = (byte) ((hash[6] & 0x0f) | 0x50);
+    hash[8] = (byte) ((hash[8] & 0x3f) | 0x80);
+    final ByteBuffer buffer = ByteBuffer.wrap(hash);
+    return PREFIX + new UUID(buffer.getLong(), buffer.getLong());
   }
 }

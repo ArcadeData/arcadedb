@@ -268,6 +268,31 @@ public class RemoteServer extends RemoteHttpComponent {
   }
 
   /**
+   * Starts "connect this server to the ArcadeDB customer portal" through {@code POST /server/support/connect} (root only): the
+   * server asks the portal for a code, a person who administers a workspace approves it in the portal, and the server then
+   * receives and stores the workspace key itself. This is the console and curl twin of Studio's button.
+   *
+   * @return {@code {userCode, verifyUrl, expiresIn}}; the key and the device code never travel through this connection
+   */
+  public JSONObject startPortalConnect() {
+    return controlPlaneRequest("POST", "server/support/connect", new JSONObject(), "connect to the portal", null);
+  }
+
+  /**
+   * The state of the last portal connection, as {@code GET /server/support/connect} answers it:
+   * {@code {status: none|pending|connected|expired|denied|error|cancelled, ...}}. Once {@code connected} it carries
+   * {@code workspaceName} and {@code registration} (what registering this server as an installation did).
+   */
+  public JSONObject portalConnectStatus() {
+    return controlPlaneRequest("GET", "server/support/connect", null, "get the portal connection state", null);
+  }
+
+  /** Stops waiting for the approval ({@code DELETE /server/support/connect}). A key already received stays registered. */
+  public void cancelPortalConnect() {
+    controlPlaneRequest("DELETE", "server/support/connect", null, "cancel the portal connection", null);
+  }
+
+  /**
    * Whether {@link #createApiToken} may ask for a token over a cleartext connection to a host that is
    * not loopback. Off by default, and the only way past the client-side guard; it is the counterpart of
    * {@code RemoteGrpcServer}'s {@code allowInsecureCredentials}. Turning it on does not make the
