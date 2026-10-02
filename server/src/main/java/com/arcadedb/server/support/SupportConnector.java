@@ -40,6 +40,8 @@ import java.util.logging.Level;
  * <p>
  * The key travels only between the portal and this server: the browser gets the user code, the portal address and the state.
  * The device code and the key are never logged, never returned and only held in local variables for the length of the exchange.
+ * The start request carries {@code attributes}, a flat map of short texts about this server (see {@link #attributesOf}): host, version,
+ * server name and, in HA, the cluster name and size. The portal interprets them; the platform in between only keeps them.
  * One connect runs at a time. The state of the last one stays readable (so Studio can show the outcome) until the next one starts
  * or it is cancelled.
  * <p>
@@ -114,7 +116,7 @@ public class SupportConnector implements AutoCloseable {
    *
    * @return {@code {userCode, verifyUrl, expiresIn}}
    */
-  public synchronized JSONObject start(final String label, final String instanceId, final String host) {
+  public synchronized JSONObject start(final String label, final String instanceId, final JSONObject attributes) {
     final Session running = session;
     if (running != null && running.state == State.PENDING)
       throw new SupportException("connect_in_progress", "A connection is already waiting for approval: finish it or cancel it first");
@@ -135,7 +137,9 @@ public class SupportConnector implements AutoCloseable {
       throw new SupportException("bad_request", e.getMessage());
     }
 
-    final JSONObject body = new JSONObject().put("host", truncate(host, 100)).put("version", Constants.getRawVersion());
+    // host and version are also sent at the top level, which the portal still accepts, for a portal that predates "attributes"
+    final JSONObject body = new JSONObject().put("host", truncate(attributes.getString("host", ""), 100)).put("version", Constants.getRawVersion())
+        .put("attributes", attributes);
     if (instanceId != null && !instanceId.isBlank())
       body.put("instanceId", instanceId);
     if (label != null && !label.isBlank())
@@ -344,6 +348,31 @@ public class SupportConnector implements AutoCloseable {
   }
 
   // ---------------------------------------------------------------------------------------------- helpers
+
+  /**
+   * What this server tells the portal about itself when it asks to connect: a flat map of short texts the portal shows to the
+   * approver and interprets as it needs (the platform keeps them as they are). The cluster name and size are only sent by a
+   * server that runs in HA. Never a secret or a path; empty values are left out and long ones cut to 200 characters.
+   *
+   * @param ha the number of servers configured in the cluster, or 0 when not known; ignored when {@code clusterName} is empty
+   */
+  static JSONObject attributesOf(final String host, final String serverName, final String clusterName, final int ha) {
+    final JSONObject attributes = new JSONObject();
+    put(attributes, "host", host);
+    put(attributes, "version", Constants.getRawVersion());
+    put(attributes, "serverName", serverName);
+    if (clusterName != null && !clusterName.isBlank()) {
+      put(attributes, "clusterName", clusterName);
+      if (ha > 0)
+        put(attributes, "haNodes", Integer.toString(ha));
+    }
+    return attributes;
+  }
+
+  private static void put(final JSONObject attributes, final String key, final String value) {
+    if (value != null && !value.isBlank())
+      attributes.put(key, truncate(value.trim(), 200));
+  }
 
   /** The host name this server reports to the portal (shown to the approver, who is told it is not verified). */
   public static String localHost(final String serverName) {

@@ -172,6 +172,13 @@ class SupportConnectTest extends BaseGraphServerTest {
     assertThat(startBody.getString("host")).isNotBlank();
     assertThat(startBody.getString("version")).isNotBlank();
     assertThat(startBody.getString("label")).isEqualTo("prod");
+    // the same facts as flat attributes the portal interprets; a standalone server has no cluster
+    final JSONObject attributes = startBody.getJSONObject("attributes");
+    assertThat(attributes.getString("host")).isEqualTo(startBody.getString("host"));
+    assertThat(attributes.getString("version")).isEqualTo(startBody.getString("version"));
+    assertThat(attributes.getString("serverName")).isEqualTo(getServer(0).getServerName());
+    assertThat(attributes.has("clusterName")).isFalse();
+    assertThat(attributes.has("haNodes")).isFalse();
 
     assertThat(call("GET", "/api/v1/server/support/connect", null).json().getString("status")).isIn("pending", "connected");
 
@@ -222,6 +229,8 @@ class SupportConnectTest extends BaseGraphServerTest {
     call("POST", "/api/v1/server/support/connect", null);
     assertThat(waitFor("denied").has("registration")).isFalse();
     assertThat(service().getConfiguration().get()).isNull();
+    // nobody named the key: no label is sent, the portal derives one
+    assertThat(new JSONObject(portal.requests.get(0).bodyText()).has("label")).isFalse();
   }
 
   @Test
