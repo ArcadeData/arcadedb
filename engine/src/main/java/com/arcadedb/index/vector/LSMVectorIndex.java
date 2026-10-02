@@ -3222,6 +3222,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
       }
     }
 
+    collapseVectorIdsSharedByRecords(ridToLatestVector);
+
     // COMPACTION (issue #5516 follow-up): the live set just computed IS the compacted content of this index, so
     // when the caller asked for a compaction the data file is rewritten here, from the very same set the graph is
     // about to be built on. Doing it in the rebuild instead of in a separate compactor is what keeps the two from
@@ -6286,6 +6288,106 @@ public class LSMVectorIndex implements Index, IndexInternal {
   /** Visible for tests: the ordinal-to-vector-id map the next search would capture. */
   int[] getOrdinalToVectorIdForTest() {
     return ordinalToVectorId;
+  }
+
+  /**
+   * Makes the live set one record per vector id, the way a load of the same pages sees it.
+   * <p>
+   * The set is keyed by RID, so two records carrying the SAME vector id both stay in it, while the id-keyed location
+   * index a later load rebuilds keeps only the entry read last. A graph built over both then has more nodes than the
+   * load has live vectors, can never take the stale-prefix reuse (it is larger, not smaller), and is rejected and
+   * rebuilt over the same pages on every query. The entry read last wins, as in the load: a mutable-file entry beats
+   * a compacted one, and within a file the higher offset beats the lower. The losers are dropped from the set and
+   * logged by record; they are not served by the graph, exactly as they are not served after a load. Repairing them
+   * needs a write, which a build (it also runs on followers) must not do - see CHECK DATABASE.
+   * <p>
+   * Detection costs one sort of the ids; the per-record pass only runs when a duplicate exists.
+   *
+   * @param liveSet the live set, keyed by RID; losers are removed from it
+   */
+  private void collapseVectorIdsSharedByRecords(final Map<RID, VectorEntryForGraphBuild> liveSet) {
+    final List<VectorEntryForGraphBuild> losers = vectorIdLosers(liveSet);
+    if (losers.isEmpty())
+      return;
+
+    final StringBuilder detail = new StringBuilder();
+    for (int i = 0; i < losers.size(); i++) {
+      final VectorEntryForGraphBuild loser = losers.get(i);
+      liveSet.remove(loser.rid);
+      if (i < 5)
+        detail.append(i > 0 ? "; " : "").append("id ").append(loser.vectorId).append(" lost ").append(loser.rid);
+    }
+    LogManager.instance().log(this, Level.WARNING,
+        "Graph build for index %s found %d vector ids carried by more than one live record and kept the one a load keeps (the entry read last); "
+            + "the %d other records are not in the graph until the index is rebuilt (CHECK DATABASE FIX or REBUILD INDEX). Examples: %s",
+        indexName, losers.size(), losers.size(), detail);
+  }
+
+  /**
+   * The entries that lose a vector id they share with another record in {@code liveSet}, without changing the set.
+   * The entry read last wins: a mutable-file entry beats a compacted one, and within a file the higher offset beats
+   * the lower.
+   */
+  private static List<VectorEntryForGraphBuild> vectorIdLosers(final Map<RID, VectorEntryForGraphBuild> liveSet) {
+    final int[] sorted = liveSet.values().stream().mapToInt(v -> v.vectorId).sorted().toArray();
+    boolean shared = false;
+    for (int i = 1; i < sorted.length && !shared; i++)
+      shared = sorted[i] == sorted[i - 1];
+    if (!shared)
+      return Collections.emptyList();
+
+    final Map<Integer, VectorEntryForGraphBuild> winners = new HashMap<>();
+    final List<VectorEntryForGraphBuild> losers = new ArrayList<>();
+    for (final VectorEntryForGraphBuild entry : liveSet.values()) {
+      final VectorEntryForGraphBuild other = winners.putIfAbsent(entry.vectorId, entry);
+      if (other == null)
+        continue;
+      final boolean entryIsLater = entry.isCompacted != other.isCompacted ?
+          other.isCompacted :
+          entry.absoluteFileOffset > other.absoluteFileOffset;
+      if (entryIsLater) {
+        winners.put(entry.vectorId, entry);
+        losers.add(other);
+      } else
+        losers.add(entry);
+    }
+    return losers;
+  }
+
+  /**
+   * Reports vector ids carried by more than one live record, read from the pages exactly as a graph build reads them.
+   * Such an index can never keep a persisted graph (see {@link #collapseVectorIdsSharedByRecords}), and nothing short
+   * of rebuilding it gives the losing records a vector id of their own, so CHECK DATABASE FIX rebuilds an index that
+   * reports it. Page reads only; no lock beyond what the page parser takes.
+   */
+  @Override
+  public List<String> checkIntegrity() {
+    final Map<RID, VectorEntryForGraphBuild> liveSet = new HashMap<>();
+    final DatabaseInternal database = getDatabase();
+    if (compactedSubIndex != null)
+      LSMVectorIndexPageParser.parsePages(database, compactedSubIndex.getFileId(), compactedSubIndex.getTotalPages(),
+          getPageSize(), true, false, entry -> mergeEntryIntoLiveSet(liveSet, entry, true));
+    LSMVectorIndexPageParser.parsePages(database, getFileId(), getTotalPages(), getPageSize(), false, false,
+        entry -> mergeEntryIntoLiveSet(liveSet, entry, false));
+
+    final List<VectorEntryForGraphBuild> losers = vectorIdLosers(liveSet);
+    if (losers.isEmpty())
+      return Collections.emptyList();
+
+    final StringBuilder detail = new StringBuilder();
+    for (int i = 0; i < Math.min(5, losers.size()); i++)
+      detail.append(i > 0 ? ", " : "").append(losers.get(i).rid);
+    return List.of("%d records share a vector id with another record, so a persisted graph is rejected on every load and these records are missing from search (first: %s). Rebuild the index (CHECK DATABASE FIX)"
+        .formatted(losers.size(), detail));
+  }
+
+  /**
+   * Visible for tests: appends one page entry carrying an explicit vector id, inside the caller's transaction, exactly
+   * as a commit replay does. Lets a test place two different records on the SAME vector id, the page state the
+   * RID-keyed graph build and the id-keyed location load read differently.
+   */
+  void persistEntryForTest(final int id, final RID rid, final float[] vector) {
+    persistVectorWithLocation(id, rid, vector);
   }
 
   /** Visible for tests: where this index's persisted graph lives, for a test that has to tamper with its sidecars. */
