@@ -111,6 +111,19 @@ class Issue8888CypherLongPrecisionTest extends TestHelper {
   }
 
   @Test
+  void aLongOrBigIntegerMeetsADoubleByItsBinaryValue() {
+    final double twoPow60 = 1152921504606846976.0d;
+    final var row = database.query("opencypher",
+        "RETURN $big = $d AS eq, $next > $d AS gt, $next < $d AS lt, $d = $big AS eqReversed, $next = $d AS neq",
+        Map.of("big", BigInteger.valueOf(1L << 60), "d", twoPow60, "next", (1L << 60) + 1)).next();
+    assertThat(row.<Boolean>getProperty("eq")).isTrue();
+    assertThat(row.<Boolean>getProperty("eqReversed")).isTrue();
+    assertThat(row.<Boolean>getProperty("gt")).isTrue();
+    assertThat(row.<Boolean>getProperty("lt")).isFalse();
+    assertThat(row.<Boolean>getProperty("neq")).isFalse();
+  }
+
+  @Test
   void smallNumbersKeepTheirOrdinaryComparison() {
     load();
     assertThat(cypher("j", 7.0)).isEqualTo(1);
