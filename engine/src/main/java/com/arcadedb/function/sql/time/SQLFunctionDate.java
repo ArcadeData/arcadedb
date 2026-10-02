@@ -26,6 +26,7 @@ import com.arcadedb.utility.DateUtils;
 
 import java.time.DateTimeException;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
@@ -55,7 +56,8 @@ public class SQLFunctionDate extends SQLFunctionAbstract {
     final LocalDateTime date;
 
     if (params.length == 0 || params[0] == null)
-      date = LocalDateTime.now();
+      // the instant as a UTC wall clock, which is how the engine stores a DATETIME - the same reading as sysdate() (issue #8892)
+      date = LocalDateTime.now(ZoneOffset.UTC);
     else if (params[0] instanceof Number number)
       date = DateUtils.millisToLocalDateTime(number.longValue(), null);
     else if (params[0] instanceof String dateAsString) {

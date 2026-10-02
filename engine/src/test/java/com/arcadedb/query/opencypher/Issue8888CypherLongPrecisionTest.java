@@ -132,7 +132,7 @@ class Issue8888CypherLongPrecisionTest extends TestHelper {
   }
 
   @Test
-  void aBigDecimalAtTwoPow53PlusOneIsNotTheDouble() {
+  void aBigDecimalAgainstADoubleStaysInDoublePrecision() {
     final var row = database.query("opencypher", "RETURN $d = $v AS eq, $l = $dl AS maxEq",
         Map.of("d", new BigDecimal("9007199254740993"), "v", 9007199254740992.0d, "l", Long.MAX_VALUE, "dl", 9.223372036854775807E18)).next();
     assertThat(row.<Boolean>getProperty("eq")).isTrue();
