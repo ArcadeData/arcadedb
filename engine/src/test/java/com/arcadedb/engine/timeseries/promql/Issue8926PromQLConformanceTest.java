@@ -94,6 +94,24 @@ class Issue8926PromQLConformanceTest extends TestHelper {
     assertThat(samples.get(1).labels()).containsEntry("host", "web");
   }
 
+  @Test
+  void delimiterCharactersInATagValueNeverMakeDistinctLabelSetsMatch() throws Exception {
+    database.command("sql",
+        "CREATE TIMESERIES TYPE m8926_x1 TIMESTAMP ts TAGS (host STRING) FIELDS (value DOUBLE) SHARDS 1");
+    database.command("sql",
+        "CREATE TIMESERIES TYPE m8926_x2 TIMESTAMP ts TAGS (host STRING, zone STRING) FIELDS (value DOUBLE) SHARDS 1");
+    database.begin();
+    ((LocalTimeSeriesType) database.getSchema().getType("m8926_x1")).getEngine()
+        .appendSamples(new long[] { 1_000L }, new Object[] { "a,zone=b" }, new Object[] { 1.0 });
+    ((LocalTimeSeriesType) database.getSchema().getType("m8926_x2")).getEngine()
+        .appendSamples(new long[] { 1_000L }, new Object[] { "a" }, new Object[] { "b" }, new Object[] { 2.0 });
+    database.commit();
+
+    // {host="a,zone=b"} and {host="a",zone="b"} are different label sets: nothing matches, nothing is excluded
+    assertThat(vectorOf("m8926_x1 and m8926_x2")).isEmpty();
+    assertThat(vectorOf("m8926_x1 unless m8926_x2")).hasSize(1);
+  }
+
   // ---- #8927
 
   @Test

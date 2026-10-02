@@ -833,7 +833,9 @@ public class PromQLEvaluator {
     for (int i = 0; i < sorted.size(); i++) {
       if (i > 0)
         sb.append(',');
-      sb.append(sorted.get(i)).append('=').append(labels.get(sorted.get(i)));
+      // length-prefixed value: a value holding ',' or '=' cannot make two distinct label sets share a key
+      final String value = labels.get(sorted.get(i));
+      sb.append(sorted.get(i)).append('=').append(value.length()).append(':').append(value);
     }
     sb.append('}');
     return sb.toString();
