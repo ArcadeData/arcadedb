@@ -542,7 +542,9 @@ public class BinaryComparator {
     else if (!a.getClass().equals(b.getClass()) &&//
         a instanceof Number number && b instanceof Number number1) {
       return Type.numbersEqual(number, number1);
-    }
+    } else if (a instanceof BigDecimal decimal && b instanceof BigDecimal decimal1)
+      // compareTo, not equals(): 19.9 and 19.90 are one value, as the index, GROUP BY and the range answer (#8885)
+      return decimal.compareTo(decimal1) == 0;
     return a.equals(b);
   }
 
