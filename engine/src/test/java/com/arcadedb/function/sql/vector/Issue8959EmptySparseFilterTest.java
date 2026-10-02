@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.schema.Type;
 
 import org.junit.jupiter.api.Test;
@@ -85,6 +86,20 @@ class Issue8959EmptySparseFilterTest extends TestHelper {
   }
 
   @Test
+  void nestedEmptyListAndListOfNullsReturnNothing() {
+    final List<Object> nested = new ArrayList<>();
+    nested.add(new ArrayList<RID>());
+    final List<Object> nulls = new ArrayList<>();
+    nulls.add(null);
+    nulls.add(null);
+    for (final List<Object> ids : List.of(nested, nulls))
+      try (final ResultSet rs = database.query("sql",
+          "SELECT expand(`vector.sparseNeighbors`('Doc[tokens,weights]', [1], [1.0], 5, { filter: :ids }))", Map.of("ids", ids))) {
+        assertThat(rs.hasNext()).isFalse();
+      }
+  }
+
+  @Test
   void filterMatchingARecordStillRestrictsTheSearch() {
     assertThat(count("(SELECT @rid FROM Doc WHERE tenant = :tenant)", "a")).isEqualTo(1);
   }
@@ -97,6 +112,6 @@ class Issue8959EmptySparseFilterTest extends TestHelper {
           Map.of("ids", new ArrayList<RID>()))) {
         rs.hasNext();
       }
-    }).isInstanceOf(Exception.class);
+    }).isInstanceOf(SchemaException.class);
   }
 }
