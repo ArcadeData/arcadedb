@@ -176,4 +176,13 @@ class Issue8908SystemProcedureInterceptionTest {
         "CALL db.labels() YIELD label RETURN label UNION ALL CALL db.relationshipTypes() YIELD relationshipType "
             + "RETURN relationshipType UNION ALL CALL db.propertyKeys() YIELD propertyKey RETURN propertyKey"))).isFalse();
   }
+
+  @Test
+  void aHugeLiteralInTheTailCannotOverflowTheStack() {
+    final String huge = "CALL dbms.listDatabases() YIELD name WHERE name = '" + "a".repeat(100_000) + "'";
+    assertThat(BoltSystemProcedures.isSystemCall(BoltSystemProcedures.normalize(huge), "dbms.listdatabases")).isFalse();
+    assertThat(BoltSystemProcedures.isStandaloneCall(BoltSystemProcedures.normalize(huge), "dbms.listdatabases")).isFalse();
+    final String mediumLiteral = "CALL dbms.listDatabases() YIELD name WHERE name = '" + "a".repeat(3_000) + "'";
+    assertThat(BoltSystemProcedures.isSystemCall(BoltSystemProcedures.normalize(mediumLiteral), "dbms.listdatabases")).isTrue();
+  }
 }
