@@ -308,14 +308,14 @@ class DeltaOverlay {
       // vertex is always in an earlier merge: a slot is not reused by the transaction that freed it
       if (addedBaseId >= 0 && !newDeleted.get(addedBaseId))
         continue; // already in base
+      if (newOverflowIds.containsKey(vd.rid))
+        continue; // already in overflow
       if (addedBaseId >= 0 && baseCsrPerType != null) {
         // Replay over a fresh base that already holds the new vertex: its masked base node still carries the
         // edges the scan captured, and the replayed edges are re-added on the overflow node, so stop counting them
         for (final CSRAdjacencyIndex csr : baseCsrPerType.values())
           newDeltaEdgeCount -= incidentEdges(csr, addedBaseId);
       }
-      if (newOverflowIds.containsKey(vd.rid))
-        continue; // already in overflow
       final int overflowId = baseNodeCount + newOverflowCount;
       newOverflowIds.put(vd.rid, overflowId);
       overflowRIDsList.add(vd.rid);
@@ -801,6 +801,7 @@ class DeltaOverlay {
   private static int incidentEdges(final CSRAdjacencyIndex csr, final int nodeId) {
     if (nodeId >= csr.getNodeCount())
       return 0;
+    // a self-loop sits in both the out and the in list of the node, so it is subtracted once
     int count = csr.outDegree(nodeId) + csr.inDegree(nodeId);
     for (int i = csr.outOffset(nodeId), end = csr.outOffsetEnd(nodeId); i < end; i++)
       if (csr.outNeighbor(nodeId, i) == nodeId)
