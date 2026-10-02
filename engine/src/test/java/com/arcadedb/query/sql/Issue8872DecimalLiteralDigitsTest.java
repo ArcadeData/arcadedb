@@ -295,6 +295,29 @@ class Issue8872DecimalLiteralDigitsTest extends TestHelper {
     assertThat(keys("SELECT k FROM O LIMIT 1.5000000000000000000001")).hasSize(1);
   }
 
+  @Test
+  void notEqualsBetweenAndDoubleNegationOnDecimal() {
+    database.command("sql", "CREATE DOCUMENT TYPE Q");
+    database.command("sql", "CREATE PROPERTY Q.k STRING");
+    database.command("sql", "CREATE PROPERTY Q.dec DECIMAL");
+    database.command("sql", "CREATE INDEX ON Q (dec) NOTUNIQUE");
+    database.transaction(() -> database.newDocument("Q").set("k", "row", "dec", new BigDecimal(EXACT)).save());
+    assertThat(keys("SELECT k FROM Q WHERE dec <> " + EXACT)).isEmpty();
+    assertThat(keys("SELECT k FROM Q WHERE dec != " + EXACT.replace("12345", "12346"))).containsExactly("row");
+    assertThat(keys("SELECT k FROM Q WHERE dec BETWEEN " + EXACT + " AND " + EXACT)).containsExactly("row");
+    try (final ResultSet rs = database.query("sql", "SELECT - -" + EXACT + " AS a")) {
+      assertThat((BigDecimal) rs.next().getProperty("a")).isEqualByComparingTo(new BigDecimal(EXACT));
+    }
+  }
+
+  /** pins the documented limit: a 17 digit literal is a double, so it does not reach a DECIMAL beyond double precision */
+  @Test
+  void seventeenDigitLiteralOnDecimalGoesThroughTheDouble() {
+    try (final ResultSet rs = database.query("sql", "SELECT 0.12345678901234567 AS a")) {
+      assertThat(rs.next().<Object>getProperty("a")).isInstanceOf(Double.class);
+    }
+  }
+
   private List<String> keys(final String sql) {
     final List<String> ks = new ArrayList<>();
     try (final ResultSet rs = database.query("sql", sql)) {
