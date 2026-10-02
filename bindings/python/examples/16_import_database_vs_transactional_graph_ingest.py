@@ -645,14 +645,14 @@ def run_graph_batch_graph_load(
     try:
         db.command("sql", f"CREATE VERTEX TYPE {vertex_type}")
         db.command("sql", f"CREATE PROPERTY {vertex_type}.Id LONG")
-        db.command("sql", f"CREATE EDGE TYPE {edge_type} UNIDIRECTIONAL")
+        db.command("sql", f"CREATE EDGE TYPE {edge_type}")
 
         rid_lookup: Dict[int, str] = {}
 
         with db.graph_batch(
             batch_size=batch_size,
             expected_edge_count=edge_count,
-            bidirectional=False,
+            bidirectional=True,
             commit_every=batch_size,
             use_wal=False,
             parallel_flush=parallel > 1,

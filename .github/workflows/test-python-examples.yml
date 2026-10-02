@@ -207,7 +207,11 @@ jobs:
       - name: Setup UV package manager
         shell: bash
         run: |
-          curl -LsSf https://astral.sh/uv/install.sh | sh
+          # Retry transient network failures (a connection reset failed a whole examples job on #8897); the
+          # script is downloaded first so a retried transfer is never piped half-written into sh.
+          installer="$(mktemp)"
+          curl -LsSf --retry 5 --retry-all-errors --retry-delay 5 -o "$installer" https://astral.sh/uv/install.sh
+          sh "$installer"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           export PATH="$HOME/.local/bin:$PATH"
           uv --version

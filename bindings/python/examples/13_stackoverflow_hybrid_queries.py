@@ -633,7 +633,7 @@ def create_graph_schema(db) -> None:
         db.command("sql", f"CREATE PROPERTY {vertex_type}.Id LONG")
 
     for edge_type in GRAPH_EDGE_TYPES:
-        db.command("sql", f"CREATE EDGE TYPE {edge_type} UNIDIRECTIONAL")
+        db.command("sql", f"CREATE EDGE TYPE {edge_type}")
 
 
 def create_graph_indexes(db) -> None:
@@ -683,7 +683,7 @@ def insert_edges(
     with db.graph_batch(
         batch_size=max(1, len(rows)),
         expected_edge_count=max(1, len(rows)),
-        bidirectional=False,
+        bidirectional=True,
         commit_every=max(1, len(rows)),
         use_wal=False,
     ) as batch:
