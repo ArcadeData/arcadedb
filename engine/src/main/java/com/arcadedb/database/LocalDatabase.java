@@ -1422,7 +1422,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         "record " + rid + " could not be taken back after its indexing refused it (" + e.getMessage() + ")");
     LogManager.instance().log(this, Level.SEVERE,
         "Cannot take back %s of record %s after its indexing refused it: the transaction is marked rollback-only, "
-            + "because committing it would publish a record no index entry points at. %s", what, rid, e.getMessage());
+            + "because committing it would publish what the index never accepted. %s", what, rid, e.getMessage());
   }
 
   @Override
@@ -1941,17 +1941,31 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     if (!localType.hasExternalProperties())
       return;
     final Map<String, RID> externalRids = serializer.findExistingExternalRids(this, document);
+    RuntimeException failure = null;
     for (final RID extRid : externalRids.values()) {
       final LocalBucket externalBucket = schema.getBucketById(extRid.getBucketId(), false);
       if (externalBucket != null) {
-        if (retract)
-          externalBucket.retractRecord(extRid);
-        else
-          externalBucket.deleteRecord(extRid);
+        try {
+          if (retract)
+            externalBucket.retractRecord(extRid);
+          else
+            externalBucket.deleteRecord(extRid);
+        } catch (final RuntimeException e) {
+          // A retraction takes back as many external records as it can, so one failure does not strand the others
+          if (!retract)
+            throw e;
+          if (failure == null)
+            failure = e;
+          else
+            failure.addSuppressed(e);
+          continue;
+        }
         // Keep the external bucket's count consistent (mirrors the +1 in BinarySerializer.writeExternalPropertyValue).
         getTransaction().updateBucketRecordDelta(externalBucket.getFileId(), -1);
       }
     }
+    if (failure != null)
+      throw failure;
   }
 
   @Override
