@@ -196,6 +196,10 @@ public class BetweenCondition extends BooleanExpression {
     final boolean matchesLowerCaseField = !matchesField
         && info.isCaseInsensitive()
         && BinaryCondition.isFieldWithLowerCaseMethod(first, info.getField());
+    // A plain BETWEEN on a CI index would be answered over lower-cased keys and bounds, not the case sensitive range it
+    // asks for: left to the scan. field.toLowerCase() BETWEEN a AND b is served by the index (issue #8932)
+    if (matchesField && info.isCaseInsensitive())
+      return false;
     if (!matchesField && !matchesLowerCaseField)
       return false;
 

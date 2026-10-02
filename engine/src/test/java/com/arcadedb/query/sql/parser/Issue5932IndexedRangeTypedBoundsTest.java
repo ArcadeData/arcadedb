@@ -197,12 +197,12 @@ class Issue5932IndexedRangeTypedBoundsTest {
       db.commit();
       db.begin();
 
-      try (final ResultSet rs = db.query("sql", "select name from V where name > 'bravo'")) {
+      try (final ResultSet rs = db.query("sql", "select name from V where name.toLowerCase() > 'bravo'")) {
         assertThat(rs.hasNext()).isTrue();
         assertThat(rs.next().<String>getProperty("name")).isEqualTo("Charlie");
         assertThat(rs.hasNext()).isFalse();
       }
-      try (final ResultSet rs = db.query("sql", "select name from V where name < 'BRAVO'")) {
+      try (final ResultSet rs = db.query("sql", "select name from V where name.toLowerCase() < 'bravo'")) {
         assertThat(rs.hasNext()).isTrue();
         assertThat(rs.next().<String>getProperty("name")).isEqualTo("Alpha");
         assertThat(rs.hasNext()).isFalse();

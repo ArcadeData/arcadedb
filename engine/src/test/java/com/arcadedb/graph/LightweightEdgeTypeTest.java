@@ -112,6 +112,28 @@ class LightweightEdgeTypeTest extends TestHelper {
         .hasMessageContaining("LIGHTWEIGHT");
   }
 
+  /** Issue #8934: GraphBatch.newEdge agrees with Vertex.newEdge that an empty property map means no properties. */
+  @Test
+  void graphBatchAcceptsAnEmptyPropertyMapOnALightweightType() {
+    database.transaction(
+        () -> database.getSchema().buildEdgeType().withName("Follows").withLightweight(true).create());
+
+    final RID a = newVertex(0);
+    final RID b = newVertex(1);
+
+    try (final GraphBatch batch = GraphBatch.builder(database).build()) {
+      batch.newEdge(a, "Follows", b, new HashMap<String, Object>());
+
+      final Map<String, Object> notEmpty = new HashMap<>();
+      notEmpty.put("since", 2020);
+      assertThatThrownBy(() -> batch.newEdge(a, "Follows", b, notEmpty))
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("LIGHTWEIGHT");
+    }
+
+    assertThat(database.lookupByRID(a, true).asVertex().countEdges(Vertex.DIRECTION.OUT, "Follows")).isEqualTo(1);
+  }
+
   @Test
   void theReturnedEdgeIsAMutableEdgeThatRefusesToMutate() {
     database.transaction(

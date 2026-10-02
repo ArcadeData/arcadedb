@@ -174,8 +174,8 @@ class Issue5966BetweenUsesIndexTest {
     });
   }
 
-  // #5966: BETWEEN on a case-insensitive (COLLATE CI) indexed STRING column must use the index and apply the
-  // range comparison after case-folding, exercising the shared convertKeys()/convertKeysToDeclaredTypes() path
+  // #5966: BETWEEN on name.toLowerCase() over a case-insensitive (COLLATE CI) indexed STRING column must use the index
+  // and apply the range comparison after case-folding (a plain "name BETWEEN" is left to the scan, issue #8932), exercising the shared convertKeys()/convertKeysToDeclaredTypes() path
   // (both the insert-side fold and the query-side bound fold this PR's LSMTreeIndex.convertKeys dedupe touches).
   @Test
   void betweenOnCaseInsensitiveIndexedColumnUsesIndexAndFolds() {
@@ -191,11 +191,11 @@ class Issue5966BetweenUsesIndexTest {
     });
 
     database.transaction(() -> {
-      final String planString = plan("EXPLAIN SELECT name FROM Product WHERE name BETWEEN 'a' AND 'c'");
+      final String planString = plan("EXPLAIN SELECT name FROM Product WHERE name.toLowerCase() BETWEEN 'a' AND 'c'");
       assertThat(planString).contains("FETCH FROM INDEX");
 
       final List<String> names = new ArrayList<>();
-      final ResultSet rs = database.query("sql", "SELECT name FROM Product WHERE name BETWEEN 'a' AND 'c'");
+      final ResultSet rs = database.query("sql", "SELECT name FROM Product WHERE name.toLowerCase() BETWEEN 'a' AND 'c'");
       while (rs.hasNext())
         names.add(rs.next().getProperty("name"));
 

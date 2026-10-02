@@ -20,6 +20,7 @@ package com.arcadedb.server.grpc;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerPlugin;
@@ -557,7 +558,14 @@ public class GrpcServerPlugin implements ServerPlugin {
   private boolean getConfigBoolean(ContextConfiguration config, String key, boolean defaultValue) {
     String value = getConfigString(config, key, null);
     if (value != null) {
-      return Boolean.parseBoolean(value);
+      // Boolean.parseBoolean() turns "yes", "1" or a typo into false without a word, which for arcadedb.grpc.tls.enabled
+      // starts a plaintext endpoint: only the two spellings are a boolean, anything else refuses to start (issue #8935)
+      final String trimmed = value.trim();
+      if ("true".equalsIgnoreCase(trimmed))
+        return true;
+      if ("false".equalsIgnoreCase(trimmed))
+        return false;
+      throw new ConfigurationException("Invalid boolean value for " + key + ": '" + value + "', expected true or false");
     }
     return defaultValue;
   }

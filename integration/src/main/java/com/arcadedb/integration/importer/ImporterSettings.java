@@ -186,26 +186,39 @@ public class ImporterSettings {
       }
   }
 
+  /**
+   * Boolean.parseBoolean() reads "yes", "1" or a typo as false without a word, e.g. {@code -wal yes} would run the import
+   * with the WAL off. Only the two spellings are a boolean (issue #8935).
+   */
+  private static boolean parseStrictBoolean(final String name, final String value) {
+    final String trimmed = value.trim();
+    if ("true".equalsIgnoreCase(trimmed))
+      return true;
+    if ("false".equalsIgnoreCase(trimmed))
+      return false;
+    throw new IllegalArgumentException("Invalid value '" + value + "' for -" + name + ". Supported values are 'true' and 'false'");
+  }
+
   public void parseParameter(final String name, String value) {
     value = FileUtils.getStringContent(value);
 
     switch (name) {
     case "database" -> database = value;
     case "url" -> url = value;
-    case "forceDatabaseCreate" -> forceDatabaseCreate = Boolean.parseBoolean(value);
-    case "wal" -> wal = Boolean.parseBoolean(value);
+    case "forceDatabaseCreate" -> forceDatabaseCreate = parseStrictBoolean(name, value);
+    case "wal" -> wal = parseStrictBoolean(name, value);
     case "commitEvery" -> commitEvery = Integer.parseInt(value);
     case "parallel" -> parallel = Integer.parseInt(value);
     case "typeIdProperty" -> typeIdProperty = value;
-    case "typeIdUnique" -> typeIdPropertyIsUnique = Boolean.parseBoolean(value);
+    case "typeIdUnique" -> typeIdPropertyIsUnique = parseStrictBoolean(name, value);
     case "typeIdType" -> typeIdType = value;
-    case "trimText" -> trimText = Boolean.parseBoolean(value);
+    case "trimText" -> trimText = parseStrictBoolean(name, value);
     case "analysisLimitBytes" -> analysisLimitBytes = FileUtils.getSizeAsNumber(value);
     case "analysisLimitEntries" -> analysisLimitEntries = Long.parseLong(value);
     case "parsingLimitBytes" -> parsingLimitBytes = FileUtils.getSizeAsNumber(value);
     case "parsingLimitEntries" -> parsingLimitEntries = Long.parseLong(value);
     case "mapping" -> mapping = value;
-    case "probeOnly" -> probeOnly = Boolean.parseBoolean(value);
+    case "probeOnly" -> probeOnly = parseStrictBoolean(name, value);
     case "onRowError" -> {
       if (!"abort".equalsIgnoreCase(value) && !"skip".equalsIgnoreCase(value))
         throw new IllegalArgumentException("Invalid value '" + value + "' for -onRowError. Supported values are 'abort' and 'skip'");
@@ -240,7 +253,7 @@ public class ImporterSettings {
     case "edgePropertiesInclude" -> edgePropertiesInclude = value;
     case "edgeFromField" -> edgeFromField = value;
     case "edgeToField" -> edgeToField = value;
-    case "edgeBidirectional" -> edgeBidirectional = Boolean.parseBoolean(value);
+    case "edgeBidirectional" -> edgeBidirectional = parseStrictBoolean(name, value);
     }
 
     // SAVE THE SETTING IN THE OPTIONS
