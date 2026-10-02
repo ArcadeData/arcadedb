@@ -146,6 +146,7 @@ class Issue7822ApiTokenForwardedHeaderTest {
   @Test
   void aMalformedElementFailsClosed() {
     assertThat(safe(null, List.of("proto=\"https"))).as("unterminated quoted string").isFalse();
+    assertThat(safe(null, List.of("proto=\"https\\"))).as("a trailing lone backslash inside quotes").isFalse();
     assertThat(safe(null, List.of("proto=https;proto=https"))).as("a parameter twice in one element").isFalse();
     assertThat(safe(null, List.of("proto"))).as("a name with no value").isFalse();
     assertThat(safe(null, List.of("https"))).as("an X-Forwarded-Proto value in the wrong header").isFalse();

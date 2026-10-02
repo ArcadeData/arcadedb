@@ -116,7 +116,7 @@ public final class ApiTokenTrustedProxies {
    * appends an element recording only {@code for=} would otherwise leave a client-injected {@code proto=https} as the
    * only scheme in the header, and have it believed.
    */
-  static String protosOfForwarded(final Iterable<String> lines) {
+  private static String protosOfForwarded(final Iterable<String> lines) {
     final StringBuilder protos = new StringBuilder(16);
     final StringBuilder token = new StringBuilder(32);
     // A flag rather than protos.length() > 0: an empty first entry (a hop that reported nothing) leaves protos empty
@@ -174,6 +174,8 @@ public final class ApiTokenTrustedProxies {
         if (name != null)
           malformed = true;
         else {
+          // Trimmed, so "proto = https" is read although RFC 7239 allows no whitespace around '='. Lenient only in
+          // what it parses: the value still has to be exactly a URI scheme, and https to pass.
           name = token.toString().trim();
           token.setLength(0);
         }
