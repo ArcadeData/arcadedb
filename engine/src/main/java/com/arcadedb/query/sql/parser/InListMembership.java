@@ -23,6 +23,7 @@ import com.arcadedb.schema.Type;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.Set;
@@ -75,8 +76,22 @@ public final class InListMembership {
   private final Set<Object> keys;
   private final int         kind;
   private final boolean     containsNull;
+  /**
+   * The finite Doubles of the list narrowed to float, and its finite Floats: a FLOAT also equals the double that
+   * narrows to it ({@code Type.numbersEqual}, issue #8882), a relation the decimal keys cannot hold, so a Float probe
+   * checks the first set and a Double probe the second. {@code null} when the list has no Double / no Float.
+   */
+  private final float[]    narrowedDoubles;
+  private final float[]    floats;
 
   private InListMembership(final Object rightValue, final Set<Object> keys, final int kind, final boolean containsNull) {
+    this(rightValue, keys, kind, containsNull, null, null);
+  }
+
+  private InListMembership(final Object rightValue, final Set<Object> keys, final int kind, final boolean containsNull,
+      final float[] narrowedDoubles, final float[] floats) {
+    this.narrowedDoubles = narrowedDoubles;
+    this.floats = floats;
     this.rightValue = rightValue;
     this.keys = keys;
     this.kind = kind;
@@ -97,6 +112,8 @@ public final class InListMembership {
 
     int kind = KIND_NONE;
     boolean containsNull = false;
+    Set<Float> narrowedDoubles = null;
+    Set<Float> floats = null;
     final Set<Object> keys = new HashSet<>();
 
     for (final Object item : MultiValue.getMultiValueIterable(rightValue, false)) {
@@ -117,13 +134,22 @@ public final class InListMembership {
 
       kind = itemKind;
       keys.add(key);
+      if (item instanceof Float f && Float.isFinite(f)) {
+        if (floats == null)
+          floats = new HashSet<>();
+        floats.add(f);
+      } else if (item instanceof Double d && Double.isFinite(d)) {
+        if (narrowedDoubles == null)
+          narrowedDoubles = new HashSet<>();
+        narrowedDoubles.add((float) (double) d);
+      }
     }
 
     if (kind == KIND_NONE)
       // Empty, or nulls only: cheap either way, and the linear evaluator already answers both exactly.
       return new InListMembership(rightValue, null, KIND_NONE, containsNull);
 
-    return new InListMembership(rightValue, keys, kind, containsNull);
+    return new InListMembership(rightValue, keys, kind, containsNull, sortedFloats(narrowedDoubles), sortedFloats(floats));
   }
 
   /**
@@ -138,11 +164,32 @@ public final class InListMembership {
         if (key != null) {
           if (keys.contains(key))
             return Boolean.TRUE;
+          if (narrowsToAnItem(left))
+            return Boolean.TRUE;
           return containsNull ? null : Boolean.FALSE;
         }
       }
     }
     return InCondition.evaluateExpressionThreeValued(left, rightValue);
+  }
+
+  private static float[] sortedFloats(final Set<Float> set) {
+    if (set == null)
+      return null;
+    final float[] sorted = new float[set.size()];
+    int i = 0;
+    for (final Float f : set)
+      sorted[i++] = f;
+    Arrays.sort(sorted);
+    return sorted;
+  }
+
+  private boolean narrowsToAnItem(final Object left) {
+    if (left instanceof Float f)
+      return narrowedDoubles != null && Float.isFinite(f) && Arrays.binarySearch(narrowedDoubles, f) >= 0;
+    if (left instanceof Double d)
+      return floats != null && Double.isFinite(d) && Arrays.binarySearch(floats, (float) (double) d) >= 0;
+    return false;
   }
 
   /** The right-hand value this probe was built from, so the caller can apply the "right is null is UNKNOWN" rule. */

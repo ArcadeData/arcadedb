@@ -70,8 +70,7 @@ public class QueryOperatorEquals {
 
     // NUMBERS
     if (left instanceof Number number && right instanceof Number number1) {
-      final Number[] couple = Type.castComparableNumber(number, number1);
-      return couple[0].equals(couple[1]);
+      return Type.numbersEqual(number, number1);
     }
 
     // ALL OTHER CASES

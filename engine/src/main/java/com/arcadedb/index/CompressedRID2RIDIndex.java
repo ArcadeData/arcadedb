@@ -184,7 +184,7 @@ public class CompressedRID2RIDIndex {
     int lastChainPos = pos;
     while (true) {
       final Object slotKey = serializer.deserializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, null);
-      if (BinaryComparator.equals(slotKey, key)) {
+      if (BinaryComparator.equalsExact(slotKey, key)) {
         // FOUND KEY
         chunk.position(chunk.position() + Binary.INT_SERIALIZED_SIZE);
         return (RID) serializer.deserializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, null);
@@ -244,7 +244,7 @@ public class CompressedRID2RIDIndex {
       while (true) {
         final RID slotKey = (RID) serializer.deserializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, null);
 
-        if (BinaryComparator.equals(slotKey, key))
+        if (BinaryComparator.equalsExact(slotKey, key))
           throw new IllegalArgumentException("Key " + key + " already inserted");
 
         lastNextPos = chunk.position();
