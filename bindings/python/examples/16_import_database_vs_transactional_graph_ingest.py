@@ -645,7 +645,7 @@ def run_graph_batch_graph_load(
     try:
         db.command("sql", f"CREATE VERTEX TYPE {vertex_type}")
         db.command("sql", f"CREATE PROPERTY {vertex_type}.Id LONG")
-        db.command("sql", f"CREATE EDGE TYPE {edge_type}")
+        db.command("sql", f"CREATE EDGE TYPE {edge_type} UNIDIRECTIONAL")
 
         rid_lookup: Dict[int, str] = {}
 

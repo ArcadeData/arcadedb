@@ -633,7 +633,7 @@ def create_graph_schema(db) -> None:
         db.command("sql", f"CREATE PROPERTY {vertex_type}.Id LONG")
 
     for edge_type in GRAPH_EDGE_TYPES:
-        db.command("sql", f"CREATE EDGE TYPE {edge_type}")
+        db.command("sql", f"CREATE EDGE TYPE {edge_type} UNIDIRECTIONAL")
 
 
 def create_graph_indexes(db) -> None:

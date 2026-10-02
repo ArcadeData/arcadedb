@@ -1045,7 +1045,7 @@ def create_arcadedb_schema(db):
         "EARNED",
         "LINKED_TO",
     ):
-        db.command("sql", f"CREATE EDGE TYPE {edge_type}")
+        db.command("sql", f"CREATE EDGE TYPE {edge_type} UNIDIRECTIONAL")
 
     db.async_executor().wait_completion()
 
