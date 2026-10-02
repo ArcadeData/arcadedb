@@ -30,8 +30,8 @@ import com.arcadedb.query.sql.executor.Result;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.Locale;
+import java.util.Map;
 import java.util.logging.Level;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -140,23 +140,6 @@ final class BoltSystemProcedures {
     return schemaCallsOf(normalized) != null;
   }
 
-  /**
-   * Answers whether the normalized query is a call to the named system procedure and nothing else: the name must end
-   * at a token boundary, and what follows may only be an empty argument list, an optional {@code YIELD} of plain
-   * identifiers, an optional {@code RETURN} of plain identifiers or {@code collect(identifier)}, and an optional
-   * semicolon. An allow-list on purpose: any other clause after the call (a {@code CREATE}, a {@code MATCH}, a
-   * {@code SET}...) makes it a larger statement, and answering it here would silently drop the rest, writes included.
-   *
-   * @param normalized    a query normalized by {@link #normalize(String)}
-   * @param procedureName the lower-case procedure name
-   *
-   * @return true if the statement is just {@code CALL <procedureName>} with an optional plain YIELD/RETURN
-   */
-  static boolean isStandaloneCall(final String normalized, final String procedureName) {
-    final Pattern tail = SINGLE_TAIL.get(procedureName);
-    return tail != null && matchesSegment(normalized, procedureName, tail) != null;
-  }
-
   private static Pattern singleTail(final String field) {
     return Pattern.compile(" ?(?:\\( ?\\))?(?: yield (?:\\*|" + field + "))?(?: return " + field + ")? ?;?");
   }
@@ -212,19 +195,23 @@ final class BoltSystemProcedures {
     return !tail.contains("//") && !FOREIGN_CLAUSE.matcher(tail).find();
   }
 
+  /** One recognized schema call: the procedure and how many values its collected list may hold. */
+  private record SchemaCall(String name, int limit) {
+  }
+
   /**
    * Splits the statement into its UNION segments and returns the schema procedure each one calls, or null when the
    * statement is not exactly one schema call or the three of them combined.
    */
-  private record SchemaCall(String name, int limit) {
-  }
-
   private static SchemaCall[] schemaCallsOf(final String normalized) {
     // Every Bolt statement passes through here: bail out before any allocation unless it opens with a call.
     if (normalized.length() > MAX_PROBE_LENGTH || !normalized.startsWith(CALL_PREFIX))
       return null;
     final String[] segments = normalized.indexOf(" union ") < 0 ? new String[] { normalized } : UNION.split(normalized, -1);
     if (segments.length != 1 && segments.length != 3)
+      return null;
+    // Cypher does not allow UNION and UNION ALL in one statement
+    if (segments.length == 3 && normalized.contains(" union all ") && normalized.replace(" union all ", " ").contains(" union "))
       return null;
 
     final Map<String, Pattern> tails = segments.length == 1 ? SINGLE_TAIL : COMBINED_TAIL;

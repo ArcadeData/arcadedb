@@ -48,7 +48,6 @@ class Issue8908SystemProcedureInterceptionTest {
   @Test
   void theReportedQueryIsLeftToTheEngine() {
     assertThat(BoltSystemProcedures.isSchemaProcedureQuery(BoltSystemProcedures.normalize(REPORTED))).isFalse();
-    assertThat(BoltSystemProcedures.isStandaloneCall(BoltSystemProcedures.normalize(REPORTED), "db.propertykeys")).isFalse();
     assertThat(BoltSystemProcedures.isSystemCall(BoltSystemProcedures.normalize(
         "MATCH (n) RETURN n, 'dbms.components' AS s"), "dbms.components")).isFalse();
   }
@@ -185,9 +184,8 @@ class Issue8908SystemProcedureInterceptionTest {
   }
 
   @Test
-  void aHugeLiteralInTheTailCannotOverflowTheStack() {
+  void aStatementOverTheProbeLengthCapIsNeverMatched() {
     final String huge = "CALL dbms.listDatabases() YIELD name WHERE name = '" + "a".repeat(100_000) + "'";
-    assertThat(BoltSystemProcedures.isSystemCall(BoltSystemProcedures.normalize(huge), "dbms.listdatabases")).isFalse();
     assertThat(BoltSystemProcedures.isSystemCall(BoltSystemProcedures.normalize(huge), "dbms.listdatabases")).isFalse();
     final String mediumLiteral = "CALL dbms.listDatabases() YIELD name WHERE name = '" + "a".repeat(3_000) + "'";
     assertThat(BoltSystemProcedures.isSystemCall(BoltSystemProcedures.normalize(mediumLiteral), "dbms.listdatabases")).isTrue();
@@ -237,5 +235,13 @@ class Issue8908SystemProcedureInterceptionTest {
         "CALL db.ping() // it's\nCREATE (:X {a:'b'})"), "db.ping")).isFalse();
     assertThat(BoltSystemProcedures.isSystemCall(BoltSystemProcedures.normalize(
         "CALL dbms.listDatabases() YIELD name WHERE name = 'a//b'"), "dbms.listdatabases")).isTrue();
+  }
+
+  @Test
+  void mixingUnionAndUnionAllIsLeftToTheEngine() {
+    assertThat(BoltSystemProcedures.isSchemaProcedureQuery(BoltSystemProcedures.normalize(
+        "CALL db.labels() YIELD label RETURN collect(label) AS result UNION ALL "
+            + "CALL db.relationshipTypes() YIELD relationshipType RETURN collect(relationshipType) AS result UNION "
+            + "CALL db.propertyKeys() YIELD propertyKey RETURN collect(propertyKey) AS result"))).isFalse();
   }
 }
