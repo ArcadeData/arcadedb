@@ -31,6 +31,7 @@ import org.neo4j.driver.Session;
 import java.io.File;
 import java.io.IOException;
 import java.io.PrintWriter;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -60,7 +61,7 @@ public class Issue8908CallUnionLoadCsvIT extends BaseBoltServerTest {
   void theReportedQueryRunsInTheEngine() throws IOException {
     final File csv = new File("./target/issue8908/arcade-load.csv");
     csv.getParentFile().mkdirs();
-    try (final PrintWriter writer = new PrintWriter(csv, "UTF-8")) {
+    try (final PrintWriter writer = new PrintWriter(csv, StandardCharsets.UTF_8)) {
       writer.println("value");
       writer.println("a");
       writer.println("b");

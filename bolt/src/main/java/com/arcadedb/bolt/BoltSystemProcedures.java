@@ -32,6 +32,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.logging.Level;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 /**
@@ -52,6 +53,9 @@ import java.util.stream.Stream;
 final class BoltSystemProcedures {
   private static final Object[] NO_ARGS       = new Object[0];
   private static final String   CALL_PREFIX   = "call ";
+  private static final String   ITEM          = "(?:collect\\(\\w+\\)|\\w+)(?: as \\w+)?";
+  private static final Pattern  CALL_TAIL     = Pattern.compile(
+      " ?(?:\\( ?\\))?(?: yield (?:\\*|" + ITEM + "(?:, ?" + ITEM + ")*))?(?: return " + ITEM + "(?:, ?" + ITEM + ")*)? ?;?");
   private static final String   LABELS        = DbLabels.NAME.toLowerCase(Locale.ROOT);
   private static final String   RELATIONSHIPS = DbRelationshipTypes.NAME.toLowerCase(Locale.ROOT);
   private static final String   PROPERTY_KEYS = DbPropertyKeys.NAME.toLowerCase(Locale.ROOT);
@@ -93,29 +97,55 @@ final class BoltSystemProcedures {
    * @return true if the Bolt executor should try to serve it here
    */
   static boolean isSchemaProcedureQuery(final String normalized) {
-    // Only a statement that opens with the call IS the introspection query (a single call, or the combined UNION
-    // form Neo4j Desktop sends, which also opens with one). A name found deeper in the text - a CALL subquery
-    // branch, a string literal, a comment - belongs to a larger statement the engine has to run (issue #8908).
-    return isStandaloneCall(normalized, LABELS) || isStandaloneCall(normalized, RELATIONSHIPS)
-        || isStandaloneCall(normalized, PROPERTY_KEYS);
+    // Only a statement that IS the introspection query - a single call, or the combined UNION form Neo4j Desktop
+    // sends - is answered here. A name found deeper in the text (a CALL subquery branch, a string literal) or a call
+    // followed by further clauses belongs to a larger statement the engine has to run (issue #8908).
+    return schemaCallsOf(normalized) != null;
   }
 
   /**
-   * Answers whether the normalized query is a call to the named system procedure, as opposed to a larger statement
-   * that merely mentions it. Substring matching used to answer for the whole statement whenever the name appeared
-   * anywhere in it, so the rest of the query was silently never run (issue #8908).
+   * Answers whether the normalized query is a call to the named system procedure and nothing else: the name must end
+   * at a token boundary, and what follows may only be an empty argument list, an optional {@code YIELD} of plain
+   * identifiers, an optional {@code RETURN} of plain identifiers or {@code collect(identifier)}, and an optional
+   * semicolon. An allow-list on purpose: any other clause after the call (a {@code CREATE}, a {@code MATCH}, a
+   * {@code SET}...) makes it a larger statement, and answering it here would silently drop the rest, writes included.
    *
    * @param normalized    a query normalized by {@link #normalize(String)}
    * @param procedureName the lower-case procedure name
    *
-   * @return true if the statement opens with {@code CALL <procedureName>}
+   * @return true if the statement is just {@code CALL <procedureName>} with an optional plain YIELD/RETURN
    */
   static boolean isStandaloneCall(final String normalized, final String procedureName) {
-    if (!normalized.startsWith(CALL_PREFIX + procedureName))
-      return false;
-    // A token boundary: db.ping must not claim db.pingAll
     final int end = CALL_PREFIX.length() + procedureName.length();
-    return end == normalized.length() || normalized.charAt(end) == '(' || normalized.charAt(end) == ' ';
+    return normalized.startsWith(CALL_PREFIX) && normalized.regionMatches(CALL_PREFIX.length(), procedureName, 0,
+        procedureName.length()) && CALL_TAIL.matcher(normalized).region(end, normalized.length()).matches();
+  }
+
+  /**
+   * Splits the statement into its UNION segments and returns the schema procedure each one calls, or null when the
+   * statement is not exactly one schema call or the three of them combined.
+   */
+  private static String[] schemaCallsOf(final String normalized) {
+    final String[] segments = normalized.split(" union ", -1);
+    if (segments.length != 1 && segments.length != 3)
+      return null;
+
+    final String[] names = new String[segments.length];
+    for (int i = 0; i < segments.length; ++i) {
+      // The segment is anchored on its own: the prefix is re-checked after each UNION.
+      final String segment = segments[i];
+      if (isStandaloneCall(segment, LABELS))
+        names[i] = LABELS;
+      else if (isStandaloneCall(segment, RELATIONSHIPS))
+        names[i] = RELATIONSHIPS;
+      else if (isStandaloneCall(segment, PROPERTY_KEYS))
+        names[i] = PROPERTY_KEYS;
+      else
+        return null;
+    }
+    if (names.length == 3 && (names[0].equals(names[1]) || names[0].equals(names[2]) || names[1].equals(names[2])))
+      return null;
+    return names;
   }
 
   /**
@@ -133,28 +163,14 @@ final class BoltSystemProcedures {
    * path reports), when the procedure is not registered, and when running it raises anything at all
    */
   static Served serveSchemaProcedure(final Database database, final String normalized) {
-    final boolean labels = normalized.contains(LABELS);
-    final boolean relationships = normalized.contains(RELATIONSHIPS);
-    final boolean propertyKeys = normalized.contains(PROPERTY_KEYS);
+    final String[] names = schemaCallsOf(normalized);
+    if (names == null)
+      return null;
 
     try {
-      if (labels && relationships && propertyKeys)
+      if (names.length == 3)
         return serveCombined(database, normalized);
-
-      // Two of the three names is neither a single call nor the combined form: the engine runs it.
-      if ((labels ? 1 : 0) + (relationships ? 1 : 0) + (propertyKeys ? 1 : 0) > 1)
-        return null;
-
-      // A single call that continues into further clauses is a larger statement: the engine runs it.
-      if (continuesIntoOtherClauses(normalized))
-        return null;
-
-      if (labels && isStandaloneCall(normalized, LABELS))
-        return serveOne(database, normalized, LABELS);
-      if (relationships && isStandaloneCall(normalized, RELATIONSHIPS))
-        return serveOne(database, normalized, RELATIONSHIPS);
-      if (propertyKeys && isStandaloneCall(normalized, PROPERTY_KEYS))
-        return serveOne(database, normalized, PROPERTY_KEYS);
+      return serveOne(database, normalized, names[0]);
     } catch (final Exception e) {
       // The Bolt executor calls its system-query interception before the try/catch that classifies query
       // errors (CommandParsingException vs. retryable conflict vs. plain failure), so an exception escaping
@@ -166,10 +182,6 @@ final class BoltSystemProcedures {
           "Error serving schema procedure from the registry, leaving the query to the engine", e);
       return null;
     }
-
-    // Defensive: the caller reaches here only through isSchemaProcedureQuery(), which anchors the same three
-    // names. Kept so the two ever diverging declines the query rather than answering it with nothing.
-    return null;
   }
 
   /**
@@ -213,11 +225,6 @@ final class BoltSystemProcedures {
       }
     }
     return new Served(fields, rows);
-  }
-
-  private static boolean continuesIntoOtherClauses(final String normalized) {
-    return normalized.contains(" match ") || normalized.contains(" with ") || normalized.contains(" unwind ")
-        || normalized.contains(" call ") || normalized.contains(" union ") || normalized.contains(" load ");
   }
 
   /**

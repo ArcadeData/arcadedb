@@ -89,4 +89,39 @@ class Issue8908SystemProcedureInterceptionTest {
     assertThat(BoltSystemProcedures.serveSchemaProcedure(null,
         BoltSystemProcedures.normalize("CALL db.labels() YIELD label"))).isNotNull();
   }
+
+  @Test
+  void aWriteOrAnyOtherClauseAfterTheCallIsLeftToTheEngine() {
+    for (final String query : new String[] { "CALL db.labels() YIELD label CREATE (:X {n: label})",
+        "CALL db.labels() YIELD label MERGE (:X {n: label})", "CALL db.labels() YIELD label SET x.y = label",
+        "CALL db.labels() YIELD label DELETE x", "CALL db.labels() YIELD label FOREACH (a IN [1] | CREATE (:Y))",
+        "CALL db.labels() YIELD label OPTIONAL MATCH (n) RETURN n",
+        "CALL dbms.info() YIELD id CREATE (:X)" }) {
+      final String normalized = BoltSystemProcedures.normalize(query);
+      assertThat(BoltSystemProcedures.isSchemaProcedureQuery(normalized)).as(query).isFalse();
+      assertThat(BoltSystemProcedures.isStandaloneCall(normalized, "dbms.info")).as(query).isFalse();
+    }
+  }
+
+  @Test
+  void theCombinedFormWithExtraClausesOrMissingProceduresIsLeftToTheEngine() {
+    assertThat(BoltSystemProcedures.isSchemaProcedureQuery(BoltSystemProcedures.normalize(
+        "CALL db.labels() YIELD label MATCH (n) WHERE n.k IN ['db.relationshiptypes','db.propertykeys'] RETURN n"))).isFalse();
+    assertThat(BoltSystemProcedures.isSchemaProcedureQuery(BoltSystemProcedures.normalize(
+        "CALL db.labels() YIELD label RETURN label UNION CALL db.labels() YIELD label RETURN label "
+            + "UNION CALL db.propertyKeys() YIELD propertyKey RETURN propertyKey"))).isFalse();
+    assertThat(BoltSystemProcedures.isSchemaProcedureQuery(BoltSystemProcedures.normalize(
+        "CALL db.labels() YIELD label RETURN label UNION CALL db.propertyKeys() YIELD propertyKey RETURN propertyKey"))).isFalse();
+  }
+
+  @Test
+  void aTrailingSemicolonIsStillServed() {
+    assertThat(BoltSystemProcedures.isStandaloneCall("call db.ping;", "db.ping")).isTrue();
+    assertThat(BoltSystemProcedures.isStandaloneCall("call db.ping() ;", "db.ping")).isTrue();
+  }
+
+  @Test
+  void showCommandsAreAnchoredToo() {
+    assertThat(BoltSystemProcedures.normalize("MATCH (n) RETURN 'show current user'").startsWith("show current user")).isFalse();
+  }
 }
