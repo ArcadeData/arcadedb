@@ -246,11 +246,11 @@ class MetricMeterTest {
 
   @Test
   void firstAskReportsHitsSinceMeterCreation() throws Exception {
-    final MetricMeter meter = new MetricMeter();
+    final MetricMeter meter = new MetricMeter(System.currentTimeMillis() / 1000 - 2);
     for (int i = 0; i < 30; i++)
       meter.hit();
 
-    Thread.sleep(2100);
+    Thread.sleep(1100);
 
     // The hits happened in a past second slot, so the first ask must see them (it used to answer 0.0)
     assertThat(meter.getRequestsPerSecondSinceLastAsked()).isGreaterThan(0F);
@@ -258,13 +258,12 @@ class MetricMeterTest {
 
   @Test
   void rateIsNotTruncatedToWholeHits() throws Exception {
-    final MetricMeter meter = new MetricMeter();
+    final MetricMeter meter = new MetricMeter(System.currentTimeMillis() / 1000 - 1);
     meter.hit();
-    Thread.sleep(2100);
+    Thread.sleep(1100);
 
-    // 1 hit over ~2 s: a fractional rate, not the integer division result 0
-    final float rate = meter.getRequestsPerSecondSinceLastAsked();
-    assertThat(rate).isGreaterThan(0F).isLessThan(1F);
+    // 1 hit over at least 2 s: a fractional rate, not the integer division result 0
+    assertThat(meter.getRequestsPerSecondSinceLastAsked()).isGreaterThan(0F).isLessThanOrEqualTo(0.5F);
   }
 
   @Test
