@@ -595,6 +595,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());
         final TransactionContext tx = current.getLastTransaction();
         try {
+          requireReplicationBuffer(tx);
           final TransactionContext.TransactionPhase1 phase1 = tx.commit1stPhase(true);
           if (phase1 != null) {
             tx.commit2ndPhase(phase1);
@@ -640,6 +641,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());
       final TransactionContext tx = current.getLastTransaction();
       try {
+        requireReplicationBuffer(tx);
         final TransactionContext.TransactionPhase1 phase1 = tx.commit1stPhase(leader);
 
         if (phase1 != null) {
@@ -676,6 +678,15 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // transaction is registered with it right before the entry is dispatched, and this thread finishes the commit once
     // the entry is acknowledged. Only the leader has a state machine that applies its own entries this way.
     replicateAndCommitLocally(payload, leader, leader ? stateMachineOrNull() : null);
+  }
+
+  /**
+   * Replication ships the WAL buffer phase 1 builds, and phase 1 builds none when the WAL is off, so a replicated
+   * commit always writes it (issue #8291). One transaction only: {@code reset()} clears the override.
+   */
+  private static void requireReplicationBuffer(final TransactionContext tx) {
+    if (!tx.isUseWAL())
+      tx.setUseWALForThisTransaction(true);
   }
 
   /**
