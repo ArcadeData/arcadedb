@@ -66,13 +66,15 @@ class Issue8948ReplayReusedVertexRidTest {
     assertThat(overlay.isDeleted(1)).as("the base node stays masked, hiding the scan's copy of the edge").isTrue();
     assertThat(overlay.getAddedOutNeighbors(0, EDGE_TYPE)).as("the edge is re-created once, on the overflow node").containsExactly(newId);
 
+    assertThat(csr.getEdgeCount() + overlay.getDeltaEdgeCount()).as("the view's edge count: one edge, counted once").isEqualTo(1);
+
     final TxDelta deleteNew = new TxDelta();
     deleteNew.deletedVertices.add(REUSED);
     deleteNew.deletedEdges.add(new TxDelta.EdgeDelta(EDGE_TYPE, A, REUSED, EDGE));
     final DeltaOverlay afterDelete = overlay.merge(deleteNew, mapping, fresh, preCount);
 
     assertThat(afterDelete.getAddedOutNeighbors(0, EDGE_TYPE)).isEmpty();
-    assertThat(afterDelete.getDeltaEdgeCount()).isZero();
+    assertThat(csr.getEdgeCount() + afterDelete.getDeltaEdgeCount()).as("no edge left after the delete").isZero();
   }
 
   /** The scan ran after the delete committed: the fresh base lacks the old vertex, so only the add is buffered. */

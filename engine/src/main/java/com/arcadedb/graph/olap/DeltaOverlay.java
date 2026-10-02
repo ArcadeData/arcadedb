@@ -308,6 +308,12 @@ class DeltaOverlay {
       // vertex is always in an earlier merge: a slot is not reused by the transaction that freed it
       if (addedBaseId >= 0 && !newDeleted.get(addedBaseId))
         continue; // already in base
+      if (addedBaseId >= 0 && baseCsrPerType != null) {
+        // Replay over a fresh base that already holds the new vertex: its masked base node still carries the
+        // edges the scan captured, and the replayed edges are re-added on the overflow node, so stop counting them
+        for (final CSRAdjacencyIndex csr : baseCsrPerType.values())
+          newDeltaEdgeCount -= incidentEdges(csr, addedBaseId);
+      }
       if (newOverflowIds.containsKey(vd.rid))
         continue; // already in overflow
       final int overflowId = baseNodeCount + newOverflowCount;
@@ -781,12 +787,25 @@ class DeltaOverlay {
   /**
    * True when the base slot's original vertex is deleted and a new vertex with the same RID lives in the overflow
    * (#8948). Replayed over a fresh base that already holds the new vertex, the delete masks that base node and the
-   * add re-creates the vertex and its edges in the overflow, so each edge counts once. Cascaded deletes of that new vertex's edges are withdrawn by edge identity, so they never depend on
-   * the stale base id this resolves to once the overflow entry is gone.
+   * add re-creates the vertex and its edges in the overflow, so each edge counts once.
+   * <p>
+   * Cascaded deletes of that new vertex's edges are withdrawn by edge identity, so they never depend on the stale
+   * base id this resolves to once the overflow entry is gone.
    */
   private static boolean isReusedBaseSlot(final int baseId, final RID rid, final Map<RID, Integer> overflowIds,
       final BitSet deletedBase) {
     return deletedBase.get(baseId) && overflowIds.containsKey(rid);
+  }
+
+  /** Edges of the CSR touching the node, a self-loop counted once. */
+  private static int incidentEdges(final CSRAdjacencyIndex csr, final int nodeId) {
+    if (nodeId >= csr.getNodeCount())
+      return 0;
+    int count = csr.outDegree(nodeId) + csr.inDegree(nodeId);
+    for (int i = csr.outOffset(nodeId), end = csr.outOffsetEnd(nodeId); i < end; i++)
+      if (csr.outNeighbor(nodeId, i) == nodeId)
+        count--;
+    return count;
   }
 
   private static int resolveNodeId(final RID rid, final NodeIdMapping baseMapping,
