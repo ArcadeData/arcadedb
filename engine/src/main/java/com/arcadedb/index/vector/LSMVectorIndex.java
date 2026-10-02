@@ -8718,6 +8718,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       // No similarity can rank a NaN or an Infinity: it would be indexed and returned with a NaN or infinite distance, and
       // under DOT_PRODUCT ahead of every finite record (issue #8962)
+      // Replay included: a transactional insert reaches this method only through the commit replay
       for (final float component : vector)
         if (!Float.isFinite(component))
           throw new IllegalArgumentException("Vector components must be finite numbers: got " + component);
