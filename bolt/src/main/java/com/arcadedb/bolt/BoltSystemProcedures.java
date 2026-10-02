@@ -55,16 +55,18 @@ final class BoltSystemProcedures {
   private static final String   CALL_PREFIX   = "call ";
   /** Real probes are tiny; a longer statement is never matched, which also bounds the regex work on client input. */
   private static final int      MAX_PROBE_LENGTH = 4096;
-  private static final String   ITEM          = "(?:collect\\(\\w+\\)(?:\\[\\.\\.\\d+\\])?|\\w+)(?: as \\w+)?";
   private static final Pattern  QUOTED        = Pattern.compile(
-      "'[^'\\\\]*+(?:\\\\.[^'\\\\]*+)*+'|\"[^\"\\\\]*+(?:\\\\.[^\"\\\\]*+)*+\"");
+      "'[^'\\\\]*+(?:\\\\.[^'\\\\]*+)*+'|\"[^\"\\\\]*+(?:\\\\.[^\"\\\\]*+)*+\"|`[^`]*+`");
   private static final Pattern  UNION        = Pattern.compile(" union (?:all )?");
   private static final Pattern  BLOCK_COMMENT = Pattern.compile("/\\*.*?\\*/");
   private static final Pattern  WHITESPACE    = Pattern.compile("\\s+");
   private static final Pattern  FOREIGN_CLAUSE = Pattern.compile(
       "(?<![\\w$.])(?:create|merge|set|delete|detach|remove|foreach|call|load|match|optional|union|use|finish|insert|drop|alter|grant|deny|revoke|start|stop|terminate|enable|rename)\\b");
-  private static final Pattern  CALL_TAIL     = Pattern.compile(
-      " ?(?:\\( ?\\))?(?: yield (?:\\*|" + ITEM + "(?:, ?" + ITEM + ")*))?(?: return " + ITEM + "(?:, ?" + ITEM + ")*)? ?;?");
+  // A single schema call is served only when the answer cannot differ from the engine's: no alias, no projection
+  private static final Pattern  CALL_TAIL     = Pattern.compile(" ?(?:\\( ?\\))?(?: yield (?:\\*|\\w+))?(?: return \\w+)? ?;?");
+  // The Desktop form: each UNION segment collects its procedure into the one `result` column
+  private static final Pattern  COMBINED_TAIL = Pattern.compile(
+      " ?(?:\\( ?\\))?(?: yield \\w+)? return collect\\(\\w+\\)(?:\\[\\.\\.\\d+\\])? as result ?;?");
   private static final String   LABELS        = DbLabels.NAME.toLowerCase(Locale.ROOT);
   private static final String   RELATIONSHIPS = DbRelationshipTypes.NAME.toLowerCase(Locale.ROOT);
   private static final String   PROPERTY_KEYS = DbPropertyKeys.NAME.toLowerCase(Locale.ROOT);
@@ -146,8 +148,12 @@ final class BoltSystemProcedures {
    * @return true if the statement is just {@code CALL <procedureName>} with an optional plain YIELD/RETURN
    */
   static boolean isStandaloneCall(final String normalized, final String procedureName) {
-    final int end = endOfCallName(normalized, procedureName);
-    return end >= 0 && CALL_TAIL.matcher(normalized).region(end, normalized.length()).matches();
+    return matchesSegment(normalized, procedureName, CALL_TAIL);
+  }
+
+  private static boolean matchesSegment(final String segment, final String procedureName, final Pattern tail) {
+    final int end = endOfCallName(segment, procedureName);
+    return end >= 0 && tail.matcher(segment).region(end, segment.length()).matches();
   }
 
   /**
@@ -201,11 +207,12 @@ final class BoltSystemProcedures {
     for (int i = 0; i < segments.length; ++i) {
       // The segment is anchored on its own: the prefix is re-checked after each UNION.
       final String segment = segments[i];
-      if (isStandaloneCall(segment, LABELS))
+      final Pattern tail = segments.length == 1 ? CALL_TAIL : COMBINED_TAIL;
+      if (matchesSegment(segment, LABELS, tail))
         names[i] = LABELS;
-      else if (isStandaloneCall(segment, RELATIONSHIPS))
+      else if (matchesSegment(segment, RELATIONSHIPS, tail))
         names[i] = RELATIONSHIPS;
-      else if (isStandaloneCall(segment, PROPERTY_KEYS))
+      else if (matchesSegment(segment, PROPERTY_KEYS, tail))
         names[i] = PROPERTY_KEYS;
       else
         return null;
