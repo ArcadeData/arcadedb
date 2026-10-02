@@ -32,6 +32,8 @@ import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.serializer.BinaryComparator;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
@@ -230,6 +232,10 @@ public class ComparisonExpression implements BooleanExpression {
           case GREATER_THAN_OR_EQUAL -> leftNum >= rightNum;
         };
       }
+      // A LONG past 2^53 (or a BigInteger) against a BigDecimal/Double/Float cannot meet in double precision: 2^53 and
+      // 2^53 + 1 collapse onto the same double and a scan answered two rows where the index answered one (issue #8888)
+      if (needsExactComparison((Number) left, (Number) right))
+        return numericCompare(exactCompare((Number) left, (Number) right), 0);
       if ((operator == Operator.EQUALS || operator == Operator.NOT_EQUALS) && (left instanceof Float || right instanceof Float)) {
         final boolean equal = floatAwareEquals((Number) left, (Number) right);
         return operator == Operator.EQUALS ? equal : !equal;
@@ -443,6 +449,62 @@ public class ComparisonExpression implements BooleanExpression {
       case GREATER_THAN -> leftNum > rightNum;
       case LESS_THAN_OR_EQUAL -> leftNum <= rightNum;
       case GREATER_THAN_OR_EQUAL -> leftNum >= rightNum;
+    };
+  }
+
+  /**
+   * Whether the pair must be compared as decimals because double precision cannot tell its members apart. The answer is
+   * deliberately not transitive across types, as in SQL: a Double is read through its shortest decimal form, so
+   * {@code 2^53 + 1} (long) differs from {@code 2^53.0} (double) while {@code 0.1d} equals the decimal {@code 0.1}.
+   */
+  private static boolean needsExactComparison(final Number left, final Number right) {
+    // the common Double/Float pairs leave at once: only a long, a BigInteger or a BigDecimal can lose precision
+    if (!(left instanceof Long || left instanceof BigInteger || left instanceof BigDecimal || right instanceof Long
+        || right instanceof BigInteger || right instanceof BigDecimal))
+      return false;
+    if (!isFinite(left) || !isFinite(right))
+      return false;
+    if (left instanceof BigInteger || right instanceof BigInteger || isLongBeyondDoublePrecision(left)
+        || isLongBeyondDoublePrecision(right))
+      return true;
+    // An exact long still collides with a decimal that is not exact as a double: 2^53 against 2^53 + 1 as a BigDecimal.
+    // Two decimals compare as decimals. A BigDecimal against a Double deliberately stays in double precision, as SQL does
+    // (Type.numbersEqual): 0.1d must equal the decimal 0.1
+    return left instanceof BigDecimal && (isIntegral(right) || right instanceof BigDecimal)
+        || right instanceof BigDecimal && isIntegral(left);
+  }
+
+  private static boolean isIntegral(final Number value) {
+    return value instanceof Long || value instanceof Integer || value instanceof Short || value instanceof Byte;
+  }
+
+  private static boolean isLongBeyondDoublePrecision(final Number value) {
+    return value instanceof Long l && !Type.isExactAsDouble(l);
+  }
+
+  private static boolean isFinite(final Number value) {
+    return !(value instanceof Double || value instanceof Float) || Double.isFinite(value.doubleValue());
+  }
+
+  private static int exactCompare(final Number left, final Number right) {
+    // A floating point number meeting an integer is read by its BINARY value: past 2^53 its shortest decimal is not the
+    // number it holds (2^60 prints as 1.152921504606847E18), which would order it wrongly against a neighbouring long
+    final boolean binary = !(left instanceof BigDecimal) && !(right instanceof BigDecimal);
+    return toExactDecimal(left, binary).compareTo(toExactDecimal(right, binary));
+  }
+
+  /**
+   * Reads a Double through its shortest decimal form ({@code BigDecimal.valueOf}) against a BigDecimal, as
+   * {@link Type#normalizeNumberForKey} does for GROUP BY and the indexes, so {@code 0.1d} meets the decimal 0.1. Against
+   * an integer ({@code binary}) it reads the exact binary value instead.
+   */
+  private static BigDecimal toExactDecimal(final Number value, final boolean binary) {
+    return switch (value) {
+      case BigDecimal bigDecimal -> bigDecimal;
+      case BigInteger bigInteger -> new BigDecimal(bigInteger);
+      case Double d -> binary ? new BigDecimal(d) : BigDecimal.valueOf(d);
+      case Float f -> binary ? new BigDecimal(Type.widenFloat(f)) : BigDecimal.valueOf(Type.widenFloat(f));
+      default -> BigDecimal.valueOf(value.longValue());
     };
   }
 
