@@ -49,7 +49,7 @@ class Issue8908SystemProcedureInterceptionTest {
   void theReportedQueryIsLeftToTheEngine() {
     assertThat(BoltSystemProcedures.isSchemaProcedureQuery(BoltSystemProcedures.normalize(REPORTED))).isFalse();
     assertThat(BoltSystemProcedures.isStandaloneCall(BoltSystemProcedures.normalize(REPORTED), "db.propertykeys")).isFalse();
-    assertThat(BoltSystemProcedures.isStandaloneCall(BoltSystemProcedures.normalize(
+    assertThat(BoltSystemProcedures.isSystemCall(BoltSystemProcedures.normalize(
         "MATCH (n) RETURN n, 'dbms.components' AS s"), "dbms.components")).isFalse();
   }
 
@@ -58,9 +58,8 @@ class Issue8908SystemProcedureInterceptionTest {
     assertThat(BoltSystemProcedures.isSchemaProcedureQuery(BoltSystemProcedures.normalize("CALL db.propertyKeys()"))).isTrue();
     assertThat(BoltSystemProcedures.isSchemaProcedureQuery(
         BoltSystemProcedures.normalize("  call   DB.labels() YIELD label"))).isTrue();
-    assertThat(BoltSystemProcedures.isStandaloneCall(BoltSystemProcedures.normalize("CALL dbms.components() YIELD name"),
-        "dbms.components")).isTrue();
-    assertThat(BoltSystemProcedures.isStandaloneCall(BoltSystemProcedures.normalize("CALL db.ping()"), "db.ping")).isTrue();
+    assertThat(BoltSystemProcedures.isSystemCall(BoltSystemProcedures.normalize("CALL dbms.components() YIELD name"), "dbms.components")).isTrue();
+    assertThat(BoltSystemProcedures.isSystemCall(BoltSystemProcedures.normalize("CALL db.ping()"), "db.ping")).isTrue();
   }
 
   @Test
@@ -73,10 +72,10 @@ class Issue8908SystemProcedureInterceptionTest {
 
   @Test
   void theNameMustEndAtATokenBoundary() {
-    assertThat(BoltSystemProcedures.isStandaloneCall("call db.pingall()", "db.ping")).isFalse();
-    assertThat(BoltSystemProcedures.isStandaloneCall("call dbms.infofoo()", "dbms.info")).isFalse();
+    assertThat(BoltSystemProcedures.isSystemCall("call db.pingall()", "db.ping")).isFalse();
+    assertThat(BoltSystemProcedures.isSystemCall("call dbms.infofoo()", "dbms.info")).isFalse();
     assertThat(BoltSystemProcedures.isSchemaProcedureQuery("call db.labelsextended()")).isFalse();
-    assertThat(BoltSystemProcedures.isStandaloneCall("call db.ping", "db.ping")).isTrue();
+    assertThat(BoltSystemProcedures.isSystemCall("call db.ping", "db.ping")).isTrue();
   }
 
   @Test
@@ -114,8 +113,8 @@ class Issue8908SystemProcedureInterceptionTest {
 
   @Test
   void aTrailingSemicolonIsStillServed() {
-    assertThat(BoltSystemProcedures.isStandaloneCall("call db.ping;", "db.ping")).isTrue();
-    assertThat(BoltSystemProcedures.isStandaloneCall("call db.ping() ;", "db.ping")).isTrue();
+    assertThat(BoltSystemProcedures.isSystemCall("call db.ping;", "db.ping")).isTrue();
+    assertThat(BoltSystemProcedures.isSystemCall("call db.ping() ;", "db.ping")).isTrue();
   }
 
   @Test
@@ -189,7 +188,7 @@ class Issue8908SystemProcedureInterceptionTest {
   void aHugeLiteralInTheTailCannotOverflowTheStack() {
     final String huge = "CALL dbms.listDatabases() YIELD name WHERE name = '" + "a".repeat(100_000) + "'";
     assertThat(BoltSystemProcedures.isSystemCall(BoltSystemProcedures.normalize(huge), "dbms.listdatabases")).isFalse();
-    assertThat(BoltSystemProcedures.isStandaloneCall(BoltSystemProcedures.normalize(huge), "dbms.listdatabases")).isFalse();
+    assertThat(BoltSystemProcedures.isSystemCall(BoltSystemProcedures.normalize(huge), "dbms.listdatabases")).isFalse();
     final String mediumLiteral = "CALL dbms.listDatabases() YIELD name WHERE name = '" + "a".repeat(3_000) + "'";
     assertThat(BoltSystemProcedures.isSystemCall(BoltSystemProcedures.normalize(mediumLiteral), "dbms.listdatabases")).isTrue();
   }
@@ -213,5 +212,22 @@ class Issue8908SystemProcedureInterceptionTest {
   void aBacktickIdentifierInTheTailDoesNotDeclineABoltOnlyCall() {
     assertThat(BoltSystemProcedures.isSystemCall(BoltSystemProcedures.normalize(
         "CALL dbms.listDatabases() YIELD name WHERE `create` = 1"), "dbms.listdatabases")).isTrue();
+  }
+
+  @Test
+  void anApostropheInABlockCommentCannotHideAClause() {
+    assertThat(BoltSystemProcedures.isSystemCall(BoltSystemProcedures.normalize(
+        "CALL db.ping() /* it's */ CREATE (n {a:'x'})"), "db.ping")).isFalse();
+    assertThat(BoltSystemProcedures.isSystemCall(BoltSystemProcedures.normalize(
+        "CALL dbms.listDatabases() YIELD name WHERE name = '/* ' CREATE (n) // */'"), "dbms.listdatabases")).isFalse();
+  }
+
+  @Test
+  void aSchemaCallProjectingAnythingButItsOwnFieldIsLeftToTheEngine() {
+    assertThat(BoltSystemProcedures.isSchemaProcedureQuery(BoltSystemProcedures.normalize("CALL db.labels() RETURN 1"))).isFalse();
+    assertThat(BoltSystemProcedures.isSchemaProcedureQuery(BoltSystemProcedures.normalize(
+        "CALL db.labels() YIELD foo RETURN foo"))).isFalse();
+    assertThat(BoltSystemProcedures.isSchemaProcedureQuery(BoltSystemProcedures.normalize(
+        "CALL db.labels() YIELD label RETURN label"))).isTrue();
   }
 }
