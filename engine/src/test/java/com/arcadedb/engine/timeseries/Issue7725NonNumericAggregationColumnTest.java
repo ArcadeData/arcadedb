@@ -295,7 +295,10 @@ class Issue7725NonNumericAggregationColumnTest extends TestHelper {
         .as("a TAG is not pushed down either; MAX over text is the generic path's business")
         .doesNotContain("AGGREGATE FROM TIMESERIES");
     assertThat(planOf("SELECT ts.timeBucket('1h', ts) AS b, count(note) AS c FROM Labelled GROUP BY b"))
-        .as("COUNT never reads the column, so it stays pushed down")
+        .as("COUNT(field) skips nulls, which the row counter cannot tell: the generic path has it (issue #8915)")
+        .doesNotContain("AGGREGATE FROM TIMESERIES");
+    assertThat(planOf("SELECT ts.timeBucket('1h', ts) AS b, count(*) AS c FROM Labelled GROUP BY b"))
+        .as("COUNT(*) counts rows, so it stays pushed down")
         .contains("AGGREGATE FROM TIMESERIES Labelled");
   }
 
