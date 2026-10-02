@@ -18,6 +18,7 @@
  */
 package com.arcadedb.function.coll;
 
+import com.arcadedb.function.convert.ConvertToSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayDeque;
@@ -55,5 +56,17 @@ class CollToSetTest {
   @Test
   void nullListReturnsNull() {
     assertThat(fn.execute(new Object[] { null }, null)).isNull();
+  }
+
+  /** Issue #8933: convert.toSet must collapse values equal under Cypher '=' exactly like coll.toSet. */
+  @Test
+  void convertToSetCollapsesNumericTwinsLikeCollToSet() {
+    final List<Object> source = List.of(1L, 1.0d, 2L, "a", "a");
+    @SuppressWarnings("unchecked")
+    final List<Object> viaConvert = (List<Object>) new ConvertToSet().execute(new Object[] { source }, null);
+    @SuppressWarnings("unchecked")
+    final List<Object> viaColl = (List<Object>) fn.execute(new Object[] { source }, null);
+    assertThat(viaConvert).containsExactly(1L, 2L, "a");
+    assertThat(viaConvert).isEqualTo(viaColl);
   }
 }

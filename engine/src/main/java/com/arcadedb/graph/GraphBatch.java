@@ -758,7 +758,8 @@ public class GraphBatch implements AutoCloseable {
     edgeDstPositions[idx] = destVertexRID.getPosition();
     edgeTypeBucketIds[idx] = typeBucketId;
 
-    final boolean hasProps = edgeProperties != null && edgeProperties.length > 0;
+    // an empty Map is how a caller sends no properties, as on Vertex.newEdge() (issue #8934)
+    final boolean hasProps = GraphEngine.describesProperties(edgeProperties);
     if (typeIsLightweight && hasProps)
       throw new IllegalArgumentException("Edge type '" + edgeTypeName
           + "' is declared LIGHTWEIGHT, so its edges cannot have properties. Use a regular edge type if the edge "

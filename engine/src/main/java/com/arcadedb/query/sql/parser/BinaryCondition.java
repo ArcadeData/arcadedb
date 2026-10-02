@@ -250,7 +250,11 @@ public class BinaryCondition extends BooleanExpression {
               && info.isMap()
               && info.isIndexByKey()) {
             return true;
-          } else return info.allowsRange() && operator.isRangeOperator();
+          } else
+            // A CI index keeps lower-cased keys and probes with the lower-cased bound, which is not the case sensitive
+            // range the plain property asks for, so only a scan answers it. field.toLowerCase() <op> X is the spelling
+            // that a CI index serves (issue #8932)
+            return info.allowsRange() && operator.isRangeOperator() && !info.isCaseInsensitive();
         }
       }
     }
