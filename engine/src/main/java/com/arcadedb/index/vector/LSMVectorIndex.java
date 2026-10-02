@@ -6360,18 +6360,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * <p>
    * Ids are dense in the usual case, so they index arrays directly; the arrays only grow while the id stays within
    * twice the number of entries seen, and a stray larger id goes to an open-addressing table. Memory therefore
-   * follows the entries replayed, never the largest id.
+   * follows the entries replayed (up to about 4x that in the worst dense case), never the largest id.
    */
   private static final class IdOwners {
     /** The bucket value of an id whose last page entry is a tombstone. */
     static final int DELETED = -1;
 
-    private int[]  denseBucket   = new int[1024];
-    private long[] densePosition = new long[1024];
+    private int[]  denseBucket    = new int[1024];
+    private long[] densePosition  = new long[1024];
     private int    entries;
     /** Open addressing, keys stored as id + 1 so 0 means empty. */
-    private int[]  keys          = new int[64];
-    private int[]  sparseBucket  = new int[64];
+    private int[]  keys           = new int[64];
+    private int[]  sparseBucket   = new int[64];
     private long[] sparsePosition = new long[64];
     private int    sparseSize;
 
@@ -6415,7 +6415,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     private int find(final int id) {
       final int mask = keys.length - 1;
-      int slot = (id * 0x9E3779B9) >>> 7 & mask;
+      int slot = (id * 0x9E3779B9) >>> (32 - Integer.numberOfTrailingZeros(keys.length)) & mask;
       while (keys[slot] != 0 && keys[slot] != id + 1)
         slot = slot + 1 & mask;
       return slot;
