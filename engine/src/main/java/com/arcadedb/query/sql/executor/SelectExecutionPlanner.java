@@ -3384,13 +3384,15 @@ public class SelectExecutionPlanner {
       return false;
     final List<ColumnDefinition> columns = tsType.getTsColumns();
     String sharedTag = null;
-    Set<String> sharedTimePredicates = null;
+    Set<List<Long>> sharedTimePredicates = null;
     for (final AndBlock block : blocks) {
-      final Set<String> timePredicates = new HashSet<>();
+      final Set<List<Long>> timePredicates = new HashSet<>();
       String tag = null;
       for (final BooleanExpression expr : block.getSubBlocks()) {
-        if (extractTimeRange(expr, tsType.getTimestampColumn(), context) != null) {
-          timePredicates.add(expr.toString());
+        final long[] range = extractTimeRange(expr, tsType.getTimestampColumn(), context);
+        if (range != null) {
+          // compared by the EVALUATED bounds: a positional parameter prints as "?" whatever it is bound to
+          timePredicates.add(List.of(range[0], range[1]));
           continue;
         }
         if (tag != null || !(expr instanceof BinaryCondition binary))
