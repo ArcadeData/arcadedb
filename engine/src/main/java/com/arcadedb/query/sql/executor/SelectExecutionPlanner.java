@@ -3400,17 +3400,10 @@ public class SelectExecutionPlanner {
       if (!(expr instanceof BinaryCondition binary) || !(binary.operator instanceof EqualsCompareOperator))
         return false;
 
-      final String leftStr = binary.left != null ? binary.left.toString().trim() : null;
-      final String rightStr = binary.right != null ? binary.right.toString().trim() : null;
-      final String tagName = isTimeSeriesTagColumn(columns, leftStr) ? leftStr
-          : isTimeSeriesTagColumn(columns, rightStr) ? rightStr : null;
+      final String tagName = tagOfNonNullEquality(binary, columns, context);
       // Two equalities on the same tag are an intersection (an empty one when the values differ) that the extracted
       // tag filter does not model as an exact filter, so they are left to the residual filter.
       if (tagName == null || !constrainedTags.add(tagName))
-        return false;
-
-      final Expression valueExpr = tagName.equals(leftStr) ? binary.right : binary.left;
-      if (valueExpr == null || valueExpr.execute((Identifiable) null, context) == null)
         return false;
     }
     return true;
@@ -3432,17 +3425,29 @@ public class SelectExecutionPlanner {
       if (block.getSubBlocks().size() != 1 || !(block.getSubBlocks().getFirst() instanceof BinaryCondition binary)
           || !(binary.operator instanceof EqualsCompareOperator))
         return false;
-      final String leftStr = binary.left != null ? binary.left.toString().trim() : null;
-      final String rightStr = binary.right != null ? binary.right.toString().trim() : null;
-      final String tag = isTimeSeriesTagColumn(columns, leftStr) ? leftStr : isTimeSeriesTagColumn(columns, rightStr) ? rightStr : null;
+      final String tag = tagOfNonNullEquality(binary, columns, context);
       if (tag == null || (sharedTag != null && !sharedTag.equals(tag)))
         return false;
       sharedTag = tag;
-      final Expression valueExpr = tag.equals(leftStr) ? binary.right : binary.left;
-      if (valueExpr == null || valueExpr.execute((Identifiable) null, context) == null)
-        return false;
     }
     return true;
+  }
+
+  /**
+   * The TAG column an equality constrains to a non-null value, or null when it is not such an equality. A null value
+   * is never an exact filter: {@code tag = null} matches nothing, and {@link #extractTagFilter} skips it.
+   */
+  private static String tagOfNonNullEquality(final BinaryCondition binary, final List<ColumnDefinition> columns,
+      final CommandContext context) {
+    if (!(binary.operator instanceof EqualsCompareOperator))
+      return null;
+    final String leftStr = binary.left != null ? binary.left.toString().trim() : null;
+    final String rightStr = binary.right != null ? binary.right.toString().trim() : null;
+    final String tag = isTimeSeriesTagColumn(columns, leftStr) ? leftStr : isTimeSeriesTagColumn(columns, rightStr) ? rightStr : null;
+    if (tag == null)
+      return null;
+    final Expression valueExpr = tag.equals(leftStr) ? binary.right : binary.left;
+    return valueExpr == null || valueExpr.execute((Identifiable) null, context) == null ? null : tag;
   }
 
   private static boolean isTimeSeriesTagColumn(final List<ColumnDefinition> columns, final String name) {
