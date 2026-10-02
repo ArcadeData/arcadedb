@@ -1944,7 +1944,9 @@ public enum GlobalConfiguration {
       vouch for the transport of an API token mint through the X-Forwarded-Proto header: `POST \
       /api/v1/server/api-tokens` over HTTP, and the gRPC `CreateApiToken` RPC, where the proxy reports it as the \
       `x-forwarded-proto` metadata key (Envoy adds it on its own; nginx with `grpc_set_header X-Forwarded-Proto \
-      $scheme`). Empty by default, which trusts no proxy and leaves the header unread. \
+      $scheme`). List only an L7 proxy that sets or overwrites the header: an L4 balancer (nginx `stream`, HAProxy \
+      `mode tcp`) passes the client's own header through untouched, so listing one lets any client vouch for itself. \
+      Empty by default, which trusts no proxy and leaves the header unread. \
       When the request's direct peer matches an entry AND the header reports https for every hop, the mint is treated \
       as protected even though the proxy-to-server leg is cleartext - that leg is on the network the operator owns, \
       and by listing the proxy they state where their trust boundary is. A peer that is not on the list can send the \
