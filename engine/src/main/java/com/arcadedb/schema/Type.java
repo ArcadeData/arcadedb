@@ -829,6 +829,14 @@ public enum Type {
             return truncateToPropertyPrecision(time, property);
         } else if (value instanceof Number number) {
           return DateUtils.date(database, DateUtils.numberToEpochUnits(number), LocalDateTime.class);
+        } else if (value instanceof Instant instant) {
+          // the moment as the stored value reads back (UTC wall clock, as the Date and Number branches do), so an
+          // equality lookup agrees with the ordering path and with the index key
+          return truncateToPropertyPrecision(LocalDateTime.ofInstant(instant, ZoneOffset.UTC), property);
+        } else if (value instanceof ZonedDateTime zoned) {
+          return truncateToPropertyPrecision(LocalDateTime.ofInstant(zoned.toInstant(), ZoneOffset.UTC), property);
+        } else if (value instanceof OffsetDateTime offset) {
+          return truncateToPropertyPrecision(LocalDateTime.ofInstant(offset.toInstant(), ZoneOffset.UTC), property);
         } else if (value instanceof Date date)
           return DateUtils.dateTime(database, date.getTime(), ChronoUnit.MILLIS, LocalDateTime.class,
               property != null ? DateUtils.getPrecisionFromType(property.getType()) : ChronoUnit.MILLIS);
