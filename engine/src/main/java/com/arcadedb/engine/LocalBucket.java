@@ -253,6 +253,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   private                int                       gatherResumePage                 = 0;
   private volatile       boolean                   gatherTruncated                  = false;
   private final          AtomicLong                changesFromLastStats             = new AtomicLong();
+  // how many gather scans ran (not how many were asked for): lets a test pin that a bulk write does not rescan the bucket per record
+  private final          AtomicLong                gatherScans                      = new AtomicLong();
 
   private enum REUSE_SPACE_MODE {
     LOW, MEDIUM, HIGH
@@ -6433,6 +6435,21 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     return bestPageAnalysis;
   }
 
+  /** How many gather scans this bucket ran since it was opened. Package-private: for tests only. */
+  long getGatherScanCountForTesting() {
+    return gatherScans.get();
+  }
+
+  /** The pages the free-space map currently lists. Package-private: for tests only. */
+  int[] getListedFreeSpacePagesForTesting() {
+    synchronized (freeSpaceInPages) {
+      final int[] pages = new int[freeSpaceInPages.size()];
+      final int[] cursor = { 0 };
+      freeSpaceInPages.forEach((pageId, freeSpace) -> pages[cursor[0]++] = pageId);
+      return pages;
+    }
+  }
+
   /**
    * Gather statistics about the free space in pages. Algorithm:
    * 1. browse all the pages but the latest, and add in a tree map the pages with enough free space (>GATHER_STATS_MIN_SPACE_PERC)
@@ -6457,6 +6474,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         int txPageCount = getTotalPages();
 
         synchronized (freeSpaceInPages) {
+          gatherScans.incrementAndGet();
           final int pagesToScan = Math.max(0, txPageCount - 2);
           final int startPage = gatherTruncated && gatherResumePage < pagesToScan ? gatherResumePage : 0;
           gatherTruncated = false;
@@ -6477,9 +6495,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             // drops it from the map on first sight (findAvailableSpaceFromStatistics). Listing it only fills the map with entries
             // that drain one by one, and each refill is an unthrottled resume gather: a bulk update over small records paid a
             // full-bucket scan every ~20 allocations.
-            if (freeSpacePerc > GATHER_STATS_MIN_SPACE_PERC && recordCountInPage < maxRecordsInPage
-                && (freeSpaceInPages.size() < MAX_PAGES_GATHER_STATS || freeSpaceInPages.containsKey(pageId)))
-              freeSpaceInPages.put(pageId, freeSpaceInPage);
+            if (freeSpacePerc > GATHER_STATS_MIN_SPACE_PERC && recordCountInPage < maxRecordsInPage) {
+              if (freeSpaceInPages.size() < MAX_PAGES_GATHER_STATS || freeSpaceInPages.containsKey(pageId))
+                freeSpaceInPages.put(pageId, freeSpaceInPage);
+            } else
+              // The scan is the authority on the pages it visits: an entry restored from persisted statistics (written
+              // before a full record table was kept out of the map, or gone stale since) must not outlive a page that
+              // cannot take a record, or it holds one of the MAX_PAGES_GATHER_STATS slots for nothing
+              freeSpaceInPages.remove(pageId, -1);
 
             ++pageId;
             if (freeSpaceInPages.size() >= MAX_PAGES_GATHER_STATS) {

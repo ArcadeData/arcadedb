@@ -29,6 +29,7 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.utility.IntHashSet;
 
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
@@ -131,30 +132,29 @@ public final class DegreeProductOp implements CountOp {
       armBuckets[a] = arms[a].endpointBuckets(db);
       anyLabelled |= armBuckets[a] != null;
     }
+
+    // Decide the path first: a multi-hop labelled arm or an arm without a view sends every arm down the per-node path, so
+    // the filtered degrees of the arms before it would be computed for nothing.
+    boolean needsPerNode = false;
+    for (int a = 0; a < arms.length && !needsPerNode; a++)
+      if (armBuckets[a] != null
+          && (arms[a].edgeTypes.length != 1 || provider.getNeighborView(arms[a].directions[0], arms[a].edgeTypes[0]) == null))
+        needsPerNode = true;
+
     final int[] bucketIds = anyLabelled ? precomputeBucketIds(provider, nodeIdUpperBound, guard) : null;
     final int[][] filteredDegrees = new int[arms.length][];
     boolean anyFiltered = false;
-    boolean needsPerNode = false;
-    for (int a = 0; a < arms.length; a++) {
-      if (armBuckets[a] == null)
-        continue;
-      if (arms[a].edgeTypes.length != 1) {
-        needsPerNode = true;
-        continue;
+    if (!needsPerNode)
+      for (int a = 0; a < arms.length; a++) {
+        if (armBuckets[a] == null || armBuckets[a][0] == null)
+          continue;
+        final IntHashSet far = armBuckets[a][0];
+        final NeighborView view = provider.getNeighborView(arms[a].directions[0], arms[a].edgeTypes[0]);
+        if (endpointLabelIsImplied(provider, arms[a], view, far, bucketIds, nodeIdUpperBound, guard))
+          continue;
+        filteredDegrees[a] = filteredDegrees(provider, view, far, bucketIds, nodeIdUpperBound, guard);
+        anyFiltered = true;
       }
-      final IntHashSet far = armBuckets[a][0];
-      if (far == null)
-        continue;
-      final NeighborView view = provider.getNeighborView(arms[a].directions[0], arms[a].edgeTypes[0]);
-      if (view == null) {
-        needsPerNode = true;
-        continue;
-      }
-      if (endpointLabelIsImplied(provider, arms[a], view, far, bucketIds, nodeIdUpperBound, guard))
-        continue;
-      filteredDegrees[a] = filteredDegrees(provider, view, far, bucketIds, nodeIdUpperBound, guard);
-      anyFiltered = true;
-    }
 
     if (!needsPerNode) {
       // Fast path: when all arms are single-hop, pre-fetch NeighborViews and scan
@@ -181,7 +181,7 @@ public final class DegreeProductOp implements CountOp {
     }
 
     // Slow path: per-node CSR lookup (fallback for multi-hop arms or missing views)
-    return executePerNode(provider, db, armBuckets, bucketIds, nodeIdUpperBound, guard);
+    return executePerNode(provider, armBuckets, bucketIds, nodeIdUpperBound, guard);
   }
 
   /**
@@ -225,9 +225,14 @@ public final class DegreeProductOp implements CountOp {
     return degrees;
   }
 
+  /**
+   * The bucket id of every node, {@code -1} for a node that is not live: bucket 0 is a real bucket, so a default of 0 would
+   * make a non-live neighbor read as a member of whatever label owns bucket 0.
+   */
   private static int[] precomputeBucketIds(final GraphTraversalProvider provider, final int nodeIdUpperBound,
       final WorkGuard guard) {
     final int[] bucketIds = new int[nodeIdUpperBound];
+    Arrays.fill(bucketIds, -1);
     for (int v = 0; v < nodeIdUpperBound; v++) {
       guard.checkPeriodically(v);
       if (provider.isNodeLive(v))
@@ -296,14 +301,27 @@ public final class DegreeProductOp implements CountOp {
    * Bulk: 4 array scans × 5M reads ≈ 40ms.
    * Per-node countEdges: 20M method calls × 150ns ≈ 3s.
    */
-  private long executePerNode(final GraphTraversalProvider provider, final Database db, final IntHashSet[][] armBuckets,
+  private long executePerNode(final GraphTraversalProvider provider, final IntHashSet[][] armBuckets,
       final int[] bucketIds, final int nodeIdUpperBound, final WorkGuard guard) {
     // Pre-compute degree arrays: one int[] per arm, indexed by nodeId
     final int[][] armDegrees = new int[arms.length][];
     for (int a = 0; a < arms.length; a++) {
       final int[] degrees = new int[nodeIdUpperBound];
-      if (armBuckets[a] != null) {
-        // A labelled arm counts only the endpoints of the label, hop by hop (#6337)
+      if (armBuckets[a] != null && arms[a].edgeTypes.length == 1) {
+        // One hop: count the neighbors of the label directly, without the frontier arrays walkArm builds per vertex
+        final IntHashSet far = armBuckets[a][0];
+        for (int v = 0; v < nodeIdUpperBound; v++) {
+          guard.checkPeriodically(v);
+          if (!provider.isNodeLive(v))
+            continue;
+          int count = 0;
+          for (final int neighbor : provider.getNeighborIds(v, arms[a].directions[0], arms[a].edgeTypes[0]))
+            if (far.contains(bucketIds[neighbor]))
+              count++;
+          degrees[v] = count;
+        }
+      } else if (armBuckets[a] != null) {
+        // A labelled multi-hop arm counts only the endpoints of the label, hop by hop (#6337)
         for (int v = 0; v < nodeIdUpperBound; v++) {
           guard.checkPeriodically(v);
           if (!provider.isNodeLive(v))

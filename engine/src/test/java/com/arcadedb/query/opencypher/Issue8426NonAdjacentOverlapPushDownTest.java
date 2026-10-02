@@ -123,14 +123,26 @@ class Issue8426NonAdjacentOverlapPushDownTest extends TestHelper {
     assertThat(plan(query)).doesNotContain(PUSHED_DOWN);
   }
 
-  /** An inequality on the wrong nodes (the middle ones) does not rule out the shared edge: still declined and correct. */
+  /** Binding one edge twice forces {@code m = c} as well as {@code t1 = t2}, so {@code m <> c} protects the overlap too. */
   @Test
-  void anInequalityOnNodesThatAreNotForcedEqualDoesNotProtectTheOverlap() {
+  void anInequalityOnTheOtherForcedEqualPairProtectsTheOverlapToo() {
     final String query = "MATCH (t1:Tag)<-[:HAS_TAG]-(m:Msg)<-[:REPLY_OF]-(c:Cmt)-[:HAS_TAG]->(t2:Tag) WHERE m <> c RETURN count(*) AS n";
     final long expected = enumerated(query);
 
     createView();
     assertThat(count(query)).isEqualTo(expected);
+    assertThat(plan(query)).contains(PUSHED_DOWN);
+  }
+
+  /** An inequality on nodes the shared edge does not force equal ({@code m} and {@code t2}) leaves the overlap open: declined, still correct. */
+  @Test
+  void anInequalityOnNodesThatAreNotForcedEqualDoesNotProtectTheOverlap() {
+    final String query = "MATCH (t1:Tag)<-[:HAS_TAG]-(m:Msg)<-[:REPLY_OF]-(c:Cmt)-[:HAS_TAG]->(t2:Tag) WHERE m <> t2 RETURN count(*) AS n";
+    final long expected = enumerated(query);
+
+    createView();
+    assertThat(count(query)).isEqualTo(expected);
+    assertThat(plan(query)).doesNotContain(PUSHED_DOWN);
   }
 
   /** Undirected overlapping hops can be walked either way, and one orientation is not covered by {@code t1 <> t2}. */

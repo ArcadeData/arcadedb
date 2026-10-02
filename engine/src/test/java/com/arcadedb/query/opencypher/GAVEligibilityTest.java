@@ -510,11 +510,9 @@ class GAVEligibilityTest {
   }
 
   /**
-   * Q7-like: star join with OPTIONAL MATCH arms. The arm endpoints are left unlabelled on purpose: a labelled
-   * endpoint is exactly what issue #6337 now declines the push-down for, since {@code DegreeProductOp.Arm} has
-   * no field to enforce it and silently ignored it before the fix. This test is about the OPTIONAL MATCH
-   * handling of the optimized step, which the unlabelled spelling still reaches; the labelled spelling is
-   * covered by {@link #starJoinQ7WithLabelledArmDeclinesTheOptimizedStep()} below.
+   * Q7-like: star join with OPTIONAL MATCH arms, with the arm endpoints left unlabelled. This test is about the OPTIONAL
+   * MATCH handling of the optimized step; the labelled spelling, which the operator enforces per hop since issue #6337
+   * was refined, is covered by {@link #starJoinQ7WithLabelledArmUsesTheOptimizedStep()} below.
    */
   @Test
   void starJoinQ7OptionalMatchUsesOptimizedStep() {
