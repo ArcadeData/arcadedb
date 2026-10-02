@@ -802,9 +802,12 @@ public class MathExpression extends SimpleNode {
         else if (b instanceof Double)
           // The decimal form, not .doubleValue(), which would carry the single precision error along (issue #7609).
           return operation.apply(Type.widenFloat(float1), b.doubleValue());
-        else if (b instanceof BigDecimal decimal)
-          return operation.apply(Type.floatToBigDecimal(float1), decimal);
-        else if (b instanceof BigInteger bigInteger) {
+        else if (b instanceof BigDecimal decimal) {
+          // NaN and the infinities have no BigDecimal form: they meet the decimal in double (issue #8872)
+          if (Float.isFinite(float1))
+            return operation.apply(Type.floatToBigDecimal(float1), decimal);
+          return operation.apply(Type.widenFloat(float1), decimal.doubleValue());
+        } else if (b instanceof BigInteger bigInteger) {
           // floatToBigDecimal() throws NumberFormatException on NaN/Infinity, which BigDecimal cannot represent,
           // so a non-finite float meets the BigInteger in double instead - the same guard Type's own Float/
           // BigInteger arm carries (#7669).
@@ -818,9 +821,12 @@ public class MathExpression extends SimpleNode {
           return operation.apply(a.doubleValue(), Type.widenFloat(float2));
         else if (b instanceof Byte || b instanceof Short || b instanceof Integer || b instanceof Long || b instanceof Double)
           return operation.apply(a.doubleValue(), b.doubleValue());
-        else if (b instanceof BigDecimal decimal)
-          return operation.apply(BigDecimal.valueOf(double1), decimal);
-        else if (b instanceof BigInteger bigInteger) {
+        else if (b instanceof BigDecimal decimal) {
+          // NaN and the infinities have no BigDecimal form: they meet the decimal in double (issue #8872)
+          if (Double.isFinite(double1))
+            return operation.apply(BigDecimal.valueOf(double1), decimal);
+          return operation.apply(double1, decimal.doubleValue());
+        } else if (b instanceof BigInteger bigInteger) {
           // Same non-finite guard as the Float arm above: BigDecimal.valueOf(double) throws on NaN/Infinity.
           if (Double.isFinite(double1))
             return operation.apply(BigDecimal.valueOf(double1), new BigDecimal(bigInteger));
@@ -836,11 +842,15 @@ public class MathExpression extends SimpleNode {
           return operation.apply(bigDecimal, new BigDecimal(short1));
         else if (b instanceof Byte byte1)
           return operation.apply(bigDecimal, new BigDecimal(byte1.intValue()));
-        else if (b instanceof Float float1)
-          return operation.apply(bigDecimal, Type.floatToBigDecimal(float1));
-        else if (b instanceof Double double1)
-          return operation.apply(bigDecimal, BigDecimal.valueOf(double1));
-        else if (b instanceof BigDecimal decimal)
+        else if (b instanceof Float float1) {
+          if (Float.isFinite(float1))
+            return operation.apply(bigDecimal, Type.floatToBigDecimal(float1));
+          return operation.apply(bigDecimal.doubleValue(), Type.widenFloat(float1));
+        } else if (b instanceof Double double1) {
+          if (Double.isFinite(double1))
+            return operation.apply(bigDecimal, BigDecimal.valueOf(double1));
+          return operation.apply(bigDecimal.doubleValue(), double1);
+        } else if (b instanceof BigDecimal decimal)
           return operation.apply(bigDecimal, decimal);
         else if (b instanceof BigInteger bigInteger)
           return operation.apply(bigDecimal, new BigDecimal(bigInteger));
