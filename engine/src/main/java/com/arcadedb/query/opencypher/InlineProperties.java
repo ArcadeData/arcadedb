@@ -122,15 +122,13 @@ public final class InlineProperties {
     final Object stored = TemporalUtil.fromCoreJavaType(actual);
     if (!(stored instanceof CypherTemporalValue have))
       return false;
-    try {
-      if (have instanceof CypherLocalDateTime local && wanted instanceof CypherDateTime zoned)
-        return local.getValue().toInstant(ZoneOffset.UTC).equals(zoned.getValue().toInstant());
-      if (have instanceof CypherDateTime zoned && wanted instanceof CypherLocalDateTime local)
-        return zoned.getValue().toInstant().equals(local.getValue().toInstant(ZoneOffset.UTC));
-      return have.compareTo(wanted) == 0;
-    } catch (final IllegalArgumentException e) {
-      return false; // different temporal types never equal
-    }
+    if (have instanceof CypherLocalDateTime local && wanted instanceof CypherDateTime zoned)
+      return local.getValue().toInstant(ZoneOffset.UTC).equals(zoned.getValue().toInstant());
+    if (have instanceof CypherDateTime zoned && wanted instanceof CypherLocalDateTime local)
+      return zoned.getValue().toInstant().equals(local.getValue().toInstant(ZoneOffset.UTC));
+    // Different temporal types never equal: decided here rather than by the IllegalArgumentException compareTo throws,
+    // because this runs once per candidate record
+    return have.getClass() == wanted.getClass() && have.compareTo(wanted) == 0;
   }
 
   /**

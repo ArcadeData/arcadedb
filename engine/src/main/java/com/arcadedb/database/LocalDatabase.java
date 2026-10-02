@@ -1396,23 +1396,33 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     final RID rid = record.getIdentity();
     try {
       // The body write also externalised the EXTERNAL properties into the paired bucket: take those back first, while the
-      // record still holds its pointers (issue #8922)
+      // record still holds its pointers (issue #8922). Isolated, so a failure here never skips the retraction of the body
       if (record instanceof Document document)
         cascadeDeleteExternalValues(document, true);
+    } catch (final Exception e) {
+      takeBackFailed(cause, transaction, rid, "its external values", e);
+    }
+
+    try {
       bucket.retractRecord(rid);
     } catch (final Exception e) {
-      cause.addSuppressed(e);
-      transaction.setRollbackOnly(
-          "record " + rid + " could not be taken back after its indexing refused it (" + e.getMessage() + ")");
-      LogManager.instance().log(this, Level.SEVERE,
-          "Cannot take back record %s after its indexing refused it: the transaction is marked rollback-only, "
-              + "because committing it would publish a record no index entry points at. %s", rid, e.getMessage());
+      takeBackFailed(cause, transaction, rid, "it", e);
     }
 
     transaction.updateBucketRecordDelta(bucket.getFileId(), -1);
     transaction.removeRecordFromCache(rid);
     transaction.unregisterNewRecord(record);
     ((RecordInternal) record).setIdentity(null);
+  }
+
+  private void takeBackFailed(final Throwable cause, final TransactionContext transaction, final RID rid, final String what,
+      final Exception e) {
+    cause.addSuppressed(e);
+    transaction.setRollbackOnly(
+        "record " + rid + " could not be taken back after its indexing refused it (" + e.getMessage() + ")");
+    LogManager.instance().log(this, Level.SEVERE,
+        "Cannot take back %s of record %s after its indexing refused it: the transaction is marked rollback-only, "
+            + "because committing it would publish a record no index entry points at. %s", what, rid, e.getMessage());
   }
 
   @Override
