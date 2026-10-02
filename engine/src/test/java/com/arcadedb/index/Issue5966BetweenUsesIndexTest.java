@@ -174,8 +174,8 @@ class Issue5966BetweenUsesIndexTest {
     });
   }
 
-  // #5966: BETWEEN on name.toLowerCase() over a case-insensitive (COLLATE CI) indexed STRING column must use the index
-  // and apply the range comparison after case-folding (a plain "name BETWEEN" is left to the scan, issue #8932), exercising the shared convertKeys()/convertKeysToDeclaredTypes() path
+  // #5966: BETWEEN on name.toLowerCase() over a case-insensitive (COLLATE CI) indexed STRING column must use the
+  // index and apply the range comparison after case-folding (a plain "name BETWEEN" is left to the scan, #8932), exercising the shared convertKeys()/convertKeysToDeclaredTypes() path
   // (both the insert-side fold and the query-side bound fold this PR's LSMTreeIndex.convertKeys dedupe touches).
   @Test
   void betweenOnCaseInsensitiveIndexedColumnUsesIndexAndFolds() {

@@ -19,6 +19,7 @@
 package com.arcadedb.integration.importer;
 
 import com.arcadedb.utility.FileUtils;
+import com.arcadedb.utility.StringUtils;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -191,12 +192,11 @@ public class ImporterSettings {
    * with the WAL off. Only the two spellings are a boolean (issue #8935).
    */
   private static boolean parseStrictBoolean(final String name, final String value) {
-    final String trimmed = value.trim();
-    if ("true".equalsIgnoreCase(trimmed))
-      return true;
-    if ("false".equalsIgnoreCase(trimmed))
-      return false;
-    throw new IllegalArgumentException("Invalid value '" + value + "' for -" + name + ". Supported values are 'true' and 'false'");
+    try {
+      return StringUtils.parseStrictBoolean(value);
+    } catch (final IllegalArgumentException e) {
+      throw new IllegalArgumentException("Invalid value '" + value + "' for -" + name + ". Supported values are 'true' and 'false'");
+    }
   }
 
   public void parseParameter(final String name, String value) {

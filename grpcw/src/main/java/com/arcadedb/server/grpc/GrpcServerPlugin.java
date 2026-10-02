@@ -24,6 +24,7 @@ import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerPlugin;
+import com.arcadedb.utility.StringUtils;
 import com.arcadedb.server.http.HttpAuthSessionManager;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurity;
@@ -560,12 +561,11 @@ public class GrpcServerPlugin implements ServerPlugin {
     if (value != null) {
       // Boolean.parseBoolean() turns "yes", "1" or a typo into false without a word, which for arcadedb.grpc.tls.enabled
       // starts a plaintext endpoint: only the two spellings are a boolean, anything else refuses to start (issue #8935)
-      final String trimmed = value.trim();
-      if ("true".equalsIgnoreCase(trimmed))
-        return true;
-      if ("false".equalsIgnoreCase(trimmed))
-        return false;
-      throw new ConfigurationException("Invalid boolean value for " + key + ": '" + value + "', expected true or false");
+      try {
+        return StringUtils.parseStrictBoolean(value);
+      } catch (final IllegalArgumentException e) {
+        throw new ConfigurationException("Invalid boolean value for " + key + ": '" + value + "', expected true or false");
+      }
     }
     return defaultValue;
   }
