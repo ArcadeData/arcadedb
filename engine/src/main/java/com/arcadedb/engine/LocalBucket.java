@@ -6473,7 +6473,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
             final int freeSpacePerc = freeSpaceInPage * 100 / (page.getMaxContentSize() - contentHeaderSize);
 
-            if (freeSpacePerc > GATHER_STATS_MIN_SPACE_PERC
+            // #8660: a page whose record table is full cannot take another record whatever its free tail is, and the allocator
+            // drops it from the map on first sight (findAvailableSpaceFromStatistics). Listing it only fills the map with entries
+            // that drain one by one, and each refill is an unthrottled resume gather: a bulk update over small records paid a
+            // full-bucket scan every ~20 allocations.
+            if (freeSpacePerc > GATHER_STATS_MIN_SPACE_PERC && recordCountInPage < maxRecordsInPage
                 && (freeSpaceInPages.size() < MAX_PAGES_GATHER_STATS || freeSpaceInPages.containsKey(pageId)))
               freeSpaceInPages.put(pageId, freeSpaceInPage);
 
@@ -6550,7 +6554,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       page.claimFreeSpace(availableSpace + delta);
 
     synchronized (freeSpaceInPages) {
-      if (availableSpace + delta == 0)
+      if (availableSpace + delta == 0 || page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET) >= maxRecordsInPage)
+        // no room left, or no free slot in the record table (#8660: the allocator would drop such an entry on first sight)
         freeSpaceInPages.remove(pageId, -1);
       else {
         // #5067: same usable-space base as gatherPageStatistics() (#4958): measure against the usable
