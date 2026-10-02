@@ -30,8 +30,10 @@ import com.arcadedb.query.sql.executor.Result;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Locale;
 import java.util.logging.Level;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
@@ -55,21 +57,24 @@ final class BoltSystemProcedures {
   private static final String   CALL_PREFIX   = "call ";
   /** Real probes are tiny; a longer statement is never matched, which also bounds the regex work on client input. */
   private static final int      MAX_PROBE_LENGTH = 4096;
-  private static final Pattern  QUOTED        = Pattern.compile(
-      "'[^'\\\\]*+(?:\\\\.[^'\\\\]*+)*+'|\"[^\"\\\\]*+(?:\\\\.[^\"\\\\]*+)*+\"|`[^`]*+`");
-  private static final Pattern  UNION        = Pattern.compile(" union (?:all )?");
-  private static final Pattern  BLOCK_COMMENT = Pattern.compile("/\\*.*?\\*/");
+  // One alternation, so each region is taken by whichever opener comes first: an apostrophe inside a block comment
+  // cannot pair with a quote outside it, nor a slash-star inside a string open a comment
+  private static final Pattern  QUOTED_OR_COMMENT = Pattern.compile(
+      "'[^'\\\\]*+(?:\\\\.[^'\\\\]*+)*+'|\"[^\"\\\\]*+(?:\\\\.[^\"\\\\]*+)*+\"|`[^`]*+`|/\\*.*?\\*/");
+  private static final Pattern  UNION         = Pattern.compile(" union (?:all )?");
   private static final Pattern  WHITESPACE    = Pattern.compile("\\s+");
   private static final Pattern  FOREIGN_CLAUSE = Pattern.compile(
       "(?<![\\w$.])(?:create|merge|set|delete|detach|remove|foreach|call|load|match|optional|union|use|finish|insert|drop|alter|grant|deny|revoke|start|stop|terminate|enable|rename)\\b");
-  // A single schema call is served only when the answer cannot differ from the engine's: no alias, no projection
-  private static final Pattern  CALL_TAIL     = Pattern.compile(" ?(?:\\( ?\\))?(?: yield (?:\\*|\\w+))?(?: return \\w+)? ?;?");
-  // The Desktop form: each UNION segment collects its procedure into the one `result` column
-  private static final Pattern  COMBINED_TAIL = Pattern.compile(
-      " ?(?:\\( ?\\))?(?: yield \\w+)? return collect\\(\\w+\\)(?:\\[\\.\\.\\d+\\])? as result ?;?");
   private static final String   LABELS        = DbLabels.NAME.toLowerCase(Locale.ROOT);
   private static final String   RELATIONSHIPS = DbRelationshipTypes.NAME.toLowerCase(Locale.ROOT);
   private static final String   PROPERTY_KEYS = DbPropertyKeys.NAME.toLowerCase(Locale.ROOT);
+  // The field each schema procedure yields, lower-case as the normalized query is. A single call is served only
+  // when the answer cannot differ from the engine's: no alias, and no projection of anything but that field.
+  private static final Map<String, Pattern> SINGLE_TAIL   = Map.of(
+      LABELS, singleTail("label"), RELATIONSHIPS, singleTail("relationshiptype"), PROPERTY_KEYS, singleTail("propertykey"));
+  // The Desktop form: each UNION segment collects its procedure into the one `result` column, optionally sliced
+  private static final Map<String, Pattern> COMBINED_TAIL = Map.of(
+      LABELS, combinedTail("label"), RELATIONSHIPS, combinedTail("relationshiptype"), PROPERTY_KEYS, combinedTail("propertykey"));
 
   /**
    * The field names and the rows a served query answers with, in the shape the Bolt executor streams them.
@@ -148,12 +153,26 @@ final class BoltSystemProcedures {
    * @return true if the statement is just {@code CALL <procedureName>} with an optional plain YIELD/RETURN
    */
   static boolean isStandaloneCall(final String normalized, final String procedureName) {
-    return matchesSegment(normalized, procedureName, CALL_TAIL);
+    final Pattern tail = SINGLE_TAIL.get(procedureName);
+    return tail != null && matchesSegment(normalized, procedureName, tail) != null;
   }
 
-  private static boolean matchesSegment(final String segment, final String procedureName, final Pattern tail) {
+  private static Pattern singleTail(final String field) {
+    return Pattern.compile(" ?(?:\\( ?\\))?(?: yield (?:\\*|" + field + "))?(?: return " + field + ")? ?;?");
+  }
+
+  private static Pattern combinedTail(final String field) {
+    return Pattern.compile(" ?(?:\\( ?\\))?(?: yield " + field + ")? return collect\\(" + field
+        + "\\)(?:\\[\\.\\.(\\d{1,9})\\])? as result ?;?");
+  }
+
+  /** @return the matcher when the segment is exactly {@code CALL <name>} followed by the tail, else null */
+  private static Matcher matchesSegment(final String segment, final String procedureName, final Pattern tail) {
     final int end = endOfCallName(segment, procedureName);
-    return end >= 0 && tail.matcher(segment).region(end, segment.length()).matches();
+    if (end < 0)
+      return null;
+    final Matcher matcher = tail.matcher(segment).region(end, segment.length());
+    return matcher.matches() ? matcher : null;
   }
 
   /**
@@ -187,7 +206,7 @@ final class BoltSystemProcedures {
     // The tail stays open (YIELD / WHERE / UNWIND / RETURN) but never a clause that writes or calls on: serving
     // those here would drop them silently, whereas the engine refuses them loudly.
     // Quoted literals and block comments are blanked first: a keyword inside either is not a clause
-    final String tail = BLOCK_COMMENT.matcher(QUOTED.matcher(normalized.substring(end)).replaceAll("''")).replaceAll(" ");
+    final String tail = QUOTED_OR_COMMENT.matcher(normalized.substring(end)).replaceAll(" ");
     return !FOREIGN_CLAUSE.matcher(tail).find();
   }
 
@@ -195,7 +214,10 @@ final class BoltSystemProcedures {
    * Splits the statement into its UNION segments and returns the schema procedure each one calls, or null when the
    * statement is not exactly one schema call or the three of them combined.
    */
-  private static String[] schemaCallsOf(final String normalized) {
+  private record SchemaCall(String name, int limit) {
+  }
+
+  private static SchemaCall[] schemaCallsOf(final String normalized) {
     // Every Bolt statement passes through here: bail out before any allocation unless it opens with a call.
     if (normalized.length() > MAX_PROBE_LENGTH || !normalized.startsWith(CALL_PREFIX))
       return null;
@@ -203,23 +225,31 @@ final class BoltSystemProcedures {
     if (segments.length != 1 && segments.length != 3)
       return null;
 
-    final String[] names = new String[segments.length];
+    final Map<String, Pattern> tails = segments.length == 1 ? SINGLE_TAIL : COMBINED_TAIL;
+    final SchemaCall[] calls = new SchemaCall[segments.length];
     for (int i = 0; i < segments.length; ++i) {
       // The segment is anchored on its own: the prefix is re-checked after each UNION.
-      final String segment = segments[i];
-      final Pattern tail = segments.length == 1 ? CALL_TAIL : COMBINED_TAIL;
-      if (matchesSegment(segment, LABELS, tail))
-        names[i] = LABELS;
-      else if (matchesSegment(segment, RELATIONSHIPS, tail))
-        names[i] = RELATIONSHIPS;
-      else if (matchesSegment(segment, PROPERTY_KEYS, tail))
-        names[i] = PROPERTY_KEYS;
-      else
+      calls[i] = schemaCallOf(segments[i], tails, LABELS);
+      if (calls[i] == null)
+        calls[i] = schemaCallOf(segments[i], tails, RELATIONSHIPS);
+      if (calls[i] == null)
+        calls[i] = schemaCallOf(segments[i], tails, PROPERTY_KEYS);
+      if (calls[i] == null)
         return null;
     }
-    if (names.length == 3 && (names[0].equals(names[1]) || names[0].equals(names[2]) || names[1].equals(names[2])))
+    if (calls.length == 3 && (calls[0].name().equals(calls[1].name()) || calls[0].name().equals(calls[2].name())
+        || calls[1].name().equals(calls[2].name())))
       return null;
-    return names;
+    return calls;
+  }
+
+  private static SchemaCall schemaCallOf(final String segment, final Map<String, Pattern> tails, final String name) {
+    final Matcher matcher = matchesSegment(segment, name, tails.get(name));
+    if (matcher == null)
+      return null;
+    // The slice group only exists in the combined tail
+    final String slice = matcher.groupCount() > 0 ? matcher.group(1) : null;
+    return new SchemaCall(name, slice == null ? Integer.MAX_VALUE : Integer.parseInt(slice));
   }
 
   /**
@@ -237,14 +267,14 @@ final class BoltSystemProcedures {
    * path reports), when the procedure is not registered, and when running it raises anything at all
    */
   static Served serveSchemaProcedure(final Database database, final String normalized) {
-    final String[] names = schemaCallsOf(normalized);
-    if (names == null)
+    final SchemaCall[] calls = schemaCallsOf(normalized);
+    if (calls == null)
       return null;
 
     try {
-      if (names.length == 3)
-        return serveCombined(database, normalized);
-      return serveOne(database, normalized, names[0]);
+      if (calls.length == 3)
+        return serveCombined(database, normalized, calls);
+      return serveOne(database, normalized, calls[0].name());
     } catch (final Exception e) {
       // The Bolt executor calls its system-query interception before the try/catch that classifies query
       // errors (CommandParsingException vs. retryable conflict vs. plain failure), so an exception escaping
@@ -262,19 +292,21 @@ final class BoltSystemProcedures {
    * Serves the combined query Neo4j Desktop sends, one row per procedure, each row holding the list of that
    * procedure's values.
    */
-  private static Served serveCombined(final Database database, final String normalized) {
-    final CypherProcedure labels = procedureFor(normalized, LABELS);
-    final CypherProcedure relationships = procedureFor(normalized, RELATIONSHIPS);
-    final CypherProcedure propertyKeys = procedureFor(normalized, PROPERTY_KEYS);
-    if (labels == null || relationships == null || propertyKeys == null)
-      return null;
-
-    final List<List<Object>> rows = new ArrayList<>(3);
-    if (database != null) {
-      rows.add(List.of(column(database, labels)));
-      rows.add(List.of(column(database, relationships)));
-      rows.add(List.of(column(database, propertyKeys)));
+  private static Served serveCombined(final Database database, final String normalized, final SchemaCall[] calls) {
+    final CypherProcedure[] procedures = new CypherProcedure[calls.length];
+    for (int i = 0; i < calls.length; ++i) {
+      procedures[i] = procedureFor(normalized, calls[i].name());
+      if (procedures[i] == null)
+        return null;
     }
+
+    // One row per segment, in the order the client sent them, each list cut at its own slice
+    final List<List<Object>> rows = new ArrayList<>(3);
+    if (database != null)
+      for (int i = 0; i < calls.length; ++i) {
+        final List<Object> values = column(database, procedures[i]);
+        rows.add(List.of(values.size() > calls[i].limit() ? new ArrayList<>(values.subList(0, calls[i].limit())) : values));
+      }
     return new Served(List.of("result"), rows);
   }
 
