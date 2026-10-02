@@ -43,14 +43,12 @@ class Issue8948GAVReusedVertexRidTest extends TestHelper {
 
     final RID c = vertex("c").getIdentity();
     database.transaction(() -> vertex("c").delete());
-    final RID[] d = new RID[1];
     database.transaction(() -> {
       final MutableVertex nv = database.newVertex("V").set("name", "d").set("age", 20).save();
-      d[0] = nv.getIdentity();
+      assertThat(nv.getIdentity()).as("precondition: the new vertex reuses the deleted RID").isEqualTo(c);
       vertex("a").newEdge("K", nv);
       nv.newEdge("K", vertex("a"));
     });
-    assertThat(d[0]).as("precondition: the new vertex reuses the deleted RID").isEqualTo(c);
 
     assertCounts();
     database.command("sql", "DROP GRAPH ANALYTICAL VIEW g");
@@ -117,6 +115,23 @@ class Issue8948GAVReusedVertexRidTest extends TestHelper {
     assertThat(GraphAnalyticalViewRegistry.get(database, "g").getEdgeCount()).isEqualTo(1);
     database.transaction(() -> vertex("e").delete());
     assertThat(count("MATCH (x:V)-[:K]->(y:V) RETURN count(*) AS n")).isEqualTo(0L);
+    database.command("sql", "DROP GRAPH ANALYTICAL VIEW g");
+  }
+
+  /** Pins the invariant DeltaOverlay.merge() relies on: a TxDelta never carries both the delete and the reuse of a slot. */
+  @Test
+  void deleteAndCreateInOneTransaction() throws Exception {
+    createSchemaAndView();
+    final RID c = vertex("c").getIdentity();
+    final RID[] reused = new RID[1];
+    database.transaction(() -> {
+      vertex("c").delete();
+      final MutableVertex d = database.newVertex("V").set("name", "d").set("age", 20).save();
+      reused[0] = d.getIdentity();
+      vertex("a").newEdge("K", d);
+    });
+    assertThat(reused[0]).as("a slot freed by a transaction is not reused by that same transaction").isNotEqualTo(c);
+    assertThat(count("MATCH (x:V)-[:K]->(y:V) RETURN count(*) AS n")).isEqualTo(1L);
     database.command("sql", "DROP GRAPH ANALYTICAL VIEW g");
   }
 
