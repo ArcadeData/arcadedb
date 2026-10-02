@@ -54,8 +54,8 @@ final class BoltSystemProcedures {
   private static final Object[] NO_ARGS       = new Object[0];
   private static final String   CALL_PREFIX   = "call ";
   private static final String   ITEM          = "(?:collect\\(\\w+\\)|\\w+)(?: as \\w+)?";
-  private static final Pattern  WRITE_TAIL    = Pattern.compile(
-      " (?:create|merge|set|delete|detach|remove|foreach|call|load|match|optional)\\b");
+  private static final Pattern  FOREIGN_CLAUSE    = Pattern.compile(
+      "(?<!\\w)(?:create|merge|set|delete|detach|remove|foreach|call|load|match|optional|union|use|finish|insert)\\b");
   private static final Pattern  CALL_TAIL     = Pattern.compile(
       " ?(?:\\( ?\\))?(?: yield (?:\\*|" + ITEM + "(?:, ?" + ITEM + ")*))?(?: return " + ITEM + "(?:, ?" + ITEM + ")*)? ?;?");
   private static final String   LABELS        = DbLabels.NAME.toLowerCase(Locale.ROOT);
@@ -172,7 +172,7 @@ final class BoltSystemProcedures {
       return false;
     // The tail stays open (YIELD / WHERE / UNWIND / RETURN) but never a clause that writes or calls on: serving
     // those here would drop them silently, whereas the engine refuses them loudly.
-    return !WRITE_TAIL.matcher(normalized).region(end, normalized.length()).find();
+    return !FOREIGN_CLAUSE.matcher(normalized).region(end, normalized.length()).find();
   }
 
   /**
