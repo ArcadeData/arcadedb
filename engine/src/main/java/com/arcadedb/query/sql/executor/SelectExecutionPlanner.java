@@ -5052,6 +5052,7 @@ public class SelectExecutionPlanner {
       return false;
     if (!decimalBound)
       return false;
+    // any non-DECIMAL key type (DOUBLE, FLOAT, INTEGER, LONG) would round or truncate the bound; the scan is slower but exact
     final Property property = type.getPropertyIfExists(field);
     return property == null || property.getType() != Type.DECIMAL;
   }

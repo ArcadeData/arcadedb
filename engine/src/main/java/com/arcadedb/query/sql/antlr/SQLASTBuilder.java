@@ -316,7 +316,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   /** significant digits a double can carry: a literal with no more than this stays a double (issue #8872) */
   private static final int MAX_DOUBLE_DIGITS          = 17;
   /** bounds on the digits (precision) and the decimal places or exponent (scale) of a literal kept as an exact BigDecimal rather than a double (issue #8872) */
-  private static final int MAX_EXACT_DECIMAL_PRECISION = 10_000;
+  private static final int MAX_EXACT_DECIMAL_PRECISION = 1_000;
   private static final int MAX_EXACT_DECIMAL_SCALE     = 400;
 
   /** Target aliases of the statements currently being built, innermost first. See {@link #resolveTargetAlias}. */
