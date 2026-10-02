@@ -147,6 +147,17 @@ class DuplicateVectorIdGraphBuildTest extends TestHelper {
     assertNoLoopAfterABuild();
   }
 
+  /** A compaction must not erase the evidence: the pages keep the shared ids until the index is rebuilt. */
+  @Test
+  void aCompactionDoesNotEraseTheSharedIdsFromThePages() throws Exception {
+    createTwoRecordsOnOneVectorId();
+
+    vectorIndex().scheduleCompaction();
+    vectorIndex().compact();
+
+    assertThat(vectorIndex().checkIntegrity()).as("still reported after a compaction").hasSize(1);
+  }
+
   private void assertNoLoopAfterABuild() {
     vectorIndex().buildVectorGraphNow();
     final int[] built = vectorIndex().getOrdinalToVectorIdForTest();

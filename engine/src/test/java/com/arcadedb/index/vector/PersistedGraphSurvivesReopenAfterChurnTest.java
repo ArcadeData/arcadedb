@@ -128,6 +128,9 @@ class PersistedGraphSurvivesReopenAfterChurnTest extends TestHelper {
     assertThat(vectorIndex().residentLocationsForTest().getActiveVectorIds().count())
         .as("the live set a reload reconstructs from the pages must be the one the build published")
         .isEqualTo(liveAfterBuild);
+    assertThat(vectorIndex().checkIntegrity())
+        .as("ordinary churn leaves no record sharing a vector id, so CHECK DATABASE FIX must not rebuild the index")
+        .isEmpty();
     assertThat(vectorIndex().getStats().get("graphRebuildCount"))
         .as("the graph persisted by the build must be accepted by the next load, not rebuilt again")
         .isEqualTo(0L);
