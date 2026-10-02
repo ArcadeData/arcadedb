@@ -517,6 +517,17 @@ public class BinaryComparator {
   }
 
   /** Numbers of different classes follow {@link Type#numbersEqual}: not transitive, so never a hash or grouping key. */
+  /**
+   * The exact twin of {@link #equals(Object, Object)} for key matching inside hash chains, where the FLOAT/DOUBLE
+   * looseness of {@link Type#numbersEqual} would let a Double key overwrite a Float one (issue #8882).
+   */
+  public static boolean equalsExact(final Object a, final Object b) {
+    if (!(a != null && b != null && !a.getClass().equals(b.getClass()) && a instanceof Number number && b instanceof Number number1))
+      return equals(a, b);
+    final Number[] pair = Type.castComparableNumber(number, number1);
+    return pair[0].equals(pair[1]);
+  }
+
   public static boolean equals(final Object a, final Object b) {
     if (a == b)
       return true;
