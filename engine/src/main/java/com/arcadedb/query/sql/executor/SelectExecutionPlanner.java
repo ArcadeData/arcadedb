@@ -3008,6 +3008,9 @@ public class SelectExecutionPlanner {
    * <p>
    * If even one block has no equality on a given tag column, that block could match a row with any
    * tag value, so push-down on that column would be unsound and is skipped.
+   * <p>
+   * Inside one block the equalities are AND'ed, so the values of a repeated tag are intersected; an empty
+   * intersection is a block that matches nothing and contributes no value to the union (issue #8917).
    */
   private static TagFilter extractTagFilter(final List<AndBlock> flattenedWhere, final List<ColumnDefinition> columns,
       final String timestampColumn, final CommandContext context) {
@@ -3054,9 +3057,8 @@ public class SelectExecutionPlanner {
             final Set<Object> values = new HashSet<>();
             values.add(coerced);
             blockMap.put(nonTsIdx, values);
-          } else
-            if (!existing.contains(coerced))
-              existing.clear();
+          } else if (!existing.contains(coerced))
+            existing.clear();
           break;
         }
       }

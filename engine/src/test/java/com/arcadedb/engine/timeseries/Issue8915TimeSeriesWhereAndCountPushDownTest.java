@@ -158,6 +158,10 @@ class Issue8915TimeSeriesWhereAndCountPushDownTest extends TestHelper {
           "SELECT ts.timeBucket('1h', ts) AS b, count(*) AS c FROM T WHERE host = ? GROUP BY b", (Object) null)) {
         assertThat(rs.hasNext()).isFalse();
       }
+      assertThat(ns("SELECT v AS n FROM T WHERE host = ?".replace("?", "null"))).isEqualTo(ns("SELECT v AS n FROM D WHERE host = null"));
+      try (final ResultSet rs = database.query("sql", "SELECT v AS n FROM T WHERE host = ?", (Object) null)) {
+        assertThat(rs.hasNext()).isFalse();
+      }
     });
   }
 
