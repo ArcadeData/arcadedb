@@ -26,6 +26,7 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -69,7 +70,35 @@ class InOperandConversionOnTypedListTest extends TestHelper {
     assertThat(count("SELECT FROM D WHERE ? IN b", "abc")).isEqualTo(0);
   }
 
-  private long count(final String query, final Object param) {
-    return database.query("sql", query, param).stream().count();
+  @Test
+  void inOnOtherRightHandShapes() {
+    database.command("sql", "CREATE DOCUMENT TYPE S");
+    database.command("sql", "CREATE PROPERTY S.d DOUBLE");
+    database.command("sql", "CREATE PROPERTY S.s STRING");
+    database.command("sql", "CREATE PROPERTY S.l LIST OF DOUBLE");
+    database.transaction(() -> database.newDocument("S").set("d", 7.0, "s", "7", "l", new ArrayList<>(List.of(7.0))).save());
+
+    // parameter bound to a Set and to an array, with a String operand against a Double item
+    assertThat(count("SELECT FROM S WHERE ? IN ?", "7", new HashSet<>(List.of(7.0)))).isEqualTo(1);
+    assertThat(count("SELECT FROM S WHERE ? IN ?", "7", new Object[] { 7.0 })).isEqualTo(1);
+    // literal list on the right, string property against doubles, and the reverse direction
+    assertThat(count("SELECT FROM S WHERE s IN [7.0, 8.0]")).isEqualTo(1);
+    assertThat(count("SELECT FROM S WHERE ? IN l", 7L)).isEqualTo(1);
+    // a null element keeps the three-valued logic: no match is UNKNOWN, so NOT IN does not return the row
+    assertThat(count("SELECT FROM S WHERE '8' NOT IN [7.0, null]")).isEqualTo(0);
+    assertThat(count("SELECT FROM S WHERE '7' IN [7.0, null]")).isEqualTo(1);
   }
+
+  @Test
+  void inDatetimeRejectsUnparseableOperand() {
+    database.command("sql", "CREATE DOCUMENT TYPE DT");
+    database.command("sql", "CREATE PROPERTY DT.b LIST OF DATETIME");
+    database.transaction(() -> database.newDocument("DT").set("b", new ArrayList<>(List.of(LocalDateTime.of(2026, 10, 1, 12, 0)))).save());
+    assertThat(count("SELECT FROM DT WHERE ? IN b", "not a date")).isEqualTo(0);
+  }
+
+  private long count(final String query, final Object... params) {
+    return database.query("sql", query, params).stream().count();
+  }
+
 }
