@@ -119,8 +119,12 @@ class Issue8908SystemProcedureInterceptionTest {
   }
 
   @Test
-  void showCommandsAreAnchoredToo() {
-    assertThat(BoltSystemProcedures.normalize("MATCH (n) RETURN 'show current user'").startsWith("show current user")).isFalse();
+  void literalsParametersAndPropertyNamesInTheTailDoNotTripTheClauseCheck() {
+    for (final String query : new String[] { "CALL dbms.listDatabases() YIELD name WHERE name = $use",
+        "CALL dbms.listDatabases() YIELD name WHERE name = 'set'", "CALL dbms.listDatabases() YIELD name WHERE name = \"a match b\"",
+        "CALL dbms.listDatabases() YIELD name WHERE x.create = 1", "CALL db.ping() YIELD success WHERE success" })
+      assertThat(BoltSystemProcedures.isSystemCall(BoltSystemProcedures.normalize(query),
+          query.contains("ping") ? "db.ping" : "dbms.listdatabases")).as(query).isTrue();
   }
 
   @Test
