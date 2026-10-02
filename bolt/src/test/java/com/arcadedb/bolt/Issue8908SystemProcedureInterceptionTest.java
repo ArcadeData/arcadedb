@@ -137,10 +137,11 @@ class Issue8908SystemProcedureInterceptionTest {
 
   @Test
   void aBoltOnlyCallFollowedByAWriteIsLeftToTheEngine() {
-    for (final String query : new String[] { "CALL db.ping() CREATE (:X)", "CALL dbms.info() YIELD name MATCH (n) DELETE n",
-        "CALL dbms.components() YIELD name SET x.y = 1", "CALL db.ping() MERGE (:X)" })
-      assertThat(BoltSystemProcedures.isSystemCall(BoltSystemProcedures.normalize(query), query.contains("ping") ? "db.ping"
-          : query.contains("info") ? "dbms.info" : "dbms.components")).as(query).isFalse();
+    for (final String[] c : new String[][] { { "CALL db.ping() CREATE (:X)", "db.ping" },
+        { "CALL db.ping() CREATE(:X)", "db.ping" }, { "CALL dbms.info() YIELD name MATCH (n) DELETE n", "dbms.info" },
+        { "CALL dbms.info() YIELD name MERGE(n:X)", "dbms.info" }, { "CALL dbms.components() YIELD name SET x.y = 1", "dbms.components" },
+        { "CALL db.ping() FOREACH(a IN [1] | CREATE (:Y))", "db.ping" }, { "CALL db.ping() MATCH(n) RETURN n", "db.ping" } })
+      assertThat(BoltSystemProcedures.isSystemCall(BoltSystemProcedures.normalize(c[0]), c[1])).as(c[0]).isFalse();
   }
 
   @Test
