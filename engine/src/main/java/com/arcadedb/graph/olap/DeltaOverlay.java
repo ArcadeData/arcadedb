@@ -304,12 +304,8 @@ class DeltaOverlay {
     // Process added vertices
     for (final TxDelta.VertexDelta vd : delta.addedVertices) {
       final int addedBaseId = baseMapping.getGlobalId(vd.rid);
-      // A deleted base slot reused by this new vertex falls through to the overflow (#8948). A TxDelta is one
-      // committed transaction and a freed slot is only reused after that commit, so the delete of the old
-      // vertex is always in an earlier merge than the add of the new one. The same holds when buffered deltas are
-      // replayed over a freshly built base: if the scan already saw the new vertex in the slot, the replayed
-      // delete of the old one masks that base node and the replayed add re-creates it in the overflow, together
-      // with its replayed edges (overflow ids skip the base-CSR dedup), so each edge is counted exactly once
+      // A deleted base slot reused by this new vertex falls through to the overflow (#8948). The delete of the old
+      // vertex is always in an earlier merge: a slot is not reused by the transaction that freed it
       if (addedBaseId >= 0 && !newDeleted.get(addedBaseId))
         continue; // already in base
       if (newOverflowIds.containsKey(vd.rid))
@@ -784,7 +780,8 @@ class DeltaOverlay {
 
   /**
    * True when the base slot's original vertex is deleted and a new vertex with the same RID lives in the overflow
-   * (#8948). Cascaded deletes of that new vertex's edges are withdrawn by edge identity, so they never depend on
+   * (#8948). Replayed over a fresh base that already holds the new vertex, the delete masks that base node and the
+   * add re-creates the vertex and its edges in the overflow, so each edge counts once. Cascaded deletes of that new vertex's edges are withdrawn by edge identity, so they never depend on
    * the stale base id this resolves to once the overflow entry is gone.
    */
   private static boolean isReusedBaseSlot(final int baseId, final RID rid, final Map<RID, Integer> overflowIds,

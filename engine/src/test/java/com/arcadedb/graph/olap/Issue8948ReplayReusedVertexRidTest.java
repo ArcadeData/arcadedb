@@ -74,4 +74,29 @@ class Issue8948ReplayReusedVertexRidTest {
     assertThat(afterDelete.getAddedOutNeighbors(0, EDGE_TYPE)).isEmpty();
     assertThat(afterDelete.getDeltaEdgeCount()).isZero();
   }
+
+  /** The scan ran after the delete committed: the fresh base lacks the old vertex, so only the add is buffered. */
+  @Test
+  void replayedAddAloneOverAFreshBaseThatLacksTheOldVertexLandsInTheOverflow() {
+    final NodeIdMapping mapping = new NodeIdMapping(1);
+    final int bucket = mapping.registerBucket(1, "V", 1);
+    mapping.addNode(bucket, 0);
+    mapping.compact();
+    final CSRAdjacencyIndex csr = new CSRAdjacencyIndex(new int[] { 0, 0 }, new int[0], new int[] { 0, 0 }, new int[0], 1, 0);
+    final Map<String, CSRAdjacencyIndex> fresh = Map.of(EDGE_TYPE, csr);
+
+    final TxDelta addNew = new TxDelta();
+    addNew.addedVertices.add(new TxDelta.VertexDelta(REUSED, Map.of("age", 20)));
+    addNew.addedEdges.add(new TxDelta.EdgeDelta(EDGE_TYPE, A, REUSED, EDGE));
+    final DeltaOverlay overlay = new DeltaOverlay(mapping.size()).merge(addNew, mapping, fresh, (type, src, tgt) -> 0);
+
+    final int newId = overlay.resolveNodeId(REUSED, mapping);
+    assertThat(newId).isGreaterThanOrEqualTo(mapping.size());
+    assertThat(overlay.getAddedOutNeighbors(0, EDGE_TYPE)).containsExactly(newId);
+    assertThat(overlay.getPropertyOverride(newId, "age")).isEqualTo(20);
+
+    final TxDelta update = new TxDelta();
+    update.updatedProperties.put(REUSED, Map.of("age", 21));
+    assertThat(overlay.merge(update, mapping, fresh, (type, src, tgt) -> 0).getPropertyOverride(newId, "age")).isEqualTo(21);
+  }
 }
