@@ -296,9 +296,10 @@ public class ClusterAlerts {
             + "entries: it has applied everything it could locally commit, so this document's localCommitIndex and "
             + "localAppliedIndex agree and only localStuckAtStaleTerm reports it, but this node makes no further progress and "
             + "does not count toward the Raft quorum. If the cluster loses one more node while this persists, "
-            + "writes stop entirely even though a leader exists and every reachable node knows it. The usual cause "
-            + "is a follower that finished a snapshot install but has not yet resumed appending the leader's "
-            + "post-install entries.")
+            + "writes stop entirely even though a leader exists and every reachable node knows it. A known cause, a "
+            + "follower that finished a snapshot install but never resumed appending the leader's post-install "
+            + "entries, was fixed in 26.10.1; if this alert appears on a later version, keep this node's log for a "
+            + "bug report.")
         .put("recommendation", "If arcadedb.ha.divergedFollowerRecovery is enabled (the default), this "
             + "self-heals: once the condition has persisted for arcadedb.ha.divergedFollowerRecoveryDurationMs "
             + "(default 20s, with no applied-index progress) the node reformats its local Raft storage and rejoins "
