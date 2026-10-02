@@ -266,4 +266,18 @@ class MetricMeterTest {
     final float rate = meter.getRequestsPerSecondSinceLastAsked();
     assertThat(rate).isGreaterThan(0F).isLessThan(1F);
   }
+
+  @Test
+  void askAfterLongGapIsCappedToTheRingSize() throws Exception {
+    // last asked one hour ago: the walk must stop at the 59 completed slots and divide by 59, not by 3600
+    final MetricMeter meter = new MetricMeter(System.currentTimeMillis() / 1000 - 3600);
+    meter.hit();
+    Thread.sleep(1100);
+
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
+    final float rate = meter.getRequestsPerSecondSinceLastAsked();
+    stopwatch.assertGaveUpWithin(500, "a walk capped at the ring size vs one iteration per second of the gap");
+
+    assertThat(rate).isEqualTo(1F / 59);
+  }
 }
