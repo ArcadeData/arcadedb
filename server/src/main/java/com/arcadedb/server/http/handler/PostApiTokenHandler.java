@@ -182,7 +182,8 @@ public class PostApiTokenHandler extends AbstractServerHttpHandler {
           "API tokens can only be minted over HTTPS or from a loopback client. Connect over TLS, set "
               + GlobalConfiguration.SERVER_API_TOKEN_TRUSTED_PROXIES.getKey()
               + " if a reverse proxy terminates TLS in front of this server, or set "
-              + GlobalConfiguration.SERVER_API_TOKEN_REQUIRE_SECURE_TRANSPORT.getKey() + "=false to allow it")
+              + GlobalConfiguration.SERVER_API_TOKEN_REQUIRE_SECURE_TRANSPORT.getKey() + "=false to allow it. "
+              + "If the request carries a Forwarded header, every element of it must include proto=https")
           .toString());
 
     LogManager.instance().log(PostApiTokenHandler.class, Level.WARNING,

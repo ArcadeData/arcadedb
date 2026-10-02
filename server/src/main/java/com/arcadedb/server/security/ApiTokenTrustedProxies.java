@@ -128,7 +128,8 @@ public final class ApiTokenTrustedProxies {
   }
 
   /**
-   * Appends one entry to {@code protos} per element of {@code line}.
+   * Appends one entry to {@code protos} per element of {@code line}. {@code token} is scratch space shared across
+   * lines to avoid an allocation per line; it is reset here and carries nothing from one call to the next.
    *
    * @return whether {@code protos} is still empty of entries, i.e. the next entry needs no leading comma
    */
