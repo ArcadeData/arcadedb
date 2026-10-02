@@ -3223,7 +3223,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       }
     }
 
-    collapseToWhatALoadKeeps(replay);
+    final boolean leftRecordsOut = collapseToWhatALoadKeeps(replay);
 
     // COMPACTION (issue #5516 follow-up): the live set just computed IS the compacted content of this index, so
     // when the caller asked for a compaction the data file is rewritten here, from the very same set the graph is
@@ -3232,7 +3232,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // (validation, preload, vectorIndex re-sync, graph build) transparently uses the compacted file.
     // A completed rewrite already re-published the location index against the new file, inside the critical section
     // that swapped it - re-publishing an identical copy below would only reopen the window it closed (issue #5568).
-    final boolean locationIndexAlreadyPublished = compactDataFile && rewriteDataFileWithLiveEntries(
+    // Not when records were just left out: rewriting the data file from the collapsed set would erase the losers'
+    // entries from the pages, and with them the only evidence of how two records came to share an id.
+    final boolean locationIndexAlreadyPublished = compactDataFile && !leftRecordsOut && rewriteDataFileWithLiveEntries(
         ridToLatestVector.values());
 
     // Rebuild ordinal mapping (may have changed after document scan fallback)
@@ -6302,35 +6304,71 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * replay sees.
    */
   private static final class LiveSetReplay {
-    /** Stands in for "this id was tombstoned last" in {@link #byId}. */
-    private static final RID DELETED = new RID(-1, -1);
+    /** Ids at or above this are not tracked: the arrays below would cost more than the check is worth. */
+    private static final int MAX_TRACKED_ID = 1 << 26;
+    /** In {@link #ownerBucket}: the id was tombstoned last. */
+    private static final int DELETED        = -1;
 
     final Map<RID, VectorEntryForGraphBuild> byRid;
-    private final Map<Integer, RID>          byId;
+    /** Per vector id, the record that holds it after the replay: bucket id + 1, 0 for never seen, {@link #DELETED}. */
+    private int[]  ownerBucket;
+    private long[] ownerPosition;
 
     LiveSetReplay(final int expectedSize) {
       byRid = new HashMap<>(expectedSize);
-      byId = new HashMap<>(expectedSize);
+      ownerBucket = new int[Math.min(MAX_TRACKED_ID, Math.max(16, expectedSize))];
+      ownerPosition = new long[ownerBucket.length];
     }
 
     void accept(final LSMVectorIndexPageParser.VectorEntry entry, final boolean isCompacted) {
       mergeEntryIntoLiveSet(byRid, entry, isCompacted);
-      byId.put(entry.vectorId, entry.deleted ? DELETED : entry.rid);
+      final int id = entry.vectorId;
+      if (id < 0 || id >= MAX_TRACKED_ID)
+        return;
+      if (id >= ownerBucket.length) {
+        final int grown = (int) Math.min(MAX_TRACKED_ID, Math.max(id + 1L, ownerBucket.length * 2L));
+        ownerBucket = Arrays.copyOf(ownerBucket, grown);
+        ownerPosition = Arrays.copyOf(ownerPosition, grown);
+      }
+      if (entry.deleted)
+        ownerBucket[id] = DELETED;
+      else {
+        ownerBucket[id] = entry.rid.getBucketId() + 1;
+        ownerPosition[id] = entry.rid.getPosition();
+      }
     }
 
-    /** The entries in {@link #byRid} whose vector id, after the replay, belongs to another record or to a tombstone. */
+    /**
+     * The entries in {@link #byRid} whose vector id, after the replay, belongs to another record or to a tombstone,
+     * in a stable order (bucket, position) so what a log or a finding shows is the same from one run to the next.
+     */
     List<VectorEntryForGraphBuild> losers() {
       List<VectorEntryForGraphBuild> losers = null;
       for (final VectorEntryForGraphBuild entry : byRid.values()) {
-        final RID owner = byId.get(entry.vectorId);
-        // Absent means the entry did not come from a page (recovered from memory or a document scan): not judged.
-        if (owner != null && !owner.equals(entry.rid)) {
+        final int id = entry.vectorId;
+        // Not judged: an id past the arrays, never seen on a page (recovered from memory or a document scan).
+        if (id < 0 || id >= ownerBucket.length || ownerBucket[id] == 0)
+          continue;
+        if (ownerBucket[id] == DELETED || ownerBucket[id] != entry.rid.getBucketId() + 1
+            || ownerPosition[id] != entry.rid.getPosition()) {
           if (losers == null)
             losers = new ArrayList<>();
           losers.add(entry);
         }
       }
-      return losers != null ? losers : Collections.emptyList();
+      if (losers == null)
+        return Collections.emptyList();
+      losers.sort(Comparator.comparingInt((VectorEntryForGraphBuild e) -> e.rid.getBucketId())
+          .thenComparingLong(e -> e.rid.getPosition()));
+      return losers;
+    }
+
+    /** The first few losers as {@code #bucket:position}, for a log line or a finding. */
+    static String describeFirst(final List<VectorEntryForGraphBuild> losers) {
+      final StringBuilder detail = new StringBuilder();
+      for (int i = 0; i < Math.min(5, losers.size()); i++)
+        detail.append(i > 0 ? ", " : "").append(losers.get(i).rid);
+      return detail.toString();
     }
   }
 
@@ -6344,28 +6382,27 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * The losers are logged by record; they are not served by the graph, exactly as they are not served after a load.
    * Repairing them needs a write, which a build (it also runs on followers) must not do - see CHECK DATABASE.
    * <p>
-   * A compaction that runs in the same pass rewrites the data file from the collapsed set, so it discards the
-   * losers' entries from the pages for good. That is intended: the records are still in their documents, a rebuild
-   * of the index brings them back, and what a compaction keeps must be what a load keeps.
+   * The caller does not compact the data file in a pass that left records out: the records are still in their
+   * documents and a rebuild of the index brings them back, but rewriting the pages from the collapsed set would erase
+   * the evidence of how they came to share an id.
    *
    * @param replay the replay of the index pages; the losers are removed from its RID-keyed set
+   *
+   * @return whether any record was left out
    */
-  private void collapseToWhatALoadKeeps(final LiveSetReplay replay) {
+  private boolean collapseToWhatALoadKeeps(final LiveSetReplay replay) {
     final List<VectorEntryForGraphBuild> losers = replay.losers();
     if (losers.isEmpty())
-      return;
+      return false;
 
-    final StringBuilder detail = new StringBuilder();
-    for (int i = 0; i < losers.size(); i++) {
-      final VectorEntryForGraphBuild loser = losers.get(i);
+    for (final VectorEntryForGraphBuild loser : losers)
       replay.byRid.remove(loser.rid);
-      if (i < 5)
-        detail.append(i > 0 ? ", " : "").append(loser.rid).append(" (id ").append(loser.vectorId).append(')');
-    }
     LogManager.instance().log(this, Level.WARNING,
         "Graph build for index %s left out %d records whose vector id a load of the same pages gives to another record or "
-            + "deletes: they are not in the graph until the index is rebuilt (CHECK DATABASE FIX or REBUILD INDEX). First: %s",
-        indexName, losers.size(), detail);
+            + "deletes: they are not in the graph until the index is rebuilt (CHECK DATABASE FIX or REBUILD INDEX), and the "
+            + "data file is not compacted in this pass. First: %s",
+        indexName, losers.size(), LiveSetReplay.describeFirst(losers));
+    return true;
   }
 
   /**
@@ -6374,29 +6411,35 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * {@link #collapseToWhatALoadKeeps}), and nothing short of rebuilding it gives those records a vector id of their
    * own, so CHECK DATABASE FIX rebuilds an index that reports it.
    * <p>
-   * Meant for a quiescent database like the rest of CHECK DATABASE: it reads the pages without blocking writers, so
-   * a write landing mid-read can raise a transient finding. It holds the live set of the index in memory for the
+   * Holds the read lock while it parses, so a write cannot land mid-read and raise a finding that is not there:
+   * under FIX a false finding is a full index rebuild. It also holds the live set of the index in memory for the
    * duration of the call, and every vector index pays that on every CHECK DATABASE.
    */
   @Override
   public List<String> checkIntegrity() {
-    final LiveSetReplay replay = new LiveSetReplay(16);
+    final long pages = getTotalPages() + (compactedSubIndex != null ? compactedSubIndex.getTotalPages() : 0);
+    // About one entry per (dimensions + 24) bytes of page: an estimate to avoid rehashing, never a bound.
+    final int expected = (int) Math.min(1 << 22, pages * getPageSize() / (metadata.dimensions + 24L));
+    final LiveSetReplay replay = new LiveSetReplay(Math.max(16, expected));
     final DatabaseInternal database = getDatabase();
-    if (compactedSubIndex != null)
-      LSMVectorIndexPageParser.parsePages(database, compactedSubIndex.getFileId(), compactedSubIndex.getTotalPages(),
-          getPageSize(), true, false, entry -> replay.accept(entry, true));
-    LSMVectorIndexPageParser.parsePages(database, getFileId(), getTotalPages(), getPageSize(), false, false,
-        entry -> replay.accept(entry, false));
+    lock.readLock().lock();
+    try {
+      if (compactedSubIndex != null)
+        LSMVectorIndexPageParser.parsePages(database, compactedSubIndex.getFileId(), compactedSubIndex.getTotalPages(),
+            getPageSize(), true, false, entry -> replay.accept(entry, true));
+      LSMVectorIndexPageParser.parsePages(database, getFileId(), getTotalPages(), getPageSize(), false, false,
+          entry -> replay.accept(entry, false));
+    } finally {
+      lock.readLock().unlock();
+    }
 
     final List<VectorEntryForGraphBuild> losers = replay.losers();
     if (losers.isEmpty())
       return Collections.emptyList();
 
-    final StringBuilder detail = new StringBuilder();
-    for (int i = 0; i < Math.min(5, losers.size()); i++)
-      detail.append(i > 0 ? ", " : "").append(losers.get(i).rid);
-    return List.of("%d records have a vector id that a load gives to another record or deletes, so a persisted graph is rejected on every load and these records are missing from search (first: %s). Rebuild the index (CHECK DATABASE FIX)"
-        .formatted(losers.size(), detail));
+    return List.of(("%d records have a vector id that a load gives to another record or deletes, so a persisted graph "
+        + "is rejected on every load and these records are missing from search (first: %s). "
+        + "Rebuild the index (CHECK DATABASE FIX)").formatted(losers.size(), LiveSetReplay.describeFirst(losers)));
   }
 
   /**
