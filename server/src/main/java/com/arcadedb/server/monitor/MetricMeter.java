@@ -24,11 +24,12 @@ package com.arcadedb.server.monitor;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class MetricMeter implements ServerMetrics.Meter {
+  private static final int SLOTS = 60;
+
   private       long   totalCounter             = 0L;
-  private final long[] lastMinuteCounters       = new long[60];
+  private final long[] lastMinuteCounters       = new long[SLOTS];
   private       int    lastMinuteCountersIndex  = 0;
   private       long   lastHitTimestampInSecs   = 0L;
-  // A NEVER-ASKED METER MEASURES SINCE ITS CREATION, NOT SINCE THE EPOCH (#8909)
   private       long   lastAskedTimestampInSecs;
 
   public MetricMeter() {
@@ -58,7 +59,7 @@ public class MetricMeter implements ServerMetrics.Meter {
 
   @Override
   public synchronized float getRequestsPerSecondInLastMinute() {
-    return getTotalRequestsInLastMinute() / 60F;
+    return getTotalRequestsInLastMinute() / (float) SLOTS;
   }
 
   @Override
@@ -70,14 +71,14 @@ public class MetricMeter implements ServerMetrics.Meter {
       return 0F;
 
     // THE RING HOLDS 60 SLOTS AND THE CURRENT ONE IS STILL FILLING: A LONGER GAP WOULD JUST READ THE SAME SLOTS AGAIN
-    final int slots = (int) Math.min(diffInSecs, lastMinuteCounters.length - 1);
+    final int slots = (int) Math.min(diffInSecs, SLOTS - 1);
 
     long total = 0L;
 
     int index = lastMinuteCountersIndex;
     for (int i = 0; i < slots; i++) {
       if (index == 0)
-        index = 59;
+        index = SLOTS - 1;
       else
         --index;
       total += lastMinuteCounters[index];
@@ -91,7 +92,7 @@ public class MetricMeter implements ServerMetrics.Meter {
   public synchronized long getTotalRequestsInLastMinute() {
     updateCountersFromLastHit();
     long total = 0L;
-    for (int i = 0; i < 60; i++)
+    for (int i = 0; i < SLOTS; i++)
       total += lastMinuteCounters[i];
     return total;
   }
@@ -118,8 +119,10 @@ public class MetricMeter implements ServerMetrics.Meter {
     final long diffInSecsFromLastHit = nowInSecs - lastHitTimestampInSecs;
 
     if (diffInSecsFromLastHit > 0) {
-      for (int i = 0; i < diffInSecsFromLastHit; i++) {
-        if (lastMinuteCountersIndex >= 59)
+      // AFTER A FULL TURN OF THE RING EVERY SLOT IS ALREADY ZEROED
+      final long steps = Math.min(diffInSecsFromLastHit, SLOTS);
+      for (long i = 0; i < steps; i++) {
+        if (lastMinuteCountersIndex >= SLOTS - 1)
           lastMinuteCountersIndex = 0;
         else
           ++lastMinuteCountersIndex;
