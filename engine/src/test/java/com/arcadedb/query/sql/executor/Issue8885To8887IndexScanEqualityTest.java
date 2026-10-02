@@ -67,14 +67,18 @@ class Issue8885To8887IndexScanEqualityTest extends TestHelper {
 
   @Test
   void instantAndZonedDateTimeMatchInScan() {
-    for (final String prop : new String[] { "DATETIME", "DATETIME_MICROS" }) {
+    for (final String prop : new String[] { "DATETIME", "DATETIME_MICROS", "DATETIME_NANOS", "DATETIME_SECOND" }) {
       final String type = "T" + prop;
       database.command("sql", "CREATE DOCUMENT TYPE " + type);
       database.command("sql", "CREATE PROPERTY " + type + ".a " + prop);
       database.command("sql", "CREATE PROPERTY " + type + ".b " + prop);
       database.command("sql", "CREATE INDEX ON " + type + " (a) NOTUNIQUE");
-      final LocalDateTime t = prop.equals("DATETIME") ? LocalDateTime.of(2026, 10, 1, 12, 34, 56, 789_000_000) :
-          LocalDateTime.of(2026, 10, 1, 12, 34, 56, 789_123_000);
+      final LocalDateTime t = switch (prop) {
+        case "DATETIME" -> LocalDateTime.of(2026, 10, 1, 12, 34, 56, 789_000_000);
+        case "DATETIME_MICROS" -> LocalDateTime.of(2026, 10, 1, 12, 34, 56, 789_123_000);
+        case "DATETIME_NANOS" -> LocalDateTime.of(2026, 10, 1, 12, 34, 56, 789_123_456);
+        default -> LocalDateTime.of(2026, 10, 1, 12, 34, 56);
+      };
       database.transaction(() -> database.newDocument(type).set("a", t, "b", t).save());
 
       final Instant i = t.toInstant(ZoneOffset.UTC);
@@ -91,6 +95,20 @@ class Issue8885To8887IndexScanEqualityTest extends TestHelper {
     }
     assertThat(count("SELECT FROM TDATETIME WHERE b = ?", new Date(Instant.parse("2026-10-01T12:34:56.789Z").toEpochMilli())))
         .isEqualTo(1);
+  }
+
+  @Test
+  void preEpochInstantMatches() {
+    database.command("sql", "CREATE DOCUMENT TYPE Old");
+    database.command("sql", "CREATE PROPERTY Old.a DATETIME");
+    database.command("sql", "CREATE PROPERTY Old.b DATETIME");
+    database.command("sql", "CREATE INDEX ON Old (a) NOTUNIQUE");
+    final LocalDateTime t = LocalDateTime.of(1960, 3, 4, 5, 6, 7, 89_000_000);
+    database.transaction(() -> database.newDocument("Old").set("a", t, "b", t).save());
+    final Instant i = t.toInstant(ZoneOffset.UTC);
+    assertThat(count("SELECT FROM Old WHERE a = ?", i)).isEqualTo(1);
+    assertThat(count("SELECT FROM Old WHERE b = ?", i)).isEqualTo(1);
+    assertThat(count("SELECT FROM Old WHERE b = ?", t.atZone(ZoneOffset.UTC))).isEqualTo(1);
   }
 
   @Test
