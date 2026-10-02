@@ -20,6 +20,7 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.IndexSearchInfo;
@@ -202,6 +203,26 @@ public class InCondition extends BooleanExpression {
     return Boolean.TRUE.equals(evaluateExpressionThreeValued(iLeft, iRight));
   }
 
+  private static Object firstItem(final Set<?> set) {
+    for (final Object o : set)
+      if (o != null)
+        return o;
+    return null;
+  }
+
+  // QueryOperatorEquals converts its 2nd argument to the class of the 1st, so try both directions
+  private static boolean equalsEitherWay(final Object left, final Object item) {
+    return QueryOperatorEquals.equals(left, item) || (mayMatchByConversion(left, item) && QueryOperatorEquals.equals(item, left));
+  }
+
+  // False where QueryOperatorEquals is symmetric (same class, two numbers, records, embedded documents), so the reverse call adds nothing
+  private static boolean mayMatchByConversion(final Object left, final Object item) {
+    if (item == null || left.getClass() == item.getClass() || (left instanceof Number && item instanceof Number))
+      return false;
+    return !(left instanceof Result || item instanceof Result || left instanceof Identifiable || item instanceof Identifiable
+        || left instanceof EmbeddedDocument || item instanceof EmbeddedDocument);
+  }
+
   /**
    * SQL three-valued membership test ({@code iLeft IN iRight}).
    *
@@ -221,6 +242,12 @@ public class InCondition extends BooleanExpression {
           return Boolean.TRUE;
         if (set.isEmpty())
           return Boolean.FALSE;
+        // The hash probe is exact: a set whose items convert to the operand's class only needs a linear pass. A set is
+        // taken as homogeneous (judged by its first item), so a big same-class set stays one hash probe
+        if (iLeft != null && mayMatchByConversion(iLeft, firstItem(set)))
+          for (final Object o : set)
+            if (o != null && equalsEitherWay(iLeft, o))
+              return Boolean.TRUE;
         // No match: UNKNOWN if the search value is null or the set holds a null element, else FALSE.
         return iLeft == null || set.contains(null) ? null : Boolean.FALSE;
       }
@@ -233,7 +260,7 @@ public class InCondition extends BooleanExpression {
           sawNull = true;
           continue;
         }
-        if (QueryOperatorEquals.equals(iLeft, o))
+        if (equalsEitherWay(iLeft, o))
           return Boolean.TRUE;
         if (MultiValue.isMultiValue(iLeft) && MultiValue.getSize(iLeft) == 1) {
 
@@ -257,7 +284,7 @@ public class InCondition extends BooleanExpression {
           sawNull = true;
           continue;
         }
-        if (QueryOperatorEquals.equals(iLeft, o))
+        if (equalsEitherWay(iLeft, o))
           return Boolean.TRUE;
       }
       if (array.length == 0)
