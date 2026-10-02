@@ -255,6 +255,33 @@ class Issue8872DecimalLiteralDigitsTest extends TestHelper {
     }
   }
 
+  @Test
+  void nonFiniteDoubleTimesLongLiteralDoesNotThrow() {
+    database.command("sql", "CREATE DOCUMENT TYPE F");
+    database.command("sql", "CREATE PROPERTY F.v DOUBLE");
+    database.transaction(() -> database.newDocument("F").set("v", Double.POSITIVE_INFINITY).save());
+    try (final ResultSet rs = database.query("sql",
+        "SELECT v * 3.14159265358979323846 AS a, 3.14159265358979323846 * v AS b, 1e999999999 * 1.2345678901234567890 AS c FROM F")) {
+      final Result r = rs.next();
+      assertThat(r.<Object>getProperty("a")).isEqualTo(Double.POSITIVE_INFINITY);
+      assertThat(r.<Object>getProperty("b")).isEqualTo(Double.POSITIVE_INFINITY);
+      assertThat(r.<Object>getProperty("c")).isEqualTo(Double.POSITIVE_INFINITY);
+    }
+  }
+
+  @Test
+  void reversedComparisonOrderByAndLimitWithLongLiteral() {
+    database.command("sql", "CREATE DOCUMENT TYPE O");
+    database.command("sql", "CREATE PROPERTY O.k STRING");
+    database.command("sql", "CREATE PROPERTY O.idx DOUBLE");
+    database.command("sql", "CREATE INDEX ON O (idx) NOTUNIQUE");
+    database.transaction(() -> database.newDocument("O").set("k", "row", "idx", 1.5d).save());
+    assertThat(keys("SELECT k FROM O WHERE 1.5000000000000000000001 > idx")).containsExactly("row");
+    assertThat(keys("SELECT k FROM O WHERE 1.5000000000000000000001 <= idx")).isEmpty();
+    assertThat(keys("SELECT k FROM O WHERE idx < 1.5000000000000000000001 ORDER BY idx")).containsExactly("row");
+    assertThat(keys("SELECT k FROM O LIMIT 1.5000000000000000000001")).hasSize(1);
+  }
+
   private List<String> keys(final String sql) {
     final List<String> ks = new ArrayList<>();
     try (final ResultSet rs = database.query("sql", sql)) {
