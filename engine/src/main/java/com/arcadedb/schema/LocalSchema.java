@@ -1715,6 +1715,9 @@ public class LocalSchema implements Schema {
    * is {@code REBUILD INDEX <name>} on the copy's indexes, or simply dropping the copy and running {@code copyType()}
    * again; both are cheap next to making the operation atomic, which would mean holding every copied record in one
    * transaction (issue #5742).
+   * <p>
+   * Under HA every record batch commits through the replicated database, so each one is a replication round trip:
+   * a larger {@code transactionBatchSize} makes fewer of them.
    *
    * @param typeName             type to copy from, left untouched
    * @param newTypeName          type to create, which must not exist yet
