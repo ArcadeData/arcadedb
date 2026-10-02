@@ -54,7 +54,14 @@ public final class IndexKeyEquality {
    * null operand, checks the lengths, and compares each element the way {@link #sameValue} does.
    */
   public static boolean sameTuple(final Object[] a, final Object[] b) {
-    return Arrays.deepEquals(a, b);
+    if (a == b)
+      return true;
+    if (a == null || b == null || a.length != b.length)
+      return false;
+    for (int i = 0; i < a.length; i++)
+      if (!sameValue(a[i], b[i]))
+        return false;
+    return true;
   }
 
   /**
@@ -63,6 +70,11 @@ public final class IndexKeyEquality {
    * array ({@code byte[]}, {@code float[]}, ...) and {@code Arrays.deepEquals()} for an {@code Object[]}.
    */
   public static boolean sameValue(final Object a, final Object b) {
+    // -0.0 and 0.0 are one key to the index comparator (issue #8920), and Double.equals() reads them as two
+    if (a instanceof Double da && b instanceof Double db)
+      return da.equals(db) || (da == 0.0d && db == 0.0d);
+    if (a instanceof Float fa && b instanceof Float fb)
+      return fa.equals(fb) || (fa == 0.0f && fb == 0.0f);
     return Objects.deepEquals(a, b);
   }
 
@@ -72,6 +84,24 @@ public final class IndexKeyEquality {
    * what {@link Arrays#deepHashCode} answers for it.
    */
   public static int hashTuple(final Object[] tuple) {
-    return Arrays.deepHashCode(tuple);
+    if (tuple == null)
+      return 0;
+    int result = 1;
+    for (final Object element : tuple)
+      result = 31 * result + hashValue(element);
+    return result;
+  }
+
+  /** Same as the element contribution of {@link Arrays#deepHashCode}, except that -0.0 hashes as 0.0 (issue #8920). */
+  private static int hashValue(final Object element) {
+    if (element == null)
+      return 0;
+    if (element instanceof Double d)
+      return Double.hashCode(d + 0.0d);
+    if (element instanceof Float f)
+      return Float.hashCode(f + 0.0f);
+    if (element.getClass().isArray())
+      return Arrays.deepHashCode(new Object[] { element }) - 31;
+    return element.hashCode();
   }
 }

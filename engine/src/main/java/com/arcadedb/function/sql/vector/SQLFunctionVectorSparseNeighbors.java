@@ -172,7 +172,7 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
     if (bracketStart > 0 && indexSpec.endsWith("]")) {
       specifiedTypeName = indexSpec.substring(0, bracketStart);
       final DocumentType specifiedType = context.getDatabase().getSchema().getType(specifiedTypeName);
-      for (final Bucket bucket : specifiedType.getBuckets(false))
+      for (final Bucket bucket : specifiedType.getBuckets(true))
         allowedBucketIds.add(bucket.getFileId());
     }
 

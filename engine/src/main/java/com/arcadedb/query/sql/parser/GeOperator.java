@@ -39,6 +39,9 @@ public class GeOperator extends SimpleNode implements BinaryCompareOperator {
 
     if (!left.getClass().equals(right.getClass())) {
       if (left instanceof Number number && right instanceof Number number1) {
+        // a FLOAT is equal to the double that narrows to it (issue #8882), so it is neither below nor above it (issue #8919)
+        if (Type.floatNarrowsToOperand(number, number1))
+          return true;
         final Number[] couple = Type.castComparableNumber(number, number1);
         left = couple[0];
         right = couple[1];

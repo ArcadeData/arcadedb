@@ -439,27 +439,19 @@ class Issue7609DecimalLiteralPrecisionTest extends TestHelper {
   }
 
   /**
-   * {@code -0.0} is not {@code 0.0} to {@link Double#equals}, which is what the equality operator ends up
-   * calling, so a bound {@code Float} carrying negative zero has to keep its sign or the parameter matches
-   * nothing. The sign used to be read from {@code doubleValue() >= 0}, and that is true for negative zero.
+   * {@code -0.0} is {@code 0.0} (IEEE 754, issue #8920), so a bound {@code Float} carrying either zero matches both
+   * records, whatever its sign: the sign of a bound zero must not be read as a different value.
    */
   @Test
-  void aBoundNegativeZeroKeepsItsSign() {
+  void aBoundNegativeZeroMatchesBothZeros() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE Zero");
       database.newDocument("Zero").set("v", -0.0d).set("sign", "negative").save();
       database.newDocument("Zero").set("v", 0.0d).set("sign", "positive").save();
     });
 
-    // the count alone would pass even if the sign were dropped, by matching the OTHER record instead, so the
-    // assertion has to name which of the two came back
-    assertThat(matchedSign(-0.0f)).as("bound -0.0f").isEqualTo("negative");
-    assertThat(matchedSign(-0.0d)).as("bound -0.0d").isEqualTo("negative");
-    assertThat(matchedSign(0.0f)).as("bound 0.0f").isEqualTo("positive");
-    assertThat(matchedSign(0.0d)).as("bound 0.0d").isEqualTo("positive");
-
-    assertThat(count("SELECT FROM Zero WHERE v = :z", Map.of("z", -0.0f))).as("bound -0.0f matches one").isEqualTo(1);
-    assertThat(count("SELECT FROM Zero WHERE v = :z", Map.of("z", 0.0f))).as("bound 0.0f matches one").isEqualTo(1);
+    assertThat(count("SELECT FROM Zero WHERE v = :z", Map.of("z", -0.0f))).as("bound -0.0f matches both").isEqualTo(2);
+    assertThat(count("SELECT FROM Zero WHERE v = :z", Map.of("z", 0.0f))).as("bound 0.0f matches both").isEqualTo(2);
 
     // a non-finite Float parameter binds without the suffix: "NaNF" would be a spelling the grammar cannot lex,
     // and NaN carries the same value as a Double. It must still bind rather than throw
@@ -518,19 +510,6 @@ class Issue7609DecimalLiteralPrecisionTest extends TestHelper {
     try (final ResultSet rs = database.query("sql", sql)) {
       final Object value = rs.next().getProperty("s");
       return value == null ? 0 : ((Number) value).doubleValue();
-    }
-  }
-
-  /**
-   * Binds {@code zero} to the signed-zero query and reports which of the two fixture records answered.
-   *
-   * @param zero the signed zero to bind
-   *
-   * @return the {@code sign} discriminator of the matched record
-   */
-  private String matchedSign(final Number zero) {
-    try (final ResultSet rs = database.query("sql", "SELECT FROM Zero WHERE v = :z", Map.of("z", zero))) {
-      return rs.hasNext() ? rs.next().getProperty("sign") : null;
     }
   }
 
