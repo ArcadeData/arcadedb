@@ -21,10 +21,13 @@ package com.arcadedb.query;
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.index.IndexKeyEquality;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.serializer.BinaryComparator;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
@@ -120,11 +123,11 @@ class Issue8920SignedZeroTest extends TestHelper {
     assertThat(IndexKeyEquality.hashTuple(new Object[] { 0.0f })).isEqualTo(IndexKeyEquality.hashTuple(new Object[] { -0.0f }));
     assertThat(IndexKeyEquality.hashTuple(new Object[] { new byte[] { 1, 2 } }))
         .isEqualTo(IndexKeyEquality.hashTuple(new Object[] { new byte[] { 1, 2 } }));
-    assertThat(IndexKeyEquality.hashTuple(new Object[] { new byte[] { 1, 2 } })).isEqualTo(java.util.Arrays.deepHashCode(new Object[] { new byte[] { 1, 2 } }));
+    assertThat(IndexKeyEquality.hashTuple(new Object[] { new byte[] { 1, 2 } })).isEqualTo(Arrays.deepHashCode(new Object[] { new byte[] { 1, 2 } }));
   }
 
   @Test
-  void zerosStayEqualAfterTheIndexIsCompacted() {
+  void zerosStayEqualAfterTheIndexIsCompacted() throws Exception {
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX TYPE C");
       database.command("sql", "CREATE PROPERTY C.id INTEGER");
@@ -133,14 +136,21 @@ class Issue8920SignedZeroTest extends TestHelper {
       database.command("sql", "INSERT INTO C SET id = 1, v = 0.0");
       database.command("sql", "INSERT INTO C SET id = 2, v = ?", -0.0d);
     });
-    for (final var index : database.getSchema().getType("C").getAllIndexes(false))
-      try {
-        ((com.arcadedb.index.IndexInternal) index).compact();
-      } catch (final Exception e) {
-        throw new RuntimeException(e);
-      }
+    for (final TypeIndex index : database.getSchema().getType("C").getAllIndexes(false))
+      index.compact();
     assertThat(sql("SELECT id FROM C WHERE v = 0.0")).containsExactly(1, 2);
     assertThat(sql("SELECT id FROM C WHERE v = -0.0")).containsExactly(1, 2);
+  }
+
+  @Test
+  void legacyZeroSpellingOfAKeyIsDerivedForTheBloomFilterProbe() {
+    final Object[] negated = BinaryComparator.withNegativeZeros(new Object[] { 0.0d, "a", 0.0f, 1.5d });
+    assertThat(negated).hasSize(4);
+    assertThat(Double.doubleToRawLongBits((Double) negated[0])).isEqualTo(Double.doubleToRawLongBits(-0.0d));
+    assertThat(Float.floatToRawIntBits((Float) negated[2])).isEqualTo(Float.floatToRawIntBits(-0.0f));
+    assertThat(negated[1]).isEqualTo("a");
+    assertThat(negated[3]).isEqualTo(1.5d);
+    assertThat(BinaryComparator.withNegativeZeros(new Object[] { 1.5d, "a" })).isNull();
   }
 
   private List<Integer> sql(final String statement) {

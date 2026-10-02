@@ -33,8 +33,8 @@ import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.utility.RidHashSet;
 
 import java.io.IOException;

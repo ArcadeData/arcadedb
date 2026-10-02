@@ -100,8 +100,7 @@ public final class IndexKeyEquality {
       return Double.hashCode(d + 0.0d);
     if (element instanceof Float f)
       return Float.hashCode(f + 0.0f);
-    // an array element (BINARY, a vector) hashes by content as it is stored: a key component is never an array of doubles holding a
-    // zero that must equal its negative, so no zero folding is needed inside one. The content hash of an array element, as Arrays.deepHashCode computes it, without allocating a wrapper
+    // an array element (BINARY, a vector) hashes by content as stored, as Arrays.deepHashCode does, without a wrapper
     if (element instanceof byte[] a)
       return Arrays.hashCode(a);
     if (element instanceof float[] a)

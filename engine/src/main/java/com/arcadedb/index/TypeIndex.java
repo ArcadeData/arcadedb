@@ -29,6 +29,7 @@ import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.index.fulltext.FullTextSearch;
 import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.IndexMetadata;
@@ -40,6 +41,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.logging.Level;
 
 /**
  * It represent an index on a type. It's backed by one or multiple underlying indexes, one per bucket. By using multiple buckets, the read/write operation can
@@ -732,6 +734,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
       final IndexInternal first = firstOrNull();
       return first != null && first.getType() != null;
     } catch (final IndexException e) {
+      LogManager.instance().log(this, Level.FINE, "Index '%s' is not ready for queries: %s", null, getName(), e.getMessage());
       return false;
     }
   }
