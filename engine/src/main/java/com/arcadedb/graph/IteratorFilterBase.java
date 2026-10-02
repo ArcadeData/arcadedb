@@ -21,10 +21,7 @@ package com.arcadedb.graph;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.schema.EdgeType;
 
-import java.util.HashSet;
-import java.util.Set;
 import java.util.logging.Level;
 
 public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
@@ -32,36 +29,33 @@ public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
   protected       RID          nextEdge;
   protected       RID          nextVertex;
   protected       RID          next;
-  protected final Set<Integer> validBuckets;
-  protected       int          fullStackTracePrinted = 0;
+  // NULL WHEN NONE OF THE REQUESTED TYPES IS AN EDGE TYPE. A PRIMITIVE MASK INSTEAD OF A Set<Integer>, SO REJECTING AN
+  // ENTRY OF ANOTHER TYPE COSTS NEITHER AN RID DECODE NOR A BOXED LOOKUP (#8417)
+  protected final EdgeBucketMask validBuckets;
+  protected       int            fullStackTracePrinted = 0;
 
   protected IteratorFilterBase(final DatabaseInternal database, final EdgeSegment current, final String[] edgeTypes) {
     super(database, current);
-
-    validBuckets = new HashSet<>();
-    for (final String e : edgeTypes) {
-      if (!database.getSchema().existsType(e))
-        continue;
-
-      // A vertex or document type sharing the name of the requested edge type cannot match any edge:
-      // skip it like a non-existent type instead of failing with a ClassCastException (issue #5194)
-      if (!(database.getSchema().getType(e) instanceof EdgeType type))
-        continue;
-
-      validBuckets.addAll(type.getBucketIds(true));
-    }
+    validBuckets = EdgeBucketMask.of(database, edgeTypes);
   }
 
   protected boolean hasNext(final boolean edge) {
     if (next != null)
       return true;
 
-    if (currentContainer == null || validBuckets.isEmpty())
+    if (currentContainer == null || validBuckets == null)
       return false;
 
     while (true) {
-      if (currentPosition.get() < currentContainer.getUsed()) {
-        lastElementPosition = currentPosition.get();
+      final int used = currentContainer.getUsed();
+      int position = currentPosition.get();
+      if (position < used)
+        // SKIP THE ENTRIES OF THE OTHER EDGE TYPES ON THEIR RAW BUCKET NUMBER, WITHOUT DECODING THEM (#8417)
+        position = currentContainer.nextEntryInBuckets(position, validBuckets);
+
+      if (position < used) {
+        lastElementPosition = position;
+        currentPosition.set(position);
 
         nextEdge = currentContainer.getRID(currentPosition);
         nextVertex = currentContainer.getRID(currentPosition);
@@ -69,8 +63,8 @@ public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
         // THE NEIGHBOUR CHECK IS SHARED WITH THE VERTEX ITERATOR BELOW (edge == false). NO CALLER ARMS THE FILTER
         // ON A VERTEX ITERATOR TODAY, SO IT IS INERT THERE; IT IS LEFT SHARED BECAUSE THE ENTRY IT FILTERS ON IS
         // THE SAME PAIR EITHER WAY, SO A FUTURE "VERTICES CONNECTED TO X" WOULD BEHAVE IDENTICALLY
-        if (!validBuckets.contains(nextEdge.getBucketId()) || !matchesNeighborFilter(nextVertex)) {
-          // FILTER IT OUT. BOTH CHECKS RUN ON THE POINTERS READ FROM THE SEGMENT, BEFORE ANY RECORD IS TOUCHED
+        if (!matchesNeighborFilter(nextVertex)) {
+          // FILTER IT OUT. THE CHECK RUNS ON THE POINTERS READ FROM THE SEGMENT, BEFORE ANY RECORD IS TOUCHED
           nextEdge = null;
           nextVertex = null;
           next = null;
