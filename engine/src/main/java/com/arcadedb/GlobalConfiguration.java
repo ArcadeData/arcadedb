@@ -1941,8 +1941,12 @@ public enum GlobalConfiguration {
   SERVER_API_TOKEN_TRUSTED_PROXIES("arcadedb.server.apiTokenTrustedProxies", SCOPE.SERVER,
       """
       Comma-separated list of literal IP addresses or CIDR ranges (IPv4 and IPv6) of the reverse proxies allowed to \
-      vouch for the transport of `POST /api/v1/server/api-tokens` through the X-Forwarded-Proto header. Empty by \
-      default, which trusts no proxy and leaves the header unread. \
+      vouch for the transport of an API token mint through the X-Forwarded-Proto header: `POST \
+      /api/v1/server/api-tokens` over HTTP, and the gRPC `CreateApiToken` RPC, where the proxy reports it as the \
+      `x-forwarded-proto` metadata key (Envoy adds it on its own; nginx with `grpc_set_header X-Forwarded-Proto \
+      $scheme`). List only an L7 proxy that sets or overwrites the header: an L4 balancer (nginx `stream`, HAProxy \
+      `mode tcp`) passes the client's own header through untouched, so listing one lets any client vouch for itself. \
+      Empty by default, which trusts no proxy and leaves the header unread. \
       When the request's direct peer matches an entry AND the header reports https for every hop, the mint is treated \
       as protected even though the proxy-to-server leg is cleartext - that leg is on the network the operator owns, \
       and by listing the proxy they state where their trust boundary is. A peer that is not on the list can send the \
@@ -1950,7 +1954,7 @@ public enum GlobalConfiguration {
       the caller who would forge it. \
       Entries must be literal addresses - a hostname is rejected rather than resolved, since a DNS answer is not a \
       trust decision. An unparseable list is treated as empty, so a typo denies rather than opening the gate \
-      (issue #7804)""",
+      (issues #7804, #7821)""",
       String.class, ""),
 
   SERVER_SECURITY_IMPORT_BLOCK_LOCAL_NETWORKS("arcadedb.server.security.importBlockLocalNetworks", SCOPE.SERVER,
