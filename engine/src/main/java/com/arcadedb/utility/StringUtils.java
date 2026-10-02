@@ -27,6 +27,23 @@ import java.util.Locale;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class StringUtils {
+
+  /**
+   * Strict boolean parse for configuration text: {@code Boolean.parseBoolean()} reads "yes", "1", "on" and every typo as
+   * false without a word, which for a switch whose safe side is true (TLS) silently turns the protection off. Only
+   * {@code true} and {@code false} are accepted, trimmed and case-insensitively (issue #8935).
+   *
+   * @throws IllegalArgumentException when the text is neither
+   */
+  public static boolean parseStrictBoolean(final String text) {
+    final String trimmed = text.trim();
+    if ("true".equalsIgnoreCase(trimmed))
+      return true;
+    if ("false".equalsIgnoreCase(trimmed))
+      return false;
+    throw new IllegalArgumentException("'" + text + "' is neither true nor false");
+  }
+
   /**
    * Widest field a {@code %<width>s}-style conversion may ask for in a user-supplied format. Deliberately generous -
    * a padded report column is nowhere near it - and the point is only that {@code format('%99999999s', 'x')} must not

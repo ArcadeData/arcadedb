@@ -26,6 +26,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -77,5 +78,39 @@ class GrpcServerPluginTest {
     assertThat(status.xdsServerRunning).isFalse();
     assertThat(status.standardPort).isEqualTo(50051);
     assertThat(status.xdsPort).isEqualTo(-1);
+  }
+
+  /** Issue #8935: "yes" must not silently start a plaintext endpoint, only true/false are booleans. */
+  @Test
+  void tlsEnabledWithANonBooleanValueRefusesToStart() {
+    final GrpcServerPlugin plugin = new GrpcServerPlugin();
+    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
+    final ContextConfiguration config = new ContextConfiguration();
+    config.setValue("arcadedb.grpc.tls.enabled", "yes");
+
+    when(mockServer.getRootPath()).thenReturn(tempDir.toString());
+    when(mockServer.getConfiguration()).thenReturn(config);
+
+    plugin.configure(mockServer, config);
+    assertThatThrownBy(plugin::startService)
+        .isInstanceOf(RuntimeException.class)
+        .hasMessageContaining("arcadedb.grpc.tls.enabled")
+        .hasMessageContaining("yes");
+    assertThat(plugin.getStatus().standardServerRunning).isFalse();
+  }
+
+  @Test
+  void enabledAcceptsTrimmedCaseInsensitiveBooleans() {
+    final GrpcServerPlugin plugin = new GrpcServerPlugin();
+    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
+    final ContextConfiguration config = new ContextConfiguration();
+    config.setValue("arcadedb.grpc.enabled", " FALSE ");
+
+    when(mockServer.getRootPath()).thenReturn(tempDir.toString());
+    when(mockServer.getConfiguration()).thenReturn(config);
+
+    plugin.configure(mockServer, config);
+    plugin.startService();
+    assertThat(plugin.getStatus().standardServerRunning).isFalse();
   }
 }

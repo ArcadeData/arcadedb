@@ -18,11 +18,13 @@
  */
 package com.arcadedb.function.convert;
 
+import com.arcadedb.function.DistinctNumericKey;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.LinkedHashSet;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 /**
@@ -60,8 +62,13 @@ public class ConvertToSet extends AbstractConvertFunction {
       throw new IllegalArgumentException("convert.toSet() requires a list or collection");
     }
 
-    // Use LinkedHashSet to preserve order and remove duplicates
-    final Set<Object> set = new LinkedHashSet<>((Collection<?>) args[0]);
-    return new ArrayList<>(set);
+    // Values equal under Cypher's '=' (1 and 1.0) are one member, the first one met is kept (same as coll.toSet, issue #8933)
+    final Collection<?> source = (Collection<?>) args[0];
+    final Set<Object> seen = new HashSet<>();
+    final List<Object> result = new ArrayList<>(source.size());
+    for (final Object element : source)
+      if (seen.add(DistinctNumericKey.canonicalize(element)))
+        result.add(element);
+    return result;
   }
 }
