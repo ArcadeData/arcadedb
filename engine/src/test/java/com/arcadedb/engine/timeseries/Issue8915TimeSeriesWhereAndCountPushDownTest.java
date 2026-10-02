@@ -25,6 +25,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -217,6 +218,24 @@ class Issue8915TimeSeriesWhereAndCountPushDownTest extends TestHelper {
       for (final String w : new String[] { "ts >= 2000 AND (host = 'a' OR host = 'b')", "ts >= 2000 AND (host = 'a' OR host = 'c')",
           "(ts >= 1000 AND host = 'a') OR (ts >= 2000 AND host = 'b')", "ts > 3000 AND ts < 2000 AND (host = 'a' OR host = 'b')" })
         assertThat(groupedCount("T", w)).as(w).isEqualTo(groupedCount("D", w));
+    });
+  }
+
+  @Test
+  void parametersInTheTimePredicatesOfEachBlockAreComparedByValue() {
+    forEachState(() -> {
+      final String sql = "SELECT ts.timeBucket('1h', ts) AS b, count(*) AS c FROM %s WHERE (ts >= ? AND host = ?) OR (ts >= ? AND host = ?) GROUP BY b";
+      for (final Object[] params : new Object[][] { { 1000L, "a", 3000L, "b" }, { 2000L, "a", 2000L, "b" } })
+        try (final ResultSet rs = database.query("sql", String.format(sql, "T"), params);
+            final ResultSet ref = database.query("sql", String.format(sql, "D"), params)) {
+          assertThat(((Number) rs.next().getProperty("c")).longValue()).isEqualTo(((Number) ref.next().getProperty("c")).longValue());
+        }
+      final String named = "SELECT ts.timeBucket('1h', ts) AS b, count(*) AS c FROM %s WHERE (ts >= :x AND host = 'a') OR (ts >= :y AND host = 'b') GROUP BY b";
+      final Map<String, Object> m = Map.of("x", 1000L, "y", 3000L);
+      try (final ResultSet rs = database.query("sql", String.format(named, "T"), m);
+          final ResultSet ref = database.query("sql", String.format(named, "D"), m)) {
+        assertThat(((Number) rs.next().getProperty("c")).longValue()).isEqualTo(((Number) ref.next().getProperty("c")).longValue());
+      }
     });
   }
 
