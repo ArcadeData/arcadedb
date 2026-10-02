@@ -36,6 +36,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * Regression test for #8944: a ClosedChannelException surfacing from inside {@code executeInReadLock} must not make the
  * database close itself while the calling thread holds the read lock (the write lock close() waits for is never granted
  * to a reader), and a channel closed by an interrupt must not close it from {@code executeInWriteLock} either.
+ * <p>
+ * The lock contract is checked with a synthetic exception: the concurrent-cancel scenario of the issue is timing
+ * dependent, and its retry half is covered deterministically by {@code PaginatedComponentFileReadRetryTest}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

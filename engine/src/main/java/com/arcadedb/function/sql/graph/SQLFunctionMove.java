@@ -41,6 +41,7 @@ import java.util.ArrayList;
  * Created by luigidellaquila on 03/01/17.
  */
 public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
+  private static final String[] NO_LABELS = new String[0];
 
   protected SQLFunctionMove(final String iName) {
     super(iName);
@@ -75,7 +76,7 @@ public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
         // CALLED ON ITS OWN MUST NOT ANSWER, OR in()/both() WOULD RETURN DIFFERENT ROWS WITH AND WITHOUT A VIEW AND
         // DISAGREE WITH inE() AND THE VERTEX API (ISSUE #8939). A PATTERN WALK ANSWERS IT, VIEW OR NOT (ISSUE #8625)
         final boolean storedSideOnly = iDirection != Vertex.DIRECTION.OUT && !IncomingEdgeLookup.isWalkingPattern()
-            && IncomingEdgeLookup.isAnyUnidirectional(database.getSchema(), iLabels != null ? iLabels : new String[0]);
+            && IncomingEdgeLookup.isAnyUnidirectional(database.getSchema(), iLabels != null ? iLabels : NO_LABELS);
         final GraphTraversalProvider provider =
             storedSideOnly ? null : GraphTraversalProviderRegistry.findProvider(database, iLabels);
         if (provider != null) {
