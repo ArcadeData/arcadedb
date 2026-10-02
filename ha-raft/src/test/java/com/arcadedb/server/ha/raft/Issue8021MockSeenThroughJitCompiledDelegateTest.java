@@ -20,6 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.LocalDatabase;
+import com.arcadedb.utility.SubclassMocks;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 

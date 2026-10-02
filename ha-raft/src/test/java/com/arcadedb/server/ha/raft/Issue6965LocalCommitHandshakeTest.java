@@ -25,6 +25,7 @@ import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.utility.SubclassMocks;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
