@@ -82,7 +82,30 @@ class Issue8926PromQLConformanceTest extends TestHelper {
     assertThat(ratio.getFirst().value()).isEqualTo(0.25);
   }
 
+  @Test
+  void orAcrossDifferentlyNamedMetricsMatchesOnLabels() throws Exception {
+    createSeries("m8926_o1", new String[] { "api" }, new double[] { 3.0 });
+    createSeries("m8926_o2", new String[] { "api", "web" }, new double[] { 12.0, 7.0 });
+
+    // api is matched (left wins), web is the unmatched right-hand sample
+    final List<VectorSample> samples = vectorOf("m8926_o1 or m8926_o2");
+    assertThat(samples).hasSize(2);
+    assertThat(samples.getFirst().value()).isEqualTo(3.0);
+    assertThat(samples.get(1).labels()).containsEntry("host", "web");
+  }
+
   // ---- #8927
+
+  @Test
+  void topkAndBottomkHonourGroupingAndAnInvalidKIsRefusedOnAnEmptyVector() throws Exception {
+    createSeries("m8927_g", new String[] { "a", "b" }, new double[] { 1.0, 2.0 });
+
+    final List<VectorSample> byHost = vectorOf("topk by (host) (1, m8927_g)");
+    assertThat(byHost).hasSize(2);
+    assertThat(vectorOf("bottomk without (host) (1, m8927_g)")).hasSize(1);
+    assertThat(vectorOf("bottomk without (host) (1, m8927_g)").getFirst().value()).isEqualTo(1.0);
+    assertThatThrownBy(() -> vectorOf("topk(0/0, m8927_g{host=\"nobody\"})")).isInstanceOf(IllegalArgumentException.class);
+  }
 
   @Test
   void topkAndBottomkRankAnAbsentSampleBelowEveryRealOne() throws Exception {
@@ -130,6 +153,9 @@ class Issue8926PromQLConformanceTest extends TestHelper {
     assertThat(PromQLFunctions.round(9.3e18, 1)).isEqualTo(9.3e18);
     assertThat(PromQLFunctions.round(12, 5)).isEqualTo(10.0);
     assertThat(PromQLFunctions.round(7.26, 0.1)).isEqualTo(7.3);
+    assertThat(PromQLFunctions.round(7.3, 0.5)).isEqualTo(7.5);
+    assertThat(PromQLFunctions.round(7.2, 0.5)).isEqualTo(7.0);
+    assertThat(PromQLFunctions.round(12, -5)).isEqualTo(10.0);
   }
 
   @Test
@@ -146,7 +172,7 @@ class Issue8926PromQLConformanceTest extends TestHelper {
     assertThat(scalarOf("2^-2")).isEqualTo(0.25);
     assertThat(scalarOf("-2^-2")).isEqualTo(-0.25);
     assertThat(scalarOf("2^3^2")).isEqualTo(512.0);
-    assertThat(scalarOf("--2^2")).isEqualTo(4.0 * 1.0 * -1.0 * -1.0);
+    assertThat(scalarOf("--2^2")).isEqualTo(4.0);
     assertThat(scalarOf("3*-2^2")).isEqualTo(-12.0);
     assertThat(scalarOf("(-2)^2")).isEqualTo(4.0);
     assertThat(scalarOf("1 - -2")).isEqualTo(3.0);

@@ -379,6 +379,9 @@ public class PromQLEvaluator {
   private PromQLResult evaluateAggregation(final AggregationExpr agg, final long evalTimeMs, final long queryStartMs,
       final long queryEndMs, final long stepMs, final int depth) {
     final PromQLResult inner = evaluate(agg.expr(), evalTimeMs, queryStartMs, queryEndMs, stepMs, depth);
+    // k does not depend on the group, and an invalid one is refused even when the vector is empty, like Prometheus
+    final boolean ranking = agg.op() == PromQLExpr.AggOp.TOPK || agg.op() == PromQLExpr.AggOp.BOTTOMK;
+    final int rankLimit = ranking ? rankingLimit(agg, evalTimeMs, queryStartMs, queryEndMs, stepMs, depth) : 0;
     if (!(inner instanceof InstantVector iv))
       return new InstantVector(List.of());
 
@@ -424,7 +427,7 @@ public class PromQLEvaluator {
         case TOPK, BOTTOMK -> {
           // Prometheus ranks the absent marker below every real sample for BOTH (issue #8927): it only fills a slot
           // when there are not enough real samples. Double.compare would order NaN above +Infinity.
-          final int k = rankingLimit(agg, evalTimeMs, queryStartMs, queryEndMs, stepMs, depth);
+          final int k = rankLimit;
           final boolean descending = agg.op() == PromQLExpr.AggOp.TOPK;
           group.sort((a, b) -> {
             final boolean aAbsent = TimeSeriesNaN.isAbsent(a.value());
@@ -439,7 +442,7 @@ public class PromQLEvaluator {
         }
       };
 
-      if (agg.op() != PromQLExpr.AggOp.TOPK && agg.op() != PromQLExpr.AggOp.BOTTOMK)
+      if (!ranking)
         result.add(new VectorSample(groupLabels, value, ts));
     }
 
@@ -815,9 +818,16 @@ public class PromQLEvaluator {
   }
 
   private String labelKey(final Map<String, String> labels) {
+    return labelKey(labels, null);
+  }
+
+  /** Same as {@link #labelKey(Map)} but skipping the label named {@code excluded} without copying the map. */
+  private String labelKey(final Map<String, String> labels, final String excluded) {
     if (labels.isEmpty())
       return "{}";
     final List<String> sorted = new ArrayList<>(labels.keySet());
+    if (excluded != null)
+      sorted.remove(excluded);
     Collections.sort(sorted);
     final StringBuilder sb = new StringBuilder("{");
     for (int i = 0; i < sorted.size(); i++) {
@@ -834,11 +844,7 @@ public class PromQLEvaluator {
    * {@code signatureFunc} does for every operator without {@code on(...)} (issue #8926).
    */
   private String matchKey(final Map<String, String> labels) {
-    if (!labels.containsKey(METRIC_NAME_LABEL))
-      return labelKey(labels);
-    final Map<String, String> withoutName = new LinkedHashMap<>(labels);
-    withoutName.remove(METRIC_NAME_LABEL);
-    return labelKey(withoutName);
+    return labelKey(labels, METRIC_NAME_LABEL);
   }
 
   /** The result labels of an arithmetic operator: Prometheus drops the metric name. */
