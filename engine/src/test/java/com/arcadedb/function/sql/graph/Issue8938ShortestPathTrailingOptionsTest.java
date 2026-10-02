@@ -19,8 +19,8 @@
 package com.arcadedb.function.sql.graph;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;

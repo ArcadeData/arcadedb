@@ -98,4 +98,24 @@ class Issue8937SelectOrderByFoldedIndexTest extends TestHelper {
       assertThat(actual).isEqualTo(expected);
     }
   }
+
+  @Test
+  void limitedEqualityOnAFoldedIndexKeepsTheRequestedOrder() {
+    database.command("sql", "CREATE DOCUMENT TYPE Eq");
+    database.command("sql", "CREATE PROPERTY Eq.s STRING");
+    database.command("sql", "CREATE PROPERTY Eq.n INTEGER");
+    database.command("sql", "CREATE INDEX ON Eq (s COLLATE ci) NOTUNIQUE");
+    database.transaction(() -> {
+      // "abc", "ABC" and "Abc" fold to one key but are different values
+      final String[] same = { "abc", "ABC", "Abc", "aBc" };
+      for (int i = 0; i < same.length; i++)
+        database.newDocument("Eq").set("s", same[i]).set("n", i).save();
+    });
+    final List<String> asc = database.select().fromType("Eq").where().property("s").eq().value("abc")
+        .orderBy("s", true).limit(2).documents().toList().stream().map(d -> d.getString("s")).toList();
+    assertThat(asc).hasSize(asc.size()).isSortedAccordingTo(String::compareTo);
+    final List<String> desc = database.select().fromType("Eq").where().property("s").eq().value("abc")
+        .orderBy("s", false).limit(2).documents().toList().stream().map(d -> d.getString("s")).toList();
+    assertThat(desc).isSortedAccordingTo((a, b) -> b.compareTo(a));
+  }
 }
