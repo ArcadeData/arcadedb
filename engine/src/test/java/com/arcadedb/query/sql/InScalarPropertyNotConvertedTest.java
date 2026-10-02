@@ -55,12 +55,30 @@ class InScalarPropertyNotConvertedTest extends TestHelper {
 
       final Object v = c[2];
       final long eq = count("SELECT FROM " + t + " WHERE b = ?", v);
+      assertThat(eq).as(c[0] + " '=' premise").isEqualTo(0);
       assertThat(count("SELECT FROM " + t + " WHERE b IN [?]", v)).as(c[0] + " unindexed IN list").isEqualTo(eq);
       assertThat(count("SELECT FROM " + t + " WHERE b IN ?", List.of(v))).as(c[0] + " unindexed IN param").isEqualTo(eq);
       assertThat(count("SELECT FROM " + t + " WHERE b IN ?", new HashSet<>(List.of(v)))).as(c[0] + " unindexed IN set").isEqualTo(eq);
       assertThat(count("SELECT FROM " + t + " WHERE a IN [?]", v)).as(c[0] + " indexed IN").isEqualTo(eq);
-      assertThat(eq).isEqualTo(0);
+      assertThat(count("SELECT FROM " + t + " WHERE b NOT IN [?, null]", v)).as(c[0] + " NOT IN with null is UNKNOWN").isEqualTo(0);
+      assertThat(count("SELECT FROM " + t + " WHERE b NOT IN [?]", v)).as(c[0] + " NOT IN").isEqualTo(1);
     }
+  }
+
+  @Test
+  void sameKindOperandStillMatches() {
+    database.command("sql", "CREATE DOCUMENT TYPE K");
+    database.command("sql", "CREATE PROPERTY K.s STRING");
+    database.transaction(() -> database.newDocument("K").set("s", "7").save());
+    assertThat(count("SELECT FROM K WHERE s IN [?]", "7")).isEqualTo(1);
+    assertThat(count("SELECT FROM K WHERE s IN ?", new HashSet<>(List.of("7")))).isEqualTo(1);
+  }
+
+  @Test
+  void literalOnTheLeftStillConverts() {
+    database.command("sql", "CREATE DOCUMENT TYPE V");
+    database.transaction(() -> database.newDocument("V").save());
+    assertThat(count("SELECT FROM V WHERE '7' IN [7.0]")).isEqualTo(1);
   }
 
   private long count(final String query, final Object... params) {
