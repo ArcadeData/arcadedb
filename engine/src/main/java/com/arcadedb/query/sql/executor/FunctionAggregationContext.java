@@ -36,6 +36,8 @@ import java.util.Set;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class FunctionAggregationContext implements AggregationContext, HeapBufferingFunction {
+  private static final int           DISTINCT_ENTRY_OVERHEAD_BYTES = HeapEstimator.HASH_ENTRY_BYTES;
+
   private final SQLFunction        aggregateFunction;
   private       List<Expression>   params;
   // WHAT A FUNCTION THAT KEEPS EVERY VALUE HOLDS (list(), percentile()...), CHARGED TO THE HEAP BUDGET OF ALL THE
@@ -43,7 +45,6 @@ public class FunctionAggregationContext implements AggregationContext, HeapBuffe
   private       OperationHeapLimit heapLimit;
   // THE DISTINCT VALUES ALREADY GIVEN TO THE FUNCTION - count(DISTINCT x) - OR NULL WHEN IT SEES EVERY VALUE (ISSUE #8889)
   private final Set<Object>      seen;
-  private static final int         DISTINCT_ENTRY_OVERHEAD_BYTES = HeapEstimator.HASH_ENTRY_BYTES;
 
   public FunctionAggregationContext(final SQLFunction function, final List<Expression> params) {
     this(function, params, false);
@@ -106,21 +107,34 @@ public class FunctionAggregationContext implements AggregationContext, HeapBuffe
    * one value. A NULL is never remembered, so the function sees every one and ignores it as it always did.
    */
   private boolean firstTimeSeen(final List<Object> paramValues) {
-    final Object[] key = new Object[paramValues.size()];
-    for (int i = 0; i < key.length; i++) {
-      final Object value = paramValues.get(i);
+    final Object element;
+    if (paramValues.size() == 1) {
+      // the common count(DISTINCT x): no array, no wrapping list
+      final Object value = paramValues.getFirst();
       if (value == null)
         return true;
-      key[i] = value.getClass().isArray() ? arrayKey(value) : Type.normalizeNumberForKey(value);
+      element = normalizeForKey(value);
+    } else {
+      final Object[] key = new Object[paramValues.size()];
+      for (int i = 0; i < key.length; i++) {
+        final Object value = paramValues.get(i);
+        if (value == null)
+          return true;
+        key[i] = normalizeForKey(value);
+      }
+      element = Arrays.asList(key);
     }
 
-    final Object element = key.length == 1 ? key[0] : Arrays.asList(key);
     if (!seen.add(element))
       return false;
 
     if (heapLimit != null)
       heapLimit.add(seen.size(), element, DISTINCT_ENTRY_OVERHEAD_BYTES);
     return true;
+  }
+
+  private static Object normalizeForKey(final Object value) {
+    return value.getClass().isArray() ? arrayKey(value) : Type.normalizeNumberForKey(value);
   }
 
   /** A Java array compares by identity: its content is what makes two values the same */
