@@ -44,7 +44,10 @@ class Issue8921TemporalWrapperLookupTest {
 
   @BeforeEach
   void setup() {
-    database = new DatabaseFactory("./target/databases/issue8921").create();
+    final DatabaseFactory factory = new DatabaseFactory("./target/databases/issue8921");
+    if (factory.exists())
+      factory.open().drop();
+    database = factory.create();
     database.getSchema().createVertexType("N");
     database.getSchema().createVertexType("I");
     database.command("sql", "CREATE PROPERTY N.d DATETIME");
