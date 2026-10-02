@@ -5127,13 +5127,14 @@ public class SelectExecutionPlanner {
     if (property == null || !(bound instanceof Byte || bound instanceof Short || bound instanceof Integer || bound instanceof Long
         || bound instanceof BigInteger))
       return false;
-    final long exactLimit = switch (property.getType()) {
-      case DOUBLE -> 1L << 53;
-      case FLOAT -> 1L << 24;
-      default -> Long.MAX_VALUE;
-    };
-    if (exactLimit == Long.MAX_VALUE)
+    final long exactLimit;
+    switch (property.getType()) {
+    case DOUBLE -> exactLimit = 1L << 53;
+    case FLOAT -> exactLimit = 1L << 24;
+    default -> {
       return false;
+    }
+    }
     if (bound instanceof BigInteger bigInteger)
       return bigInteger.abs().compareTo(BigInteger.valueOf(exactLimit)) > 0;
     final long value = ((Number) bound).longValue();
