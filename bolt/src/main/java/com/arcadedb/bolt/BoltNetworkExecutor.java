@@ -1482,15 +1482,15 @@ public class BoltNetworkExecutor extends Thread {
   private boolean handleSystemQuery(final String query, final BoltQueryStream stream) throws IOException {
     final String normalized = BoltSystemProcedures.normalize(query);
 
-    if (BoltSystemProcedures.isStandaloneCall(normalized, "dbms.components")) {
+    if (BoltSystemProcedures.isSystemCall(normalized, "dbms.components")) {
       // CALL dbms.components() - returns server version info
       stream.fields = List.of("name", "versions", "edition");
       stream.syntheticResults = new ArrayList<>();
       stream.syntheticResults.add(List.of("Neo4j Kernel", List.of("5.26.0"), "community"));
       return true;
 
-    } else if (normalized.startsWith("show database") || BoltSystemProcedures.isStandaloneCall(normalized, "dbms.showdatabase")
-        || BoltSystemProcedures.isStandaloneCall(normalized, "dbms.listdatabases")) {
+    } else if (normalized.startsWith("show database") || BoltSystemProcedures.isSystemCall(normalized, "dbms.showdatabase")
+        || BoltSystemProcedures.isSystemCall(normalized, "dbms.listdatabases")) {
       // SHOW DATABASES or CALL dbms.listDatabases()
       stream.fields = List.of("name", "type", "aliases", "access", "address", "role",
           "writer", "requestedStatus", "currentStatus", "statusMessage", "default", "home",
@@ -1513,7 +1513,7 @@ public class BoltNetworkExecutor extends Thread {
           false, "online", "online", "", false, false, List.of()));
       return true;
 
-    } else if (normalized.startsWith("show current user") || BoltSystemProcedures.isStandaloneCall(normalized, "dbms.showcurrentuser")) {
+    } else if (normalized.startsWith("show current user") || BoltSystemProcedures.isSystemCall(normalized, "dbms.showcurrentuser")) {
       // SHOW CURRENT USER or CALL dbms.showCurrentUser()
       stream.fields = List.of("user", "roles", "passwordChangeRequired", "suspended", "home");
       stream.syntheticResults = new ArrayList<>();
@@ -1526,21 +1526,21 @@ public class BoltNetworkExecutor extends Thread {
       stream.syntheticResults.add(userRecord);
       return true;
 
-    } else if (BoltSystemProcedures.isStandaloneCall(normalized, "dbms.info")) {
+    } else if (BoltSystemProcedures.isSystemCall(normalized, "dbms.info")) {
       // CALL dbms.info() - returns basic server info
       stream.fields = List.of("id", "name", "creationDate");
       stream.syntheticResults = new ArrayList<>();
       stream.syntheticResults.add(List.of("arcadedb-" + server.getServerName(), server.getServerName(), ""));
       return true;
 
-    } else if (BoltSystemProcedures.isStandaloneCall(normalized, "db.ping")) {
+    } else if (BoltSystemProcedures.isSystemCall(normalized, "db.ping")) {
       // CALL db.ping() - health check
       stream.fields = List.of("success");
       stream.syntheticResults = new ArrayList<>();
       stream.syntheticResults.add(List.of(true));
       return true;
 
-    } else if (BoltSystemProcedures.isStandaloneCall(normalized, "dbms.clientconfig")) {
+    } else if (BoltSystemProcedures.isSystemCall(normalized, "dbms.clientconfig")) {
       // CALL dbms.clientConfig() - client configuration
       stream.fields = List.of("name", "value");
       stream.syntheticResults = new ArrayList<>();
@@ -1612,7 +1612,7 @@ public class BoltNetworkExecutor extends Thread {
       stream.syntheticResults = buildShowConstraintsResults(normalized);
       return true;
 
-    } else if (BoltSystemProcedures.isStandaloneCall(normalized, "dbms.licenseagreementdetails")) {
+    } else if (BoltSystemProcedures.isSystemCall(normalized, "dbms.licenseagreementdetails")) {
       // CALL dbms.licenseAgreementDetails() - return empty/default
       stream.fields = List.of("name", "status", "version");
       stream.syntheticResults = new ArrayList<>();
