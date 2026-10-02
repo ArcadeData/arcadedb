@@ -6312,14 +6312,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * replay sees.
    */
   private static final class LiveSetReplay {
-    /** Ids at or above this are not tracked: the arrays below would cost more than the check is worth. */
+    /** Ids at or above this go to a map instead of the arrays: a stray huge id must not size them. */
     static final int MAX_TRACKED_ID = 1 << 26;
     /** In {@link #ownerBucket}: the id was tombstoned last. */
     private static final int DELETED        = -1;
 
     final Map<RID, VectorEntryForGraphBuild> byRid;
-    /** Page entries whose id was past {@link #MAX_TRACKED_ID}, so never judged. */
-    int untrackedIds;
+    /** Owners of the ids past {@link #MAX_TRACKED_ID}: bounded arrays for the dense case, a map for the stray rest. */
+    private final Map<Integer, long[]> overflowOwners = new HashMap<>();
     /** Per vector id, the record that holds it after the replay: bucket id + 1, 0 for never seen, {@link #DELETED}. */
     private int[]  ownerBucket;
     private long[] ownerPosition;
@@ -6333,8 +6333,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
     void accept(final LSMVectorIndexPageParser.VectorEntry entry, final boolean isCompacted) {
       mergeEntryIntoLiveSet(byRid, entry, isCompacted);
       final int id = entry.vectorId;
-      if (id < 0 || id >= MAX_TRACKED_ID) {
-        untrackedIds++;
+      if (id < 0)
+        return;
+      if (id >= MAX_TRACKED_ID) {
+        overflowOwners.put(id, entry.deleted ? new long[] { DELETED, 0L } :
+            new long[] { entry.rid.getBucketId() + 1L, entry.rid.getPosition() });
         return;
       }
       if (id >= ownerBucket.length) {
@@ -6358,11 +6361,20 @@ public class LSMVectorIndex implements Index, IndexInternal {
       List<VectorEntryForGraphBuild> losers = null;
       for (final VectorEntryForGraphBuild entry : byRid.values()) {
         final int id = entry.vectorId;
-        // Not judged: an id past the arrays, never seen on a page (recovered from memory or a document scan).
-        if (id < 0 || id >= ownerBucket.length || ownerBucket[id] == 0)
+        final long bucket;
+        final long position;
+        if (id >= MAX_TRACKED_ID) {
+          final long[] owner = overflowOwners.get(id);
+          bucket = owner != null ? owner[0] : 0;
+          position = owner != null ? owner[1] : 0;
+        } else {
+          bucket = id >= 0 && id < ownerBucket.length ? ownerBucket[id] : 0;
+          position = bucket != 0 ? ownerPosition[id] : 0;
+        }
+        // Not judged: an id never seen on a page (recovered from memory or a document scan).
+        if (bucket == 0)
           continue;
-        if (ownerBucket[id] == DELETED || ownerBucket[id] != entry.rid.getBucketId() + 1
-            || ownerPosition[id] != entry.rid.getPosition()) {
+        if (bucket == DELETED || bucket != entry.rid.getBucketId() + 1L || position != entry.rid.getPosition()) {
           if (losers == null)
             losers = new ArrayList<>();
           losers.add(entry);
@@ -6415,10 +6427,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
             + "deletes: they are not in the graph until the index is rebuilt (CHECK DATABASE FIX or REBUILD INDEX), and the "
             + "data file is not compacted in this pass. First: %s",
         indexName, losers.size(), LiveSetReplay.describeFirst(losers));
-    if (replay.untrackedIds > 0)
-      LogManager.instance().log(this, Level.WARNING,
-          "Index %s has %d page entries with vector ids too large to track: shared ids among them are not reported",
-          indexName, replay.untrackedIds);
     return true;
   }
 
@@ -6441,10 +6449,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (!anyVectorIdWrittenByTwoRecords())
       return Collections.emptyList();
 
-    final long pages = getTotalPages() + (compactedSubIndex != null ? compactedSubIndex.getTotalPages() : 0);
-    // About one entry per (dimensions + 24) bytes of page: an estimate to avoid rehashing, never a bound.
-    final int expected = (int) Math.min(1 << 22, pages * getPageSize() / (metadata.dimensions + 24L));
-    final LiveSetReplay replay = new LiveSetReplay(Math.max(16, expected));
+    // Starts small and grows with the replay: any up-front estimate of the entry count is a guess, and a wrong one
+    // costs an allocation of tens of MB before the first page is read.
+    final LiveSetReplay replay = new LiveSetReplay(16);
     final DatabaseInternal database = getDatabase();
     // Pass 2 decides, and holds the read lock so a write cannot land mid-read and raise a finding that is not there:
     // under FIX a false finding is a full index rebuild.
@@ -6477,10 +6484,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
     final int[][] bucket = { new int[1024] };
     final long[][] position = { new long[1024] };
     final boolean[] shared = { false };
+    final Map<Integer, RID> overflow = new HashMap<>();
     final Consumer<LSMVectorIndexPageParser.VectorEntry> consumer = entry -> {
       final int id = entry.vectorId;
-      if (shared[0] || id < 0 || id >= LiveSetReplay.MAX_TRACKED_ID)
+      if (shared[0] || id < 0)
         return;
+      if (id >= LiveSetReplay.MAX_TRACKED_ID) {
+        final RID previous = overflow.putIfAbsent(id, entry.rid);
+        shared[0] = previous != null && !previous.equals(entry.rid);
+        return;
+      }
       if (id >= bucket[0].length) {
         final int grown = (int) Math.min(LiveSetReplay.MAX_TRACKED_ID, Math.max(id + 1L, bucket[0].length * 2L));
         bucket[0] = Arrays.copyOf(bucket[0], grown);
