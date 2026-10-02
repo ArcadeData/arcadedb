@@ -198,6 +198,24 @@ class Issue8872DecimalLiteralDigitsTest extends TestHelper {
     }
   }
 
+  @Test
+  void indexedAndUnindexedDoubleAgreeOnALongLiteral() {
+    database.command("sql", "CREATE DOCUMENT TYPE X");
+    database.command("sql", "CREATE PROPERTY X.k STRING");
+    database.command("sql", "CREATE PROPERTY X.plain DOUBLE");
+    database.command("sql", "CREATE PROPERTY X.idx DOUBLE");
+    database.command("sql", "CREATE INDEX ON X (idx) NOTUNIQUE");
+    database.transaction(() -> database.newDocument("X").set("k", "row", "plain", 1.5d, "idx", 1.5d).save());
+    for (final String op : new String[] { "=", ">=", "<=", ">", "<" }) {
+      final String literal = "1.5000000000000000000001";
+      assertThat(keys("SELECT k FROM X WHERE idx " + op + " " + literal)).as("idx " + op)
+          .isEqualTo(keys("SELECT k FROM X WHERE plain " + op + " " + literal));
+    }
+    assertThat(keys("SELECT k FROM X WHERE idx >= 1.5000000000000000000001")).isEmpty();
+    assertThat(keys("SELECT k FROM X WHERE idx <= 1.5000000000000000000001")).containsExactly("row");
+    assertThat(keys("SELECT k FROM X WHERE idx BETWEEN 1.4000000000000000000001 AND 1.5000000000000000000001")).containsExactly("row");
+  }
+
   private List<String> keys(final String sql) {
     final List<String> ks = new ArrayList<>();
     try (final ResultSet rs = database.query("sql", sql)) {
