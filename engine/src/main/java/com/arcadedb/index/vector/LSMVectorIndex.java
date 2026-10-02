@@ -6420,7 +6420,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     private int find(final int id) {
       final int mask = keys.length - 1;
-      int slot = (id * 0x9E3779B9) >>> (32 - Integer.numberOfTrailingZeros(keys.length)) & mask;
+      int slot = (id * 0x9E3779B9) >>> (32 - Integer.numberOfTrailingZeros(keys.length));
       while (keys[slot] != 0 && keys[slot] != id + 1)
         slot = slot + 1 & mask;
       return slot;
@@ -6474,7 +6474,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
   /**
    * The live set of a page replay in the two shapes a build and a load disagree on: {@link #byRid} keeps one entry
    * per record (what a build wants), {@link #owners} is the id-keyed state a load ends up with. A tombstone deletes
-   * the id whoever holds it, so a stale one for record A also removes record B holding the same id.
+   * the id whoever holds it, so a stale one for record A also removes record B holding the same id. The opposite
+   * mismatch, one record with two live ids and no tombstone, is not judged: a build counts it once and a load twice.
    */
   private static final class LiveSetReplay {
     final Map<RID, VectorEntryForGraphBuild> byRid;
@@ -6617,7 +6618,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * as a commit replay does. Lets a test place two different records on the SAME vector id, the page state the
    * RID-keyed graph build and the id-keyed location load read differently.
    */
-  void persistEntryForTest(final int id, final RID rid, final float[] vector) {
+  public void persistEntryForTest(final int id, final RID rid, final float[] vector) {
     persistVectorWithLocation(id, rid, vector);
   }
 
