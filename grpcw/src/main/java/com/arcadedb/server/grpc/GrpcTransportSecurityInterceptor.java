@@ -20,7 +20,7 @@ package com.arcadedb.server.grpc;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.http.handler.PostApiTokenHandler;
+import com.arcadedb.server.security.ApiTokenTrustedProxies;
 import com.arcadedb.utility.IPAddressBlocklist;
 import io.grpc.Context;
 import io.grpc.Contexts;
@@ -168,7 +168,7 @@ public class GrpcTransportSecurityInterceptor implements ServerInterceptor {
       return false;
 
     final Iterable<String> values = headers != null ? headers.getAll(X_FORWARDED_PROTO_KEY) : null;
-    return values != null && PostApiTokenHandler.forwardedProtoIsFullyEncrypted(String.join(",", values));
+    return values != null && ApiTokenTrustedProxies.forwardedProtoIsFullyEncrypted(String.join(",", values));
   }
 
   /**
@@ -191,7 +191,7 @@ public class GrpcTransportSecurityInterceptor implements ServerInterceptor {
       return cached.list();
 
     // A benign race: two calls seeing a change at once both parse it and store equal results.
-    final TrustedProxies parsed = new TrustedProxies(csv, PostApiTokenHandler.parseTrustedProxies(csv));
+    final TrustedProxies parsed = new TrustedProxies(csv, ApiTokenTrustedProxies.parse(csv));
     trustedProxies = parsed;
     return parsed.list();
   }

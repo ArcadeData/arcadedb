@@ -20,7 +20,6 @@ package com.arcadedb.server.grpc;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
-
 import io.grpc.Attributes;
 import io.grpc.Context;
 import io.grpc.Grpc;
@@ -34,6 +33,7 @@ import org.junit.jupiter.api.Test;
 
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLSession;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.security.NoSuchAlgorithmException;
 import java.net.SocketAddress;
@@ -246,21 +246,53 @@ class GrpcTransportSecurityInterceptorTest {
   }
 
   /**
+   * A listed IPv4 proxy reached over a dual-stack socket arrives as an IPv4-mapped IPv6 address
+   * ({@code ::ffff:10.0.0.5}) and must still match its IPv4 entry; and a padded value still reads as https,
+   * as it does for HTTP.
+   */
+  @Test
+  void anIpv4MappedProxyAndAPaddedValueAreRecognised() throws Exception {
+    final GrpcTransportSecurityInterceptor interceptor = new GrpcTransportSecurityInterceptor(() -> PROXY_IP);
+    final InetSocketAddress mapped = new InetSocketAddress(
+        InetAddress.getByAddress(new byte[] { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, (byte) 0xff, (byte) 0xff, 10, 0, 0, 5 }),
+        51000);
+
+    assertThat(decisionFor(interceptor, mapped, false, forwardedProto("https"))).isTrue();
+    assertThat(decisionFor(interceptor, proxy(), false, forwardedProto(" https "))).isTrue();
+  }
+
+  /**
+   * The gate itself, beyond its message: a key the interceptor set to true lets the mint through, and a key
+   * set to false or never set refuses it - the fail-closed reading its javadoc promises.
+   */
+  @Test
+  void theGateRefusesUnlessTheInterceptorVouched() throws Exception {
+    assertThat(gateUnder(true)).isNull();
+    assertThat(gateUnder(false)).isNotNull();
+    assertThat(gateUnder(null)).as("no interceptor ran, so nothing vouched for the transport").isNotNull();
+    assertThat(gateUnder(null).getStatus().getCode()).isEqualTo(Status.Code.FAILED_PRECONDITION);
+  }
+
+  private static StatusException gateUnder(final Boolean safe) throws Exception {
+    final Context context = safe == null ? Context.ROOT
+        : Context.ROOT.withValue(GrpcTransportSecurityInterceptor.SECRET_SAFE_TRANSPORT_KEY, safe);
+    return context.call(() -> {
+      try {
+        ArcadeDbGrpcAdminService.requireTransportSafeForSecrets();
+        return null;
+      } catch (final StatusException e) {
+        return e;
+      }
+    });
+  }
+
+  /**
    * The refusal names the setting that would let a proxy through: an operator behind one is reading this
    * message to find out why the mint is refused, and it previously offered only TLS and loopback.
    */
   @Test
   void theRefusalPointsAtTheTrustedProxySetting() throws Exception {
-    final StatusException refusal = Context.current()
-        .withValue(GrpcTransportSecurityInterceptor.SECRET_SAFE_TRANSPORT_KEY, false)
-        .call(() -> {
-          try {
-            ArcadeDbGrpcAdminService.requireTransportSafeForSecrets();
-            return null;
-          } catch (final StatusException e) {
-            return e;
-          }
-        });
+    final StatusException refusal = gateUnder(false);
 
     assertThat(refusal).isNotNull();
     assertThat(refusal.getStatus().getCode()).isEqualTo(Status.Code.FAILED_PRECONDITION);

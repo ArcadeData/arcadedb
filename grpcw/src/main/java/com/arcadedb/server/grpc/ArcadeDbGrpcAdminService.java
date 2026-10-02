@@ -570,10 +570,10 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
    * stops tokens being minted rather than stopping them being protected.
    */
   static void requireTransportSafeForSecrets() throws StatusException {
+    // Names the trusted-proxy setting because an operator behind a TLS-terminating proxy is reading this
+    // message to find out why the mint is refused, and the proxy is the one thing they cannot fix by
+    // reconnecting (issue #7821).
     if (!Boolean.TRUE.equals(GrpcTransportSecurityInterceptor.SECRET_SAFE_TRANSPORT_KEY.get()))
-      // Names the trusted-proxy setting because an operator behind a TLS-terminating proxy is reading this
-      // message to find out why the mint is refused, and the proxy is the one thing they cannot fix by
-      // reconnecting (issue #7821).
       throw Status.FAILED_PRECONDITION.withDescription(
               "Refusing to return API token material over an unprotected transport. Enable gRPC TLS "
                   + "(arcadedb.grpc.tls.enabled), issue the token from a client on the loopback interface, or list "
