@@ -41,6 +41,7 @@ import java.util.ArrayList;
  * Created by luigidellaquila on 03/01/17.
  */
 public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
+  private static final String[] NO_LABELS = new String[0];
 
   protected SQLFunctionMove(final String iName) {
     super(iName);
@@ -71,7 +72,14 @@ public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
       final Document rec = (Document) iRecord.getRecord();
       if (rec instanceof Vertex vertex) {
         final Database database = vertex.getDatabase();
-        final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(database, iLabels);
+        // A VIEW ONLY ACCELERATES: ITS REVERSE INDEX HOLDS THE INCOMING SIDE OF A UNIDIRECTIONAL TYPE, WHICH A FUNCTION
+        // CALLED ON ITS OWN MUST NOT ANSWER, OR in()/both() WOULD RETURN DIFFERENT ROWS WITH AND WITHOUT A VIEW AND
+        // DISAGREE WITH inE() AND THE VERTEX API (ISSUE #8939). A PATTERN WALK ANSWERS IT, VIEW OR NOT (ISSUE #8625)
+        GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(database, iLabels);
+        // ASKED ONLY WHEN A VIEW EXISTS, SO THE NO-VIEW PATH PAYS NOTHING
+        if (provider != null && iDirection != Vertex.DIRECTION.OUT && !IncomingEdgeLookup.isWalkingPattern()
+            && IncomingEdgeLookup.isAnyUnidirectional(database.getSchema(), iLabels != null ? iLabels : NO_LABELS))
+          provider = null;
         if (provider != null) {
           final int nodeId = provider.getNodeId(vertex.getIdentity());
           if (nodeId >= 0) {
