@@ -231,9 +231,51 @@ test("where a request runs: what support asked for unless the user chose another
   assert.equal(run(`supportReqTarget({ nodes: "all" }, {})`), "all");
   assert.equal(run(`supportReqTarget({ nodes: "current" }, {})`), "current");
   assert.equal(run(`supportReqTarget({}, {})`), "current");
-  assert.equal(run(`supportReqTarget({ nodes: "arcadedb-1" }, {})`), "arcadedb-1");
+  assert.equal(run(`supportReqTarget({ nodes: "node:arcadedb-1" }, {})`), "node:arcadedb-1");
   assert.equal(run(`supportReqTarget({ nodes: "all" }, { nodes: "current" })`), "current");
-  assert.equal(run(`supportReqTarget({ nodes: "current" }, { nodes: "arcadedb-2" })`), "arcadedb-2");
+  assert.equal(run(`supportReqTarget({ nodes: "current" }, { nodes: "node:arcadedb-2" })`), "node:arcadedb-2");
+});
+
+test("a value this Studio does not understand is never run on the local node", () => {
+  const { run } = load();
+  // an older platform value, a typo, a bare name, a non-string: all "unknown", none silently "current"
+  for (const bad of ['"some"', '"arcadedb-1"', '"node:"', '"Node:a"', "3", "{}", '"node:" + "a".repeat(101)'])
+    assert.equal(run(`supportReqTarget({ nodes: ${bad} }, {})`), "unknown", bad);
+  assert.match(run(`supportReqTargetProblem("unknown")`), /does not understand/);
+});
+
+test("a named node must be this server or a member of the cluster, else nothing runs and the card says so", () => {
+  const { run } = load();
+  const problem = (setup, target) => run(`(function () { ${setup}; return supportReqTargetProblem(${JSON.stringify(target)}); })()`);
+  const cluster = 'supportReqNode = "arcadedb-0"; supportReqPeers = { loaded: true, ha: true, peers: ["arcadedb-1", "arcadedb-2"] }';
+  assert.equal(problem(cluster, "current"), "");
+  assert.equal(problem(cluster, "all"), "");
+  assert.equal(problem(cluster, "node:arcadedb-1"), "");
+  assert.equal(problem(cluster, "node:arcadedb-0"), "");
+  assert.match(problem(cluster, "node:arcadedb-9"), /not a member of this cluster/);
+  const solo = 'supportReqNode = "solo"; supportReqPeers = { loaded: true, ha: false, peers: [] }';
+  assert.equal(problem(solo, "node:solo"), "");
+  assert.match(problem(solo, "node:arcadedb-1"), /not in a cluster/);
+  assert.match(problem('supportReqNode = ""; supportReqPeers = { loaded: false, ha: false, peers: [] }', "node:arcadedb-1"), /still checking/);
+});
+
+test("the card for a node that is not a member refuses to run and offers running here on purpose", () => {
+  const { run } = load();
+  const html = run(`(function () {
+    supportReqNode = "arcadedb-0";
+    supportReqPeers = { loaded: true, ha: true, peers: ["arcadedb-1"] };
+    var request = { id: "rq_1", kind: "query", label: "l", language: "sql", statement: "SELECT 1", nodes: "node:<b>x</b>", status: "open" };
+    return supportRequestBodyHtml(request);
+  })()`);
+  assert.match(html, /not a member of this cluster/);
+  assert.match(html, /sp-rq-here/);
+  assert.ok(!html.includes("<b>x</b>"), "the node name is text");
+  const ok = run(`(function () {
+    var request = { id: "rq_2", kind: "query", label: "l", language: "sql", statement: "SELECT 1", nodes: "node:arcadedb-1", status: "open" };
+    return supportRequestBodyHtml(request);
+  })()`);
+  assert.match(ok, /Support asked for the node <b>arcadedb-1<\/b>/);
+  assert.ok(!ok.includes("sp-rq-here"));
 });
 
 test("the node selector exists only in a cluster, offers this node, all nodes and each peer, and node names are text", () => {
@@ -245,6 +287,7 @@ test("the node selector exists only in a cluster, offers this node, all nodes an
     return supportReqNodeSelectHtml({ id: "rq_1", nodes: "all" }, {});
   })()`);
   assert.match(html, /<option value="current">This node \(arcadedb-0\)<\/option>/);
+  assert.match(html, /<option value="node:arcadedb-1">arcadedb-1<\/option>/);
   assert.match(html, /<option value="all" selected>All nodes<\/option>/);
   assert.match(html, /arcadedb-1/);
   assert.ok(!html.includes("<img"), html);
