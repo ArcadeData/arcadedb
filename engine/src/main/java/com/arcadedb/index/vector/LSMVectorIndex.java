@@ -6365,7 +6365,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * <p>
    * Ids are dense in the usual case, so they index arrays directly; the arrays only grow while the id stays within
    * twice the number of entries seen, and a stray larger id goes to an open-addressing table. Memory therefore
-   * follows the entries replayed (up to about 4x that in the worst dense case), never the largest id.
+   * follows the entries replayed, never the largest id: 12 bytes per slot, so about 12-24 bytes per entry when ids
+   * are dense and up to about 48 in the worst case, against the ~100 bytes per record of the RID map held beside it.
    */
   private static final class IdOwners {
     /** The bucket value of an id whose last page entry is a tombstone. */
@@ -6519,7 +6520,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     static String describeFirst(final List<VectorEntryForGraphBuild> losers) {
       final StringBuilder detail = new StringBuilder();
       for (int i = 0; i < Math.min(5, losers.size()); i++)
-        detail.append(i > 0 ? ", " : "").append(losers.get(i).rid);
+        detail.append(i > 0 ? ", " : "").append(losers.get(i).rid).append(losers.get(i).isCompacted ? " (compacted)" : " (mutable)");
       return detail.toString();
     }
   }
@@ -6614,7 +6615,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
-   * Visible for tests: appends one page entry carrying an explicit vector id, inside the caller's transaction, exactly
+   * Visible for tests, never to be called from production code: appends one page entry carrying an explicit vector id,
+   * which can create exactly the damage CHECK DATABASE repairs. Runs inside the caller's transaction, exactly
    * as a commit replay does. Lets a test place two different records on the SAME vector id, the page state the
    * RID-keyed graph build and the id-keyed location load read differently.
    */
