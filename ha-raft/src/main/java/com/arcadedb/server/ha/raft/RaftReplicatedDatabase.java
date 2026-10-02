@@ -595,6 +595,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());
         final TransactionContext tx = current.getLastTransaction();
         try {
+          requireReplicationBuffer(tx);
           final TransactionContext.TransactionPhase1 phase1 = tx.commit1stPhase(true);
           if (phase1 != null) {
             tx.commit2ndPhase(phase1);
@@ -640,6 +641,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());
       final TransactionContext tx = current.getLastTransaction();
       try {
+        requireReplicationBuffer(tx);
         final TransactionContext.TransactionPhase1 phase1 = tx.commit1stPhase(leader);
 
         if (phase1 != null) {
@@ -676,6 +678,25 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // transaction is registered with it right before the entry is dispatched, and this thread finishes the commit once
     // the entry is acknowledged. Only the leader has a state machine that applies its own entries this way.
     replicateAndCommitLocally(payload, leader, leader ? stateMachineOrNull() : null);
+  }
+
+  /**
+   * Turns the WAL on for a transaction about to be replicated (issue #8291). What this wrapper proposes to Raft IS the
+   * WAL buffer phase 1 builds, and phase 1 builds none for a transaction whose WAL is off - an {@code LSM_VECTOR}
+   * index build that commits through the wrapper (per chunk, and at the end when it owns its transaction), a session
+   * that called {@code setUseWAL(false)}, a database configured with {@code arcadedb.txWAL=false}. Both arms of
+   * {@link #commit()} then dereferenced the missing buffer and refused the commit with a
+   * {@code NullPointerException}. Refusing it outright would make every one of those features unusable under HA, and
+   * committing it locally only would leave the replicas without its pages, so a replicated commit always writes its
+   * WAL: skipping the WAL is a single-node optimization that has no equivalent here. {@code GraphBatch} already
+   * applies the same rule to itself (issue #4076); this applies it once, where every replicated commit passes.
+   * <p>
+   * The override lasts one transaction - the commit's {@code reset()} clears it - so the session's own setting is
+   * untouched, and a builder that re-applies its own override after each {@code begin()} keeps doing so.
+   */
+  private static void requireReplicationBuffer(final TransactionContext tx) {
+    if (!tx.isUseWAL())
+      tx.setUseWALForThisTransaction(true);
   }
 
   /**
