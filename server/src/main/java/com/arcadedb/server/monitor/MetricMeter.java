@@ -29,7 +29,18 @@ public class MetricMeter implements ServerMetrics.Meter {
   private       int    lastMinuteCountersIndex  = 0;
   private       long   lastHitTimestampInSecs   = 0L;
   // A NEVER-ASKED METER MEASURES SINCE ITS CREATION, NOT SINCE THE EPOCH (#8909)
-  private       long   lastAskedTimestampInSecs = System.currentTimeMillis() / 1000;
+  private       long   lastAskedTimestampInSecs;
+
+  public MetricMeter() {
+    this(System.currentTimeMillis() / 1000);
+  }
+
+  /**
+   * Visible for tests: lets a test place the "last asked" instant in the past to exercise the ring cap without waiting.
+   */
+  MetricMeter(final long lastAskedTimestampInSecs) {
+    this.lastAskedTimestampInSecs = lastAskedTimestampInSecs;
+  }
 
   @Override
   public synchronized void hit() {
