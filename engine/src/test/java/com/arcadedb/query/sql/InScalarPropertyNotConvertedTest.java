@@ -25,6 +25,7 @@ import org.junit.jupiter.api.Test;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashSet;
 import java.util.List;
@@ -72,6 +73,16 @@ class InScalarPropertyNotConvertedTest extends TestHelper {
     database.transaction(() -> database.newDocument("K").set("s", "7").save());
     assertThat(count("SELECT FROM K WHERE s IN [?]", "7")).isEqualTo(1);
     assertThat(count("SELECT FROM K WHERE s IN ?", new HashSet<>(List.of("7")))).isEqualTo(1);
+  }
+
+  @Test
+  void nonConstantRightHandSideDoesNotConvertPropertyOnTheLeft() {
+    database.command("sql", "CREATE DOCUMENT TYPE R");
+    database.command("sql", "CREATE PROPERTY R.s STRING");
+    database.command("sql", "CREATE PROPERTY R.l LIST OF DOUBLE");
+    database.transaction(() -> database.newDocument("R").set("s", "7", "l", new ArrayList<>(List.of(7.0))).save());
+    assertThat(count("SELECT FROM R WHERE s IN l")).isEqualTo(0);
+    assertThat(count("SELECT FROM R WHERE ? IN l", "7")).isEqualTo(1);
   }
 
   @Test
