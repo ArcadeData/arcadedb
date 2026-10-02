@@ -59,6 +59,7 @@ final class BoltSystemProcedures {
   private static final Pattern  QUOTED        = Pattern.compile(
       "'[^'\\\\]*+(?:\\\\.[^'\\\\]*+)*+'|\"[^\"\\\\]*+(?:\\\\.[^\"\\\\]*+)*+\"");
   private static final Pattern  UNION        = Pattern.compile(" union (?:all )?");
+  private static final Pattern  BLOCK_COMMENT = Pattern.compile("/\\*.*?\\*/");
   private static final Pattern  WHITESPACE    = Pattern.compile("\\s+");
   private static final Pattern  FOREIGN_CLAUSE = Pattern.compile(
       "(?<![\\w$.])(?:create|merge|set|delete|detach|remove|foreach|call|load|match|optional|union|use|finish|insert|drop|alter|grant|deny|revoke|start|stop|terminate|enable|rename)\\b");
@@ -179,8 +180,8 @@ final class BoltSystemProcedures {
       return false;
     // The tail stays open (YIELD / WHERE / UNWIND / RETURN) but never a clause that writes or calls on: serving
     // those here would drop them silently, whereas the engine refuses them loudly.
-    // Quoted literals are blanked first: a keyword inside a string is data, not a clause
-    final String tail = QUOTED.matcher(normalized.substring(end)).replaceAll("''");
+    // Quoted literals and block comments are blanked first: a keyword inside either is not a clause
+    final String tail = BLOCK_COMMENT.matcher(QUOTED.matcher(normalized.substring(end)).replaceAll("''")).replaceAll(" ");
     return !FOREIGN_CLAUSE.matcher(tail).find();
   }
 

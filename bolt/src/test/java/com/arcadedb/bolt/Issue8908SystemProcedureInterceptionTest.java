@@ -193,4 +193,10 @@ class Issue8908SystemProcedureInterceptionTest {
     final String mediumLiteral = "CALL dbms.listDatabases() YIELD name WHERE name = '" + "a".repeat(3_000) + "'";
     assertThat(BoltSystemProcedures.isSystemCall(BoltSystemProcedures.normalize(mediumLiteral), "dbms.listdatabases")).isTrue();
   }
+
+  @Test
+  void aKeywordInsideABlockCommentInTheTailDoesNotDeclineTheCall() {
+    assertThat(BoltSystemProcedures.isSystemCall(BoltSystemProcedures.normalize("CALL db.ping() /* CREATE (:X) */"), "db.ping")).isTrue();
+    assertThat(BoltSystemProcedures.isSystemCall(BoltSystemProcedures.normalize("CALL db.ping() /* x */ CREATE (:X)"), "db.ping")).isFalse();
+  }
 }
