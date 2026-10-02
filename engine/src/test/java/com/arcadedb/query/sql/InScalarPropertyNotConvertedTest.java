@@ -86,6 +86,27 @@ class InScalarPropertyNotConvertedTest extends TestHelper {
   }
 
   @Test
+  void subqueryAndReexecutedStatementDoNotLeakTheMemo() {
+    database.command("sql", "CREATE DOCUMENT TYPE Q");
+    database.command("sql", "CREATE PROPERTY Q.s STRING");
+    database.command("sql", "CREATE PROPERTY Q.d DOUBLE");
+    database.transaction(() -> database.newDocument("Q").set("s", "7", "d", 7.0).save());
+    assertThat(count("SELECT FROM Q WHERE s IN (SELECT d FROM Q)")).isEqualTo(0);
+    // same statement text (cached), property on the left never converts whatever the parameter type
+    assertThat(count("SELECT FROM Q WHERE s IN [?]", 7.0)).isEqualTo(0);
+    assertThat(count("SELECT FROM Q WHERE s IN [?]", "7")).isEqualTo(1);
+    assertThat(count("SELECT FROM Q WHERE ? IN [d]", "7")).isEqualTo(0);
+    assertThat(count("SELECT FROM Q WHERE s IN [?]", 7.0)).isEqualTo(0);
+  }
+
+  @Test
+  void letVariableOnTheLeftKeepsConverting() {
+    database.command("sql", "CREATE DOCUMENT TYPE V2");
+    database.transaction(() -> database.newDocument("V2").save());
+    assertThat(count("SELECT FROM V2 LET $x = '7' WHERE $x IN [7.0]")).isEqualTo(1);
+  }
+
+  @Test
   void literalOnTheLeftStillConverts() {
     database.command("sql", "CREATE DOCUMENT TYPE V");
     database.transaction(() -> database.newDocument("V").save());

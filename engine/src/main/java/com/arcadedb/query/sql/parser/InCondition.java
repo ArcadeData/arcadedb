@@ -256,6 +256,8 @@ public class InCondition extends BooleanExpression {
    * non-match, or {@code null} (UNKNOWN) when the left value is null or no match was found but the
    * right collection contains a null element. UNKNOWN is mapped to false at the WHERE boundary.
    */
+  // Defaults to converting: the callers without a record property on the left (e.g. RightBinaryCondition's list filter, whose
+  // element is not a record property) want the #8895 behavior
   protected static Boolean evaluateExpressionThreeValued(final Object iLeft, final Object iRight) {
     return evaluateExpressionThreeValued(iLeft, iRight, true);
   }
