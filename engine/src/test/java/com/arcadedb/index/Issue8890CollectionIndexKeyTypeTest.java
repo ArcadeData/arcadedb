@@ -150,6 +150,11 @@ class Issue8890CollectionIndexKeyTypeTest extends TestHelper {
   }
 
   @Test
+  void listOfBooleanIsLookedUpWithAndWithoutTheIndex() {
+    assertIndexedAndScanAgree("LIST OF BOOLEAN", true, 1, true, "true");
+  }
+
+  @Test
   void aListItemOfAnotherTypeIsStillIndexed() {
     database.command("sql", "CREATE DOCUMENT TYPE X");
     database.command("sql", "CREATE PROPERTY X.a LIST OF INTEGER");
