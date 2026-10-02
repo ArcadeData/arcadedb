@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.serializer.BinaryComparator;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -42,11 +43,11 @@ class Issue8885To8887IndexScanEqualityTest extends TestHelper {
   @Test
   void decimalScaleIsIgnoredInScan() {
     for (final String index : new String[] { "NOTUNIQUE", "NOTUNIQUE_HASH" }) {
-      database.command("sql", "CREATE DOCUMENT TYPE D" + index);
-      database.command("sql", "CREATE PROPERTY D" + index + ".a DECIMAL");
-      database.command("sql", "CREATE PROPERTY D" + index + ".b DECIMAL");
-      database.command("sql", "CREATE INDEX ON D" + index + " (a) " + index);
       final String type = "D" + index;
+      database.command("sql", "CREATE DOCUMENT TYPE " + type);
+      database.command("sql", "CREATE PROPERTY " + type + ".a DECIMAL");
+      database.command("sql", "CREATE PROPERTY " + type + ".b DECIMAL");
+      database.command("sql", "CREATE INDEX ON " + type + " (a) " + index);
       database.transaction(() -> {
         database.newDocument(type).set("a", new BigDecimal("19.90"), "b", new BigDecimal("19.90")).save();
         database.newDocument(type).set("a", new BigDecimal("7"), "b", new BigDecimal("7")).save();
@@ -124,7 +125,20 @@ class Issue8885To8887IndexScanEqualityTest extends TestHelper {
       assertThat(cypherIndexed).isEqualTo(cypherScan);
       assertThat(cypherCount("MATCH (n:" + type + ") WHERE n.a = $v RETURN n", 1))
           .isEqualTo(cypherCount("MATCH (n:" + type + ") WHERE n.b = $v RETURN n", 1));
+      assertThat(cypherCount("MATCH (n:" + type + ") WHERE n.a = $v RETURN n", "maybe")).isZero();
+      assertThat(cypherCount("MATCH (n:" + type + ") WHERE n.b = $v RETURN n", "maybe")).isZero();
     }
+  }
+
+  @Test
+  void binaryComparatorDecimalScale() {
+    final BigDecimal a = new BigDecimal("19.9");
+    final BigDecimal b = new BigDecimal("19.90");
+    assertThat(BinaryComparator.equals(a, b)).isTrue();
+    assertThat(BinaryComparator.equals(a, new BigDecimal("19.91"))).isFalse();
+    // the exact twin stays scale-sensitive: hashed key structures pick their slot with BigDecimal.hashCode()
+    assertThat(BinaryComparator.equalsExact(a, b)).isFalse();
+    assertThat(BinaryComparator.equalsExact(a, new BigDecimal("19.9"))).isTrue();
   }
 
   private long count(final String sql, final Object... params) {
