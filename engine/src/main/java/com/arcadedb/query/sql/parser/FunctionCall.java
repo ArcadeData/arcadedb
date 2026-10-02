@@ -379,7 +379,7 @@ public class FunctionCall extends SimpleNode {
   }
 
   private CommandExecutionException distinctNotAggregate() {
-    return new CommandExecutionException("DISTINCT is supported only inside an aggregate function (count, sum, avg, ...), not in '"
+    return new CommandExecutionException("DISTINCT is supported only by an aggregate function (count, sum, avg, ...) evaluated in an aggregation, not by '"
         + name.getStringValue() + "'");
   }
 
