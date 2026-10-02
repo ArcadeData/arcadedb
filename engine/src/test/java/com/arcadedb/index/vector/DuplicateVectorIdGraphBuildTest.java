@@ -87,6 +87,7 @@ class DuplicateVectorIdGraphBuildTest extends TestHelper {
     }
 
     assertThat(vectorIndex().checkIntegrity()).as("after the fix no two records share a vector id").isEmpty();
+    assertThat(vectorIndex().compactionBlockedBySharedIdsForTest()).as("the rebuilt index may compact again").isFalse();
     assertThat(vectorIndex().getStats().get("activeVectors"))
         .as("every record holding an embedding is indexed again, the %d that lost theirs included", COLLISIONS)
         .isEqualTo((long) LIVE);
@@ -156,6 +157,9 @@ class DuplicateVectorIdGraphBuildTest extends TestHelper {
     vectorIndex().compact();
 
     assertThat(vectorIndex().checkIntegrity()).as("still reported after a compaction").hasSize(1);
+    assertThat(vectorIndex().compactionBlockedBySharedIdsForTest())
+        .as("and the compaction trigger stops asking, or every commit would repeat a full graph build for nothing")
+        .isTrue();
   }
 
   private void assertNoLoopAfterABuild() {

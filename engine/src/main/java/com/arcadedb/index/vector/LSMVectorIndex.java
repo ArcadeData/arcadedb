@@ -128,6 +128,7 @@ import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.logging.Level;
@@ -263,6 +264,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private volatile boolean                       materializedUnderWriteLock;
   private final    AtomicInteger                 nextId;
   private final    AtomicReference<INDEX_STATUS> status;
+  /**
+   * Set once a graph build left records out because they share a vector id. A compaction of such an index declines
+   * (it would erase the shared ids from the pages), so the garbage-ratio trigger must stop asking: each ask is a
+   * full graph build that reclaims nothing, repeated after every commit. Cleared only by a new index instance,
+   * which is what the rebuild of CHECK DATABASE FIX produces.
+   */
+  private volatile boolean compactionBlockedBySharedIds;
   // Set once the ignored location-cache limit has been reported, so a rebuild does not repeat the warning.
   // compareAndSet, not a plain flag: two threads racing the first call would otherwise both log it.
   private final    AtomicBoolean                 locationCacheCapReported = new AtomicBoolean();
@@ -6305,11 +6313,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   private static final class LiveSetReplay {
     /** Ids at or above this are not tracked: the arrays below would cost more than the check is worth. */
-    private static final int MAX_TRACKED_ID = 1 << 26;
+    static final int MAX_TRACKED_ID = 1 << 26;
     /** In {@link #ownerBucket}: the id was tombstoned last. */
     private static final int DELETED        = -1;
 
     final Map<RID, VectorEntryForGraphBuild> byRid;
+    /** Page entries whose id was past {@link #MAX_TRACKED_ID}, so never judged. */
+    int untrackedIds;
     /** Per vector id, the record that holds it after the replay: bucket id + 1, 0 for never seen, {@link #DELETED}. */
     private int[]  ownerBucket;
     private long[] ownerPosition;
@@ -6323,8 +6333,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
     void accept(final LSMVectorIndexPageParser.VectorEntry entry, final boolean isCompacted) {
       mergeEntryIntoLiveSet(byRid, entry, isCompacted);
       final int id = entry.vectorId;
-      if (id < 0 || id >= MAX_TRACKED_ID)
+      if (id < 0 || id >= MAX_TRACKED_ID) {
+        untrackedIds++;
         return;
+      }
       if (id >= ownerBucket.length) {
         final int grown = (int) Math.min(MAX_TRACKED_ID, Math.max(id + 1L, ownerBucket.length * 2L));
         ownerBucket = Arrays.copyOf(ownerBucket, grown);
@@ -6397,11 +6409,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     for (final VectorEntryForGraphBuild loser : losers)
       replay.byRid.remove(loser.rid);
+    compactionBlockedBySharedIds = true;
     LogManager.instance().log(this, Level.WARNING,
         "Graph build for index %s left out %d records whose vector id a load of the same pages gives to another record or "
             + "deletes: they are not in the graph until the index is rebuilt (CHECK DATABASE FIX or REBUILD INDEX), and the "
             + "data file is not compacted in this pass. First: %s",
         indexName, losers.size(), LiveSetReplay.describeFirst(losers));
+    if (replay.untrackedIds > 0)
+      LogManager.instance().log(this, Level.WARNING,
+          "Index %s has %d page entries with vector ids too large to track: shared ids among them are not reported",
+          indexName, replay.untrackedIds);
     return true;
   }
 
@@ -6417,18 +6434,23 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   @Override
   public List<String> checkIntegrity() {
+    // Pass 1, no lock and no per-record map: does any vector id ever carry two different records? A record that
+    // writes an id and the tombstone that deletes it name the same record, so on a healthy index this never
+    // fires, and without it there is nothing for a load to give to another record. Damage is on the pages, so a
+    // write landing during this pass cannot hide it.
+    if (!anyVectorIdWrittenByTwoRecords())
+      return Collections.emptyList();
+
     final long pages = getTotalPages() + (compactedSubIndex != null ? compactedSubIndex.getTotalPages() : 0);
     // About one entry per (dimensions + 24) bytes of page: an estimate to avoid rehashing, never a bound.
     final int expected = (int) Math.min(1 << 22, pages * getPageSize() / (metadata.dimensions + 24L));
     final LiveSetReplay replay = new LiveSetReplay(Math.max(16, expected));
     final DatabaseInternal database = getDatabase();
+    // Pass 2 decides, and holds the read lock so a write cannot land mid-read and raise a finding that is not there:
+    // under FIX a false finding is a full index rebuild.
     lock.readLock().lock();
     try {
-      if (compactedSubIndex != null)
-        LSMVectorIndexPageParser.parsePages(database, compactedSubIndex.getFileId(), compactedSubIndex.getTotalPages(),
-            getPageSize(), true, false, entry -> replay.accept(entry, true));
-      LSMVectorIndexPageParser.parsePages(database, getFileId(), getTotalPages(), getPageSize(), false, false,
-          entry -> replay.accept(entry, false));
+      replayPages(database, replay);
     } finally {
       lock.readLock().unlock();
     }
@@ -6442,6 +6464,43 @@ public class LSMVectorIndex implements Index, IndexInternal {
         + "Rebuild the index (CHECK DATABASE FIX)").formatted(losers.size(), LiveSetReplay.describeFirst(losers)));
   }
 
+  private void replayPages(final DatabaseInternal database, final LiveSetReplay replay) {
+    if (compactedSubIndex != null)
+      LSMVectorIndexPageParser.parsePages(database, compactedSubIndex.getFileId(), compactedSubIndex.getTotalPages(),
+          getPageSize(), true, false, entry -> replay.accept(entry, true));
+    LSMVectorIndexPageParser.parsePages(database, getFileId(), getTotalPages(), getPageSize(), false, false,
+        entry -> replay.accept(entry, false));
+  }
+
+  /** The cheap pre-pass of {@link #checkIntegrity()}: 12 bytes per vector id, nothing per record. */
+  private boolean anyVectorIdWrittenByTwoRecords() {
+    final int[][] bucket = { new int[1024] };
+    final long[][] position = { new long[1024] };
+    final boolean[] shared = { false };
+    final Consumer<LSMVectorIndexPageParser.VectorEntry> consumer = entry -> {
+      final int id = entry.vectorId;
+      if (shared[0] || id < 0 || id >= LiveSetReplay.MAX_TRACKED_ID)
+        return;
+      if (id >= bucket[0].length) {
+        final int grown = (int) Math.min(LiveSetReplay.MAX_TRACKED_ID, Math.max(id + 1L, bucket[0].length * 2L));
+        bucket[0] = Arrays.copyOf(bucket[0], grown);
+        position[0] = Arrays.copyOf(position[0], grown);
+      }
+      final int b = entry.rid.getBucketId() + 1;
+      if (bucket[0][id] == 0) {
+        bucket[0][id] = b;
+        position[0][id] = entry.rid.getPosition();
+      } else if (bucket[0][id] != b || position[0][id] != entry.rid.getPosition())
+        shared[0] = true;
+    };
+    final DatabaseInternal database = getDatabase();
+    if (compactedSubIndex != null)
+      LSMVectorIndexPageParser.parsePages(database, compactedSubIndex.getFileId(), compactedSubIndex.getTotalPages(),
+          getPageSize(), true, false, consumer);
+    LSMVectorIndexPageParser.parsePages(database, getFileId(), getTotalPages(), getPageSize(), false, false, consumer);
+    return shared[0];
+  }
+
   /**
    * Visible for tests: appends one page entry carrying an explicit vector id, inside the caller's transaction, exactly
    * as a commit replay does. Lets a test place two different records on the SAME vector id, the page state the
@@ -6449,6 +6508,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   void persistEntryForTest(final int id, final RID rid, final float[] vector) {
     persistVectorWithLocation(id, rid, vector);
+  }
+
+  /** Visible for tests: whether a build left records out, which stops the compaction trigger. */
+  boolean compactionBlockedBySharedIdsForTest() {
+    return compactionBlockedBySharedIds;
   }
 
   /** Visible for tests: appends a tombstone for an explicit vector id, inside the caller's transaction. */
@@ -9183,7 +9247,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * the number of resident locations, two settings read live - and never touches a page.
    */
   private boolean isCompactionDue() {
-    if (!isCompactionAllowedOnThisNode(getDatabase()))
+    if (compactionBlockedBySharedIds || !isCompactionAllowedOnThisNode(getDatabase()))
       return false;
 
     final ContextConfiguration configuration = getDatabase().getConfiguration();
