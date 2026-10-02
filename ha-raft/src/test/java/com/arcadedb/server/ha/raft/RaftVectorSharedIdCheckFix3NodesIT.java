@@ -113,6 +113,13 @@ class RaftVectorSharedIdCheckFix3NodesIT extends BaseRaftHATest {
         .as("a plain check, forwarded to the leader, names the index and repairs nothing")
         .anyMatch(name -> name.startsWith("Doc_"));
 
+    for (int i = 0; i < getServerCount(); i++) {
+      final int server = i;
+      final List<String> afterPlainCheck = withResyncRetry(server,
+          db -> vectorIndex((DatabaseInternal) db).checkIntegrity());
+      assertThat(afterPlainCheck).as("the plain check repairs nothing: server %d still has the damage", server).hasSize(1);
+    }
+
     runCheck(followerIndex, "CHECK DATABASE FIX");
     waitForAllServers();
 
