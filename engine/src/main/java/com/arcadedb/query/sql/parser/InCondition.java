@@ -65,8 +65,8 @@ public class InCondition extends BooleanExpression {
   /** Lazily assigned on the first row that can use the memo; see {@link #constantRightHandSide}. */
   private volatile String memoKey;
 
-  /** Lazily computed by {@link #operandIsSearched}. */
-  private volatile Boolean operandSearched;
+  /** Lazily assigned key of {@link #operandIsSearched}'s per-execution memo. */
+  private volatile String searchedKey;
 
   public InCondition() {
   }
@@ -209,16 +209,22 @@ public class InCondition extends BooleanExpression {
   /**
    * Whether the left side is a searched value: an expression that needs no record (literal, parameter, record-free
    * function call). Only then may the operand be converted to the item type of the right side ({@code ? IN typedList}).
-   * A record property is compared without converting the right-hand
-   * operands, like {@code =} and an index (#8913).
+   * A record property is compared without converting the right-hand operands, like {@code =} and an index (#8913).
    * <p>
-   * The answer is memoized per node: it depends on the shape of the expression, which a cached statement keeps.
+   * The answer can depend on the execution context (script variables, bound parameters), and statements are cached and
+   * reused, so it is memoized per execution in the context, never on the node.
    */
   private boolean operandIsSearched(final CommandContext context) {
-    Boolean searched = operandSearched;
+    String key = searchedKey;
+    if (key == null) {
+      // Same benign race as memoKey
+      key = "$IN$S" + MEMO_KEY_SEQUENCE.incrementAndGet();
+      searchedKey = key;
+    }
+    Boolean searched = (Boolean) context.getCachedValue(key);
     if (searched == null) {
       searched = left.isEarlyCalculated(context);
-      operandSearched = searched;
+      context.setCachedValue(key, searched);
     }
     return searched;
   }
@@ -270,6 +276,7 @@ public class InCondition extends BooleanExpression {
         // taken as homogeneous (judged by its first item), so a big same-class set stays one hash probe
         if (convertOperand && iLeft != null && mayMatchByConversion(iLeft, firstItem(set)))
           for (final Object o : set)
+            // convertOperand is known true here (see the enclosing if)
             if (o != null && equalsEitherWay(iLeft, o, true))
               return Boolean.TRUE;
         // No match: UNKNOWN if the search value is null or the set holds a null element, else FALSE.
