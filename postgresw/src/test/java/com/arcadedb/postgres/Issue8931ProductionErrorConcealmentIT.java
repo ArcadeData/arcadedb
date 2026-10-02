@@ -125,7 +125,7 @@ class Issue8931ProductionErrorConcealmentIT extends PostgresWireProtocolTestBase
   }
 
   private Map<Character, String> withMode(final String mode, final WireScript script) throws Exception {
-    final Object previous = GlobalConfiguration.SERVER_MODE.getValue();
+    final String previous = getServer(0).getConfiguration().getValueAsString(GlobalConfiguration.SERVER_MODE);
     getServer(0).getConfiguration().setValue(GlobalConfiguration.SERVER_MODE, mode);
     try (final Socket socket = new Socket()) {
       socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
