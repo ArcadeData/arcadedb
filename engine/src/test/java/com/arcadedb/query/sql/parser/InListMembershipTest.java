@@ -95,16 +95,16 @@ class InListMembershipTest {
   void arrayRightHandSideIsIndexedLikeAList() {
     final Object[] array = { "a", "b" };
     final InListMembership membership = InListMembership.build(array);
-    assertThat(membership.evaluate("a", true)).isTrue();
-    assertThat(membership.evaluate("z", true)).isFalse();
-    assertThat(membership.evaluate(null, true)).isNull();
+    assertThat(membership.evaluate("a")).isTrue();
+    assertThat(membership.evaluate("z")).isFalse();
+    assertThat(membership.evaluate(null)).isNull();
   }
 
   @Test
   void nonIndexableRightHandSidesAreCarriedThroughUntouched() {
     // A scalar degrades to an equality test, exactly as the linear evaluator does.
-    assertThat(InListMembership.build("a").evaluate("a", true)).isTrue();
-    assertThat(InListMembership.build("a").evaluate("b", true)).isFalse();
+    assertThat(InListMembership.build("a").evaluate("a")).isTrue();
+    assertThat(InListMembership.build("a").evaluate("b")).isFalse();
     // A null right-hand side is the caller's to turn into UNKNOWN, so it has to survive the build intact.
     assertThat(InListMembership.build(null).getRightValue()).isNull();
   }
@@ -112,7 +112,7 @@ class InListMembershipTest {
   private void assertAgreesOn(final Object list, final Object... leftValues) {
     final InListMembership membership = InListMembership.build(list);
     for (final Object left : leftValues)
-      assertThat(membership.evaluate(left, true))
+      assertThat(membership.evaluate(left))
           .as("membership of %s (%s) in %s", left, left == null ? "null" : left.getClass().getSimpleName(), list)
           .isEqualTo(InCondition.evaluateExpressionThreeValued(left, list));
   }

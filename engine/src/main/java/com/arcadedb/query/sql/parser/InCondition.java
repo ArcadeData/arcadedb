@@ -80,7 +80,7 @@ public class InCondition extends BooleanExpression {
     if (membership != null) {
       if (membership.getRightValue() == null)
         return null;
-      result = membership.evaluate(leftVal, operandIsSearched(context));
+      result = membership.evaluate(leftVal);
     } else {
       final Object rightVal = evaluateRight(currentRecord, context);
       if (rightVal == null)
@@ -120,7 +120,7 @@ public class InCondition extends BooleanExpression {
     if (membership != null) {
       if (membership.getRightValue() == null)
         return null;
-      result = membership.evaluate(leftVal, operandIsSearched(context));
+      result = membership.evaluate(leftVal);
     } else {
       final Object rightVal = evaluateRight(currentRecord, context);
       if (rightVal == null)
@@ -160,7 +160,7 @@ public class InCondition extends BooleanExpression {
 
     InListMembership membership = (InListMembership) context.getCachedValue(key);
     if (membership == null) {
-      membership = InListMembership.build(evaluateRight((Result) null, context));
+      membership = InListMembership.build(evaluateRight((Result) null, context), operandIsSearched(context));
       context.setCachedValue(key, membership);
     }
     return membership;
