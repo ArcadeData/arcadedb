@@ -54,8 +54,10 @@ final class BoltSystemProcedures {
   private static final Object[] NO_ARGS       = new Object[0];
   private static final String   CALL_PREFIX   = "call ";
   private static final String   ITEM          = "(?:collect\\(\\w+\\)|\\w+)(?: as \\w+)?";
-  private static final Pattern  FOREIGN_CLAUSE    = Pattern.compile(
-      "(?<!\\w)(?:create|merge|set|delete|detach|remove|foreach|call|load|match|optional|union|use|finish|insert)\\b");
+  private static final Pattern  QUOTED        = Pattern.compile("'[^']*'|\"[^\"]*\"");
+  private static final Pattern  WHITESPACE    = Pattern.compile("\\s+");
+  private static final Pattern  FOREIGN_CLAUSE  = Pattern.compile(
+      "(?<![\\w$.])(?:create|merge|set|delete|detach|remove|foreach|call|load|match|optional|union|use|finish|insert)\\b");
   private static final Pattern  CALL_TAIL     = Pattern.compile(
       " ?(?:\\( ?\\))?(?: yield (?:\\*|" + ITEM + "(?:, ?" + ITEM + ")*))?(?: return " + ITEM + "(?:, ?" + ITEM + ")*)? ?;?");
   private static final String   LABELS        = DbLabels.NAME.toLowerCase(Locale.ROOT);
@@ -88,7 +90,7 @@ final class BoltSystemProcedures {
    * @return the normalized form used by every anchored match
    */
   static String normalize(final String query) {
-    return stripLeadingComments(query.trim()).toLowerCase(Locale.ROOT).replaceAll("\\s+", " ");
+    return WHITESPACE.matcher(stripLeadingComments(query.trim()).toLowerCase(Locale.ROOT)).replaceAll(" ");
   }
 
   /**
@@ -160,7 +162,8 @@ final class BoltSystemProcedures {
    * tail handling (YIELD / WHERE / UNWIND, as Neo4j Browser sends it). Only the anchoring and the token boundary are
    * required (plus no write or further-reading clause in the tail), which is what keeps a mere mention of the name
    * elsewhere in a larger statement out (issue #8908). The tail check is a deny-list on a family with no engine
-   * fallback, so a string literal in the tail that holds such a keyword is declined too. An {@code EXPLAIN} or
+   * fallback: quoted literals are blanked and a keyword after {@code $} or {@code .} is not a clause, so parameters
+   * and property names do not trip it. An {@code EXPLAIN} or
    * {@code PROFILE} prefix, or a comment between {@code CALL} and the name, reaches the engine.
    */
   static boolean isSystemCall(final String normalized, final String procedureName) {
@@ -172,7 +175,9 @@ final class BoltSystemProcedures {
       return false;
     // The tail stays open (YIELD / WHERE / UNWIND / RETURN) but never a clause that writes or calls on: serving
     // those here would drop them silently, whereas the engine refuses them loudly.
-    return !FOREIGN_CLAUSE.matcher(normalized).region(end, normalized.length()).find();
+    // Quoted literals are blanked first: a keyword inside a string is data, not a clause
+    final String tail = QUOTED.matcher(normalized.substring(end)).replaceAll("''");
+    return !FOREIGN_CLAUSE.matcher(tail).find();
   }
 
   /**
