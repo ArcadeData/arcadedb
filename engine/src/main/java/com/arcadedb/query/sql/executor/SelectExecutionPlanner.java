@@ -5292,7 +5292,7 @@ public class SelectExecutionPlanner {
    * stand in for a sort nor answer min() / max() with a key. Deliberately conservative for a composite index with one
    * folded column: it is refused even when the ORDER BY only reads a column that is not folded.
    */
-  private static boolean holdsFoldedKeys(final Index index) {
+  public static boolean holdsFoldedKeys(final Index index) {
     return index instanceof IndexInternal internal && internal.getMetadata() != null && internal.getMetadata().hasAnyCaseInsensitive();
   }
 

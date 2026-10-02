@@ -21,8 +21,10 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.database.Document;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
+import com.arcadedb.database.DocumentValidator;
+import com.arcadedb.database.DocumentValidator.ExistenceConstraint;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
@@ -154,6 +156,9 @@ public class AlterPropertyStatement extends DDLStatement {
    * constraint that has no value for the property stays legal and stays out of any index on it, yet the planners trust
    * MANDATORY + NOTNULL to mean "the index holds every record", so such a record would silently vanish from an
    * index-ordered read. The scan stops at the first offender and names its RID.
+   * <p>
+   * Best effort: a full read of the type, not atomic with the schema change, so a writer racing the ALTER can still slip a
+   * record in, and the Java schema API ({@code Property.setMandatory()}) is not guarded at all.
    */
   private static void requireExistingRecordsConform(final Database db, final DocumentType type, final Property property,
       final boolean mandatory) {
@@ -162,13 +167,11 @@ public class AlterPropertyStatement extends DDLStatement {
     while (records.hasNext()) {
       if (!(records.next() instanceof Document document))
         continue;
-      final boolean violates = mandatory ? !document.has(name) : document.has(name) && document.get(name) == null;
-      if (violates)
-        throw new CommandExecutionException(
-            "Cannot set " + (mandatory ? "MANDATORY" : "NOTNULL") + " on property '" + type.getName() + "." + name + "': record "
-                + document.getIdentity() + (mandatory ? " has no value for it (property '" + type.getName() + "." + name
-                + "' is mandatory, but was never set)" : " holds a null (property '" + type.getName() + "." + name
-                + "' cannot be null)") + ". Fix or delete the non-conforming records first");
+      final ExistenceConstraint unmet = DocumentValidator.unmetExistenceConstraint(document, name, mandatory, !mandatory);
+      if (unmet != null)
+        throw new CommandExecutionException("Cannot set " + (mandatory ? "MANDATORY" : "NOTNULL") + ": record "
+            + document.getIdentity() + " violates it, " + DocumentValidator.describeUnmetExistenceConstraint(document, name, unmet)
+            + ". Fix or delete the non-conforming records first");
     }
   }
 

@@ -78,12 +78,10 @@ class Issue8943AlterPropertyExistingRecordsTest extends TestHelper {
   @Test
   void orderByStillReturnsEveryRecordAfterTheRefusedAlter() {
     load();
-    try {
-      database.command("sql", "ALTER PROPERTY T.v NOTNULL true");
-      database.command("sql", "ALTER PROPERTY T.v MANDATORY true");
-    } catch (final CommandExecutionException expected) {
-      // refused: the constraint never takes effect
-    }
+    // NOTNULL alone only rejects an explicit null, so it is accepted; MANDATORY is the one refused
+    database.command("sql", "ALTER PROPERTY T.v NOTNULL true");
+    assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY T.v MANDATORY true"))
+        .isInstanceOf(CommandExecutionException.class);
     assertThat(count("SELECT id FROM T")).isEqualTo(5);
     assertThat(count("SELECT FROM T ORDER BY v")).isEqualTo(5);
   }
@@ -103,6 +101,28 @@ class Issue8943AlterPropertyExistingRecordsTest extends TestHelper {
     load();
     database.command("sql", "ALTER PROPERTY T.v MANDATORY false");
     database.command("sql", "ALTER PROPERTY T.v NOTNULL false");
+    assertThat(database.getSchema().getType("T").getProperty("v").isMandatory()).isFalse();
+    assertThat(database.getSchema().getType("T").getProperty("v").isNotNull()).isFalse();
+  }
+
+  @Test
+  void reapplyingAConstraintThatIsAlreadySetDoesNotRescan() {
+    database.command("sql", "CREATE DOCUMENT TYPE R");
+    database.command("sql", "CREATE PROPERTY R.v INTEGER");
+    database.command("sql", "ALTER PROPERTY R.v MANDATORY true");
+    // a record written while the constraint is on cannot violate it; the repeat must simply succeed
+    database.transaction(() -> database.newDocument("R").set("v", 1).save());
+    database.command("sql", "ALTER PROPERTY R.v MANDATORY true");
+    assertThat(database.getSchema().getType("R").getProperty("v").isMandatory()).isTrue();
+  }
+
+  @Test
+  void theRefusalIsRaisedInsideADdlScriptToo() {
+    load();
+    assertThatThrownBy(() -> database.command("sqlscript",
+        "CREATE DOCUMENT TYPE Other;\nALTER PROPERTY T.v MANDATORY true;"))
+        .isInstanceOf(CommandExecutionException.class);
+    assertThat(database.getSchema().getType("T").getProperty("v").isMandatory()).isFalse();
   }
 
   @Test
@@ -112,6 +132,6 @@ class Issue8943AlterPropertyExistingRecordsTest extends TestHelper {
     database.command("sql", "CREATE DOCUMENT TYPE C EXTENDS P");
     database.transaction(() -> database.newDocument("C").set("other", 1).save());
     assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY P.v MANDATORY true"))
-        .isInstanceOf(CommandExecutionException.class);
+        .isInstanceOf(CommandExecutionException.class).hasMessageContaining("#").hasMessageContaining("is mandatory");
   }
 }
