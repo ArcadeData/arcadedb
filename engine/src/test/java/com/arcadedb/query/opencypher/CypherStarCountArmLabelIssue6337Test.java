@@ -26,11 +26,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Regression tests for issue #6337: {@code tryDetectStarCountStar} reads only the central variable's label and
- * carries nothing for an arm's far endpoint - {@code DegreeProductOp.Arm} has no room for one - so
- * {@code (p)<-[:WROTE]-(:Author)} and {@code (p)<-[:WROTE]-()} produced the same operator and the same,
- * over-counted, answer. The fix declines the push-down whenever a non-central node of a star-join pattern
- * carries a label, exactly as the sibling detectors already do for the central variable's own label
- * (issue #6322).
+ * carried nothing for an arm's far endpoint, so {@code (p)<-[:WROTE]-(:Author)} and {@code (p)<-[:WROTE]-()}
+ * produced the same operator and the same, over-counted, answer. The first fix declined the push-down whenever a
+ * non-central node carried a label, which was correct but sent LSQB Q4/Q7 (every endpoint labelled) to full pattern
+ * matching (0.01s to 5-12s on SF1). {@code DegreeProductOp.Arm} now carries a label per hop and the operator enforces
+ * it, on the CSR paths (a label the edge type already implies costs nothing, one that filters gets a filtered degree)
+ * and on the OLTP paths. These tests keep the original over-count scenario as the ground truth: the push-down is used
+ * AND the answer is the materialized pipeline's.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -55,17 +57,16 @@ class CypherStarCountArmLabelIssue6337Test extends TestHelper {
    * pipeline is ground truth: only the Author-authored, Topic-tagged post exists once.
    */
   @Test
-  void aLabelledArmEndpointDeclinesTheStarCountPushDown() {
+  void aLabelledArmEndpointIsEnforcedByTheStarCountPushDown() {
     final String labelled = "MATCH (p:Post)<-[:WROTE]-(:Author), (p)-[:TAGGED]->(:Topic) RETURN count(*) AS c";
-    assertThat(explainOf(labelled)).doesNotContain("COUNT STAR JOIN");
+    assertThat(explainOf(labelled)).contains("COUNT STAR JOIN");
     assertThat(scalarOf(labelled)).isEqualTo(1);
     assertThat(scalarOf(labelled)).isEqualTo(rowCountOf(
         "MATCH (p:Post)<-[:WROTE]-(a:Author), (p)-[:TAGGED]->(t:Topic) RETURN p"));
   }
 
   /**
-   * When no arm carries a label at all, the push-down still applies and still counts both {@code WROTE} arms -
-   * the fix declines on a label the operator cannot enforce, not on the presence of an arm.
+   * When no arm carries a label at all, the push-down still applies and still counts both {@code WROTE} arms.
    */
   @Test
   void starCountPushDownStillAppliesWhenNoArmCarriesALabel() {
@@ -74,15 +75,15 @@ class CypherStarCountArmLabelIssue6337Test extends TestHelper {
     assertThat(scalarOf(unlabelled)).isEqualTo(2);
   }
 
-  /** A label on an interior node of a multi-hop arm is just as unenforceable as one on the far endpoint. */
+  /** A label on an interior node of a multi-hop arm is enforced hop by hop. */
   @Test
-  void aLabelledInteriorArmNodeDeclinesTheStarCountPushDown() {
+  void aLabelledInteriorArmNodeIsEnforcedByTheStarCountPushDown() {
     database.command("opencypher", "CREATE (:Bad {k:'x1'})");
     database.command("opencypher", "MATCH (b:Bad {k:'x1'}), (p:Post {k:'p1'}) CREATE (b)-[:VIA]->(p)");
     database.command("opencypher", "MATCH (a:Author {k:'a1'}), (b:Bad {k:'x1'}) CREATE (a)-[:LINK]->(b)");
 
     final String query = "MATCH (p:Post)<-[:VIA]-(:Bad)<-[:LINK]-(:Author), (p)-[:TAGGED]->(:Topic) RETURN count(*) AS c";
-    assertThat(explainOf(query)).doesNotContain("COUNT STAR JOIN");
+    assertThat(explainOf(query)).contains("COUNT STAR JOIN");
     assertThat(scalarOf(query)).isEqualTo(rowCountOf(
         "MATCH (p:Post)<-[:VIA]-(x:Bad)<-[:LINK]-(a:Author), (p)-[:TAGGED]->(t:Topic) RETURN p"));
   }
@@ -95,7 +96,7 @@ class CypherStarCountArmLabelIssue6337Test extends TestHelper {
    * label-decline loop has to cover too, since it runs once per pattern before that split, not once per arm.
    */
   @Test
-  void aLabelledEndpointDeclinesTheStarCountPushDownWhenTheCentralNodeIsInterior() {
+  void aLabelledEndpointIsEnforcedWhenTheCentralNodeIsInterior() {
     database.command("opencypher", "CREATE (:Extra {k:'e1'})");
     database.command("opencypher", "MATCH (p:Post {k:'p1'}), (e:Extra {k:'e1'}) CREATE (p)-[:VIA]->(e)");
 
@@ -103,9 +104,53 @@ class CypherStarCountArmLabelIssue6337Test extends TestHelper {
     // a leftArm (back to :Author) and a rightArm (forward to :Topic); the second pattern only supplies p's
     // second occurrence so it counts as the central variable at all.
     final String query = "MATCH (:Author)-[:WROTE]->(p:Post)-[:TAGGED]->(:Topic), (p)-[:VIA]->() RETURN count(*) AS c";
-    assertThat(explainOf(query)).doesNotContain("COUNT STAR JOIN");
+    assertThat(explainOf(query)).contains("COUNT STAR JOIN");
     assertThat(scalarOf(query)).isEqualTo(rowCountOf(
         "MATCH (a:Author)-[:WROTE]->(p:Post)-[:TAGGED]->(t:Topic), (p)-[:VIA]->(e) RETURN p"));
+  }
+
+  /**
+   * The same scenarios on a Graph Analytical View, the path LSQB takes. The {@code WROTE} label really filters (a Bot
+   * writes the post too), so the arm gets a filtered degree; the {@code TAGGED} label is implied (only Posts tag Topics
+   * here) and keeps the plain degree. Both have to give the materialized pipeline's answer.
+   */
+  @Test
+  void labelledArmsAreEnforcedOnTheCsrPathToo() {
+    createView();
+    final String filtering = "MATCH (p:Post)<-[:WROTE]-(:Author), (p)-[:TAGGED]->(:Topic) RETURN count(*) AS c";
+    assertThat(explainOf(filtering)).contains("COUNT STAR JOIN");
+    assertThat(scalarOf(filtering)).isEqualTo(1);
+
+    final String implied = "MATCH (p:Post)-[:TAGGED]->(:Topic), (p)<-[:WROTE]-() RETURN count(*) AS c";
+    assertThat(explainOf(implied)).contains("COUNT STAR JOIN");
+    assertThat(scalarOf(implied)).isEqualTo(rowCountOf("MATCH (p:Post)-[:TAGGED]->(t:Topic), (p)<-[:WROTE]-(w) RETURN p"));
+
+    final String optional = "MATCH (p:Post)-[:TAGGED]->(:Topic) OPTIONAL MATCH (p)<-[:WROTE]-(:Author) RETURN count(*) AS c";
+    assertThat(scalarOf(optional)).isEqualTo(rowCountOf("MATCH (p:Post)-[:TAGGED]->(t:Topic) OPTIONAL MATCH (p)<-[:WROTE]-(a:Author) RETURN p"));
+
+    final String bots = "MATCH (p:Post)-[:TAGGED]->(:Topic), (p)<-[:WROTE]-(:Bot) RETURN count(*) AS c";
+    assertThat(scalarOf(bots)).isEqualTo(1);
+
+    final String none = "MATCH (p:Post)-[:TAGGED]->(:Topic), (p)<-[:WROTE]-(:Topic) RETURN count(*) AS c";
+    assertThat(scalarOf(none)).isZero();
+  }
+
+  /** A label the schema does not know matches nothing (a mandatory arm) or leaves the optional row alone. */
+  @Test
+  void anUnknownEndpointLabelMatchesNothing() {
+    createView();
+    assertThat(scalarOf("MATCH (p:Post)-[:TAGGED]->(:Topic), (p)<-[:WROTE]-(:Ghost) RETURN count(*) AS c")).isZero();
+    assertThat(scalarOf("MATCH (p:Post)-[:TAGGED]->(:Topic) OPTIONAL MATCH (p)<-[:WROTE]-(:Ghost) RETURN count(*) AS c")).isEqualTo(1);
+  }
+
+  private void createView() {
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW gav6337 VERTEX TYPES (Author, Bot, Post, Topic) "
+        + "EDGE TYPES (WROTE, TAGGED)");
+    final var view = com.arcadedb.graph.olap.GraphAnalyticalViewRegistry.get(database, "gav6337");
+    final long deadline = System.currentTimeMillis() + 60_000;
+    while (!view.isReady() && System.currentTimeMillis() < deadline)
+      Thread.onSpinWait();
+    assertThat(view.isReady()).isTrue();
   }
 
   // ===================================================================================================
