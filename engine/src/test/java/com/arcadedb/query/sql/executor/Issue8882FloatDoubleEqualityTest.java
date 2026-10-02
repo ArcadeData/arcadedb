@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -79,6 +80,50 @@ class Issue8882FloatDoubleEqualityTest extends TestHelper {
     assertThat(count("opencypher", "MATCH (n:T) WHERE n.g = $p AND n.k = 0 RETURN n", 0.10000001)).isEqualTo(0);
   }
 
+  @Test
+  void inListFindsTheWidenedDouble() {
+    setup();
+    assertThat(count("sql", "SELECT FROM T WHERE g IN [?] AND k = 0", (double) 0.1f)).isEqualTo(1);
+    assertThat(count("sql", "SELECT FROM T WHERE f IN [?] AND k = 0", (double) 0.1f)).isEqualTo(1);
+    assertThat(count("sql", "SELECT FROM T WHERE g IN [?, ?] AND k = 0", 5.5d, (double) 0.1f)).isEqualTo(1);
+    assertThat(count("sql", "SELECT FROM T WHERE g IN [?] AND k = 0", 0.2d)).isEqualTo(0);
+  }
+
+  @Test
+  void cypherNotEqualsNaNAndSignedZero() {
+    database.command("sql", "CREATE VERTEX TYPE N");
+    database.command("sql", "CREATE PROPERTY N.f FLOAT");
+    database.transaction(() -> {
+      database.newVertex("N").set("f", Float.NaN).save();
+      database.newVertex("N").set("f", 0.1f).save();
+      database.newVertex("N").set("f", 0.0f).save();
+    });
+    assertThat(count("opencypher", "MATCH (n:N) WHERE n.f = n.f RETURN n", null)).isEqualTo(2);
+    assertThat(count("opencypher", "MATCH (n:N) WHERE n.f <> n.f RETURN n", null)).isEqualTo(1);
+    assertThat(count("opencypher", "MATCH (n:N) WHERE n.f = $p RETURN n", Double.NaN)).isEqualTo(0);
+    assertThat(count("opencypher", "MATCH (n:N) WHERE n.f = $p RETURN n", -0.0d)).isEqualTo(1);
+    assertThat(count("opencypher", "MATCH (n:N) WHERE n.f <> $p RETURN n", (double) 0.1f)).isEqualTo(2);
+    assertThat(count("opencypher", "MATCH (n:N) WHERE n.f = $p RETURN n", (double) 0.1f)).isEqualTo(1);
+  }
+
+  @Test
+  void numbersEqualEdgeCases() {
+    assertThat(Type.numbersEqual(0.1f, (double) 0.1f)).isTrue();
+    assertThat(Type.numbersEqual((double) 0.1f, 0.1f)).isTrue();
+    assertThat(Type.numbersEqual(0.1f, 0.1d)).isTrue();
+    assertThat(Type.numbersEqual(0.1f, 0.10000001d)).isFalse();
+    assertThat(Type.numbersEqual(0.0f, -0.0d)).isFalse();
+    assertThat(Type.numbersEqual(-0.0f, 0.0d)).isFalse();
+    assertThat(Type.numbersEqual(Float.POSITIVE_INFINITY, Double.POSITIVE_INFINITY)).isTrue();
+    assertThat(Type.numbersEqual(Float.POSITIVE_INFINITY, 1e300d)).isFalse();
+    assertThat(Type.numbersEqual(1e10d, new BigDecimal("1e400"))).isFalse();
+    assertThat(Type.numbersEqual(Double.POSITIVE_INFINITY, new BigDecimal("1e400"))).isFalse();
+    assertThat(Type.numbersEqual(0.1d, new BigDecimal("0.10000000000000001"))).isTrue();
+    assertThat(Type.numbersEqual(0.1d, new BigDecimal("0.1000000000000001"))).isFalse();
+    assertThat(Type.numbersEqual(1.5f, 1)).isFalse();
+    assertThat(Type.numbersEqual(2.0f, 2)).isTrue();
+  }
+
   private void setup() {
     database.command("sql", "CREATE VERTEX TYPE T");
     database.command("sql", "CREATE PROPERTY T.k INTEGER");
@@ -103,11 +148,25 @@ class Issue8882FloatDoubleEqualityTest extends TestHelper {
     }
   }
 
-  private int count(final String language, final String query, final Object param) {
+  private int count(final String language, final String query, final Object... params) {
+    final Object param = params == null || params.length == 0 ? null : params.length == 1 ? params[0] : null;
+    if (params != null && params.length > 1)
+      return countMulti(language, query, params);
     int n = 0;
     try (final ResultSet rs = param == null ?
         database.query(language, query) :
         language.equals("sql") ? database.query(language, query, param) : database.query(language, query, Map.of("p", param))) {
+      while (rs.hasNext()) {
+        rs.next();
+        n++;
+      }
+    }
+    return n;
+  }
+
+  private int countMulti(final String language, final String query, final Object[] params) {
+    int n = 0;
+    try (final ResultSet rs = database.query(language, query, params)) {
       while (rs.hasNext()) {
         rs.next();
         n++;
