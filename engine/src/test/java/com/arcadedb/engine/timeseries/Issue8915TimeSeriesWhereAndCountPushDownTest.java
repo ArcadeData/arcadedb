@@ -132,7 +132,8 @@ class Issue8915TimeSeriesWhereAndCountPushDownTest extends TestHelper {
   void twoEqualitiesOnTheSameTagInOneAndMatchNothing() {
     forEachState(() -> {
       for (final String w : new String[] { "host = 'a' AND host = 'b'", "host = 'a' AND host = 'b' AND v > 0",
-          "(host = 'a' AND host = 'b') OR host = 'a'", "host = 'a' AND host = 'a'" })
+          "(host = 'a' AND host = 'b') OR host = 'a'", "host = 'a' AND host = 'a'",
+          "host = 'a' AND host = 'b' AND host = 'a'" })
         assertThat(groupedCount("T", w)).as(w).isEqualTo(groupedCount("D", w));
       assertThat(groupedCount("T", "host = 'a' AND host = 'b'")).isZero();
     });
