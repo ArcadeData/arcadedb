@@ -228,6 +228,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   protected          LocalSchema                               schema;
   protected          TransactionManager                        transactionManager;
   protected volatile DatabaseAsyncExecutorImpl                 async                     = null;
+  // Held only for short, non-blocking sections: setWrappedDatabaseInstance() takes it from the HA wrapper's constructor
+  // and, in tests, from an async worker, so nothing may ever wait for the async workers while holding it.
   protected final    Lock                                      asyncLock                 = new ReentrantLock();
   protected          boolean                                   autoTransaction           = false;
   protected volatile boolean                                   open                      = false;

@@ -168,10 +168,13 @@ public class DatabaseChecker {
   private long             stepTotal;
   private int              lastReportedPct;
 
+  /**
+   * Builds a checker on the database's current wrapper, NOT on the instance passed in: the checker commits its fixes,
+   * and under HA a commit on the inner instance applies its pages on this node only (issue #8292). The wrapper is
+   * resolved once, here, so a check that outlives a wrapper replacement keeps committing through the one it started on.
+   */
   public DatabaseChecker(final Database database) {
-    // The database's CURRENT wrapper, whatever instance the caller handed over (issue #8292): the checker commits its
-    // fixes, and under HA a commit on the inner instance applies its pages on this node only. CHECK DATABASE already
-    // passes the wrapper; this covers the embedded API and a wrapper a plugin restart has since replaced.
+    // CHECK DATABASE already passes the wrapper; this covers the embedded API and a wrapper a plugin restart replaced.
     this.database = ((DatabaseInternal) database).getEmbedded().getWrappedDatabaseInstance();
   }
 
