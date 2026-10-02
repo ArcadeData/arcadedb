@@ -24,6 +24,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.Map;
+import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -57,7 +58,7 @@ public class CypherFunctionLibraryDefinition implements FunctionLibraryDefinitio
     json.put("language", getLanguage());
 
     final JSONObject functionsJSON = new JSONObject();
-    for (final CypherFunctionDefinition f : functions.values()) {
+    for (final CypherFunctionDefinition f : new TreeMap<>(functions).values()) {
       final JSONObject fJSON = new JSONObject();
       fJSON.put("code", f.getImplementation());
       fJSON.put("parameters", new JSONArray(f.getParameters()));
