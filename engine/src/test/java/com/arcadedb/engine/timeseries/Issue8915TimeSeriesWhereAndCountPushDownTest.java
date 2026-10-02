@@ -172,6 +172,10 @@ class Issue8915TimeSeriesWhereAndCountPushDownTest extends TestHelper {
     assertThat(plan(head + "host = 'a' AND ts >= 1000 GROUP BY b")).contains("AGGREGATE FROM TIMESERIES");
     assertThat(plan(head + "host = 'a' OR host = 'b' GROUP BY b")).as("an exact IN stays pushed down")
         .contains("AGGREGATE FROM TIMESERIES");
+    assertThat(plan(head + "ts >= 1000 AND (host = 'a' OR host = 'b') GROUP BY b")).as("a shared time range keeps the IN exact")
+        .contains("AGGREGATE FROM TIMESERIES");
+    assertThat(plan(head + "(ts >= 1000 AND host = 'a') OR (ts >= 2000 AND host = 'b') GROUP BY b"))
+        .as("different ranges per block are not an exact union").doesNotContain("AGGREGATE FROM TIMESERIES");
     assertThat(plan(head + "host = 'a' AND host = 'b' GROUP BY b")).doesNotContain("AGGREGATE FROM TIMESERIES");
     assertThat(plan(head + "ts >= 3000 OR host = 'a' GROUP BY b")).doesNotContain("AGGREGATE FROM TIMESERIES");
     assertThat(plan(head + "ts < 2000 OR ts >= 4000 GROUP BY b")).doesNotContain("AGGREGATE FROM TIMESERIES");
@@ -204,6 +208,15 @@ class Issue8915TimeSeriesWhereAndCountPushDownTest extends TestHelper {
         assertThat(groupedCount("T", w)).as(w).isEqualTo(groupedCount("D", w));
       assertThat(plan("SELECT ts.timeBucket('1h', ts) AS b, count(*) AS c FROM T WHERE ts != 2000 GROUP BY b"))
           .doesNotContain("AGGREGATE FROM TIMESERIES");
+    });
+  }
+
+  @Test
+  void orOfTagsUnderASharedTimeRangeStaysExact() {
+    forEachState(() -> {
+      for (final String w : new String[] { "ts >= 2000 AND (host = 'a' OR host = 'b')", "ts >= 2000 AND (host = 'a' OR host = 'c')",
+          "(ts >= 1000 AND host = 'a') OR (ts >= 2000 AND host = 'b')", "ts > 3000 AND ts < 2000 AND (host = 'a' OR host = 'b')" })
+        assertThat(groupedCount("T", w)).as(w).isEqualTo(groupedCount("D", w));
     });
   }
 
