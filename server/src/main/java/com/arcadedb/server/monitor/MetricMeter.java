@@ -28,7 +28,8 @@ public class MetricMeter implements ServerMetrics.Meter {
   private final long[] lastMinuteCounters       = new long[60];
   private       int    lastMinuteCountersIndex  = 0;
   private       long   lastHitTimestampInSecs   = 0L;
-  private       long   lastAskedTimestampInSecs = 0L;
+  // A NEVER-ASKED METER MEASURES SINCE ITS CREATION, NOT SINCE THE EPOCH (#8909)
+  private       long   lastAskedTimestampInSecs = System.currentTimeMillis() / 1000;
 
   @Override
   public synchronized void hit() {
@@ -57,10 +58,13 @@ public class MetricMeter implements ServerMetrics.Meter {
     if (diffInSecs < 1)
       return 0F;
 
+    // THE RING HOLDS 60 SLOTS AND THE CURRENT ONE IS STILL FILLING: A LONGER GAP WOULD JUST READ THE SAME SLOTS AGAIN
+    final int slots = (int) Math.min(diffInSecs, lastMinuteCounters.length - 1);
+
     long total = 0L;
 
     int index = lastMinuteCountersIndex;
-    for (int i = 0; i < diffInSecs; i++) {
+    for (int i = 0; i < slots; i++) {
       if (index == 0)
         index = 59;
       else
@@ -69,7 +73,7 @@ public class MetricMeter implements ServerMetrics.Meter {
     }
 
     lastAskedTimestampInSecs = nowInSecs;
-    return total / diffInSecs;
+    return (float) total / slots;
   }
 
   @Override
