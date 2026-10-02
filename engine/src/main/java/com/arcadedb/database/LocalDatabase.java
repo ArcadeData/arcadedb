@@ -228,6 +228,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   protected          LocalSchema                               schema;
   protected          TransactionManager                        transactionManager;
   protected volatile DatabaseAsyncExecutorImpl                 async                     = null;
+  // Held only for short, non-blocking sections: setWrappedDatabaseInstance() takes it from the HA wrapper's constructor,
+  // so nothing may ever wait for the async workers while holding it.
   protected final    Lock                                      asyncLock                 = new ReentrantLock();
   protected          boolean                                   autoTransaction           = false;
   protected volatile boolean                                   open                      = false;
@@ -2666,8 +2668,23 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     return wrappedDatabaseInstance;
   }
 
+  /**
+   * Installs the instance this database is served through - under HA the Raft-replicated wrapper - and points the async
+   * executor at it too (issue #8292). The executor is created lazily and bound to the wrapper as it stood at that
+   * moment, so one created before the HA wrap, or before a plugin restart replaced the wrapper, kept committing every
+   * async write on an instance that does not replicate. Under {@link #asyncLock}, the lock {@link #async()} creates the
+   * executor under, so the executor is either created after this assignment or rebound by it - never neither.
+   */
   public void setWrappedDatabaseInstance(final DatabaseInternal wrappedDatabaseInstance) {
-    this.wrappedDatabaseInstance = wrappedDatabaseInstance;
+    asyncLock.lock();
+    try {
+      this.wrappedDatabaseInstance = wrappedDatabaseInstance;
+      final DatabaseAsyncExecutorImpl executor = async;
+      if (executor != null)
+        executor.rebindDatabase(wrappedDatabaseInstance);
+    } finally {
+      asyncLock.unlock();
+    }
   }
 
   public void registerReusableQueryEngine(final QueryEngine queryEngine) {

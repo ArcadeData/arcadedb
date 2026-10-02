@@ -72,7 +72,10 @@ public class RepairTransaction {
    * @param batchPages modified-page budget of one batch, {@code <= 0} for a single all-or-nothing transaction.
    */
   public RepairTransaction(final DatabaseInternal database, final int batchPages) {
-    this.database = database;
+    // The database's CURRENT wrapper, not the instance the caller holds (issue #8292): LocalBucket.check(fix) hands over
+    // the bucket's own reference, which is the inner instance, and under HA a repair committed there applies its pages
+    // on this node only - the "real replication round trip" commitBatchIfFull() documents would never happen.
+    this.database = database.getEmbedded().getWrappedDatabaseInstance();
     this.batchPages = batchPages;
   }
 
