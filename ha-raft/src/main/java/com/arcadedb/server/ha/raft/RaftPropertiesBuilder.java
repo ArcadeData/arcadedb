@@ -316,6 +316,13 @@ class RaftPropertiesBuilder {
           replicate.""",
           appendBuffer.getSize(), grpcMessageSizeMax);
 
+    // Issue #8898: Ratis closes the whole division on a long JVM pause, and the in-place restart that followed did
+    // not recover the follower. 0 (default) puts that close out of reach; a leader still steps down on a pause.
+    // TimeDuration has no "disabled" value, so out of reach is ten years.
+    final long jvmPauseCloseMs = configuration.getValueAsLong(GlobalConfiguration.HA_JVM_PAUSE_CLOSE_THRESHOLD_MS);
+    RaftServerConfigKeys.setCloseThreshold(properties,
+        jvmPauseCloseMs > 0 ? TimeDuration.valueOf(jvmPauseCloseMs, TimeUnit.MILLISECONDS) : TimeDuration.valueOf(3650, TimeUnit.DAYS));
+
     // Leader lease: consistent reads without round-trip
     RaftServerConfigKeys.Read.setLeaderLeaseEnabled(properties, true);
     RaftServerConfigKeys.Read.setLeaderLeaseTimeoutRatio(properties, 0.9);

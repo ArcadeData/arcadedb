@@ -158,4 +158,24 @@ class RaftPropertiesBuilderTest {
     final RaftProperties props = RaftPropertiesBuilder.build(config);
     assertThat(RaftServerConfigKeys.Rpc.timeoutMax(props).toLong(TimeUnit.MILLISECONDS)).isEqualTo(5000L);
   }
+
+  /**
+   * Issue #8898: Ratis's own JVM-pause monitor closes the whole division when a pause exceeds
+   * {@code raft.server.close.threshold} (60s by default), behind ArcadeDB's back, and the in-place restart that
+   * follows never recovers the follower. By default ArcadeDB therefore keeps that close out of reach and leaves
+   * long-pause recovery to its own monitors.
+   */
+  @Test
+  void jvmPauseCloseThresholdIsOutOfReachByDefault() {
+    final RaftProperties props = RaftPropertiesBuilder.build(new ContextConfiguration());
+    assertThat(RaftServerConfigKeys.closeThreshold(props).toLong(TimeUnit.DAYS)).isGreaterThanOrEqualTo(365L);
+  }
+
+  @Test
+  void jvmPauseCloseThresholdCanBeRestoredToACustomValue() {
+    final ContextConfiguration config = new ContextConfiguration();
+    config.setValue(GlobalConfiguration.HA_JVM_PAUSE_CLOSE_THRESHOLD_MS, 90_000L);
+    final RaftProperties props = RaftPropertiesBuilder.build(config);
+    assertThat(RaftServerConfigKeys.closeThreshold(props).toLong(TimeUnit.MILLISECONDS)).isEqualTo(90_000L);
+  }
 }
