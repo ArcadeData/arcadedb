@@ -39,16 +39,7 @@ class Issue8948GAVReusedVertexRidTest extends TestHelper {
 
   @Test
   void reusedVertexRidKeepsItsEdgesInCounts() throws Exception {
-    database.command("sql", "CREATE VERTEX TYPE V");
-    database.command("sql", "CREATE PROPERTY V.name STRING");
-    database.command("sql", "CREATE PROPERTY V.age INTEGER");
-    database.command("sql", "CREATE EDGE TYPE K");
-    database.transaction(() -> {
-      database.newVertex("V").set("name", "a").set("age", 30).save();
-      database.newVertex("V").set("name", "c").set("age", 10).save();
-    });
-    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW g VERTEX TYPES (V) EDGE TYPES (K) PROPERTIES (age) UPDATE MODE SYNCHRONOUS");
-    GraphAnalyticalViewRegistry.get(database, "g").awaitReady(60, TimeUnit.SECONDS);
+    createSchemaAndView();
 
     final RID c = vertex("c").getIdentity();
     database.transaction(() -> vertex("c").delete());
@@ -66,6 +57,7 @@ class Issue8948GAVReusedVertexRidTest extends TestHelper {
     assertCounts();
   }
 
+  /** Guard test: no RID reuse here, it pins that cascaded edge deletions of a plain base vertex are still recorded. */
   @Test
   void deletingVertexWithEdgesKeepsEdgeCountInStep() throws Exception {
     createSchemaAndView();
@@ -94,6 +86,26 @@ class Issue8948GAVReusedVertexRidTest extends TestHelper {
     database.transaction(() -> vertex("d").delete());
     assertThat(count("MATCH (x:V)-[:K]->(y:V) RETURN count(*) AS n")).isEqualTo(0L);
     assertThat(count("MATCH (y:V) RETURN count(*) AS n")).isEqualTo(1L);
+    assertThat(GraphAnalyticalViewRegistry.get(database, "g").getEdgeCount()).isEqualTo(0);
+    database.command("sql", "DROP GRAPH ANALYTICAL VIEW g");
+  }
+
+  @Test
+  void slotReusedTwice() throws Exception {
+    createSchemaAndView();
+    database.transaction(() -> vertex("c").delete());
+    database.transaction(() -> {
+      vertex("a").newEdge("K", database.newVertex("V").set("name", "d").set("age", 20).save());
+    });
+    database.transaction(() -> vertex("d").delete());
+    database.transaction(() -> {
+      vertex("a").newEdge("K", database.newVertex("V").set("name", "e").set("age", 40).save());
+    });
+    assertThat(count("MATCH (x:V)-[:K]->(y:V) RETURN count(*) AS n")).isEqualTo(1L);
+    assertThat(count("MATCH (x:V)-[:K]->(y:V) WHERE y.age = 40 RETURN count(*) AS n")).isEqualTo(1L);
+    assertThat(GraphAnalyticalViewRegistry.get(database, "g").getEdgeCount()).isEqualTo(1);
+    database.transaction(() -> vertex("e").delete());
+    assertThat(count("MATCH (x:V)-[:K]->(y:V) RETURN count(*) AS n")).isEqualTo(0L);
     database.command("sql", "DROP GRAPH ANALYTICAL VIEW g");
   }
 
