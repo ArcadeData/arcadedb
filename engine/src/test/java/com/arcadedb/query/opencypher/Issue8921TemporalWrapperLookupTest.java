@@ -111,4 +111,14 @@ class Issue8921TemporalWrapperLookupTest {
   void optionalMatchAfterWith() {
     both("MATCH (a:N) WITH a.d AS m OPTIONAL MATCH (p:%s {d: m}) RETURN count(p) AS c", 9);
   }
+
+  /** Pins the semantic: a naive stored datetime and a zoned one compare by instant, the same in the inline and WHERE forms. */
+  @Test
+  void zonedLiteralAgreesBetweenInlineAndWhereForms() {
+    final long where = count("MATCH (p:N) WHERE p.d = datetime('2021-06-15T12:30:00Z') RETURN count(p) AS c");
+    final long inline = count("MATCH (p:N {d: datetime('2021-06-15T12:30:00Z')}) RETURN count(p) AS c");
+    assertThat(inline).isEqualTo(where);
+    final long indexed = count("MATCH (p:I {d: datetime('2021-06-15T12:30:00Z')}) RETURN count(p) AS c");
+    assertThat(indexed).isEqualTo(where);
+  }
 }
