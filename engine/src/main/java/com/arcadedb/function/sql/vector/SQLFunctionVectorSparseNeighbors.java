@@ -124,6 +124,10 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
       }
     }
 
+    // A FILTER THAT MATCHED NOTHING IS NOT "NO FILTER": NO RECORD CAN SATISFY IT (ISSUE #8959)
+    if (allowedRIDs != null && allowedRIDs.isEmpty())
+      return new ArrayList<>(0);
+
     final TypeIndex typeIndex = resolveTypeIndex(indexSpec, context);
     final List<LSMSparseVectorIndex> sparseIndexes = collectSparseIndexes(indexSpec, typeIndex, context);
 
