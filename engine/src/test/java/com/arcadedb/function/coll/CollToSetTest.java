@@ -69,4 +69,12 @@ class CollToSetTest {
     assertThat(viaConvert).containsExactly(1L, 2L, "a");
     assertThat(viaConvert).isEqualTo(viaColl);
   }
+
+  @Test
+  void convertToSetCollapsesNestedNumericTwins() {
+    final List<Object> source = List.of(List.of(1L), List.of(1.0d), List.of(2L));
+    @SuppressWarnings("unchecked")
+    final List<Object> result = (List<Object>) new ConvertToSet().execute(new Object[] { source }, null);
+    assertThat(result).hasSize(2);
+  }
 }

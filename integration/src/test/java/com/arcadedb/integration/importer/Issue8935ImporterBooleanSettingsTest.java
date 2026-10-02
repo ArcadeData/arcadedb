@@ -40,6 +40,15 @@ class Issue8935ImporterBooleanSettingsTest {
   }
 
   @Test
+  void everyBooleanSettingIsStrict() {
+    final ImporterSettings settings = new ImporterSettings();
+    for (final String name : new String[] { "forceDatabaseCreate", "typeIdUnique", "trimText", "probeOnly", "edgeBidirectional" }) {
+      assertThatThrownBy(() -> settings.parseParameter(name, "1")).as(name).isInstanceOf(IllegalArgumentException.class);
+      settings.parseParameter(name, "true");
+    }
+  }
+
+  @Test
   void trueAndFalseAreAcceptedTrimmedAndCaseInsensitive() {
     final ImporterSettings settings = new ImporterSettings();
     settings.parseParameter("wal", " TRUE ");
