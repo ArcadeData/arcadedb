@@ -745,16 +745,35 @@ class AsyncExecutor:
         Args:
             timeout_ms: Optional timeout in milliseconds.
                        None = wait indefinitely (default)
+                       0 = do not wait: return if everything is done,
+                       otherwise raise TimeoutError at once
+                       negative = rejected with ValueError
+
+        The engine's waitCompletion() clamps any timeout <= 0 to an infinite
+        wait, so 0 is never handed to it: it is answered off isProcessing(),
+        the same non-blocking poll is_pending() uses. Like is_pending(), it is
+        a point-in-time snapshot, not the barrier a positive timeout or no
+        argument gives: work a running task schedules after the snapshot is
+        not covered by a successful poll.
 
         Raises:
             TimeoutError: If timeout is reached before completion
+            ValueError: If timeout_ms is negative
 
         Example:
             >>> async_exec.wait_completion()  # Wait forever
             >>> async_exec.wait_completion(30000)  # Wait max 30 seconds
+            >>> async_exec.wait_completion(0)  # Poll: raise if not done yet
         """
         if timeout_ms is None:
             self._java_async.waitCompletion()
+        elif timeout_ms < 0:
+            raise ValueError(f"timeout_ms must be None or >= 0, got {timeout_ms}")
+        elif timeout_ms == 0:
+            # Not is_processing(): that swallows engine errors as "idle", which
+            # here would report completion that never happened.
+            if self._java_async.isProcessing():
+                raise TimeoutError("Async operations have not completed (0ms poll)")
         else:
             success = self._java_async.waitCompletion(timeout_ms)
             if not success:
