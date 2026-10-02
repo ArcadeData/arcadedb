@@ -124,16 +124,17 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
       }
     }
 
-    // A FILTER THAT MATCHED NOTHING IS NOT "NO FILTER": NO RECORD CAN SATISFY IT (ISSUE #8959)
-    if (allowedRIDs != null && allowedRIDs.isEmpty())
-      return new ArrayList<>(0);
-
     final TypeIndex typeIndex = resolveTypeIndex(indexSpec, context);
     final List<LSMSparseVectorIndex> sparseIndexes = collectSparseIndexes(indexSpec, typeIndex, context);
 
     if (sparseIndexes.isEmpty())
       throw new CommandSQLParsingException(
           "Index '" + indexSpec + "' is not a sparse vector index");
+
+    // Checked after the index is resolved, so a bad index spec stays loud. A filter that matched nothing is not "no filter":
+    // no record can satisfy it (issue #8959)
+    if (allowedRIDs != null && allowedRIDs.isEmpty())
+      return new ArrayList<>(0);
 
     return executeWithIndexes(sparseIndexes, queryIndices, queryValues, k, allowedRIDs, groupBy, groupSize, minScore, context);
   }

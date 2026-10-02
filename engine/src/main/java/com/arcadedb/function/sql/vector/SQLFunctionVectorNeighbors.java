@@ -121,10 +121,6 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
       }
     }
 
-    // A FILTER THAT MATCHED NOTHING IS NOT "NO FILTER": NO RECORD CAN SATISFY IT (ISSUE #8959)
-    if (allowedRIDs != null && allowedRIDs.isEmpty())
-      return new ArrayList<>(0);
-
     // Parse the index specification: TYPE[property] or just index name
     final String specifiedTypeName;
     final String propertyName;
@@ -192,6 +188,11 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
       throw new CommandSQLParsingException(
           "Index '" + typeIndex.getName() + "' is not a vector index");
     }
+
+    // Checked after the index is resolved, so a bad index spec stays loud. A filter that matched nothing is not "no filter":
+    // no record can satisfy it (issue #8959)
+    if (allowedRIDs != null && allowedRIDs.isEmpty())
+      return new ArrayList<>(0);
 
     // Search across all matching vector indexes and merge results
     return executeWithLSMVectorIndexes(vectorIndexes, key, limit, efSearch, allowedRIDs, groupBy, groupSize, maxDistance, context);

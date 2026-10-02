@@ -918,7 +918,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
     residentLocations = rebuilt;
     // The search vector cache is keyed by vector id, and a renumbering compaction (issue #5870) hands every id to a
     // different record: a surviving entry would score graph nodes against the vector of whichever record held that
-    // id before (issue #8957). Cleared in the same critical section that publishes the new ids.
+    // id before (issue #8957). Cleared in the same critical section that publishes the new ids. Every publish clears, not only the
+    // renumbering one: rebuilds are rare and heavy, and a single rule is easier to keep correct than a per-caller flag.
     final VectorCache staleCache = searchVectorCache;
     if (staleCache != null)
       staleCache.clear();
