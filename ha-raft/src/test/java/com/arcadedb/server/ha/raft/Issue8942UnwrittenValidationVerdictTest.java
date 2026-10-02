@@ -34,6 +34,7 @@ import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assumptions.assumeThat;
 
 /**
  * Issue #8942: when the validating reopen of an installed snapshot fails and the VALIDATION_FAILED phase cannot be
@@ -136,6 +137,53 @@ class Issue8942UnwrittenValidationVerdictTest {
     assertThat(live.resolve(SnapshotInstaller.SNAPSHOT_SWAP_STATE_FILE)).doesNotExist();
     assertThat(server.existsDatabase(DB_NAME)).isTrue();
     assertValue(server, "old");
+    server.stop();
+
+    // The refused install does not wedge the database behind its marker: recovery drops the never-started swap.
+    unblockPhaseWrites(verdict);
+    SnapshotInstaller.recoverPendingSnapshotSwaps(databases);
+
+    assertDatabaseValue(live, "old");
+    assertThat(marker).doesNotExist();
+    assertThat(staged).doesNotExist();
+  }
+
+  /** On a full volume the record may be created and its write fail: the refused install leaves no partial record. */
+  @Test
+  void partiallyWrittenVerdictIsRemovedWhenPreparingFails() throws Exception {
+    final Path live = root.resolve("databases").resolve(DB_NAME);
+    final Path verdict = live.resolve(SnapshotInstaller.SNAPSHOT_VALIDATION_FAILED_FILE);
+    createDatabase(live, "old");
+    Files.writeString(verdict, "");
+    assertThat(verdict.toFile().setReadOnly()).isTrue();
+    assumeThat(Files.isWritable(verdict)).as("a superuser ignores the read-only bit").isFalse();
+
+    assertThatThrownBy(() -> SnapshotInstaller.prepareValidationFailedVerdict(live)).isInstanceOf(IOException.class);
+
+    assertThat(verdict).doesNotExist();
+  }
+
+  /** A successful install leaves no prepared record behind. */
+  @Test
+  void successfulInstallRemovesThePreparedVerdict() throws Exception {
+    final Path live = root.resolve("databases").resolve(DB_NAME);
+    final Path staged = live.resolve(SnapshotInstaller.SNAPSHOT_NEW_DIR);
+    final Path backup = live.resolve(SnapshotInstaller.SNAPSHOT_BACKUP_DIR);
+    final Path marker = live.resolve(SnapshotInstaller.SNAPSHOT_PENDING_FILE);
+    createDatabase(live, "old");
+    createDatabase(staged, "new");
+
+    server = newServer();
+    server.start();
+
+    Files.writeString(marker, "");
+    Files.writeString(staged.resolve(SnapshotInstaller.SNAPSHOT_COMPLETE_FILE), "");
+    SnapshotInstaller.swapAndReopen(DB_NAME, live, staged, backup, marker, server);
+
+    assertValue(server, "new");
+    assertThat(marker).doesNotExist();
+    assertThat(backup).doesNotExist();
+    assertThat(live.resolve(SnapshotInstaller.SNAPSHOT_VALIDATION_FAILED_FILE)).doesNotExist();
   }
 
   /**

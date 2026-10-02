@@ -1152,18 +1152,34 @@ public final class SnapshotInstaller {
    * {@link #publishValidationFailedVerdict} to rename over {@code .snapshot-swap-state} (issue #8942).
    */
   static void prepareValidationFailedVerdict(final Path dbPath) throws IOException {
-    writeFileForced(dbPath.resolve(SNAPSHOT_VALIDATION_FAILED_FILE), SwapPhase.VALIDATION_FAILED.name());
+    final Path prepared = dbPath.resolve(SNAPSHOT_VALIDATION_FAILED_FILE);
+    try {
+      writeFileForced(prepared, SwapPhase.VALIDATION_FAILED.name());
+    } catch (final IOException e) {
+      // A full volume can create the file and fail the write: leave the directory as the refused install found it.
+      try {
+        Files.deleteIfExists(prepared);
+      } catch (final IOException cleanup) {
+        e.addSuppressed(cleanup);
+      }
+      throw e;
+    }
     fsyncDirectory(dbPath);
   }
 
-  /** Publishes VALIDATION_FAILED from the prepared record when there is one, by a fresh phase write otherwise. */
+  /**
+   * Publishes VALIDATION_FAILED from the prepared record when there is one, by a fresh phase write otherwise. A record
+   * left behind by an earlier install that failed its swap is never published stale: {@link #swapAndReopen} rewrites
+   * it before every swap, and that is the only path that reaches here after a swap.
+   */
   private static void publishValidationFailedVerdict(final Path dbPath) throws IOException {
     final Path prepared = dbPath.resolve(SNAPSHOT_VALIDATION_FAILED_FILE);
     if (!Files.isRegularFile(prepared)) {
       writeSwapPhase(dbPath, SwapPhase.VALIDATION_FAILED);
       return;
     }
-    // A rename onto an existing entry of the same directory allocates no data block, unlike the write it replaces.
+    // A rename onto an existing entry of the same directory typically allocates no data block, unlike the write it
+    // replaces (a copy-on-write filesystem on an exhausted pool may still refuse it: #8950).
     Files.move(prepared, dbPath.resolve(SNAPSHOT_SWAP_STATE_FILE), StandardCopyOption.ATOMIC_MOVE,
         StandardCopyOption.REPLACE_EXISTING);
     fsyncDirectory(dbPath);
