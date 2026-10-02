@@ -91,6 +91,9 @@ class InOperandConversionOnTypedListTest extends TestHelper {
     // same for a Set that holds a null: no match is UNKNOWN on the Set branch too
     assertThat(count("SELECT FROM S WHERE ? NOT IN ?", "8", new HashSet<>(Arrays.asList(7.0, null)))).isEqualTo(0);
     assertThat(count("SELECT FROM S WHERE ? IN ?", "7", new HashSet<>(Arrays.asList(7.0, null)))).isEqualTo(1);
+    // a Number operand against a Set of Strings converts too, and a converted match is the only match for NOT IN
+    assertThat(count("SELECT FROM S WHERE ? IN ?", 7, new HashSet<>(List.of("7")))).isEqualTo(1);
+    assertThat(count("SELECT FROM S WHERE ? NOT IN ?", 7, new HashSet<>(List.of("7")))).isEqualTo(0);
     // numeric mixes keep their behaviour
     assertThat(count("SELECT FROM S WHERE ? IN ?", 7, new ArrayList<>(List.of(7L)))).isEqualTo(1);
     assertThat(count("SELECT FROM S WHERE ? IN ?", 8, new ArrayList<>(List.of(7L)))).isEqualTo(0);

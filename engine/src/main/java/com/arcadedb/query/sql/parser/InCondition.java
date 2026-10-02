@@ -203,23 +203,24 @@ public class InCondition extends BooleanExpression {
     return Boolean.TRUE.equals(evaluateExpressionThreeValued(iLeft, iRight));
   }
 
-  private static boolean sameClassAsFirstItem(final Set<?> set, final Object left) {
+  private static Object firstItem(final Set<?> set) {
     for (final Object o : set)
       if (o != null)
-        return o.getClass() == left.getClass();
-    return true;
+        return o;
+    return null;
   }
 
   // QueryOperatorEquals converts its 2nd argument to the class of the 1st, so try both directions
   private static boolean equalsEitherWay(final Object left, final Object item) {
-    if (QueryOperatorEquals.equals(left, item))
-      return true;
-    // numbers, records and embedded documents compare symmetrically: the reverse call cannot add a match
-    if (left.getClass() == item.getClass() || (left instanceof Number && item instanceof Number) || left instanceof Result
-        || item instanceof Result || left instanceof Identifiable || item instanceof Identifiable || left instanceof EmbeddedDocument
-        || item instanceof EmbeddedDocument)
+    return QueryOperatorEquals.equals(left, item) || (mayMatchByConversion(left, item) && QueryOperatorEquals.equals(item, left));
+  }
+
+  // False where QueryOperatorEquals is symmetric (same class, two numbers, records, embedded documents), so the reverse call adds nothing
+  private static boolean mayMatchByConversion(final Object left, final Object item) {
+    if (item == null || left.getClass() == item.getClass() || (left instanceof Number && item instanceof Number))
       return false;
-    return QueryOperatorEquals.equals(item, left);
+    return !(left instanceof Result || item instanceof Result || left instanceof Identifiable || item instanceof Identifiable
+        || left instanceof EmbeddedDocument || item instanceof EmbeddedDocument);
   }
 
   /**
@@ -241,8 +242,9 @@ public class InCondition extends BooleanExpression {
           return Boolean.TRUE;
         if (set.isEmpty())
           return Boolean.FALSE;
-        // The hash probe is exact: only a set of another class than the operand needs the converting linear pass
-        if (iLeft != null && !(iLeft instanceof Number) && !sameClassAsFirstItem(set, iLeft))
+        // The hash probe is exact: a set whose items convert to the operand's class only needs a linear pass. A set is
+        // taken as homogeneous (judged by its first item), so a big same-class set stays one hash probe
+        if (iLeft != null && mayMatchByConversion(iLeft, firstItem(set)))
           for (final Object o : set)
             if (o != null && equalsEitherWay(iLeft, o))
               return Boolean.TRUE;
