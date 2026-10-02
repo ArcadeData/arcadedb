@@ -55,12 +55,13 @@ final class BoltSystemProcedures {
   private static final String   CALL_PREFIX   = "call ";
   /** Real probes are tiny; a longer statement is never matched, which also bounds the regex work on client input. */
   private static final int      MAX_PROBE_LENGTH = 4096;
-  private static final String   ITEM          = "(?:collect\\(\\w+\\)|\\w+)(?: as \\w+)?";
+  private static final String   ITEM          = "(?:collect\\(\\w+\\)(?:\\[\\.\\.\\d+\\])?|\\w+)(?: as \\w+)?";
   private static final Pattern  QUOTED        = Pattern.compile(
       "'[^'\\\\]*+(?:\\\\.[^'\\\\]*+)*+'|\"[^\"\\\\]*+(?:\\\\.[^\"\\\\]*+)*+\"");
+  private static final Pattern  UNION        = Pattern.compile(" union (?:all )?");
   private static final Pattern  WHITESPACE    = Pattern.compile("\\s+");
   private static final Pattern  FOREIGN_CLAUSE = Pattern.compile(
-      "(?<![\\w$.])(?:create|merge|set|delete|detach|remove|foreach|call|load|match|optional|union|use|finish|insert)\\b");
+      "(?<![\\w$.])(?:create|merge|set|delete|detach|remove|foreach|call|load|match|optional|union|use|finish|insert|drop|alter|grant|deny|revoke|start|stop|terminate|enable|rename)\\b");
   private static final Pattern  CALL_TAIL     = Pattern.compile(
       " ?(?:\\( ?\\))?(?: yield (?:\\*|" + ITEM + "(?:, ?" + ITEM + ")*))?(?: return " + ITEM + "(?:, ?" + ITEM + ")*)? ?;?");
   private static final String   LABELS        = DbLabels.NAME.toLowerCase(Locale.ROOT);
@@ -191,7 +192,7 @@ final class BoltSystemProcedures {
     // Every Bolt statement passes through here: bail out before any allocation unless it opens with a call.
     if (normalized.length() > MAX_PROBE_LENGTH || !normalized.startsWith(CALL_PREFIX))
       return null;
-    final String[] segments = normalized.indexOf(" union ") < 0 ? new String[] { normalized } : normalized.split(" union ", -1);
+    final String[] segments = normalized.indexOf(" union ") < 0 ? new String[] { normalized } : UNION.split(normalized, -1);
     if (segments.length != 1 && segments.length != 3)
       return null;
 

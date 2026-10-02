@@ -171,10 +171,18 @@ class Issue8908SystemProcedureInterceptionTest {
   }
 
   @Test
-  void unionAllCombinedFormGoesToTheEngine() {
-    assertThat(BoltSystemProcedures.isSchemaProcedureQuery(BoltSystemProcedures.normalize(
-        "CALL db.labels() YIELD label RETURN label UNION ALL CALL db.relationshipTypes() YIELD relationshipType "
-            + "RETURN relationshipType UNION ALL CALL db.propertyKeys() YIELD propertyKey RETURN propertyKey"))).isFalse();
+  void theCombinedDesktopFormWithUnionAllAndASliceIsServed() {
+    final String query = BoltSystemProcedures.normalize(
+        "CALL db.labels() YIELD label RETURN COLLECT(label)[..1000] AS result UNION ALL "
+            + "CALL db.relationshipTypes() YIELD relationshipType RETURN COLLECT(relationshipType)[..1000] AS result UNION ALL "
+            + "CALL db.propertyKeys() YIELD propertyKey RETURN COLLECT(propertyKey)[..1000] AS result");
+    assertThat(BoltSystemProcedures.isSchemaProcedureQuery(query)).isTrue();
+  }
+
+  @Test
+  void adminClausesAfterABoltOnlyCallAreLeftToTheEngine() {
+    assertThat(BoltSystemProcedures.isSystemCall(BoltSystemProcedures.normalize("CALL dbms.info() DROP INDEX foo"), "dbms.info")).isFalse();
+    assertThat(BoltSystemProcedures.isSystemCall(BoltSystemProcedures.normalize("CALL dbms.info() GRANT ROLE x TO y"), "dbms.info")).isFalse();
   }
 
   @Test
