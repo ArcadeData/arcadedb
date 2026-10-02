@@ -643,7 +643,16 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
     final int boundCategory = categoryOfBound(bound);
     if (keyCategory == 0 || boundCategory == 0)
       return true;
-    return keyCategory == boundCategory;
+    if (keyCategory != boundCategory)
+      return false;
+    // An integer a DOUBLE (2^53) or a FLOAT (2^24) key cannot hold is rounded by the index and compared exactly by the filter:
+    // the enclosing filter answers it (issue #8919)
+    if (bound instanceof Long || bound instanceof Integer || bound instanceof Short || bound instanceof Byte) {
+      final long limit = indexKeyType == Type.DOUBLE ? 1L << 53 : indexKeyType == Type.FLOAT ? 1L << 24 : Long.MAX_VALUE;
+      final long value = ((Number) bound).longValue();
+      return value <= limit && value >= -limit;
+    }
+    return true;
   }
 
   private static int categoryOf(final Type type) {
