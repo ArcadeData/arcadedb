@@ -2077,23 +2077,9 @@ public class SelectExecutionPlanner {
       tsType.requireEngine();
 
       // Extract time range from WHERE clause (if available)
-      long fromTs = Long.MIN_VALUE;
-      long toTs = Long.MAX_VALUE;
-
-      if (info.flattenedWhereClause != null) {
-        for (final AndBlock andBlock : info.flattenedWhereClause) {
-          for (final BooleanExpression expr : andBlock.getSubBlocks()) {
-            final long[] range = extractTimeRange(expr, tsType.getTimestampColumn(), context);
-            if (range != null) {
-              // Tighten bounds: take the most restrictive range
-              if (range[0] != Long.MIN_VALUE)
-                fromTs = Math.max(fromTs, range[0]);
-              if (range[1] != Long.MAX_VALUE)
-                toTs = Math.min(toTs, range[1]);
-            }
-          }
-        }
-      }
+      final long[] timeRange = extractTimeRange(info.flattenedWhereClause, tsType.getTimestampColumn(), context);
+      final long fromTs = timeRange[0];
+      final long toTs = timeRange[1];
 
       // Extract tag filter from WHERE clause
       final TagFilter tagFilter = extractTagFilter(info.flattenedWhereClause, tsType.getTsColumns(),
@@ -2886,11 +2872,50 @@ public class SelectExecutionPlanner {
   }
 
   /**
+   * Scan range of a flattened (DNF) WHERE: the UNION of the ranges of its AND blocks (issue #8916). Inside a block the
+   * time predicates are AND'ed, so they tighten the block's range; across blocks they are OR'ed, so the scan has to
+   * cover every block's range, and a block with no bound on a side leaves the scan unbounded on that side. A block
+   * whose own predicates contradict each other matches nothing and adds nothing to the union. When no block can match,
+   * the answer is the empty range {@code [Long.MAX_VALUE, Long.MIN_VALUE]}.
+   * The range is only a superset of the matching rows when there is more than one block: the residual filter, or
+   * {@link #isWhereExactlyPushedDown}, is what keeps the answer exact.
+   */
+  private static long[] extractTimeRange(final List<AndBlock> flattenedWhere, final String timestampColumn,
+      final CommandContext context) {
+    if (flattenedWhere == null || flattenedWhere.isEmpty())
+      return new long[] { Long.MIN_VALUE, Long.MAX_VALUE };
+
+    long from = Long.MAX_VALUE;
+    long to = Long.MIN_VALUE;
+    boolean anyBlock = false;
+    for (final AndBlock andBlock : flattenedWhere) {
+      long blockFrom = Long.MIN_VALUE;
+      long blockTo = Long.MAX_VALUE;
+      for (final BooleanExpression expr : andBlock.getSubBlocks()) {
+        final long[] range = extractTimeRange(expr, timestampColumn, context);
+        if (range != null) {
+          // Tighten bounds: take the most restrictive range
+          if (range[0] != Long.MIN_VALUE)
+            blockFrom = Math.max(blockFrom, range[0]);
+          if (range[1] != Long.MAX_VALUE)
+            blockTo = Math.min(blockTo, range[1]);
+        }
+      }
+      if (blockFrom > blockTo)
+        continue; // contradictory block: matches nothing
+      anyBlock = true;
+      from = Math.min(from, blockFrom);
+      to = Math.max(to, blockTo);
+    }
+    return anyBlock ? new long[] { from, to } : new long[] { Long.MAX_VALUE, Long.MIN_VALUE };
+  }
+
+  /**
    * Extracts a time range from a BETWEEN or comparison expression on the timestamp column.
    * Returns [fromTs, toTs] or null if not a matching expression.
    * Supports: BETWEEN, >, >=, <, <=, = operators.
    */
-  private long[] extractTimeRange(final BooleanExpression expr, final String timestampColumn, final CommandContext context) {
+  private static long[] extractTimeRange(final BooleanExpression expr, final String timestampColumn, final CommandContext context) {
     if (expr instanceof BetweenCondition between) {
       final String fieldName = between.getFirst() != null ? between.getFirst().toString().trim() : null;
       if (timestampColumn.equals(fieldName)) {
@@ -3021,7 +3046,16 @@ public class SelectExecutionPlanner {
           final int nonTsIdx = nonTsIndexOf(columns, i);
           // Coerce to the tag's declared type: both storage layers hand the value back in that type
           // now, so a stringified literal would never match (issue #5475).
-          blockMap.computeIfAbsent(nonTsIdx, k -> new HashSet<>()).add(col.coerceValue(value));
+          // Equalities inside one block are AND'ed, so their values are INTERSECTED (issue #8917); an empty
+          // intersection is a block that matches nothing and contributes no value to the union below
+          final Object coerced = col.coerceValue(value);
+          final Set<Object> existing = blockMap.get(nonTsIdx);
+          if (existing == null) {
+            final Set<Object> values = new HashSet<>();
+            values.add(coerced);
+            blockMap.put(nonTsIdx, values);
+          } else
+            existing.retainAll(Set.of(coerced));
           break;
         }
       }
@@ -3040,11 +3074,11 @@ public class SelectExecutionPlanner {
       boolean inEveryBlock = true;
       for (final Map<Integer, Set<Object>> blockMap : perBlockEqualities) {
         final Set<Object> values = blockMap.get(nonTsIdx);
-        if (values == null || values.isEmpty()) {
+        if (values == null) {
           inEveryBlock = false;
           break;
         }
-        unionValues.addAll(values);
+        unionValues.addAll(values); // empty: a contradictory block, which matches nothing
       }
       if (!inEveryBlock || unionValues.isEmpty())
         continue;
@@ -3060,6 +3094,51 @@ public class SelectExecutionPlanner {
       if (columns.get(j).getRole() != ColumnDefinition.ColumnRole.TIMESTAMP)
         nonTsIdx++;
     return nonTsIdx;
+  }
+
+  /**
+   * The push-down consumes the whole WHERE, so the time range and the tag filter it derives must select EXACTLY the
+   * rows the WHERE selects, not a superset (the plain scan keeps a residual filter, this path has none). That holds
+   * for a single AND block whose tag equalities name each tag at most once (two equalities on one tag are an
+   * intersection the IN filter does not express, issue #8917). Across OR'ed blocks it holds only for the plain
+   * {@code tag = x OR tag = y} shape over one tag column with no time predicate: the scan range is the union of the
+   * blocks' ranges and the tag filter the cross product of their values (issue #8916), so anything else is declined and
+   * left to the generic path.
+   */
+  private static boolean isWhereExactlyPushedDown(final List<AndBlock> flattenedWhere, final List<ColumnDefinition> columns,
+      final String timestampColumn, final CommandContext context) {
+    final boolean singleBlock = flattenedWhere.size() <= 1;
+    String sharedTag = null;
+    for (final AndBlock andBlock : flattenedWhere) {
+      final Set<String> tagsSeen = new HashSet<>();
+      for (final BooleanExpression expr : andBlock.getSubBlocks()) {
+        if (extractTimeRange(expr, timestampColumn, context) != null) {
+          if (!singleBlock)
+            return false;
+          continue;
+        }
+        if (!(expr instanceof BinaryCondition binary))
+          return false;
+        final String leftStr = binary.left != null ? binary.left.toString().trim() : null;
+        final String rightStr = binary.right != null ? binary.right.toString().trim() : null;
+        String tag = null;
+        for (final ColumnDefinition col : columns)
+          if (col.getRole() == ColumnDefinition.ColumnRole.TAG && (col.getName().equals(leftStr) || col.getName().equals(rightStr))) {
+            tag = col.getName();
+            break;
+          }
+        if (tag == null || !tagsSeen.add(tag))
+          return false;
+        if (!singleBlock) {
+          if (sharedTag != null && !sharedTag.equals(tag))
+            return false;
+          sharedTag = tag;
+        }
+      }
+      if (!singleBlock && tagsSeen.size() != 1)
+        return false;
+    }
+    return true;
   }
 
   /**
@@ -3490,9 +3569,14 @@ public class SelectExecutionPlanner {
           return false; // unsupported aggregate
 
         // COUNT is the one aggregate this push-down never resolves a column for: it counts rows on both
-        // halves, and COUNT(*) names no field to resolve (issue #8140).
+        // halves, and COUNT(*) names no field to resolve (issue #8140). That is right for COUNT(*) only: COUNT(field)
+        // skips the rows where the field is null, which the row counter cannot tell, so it is the generic path's
+        // (issue #8915)
         int schemaIndex = -1;
-        if (aggType != AggregationType.COUNT) {
+        if (aggType == AggregationType.COUNT) {
+          if (funcCall.getParams().size() != 1 || !"*".equals(funcCall.getParams().get(0).toString().trim()))
+            return false;
+        } else {
           // Extract field name from first parameter
           if (funcCall.getParams().isEmpty())
             return false;
@@ -3557,7 +3641,8 @@ public class SelectExecutionPlanner {
     // Verify all WHERE conditions are consumed by push-down (time-range or tag equality).
     // If any field-value predicate remains (e.g., WHERE value > 100), bail out to avoid
     // silently dropping it — the standard filter step will handle it instead.
-    if (info.flattenedWhereClause != null && hasNonPushDownConditions(info.flattenedWhereClause, columns, tsType.getTimestampColumn()))
+    if (info.flattenedWhereClause != null && (hasNonPushDownConditions(info.flattenedWhereClause, columns, tsType.getTimestampColumn())
+        || !isWhereExactlyPushedDown(info.flattenedWhereClause, columns, tsType.getTimestampColumn(), context)))
       return false;
 
     // Chain the push-down step
