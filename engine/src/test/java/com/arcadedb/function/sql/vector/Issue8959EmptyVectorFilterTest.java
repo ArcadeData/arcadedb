@@ -20,6 +20,7 @@ package com.arcadedb.function.sql.vector;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
@@ -30,6 +31,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #8959: a {@code filter} option of {@code vector.neighbors} that resolves to no RIDs was read as "no filter", so a
@@ -83,6 +85,29 @@ class Issue8959EmptyVectorFilterTest extends TestHelper {
   @Test
   void emptyRidListReturnsNothing() {
     assertThat(search(":ids", "c", idsOf("c"))).isEmpty();
+  }
+
+  @Test
+  void badIndexSpecStaysLoudWithAnEmptyFilter() {
+    assertThatThrownBy(() -> {
+      try (final ResultSet rs = database.query("sql",
+          "SELECT expand(vectorNeighbors('Nope[vector]', [1.0, 0.0], 3, { filter: :ids }))", Map.of("ids", new ArrayList<RID>()))) {
+        rs.hasNext();
+      }
+    }).isInstanceOf(SchemaException.class);
+  }
+
+  @Test
+  void nestedEmptyListAndListOfNullsReturnNothing() {
+    final List<Object> nested = new ArrayList<>();
+    nested.add(new ArrayList<RID>());
+    final List<Object> nulls = new ArrayList<>();
+    nulls.add(null);
+    for (final List<Object> ids : List.of(nested, nulls))
+      try (final ResultSet rs = database.query("sql",
+          "SELECT expand(vectorNeighbors('Doc[vector]', [1.0, 0.0], 3, { filter: :ids }))", Map.of("ids", ids))) {
+        assertThat(rs.hasNext()).isFalse();
+      }
   }
 
   @Test
