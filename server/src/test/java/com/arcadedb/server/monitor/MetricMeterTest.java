@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.monitor;
 
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -227,5 +228,42 @@ class MetricMeterTest {
       }
       assertThat(meter.getTotalCounter()).isEqualTo((round + 1) * 10);
     }
+  }
+
+  @Test
+  void firstAskOnFreshMeterDoesNotLoopSinceEpoch() {
+    // #8909: a never-asked meter looped once per second since 1970 (about 2 s of CPU per meter)
+    final MetricMeter meter = new MetricMeter();
+    meter.hit();
+
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
+    final float rate = meter.getRequestsPerSecondSinceLastAsked();
+    stopwatch.assertGaveUpWithin(500, "a first ask bounded by the 60-slot ring vs a loop over 1.8e9 epoch seconds");
+
+    assertThat(rate).isGreaterThanOrEqualTo(0F);
+    assertThat(meter.getTotalCounter()).isEqualTo(1);
+  }
+
+  @Test
+  void firstAskReportsHitsSinceMeterCreation() throws Exception {
+    final MetricMeter meter = new MetricMeter();
+    for (int i = 0; i < 30; i++)
+      meter.hit();
+
+    Thread.sleep(2100);
+
+    // The hits happened in a past second slot, so the first ask must see them (it used to answer 0.0)
+    assertThat(meter.getRequestsPerSecondSinceLastAsked()).isGreaterThan(0F);
+  }
+
+  @Test
+  void rateIsNotTruncatedToWholeHits() throws Exception {
+    final MetricMeter meter = new MetricMeter();
+    meter.hit();
+    Thread.sleep(2100);
+
+    // 1 hit over ~2 s: a fractional rate, not the integer division result 0
+    final float rate = meter.getRequestsPerSecondSinceLastAsked();
+    assertThat(rate).isGreaterThan(0F).isLessThan(1F);
   }
 }
