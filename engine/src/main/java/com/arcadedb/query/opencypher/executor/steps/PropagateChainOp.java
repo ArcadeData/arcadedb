@@ -482,7 +482,10 @@ public final class PropagateChainOp implements CountOp {
   }
 
   /**
-   * Counts the size of the intersection of two sorted int[] sub-arrays using merge scan.
+   * Counts the pairs {@code (i, j)} with {@code a[i] == b[j]} over two sorted int[] sub-arrays using a merge scan:
+   * a value present {@code p} times in one range and {@code q} times in the other closes {@code p * q} paths, one per pair
+   * of parallel edges (issue #8426). Counting the value once, or the smaller of {@code p} and {@code q}, left the
+   * self-loop subtraction short on a graph with parallel edges, so the inequality count came out too high.
    * O(|a| + |b|) time, O(1) space.
    */
   private static long sortedIntersectionCount(final int[] a, int aStart, final int aEnd,
@@ -492,7 +495,19 @@ public final class PropagateChainOp implements CountOp {
       final int av = a[aStart], bv = b[bStart];
       if (av < bv) aStart++;
       else if (av > bv) bStart++;
-      else { count++; aStart++; bStart++; }
+      else {
+        int aRun = 0;
+        while (aStart < aEnd && a[aStart] == av) {
+          aRun++;
+          aStart++;
+        }
+        int bRun = 0;
+        while (bStart < bEnd && b[bStart] == bv) {
+          bRun++;
+          bStart++;
+        }
+        count += (long) aRun * bRun;
+      }
     }
     return count;
   }
