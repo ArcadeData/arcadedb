@@ -46,6 +46,8 @@ public class SupportApiSpec implements OpenApiContributor {
     openAPI.getPaths().addPathItem("/api/v1/server/support/register", createRegisterPath());
     openAPI.getPaths().addPathItem("/api/v1/server/support/installation", createInstallationPath());
     openAPI.getPaths().addPathItem("/api/v1/server/support/connect", createConnectPath());
+    openAPI.getPaths().addPathItem("/api/v1/server/support/peers", createPeersPath());
+    openAPI.getPaths().addPathItem("/api/v1/server/support/peer-query", createPeerQueryPath());
     openAPI.getPaths().addPathItem("/api/v1/server/support/preview", createPreviewPath());
     openAPI.getPaths().addPathItem("/api/v1/server/support/bundle", createBundlePath());
     openAPI.getPaths().addPathItem("/api/v1/server/support/issues", createIssuesPath());
@@ -68,6 +70,7 @@ public class SupportApiSpec implements OpenApiContributor {
 
     openAPI.getComponents().addSchemas("SupportStatus", createStatusSchema());
     openAPI.getComponents().addSchemas("SupportRegisterRequest", createRegisterRequestSchema());
+    openAPI.getComponents().addSchemas("SupportPeerQueryRequest", createPeerQueryRequestSchema());
     openAPI.getComponents().addSchemas("SupportPreviewRequest", createPreviewRequestSchema());
     openAPI.getComponents().addSchemas("SupportPreview", createPreviewSchema());
     openAPI.getComponents().addSchemas("SupportBundleRequest", createBundleRequestSchema());
@@ -173,6 +176,43 @@ public class SupportApiSpec implements OpenApiContributor {
     item.setGet(get);
     item.setDelete(delete);
     return item;
+  }
+
+  private PathItem createPeersPath() {
+    final Operation get = SpecBuilders.operation("getSupportPeers", TAG, "The other members of the cluster, by name",
+        "{ha: boolean, peers: [name]}: the names Studio offers as targets of a support request. No addresses are returned. "
+            + "Empty and ha=false when this server is not part of a cluster. Restricted to the root user.");
+    get.setResponses(SpecBuilders.standardResponses("200", SpecBuilders.emptyResponse("The peer names"), "403"));
+    final PathItem item = new PathItem();
+    item.setGet(get);
+    return item;
+  }
+
+  private PathItem createPeerQueryPath() {
+    final Operation post = SpecBuilders.operation("runSupportPeerQuery", TAG, "Run a read-only support query on other cluster nodes",
+        "Runs the statement of a support request on the OTHER members of the cluster ('all' or one named node) and answers "
+            + "{ha, nodes: [{node, status: ok, records, truncated} | {node, status: failed, error}]}: a peer that cannot be "
+            + "reached, times out or refuses is its own row and never fails the request. The node that receives this call does "
+            + "not run the query on itself: Studio does that through the ordinary query endpoint. Each peer runs the statement "
+            + "through its ordinary idempotent query endpoint, so the engine of EACH peer refuses anything that is not "
+            + "read-only; peers are chosen from the cluster configuration by name, never by address, and the query runs on "
+            + "the peer with the permissions of the calling user. At most 16 peers, 8 at a time, 35 seconds and 4 MB each; "
+            + "SQL and OpenCypher only. Restricted to the root user." + ERRORS);
+    post.setRequestBody(SpecBuilders.jsonBody("What to run and where", "SupportPeerQueryRequest", true));
+    post.setResponses(SpecBuilders.standardResponses("200", SpecBuilders.emptyResponse("The result of every node asked"), "400",
+        "403"));
+    final PathItem item = new PathItem();
+    item.setPost(post);
+    return item;
+  }
+
+  private Schema<?> createPeerQueryRequestSchema() {
+    final Schema<Object> schema = SpecBuilders.object("A read-only query to run on other cluster nodes");
+    schema.addProperty("database", SpecBuilders.string("The database name"));
+    schema.addProperty("language", SpecBuilders.string("sql or opencypher"));
+    schema.addProperty("statement", SpecBuilders.string("The statement (1 to 2000 characters)"));
+    schema.addProperty("nodes", SpecBuilders.string("'all' or the name of one cluster node (default all)"));
+    return schema;
   }
 
   private PathItem createPreviewPath() {

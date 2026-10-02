@@ -47,7 +47,7 @@ import java.util.logging.Level;
  */
 public class SupportHandler extends AbstractServerHttpHandler {
   public enum Action {
-    STATUS, REGISTER, UNREGISTER, REGISTER_INSTALLATION, CONNECT_START, CONNECT_STATUS, CONNECT_CANCEL, PREVIEW, CREATE_ISSUE, LIST_ISSUES, GET_ISSUE, COMMENT, STAGE_SCREENSHOT, DISCARD_SCREENSHOT, ANSWER_REQUEST, ANSWER_REQUESTS, SET_OPEN, ATTACH, BUNDLE
+    STATUS, REGISTER, UNREGISTER, REGISTER_INSTALLATION, CONNECT_START, CONNECT_STATUS, CONNECT_CANCEL, PEERS, PEER_QUERY, PREVIEW, CREATE_ISSUE, LIST_ISSUES, GET_ISSUE, COMMENT, STAGE_SCREENSHOT, DISCARD_SCREENSHOT, ANSWER_REQUEST, ANSWER_REQUESTS, SET_OPEN, ATTACH, BUNDLE
   }
 
   private final Action action;
@@ -82,6 +82,12 @@ public class SupportHandler extends AbstractServerHttpHandler {
         case CONNECT_CANCEL -> {
           service.getConnector().cancel();
           yield new ExecutionResponse(204, "");
+        }
+        case PEERS -> json(200, service.getPeerQuery().peers());
+        case PEER_QUERY -> {
+          final JSONObject request = required(payload);
+          yield json(200, service.getPeerQuery().run(user.getName(), request.getString("database", ""),
+              request.getString("language", ""), request.getString("statement", ""), request.getString("nodes", "all")));
         }
         case PREVIEW -> json(200, service.preview(required(payload)));
         case CREATE_ISSUE -> new ExecutionResponse(201, service.createIssue(required(payload)));

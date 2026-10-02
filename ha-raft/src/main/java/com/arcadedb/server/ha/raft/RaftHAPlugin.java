@@ -32,6 +32,7 @@ import com.arcadedb.server.http.handler.LeaderDial;
 import com.arcadedb.utility.CodeUtils;
 
 import io.undertow.server.handlers.PathHandler;
+import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
 
 import com.arcadedb.database.DatabaseInternal;
@@ -829,6 +830,25 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   @Override
   public HttpClient getPeerHttpsClient() throws IOException {
     return raftHAServer != null ? raftHAServer.getForwardHttpsClient() : null;
+  }
+
+  @Override
+  public List<ClusterPeer> getClusterPeers() {
+    if (raftHAServer == null)
+      return List.of();
+    final List<ClusterPeer> peers = new ArrayList<>();
+    for (final RaftPeer peer : raftHAServer.getRaftGroup().getPeers()) {
+      if (peer.getId().equals(raftHAServer.getLocalPeerId()))
+        continue;
+      // The guard that every other peer-to-peer dial in the cluster goes through (issues #6191, #6202, #6221): an address that
+      // is shared with another peer or is this node's own is refused, never dialled.
+      final PeerDialAddress dial = PeerDialAddress.resolve(raftHAServer, peer.getId(), "peer");
+      final String display = raftHAServer.getPeerDisplayName(peer.getId());
+      final int paren = display.indexOf(" (");
+      final String name = paren > 0 ? display.substring(0, paren) : display;
+      peers.add(new ClusterPeer(peer.getId().toString(), name, dial.httpAddress(), dial.httpsAddress(), dial.refusal()));
+    }
+    return peers;
   }
 
   @Override

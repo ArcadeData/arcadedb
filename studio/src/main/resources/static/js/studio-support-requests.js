@@ -27,7 +27,11 @@
 // customer portal and the platform, one shared vector file) only gives a friendly refusal before the call, and Studio
 // re-validates here because the text came from outside.
 //
-// This version runs a request on the server Studio is connected to, never on the other nodes of a cluster.
+// A request runs on the server Studio is connected to ("This node"), or, in a cluster, on every node ("All nodes") or on one named
+// node. The node Studio is connected to runs it through the ordinary query endpoint, as always; the OTHER nodes are asked by this
+// server (POST api/v1/server/support/peer-query), which reaches only the members of the cluster, by name, and each of them runs it
+// through its own idempotent query endpoint, so the engine of every node is the read-only gate. The answers are merged here into ONE
+// table with a leading `node` column; a node that cannot answer is a row with its error and the others still answer.
 
 // ---------------------------------------------------------------------------------------------- the rules
 
@@ -162,6 +166,67 @@ function supportReqTable(records, nodeName, limit) {
   return { columns: columns, rows: rows, truncated: truncated };
 }
 
+/** The node(s) a request is run on: "current", "all", or the name of one node. The user's choice, else what support asked for. */
+function supportReqTarget(request, s) {
+  var wanted = s && s.nodes ? s.nodes : request.nodes;
+  if (wanted === "all") return "all";
+  if (typeof wanted === "string" && wanted && wanted !== "current") return wanted;
+  return "current";
+}
+
+/**
+ * ONE table out of the answers of several nodes: parts are {node, table} (from supportReqTable without a node column) or
+ * {node, error}. The first column is `node`; the other columns are the union of the nodes' columns in the order they appear (a
+ * node that lacks one has null there); when any node failed there is a last `error` column, filled only on that node's row.
+ * The rows are cut to `cap` in total, evenly per node, so a wide cluster cannot make an answer the portal would refuse.
+ */
+function supportReqMergeTables(parts, cap) {
+  var limit = cap || SUPPORT_REQ_MAX_ROWS;
+  var perNode = Math.max(1, Math.floor(limit / Math.max(1, parts.length)));
+  var names = [];
+  var truncated = false;
+  var failed = false;
+  parts.forEach(function (p) {
+    if (p.error) {
+      failed = true;
+      return;
+    }
+    if (p.table.truncated || p.table.rows.length > perNode) truncated = true;
+    p.table.columns.forEach(function (c) {
+      var name = c.name === "node" ? "node_value" : c.name === "error" ? "error_value" : c.name;
+      if (names.indexOf(name) < 0) names.push(name);
+    });
+  });
+  var rows = [];
+  parts.forEach(function (p) {
+    if (p.error) {
+      var row = [p.node];
+      names.forEach(function () { row.push(null); });
+      row.push(String(p.error));
+      rows.push(row);
+      return;
+    }
+    var own = p.table.columns.map(function (c) {
+      return c.name === "node" ? "node_value" : c.name === "error" ? "error_value" : c.name;
+    });
+    p.table.rows.slice(0, perNode).forEach(function (r) {
+      var row = [p.node];
+      names.forEach(function (n) {
+        var at = own.indexOf(n);
+        row.push(at < 0 ? null : r[at]);
+      });
+      if (failed) row.push(null);
+      rows.push(row);
+    });
+  });
+  var columns = [{ name: "node", type: "STRING" }];
+  names.forEach(function (n, i) {
+    columns.push({ name: n, type: supportReqType(rows.map(function (row) { return row[i + 1]; })) });
+  });
+  if (failed) columns.push({ name: "error", type: "STRING" });
+  return { columns: columns, rows: rows, truncated: truncated };
+}
+
 /** A new mask state for a table: the columns whose names look sensitive, or that the user masked before, start masked. */
 function supportReqInitialMask(table, remembered) {
   var columns = {};
@@ -278,6 +343,7 @@ function supportReqBuildAnswer(table, mask, durationMs) {
 var supportReqState = {};
 var supportReqDatabases = null;
 var supportReqNode = "";
+var supportReqPeers = { loaded: false, ha: false, peers: [] };
 
 function supportReqRemembered() {
   try {
@@ -345,8 +411,13 @@ function supportRequestsHtml(entry) {
 function supportRequestBodyHtml(request) {
   var s = supportReqStateFor(request);
   var html = "";
-  if (request.nodes === "all")
-    html += '<div class="support-hint mb-2">Support asked for every node of the cluster. This version of Studio runs it on this server only' + (supportReqNode ? " (<b>" + supportEsc(supportReqNode) + "</b>)" : "") + ".</div>";
+  var wantedNodes = supportReqTarget(request, s);
+  if (wantedNodes !== "current" && supportReqPeers.loaded && !supportReqPeers.ha)
+    html += '<div class="support-hint mb-2">Support asked for ' + (wantedNodes === "all" ? "every node of the cluster" : "the node <b>" + supportEsc(wantedNodes) + "</b>") + ", but this server is not part of a cluster, so it runs on this server only" + (supportReqNode ? " (<b>" + supportEsc(supportReqNode) + "</b>)" : "") + ".</div>";
+  else if (wantedNodes === "all")
+    html += '<div class="support-hint mb-2">Support asked for every node of the cluster: it runs on this server and is asked of the other nodes by this server, and the answers come back in one table.</div>';
+  else if (wantedNodes !== "current")
+    html += '<div class="support-hint mb-2">Support asked for the node <b>' + supportEsc(wantedNodes) + "</b>.</div>";
   var check = supportReqValidate(request.language, request.statement);
   if (!check.ok) {
     html += '<div class="alert alert-warning py-2" style="font-size: 0.84rem;">Studio will not run this statement: ' + supportEsc(check.message) + ". Nothing was run.</div>";
@@ -356,7 +427,8 @@ function supportRequestBodyHtml(request) {
   if (s.status === "idle" || s.status === "running") {
     html += '<div class="d-flex flex-wrap align-items-center gap-2">';
     html += '<select class="form-select form-select-sm sp-rq-db" style="max-width: 14rem;" data-rq="' + supportEsc(request.id) + '" title="Database"><option value="">Database...</option></select>';
-    html += '<button class="btn btn-sm btn-primary sp-rq-run" data-rq="' + supportEsc(request.id) + '"' + (s.status === "running" ? " disabled" : "") + '><i class="fa fa-play"></i> Run</button>';
+        html += supportReqNodeSelectHtml(request, s);
+html += '<button class="btn btn-sm btn-primary sp-rq-run" data-rq="' + supportEsc(request.id) + '"' + (s.status === "running" ? " disabled" : "") + '><i class="fa fa-play"></i> Run</button>';
     html += '<button class="btn btn-sm btn-outline-secondary sp-rq-decline" data-rq="' + supportEsc(request.id) + '">Decline</button>';
     html += "</div>";
     html += '<div id="spRqAlert_' + supportEsc(request.id) + '" class="mt-2"></div>';
@@ -378,6 +450,21 @@ function supportRequestBodyHtml(request) {
   html += supportReqTableHtml(request, s);
   html += supportReqActionsHtml(request, "Send the result");
   return html;
+}
+
+/** The node selector of a card: only in a cluster. "This node", "All nodes", then every other member by name. */
+function supportReqNodeSelectHtml(request, s) {
+  if (!supportReqPeers.ha) return "";
+  var chosen = supportReqTarget(request, s);
+  var self = supportReqNode || "this server";
+  var options = [["current", "This node (" + self + ")"], ["all", "All nodes"]];
+  supportReqPeers.peers.forEach(function (name) { options.push([name, name]); });
+  if (chosen !== "current" && chosen !== "all" && supportReqPeers.peers.indexOf(chosen) < 0 && chosen !== supportReqNode) options.push([chosen, chosen + " (not in this cluster)"]);
+  var html = '<select class="form-select form-select-sm sp-rq-nodes" style="max-width: 16rem;" data-rq="' + supportEsc(request.id) + '" title="Where to run it">';
+  options.forEach(function (o) {
+    html += '<option value="' + supportEsc(o[0]) + '"' + (o[0] === chosen ? " selected" : "") + ">" + supportEsc(o[1]) + "</option>";
+  });
+  return html + "</select>";
 }
 
 function supportReqActionsHtml(request, label) {
@@ -474,12 +561,21 @@ function supportReqFillDatabases(request) {
 }
 
 function supportReqLoadNode() {
-  if (supportReqNode) return;
-  jQuery
-    .ajax({ type: "GET", url: "api/v1/server", beforeSend: function (xhr) { xhr.setRequestHeader("Authorization", globalCredentials); } })
-    .done(function (data) {
-      supportReqNode = data && data.serverName ? String(data.serverName) : "";
-    });
+  if (!supportReqNode)
+    jQuery
+      .ajax({ type: "GET", url: "api/v1/server", beforeSend: function (xhr) { xhr.setRequestHeader("Authorization", globalCredentials); } })
+      .done(function (data) {
+        supportReqNode = data && data.serverName ? String(data.serverName) : "";
+      });
+  if (!supportReqPeers.loaded)
+    supportApi("GET", "/peers")
+      .done(function (text) {
+        var data = supportParse(text) || {};
+        supportReqPeers = { loaded: true, ha: data.ha === true, peers: Array.isArray(data.peers) ? data.peers.map(String) : [] };
+        Object.keys(supportReqState).forEach(function (id) {
+          if (supportReqState[id].status === "idle") supportReqRefresh(supportReqState[id].request);
+        });
+      });
 }
 
 /** Runs one request through the idempotent query endpoint. Calls back with nothing; the state says what happened. */
@@ -494,29 +590,72 @@ function supportReqRun(request, done) {
   s.status = "running";
   supportReqRefresh(request);
   var began = Date.now();
-  jQuery
-    .ajax({
-      type: "POST",
-      url: "api/v1/query/" + encodeDatabaseName(s.database),
-      contentType: "application/json",
-      data: JSON.stringify({ language: request.language, command: check.statement, limit: SUPPORT_REQ_MAX_ROWS + 1 }),
-      beforeSend: function (xhr) { xhr.setRequestHeader("Authorization", globalCredentials); },
-    })
-    .done(function (data) {
-      s.table = supportReqTable(data && data.result, request.nodes === "all" ? supportReqNode || "this server" : "", SUPPORT_REQ_MAX_ROWS);
-      s.mask = supportReqInitialMask(s.table, supportReqRemembered());
-      s.durationMs = Date.now() - began;
-      s.status = "done";
-    })
-    .fail(function (jqXHR) {
-      var body = supportParse(jqXHR && jqXHR.responseText);
-      s.error = (body && (body.detail || body.error || body.message)) || "The query failed (HTTP " + (jqXHR ? jqXHR.status : "?") + ").";
-      s.status = "failed";
-    })
-    .always(function () {
-      supportReqRefresh(request);
-      if (done) done();
-    });
+  var target = supportReqTarget(request, s);
+  var inCluster = supportReqPeers.ha;
+  var self = supportReqNode || "this server";
+  // This node runs it itself unless a named OTHER node was asked for; the other nodes are asked only inside a cluster.
+  var runLocal = target === "current" || target === "all" || target === supportReqNode || !inCluster;
+  var askPeers = inCluster && target !== "current" && (target === "all" || target !== supportReqNode);
+  var parts = [];
+  var pending = (runLocal ? 1 : 0) + (askPeers ? 1 : 0);
+
+  function finish() {
+    if (--pending > 0) return;
+    s.table = target === "current" ? parts[0].table : supportReqMergeTables(parts, SUPPORT_REQ_MAX_ROWS);
+    s.mask = supportReqInitialMask(s.table, supportReqRemembered());
+    s.durationMs = Date.now() - began;
+    s.status = "done";
+    supportReqRefresh(request);
+    if (done) done();
+  }
+
+  function failAll(message) {
+    s.error = message;
+    s.status = "failed";
+    supportReqRefresh(request);
+    if (done) done();
+  }
+
+  if (runLocal)
+    jQuery
+      .ajax({
+        type: "POST",
+        url: "api/v1/query/" + encodeDatabaseName(s.database),
+        contentType: "application/json",
+        data: JSON.stringify({ language: request.language, command: check.statement, limit: SUPPORT_REQ_MAX_ROWS + 1 }),
+        beforeSend: function (xhr) { xhr.setRequestHeader("Authorization", globalCredentials); },
+      })
+      .done(function (data) {
+        parts.unshift({ node: self, table: supportReqTable(data && data.result, "", SUPPORT_REQ_MAX_ROWS) });
+        finish();
+      })
+      .fail(function (jqXHR) {
+        var body = supportParse(jqXHR && jqXHR.responseText);
+        var message = (body && (body.detail || body.error || body.message)) || "The query failed (HTTP " + (jqXHR ? jqXHR.status : "?") + ").";
+        if (target === "current") return failAll(message);
+        parts.unshift({ node: self, error: message });
+        finish();
+      });
+
+  if (askPeers)
+    supportApi("POST", "/peer-query", { database: s.database, language: request.language, statement: check.statement, nodes: target === "all" ? "all" : target })
+      .done(function (text) {
+        var data = supportParse(text) || {};
+        (Array.isArray(data.nodes) ? data.nodes : []).forEach(function (n) {
+          var name = String((n && n.node) || "?");
+          if (n && n.status === "ok") {
+            var table = supportReqTable(n.records, "", SUPPORT_REQ_MAX_ROWS);
+            if (n.truncated) table.truncated = true;
+            parts.push({ node: name, table: table });
+          } else parts.push({ node: name, error: String((n && n.error) || "failed") });
+        });
+        finish();
+      })
+      .fail(function (jqXHR) {
+        var error = supportError(jqXHR);
+        parts.push({ node: "other nodes", error: error.message || "the other nodes could not be asked" });
+        finish();
+      });
 }
 
 // ---------------------------------------------------------------------------------------------- sending
@@ -616,6 +755,11 @@ function supportRequestsInit(issue) {
 $(document).on("change", ".sp-rq-db", function () {
   var request = supportReqOf(this);
   if (request) supportReqStateFor(request).database = $(this).val();
+});
+
+$(document).on("change", ".sp-rq-nodes", function () {
+  var request = supportReqOf(this);
+  if (request) supportReqStateFor(request).nodes = String($(this).val() || "current");
 });
 
 $(document).on("click", ".sp-rq-run", function () {
