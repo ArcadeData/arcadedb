@@ -207,9 +207,12 @@ public class InCondition extends BooleanExpression {
   }
 
   /**
-   * Whether the left side is a searched value (literal, parameter) rather than a record property. Only then may the
-   * operand be converted to the item type of the right side ({@code ? IN typedList}); a property on the left is already
-   * of its declared type and, like {@code =} and an index, is compared without converting the right-hand operands (#8913).
+   * Whether the left side is a searched value: an expression that needs no record (literal, parameter, record-free
+   * function call). Only then may the operand be converted to the item type of the right side ({@code ? IN typedList}).
+   * A record property is compared without converting the right-hand
+   * operands, like {@code =} and an index (#8913).
+   * <p>
+   * The answer is memoized per node: it depends on the shape of the expression, which a cached statement keeps.
    */
   private boolean operandIsSearched(final CommandContext context) {
     Boolean searched = operandSearched;
@@ -267,7 +270,7 @@ public class InCondition extends BooleanExpression {
         // taken as homogeneous (judged by its first item), so a big same-class set stays one hash probe
         if (convertOperand && iLeft != null && mayMatchByConversion(iLeft, firstItem(set)))
           for (final Object o : set)
-            if (o != null && equalsEitherWay(iLeft, o, convertOperand))
+            if (o != null && equalsEitherWay(iLeft, o, true))
               return Boolean.TRUE;
         // No match: UNKNOWN if the search value is null or the set holds a null element, else FALSE.
         return iLeft == null || set.contains(null) ? null : Boolean.FALSE;
