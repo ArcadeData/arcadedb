@@ -30,6 +30,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * A BY ITEM list index was keyed as STRING whatever the declared item type, so {@code CONTAINS 7} missed a stored
@@ -123,15 +124,17 @@ class Issue8890CollectionIndexKeyTypeTest extends TestHelper {
   }
 
   @Test
-  void rangeLookupsByAnUnreadableKeyDoNotThrow() {
+  void rangeLookupsByAnUnreadableKeyAnswerAsTheScanDoes() {
     database.command("sql", "CREATE DOCUMENT TYPE W");
     database.command("sql", "CREATE PROPERTY W.i INTEGER");
+    database.command("sql", "CREATE PROPERTY W.j INTEGER");
     database.command("sql", "CREATE INDEX ON W (i) NOTUNIQUE");
-    database.transaction(() -> database.newDocument("W").set("i", 7).save());
+    database.transaction(() -> database.newDocument("W").set("i", 7, "j", 7).save());
     for (final String op : new String[] { "=", "<", "<=", ">", ">=", "<>" })
-      assertThat(count("SELECT FROM W WHERE i " + op + " ?", "7.0")).as(op).isLessThanOrEqualTo(1);
-    assertThat(count("SELECT FROM W WHERE i BETWEEN ? AND ?", "6.0", "8.0")).isLessThanOrEqualTo(1);
-    assertThat(count("SELECT FROM W WHERE i IN ?", List.of("7.0", "x"))).isZero();
+      assertThat(count("SELECT FROM W WHERE i " + op + " ?", "7.0")).as(op).isEqualTo(count("SELECT FROM W WHERE j " + op + " ?", "7.0"));
+    assertThat(count("SELECT FROM W WHERE i BETWEEN ? AND ?", "6.0", "8.0"))
+        .isEqualTo(count("SELECT FROM W WHERE j BETWEEN ? AND ?", "6.0", "8.0"));
+    assertThat(count("SELECT FROM W WHERE i IN ?", List.of("7.0", "x"))).isEqualTo(count("SELECT FROM W WHERE j IN ?", List.of("7.0", "x")));
   }
 
   @Test
@@ -142,6 +145,20 @@ class Issue8890CollectionIndexKeyTypeTest extends TestHelper {
     database.transaction(() -> database.newDocument("X").set("a", new ArrayList<>(List.of(7, 8L, "9"))).save());
     assertThat(count("SELECT FROM X WHERE a CONTAINS 7")).isEqualTo(1);
     assertThat(count("SELECT FROM X WHERE a CONTAINS 9")).isEqualTo(1);
+  }
+
+  @Test
+  void aListItemThatCannotBeReadAsTheDeclaredTypeIsRefusedWithOrWithoutTheIndex() {
+    // the declared OF type is enforced when the record is saved, before any index sees the item: typing the BY ITEM key
+    // narrows nothing that could be written before
+    database.command("sql", "CREATE DOCUMENT TYPE Y");
+    database.command("sql", "CREATE PROPERTY Y.a LIST OF INTEGER");
+    database.command("sql", "CREATE PROPERTY Y.b LIST OF INTEGER");
+    database.command("sql", "CREATE INDEX ON Y (a BY ITEM) NOTUNIQUE");
+    assertThatThrownBy(() -> database.transaction(() -> database.newDocument("Y").set("a", new ArrayList<>(List.of(7, "abc"))).save()))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> database.transaction(() -> database.newDocument("Y").set("b", new ArrayList<>(List.of(7, "abc"))).save()))
+        .isInstanceOf(IllegalArgumentException.class);
   }
 
   @Test

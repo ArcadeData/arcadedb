@@ -26,6 +26,7 @@ import com.arcadedb.schema.Type;
 import java.lang.reflect.Array;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -97,6 +98,7 @@ public class FunctionAggregationContext implements AggregationContext, HeapBuffe
       return;
 
     aggregateFunction.execute(next, null, null, paramValues.toArray(), context);
+    // a DISTINCT call is charged through the set of distinct values it remembers, which share the function's own items
     if (heapLimit != null && seen == null)
       heapLimit.chargeElement(paramValues.size() == 1 ? paramValues.getFirst() : paramValues, 0);
   }
@@ -134,11 +136,17 @@ public class FunctionAggregationContext implements AggregationContext, HeapBuffe
   }
 
   private static Object normalizeForKey(final Object value) {
-    return value.getClass().isArray() ? arrayKey(value) : Type.normalizeNumberForKey(value);
+    if (value instanceof Collection<?> collection) {
+      final List<Object> items = new ArrayList<>(collection.size());
+      for (final Object item : collection)
+        items.add(item == null ? null : normalizeForKey(item));
+      return items;
+    }
+    return value.getClass().isArray() ? normalizeForKey(arrayItems(value)) : Type.normalizeNumberForKey(value);
   }
 
   /** A Java array compares by identity: its content is what makes two values the same */
-  private static Object arrayKey(final Object array) {
+  private static List<Object> arrayItems(final Object array) {
     if (array instanceof Object[] objects)
       return Arrays.asList(objects);
 
