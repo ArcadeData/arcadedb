@@ -103,6 +103,7 @@ import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.Pair;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
@@ -4971,7 +4972,7 @@ public class SelectExecutionPlanner {
       boolean rangeOp = false;
       while (blockIterator.hasNext()) {
         BooleanExpression singleExp = blockIterator.next();
-        if (singleExp.isIndexAware(info)) {
+        if (singleExp.isIndexAware(info) && !hasLossyDecimalLiteralBound(singleExp, clazz, baseFieldName, context)) {
           indexFieldFound = true;
           indexKeyValue.getSubBlocks().add(singleExp.copy());
           blockIterator.remove();
@@ -4993,7 +4994,8 @@ public class SelectExecutionPlanner {
             while (blockIterator.hasNext()) {
               BooleanExpression next = blockIterator.next();
               // The other side of a range over field.toLowerCase() is probed lower-cased too, so it must already be
-              if (next.createRangeWith(singleExp) && rangePartnerAllowed(singleExp, next, ciCollation, info)) {
+              if (next.createRangeWith(singleExp) && rangePartnerAllowed(singleExp, next, ciCollation, info)
+                  && !hasLossyDecimalLiteralBound(next, clazz, baseFieldName, context)) {
                 additionalRangeCondition = (BinaryCondition) next;
                 blockIterator.remove();
                 break;
@@ -5029,6 +5031,45 @@ public class SelectExecutionPlanner {
     }
 
     return null;
+  }
+
+  /**
+   * True when a comparison against a property that is not a DECIMAL has a literal BigDecimal bound, a decimal literal a
+   * double cannot hold (issue #8872). A key index converts the bound to its key type, so on a DOUBLE key it would answer for
+   * the rounded bound, and neither the rows it returns nor the ones it leaves out follow the exact comparison a scan makes.
+   * Such a condition is left to the scan, so the indexed and the unindexed query agree.
+   */
+  private static boolean hasLossyDecimalLiteralBound(final BooleanExpression expression, final DocumentType type, final String field,
+      final CommandContext context) {
+    final boolean decimalBound;
+    if (expression instanceof BinaryCondition condition)
+      decimalBound = isDecimalLiteral(condition.getRight(), context);
+    else if (expression instanceof BetweenCondition between)
+      decimalBound = isDecimalLiteral(between.getSecond(), context) || isDecimalLiteral(between.getThird(), context);
+    else if (expression instanceof InCondition in)
+      decimalBound = hasDecimalLiteralElement(in, context);
+    else
+      return false;
+    if (!decimalBound)
+      return false;
+    // a null property is unreachable (an index needs a declared property); treated as lossy to stay on the safe scan path
+    // any non-DECIMAL key type (DOUBLE, FLOAT, INTEGER, LONG) would round or truncate the bound; the scan is slower but exact
+    final Property property = type.getPropertyIfExists(field);
+    return property == null || property.getType() != Type.DECIMAL;
+  }
+
+  private static boolean hasDecimalLiteralElement(final InCondition in, final CommandContext context) {
+    final MathExpression right = in.getRightMathExpression();
+    if (right == null || !right.isLiteral() || !(right.execute((Result) null, context) instanceof Collection<?> values))
+      return false;
+    for (final Object value : values)
+      if (value instanceof BigDecimal)
+        return true;
+    return false;
+  }
+
+  private static boolean isDecimalLiteral(final Expression expression, final CommandContext context) {
+    return expression != null && expression.isLiteral() && expression.execute((Result) null, context) instanceof BigDecimal;
   }
 
   /**
