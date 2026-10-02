@@ -51,6 +51,7 @@ import java.util.stream.Stream;
  */
 final class BoltSystemProcedures {
   private static final Object[] NO_ARGS       = new Object[0];
+  private static final String   CALL_PREFIX   = "call ";
   private static final String   LABELS        = DbLabels.NAME.toLowerCase(Locale.ROOT);
   private static final String   RELATIONSHIPS = DbRelationshipTypes.NAME.toLowerCase(Locale.ROOT);
   private static final String   PROPERTY_KEYS = DbPropertyKeys.NAME.toLowerCase(Locale.ROOT);
@@ -92,7 +93,25 @@ final class BoltSystemProcedures {
    * @return true if the Bolt executor should try to serve it here
    */
   static boolean isSchemaProcedureQuery(final String normalized) {
-    return normalized.contains(LABELS) || normalized.contains(RELATIONSHIPS) || normalized.contains(PROPERTY_KEYS);
+    // Only a statement that opens with the call IS the introspection query (a single call, or the combined UNION
+    // form Neo4j Desktop sends, which also opens with one). A name found deeper in the text - a CALL subquery
+    // branch, a string literal, a comment - belongs to a larger statement the engine has to run (issue #8908).
+    return normalized.startsWith(CALL_PREFIX + LABELS) || normalized.startsWith(CALL_PREFIX + RELATIONSHIPS)
+        || normalized.startsWith(CALL_PREFIX + PROPERTY_KEYS);
+  }
+
+  /**
+   * Answers whether the normalized query is a call to the named system procedure, as opposed to a larger statement
+   * that merely mentions it. Substring matching used to answer for the whole statement whenever the name appeared
+   * anywhere in it, so the rest of the query was silently never run (issue #8908).
+   *
+   * @param normalized    a query normalized by {@link #normalize(String)}
+   * @param procedureName the lower-case procedure name
+   *
+   * @return true if the statement opens with {@code CALL <procedureName>}
+   */
+  static boolean isStandaloneCall(final String normalized, final String procedureName) {
+    return normalized.startsWith(CALL_PREFIX + procedureName);
   }
 
   /**
@@ -117,6 +136,10 @@ final class BoltSystemProcedures {
     try {
       if (labels && relationships && propertyKeys)
         return serveCombined(database, normalized);
+
+      // Two of the three names is neither a single call nor the combined form: the engine runs it.
+      if ((labels ? 1 : 0) + (relationships ? 1 : 0) + (propertyKeys ? 1 : 0) > 1)
+        return null;
 
       if (labels)
         return serveOne(database, normalized, LABELS);
