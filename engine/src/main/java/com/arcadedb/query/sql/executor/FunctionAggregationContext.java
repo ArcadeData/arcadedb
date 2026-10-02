@@ -45,10 +45,6 @@ public class FunctionAggregationContext implements AggregationContext, HeapBuffe
   // THE DISTINCT VALUES ALREADY GIVEN TO THE FUNCTION - count(DISTINCT x) - OR NULL WHEN IT SEES EVERY VALUE (ISSUE #8889)
   private final Set<Object>      seen;
 
-  public FunctionAggregationContext(final SQLFunction function, final List<Expression> params) {
-    this(function, params, false);
-  }
-
   public FunctionAggregationContext(final SQLFunction function, final List<Expression> params, final boolean distinct) {
     this.seen = distinct ? new HashSet<>() : null;
     this.aggregateFunction = function;
@@ -129,7 +125,7 @@ public class FunctionAggregationContext implements AggregationContext, HeapBuffe
       return false;
 
     if (heapLimit != null)
-      heapLimit.add(seen.size(), element, HeapEstimator.HASH_ENTRY_BYTES);
+      heapLimit.add(seen.size(), element, HeapEstimator.HASH_ENTRY_BYTES + HeapEstimator.OBJECT_BYTES);
     return true;
   }
 
