@@ -200,6 +200,9 @@ public final class PromQLFunctions {
   public static double round(final double value, final double toNearest) {
     if (toNearest == 0)
       return value;
-    return Math.round(value / toNearest) * toNearest;
+    // Stays in double like Prometheus (issue #8928): Math.round(double) returns a long, which turns NaN into 0
+    // and saturates infinities and anything above 2^63.
+    final double toNearestInverse = 1.0 / toNearest;
+    return Math.floor(value * toNearestInverse + 0.5) / toNearestInverse;
   }
 }
