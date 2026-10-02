@@ -28,6 +28,7 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.MultiIndexCursor;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.vector.LSMVectorIndex;
+import com.arcadedb.query.sql.executor.SelectExecutionPlanner;
 import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.Pair;
 
@@ -86,11 +87,17 @@ public class SelectExecutor {
     public final Index   index;
     public final String  property;
     public final boolean order;
+    /**
+     * True when the index holds folded keys (COLLATE ci): its iteration order is the order of the folded keys, not of the
+     * values, so it never satisfies an ORDER BY (#8937).
+     */
+    public final boolean foldsKeys;
 
     IndexInfo(final Index index, final String property, final boolean order) {
       this.index = index;
       this.property = property;
       this.order = order;
+      this.foldsKeys = SelectExecutionPlanner.holdsFoldedKeys(index);
     }
   }
 
@@ -501,7 +508,7 @@ public class SelectExecutor {
     }
 
     final boolean orderByElided = select.orderBy != null && select.orderBy.size() == 1 && trailingProperty != null
-        && select.orderBy.getFirst().getFirst().equals(trailingProperty);
+        && select.orderBy.getFirst().getFirst().equals(trailingProperty) && !SelectExecutionPlanner.holdsFoldedKeys(bestIndex);
 
     // A KEY SHORTER THAN THE INDEX'S FULL ARITY IS A PREFIX, NOT AN EXACT KEY: get() PERFORMS A SINGLE POSITIONAL
     // LOOKUP AND ONLY RETURNS EVERY MATCH WHEN THE KEY'S ARITY MATCHES THE INDEX'S OWN EXACTLY, SO A PREFIX MUST GO
@@ -662,7 +669,7 @@ public class SelectExecutor {
   private boolean isOrderBySafeForCap(final SelectTreeNode leaf) {
     if (select.orderBy == null)
       return true;
-    if (leaf == null || select.orderBy.size() != 1)
+    if (leaf == null || select.orderBy.size() != 1 || SelectExecutionPlanner.holdsFoldedKeys(leaf.index))
       return false;
     final Pair<String, Boolean> orderBy = select.orderBy.getFirst();
     // UNCHECKED CAST IS SAFE: leaf CAME FROM soleExactLeaf(), WHICH ONLY EVER RETURNS A NODE WHOSE node.index IS

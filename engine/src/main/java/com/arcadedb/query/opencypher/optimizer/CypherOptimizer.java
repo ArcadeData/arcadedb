@@ -401,8 +401,8 @@ public class CypherOptimizer {
     if (schemaProperty == null)
       return null;
     // MANDATORY makes the vertex carry the property and NOTNULL its value: NOTNULL alone leaves a vertex that never sets it,
-    // and such a vertex is not in the index either (issue #8701). The constraint is trusted as SQL trusts it: ALTER PROPERTY does
-    // not validate the vertices written before it, so a type that gained the constraint over existing data must be repaired first
+    // and such a vertex is not in the index either (issue #8701). The constraint is trusted as SQL trusts it: SQL ALTER PROPERTY
+    // refuses to add it over vertices that already violate it (#8943), so only the Java schema API can reach that state
     final boolean everyVertexHasAKey = schemaProperty.isMandatory() && schemaProperty.isNotNull();
 
     final NodeIndexRangeScan.NullKeys nullKeys;
