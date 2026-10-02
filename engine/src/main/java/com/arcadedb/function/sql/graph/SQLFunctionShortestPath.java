@@ -63,6 +63,9 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
 
   private static final Set<String> OPTIONS = Set.of("direction", "edgeType", "edgeTypeNames", "maxDepth",
       "edge");
+  // The trailing map at position 4 honours only these: a path knob written there is refused by name instead of being
+  // validated and then dropped (#8938)
+  private static final Set<String> TRAILING_OPTIONS = Set.of("maxDepth", "edge");
 
   public SQLFunctionShortestPath() {
     super(NAME);
@@ -280,7 +283,7 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
     if (map == null || map.isEmpty())
       return;
 
-    final FunctionOptions opts = new FunctionOptions(NAME, map, OPTIONS);
+    final FunctionOptions opts = new FunctionOptions(NAME, map, allowPathKnobs ? OPTIONS : TRAILING_OPTIONS);
 
     if (allowPathKnobs) {
       if (opts.containsKey("direction"))
