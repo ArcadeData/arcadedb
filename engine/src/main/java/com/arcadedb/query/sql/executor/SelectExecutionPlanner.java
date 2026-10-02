@@ -3100,44 +3100,6 @@ public class SelectExecutionPlanner {
   }
 
   /**
-   * Returns true if the WHERE clause contains conditions that are NOT consumed by time-series
-   * push-down (i.e., not time-range predicates and not tag equality filters).
-   */
-  private static boolean hasNonPushDownConditions(final List<AndBlock> flattenedWhere,
-      final List<ColumnDefinition> columns, final String timestampColumn) {
-    for (final AndBlock andBlock : flattenedWhere) {
-      for (final BooleanExpression expr : andBlock.getSubBlocks()) {
-        if (expr instanceof BetweenCondition between) {
-          final String fieldName = between.getFirst() != null ? between.getFirst().toString().trim() : null;
-          if (timestampColumn.equals(fieldName))
-            continue; // consumed by time-range extraction
-          return true; // BETWEEN on a non-timestamp field — not consumed
-        }
-        if (!(expr instanceof BinaryCondition binary))
-          return true; // unknown condition type — not consumed
-        final String leftStr = binary.left != null ? binary.left.toString().trim() : null;
-        final String rightStr = binary.right != null ? binary.right.toString().trim() : null;
-        // Time range predicate on timestamp column
-        if (timestampColumn.equals(leftStr) || timestampColumn.equals(rightStr))
-          continue;
-        // Tag equality predicate
-        if (binary.operator instanceof EqualsCompareOperator) {
-          boolean isTagPredicate = false;
-          for (final ColumnDefinition col : columns)
-            if (col.getRole() == ColumnDefinition.ColumnRole.TAG && (col.getName().equals(leftStr) || col.getName().equals(rightStr))) {
-              isTagPredicate = true;
-              break;
-            }
-          if (isTagPredicate)
-            continue;
-        }
-        return true; // anything else is not consumed by push-down
-      }
-    }
-    return false;
-  }
-
-  /**
    * Issue #5414: decides whether the TimeSeries fetch may run newest-first, and how many rows the
    * engine is allowed to stop at.
    * <p>
@@ -3374,9 +3336,8 @@ public class SelectExecutionPlanner {
    * Returns true when the time range and tag filter handed to the engine reproduce the WHERE clause
    * <em>exactly</em>, so the residual {@link FilterStep} cannot discard any row the engine returns.
    * <p>
-   * This is stricter than {@link #hasNonPushDownConditions} on purpose: that check treats <b>any</b>
-   * predicate mentioning the timestamp column as consumed, while only the forms
-   * {@link #extractTimeRange} actually understands become bounds. A row cap must not be pushed down
+   * Only the time predicates {@link #extractTimeRange} actually understands become bounds: any other predicate
+   * mentioning the timestamp column (e.g. {@code ts != 5}) is NOT consumed. A row cap must not be pushed down
    * on the strength of a predicate the engine never saw - the newest row could be filtered out
    * afterwards and the query would return nothing.
    */
@@ -3634,8 +3595,7 @@ public class SelectExecutionPlanner {
     // Verify all WHERE conditions are consumed by push-down (time-range or tag equality).
     // If any field-value predicate remains (e.g., WHERE value > 100), bail out to avoid
     // silently dropping it — the standard filter step will handle it instead.
-    if (info.flattenedWhereClause != null && (hasNonPushDownConditions(info.flattenedWhereClause, columns, tsType.getTimestampColumn())
-        || !(isTimeSeriesWhereFullyPushedDown(tsType, info, context) || isOrOfEqualitiesOnOneTag(tsType, info, context))))
+    if (info.flattenedWhereClause != null && !(isTimeSeriesWhereFullyPushedDown(tsType, info, context) || isOrOfEqualitiesOnOneTag(tsType, info, context)))
       return false;
 
     // Chain the push-down step
