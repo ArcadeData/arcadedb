@@ -88,8 +88,12 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
    */
   public static volatile IntConsumer TEST_BEFORE_BATCH_COMMIT_HOOK = null;
 
-  private final DatabaseInternal     database;
-  private final ContextConfiguration configuration;
+  // Volatile, not final (issue #8292): the instance every worker commits through is the database's CURRENT wrapper,
+  // and the executor is created lazily, so it can predate the HA wrap or outlive a wrapper a plugin restart replaced.
+  // LocalDatabase.setWrappedDatabaseInstance() rebinds it (see rebindDatabase()). The workers read this field, never a
+  // copy of their own, so a rebind reaches a worker created by a concurrent setParallelLevel() too.
+  private volatile DatabaseInternal     database;
+  private final    ContextConfiguration configuration;
   // Volatile + lifecycleLock-guarded: createThreads/shutdownThreads/kill mutate this field; readers
   // (scheduleTask, getThreadCount, getStats, ...) snapshot it locally before iterating so they cannot
   // observe a half-built or just-nulled array. See lifecycleLock for the publish discipline.
@@ -241,7 +245,6 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
   public class AsyncThread extends Thread {
     public final    BlockingQueue<DatabaseAsyncTask> queue;
-    public final    DatabaseInternal                 database;
     public volatile boolean                          shutdown      = false;
     public volatile boolean                          forceShutdown = false;
     public          AtomicBoolean                    executingTask = new AtomicBoolean(false);
@@ -360,7 +363,6 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       // The graceful drain still happens in close(), which the JVM shutdown hook installed by
       // DatabaseFactory reaches before daemon threads are stopped.
       setDaemon(true);
-      this.database = database;
 
       int queueSize =
           database.getConfiguration().getValueAsInteger(GlobalConfiguration.ASYNC_OPERATIONS_QUEUE_SIZE) / parallelLevel;
@@ -1006,6 +1008,21 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     public boolean isExecutingTask() {
       return executingTask.get();
     }
+  }
+
+  /**
+   * Points every worker at {@code database} from its next read on (issue #8292). Called by
+   * {@code LocalDatabase.setWrappedDatabaseInstance()} when the HA plugin wraps the database, so an executor created
+   * before the wrap - a parallel {@code SELECT} or a scheduled index compaction while the server was starting - stops
+   * committing on the inner instance, where a commit applies its pages on this node only and replicates nothing.
+   * <p>
+   * A worker in the middle of a batch begins through one instance and commits through the other. That is still one
+   * transaction: every wrapper delegates to the same embedded database, and the transaction lives in the worker's
+   * thread context, keyed by the database path.
+   */
+  public void rebindDatabase(final DatabaseInternal database) {
+    if (database != null)
+      this.database = database;
   }
 
   public DatabaseAsyncExecutorImpl(final DatabaseInternal database, final ContextConfiguration configuration) {

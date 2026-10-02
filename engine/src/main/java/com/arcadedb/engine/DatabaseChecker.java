@@ -169,7 +169,10 @@ public class DatabaseChecker {
   private int              lastReportedPct;
 
   public DatabaseChecker(final Database database) {
-    this.database = (DatabaseInternal) database;
+    // The database's CURRENT wrapper, whatever instance the caller handed over (issue #8292): the checker commits its
+    // fixes, and under HA a commit on the inner instance applies its pages on this node only. CHECK DATABASE already
+    // passes the wrapper; this covers the embedded API and a wrapper a plugin restart has since replaced.
+    this.database = ((DatabaseInternal) database).getEmbedded().getWrappedDatabaseInstance();
   }
 
   public Map<String, Object> check() {

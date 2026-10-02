@@ -1752,19 +1752,22 @@ public class LocalSchema implements Schema {
         newType.createProperty(propName, prop.getType(), prop.getOfType());
       }
 
-      // COPY ALL THE RECORDS
+      // COPY ALL THE RECORDS. Through the database's current wrapper, not the schema's own reference to the inner
+      // instance (issue #8292): under HA that wrapper is the replicated database, and a batch committed on the inner
+      // instance applies its pages on this node only - the type exists everywhere, its records only here.
+      final DatabaseInternal db = database.getWrappedDatabaseInstance();
       long copied = 0;
-      database.begin();
+      db.begin();
       try {
-        for (final Iterator<Record> iter = database.iterateType(typeName, false); iter.hasNext(); ) {
+        for (final Iterator<Record> iter = db.iterateType(typeName, false); iter.hasNext(); ) {
 
           final Document record = (Document) iter.next();
 
           final MutableDocument newRecord;
           if (newType instanceof LocalVertexType)
-            newRecord = database.newVertex(newTypeName);
+            newRecord = db.newVertex(newTypeName);
           else
-            newRecord = database.newDocument(newTypeName);
+            newRecord = db.newDocument(newTypeName);
 
           newRecord.fromMap(record.propertiesAsMap());
           newRecord.save();
@@ -1772,16 +1775,16 @@ public class LocalSchema implements Schema {
           ++copied;
 
           if (transactionBatchSize > 0 && copied % transactionBatchSize == 0) {
-            database.commit();
-            database.begin();
+            db.commit();
+            db.begin();
           }
         }
 
-        database.commit();
+        db.commit();
 
       } finally {
-        if (database.isTransactionActive())
-          database.rollback();
+        if (db.isTransactionActive())
+          db.rollback();
       }
 
       // COPY INDEXES. Deliberately outside the record-copy transaction: each index build opens its own transaction
