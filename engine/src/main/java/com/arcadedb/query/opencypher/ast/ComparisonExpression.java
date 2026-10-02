@@ -32,6 +32,8 @@ import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.serializer.BinaryComparator;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
@@ -230,6 +232,10 @@ public class ComparisonExpression implements BooleanExpression {
           case GREATER_THAN_OR_EQUAL -> leftNum >= rightNum;
         };
       }
+      // A LONG past 2^53 (or a BigInteger) against a BigDecimal/Double/Float cannot meet in double precision: 2^53 and
+      // 2^53 + 1 collapse onto the same double and a scan answered two rows where the index answered one (issue #8888)
+      if (needsExactComparison((Number) left, (Number) right))
+        return numericCompare(exactCompare((Number) left, (Number) right), 0);
       if ((operator == Operator.EQUALS || operator == Operator.NOT_EQUALS) && (left instanceof Float || right instanceof Float)) {
         final boolean equal = floatAwareEquals((Number) left, (Number) right);
         return operator == Operator.EQUALS ? equal : !equal;
@@ -443,6 +449,42 @@ public class ComparisonExpression implements BooleanExpression {
       case GREATER_THAN -> leftNum > rightNum;
       case LESS_THAN_OR_EQUAL -> leftNum <= rightNum;
       case GREATER_THAN_OR_EQUAL -> leftNum >= rightNum;
+    };
+  }
+
+  private static boolean needsExactComparison(final Number left, final Number right) {
+    if (!isFinite(left) || !isFinite(right))
+      return false;
+    if (left instanceof BigInteger || right instanceof BigInteger || isLongBeyondDoublePrecision(left)
+        || isLongBeyondDoublePrecision(right))
+      return true;
+    // An exact long still collides with a decimal that is not exact as a double: 2^53 against 2^53 + 1 as a BigDecimal
+    return left instanceof BigDecimal && isIntegral(right) || right instanceof BigDecimal && isIntegral(left);
+  }
+
+  private static boolean isIntegral(final Number value) {
+    return value instanceof Long || value instanceof Integer || value instanceof Short || value instanceof Byte;
+  }
+
+  private static boolean isLongBeyondDoublePrecision(final Number value) {
+    return value instanceof Long l && !Type.isExactAsDouble(l);
+  }
+
+  private static boolean isFinite(final Number value) {
+    return !(value instanceof Double || value instanceof Float) || Double.isFinite(value.doubleValue());
+  }
+
+  private static int exactCompare(final Number left, final Number right) {
+    return toExactDecimal(left).compareTo(toExactDecimal(right));
+  }
+
+  private static BigDecimal toExactDecimal(final Number value) {
+    return switch (value) {
+      case BigDecimal bigDecimal -> bigDecimal;
+      case BigInteger bigInteger -> new BigDecimal(bigInteger);
+      case Double d -> BigDecimal.valueOf(d);
+      case Float f -> BigDecimal.valueOf(Type.widenFloat(f));
+      default -> BigDecimal.valueOf(value.longValue());
     };
   }
 

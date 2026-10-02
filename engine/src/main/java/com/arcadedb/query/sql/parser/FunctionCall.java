@@ -42,10 +42,16 @@ import java.util.stream.Collectors;
 
 public class FunctionCall extends SimpleNode {
   public Identifier       name;
-  public List<Expression> params = new ArrayList<>();
+  public List<Expression> params   = new ArrayList<>();
+  /** {@code count(DISTINCT x)}: the aggregate sees each distinct value of its arguments once (issue #8889) */
+  public boolean          distinct = false;
   private   SQLFunction      cachedFunction;
 
   public FunctionCall() {
+  }
+
+  public boolean isDistinct() {
+    return distinct;
   }
 
   public boolean isStar() {
@@ -73,6 +79,8 @@ public class FunctionCall extends SimpleNode {
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     name.toString(params, builder);
     builder.append("(");
+    if (distinct)
+      builder.append("DISTINCT ");
     boolean first = true;
     for (final Expression expr : this.params) {
       if (!first) {
@@ -89,6 +97,9 @@ public class FunctionCall extends SimpleNode {
   }
 
   private Object execute(final Object targetObjects, final CommandContext context, final String name) {
+    if (distinct)
+      throw distinctNotAggregate();
+
     final List<Object> paramValues = new ArrayList<>();
 
     Object record;
@@ -262,6 +273,8 @@ public class FunctionCall extends SimpleNode {
     if (isAggregateFunction(context)) {
       return true;
     }
+    if (distinct)
+      throw distinctNotAggregate();
 
     for (final Expression exp : params) {
       if (exp.isAggregate(context)) {
@@ -276,6 +289,7 @@ public class FunctionCall extends SimpleNode {
     if (isAggregate(context)) {
       final FunctionCall newFunct = new FunctionCall();
       newFunct.name = this.name;
+      newFunct.distinct = this.distinct;
       final Identifier functionResultAlias = aggregateProj.getNextAlias();
 
       if (isAggregateFunction(context)) {
@@ -361,19 +375,25 @@ public class FunctionCall extends SimpleNode {
   }
 
   public AggregationContext getAggregationContext(final CommandContext context) {
-    return new FunctionAggregationContext(getFunction(context), this.params);
+    return new FunctionAggregationContext(getFunction(context), this.params, distinct);
+  }
+
+  private CommandExecutionException distinctNotAggregate() {
+    return new CommandExecutionException("DISTINCT is supported only inside an aggregate function (count, sum, avg, ...), not in '"
+        + name.getStringValue() + "'");
   }
 
   public FunctionCall copy() {
     final FunctionCall result = new FunctionCall();
     result.name = name;
+    result.distinct = distinct;
     result.params = params.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;
   }
 
   @Override
   protected Object[] getIdentityElements() {
-    return new Object[] { name, params };
+    return new Object[] { name, params, distinct };
   }
 
   @Override

@@ -3660,7 +3660,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
   /**
    * Function call visitor - parses function name and parameters.
-   * Grammar: identifier LPAREN (STAR | expression (COMMA expression)*)? RPAREN
+   * Grammar: identifier LPAREN (STAR | DISTINCT? expression (COMMA expression)*)? RPAREN
    */
   @Override
   public FunctionCall visitFunctionCall(final SQLParser.FunctionCallContext ctx) {
@@ -3689,6 +3689,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         params.add(starExpr);
         funcCall.params = params;
       } else if (CollectionUtils.isNotEmpty(ctx.expression())) {
+        // Aggregate over the distinct values only: count(DISTINCT x), sum(DISTINCT x)... (issue #8889)
+        funcCall.distinct = ctx.DISTINCT() != null;
         // Regular parameters
         final List<Expression> params = new ArrayList<>();
         for (final SQLParser.ExpressionContext exprCtx : ctx.expression()) {

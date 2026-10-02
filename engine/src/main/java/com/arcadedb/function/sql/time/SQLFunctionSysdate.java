@@ -26,6 +26,8 @@ import com.arcadedb.utility.DateUtils;
 import java.time.DateTimeException;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
 
 /**
  * Returns the current date time. If the `zoneid` parameter is passed, then a ZonedDateTime instance is returned, otherwise a LocalDateTime.
@@ -45,15 +47,17 @@ public class SQLFunctionSysdate extends SQLFunctionAbstract {
 
   public Object execute(final Object thisObject, final Identifiable currentRecord, final Object currentResult,
       final Object[] params, final CommandContext context) {
-    final LocalDateTime now = LocalDateTime.now();
-    Object result = now;
+    // The clock is read as an INSTANT and handed over in the engine's convention: a LocalDateTime is stored as a UTC
+    // wall clock, so the JVM-local wall clock (LocalDateTime.now()) landed hours away from the real instant on any
+    // non-UTC JVM (issue #8892).
+    Object result = LocalDateTime.now(ZoneOffset.UTC);
 
     // The zone is the FIRST argument - `sysdate([<zoneid>])`. Reading params[1] meant the one-argument form the
     // syntax documents silently dropped the zone and answered server-local time (issue #6388).
     if (params.length > 0 && params[0] != null) {
       final String zoneId = params[0].toString();
       try {
-        result = now.atZone(ZoneId.of(zoneId));
+        result = ZonedDateTime.now(ZoneId.of(zoneId));
       } catch (final DateTimeException e) {
         throw new IllegalArgumentException(NAME + "() received an unknown time zone id '" + zoneId + "'", e);
       }

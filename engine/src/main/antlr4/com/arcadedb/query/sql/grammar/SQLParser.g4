@@ -1486,13 +1486,14 @@ extendedCaseAlternative
 /**
  * Function call
  * Allows STAR (*) as parameter for aggregate functions like COUNT(*), SUM(*), etc.
+ * Allows DISTINCT before the arguments of an aggregate function: COUNT(DISTINCT x), SUM(DISTINCT x), etc. (issue #8889)
  * Supports method call chains: out('Follows').out('Follows')
  * Supports array selectors: someFunc()[0]
  * Supports modifiers: someFunc().asString()
  * Supports nested projections: list({x:1}):{x} (processed before methodCall/arraySelector/modifier)
  */
 functionCall
-    : identifier LPAREN (STAR | expression (COMMA expression)*)? RPAREN nestedProjection* methodCall* arraySelector* modifier*
+    : identifier LPAREN (STAR | DISTINCT? expression (COMMA expression)*)? RPAREN nestedProjection* methodCall* arraySelector* modifier*
     ;
 
 /**
