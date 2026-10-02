@@ -1406,7 +1406,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     try {
       bucket.retractRecord(rid);
     } catch (final Exception e) {
-      takeBackFailed(cause, transaction, rid, "it", e);
+      takeBackFailed(cause, transaction, rid, "the record body", e);
     }
 
     transaction.updateBucketRecordDelta(bucket.getFileId(), -1);
@@ -1419,7 +1419,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       final Exception e) {
     cause.addSuppressed(e);
     transaction.setRollbackOnly(
-        "record " + rid + " could not be taken back after its indexing refused it (" + e.getMessage() + ")");
+        "record " + rid + " could not be taken back after its indexing refused it (" + e.getMessage() + "), failed to take back " + what);
     LogManager.instance().log(this, Level.SEVERE,
         "Cannot take back %s of record %s after its indexing refused it: the transaction is marked rollback-only, "
             + "because committing it would publish what the index never accepted. %s", what, rid, e.getMessage());
