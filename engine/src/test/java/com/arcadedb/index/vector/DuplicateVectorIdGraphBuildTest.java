@@ -159,6 +159,8 @@ class DuplicateVectorIdGraphBuildTest extends TestHelper {
     assertThat(vectorIndex().checkIntegrity()).as("still reported after a compaction").hasSize(1);
     assertThat(vectorIndex().getStats().get("compactionBlockedBySharedIds"))
         .as("visible to monitoring, since nothing else says compaction has stopped").isEqualTo(1L);
+    assertThat(vectorIndex().getStats().get("recordsLeftOutBySharedIds")).as("and how many records are missing")
+        .isPositive();
     assertThat(vectorIndex().compactionBlockedBySharedIdsForTest())
         .as("and the compaction trigger stops asking, or every commit would repeat a full graph build for nothing")
         .isTrue();
@@ -179,6 +181,29 @@ class DuplicateVectorIdGraphBuildTest extends TestHelper {
     reopenDatabase();
 
     assertThat(vectorIndex().checkIntegrity()).as("the loser of an id past the dense range").hasSize(1);
+  }
+
+  /** An id stored sparse before the dense arrays grew past it must still be seen by the later writer. */
+  @Test
+  void anIdStoredSparseBeforeTheDenseArraysGrewPastItIsStillJudged() {
+    createIndexedDocs();
+    final LSMVectorIndex index = vectorIndex();
+    final int highId = 20_000;
+    final RID first = ridOf(0);
+    final RID second = ridOf(1000);
+    final RID filler = ridOf(2);
+    database.transaction(() -> {
+      index.persistEntryForTest(highId, first, embedding(0));
+      // Enough dense ids that the arrays double past the high id while it sits in the sparse table. A third record,
+      // so no record's highest id is one of these and the loser is the first writer of the high id.
+      for (int id = 1_500; id <= 21_000; id++)
+        if (id != highId)
+          index.persistEntryForTest(id, filler, embedding(2));
+      index.persistEntryForTest(highId, second, embedding(1000));
+    });
+    reopenDatabase();
+
+    assertThat(vectorIndex().checkIntegrity()).as("the second writer of the high id must be reported").isNotEmpty();
   }
 
   private void assertNoLoopAfterABuild() {

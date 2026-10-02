@@ -268,9 +268,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * Set once a graph build left records out because they share a vector id. A compaction of such an index declines
    * (it would erase the shared ids from the pages), so the garbage-ratio trigger must stop asking: each ask is a
    * full graph build that reclaims nothing, repeated after every commit. Cleared only by a new index instance,
-   * which is what the rebuild of CHECK DATABASE FIX produces.
+   * which is what the rebuild of CHECK DATABASE FIX produces. In memory only: after a restart the first build sets it
+   * again, at the cost of one build.
    */
   private volatile boolean compactionBlockedBySharedIds;
+  /** Records the last build left out of the graph for sharing a vector id; in memory only, like the block above. */
+  private volatile int     recordsLeftOutBySharedIds;
   // Set once the ignored location-cache limit has been reported, so a rebuild does not repeat the warning.
   // compareAndSet, not a plain flag: two threads racing the first call would otherwise both log it.
   private final    AtomicBoolean                 locationCacheCapReported = new AtomicBoolean();
@@ -6341,6 +6344,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         final int grown = (int) Math.max(id + 1L, denseBucket.length * 2L);
         denseBucket = Arrays.copyOf(denseBucket, grown);
         densePosition = Arrays.copyOf(densePosition, grown);
+        migrateSparseIntoDense();
       }
       if (id < denseBucket.length) {
         denseBucket[id] = bucket;
@@ -6364,6 +6368,34 @@ public class LSMVectorIndex implements Index, IndexInternal {
       while (keys[slot] != 0 && keys[slot] != id + 1)
         slot = slot + 1 & mask;
       return slot;
+    }
+
+    /** Ids stored sparse before the dense arrays grew past them now belong in the arrays, which are read first. */
+    private void migrateSparseIntoDense() {
+      if (sparseSize == 0)
+        return;
+      final int[] oldKeys = keys;
+      final int[] oldBucket = sparseBucket;
+      final long[] oldPosition = sparsePosition;
+      keys = new int[oldKeys.length];
+      sparseBucket = new int[keys.length];
+      sparsePosition = new long[keys.length];
+      sparseSize = 0;
+      for (int i = 0; i < oldKeys.length; i++) {
+        if (oldKeys[i] == 0)
+          continue;
+        final int id = oldKeys[i] - 1;
+        if (id < denseBucket.length) {
+          denseBucket[id] = oldBucket[i];
+          densePosition[id] = oldPosition[i];
+        } else {
+          final int slot = find(id);
+          keys[slot] = oldKeys[i];
+          sparseBucket[slot] = oldBucket[i];
+          sparsePosition[slot] = oldPosition[i];
+          ++sparseSize;
+        }
+      }
     }
 
     private void growSparse() {
@@ -6451,6 +6483,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     for (final VectorEntryForGraphBuild loser : losers)
       replay.byRid.remove(loser.rid);
     compactionBlockedBySharedIds = true;
+    recordsLeftOutBySharedIds = losers.size();
     LogManager.instance().log(this, Level.WARNING,
         "Graph build for index %s left out %d records whose vector id a load of the same pages gives to another record or "
             + "deletes: they are not in the graph until the index is rebuilt (CHECK DATABASE FIX or REBUILD INDEX), and the "
@@ -10198,6 +10231,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // operator has to be able to ask on a freshly reopened index too.
     final int[] unreachableOrdinals = graphUnreachableOrdinals;
     stats.put("compactionBlockedBySharedIds", compactionBlockedBySharedIds ? 1L : 0L);
+    stats.put("recordsLeftOutBySharedIds", (long) recordsLeftOutBySharedIds);
     stats.put("unreachableGraphNodes", unreachableOrdinals != null ?
         (long) unreachableOrdinals.length :
         manifestContent != null ? (long) manifestContent.unreachableOrdinals().length : 0L);
