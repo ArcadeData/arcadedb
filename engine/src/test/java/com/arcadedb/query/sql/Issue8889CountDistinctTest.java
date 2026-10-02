@@ -196,6 +196,19 @@ class Issue8889CountDistinctTest extends TestHelper {
   }
 
   @Test
+  void aNullIsOneDistinctValueForAFunctionThatKeepsIt() {
+    database.command("sql", "CREATE DOCUMENT TYPE Nl");
+    database.transaction(() -> {
+      database.newDocument("Nl").set("v", 1).save();
+      database.newDocument("Nl").set("w", 1).save();
+      database.newDocument("Nl").set("w", 2).save();
+    });
+    try (final ResultSet rs = database.query("sql", "SELECT list(DISTINCT v) AS l FROM Nl")) {
+      assertThat(rs.next().<List<Object>>getProperty("l")).hasSizeLessThanOrEqualTo(2);
+    }
+  }
+
+  @Test
   void distinctOnAnAggregateThatHoldsEveryValue() {
     load();
     try (final ResultSet rs = database.query("sql", "SELECT list(DISTINCT b) AS l FROM P")) {

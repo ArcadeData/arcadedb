@@ -62,6 +62,7 @@ class Issue8892SysdateInstantTest extends TestHelper {
       final long before = System.currentTimeMillis();
       database.transaction(() -> {
         database.command("sql", "INSERT INTO " + type + " SET k = 'sysdate', at = sysdate()");
+        database.command("sql", "INSERT INTO " + type + " SET k = 'date', at = date()");
         database.command("sql", "INSERT INTO " + type + " SET k = 'utc', at = sysdate('UTC')");
         database.command("sql", "INSERT INTO " + type + " SET k = 'seoul', at = sysdate('Asia/Seoul')");
         database.command("sql", "INSERT INTO " + type + " SET k = 'ny', at = sysdate('America/New_York')");
@@ -76,7 +77,7 @@ class Issue8892SysdateInstantTest extends TestHelper {
           assertThat(Math.abs(ms - before)).as("JVM zone %s, %s", jvmZone, row.<String>getProperty("k")).isLessThan(TOLERANCE_MS);
           rows++;
         }
-        assertThat(rows).isEqualTo(5);
+        assertThat(rows).isEqualTo(6);
       }
     }
   }

@@ -37,6 +37,9 @@ import java.util.Set;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class FunctionAggregationContext implements AggregationContext, HeapBufferingFunction {
+  // a NULL is one more distinct value: the function sees it once, and ignores it or keeps it as it always did
+  private static final Object NULL_KEY = new Object();
+
   private final SQLFunction        aggregateFunction;
   private       List<Expression>   params;
   // WHAT A FUNCTION THAT KEEPS EVERY VALUE HOLDS (list(), percentile()...), CHARGED TO THE HEAP BUDGET OF ALL THE
@@ -100,24 +103,17 @@ public class FunctionAggregationContext implements AggregationContext, HeapBuffe
   /**
    * Records the argument values and tells whether they are new. Equality follows the rule of GROUP BY and SELECT
    * DISTINCT: numbers meet in a canonical form, so {@code 1} and {@code 1.0}, or {@code 19.9} and {@code 19.90}, are
-   * one value. A NULL is never remembered, so the function sees every one and ignores it as it always did.
+   * one value. A NULL is one more value, seen once.
    */
   private boolean firstTimeSeen(final List<Object> paramValues) {
     final Object element;
     if (paramValues.size() == 1) {
       // the common count(DISTINCT x): no array, no wrapping list
-      final Object value = paramValues.getFirst();
-      if (value == null)
-        return true;
-      element = normalizeForKey(value);
+      element = normalizeForKey(paramValues.getFirst());
     } else {
       final Object[] key = new Object[paramValues.size()];
-      for (int i = 0; i < key.length; i++) {
-        final Object value = paramValues.get(i);
-        if (value == null)
-          return true;
-        key[i] = normalizeForKey(value);
-      }
+      for (int i = 0; i < key.length; i++)
+        key[i] = normalizeForKey(paramValues.get(i));
       element = Arrays.asList(key);
     }
 
@@ -130,6 +126,8 @@ public class FunctionAggregationContext implements AggregationContext, HeapBuffe
   }
 
   private static Object normalizeForKey(final Object value) {
+    if (value == null)
+      return NULL_KEY;
     if (value instanceof Collection<?> collection) {
       final List<Object> items = new ArrayList<>(collection.size());
       for (final Object item : collection)
