@@ -27,6 +27,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -111,6 +112,20 @@ class Issue8959EmptyVectorFilterTest extends TestHelper {
   }
 
   @Test
+  void nullFilterIsTheAbsentFilterAndSearchesEverything() {
+    // PINNED CONTRACT: ONLY A FILTER THAT RESOLVED TO A COLLECTION CAN MATCH NOTHING. A NULL VALUE IS "NO FILTER", LIKE AN ABSENT KEY
+    try (final ResultSet rs = database.query("sql",
+        "SELECT expand(vectorNeighbors('Doc[vector]', [1.0, 0.0], 3, { filter: :none }))", hashMapWithNull())) {
+      int n = 0;
+      while (rs.hasNext()) {
+        rs.next();
+        n++;
+      }
+      assertThat(n).isEqualTo(3);
+    }
+  }
+
+  @Test
   void filterMatchingRecordsStillRestrictsTheSearch() {
     assertThat(search("(SELECT @rid FROM Doc WHERE tenant = :tenant)", "a", idsOf("a"))).containsExactlyInAnyOrder("a1", "a2");
     assertThat(search(":ids", "b", idsOf("b"))).containsExactlyInAnyOrder("b1", "b2");
@@ -124,5 +139,11 @@ class Issue8959EmptyVectorFilterTest extends TestHelper {
       rs.forEachRemaining(r -> names.add(r.getProperty("name")));
     }
     assertThat(names).hasSize(3);
+  }
+
+  private static Map<String, Object> hashMapWithNull() {
+    final Map<String, Object> params = new HashMap<>();
+    params.put("none", null);
+    return params;
   }
 }
