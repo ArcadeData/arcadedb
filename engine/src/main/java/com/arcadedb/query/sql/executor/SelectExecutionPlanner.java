@@ -3415,6 +3415,35 @@ public class SelectExecutionPlanner {
     return true;
   }
 
+  /**
+   * True for {@code tag = x OR tag = y ...}: every AND block is ONE equality, on the same TAG column, with a non-null value.
+   * The union of the values is then an exact {@code IN}, so the aggregation push-down answers it with no residual filter,
+   * which keeps the common dashboard shape on the fast path (issue #8916 made every other OR decline).
+   */
+  private static boolean isOrOfEqualitiesOnOneTag(final LocalTimeSeriesType tsType, final QueryPlanningInfo info,
+      final CommandContext context) {
+    final List<AndBlock> blocks = info.flattenedWhereClause;
+    if (blocks == null || blocks.size() < 2)
+      return false;
+    final List<ColumnDefinition> columns = tsType.getTsColumns();
+    String sharedTag = null;
+    for (final AndBlock block : blocks) {
+      if (block.getSubBlocks().size() != 1 || !(block.getSubBlocks().getFirst() instanceof BinaryCondition binary)
+          || !(binary.operator instanceof EqualsCompareOperator))
+        return false;
+      final String leftStr = binary.left != null ? binary.left.toString().trim() : null;
+      final String rightStr = binary.right != null ? binary.right.toString().trim() : null;
+      final String tag = isTimeSeriesTagColumn(columns, leftStr) ? leftStr : isTimeSeriesTagColumn(columns, rightStr) ? rightStr : null;
+      if (tag == null || (sharedTag != null && !sharedTag.equals(tag)))
+        return false;
+      sharedTag = tag;
+      final Expression valueExpr = tag.equals(leftStr) ? binary.right : binary.left;
+      if (valueExpr == null || valueExpr.execute((Identifiable) null, context) == null)
+        return false;
+    }
+    return true;
+  }
+
   private static boolean isTimeSeriesTagColumn(final List<ColumnDefinition> columns, final String name) {
     if (name == null)
       return false;
@@ -3600,7 +3629,7 @@ public class SelectExecutionPlanner {
     // If any field-value predicate remains (e.g., WHERE value > 100), bail out to avoid
     // silently dropping it — the standard filter step will handle it instead.
     if (info.flattenedWhereClause != null && (hasNonPushDownConditions(info.flattenedWhereClause, columns, tsType.getTimestampColumn())
-        || !isTimeSeriesWhereFullyPushedDown(tsType, info, context)))
+        || !(isTimeSeriesWhereFullyPushedDown(tsType, info, context) || isOrOfEqualitiesOnOneTag(tsType, info, context))))
       return false;
 
     // Chain the push-down step
