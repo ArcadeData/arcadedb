@@ -18,8 +18,8 @@
  */
 package com.arcadedb.query.opencypher;
 
-import com.arcadedb.query.opencypher.ast.ComparisonExpression;
 import com.arcadedb.database.Document;
+import com.arcadedb.query.opencypher.ast.ComparisonExpression;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;

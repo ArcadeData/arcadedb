@@ -152,6 +152,32 @@ class Issue8882FloatDoubleEqualityTest extends TestHelper {
   }
 
   @Test
+  void underflowReadsAsTheStoredValueLikeTheIndexKey() {
+    database.command("sql", "CREATE DOCUMENT TYPE Z");
+    database.command("sql", "CREATE PROPERTY Z.f FLOAT");
+    database.command("sql", "CREATE PROPERTY Z.g FLOAT");
+    database.command("sql", "CREATE INDEX ON Z (f) NOTUNIQUE");
+    database.transaction(() -> database.newDocument("Z").set("f", 0.0f, "g", 0.0f).save());
+    // Type.convert narrows 1e-50 to 0.0f for the index key, so the scan answers the same
+    assertThat(count("sql", "SELECT FROM Z WHERE f = ?", 1e-50d)).isEqualTo(count("sql", "SELECT FROM Z WHERE g = ?", 1e-50d));
+  }
+
+  @Test
+  void storedNegativeZeroAgainstPositiveZeroScan() {
+    database.command("sql", "CREATE DOCUMENT TYPE Z");
+    database.command("sql", "CREATE PROPERTY Z.g FLOAT");
+    database.transaction(() -> database.newDocument("Z").set("g", -0.0f).save());
+    assertThat(count("sql", "SELECT FROM Z WHERE g = ?", -0.0d)).isEqualTo(1);
+    assertThat(count("sql", "SELECT FROM Z WHERE g = ?", 0.0d)).isEqualTo(0);
+  }
+
+  @Test
+  void floatPropertyAgainstBigDecimalInItem() {
+    setup();
+    assertThat(count("sql", "SELECT FROM T WHERE g IN [?] AND k = 0", new BigDecimal(0.1f))).isEqualTo(1);
+  }
+
+  @Test
   void numbersEqualEdgeCases() {
     assertThat(Type.numbersEqual(0.1f, (double) 0.1f)).isTrue();
     assertThat(Type.numbersEqual((double) 0.1f, 0.1f)).isTrue();

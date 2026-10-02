@@ -1604,6 +1604,7 @@ public enum Type {
     return false;
   }
 
+  // Deliberately as loose as the index key: Type.convert narrows the operand, so 1e-50 reads as 0.0f and finds it (#8882)
   private static boolean narrowsTo(final float f, final Number other) {
     if (other instanceof Double || other instanceof BigDecimal)
       // Float.compare, not ==: negative zero is not zero, as Double.equals reads it
