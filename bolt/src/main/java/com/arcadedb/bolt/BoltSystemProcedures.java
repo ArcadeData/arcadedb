@@ -31,7 +31,10 @@ import com.arcadedb.query.sql.executor.Result;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.logging.Level;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 /**
@@ -51,9 +54,27 @@ import java.util.stream.Stream;
  */
 final class BoltSystemProcedures {
   private static final Object[] NO_ARGS       = new Object[0];
+  private static final String   CALL_PREFIX   = "call ";
+  /** Real probes are tiny; a longer statement is never matched, which also bounds the regex work on client input. */
+  private static final int      MAX_PROBE_LENGTH = 4096;
+  // One alternation, so each region is taken by whichever opener comes first: an apostrophe inside a block comment
+  // cannot pair with a quote outside it, nor a slash-star inside a string open a comment
+  private static final Pattern  QUOTED_OR_COMMENT = Pattern.compile(
+      "'[^'\\\\]*+(?:\\\\.[^'\\\\]*+)*+'|\"[^\"\\\\]*+(?:\\\\.[^\"\\\\]*+)*+\"|`[^`]*+`|/\\*.*?\\*/");
+  private static final Pattern  UNION         = Pattern.compile(" union (?:all )?");
+  private static final Pattern  WHITESPACE    = Pattern.compile("\\s+");
+  private static final Pattern  FOREIGN_CLAUSE = Pattern.compile(
+      "(?<![\\w$.])(?:create|merge|set|delete|detach|remove|foreach|call|load|match|optional|union|use|finish|insert|drop|alter|grant|deny|revoke|start|stop|terminate|enable|rename)\\b");
   private static final String   LABELS        = DbLabels.NAME.toLowerCase(Locale.ROOT);
   private static final String   RELATIONSHIPS = DbRelationshipTypes.NAME.toLowerCase(Locale.ROOT);
   private static final String   PROPERTY_KEYS = DbPropertyKeys.NAME.toLowerCase(Locale.ROOT);
+  // The field each schema procedure yields, lower-case as the normalized query is. A single call is served only
+  // when the answer cannot differ from the engine's: no alias, and no projection of anything but that field.
+  private static final Map<String, Pattern> SINGLE_TAIL   = Map.of(
+      LABELS, singleTail("label"), RELATIONSHIPS, singleTail("relationshiptype"), PROPERTY_KEYS, singleTail("propertykey"));
+  // The Desktop form: each UNION segment collects its procedure into the one `result` column, optionally sliced
+  private static final Map<String, Pattern> COMBINED_TAIL = Map.of(
+      LABELS, combinedTail("label"), RELATIONSHIPS, combinedTail("relationshiptype"), PROPERTY_KEYS, combinedTail("propertykey"));
 
   /**
    * The field names and the rows a served query answers with, in the shape the Bolt executor streams them.
@@ -78,10 +99,31 @@ final class BoltSystemProcedures {
    *
    * @param query the raw query text
    *
-   * @return the normalized form used by every {@code contains}/{@code startsWith} check
+   * @return the normalized form used by every anchored match
    */
   static String normalize(final String query) {
-    return query.trim().toLowerCase(Locale.ROOT).replaceAll("\\s+", " ");
+    return WHITESPACE.matcher(stripLeadingComments(query.trim()).toLowerCase(Locale.ROOT)).replaceAll(" ");
+  }
+
+  /**
+   * Drops the {@code //} and block comments a driver or tool may put in front of a statement, so that the anchored
+   * matching sees the statement itself. Done on the raw text, because normalizing collapses the newline that ends a
+   * line comment.
+   */
+  private static String stripLeadingComments(final String trimmed) {
+    String text = trimmed;
+    while (text.startsWith("//") || text.startsWith("/*")) {
+      final int end;
+      if (text.startsWith("//")) {
+        final int newline = text.indexOf('\n');
+        end = newline < 0 ? text.length() : newline + 1;
+      } else {
+        final int close = text.indexOf("*/");
+        end = close < 0 ? text.length() : close + 2;
+      }
+      text = text.substring(end).trim();
+    }
+    return text;
   }
 
   /**
@@ -92,7 +134,111 @@ final class BoltSystemProcedures {
    * @return true if the Bolt executor should try to serve it here
    */
   static boolean isSchemaProcedureQuery(final String normalized) {
-    return normalized.contains(LABELS) || normalized.contains(RELATIONSHIPS) || normalized.contains(PROPERTY_KEYS);
+    // Only a statement that IS the introspection query - a single call, or the combined UNION form Neo4j Desktop
+    // sends - is answered here. A name found deeper in the text (a CALL subquery branch, a string literal) or a call
+    // followed by further clauses belongs to a larger statement the engine has to run (issue #8908).
+    return schemaCallsOf(normalized) != null;
+  }
+
+  private static Pattern singleTail(final String field) {
+    return Pattern.compile(" ?(?:\\( ?\\))?(?: yield (?:\\*|" + field + "))?(?: return " + field + ")? ?;?");
+  }
+
+  private static Pattern combinedTail(final String field) {
+    return Pattern.compile(" ?(?:\\( ?\\))?(?: yield " + field + ")? return collect\\(" + field
+        + "\\)(?:\\[\\.\\.(\\d{1,9})\\])? as result ?;?");
+  }
+
+  /** @return the matcher when the segment is exactly {@code CALL <name>} followed by the tail, else null */
+  private static Matcher matchesSegment(final String segment, final String procedureName, final Pattern tail) {
+    final int end = endOfCallName(segment, procedureName);
+    if (end < 0)
+      return null;
+    final Matcher matcher = tail.matcher(segment).region(end, segment.length());
+    return matcher.matches() ? matcher : null;
+  }
+
+  /**
+   * @return the offset just past {@code CALL <procedureName>} when the statement opens with it, else -1
+   */
+  private static int endOfCallName(final String normalized, final String procedureName) {
+    if (normalized.length() > MAX_PROBE_LENGTH || !normalized.startsWith(CALL_PREFIX)
+        || !normalized.regionMatches(CALL_PREFIX.length(), procedureName, 0, procedureName.length()))
+      return -1;
+    return CALL_PREFIX.length() + procedureName.length();
+  }
+
+  /**
+   * Answers whether the normalized query opens with a call to the named Bolt-only system procedure ({@code dbms.*},
+   * {@code db.ping}). Unlike the schema procedures these exist nowhere but in the Bolt interception, so a statement
+   * declined here would fail in the engine as an unknown procedure; what follows the call is therefore left to the
+   * tail handling (YIELD / WHERE / UNWIND, as Neo4j Browser sends it). Only the anchoring and the token boundary are
+   * required (plus no write or further-reading clause in the tail), which is what keeps a mere mention of the name
+   * elsewhere in a larger statement out (issue #8908). The tail check is a deny-list on a family with no engine
+   * fallback: quoted literals are blanked and a keyword after {@code $} or {@code .} is not a clause, so parameters
+   * and property names do not trip it. An {@code EXPLAIN} or
+   * {@code PROFILE} prefix, or a comment between {@code CALL} and the name, reaches the engine.
+   */
+  static boolean isSystemCall(final String normalized, final String procedureName) {
+    final int end = endOfCallName(normalized, procedureName);
+    if (end < 0)
+      return false;
+    if (end != normalized.length() && normalized.charAt(end) != '(' && normalized.charAt(end) != ' '
+        && normalized.charAt(end) != ';')
+      return false;
+    // The tail stays open (YIELD / WHERE / UNWIND / RETURN) but never a clause that writes or calls on: serving
+    // those here would drop them silently, whereas the engine refuses them loudly.
+    // Quoted literals and block comments are blanked first: a keyword inside either is not a clause
+    final String tail = QUOTED_OR_COMMENT.matcher(normalized.substring(end)).replaceAll(" ");
+    // A line comment survives the blanking (normalize has already folded its newline away, so what it hides cannot be
+    // told apart from the statement): such a tail is the engine's to refuse.
+    return !tail.contains("//") && !FOREIGN_CLAUSE.matcher(tail).find();
+  }
+
+  /** One recognized schema call: the procedure and how many values its collected list may hold. */
+  private record SchemaCall(String name, int limit) {
+  }
+
+  /**
+   * Splits the statement into its UNION segments and returns the schema procedure each one calls, or null when the
+   * statement is not exactly one schema call or the three of them combined.
+   */
+  private static SchemaCall[] schemaCallsOf(final String normalized) {
+    // Every Bolt statement passes through here: bail out before any allocation unless it opens with a call.
+    if (normalized.length() > MAX_PROBE_LENGTH || !normalized.startsWith(CALL_PREFIX))
+      return null;
+    final String[] segments = normalized.indexOf(" union ") < 0 ? new String[] { normalized } : UNION.split(normalized, -1);
+    if (segments.length != 1 && segments.length != 3)
+      return null;
+    // Cypher does not allow UNION and UNION ALL in one statement
+    if (segments.length == 3 && normalized.contains(" union all ") && normalized.replace(" union all ", " ").contains(" union "))
+      return null;
+
+    final Map<String, Pattern> tails = segments.length == 1 ? SINGLE_TAIL : COMBINED_TAIL;
+    final SchemaCall[] calls = new SchemaCall[segments.length];
+    for (int i = 0; i < segments.length; ++i) {
+      // The segment is anchored on its own: the prefix is re-checked after each UNION.
+      calls[i] = schemaCallOf(segments[i], tails, LABELS);
+      if (calls[i] == null)
+        calls[i] = schemaCallOf(segments[i], tails, RELATIONSHIPS);
+      if (calls[i] == null)
+        calls[i] = schemaCallOf(segments[i], tails, PROPERTY_KEYS);
+      if (calls[i] == null)
+        return null;
+    }
+    if (calls.length == 3 && (calls[0].name().equals(calls[1].name()) || calls[0].name().equals(calls[2].name())
+        || calls[1].name().equals(calls[2].name())))
+      return null;
+    return calls;
+  }
+
+  private static SchemaCall schemaCallOf(final String segment, final Map<String, Pattern> tails, final String name) {
+    final Matcher matcher = matchesSegment(segment, name, tails.get(name));
+    if (matcher == null)
+      return null;
+    // The slice group only exists in the combined tail
+    final String slice = matcher.groupCount() > 0 ? matcher.group(1) : null;
+    return new SchemaCall(name, slice == null ? Integer.MAX_VALUE : Integer.parseInt(slice));
   }
 
   /**
@@ -110,20 +256,14 @@ final class BoltSystemProcedures {
    * path reports), when the procedure is not registered, and when running it raises anything at all
    */
   static Served serveSchemaProcedure(final Database database, final String normalized) {
-    final boolean labels = normalized.contains(LABELS);
-    final boolean relationships = normalized.contains(RELATIONSHIPS);
-    final boolean propertyKeys = normalized.contains(PROPERTY_KEYS);
+    final SchemaCall[] calls = schemaCallsOf(normalized);
+    if (calls == null)
+      return null;
 
     try {
-      if (labels && relationships && propertyKeys)
-        return serveCombined(database, normalized);
-
-      if (labels)
-        return serveOne(database, normalized, LABELS);
-      if (relationships)
-        return serveOne(database, normalized, RELATIONSHIPS);
-      if (propertyKeys)
-        return serveOne(database, normalized, PROPERTY_KEYS);
+      if (calls.length == 3)
+        return serveCombined(database, normalized, calls);
+      return serveOne(database, normalized, calls[0].name());
     } catch (final Exception e) {
       // The Bolt executor calls its system-query interception before the try/catch that classifies query
       // errors (CommandParsingException vs. retryable conflict vs. plain failure), so an exception escaping
@@ -135,30 +275,27 @@ final class BoltSystemProcedures {
           "Error serving schema procedure from the registry, leaving the query to the engine", e);
       return null;
     }
-
-    // Defensive: the caller reaches here only through isSchemaProcedureQuery(), which tests the same three
-    // substrings, so no name can be missing. Kept so the two ever diverging declines the query rather than
-    // answering it with nothing.
-    return null;
   }
 
   /**
    * Serves the combined query Neo4j Desktop sends, one row per procedure, each row holding the list of that
    * procedure's values.
    */
-  private static Served serveCombined(final Database database, final String normalized) {
-    final CypherProcedure labels = procedureFor(normalized, LABELS);
-    final CypherProcedure relationships = procedureFor(normalized, RELATIONSHIPS);
-    final CypherProcedure propertyKeys = procedureFor(normalized, PROPERTY_KEYS);
-    if (labels == null || relationships == null || propertyKeys == null)
-      return null;
-
-    final List<List<Object>> rows = new ArrayList<>(3);
-    if (database != null) {
-      rows.add(List.of(column(database, labels)));
-      rows.add(List.of(column(database, relationships)));
-      rows.add(List.of(column(database, propertyKeys)));
+  private static Served serveCombined(final Database database, final String normalized, final SchemaCall[] calls) {
+    final CypherProcedure[] procedures = new CypherProcedure[calls.length];
+    for (int i = 0; i < calls.length; ++i) {
+      procedures[i] = procedureFor(normalized, calls[i].name());
+      if (procedures[i] == null)
+        return null;
     }
+
+    // One row per segment, in the order the client sent them, each list cut at its own slice
+    final List<List<Object>> rows = new ArrayList<>(3);
+    if (database != null)
+      for (int i = 0; i < calls.length; ++i) {
+        final List<Object> values = column(database, procedures[i]);
+        rows.add(List.of(values.size() > calls[i].limit() ? new ArrayList<>(values.subList(0, calls[i].limit())) : values));
+      }
     return new Served(List.of("result"), rows);
   }
 
@@ -222,8 +359,8 @@ final class BoltSystemProcedures {
   /**
    * Detects a call to the named procedure that passes at least one argument, e.g. {@code CALL db.labels('x')}.
    * <p>
-   * The Bolt interception matches procedure names by substring and cannot evaluate arguments, so a call that
-   * carries any is handed to the Cypher engine rather than answered here.
+   * The Bolt interception only has the query TEXT and cannot evaluate arguments, so a call that carries any is
+   * handed to the Cypher engine rather than answered here.
    * </p>
    * <p>
    * This is not a Cypher tokenizer and must not be mistaken for one: it walks to the first {@code )} after the
