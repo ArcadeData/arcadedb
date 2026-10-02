@@ -5721,6 +5721,21 @@ public class LSMVectorIndex implements Index, IndexInternal {
       }
     }
 
+    // All bits set is how a CONSTANT vector (the all-zero one included) is stored. A vector that is not constant but
+    // sits on its minimum for at least half of its components (median == minimum, e.g. [0, 0, 0, 5]) would collide with
+    // it and read back as the origin, so its minimum components are put below the median instead (PR #8969 review).
+    float min = vector[0];
+    float max = vector[0];
+    for (final float v : vector) {
+      min = Math.min(min, v);
+      max = Math.max(max, v);
+    }
+    if (min != max && median == min) {
+      for (int i = 0; i < vector.length; i++)
+        if (vector[i] == min)
+          packed[i / 8] &= ~(1 << (i % 8));
+    }
+
     return new VectorQuantizationMetadata.BinaryQuantizationMetadata(packed, median, vector.length);
   }
 

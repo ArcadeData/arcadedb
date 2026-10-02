@@ -62,6 +62,20 @@ class Issue8960BinaryQuantizationSelfMatchTest extends TestHelper {
   }
 
   @Test
+  void nonZeroVectorWithZeroMedianIsNotStoredAsTheZeroVector() {
+    final String type = createType("SparseBinary", 4);
+    database.transaction(() -> {
+      database.newDocument(type).set("name", "sparse", "vector", new float[] { 0f, 0f, 0f, 5f }).save();
+      database.newDocument(type).set("name", "other", "vector", new float[] { 1f, 1f, 1f, -1f }).save();
+    });
+
+    final List<Pair<RID, Float>> hits = index(type).findNeighborsFromVector(new float[] { 0f, 0f, 0f, 5f }, 2, 100);
+
+    assertThat(hits).hasSize(2);
+    assertThat(hits.get(0).getFirst().asDocument().getString("name")).isEqualTo("sparse");
+  }
+
+  @Test
   void ownVectorFirstAndUsableRecallOnRandomVectors() {
     final Random random = new Random(42);
     final List<float[]> vectors = new ArrayList<>();
