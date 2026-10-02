@@ -22,8 +22,6 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.Set;
 
 /**
  * Difference between two serializations of a database schema, so a {@code SCHEMA_ENTRY} can ship what a DDL
@@ -66,7 +64,9 @@ import java.util.Set;
  * added to or removed from, the result carries exactly the key set the leader had, with the UNCHANGED children
  * taken from the receiver's own copy. A removal therefore needs no separate drop list, and a receiver whose
  * document does not match the leader's base cannot come out of that section with a phantom type no entry ever
- * removes.
+ * removes. The key set is also ORDER-authoritative (issue #8206): {@link #apply} rebuilds such a section in the
+ * leader's key order. A section whose key set did not move carries no order, so a receiver whose file order
+ * already drifted keeps it until that section's key set next moves.
  * <p>
  * A key set is proportional to its SECTION, not to the change, so one is emitted only for a section whose key
  * set actually moved - a couple of hundred bytes of names on the DDL that added or dropped something, and
@@ -206,25 +206,32 @@ public final class SchemaDelta {
           target.put(childKey, upserts.opt(childKey));
       }
 
+    // A key set is applied by REBUILDING the section in the leader's key order (issue #8206), not by removing what
+    // is missing from it: the receiver writes this document to its schema.json verbatim, and dropping alone left a
+    // child the merge above added AFTER the receiver's own children, so a follower's file listed a new type last
+    // while the leader's listed it in its place. The keys are carried exactly when a section's key set moved, which
+    // is the only time a merge can append; a section whose keys did not move keeps the order it already had.
     final JSONObject keys = delta.getJSONObject(FIELD_KEYS, null);
     if (keys != null)
-      for (final String rootKey : new ArrayList<>(keys.keySet())) {
-        final JSONObject target = mapSection(result, rootKey);
-        final Set<String> allowed = toStringSet(keys.getJSONArray(rootKey));
-        for (final String childKey : new ArrayList<>(target.keySet()))
-          if (!allowed.contains(childKey))
-            target.remove(childKey);
-      }
+      for (final String rootKey : new ArrayList<>(keys.keySet()))
+        result.put(rootKey, inKeyOrder(mapSection(result, rootKey), keys.getJSONArray(rootKey)));
 
     final JSONArray rootKeys = delta.getJSONArray(FIELD_ROOT_KEYS, null);
-    if (rootKeys != null) {
-      final Set<String> allowed = toStringSet(rootKeys);
-      for (final String rootKey : new ArrayList<>(result.keySet()))
-        if (!allowed.contains(rootKey))
-          result.remove(rootKey);
-    }
+    return rootKeys != null ? inKeyOrder(result, rootKeys) : result;
+  }
 
-    return result;
+  /**
+   * Returns the entries of {@code source} whose key is in {@code orderedKeys}, in that order. A listed key
+   * {@code source} does not hold is skipped, as before: the key set says what may remain, not what must exist.
+   */
+  private static JSONObject inKeyOrder(final JSONObject source, final JSONArray orderedKeys) {
+    final JSONObject ordered = new JSONObject();
+    for (int i = 0; i < orderedKeys.length(); i++) {
+      final String key = orderedKeys.getString(i);
+      if (source.has(key))
+        ordered.put(key, source.opt(key));
+    }
+    return ordered;
   }
 
   /**
@@ -260,13 +267,6 @@ public final class SchemaDelta {
     if (right instanceof JSONObject)
       return false;
     return String.valueOf(left).equals(String.valueOf(right));
-  }
-
-  private static Set<String> toStringSet(final JSONArray array) {
-    final Set<String> set = HashSet.newHashSet(array.length());
-    for (int i = 0; i < array.length(); i++)
-      set.add(array.getString(i));
-    return set;
   }
 
 }

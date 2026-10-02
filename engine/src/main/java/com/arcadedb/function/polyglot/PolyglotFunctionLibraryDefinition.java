@@ -26,6 +26,7 @@ import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.Collections;
 import java.util.List;
+import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
@@ -120,7 +121,7 @@ public abstract class PolyglotFunctionLibraryDefinition<T extends PolyglotFuncti
     json.put("language", language);
 
     final JSONObject functionsJSON = new JSONObject();
-    for (final T f : functions.values()) {
+    for (final T f : new TreeMap<>(functions).values()) {
       final JSONObject fJSON = new JSONObject();
       fJSON.put("code", f.getImplementation());
       fJSON.put("parameters", new JSONArray(f.getParameters()));
