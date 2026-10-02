@@ -2557,6 +2557,13 @@ public enum GlobalConfiguration {
       up with a SEVERE alert) instead of restarting forever (issue #5291).""",
       Integer.class, 10),
 
+  HA_JVM_PAUSE_CLOSE_THRESHOLD_MS("arcadedb.ha.jvmPauseCloseThresholdMs", SCOPE.SERVER,
+      """
+      JVM-pause length in milliseconds above which Ratis closes this node's Raft division (Ratis default: \
+      60000). 0 or a negative value disables the close: a long pause still steps a leader down, and ArcadeDB's \
+      health monitor decides whether the node needs recovery. Set a positive value to restore the Ratis behavior.""",
+      Long.class, 0L),
+
   HA_STOP_SERVER_ON_REPLICATION_FAILURE("arcadedb.ha.stopServerOnReplicationFailure", SCOPE.SERVER,
       """
       After a phase-2 local commit fails on the leader while followers have applied the entry, step-down \
