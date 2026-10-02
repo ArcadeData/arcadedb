@@ -20,6 +20,7 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.IndexSearchInfo;
@@ -202,14 +203,23 @@ public class InCondition extends BooleanExpression {
     return Boolean.TRUE.equals(evaluateExpressionThreeValued(iLeft, iRight));
   }
 
-  /**
-   * Equality of the search value against one right-hand item. {@link QueryOperatorEquals#equals} converts its second
-   * argument to the class of its first, so the item is first converted to the operand's class and, when that finds
-   * nothing, the operand to the item's class. The second call is what lets a String operand find a Double item, exactly as
-   * {@code list CONTAINS operand} and a BY ITEM index do (issue #8895). It only ever adds matches.
-   */
+  private static boolean sameClassAsFirstItem(final Set<?> set, final Object left) {
+    for (final Object o : set)
+      if (o != null)
+        return o.getClass() == left.getClass();
+    return true;
+  }
+
+  // QueryOperatorEquals converts its 2nd argument to the class of the 1st, so try both directions
   private static boolean equalsEitherWay(final Object left, final Object item) {
-    return QueryOperatorEquals.equals(left, item) || (left.getClass() != item.getClass() && QueryOperatorEquals.equals(item, left));
+    if (QueryOperatorEquals.equals(left, item))
+      return true;
+    // numbers, records and embedded documents compare symmetrically: the reverse call cannot add a match
+    if (left.getClass() == item.getClass() || (left instanceof Number && item instanceof Number) || left instanceof Result
+        || item instanceof Result || left instanceof Identifiable || item instanceof Identifiable || left instanceof EmbeddedDocument
+        || item instanceof EmbeddedDocument)
+      return false;
+    return QueryOperatorEquals.equals(item, left);
   }
 
   /**
@@ -231,12 +241,11 @@ public class InCondition extends BooleanExpression {
           return Boolean.TRUE;
         if (set.isEmpty())
           return Boolean.FALSE;
-        if (iLeft != null) {
-          // The hash probe is exact: a typed item the operand only converts to (issue #8895) needs the linear check.
+        // The hash probe is exact: only a set of another class than the operand needs the converting linear pass
+        if (iLeft != null && !(iLeft instanceof Number) && !sameClassAsFirstItem(set, iLeft))
           for (final Object o : set)
             if (o != null && equalsEitherWay(iLeft, o))
               return Boolean.TRUE;
-        }
         // No match: UNKNOWN if the search value is null or the set holds a null element, else FALSE.
         return iLeft == null || set.contains(null) ? null : Boolean.FALSE;
       }
@@ -256,7 +265,7 @@ public class InCondition extends BooleanExpression {
           final Object item = MultiValue.getFirstValue(iLeft);
           if (item instanceof Result result && result.getPropertyNames().size() == 1) {
             final Object propValue = result.getProperty(result.getPropertyNames().iterator().next());
-            if (propValue != null && equalsEitherWay(propValue, o))
+            if (QueryOperatorEquals.equals(propValue, o))
               return Boolean.TRUE;
           }
         }
@@ -290,7 +299,7 @@ public class InCondition extends BooleanExpression {
           sawNull = true;
           continue;
         }
-        if (equalsEitherWay(iLeft, o))
+        if (QueryOperatorEquals.equals(iLeft, o))
           return Boolean.TRUE;
       }
       if (empty)

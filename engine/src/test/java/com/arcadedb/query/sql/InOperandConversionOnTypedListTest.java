@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -26,6 +27,7 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 
@@ -86,6 +88,12 @@ class InOperandConversionOnTypedListTest extends TestHelper {
     assertThat(count("SELECT FROM S WHERE ? IN l", 7L)).isEqualTo(1);
     // a null element keeps the three-valued logic: no match is UNKNOWN, so NOT IN does not return the row
     assertThat(count("SELECT FROM S WHERE '8' NOT IN [7.0, null]")).isEqualTo(0);
+    // same for a Set that holds a null: no match is UNKNOWN on the Set branch too
+    assertThat(count("SELECT FROM S WHERE ? NOT IN ?", "8", new HashSet<>(Arrays.asList(7.0, null)))).isEqualTo(0);
+    assertThat(count("SELECT FROM S WHERE ? IN ?", "7", new HashSet<>(Arrays.asList(7.0, null)))).isEqualTo(1);
+    // numeric mixes keep their behaviour
+    assertThat(count("SELECT FROM S WHERE ? IN ?", 7, new ArrayList<>(List.of(7L)))).isEqualTo(1);
+    assertThat(count("SELECT FROM S WHERE ? IN ?", 8, new ArrayList<>(List.of(7L)))).isEqualTo(0);
     assertThat(count("SELECT FROM S WHERE '7' IN [7.0, null]")).isEqualTo(1);
   }
 
@@ -98,7 +106,9 @@ class InOperandConversionOnTypedListTest extends TestHelper {
   }
 
   private long count(final String query, final Object... params) {
-    return database.query("sql", query, params).stream().count();
+    try (final ResultSet rs = database.query("sql", query, params)) {
+      return rs.stream().count();
+    }
   }
 
 }
