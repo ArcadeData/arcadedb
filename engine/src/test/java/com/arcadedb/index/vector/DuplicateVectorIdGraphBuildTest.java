@@ -162,6 +162,23 @@ class DuplicateVectorIdGraphBuildTest extends TestHelper {
         .isTrue();
   }
 
+  /** Ids past the dense arrays are judged too: a shared id there is reported and not silently skipped. */
+  @Test
+  void aSharedIdPastTheDenseArraysIsReported() {
+    createIndexedDocs();
+    final LSMVectorIndex index = vectorIndex();
+    final int hugeId = (1 << 26) + 5;
+    final RID first = ridOf(0);
+    final RID second = ridOf(1000);
+    database.transaction(() -> {
+      index.persistEntryForTest(hugeId, first, embedding(0));
+      index.persistEntryForTest(hugeId, second, embedding(1000));
+    });
+    reopenDatabase();
+
+    assertThat(vectorIndex().checkIntegrity()).as("the loser of an id past the dense range").hasSize(1);
+  }
+
   private void assertNoLoopAfterABuild() {
     vectorIndex().buildVectorGraphNow();
     final int[] built = vectorIndex().getOrdinalToVectorIdForTest();
