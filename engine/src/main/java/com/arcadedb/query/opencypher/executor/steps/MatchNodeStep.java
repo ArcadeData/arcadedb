@@ -35,6 +35,7 @@ import com.arcadedb.query.opencypher.executor.PartitionPruning;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.ComparisonExpression;
 import com.arcadedb.query.opencypher.ast.Expression;
+import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
 import com.arcadedb.query.opencypher.ast.LogicalExpression;
 import com.arcadedb.query.opencypher.ast.NodePattern;
@@ -825,7 +826,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
       final Object[] propertyValues = new Object[propertyNames.length];
 
       for (int i = 0; i < propertyNames.length; i++)
-        propertyValues[i] = properties.get(propertyNames[i]);
+        propertyValues[i] = TemporalUtil.toIndexKey(properties.get(propertyNames[i]));
 
       // Track which index was used for profiling output, named after the type that DECLARES it: an inherited
       // index reported under the queried type would name an index that does not exist (issue #7021).
@@ -916,7 +917,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
       final String[] propertyNames = bestMatchedProperties.toArray(new String[0]);
       final Object[] propertyValues = new Object[propertyNames.length];
       for (int i = 0; i < propertyNames.length; i++)
-        propertyValues[i] = equalityPredicates.get(propertyNames[i]);
+        propertyValues[i] = TemporalUtil.toIndexKey(equalityPredicates.get(propertyNames[i]));
 
       usedIndexName = bestIndex.getTypeName() + "[" + String.join(", ", propertyNames) + "]";
 

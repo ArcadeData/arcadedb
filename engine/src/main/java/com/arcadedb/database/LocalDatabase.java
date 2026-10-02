@@ -1395,6 +1395,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       final Throwable cause) {
     final RID rid = record.getIdentity();
     try {
+      // The body write also externalised the EXTERNAL properties into the paired bucket: take those back first, while the
+      // record still holds its pointers (issue #8922)
+      if (record instanceof Document document)
+        cascadeDeleteExternalValues(document, true);
       bucket.retractRecord(rid);
     } catch (final Exception e) {
       cause.addSuppressed(e);
@@ -1914,6 +1918,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * a buffer.
    */
   private void cascadeDeleteExternalValues(final Document document) {
+    cascadeDeleteExternalValues(document, false);
+  }
+
+  /**
+   * @param retract true when the engine undoes its own write (a refused create): the external records are retracted
+   *                without the user-delete permission check, like the primary body (issue #8922)
+   */
+  private void cascadeDeleteExternalValues(final Document document, final boolean retract) {
     if (!(document.getType() instanceof LocalDocumentType localType))
       return;
     if (!localType.hasExternalProperties())
@@ -1922,7 +1934,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     for (final RID extRid : externalRids.values()) {
       final LocalBucket externalBucket = schema.getBucketById(extRid.getBucketId(), false);
       if (externalBucket != null) {
-        externalBucket.deleteRecord(extRid);
+        if (retract)
+          externalBucket.retractRecord(extRid);
+        else
+          externalBucket.deleteRecord(extRid);
         // Keep the external bucket's count consistent (mirrors the +1 in BinarySerializer.writeExternalPropertyValue).
         getTransaction().updateBucketRecordDelta(externalBucket.getFileId(), -1);
       }

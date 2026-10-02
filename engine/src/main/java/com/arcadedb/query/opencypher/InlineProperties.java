@@ -21,6 +21,10 @@ package com.arcadedb.query.opencypher;
 import com.arcadedb.database.Document;
 import com.arcadedb.query.opencypher.ast.ComparisonExpression;
 import com.arcadedb.query.opencypher.ast.Expression;
+import com.arcadedb.query.opencypher.temporal.CypherDateTime;
+import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
+import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
+import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -28,6 +32,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.math.BigInteger;
+import java.time.ZoneOffset;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
@@ -103,7 +108,29 @@ public final class InlineProperties {
       return false;
     if (actual.equals(expected))
       return true;
+    if (expected instanceof CypherTemporalValue wanted)
+      return temporalEqual(actual, wanted);
     return actual instanceof Number a && expected instanceof Number b && numbersEqual(a, b);
+  }
+
+  /**
+   * A value that went through a {@code WITH}, an {@code UNWIND} or a {@code datetime()} call is a Cypher temporal
+   * wrapper, which a stored {@code java.time} value never {@code equals()}: compare them the way {@code =} does, a
+   * naive datetime against a zoned one by instant (issue #8921).
+   */
+  private static boolean temporalEqual(final Object actual, final CypherTemporalValue wanted) {
+    final Object stored = TemporalUtil.fromCoreJavaType(actual);
+    if (!(stored instanceof CypherTemporalValue have))
+      return false;
+    try {
+      if (have instanceof CypherLocalDateTime local && wanted instanceof CypherDateTime zoned)
+        return local.getValue().toInstant(ZoneOffset.UTC).equals(zoned.getValue().toInstant());
+      if (have instanceof CypherDateTime zoned && wanted instanceof CypherLocalDateTime local)
+        return zoned.getValue().toInstant().equals(local.getValue().toInstant(ZoneOffset.UTC));
+      return have.compareTo(wanted) == 0;
+    } catch (final IllegalArgumentException e) {
+      return false; // different temporal types never equal
+    }
   }
 
   /**

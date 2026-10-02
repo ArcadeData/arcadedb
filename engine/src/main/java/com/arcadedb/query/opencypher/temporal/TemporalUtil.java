@@ -466,6 +466,19 @@ public final class TemporalUtil {
   }
 
   /**
+   * The value to hand to an index lookup for a Cypher temporal operand: the {@code java.time} value the wrapper holds,
+   * which the index key conversion understands (a zoned datetime stays a {@link ZonedDateTime}, where
+   * {@link #toCoreJavaType(Object)} would turn it into text). Any other value is returned unchanged (issue #8921).
+   */
+  public static Object toIndexKey(final Object value) {
+    if (value instanceof CypherDateTime dt)
+      return dt.getValue();
+    if (value instanceof CypherTemporalValue)
+      return toCoreJavaType(value);
+    return value;
+  }
+
+  /**
    * Inverse of {@link #toCoreJavaType(Object)}: wrap a native {@code java.time} / {@code java.util.Date}
    * value into its Cypher temporal type so it participates in temporal comparison and component access.
    * <p>

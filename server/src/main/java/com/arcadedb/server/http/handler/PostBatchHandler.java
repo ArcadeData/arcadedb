@@ -867,7 +867,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
 
     final NdJsonBatchResponse response = new NdJsonBatchResponse(exchange,
         WriteBoundedOutputStream.connectionWatchdog(exchange, streamingWriteTimeout(),
-            () -> "the streamed answer of a batch load on database '" + databaseName + "'"));
+            () -> "the streamed answer of a batch load on database '" + databaseName + "'"), streamingKeepAliveInterval());
     // Counters as of the last acknowledgement, so a failure that cannot reach streamRecords' own counters -
     // an engine exception raised after the stream started - still has something honest to report.
     final long[] lastProgress = new long[2];
@@ -1076,12 +1076,15 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     private final HttpServerExchange                     exchange;
     /** The write-side bound of issue #7381; {@code NONE} when the budget is not positive. */
     private final WriteBoundedOutputStream.WriteWatchdog watchdog;
+    private final int                                    keepAliveIntervalMs;
     private       NdJsonResultStream                     stream;
+    private       NdJsonKeepAlive                        keepAlive;
 
     private NdJsonBatchResponse(final HttpServerExchange exchange,
-        final WriteBoundedOutputStream.WriteWatchdog watchdog) {
+        final WriteBoundedOutputStream.WriteWatchdog watchdog, final int keepAliveIntervalMs) {
       this.exchange = exchange;
       this.watchdog = watchdog;
+      this.keepAliveIntervalMs = keepAliveIntervalMs;
     }
 
     private NdJsonResultStream open() {
@@ -1097,6 +1100,11 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
         // Every write of this response is bounded, terminal line and close included, because the whole response
         // is what grows with the size of the load (issue #7381).
         stream = new NdJsonResultStream(new WriteBoundedOutputStream(exchange.getOutputStream(), watchdog));
+        // GraphBatch.close() connects the deferred incoming edges AFTER the last progress line and BEFORE the summary,
+        // minutes of silence on a large load, which the driver's silence bound would take for a dead server and fail a
+        // load that is in fact completing (issue #8930). Only ever called right before an event is written, so the
+        // timer cannot commit the 200 of a load that was still entitled to an error status.
+        keepAlive = NdJsonKeepAlive.start(exchange, stream, keepAliveIntervalMs);
       }
       return stream;
     }
@@ -1112,6 +1120,9 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
      */
     @Override
     public void close() throws IOException {
+      // The timer goes before the stream does (the order AbstractQueryHandler documents)
+      if (keepAlive != null)
+        keepAlive.close();
       if (hasStarted())
         stream.close();
     }
