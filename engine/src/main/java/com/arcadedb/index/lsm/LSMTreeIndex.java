@@ -60,6 +60,7 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -561,6 +562,8 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     try {
       convertedKeys = convertKeys(keys);
     } catch (final NumberFormatException e) {
+      LogManager.instance().log(this, Level.FINE, "Lookup key %s cannot be read as the key types of index '%s': no row", e,
+          Arrays.toString(keys), getName());
       // A lookup key the declared numeric type cannot read ('7.0' against an INTEGER key) cannot equal any indexed
       // key: it answers no row, as the same predicate does without the index (issue #8888). A WRITE of such a key
       // still fails in put(), which is the build/insert contract convertIndexKeyOrNull documents.

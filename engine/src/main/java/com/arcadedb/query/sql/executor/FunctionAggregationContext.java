@@ -37,8 +37,6 @@ import java.util.Set;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class FunctionAggregationContext implements AggregationContext, HeapBufferingFunction {
-  private static final int           DISTINCT_ENTRY_OVERHEAD_BYTES = HeapEstimator.HASH_ENTRY_BYTES;
-
   private final SQLFunction        aggregateFunction;
   private       List<Expression>   params;
   // WHAT A FUNCTION THAT KEEPS EVERY VALUE HOLDS (list(), percentile()...), CHARGED TO THE HEAP BUDGET OF ALL THE
@@ -131,7 +129,7 @@ public class FunctionAggregationContext implements AggregationContext, HeapBuffe
       return false;
 
     if (heapLimit != null)
-      heapLimit.add(seen.size(), element, DISTINCT_ENTRY_OVERHEAD_BYTES);
+      heapLimit.add(seen.size(), element, HeapEstimator.HASH_ENTRY_BYTES);
     return true;
   }
 
