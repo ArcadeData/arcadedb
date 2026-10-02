@@ -150,9 +150,12 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
                 // for the same reason (TimeSeriesNaN.sum): a SUM over +Infinity and -Infinity is NaN with real
                 // samples behind it - an undefined TOTAL, which IEEE keeps and so do we - while an absent bucket
                 // is NaN with nothing behind it. Only the second is NULL (CodeRabbit on PR #7747).
-                // COUNT answers a Long, as SQLFunctionCount does on the generic path (issue #8915)
-                row.setProperty(outputAlias, req.type() == AggregationType.COUNT ? (Object) (long) value
-                    : TimeSeriesNaN.isAbsent(value) && aggResult.getCount(bucketTs, i) == 0 ? null : value);
+                if (req.type() == AggregationType.COUNT)
+                  // a Long, as SQLFunctionCount answers on the generic path (issue #8915)
+                  row.setProperty(outputAlias, (long) value);
+                else
+                  row.setProperty(outputAlias,
+                      TimeSeriesNaN.isAbsent(value) && aggResult.getCount(bucketTs, i) == 0 ? null : value);
               }
               rowCount++;
               return row;

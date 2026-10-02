@@ -116,33 +116,71 @@ class Issue8915TimeSeriesWhereAndCountPushDownTest extends TestHelper {
     });
   }
 
+  private long groupedCount(final String type, final String where) {
+    try (final ResultSet rs = database.query("sql",
+        "SELECT ts.timeBucket('1h', ts) AS b, count(*) AS c FROM " + type + " WHERE " + where + " GROUP BY b")) {
+      return rs.hasNext() ? ((Number) rs.next().getProperty("c")).longValue() : 0L;
+    }
+  }
+
+  private String plan(final String sql, final Object... args) {
+    try (final ResultSet rs = database.query("sql", sql, args)) {
+      return rs.getExecutionPlan().orElseThrow().prettyPrint(0, 2);
+    }
+  }
+
   @Test
   void twoEqualitiesOnTheSameTagInOneAndMatchNothing() {
     forEachState(() -> {
       for (final String w : new String[] { "host = 'a' AND host = 'b'", "host = 'a' AND host = 'b' AND v > 0",
-          "(host = 'a' AND host = 'b') OR host = 'a'", "host = 'a' AND host = 'a'" }) {
-        final String agg = "SELECT ts.timeBucket('1h', ts) AS b, count(*) AS c, sum(n) AS s FROM %s WHERE " + w + " GROUP BY b";
-        try (final ResultSet rs = database.query("sql", String.format(agg, "T"));
-            final ResultSet ref = database.query("sql", String.format(agg, "D"))) {
-          final long got = rs.hasNext() ? ((Number) rs.next().getProperty("c")).longValue() : 0L;
-          final long want = ref.hasNext() ? ((Number) ref.next().getProperty("c")).longValue() : 0L;
-          assertThat(got).as(w).isEqualTo(want);
-        }
+          "(host = 'a' AND host = 'b') OR host = 'a'", "host = 'a' AND host = 'a'" })
+        assertThat(groupedCount("T", w)).as(w).isEqualTo(groupedCount("D", w));
+      assertThat(groupedCount("T", "host = 'a' AND host = 'b'")).isZero();
+    });
+  }
+
+  @Test
+  void contradictoryBlocksAddNothingToTheTimeRangeUnion() {
+    forEachState(() -> {
+      for (final String w : new String[] { "(ts > 3000 AND ts < 2000) OR host = 'a'", "(ts > 3000 AND ts < 2000) OR ts >= 4000",
+          "(ts > 3000 AND ts < 2000) OR (ts > 5000 AND ts < 1000)" }) {
+        assertThat(ns("SELECT v AS n FROM T WHERE " + w + " ORDER BY ts")).as(w)
+            .isEqualTo(ns("SELECT v AS n FROM D WHERE " + w + " ORDER BY ts"));
+        assertThat(groupedCount("T", w)).as(w).isEqualTo(groupedCount("D", w));
       }
+    });
+  }
+
+  @Test
+  void aNullTagParameterMatchesNothingOnEveryPath() {
+    forEachState(() -> {
       try (final ResultSet rs = database.query("sql",
-          "SELECT ts.timeBucket('1h', ts) AS b, count(*) AS c FROM T WHERE host = 'a' AND host = 'b' GROUP BY b")) {
+          "SELECT ts.timeBucket('1h', ts) AS b, count(*) AS c FROM T WHERE host = ? GROUP BY b", (Object) null)) {
         assertThat(rs.hasNext()).isFalse();
       }
     });
   }
 
   @Test
+  void pushDownOnlyTakesTheShapesItAnswersExactly() {
+    load();
+    final String head = "SELECT ts.timeBucket('1h', ts) AS b, count(*) AS c FROM T WHERE ";
+    assertThat(plan(head + "host = 'a' AND ts >= 1000 GROUP BY b")).contains("AGGREGATE FROM TIMESERIES");
+    assertThat(plan(head + "host = 'a' AND host = 'b' GROUP BY b")).doesNotContain("AGGREGATE FROM TIMESERIES");
+    assertThat(plan(head + "ts >= 3000 OR host = 'a' GROUP BY b")).doesNotContain("AGGREGATE FROM TIMESERIES");
+    assertThat(plan(head + "ts < 2000 OR ts >= 4000 GROUP BY b")).doesNotContain("AGGREGATE FROM TIMESERIES");
+    assertThat(plan("SELECT ts.timeBucket('1h', ts) AS b, count(v) AS c FROM T GROUP BY b"))
+        .doesNotContain("AGGREGATE FROM TIMESERIES");
+    assertThat(plan("SELECT ts.timeBucket('1h', ts) AS b, count(*) AS c FROM T GROUP BY b"))
+        .contains("AGGREGATE FROM TIMESERIES");
+  }
+
+  @Test
   void orOfTagsAcrossBlocksStaysExact() {
     forEachState(() -> {
-      try (final ResultSet rs = database.query("sql",
-          "SELECT ts.timeBucket('1h', ts) AS b, count(*) AS c FROM T WHERE host = 'a' OR host = 'b' GROUP BY b")) {
-        assertThat(((Number) rs.next().getProperty("c")).longValue()).isEqualTo(4L);
-      }
+      final String w = "host = 'a' OR host = 'b'";
+      assertThat(groupedCount("T", w)).isEqualTo(4L);
+      assertThat(groupedCount("T", "host = 'a' OR host = 'c'")).isEqualTo(groupedCount("D", "host = 'a' OR host = 'c'"));
     });
   }
 }

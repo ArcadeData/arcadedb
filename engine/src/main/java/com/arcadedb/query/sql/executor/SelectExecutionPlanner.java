@@ -2077,7 +2077,7 @@ public class SelectExecutionPlanner {
       tsType.requireEngine();
 
       // Extract time range from WHERE clause (if available)
-      final long[] timeRange = extractTimeRange(info.flattenedWhereClause, tsType.getTimestampColumn(), context);
+      final long[] timeRange = extractTimeRangeUnion(info.flattenedWhereClause, tsType.getTimestampColumn(), context);
       final long fromTs = timeRange[0];
       final long toTs = timeRange[1];
 
@@ -2878,9 +2878,9 @@ public class SelectExecutionPlanner {
    * whose own predicates contradict each other matches nothing and adds nothing to the union. When no block can match,
    * the answer is the empty range {@code [Long.MAX_VALUE, Long.MIN_VALUE]}.
    * The range is only a superset of the matching rows when there is more than one block: the residual filter, or
-   * {@link #isWhereExactlyPushedDown}, is what keeps the answer exact.
+   * {@link #isTimeSeriesWhereFullyPushedDown}, is what keeps the answer exact.
    */
-  private static long[] extractTimeRange(final List<AndBlock> flattenedWhere, final String timestampColumn,
+  private static long[] extractTimeRangeUnion(final List<AndBlock> flattenedWhere, final String timestampColumn,
       final CommandContext context) {
     if (flattenedWhere == null || flattenedWhere.isEmpty())
       return new long[] { Long.MIN_VALUE, Long.MAX_VALUE };
@@ -3055,7 +3055,8 @@ public class SelectExecutionPlanner {
             values.add(coerced);
             blockMap.put(nonTsIdx, values);
           } else
-            existing.retainAll(Set.of(coerced));
+            if (!existing.contains(coerced))
+              existing.clear();
           break;
         }
       }
@@ -3094,51 +3095,6 @@ public class SelectExecutionPlanner {
       if (columns.get(j).getRole() != ColumnDefinition.ColumnRole.TIMESTAMP)
         nonTsIdx++;
     return nonTsIdx;
-  }
-
-  /**
-   * The push-down consumes the whole WHERE, so the time range and the tag filter it derives must select EXACTLY the
-   * rows the WHERE selects, not a superset (the plain scan keeps a residual filter, this path has none). That holds
-   * for a single AND block whose tag equalities name each tag at most once (two equalities on one tag are an
-   * intersection the IN filter does not express, issue #8917). Across OR'ed blocks it holds only for the plain
-   * {@code tag = x OR tag = y} shape over one tag column with no time predicate: the scan range is the union of the
-   * blocks' ranges and the tag filter the cross product of their values (issue #8916), so anything else is declined and
-   * left to the generic path.
-   */
-  private static boolean isWhereExactlyPushedDown(final List<AndBlock> flattenedWhere, final List<ColumnDefinition> columns,
-      final String timestampColumn, final CommandContext context) {
-    final boolean singleBlock = flattenedWhere.size() <= 1;
-    String sharedTag = null;
-    for (final AndBlock andBlock : flattenedWhere) {
-      final Set<String> tagsSeen = new HashSet<>();
-      for (final BooleanExpression expr : andBlock.getSubBlocks()) {
-        if (extractTimeRange(expr, timestampColumn, context) != null) {
-          if (!singleBlock)
-            return false;
-          continue;
-        }
-        if (!(expr instanceof BinaryCondition binary))
-          return false;
-        final String leftStr = binary.left != null ? binary.left.toString().trim() : null;
-        final String rightStr = binary.right != null ? binary.right.toString().trim() : null;
-        String tag = null;
-        for (final ColumnDefinition col : columns)
-          if (col.getRole() == ColumnDefinition.ColumnRole.TAG && (col.getName().equals(leftStr) || col.getName().equals(rightStr))) {
-            tag = col.getName();
-            break;
-          }
-        if (tag == null || !tagsSeen.add(tag))
-          return false;
-        if (!singleBlock) {
-          if (sharedTag != null && !sharedTag.equals(tag))
-            return false;
-          sharedTag = tag;
-        }
-      }
-      if (!singleBlock && tagsSeen.size() != 1)
-        return false;
-    }
-    return true;
   }
 
   /**
@@ -3642,7 +3598,7 @@ public class SelectExecutionPlanner {
     // If any field-value predicate remains (e.g., WHERE value > 100), bail out to avoid
     // silently dropping it — the standard filter step will handle it instead.
     if (info.flattenedWhereClause != null && (hasNonPushDownConditions(info.flattenedWhereClause, columns, tsType.getTimestampColumn())
-        || !isWhereExactlyPushedDown(info.flattenedWhereClause, columns, tsType.getTimestampColumn(), context)))
+        || !isTimeSeriesWhereFullyPushedDown(tsType, info, context)))
       return false;
 
     // Chain the push-down step
