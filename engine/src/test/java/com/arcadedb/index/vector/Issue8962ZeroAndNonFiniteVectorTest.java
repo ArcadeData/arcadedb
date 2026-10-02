@@ -57,7 +57,7 @@ class Issue8962ZeroAndNonFiniteVectorTest extends TestHelper {
       final String type = create(similarity);
       for (final float bad : new float[] { Float.NaN, Float.POSITIVE_INFINITY, Float.NEGATIVE_INFINITY })
         assertThatThrownBy(() -> database.transaction(() -> database.newDocument(type).set("name", "bad", "vector", new float[] { bad, 1f }).save()))
-            .hasRootCauseInstanceOf(IllegalArgumentException.class).hasStackTraceContaining("finite");
+            .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("finite");
 
       database.transaction(() -> database.newDocument(type).set("name", "ok", "vector", new float[] { 0.6f, 0.8f }).save());
       assertThat(neighbors(type)).containsExactly("ok");
