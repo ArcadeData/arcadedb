@@ -516,7 +516,6 @@ public class BinaryComparator {
     return Integer.compare(buffer1[mismatch] & 0xFF, buffer2.getByte(buffer2.position() - 1) & 0xFF);
   }
 
-  /** Numbers of different classes follow {@link Type#numbersEqual}: not transitive, so never a hash or grouping key. */
   /**
    * The exact twin of {@link #equals(Object, Object)} for key matching inside hash chains, where the FLOAT/DOUBLE
    * looseness of {@link Type#numbersEqual} would let a Double key overwrite a Float one (issue #8882).
@@ -528,6 +527,7 @@ public class BinaryComparator {
     return pair[0].equals(pair[1]);
   }
 
+  /** Numbers of different classes follow {@link Type#numbersEqual}: not transitive, so never a hash or grouping key. */
   public static boolean equals(final Object a, final Object b) {
     if (a == b)
       return true;
