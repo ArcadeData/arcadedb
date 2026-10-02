@@ -86,6 +86,7 @@ class RaftVectorSharedIdCheckFix3NodesIT extends BaseRaftHATest {
     final RID[] winners = new RID[COLLISIONS];
     for (int k = 0; k < COLLISIONS; k++)
       winners[k] = ridOf(leaderDb, 1000 + k);
+    // Reflection: LSMVectorIndex.persistEntryForTest is package-private in the engine. Rename it here too.
     final Method persistEntry = LSMVectorIndex.class.getDeclaredMethod("persistEntryForTest", int.class, RID.class,
         float[].class);
     persistEntry.setAccessible(true);

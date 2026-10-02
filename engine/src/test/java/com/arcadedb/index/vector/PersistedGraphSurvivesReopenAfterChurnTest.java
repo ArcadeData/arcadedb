@@ -37,6 +37,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * keyed by vector id. When the two derivations disagree the persisted graph is rejected by the usability check on the
  * search path, rebuilt synchronously, persisted, and rejected again.
  * <p>
+ * This is a guard, not the regression test of the bug: ordinary writes never produce the shared ids, so it passes
+ * with or without the fix. {@code DuplicateVectorIdGraphBuildTest} is the regression test.
+ * <p>
  * Each test drives one churn shape that produces page entries the two derivations could read differently (updates
  * that mint a new id for the same RID, deletes, delete plus re-insert, update then delete, repeated updates), across
  * separate transactions as an ingest does, then checks that (1) the live set a rebuild publishes is the live set a
