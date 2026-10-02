@@ -3371,8 +3371,10 @@ public class SelectExecutionPlanner {
   }
 
   /**
-   * True for {@code tag = x OR tag = y ...}: every AND block is ONE equality, on the same TAG column, with a non-null value.
-   * The union of the values is then an exact {@code IN}, so the aggregation push-down answers it with no residual filter,
+   * True for {@code tag = x OR tag = y ...}, optionally under a shared time range ({@code ts >= X AND (tag = x OR tag = y)}
+   * flattens to {@code (ts >= X AND tag = x) OR (ts >= X AND tag = y)}): every AND block carries the SAME time predicates plus
+   * ONE equality, on the same TAG column, with a non-null value. The union of the blocks' ranges is then each block's range
+   * and the union of the values is an exact {@code IN}, so the aggregation push-down answers it with no residual filter,
    * which keeps the common dashboard shape on the fast path (issue #8916 made every other OR decline).
    */
   private static boolean isOrOfEqualitiesOnOneTag(final LocalTimeSeriesType tsType, final QueryPlanningInfo info,
@@ -3382,14 +3384,27 @@ public class SelectExecutionPlanner {
       return false;
     final List<ColumnDefinition> columns = tsType.getTsColumns();
     String sharedTag = null;
+    Set<String> sharedTimePredicates = null;
     for (final AndBlock block : blocks) {
-      if (block.getSubBlocks().size() != 1 || !(block.getSubBlocks().getFirst() instanceof BinaryCondition binary)
-          || !(binary.operator instanceof EqualsCompareOperator))
-        return false;
-      final String tag = tagOfNonNullEquality(binary, columns, context);
+      final Set<String> timePredicates = new HashSet<>();
+      String tag = null;
+      for (final BooleanExpression expr : block.getSubBlocks()) {
+        if (extractTimeRange(expr, tsType.getTimestampColumn(), context) != null) {
+          timePredicates.add(expr.toString());
+          continue;
+        }
+        if (tag != null || !(expr instanceof BinaryCondition binary))
+          return false;
+        tag = tagOfNonNullEquality(binary, columns, context);
+        if (tag == null)
+          return false;
+      }
       if (tag == null || (sharedTag != null && !sharedTag.equals(tag)))
         return false;
+      if (sharedTimePredicates != null && !sharedTimePredicates.equals(timePredicates))
+        return false;
       sharedTag = tag;
+      sharedTimePredicates = timePredicates;
     }
     return true;
   }
@@ -3595,7 +3610,9 @@ public class SelectExecutionPlanner {
     // Verify all WHERE conditions are consumed by push-down (time-range or tag equality).
     // If any field-value predicate remains (e.g., WHERE value > 100), bail out to avoid
     // silently dropping it — the standard filter step will handle it instead.
-    if (info.flattenedWhereClause != null && !(isTimeSeriesWhereFullyPushedDown(tsType, info, context) || isOrOfEqualitiesOnOneTag(tsType, info, context)))
+    final boolean whereFullyConsumed = isTimeSeriesWhereFullyPushedDown(tsType, info, context)
+        || isOrOfEqualitiesOnOneTag(tsType, info, context);
+    if (info.flattenedWhereClause != null && !whereFullyConsumed)
       return false;
 
     // Chain the push-down step
