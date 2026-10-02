@@ -100,22 +100,22 @@ class Issue8937SelectOrderByFoldedIndexTest extends TestHelper {
   }
 
   @Test
-  void limitedEqualityOnAFoldedIndexKeepsTheRequestedOrder() {
+  void limitedEqualityOnAFoldedIndexStillAnswersTheExactValue() {
     database.command("sql", "CREATE DOCUMENT TYPE Eq");
     database.command("sql", "CREATE PROPERTY Eq.s STRING");
     database.command("sql", "CREATE PROPERTY Eq.n INTEGER");
     database.command("sql", "CREATE INDEX ON Eq (s COLLATE ci) NOTUNIQUE");
     database.transaction(() -> {
-      // "abc", "ABC" and "Abc" fold to one key but are different values
+      // the four values fold to one key; an equality predicate still matches the exact value only (unchanged by #8937)
       final String[] same = { "abc", "ABC", "Abc", "aBc" };
       for (int i = 0; i < same.length; i++)
         database.newDocument("Eq").set("s", same[i]).set("n", i).save();
     });
     final List<String> asc = database.select().fromType("Eq").where().property("s").eq().value("abc")
         .orderBy("s", true).limit(2).documents().toList().stream().map(d -> d.getString("s")).toList();
-    assertThat(asc).hasSize(asc.size()).isSortedAccordingTo(String::compareTo);
+    assertThat(asc).containsExactly("abc");
     final List<String> desc = database.select().fromType("Eq").where().property("s").eq().value("abc")
         .orderBy("s", false).limit(2).documents().toList().stream().map(d -> d.getString("s")).toList();
-    assertThat(desc).isSortedAccordingTo((a, b) -> b.compareTo(a));
+    assertThat(desc).containsExactly("abc");
   }
 }
