@@ -314,7 +314,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    */
   private static final String NO_TARGET_ALIAS = "";
   /** significant digits a double can carry: a literal with no more than this stays a double (issue #8872) */
-  private static final int MAX_DOUBLE_DIGITS          = 17;
+  private static final int MAX_DOUBLE_DIGITS = 17;
   /** bound on the decimal places or exponent (scale) of a literal kept as an exact BigDecimal rather than a double (issue #8872) */
   private static final int MAX_EXACT_DECIMAL_SCALE = 400;
 
@@ -3414,8 +3414,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    * limitation: a 16 or 17 digit literal on a DECIMAL property still goes through the double.
    * <p>
    * Hex floats, values outside the double range and a scale beyond {@link #MAX_EXACT_DECIMAL_SCALE} stay doubles, so a
-   * hostile exponent cannot become a BigDecimal whose arithmetic expands about a billion digits (a finite double bounds
-   * the precision too). Text of 15 characters or fewer is always a double (cheap pre-filter).
+   * hostile exponent cannot become a BigDecimal whose arithmetic expands about a billion digits (the scale cap and the finite
+   * double range together bound the precision). Text of 15 characters or fewer is always a double (cheap pre-filter).
    */
   private static Number parseSuffixlessDecimal(final String text) {
     final double d = Double.parseDouble(text);
