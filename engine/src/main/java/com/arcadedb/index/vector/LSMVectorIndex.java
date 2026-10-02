@@ -6302,79 +6302,118 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
-   * The live set of a page replay, kept in the two shapes the build and a load disagree on.
+   * Which record holds each vector id after a replay of the pages, in primitives.
    * <p>
-   * {@link #byRid} is what a graph build wants: one entry per record, the highest vector id winning. A load of the
-   * same pages keys the set by vector id instead: a live entry overwrites whatever record held the id, and a
-   * tombstone deletes the id whoever holds it. Both are replayed here in page order, so {@link #losers()} can name
-   * the records the build would count and the load would not. Two records on one id are the common case; a tombstone
-   * written for one of them removes the id for the other as well, in an order-dependent way, which only an id-keyed
-   * replay sees.
+   * Ids are dense in the usual case, so they index arrays directly; the arrays only grow while the id stays within
+   * twice the number of entries seen, and a stray larger id goes to an open-addressing table. Memory therefore
+   * follows the entries replayed, never the largest id.
+   */
+  private static final class IdOwners {
+    /** The bucket value of an id whose last page entry is a tombstone. */
+    static final int DELETED = -1;
+
+    private int[]  denseBucket   = new int[1024];
+    private long[] densePosition = new long[1024];
+    private int    entries;
+    /** Open addressing, keys stored as id + 1 so 0 means empty. */
+    private int[]  keys          = new int[64];
+    private int[]  sparseBucket  = new int[64];
+    private long[] sparsePosition = new long[64];
+    private int    sparseSize;
+
+    /** Bucket id + 1 of the record that holds the id, {@link #DELETED}, or 0 when no page entry named it. */
+    int bucket(final int id) {
+      if (id < denseBucket.length)
+        return denseBucket[id];
+      final int slot = find(id);
+      return keys[slot] != 0 ? sparseBucket[slot] : 0;
+    }
+
+    long position(final int id) {
+      if (id < denseBucket.length)
+        return densePosition[id];
+      return sparsePosition[find(id)];
+    }
+
+    void put(final int id, final int bucket, final long position) {
+      ++entries;
+      if (id >= denseBucket.length && id <= 2L * entries + 1024) {
+        final int grown = (int) Math.max(id + 1L, denseBucket.length * 2L);
+        denseBucket = Arrays.copyOf(denseBucket, grown);
+        densePosition = Arrays.copyOf(densePosition, grown);
+      }
+      if (id < denseBucket.length) {
+        denseBucket[id] = bucket;
+        densePosition[id] = position;
+        return;
+      }
+      if (2 * (sparseSize + 1) > keys.length)
+        growSparse();
+      final int slot = find(id);
+      if (keys[slot] == 0) {
+        keys[slot] = id + 1;
+        ++sparseSize;
+      }
+      sparseBucket[slot] = bucket;
+      sparsePosition[slot] = position;
+    }
+
+    private int find(final int id) {
+      final int mask = keys.length - 1;
+      int slot = (id * 0x9E3779B9) >>> 7 & mask;
+      while (keys[slot] != 0 && keys[slot] != id + 1)
+        slot = slot + 1 & mask;
+      return slot;
+    }
+
+    private void growSparse() {
+      final int[] oldKeys = keys;
+      final int[] oldBucket = sparseBucket;
+      final long[] oldPosition = sparsePosition;
+      keys = new int[oldKeys.length * 2];
+      sparseBucket = new int[keys.length];
+      sparsePosition = new long[keys.length];
+      for (int i = 0; i < oldKeys.length; i++)
+        if (oldKeys[i] != 0) {
+          final int slot = find(oldKeys[i] - 1);
+          keys[slot] = oldKeys[i];
+          sparseBucket[slot] = oldBucket[i];
+          sparsePosition[slot] = oldPosition[i];
+        }
+    }
+  }
+
+  /**
+   * The live set of a page replay in the two shapes a build and a load disagree on: {@link #byRid} keeps one entry
+   * per record (what a build wants), {@link #owners} is the id-keyed state a load ends up with. A tombstone deletes
+   * the id whoever holds it, so a stale one for record A also removes record B holding the same id.
    */
   private static final class LiveSetReplay {
-    /** Ids at or above this go to a map instead of the arrays: a stray huge id must not size them. */
-    static final int MAX_TRACKED_ID = 1 << 26;
-    /** In {@link #ownerBucket}: the id was tombstoned last. */
-    private static final int DELETED        = -1;
-
     final Map<RID, VectorEntryForGraphBuild> byRid;
-    /** Owners of the ids past {@link #MAX_TRACKED_ID}: bounded arrays for the dense case, a map for the stray rest. */
-    private final Map<Integer, long[]> overflowOwners = new HashMap<>();
-    /** Per vector id, the record that holds it after the replay: bucket id + 1, 0 for never seen, {@link #DELETED}. */
-    private int[]  ownerBucket;
-    private long[] ownerPosition;
+    private final IdOwners                   owners = new IdOwners();
 
     LiveSetReplay(final int expectedSize) {
       byRid = new HashMap<>(expectedSize);
-      ownerBucket = new int[Math.min(MAX_TRACKED_ID, Math.max(16, expectedSize))];
-      ownerPosition = new long[ownerBucket.length];
     }
 
     void accept(final LSMVectorIndexPageParser.VectorEntry entry, final boolean isCompacted) {
       mergeEntryIntoLiveSet(byRid, entry, isCompacted);
-      final int id = entry.vectorId;
-      if (id < 0)
-        return;
-      if (id >= MAX_TRACKED_ID) {
-        overflowOwners.put(id, entry.deleted ? new long[] { DELETED, 0L } :
-            new long[] { entry.rid.getBucketId() + 1L, entry.rid.getPosition() });
-        return;
-      }
-      if (id >= ownerBucket.length) {
-        final int grown = (int) Math.min(MAX_TRACKED_ID, Math.max(id + 1L, ownerBucket.length * 2L));
-        ownerBucket = Arrays.copyOf(ownerBucket, grown);
-        ownerPosition = Arrays.copyOf(ownerPosition, grown);
-      }
-      if (entry.deleted)
-        ownerBucket[id] = DELETED;
-      else {
-        ownerBucket[id] = entry.rid.getBucketId() + 1;
-        ownerPosition[id] = entry.rid.getPosition();
-      }
+      if (entry.vectorId >= 0)
+        owners.put(entry.vectorId, entry.deleted ? IdOwners.DELETED : entry.rid.getBucketId() + 1,
+            entry.deleted ? 0L : entry.rid.getPosition());
     }
 
-    /**
-     * The entries in {@link #byRid} whose vector id, after the replay, belongs to another record or to a tombstone,
-     * in a stable order (bucket, position) so what a log or a finding shows is the same from one run to the next.
-     */
+    /** The entries in {@link #byRid} whose id belongs to another record or a tombstone, ordered by (bucket, position). */
     List<VectorEntryForGraphBuild> losers() {
       List<VectorEntryForGraphBuild> losers = null;
       for (final VectorEntryForGraphBuild entry : byRid.values()) {
         final int id = entry.vectorId;
-        final long bucket;
-        final long position;
-        if (id >= MAX_TRACKED_ID) {
-          final long[] owner = overflowOwners.get(id);
-          bucket = owner != null ? owner[0] : 0;
-          position = owner != null ? owner[1] : 0;
-        } else {
-          bucket = id >= 0 && id < ownerBucket.length ? ownerBucket[id] : 0;
-          position = bucket != 0 ? ownerPosition[id] : 0;
-        }
-        // Not judged: an id never seen on a page (recovered from memory or a document scan).
+        final int bucket = id >= 0 ? owners.bucket(id) : 0;
+        // Not judged: an id no page entry named (recovered from memory or a document scan).
         if (bucket == 0)
           continue;
-        if (bucket == DELETED || bucket != entry.rid.getBucketId() + 1L || position != entry.rid.getPosition()) {
+        if (bucket == IdOwners.DELETED || bucket != entry.rid.getBucketId() + 1
+            || owners.position(id) != entry.rid.getPosition()) {
           if (losers == null)
             losers = new ArrayList<>();
           losers.add(entry);
@@ -6397,20 +6436,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
-   * Drops from the live set the records a load of the same pages would not keep.
-   * <p>
-   * The set is keyed by RID, so two records carrying the SAME vector id both stay in it, while the id-keyed location
-   * index a later load rebuilds keeps only the entry read last, and a tombstone on the id removes it whoever holds
-   * it. A graph built over all of them then has more nodes than the load has live vectors, can never take the
-   * stale-prefix reuse (it is larger, not smaller), and is rejected and rebuilt over the same pages on every query.
-   * The losers are logged by record; they are not served by the graph, exactly as they are not served after a load.
-   * Repairing them needs a write, which a build (it also runs on followers) must not do - see CHECK DATABASE.
-   * <p>
-   * The caller does not compact the data file in a pass that left records out: the records are still in their
-   * documents and a rebuild of the index brings them back, but rewriting the pages from the collapsed set would erase
-   * the evidence of how they came to share an id.
-   *
-   * @param replay the replay of the index pages; the losers are removed from its RID-keyed set
+   * Drops the records a load of the same pages would not keep (same id given to another record, or tombstoned), or
+   * the graph is larger than the load's live set and is rejected and rebuilt on every query. The losers are logged,
+   * not repaired: a build also runs on followers and must not write, so CHECK DATABASE FIX does that. The caller
+   * skips compaction in such a pass, which would erase the pages' evidence.
    *
    * @return whether any record was left out
    */
@@ -6430,34 +6459,23 @@ public class LSMVectorIndex implements Index, IndexInternal {
     return true;
   }
 
-  /**
-   * Reports records whose vector id a load of the pages gives to another record or deletes, read from the pages
-   * exactly as a graph build reads them. Such an index can never keep a persisted graph (see
-   * {@link #collapseToWhatALoadKeeps}), and nothing short of rebuilding it gives those records a vector id of their
-   * own, so CHECK DATABASE FIX rebuilds an index that reports it.
-   * <p>
-   * Holds the read lock while it parses, so a write cannot land mid-read and raise a finding that is not there:
-   * under FIX a false finding is a full index rebuild. It also holds the live set of the index in memory for the
-   * duration of the call, and every vector index pays that on every CHECK DATABASE.
-   */
+  /** Reports records whose vector id a load gives to another record or deletes; CHECK DATABASE FIX rebuilds the index. */
   @Override
   public List<String> checkIntegrity() {
-    // Pass 1, no lock and no per-record map: does any vector id ever carry two different records? A record that
-    // writes an id and the tombstone that deletes it name the same record, so on a healthy index this never
-    // fires, and without it there is nothing for a load to give to another record. Damage is on the pages, so a
-    // write landing during this pass cannot hide it.
-    if (!anyVectorIdWrittenByTwoRecords())
-      return Collections.emptyList();
-
-    // Starts small and grows with the replay: any up-front estimate of the entry count is a guess, and a wrong one
-    // costs an allocation of tens of MB before the first page is read.
-    final LiveSetReplay replay = new LiveSetReplay(16);
-    final DatabaseInternal database = getDatabase();
-    // Pass 2 decides, and holds the read lock so a write cannot land mid-read and raise a finding that is not there:
-    // under FIX a false finding is a full index rebuild.
+    final LiveSetReplay replay;
+    // Under the read lock end to end, like LSMTreeIndex.checkIntegrity: a compaction swapping the files must not
+    // land between the page count and the read, and a write must not raise a finding that is not there (under FIX
+    // that is a full rebuild). Writers to this index wait for the duration of the parse.
     lock.readLock().lock();
     try {
-      replayPages(database, replay);
+      // Pass 1 keeps only the owner of each id: does any id carry two different records? A record and the
+      // tombstone that deletes it name the same one, so a healthy index never fires, and without it there is
+      // nothing for a load to give to another record.
+      if (!anyVectorIdWrittenByTwoRecords())
+        return Collections.emptyList();
+
+      replay = new LiveSetReplay(16);
+      replayPages(getDatabase(), replay);
     } finally {
       lock.readLock().unlock();
     }
@@ -6479,32 +6497,19 @@ public class LSMVectorIndex implements Index, IndexInternal {
         entry -> replay.accept(entry, false));
   }
 
-  /** The cheap pre-pass of {@link #checkIntegrity()}: 12 bytes per vector id, nothing per record. */
   private boolean anyVectorIdWrittenByTwoRecords() {
-    final int[][] bucket = { new int[1024] };
-    final long[][] position = { new long[1024] };
+    final IdOwners owners = new IdOwners();
     final boolean[] shared = { false };
-    final Map<Integer, RID> overflow = new HashMap<>();
     final Consumer<LSMVectorIndexPageParser.VectorEntry> consumer = entry -> {
       final int id = entry.vectorId;
       if (shared[0] || id < 0)
         return;
-      if (id >= LiveSetReplay.MAX_TRACKED_ID) {
-        final RID previous = overflow.putIfAbsent(id, entry.rid);
-        shared[0] = previous != null && !previous.equals(entry.rid);
-        return;
-      }
-      if (id >= bucket[0].length) {
-        final int grown = (int) Math.min(LiveSetReplay.MAX_TRACKED_ID, Math.max(id + 1L, bucket[0].length * 2L));
-        bucket[0] = Arrays.copyOf(bucket[0], grown);
-        position[0] = Arrays.copyOf(position[0], grown);
-      }
-      final int b = entry.rid.getBucketId() + 1;
-      if (bucket[0][id] == 0) {
-        bucket[0][id] = b;
-        position[0][id] = entry.rid.getPosition();
-      } else if (bucket[0][id] != b || position[0][id] != entry.rid.getPosition())
-        shared[0] = true;
+      final int bucket = entry.rid.getBucketId() + 1;
+      final int previous = owners.bucket(id);
+      if (previous == 0)
+        owners.put(id, bucket, entry.rid.getPosition());
+      else
+        shared[0] = previous != bucket || owners.position(id) != entry.rid.getPosition();
     };
     final DatabaseInternal database = getDatabase();
     if (compactedSubIndex != null)
@@ -10192,6 +10197,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // persistedGraphNodeCount above is read from there: "how many are only reachable by scan" is a question an
     // operator has to be able to ask on a freshly reopened index too.
     final int[] unreachableOrdinals = graphUnreachableOrdinals;
+    stats.put("compactionBlockedBySharedIds", compactionBlockedBySharedIds ? 1L : 0L);
     stats.put("unreachableGraphNodes", unreachableOrdinals != null ?
         (long) unreachableOrdinals.length :
         manifestContent != null ? (long) manifestContent.unreachableOrdinals().length : 0L);

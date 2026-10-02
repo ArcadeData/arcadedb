@@ -157,6 +157,8 @@ class DuplicateVectorIdGraphBuildTest extends TestHelper {
     vectorIndex().compact();
 
     assertThat(vectorIndex().checkIntegrity()).as("still reported after a compaction").hasSize(1);
+    assertThat(vectorIndex().getStats().get("compactionBlockedBySharedIds"))
+        .as("visible to monitoring, since nothing else says compaction has stopped").isEqualTo(1L);
     assertThat(vectorIndex().compactionBlockedBySharedIdsForTest())
         .as("and the compaction trigger stops asking, or every commit would repeat a full graph build for nothing")
         .isTrue();
@@ -167,7 +169,7 @@ class DuplicateVectorIdGraphBuildTest extends TestHelper {
   void aSharedIdPastTheDenseArraysIsReported() {
     createIndexedDocs();
     final LSMVectorIndex index = vectorIndex();
-    final int hugeId = (1 << 26) + 5;
+    final int hugeId = 50_000_000;
     final RID first = ridOf(0);
     final RID second = ridOf(1000);
     database.transaction(() -> {
