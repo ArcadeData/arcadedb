@@ -458,8 +458,11 @@ public class ComparisonExpression implements BooleanExpression {
     if (left instanceof BigInteger || right instanceof BigInteger || isLongBeyondDoublePrecision(left)
         || isLongBeyondDoublePrecision(right))
       return true;
-    // An exact long still collides with a decimal that is not exact as a double: 2^53 against 2^53 + 1 as a BigDecimal
-    return left instanceof BigDecimal && isIntegral(right) || right instanceof BigDecimal && isIntegral(left);
+    // An exact long still collides with a decimal that is not exact as a double: 2^53 against 2^53 + 1 as a BigDecimal.
+    // Two decimals compare as decimals. A BigDecimal against a Double deliberately stays in double precision, as SQL does
+    // (Type.numbersEqual): 0.1d must equal the decimal 0.1
+    return left instanceof BigDecimal && (isIntegral(right) || right instanceof BigDecimal)
+        || right instanceof BigDecimal && isIntegral(left);
   }
 
   private static boolean isIntegral(final Number value) {
@@ -478,6 +481,10 @@ public class ComparisonExpression implements BooleanExpression {
     return toExactDecimal(left).compareTo(toExactDecimal(right));
   }
 
+  /**
+   * Reads a Double through its shortest decimal form ({@code BigDecimal.valueOf}), NOT its binary value: the same
+   * reading {@link Type#normalizeNumberForKey} gives GROUP BY and the indexes, so a predicate agrees with them.
+   */
   private static BigDecimal toExactDecimal(final Number value) {
     return switch (value) {
       case BigDecimal bigDecimal -> bigDecimal;

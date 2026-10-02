@@ -123,6 +123,28 @@ class Issue8890CollectionIndexKeyTypeTest extends TestHelper {
   }
 
   @Test
+  void rangeLookupsByAnUnreadableKeyDoNotThrow() {
+    database.command("sql", "CREATE DOCUMENT TYPE W");
+    database.command("sql", "CREATE PROPERTY W.i INTEGER");
+    database.command("sql", "CREATE INDEX ON W (i) NOTUNIQUE");
+    database.transaction(() -> database.newDocument("W").set("i", 7).save());
+    for (final String op : new String[] { "=", "<", "<=", ">", ">=", "<>" })
+      assertThat(count("SELECT FROM W WHERE i " + op + " ?", "7.0")).as(op).isLessThanOrEqualTo(1);
+    assertThat(count("SELECT FROM W WHERE i BETWEEN ? AND ?", "6.0", "8.0")).isLessThanOrEqualTo(1);
+    assertThat(count("SELECT FROM W WHERE i IN ?", List.of("7.0", "x"))).isZero();
+  }
+
+  @Test
+  void aListItemOfAnotherTypeIsStillIndexed() {
+    database.command("sql", "CREATE DOCUMENT TYPE X");
+    database.command("sql", "CREATE PROPERTY X.a LIST OF INTEGER");
+    database.command("sql", "CREATE INDEX ON X (a BY ITEM) NOTUNIQUE");
+    database.transaction(() -> database.newDocument("X").set("a", new ArrayList<>(List.of(7, 8L, "9"))).save());
+    assertThat(count("SELECT FROM X WHERE a CONTAINS 7")).isEqualTo(1);
+    assertThat(count("SELECT FROM X WHERE a CONTAINS 9")).isEqualTo(1);
+  }
+
+  @Test
   void rebuiltIndexKeepsTheDeclaredKeyType() {
     database.command("sql", "CREATE DOCUMENT TYPE R");
     database.command("sql", "CREATE PROPERTY R.a LIST OF DOUBLE");

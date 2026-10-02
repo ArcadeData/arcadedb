@@ -92,6 +92,13 @@ class Issue8888CypherLongPrecisionTest extends TestHelper {
   }
 
   @Test
+  void twoDecimalsPastTwoPow53CompareAsDecimals() {
+    assertThat(database.query("opencypher", "RETURN $a = $b AS eq, $a > $b AS gt",
+        Map.of("a", new BigDecimal("9007199254740993.0"), "b", new BigDecimal("9007199254740992.0"))).next().<Boolean>getProperty("eq"))
+        .isFalse();
+  }
+
+  @Test
   void smallNumbersKeepTheirOrdinaryComparison() {
     load();
     assertThat(cypher("j", 7.0)).isEqualTo(1);

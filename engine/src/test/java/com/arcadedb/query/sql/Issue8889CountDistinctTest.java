@@ -26,6 +26,7 @@ import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -170,6 +171,33 @@ class Issue8889CountDistinctTest extends TestHelper {
   void countDistinctWithoutATarget() {
     try (final ResultSet rs = database.query("sql", "SELECT count(DISTINCT 1) AS n")) {
       assertThat(rs.next().<Long>getProperty("n")).isEqualTo(1L);
+    }
+  }
+
+  @Test
+  void distinctInsideAnExpressionHavingAndOrderBy() {
+    load();
+    try (final ResultSet rs = database.query("sql", "SELECT count(DISTINCT b) + 1 AS n, count(DISTINCT b) * 1.0 / count(*) AS r FROM P")) {
+      final var row = rs.next();
+      assertThat(row.<Number>getProperty("n").longValue()).isEqualTo(4L);
+      assertThat(row.<Number>getProperty("r").doubleValue()).isEqualTo(0.75);
+    }
+    try (final ResultSet rs = database.query("sql",
+        "SELECT FROM (SELECT g, count(DISTINCT b) AS n FROM P GROUP BY g) WHERE n > 1")) {
+      assertThat(rs.next().<String>getProperty("g")).isEqualTo("x");
+      assertThat(rs.hasNext()).isFalse();
+    }
+    try (final ResultSet rs = database.query("sql", "SELECT g, count(DISTINCT b) AS n FROM P GROUP BY g ORDER BY n DESC")) {
+      assertThat(rs.next().<String>getProperty("g")).isEqualTo("x");
+      assertThat(rs.next().<String>getProperty("g")).isEqualTo("y");
+    }
+  }
+
+  @Test
+  void distinctOnAnAggregateThatHoldsEveryValue() {
+    load();
+    try (final ResultSet rs = database.query("sql", "SELECT list(DISTINCT b) AS l FROM P")) {
+      assertThat(rs.next().<List<Object>>getProperty("l")).hasSize(3);
     }
   }
 
