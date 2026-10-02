@@ -516,6 +516,7 @@ public class BinaryComparator {
     return Integer.compare(buffer1[mismatch] & 0xFF, buffer2.getByte(buffer2.position() - 1) & 0xFF);
   }
 
+  /** Numbers of different classes follow {@link Type#numbersEqual}: not transitive, so never a hash or grouping key. */
   public static boolean equals(final Object a, final Object b) {
     if (a == b)
       return true;
