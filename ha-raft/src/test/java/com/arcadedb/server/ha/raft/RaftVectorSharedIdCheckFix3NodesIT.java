@@ -26,7 +26,6 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
-import java.lang.reflect.Method;
 import java.util.Collection;
 import java.util.List;
 import java.util.Random;
@@ -86,18 +85,10 @@ class RaftVectorSharedIdCheckFix3NodesIT extends BaseRaftHATest {
     final RID[] winners = new RID[COLLISIONS];
     for (int k = 0; k < COLLISIONS; k++)
       winners[k] = ridOf(leaderDb, 1000 + k);
-    // Reflection: LSMVectorIndex.persistEntryForTest is package-private in the engine. Rename it here too.
-    final Method persistEntry = LSMVectorIndex.class.getDeclaredMethod("persistEntryForTest", int.class, RID.class,
-        float[].class);
-    persistEntry.setAccessible(true);
     leaderDb.transaction(() -> {
-      try {
-        final LSMVectorIndex index = vectorIndex(leaderDb);
-        for (int k = 0; k < COLLISIONS; k++)
-          persistEntry.invoke(index, k, winners[k], embedding(1000 + k));
-      } catch (final ReflectiveOperationException e) {
-        throw new RuntimeException(e);
-      }
+      final LSMVectorIndex index = vectorIndex(leaderDb);
+      for (int k = 0; k < COLLISIONS; k++)
+        index.persistEntryForTest(k, winners[k], embedding(1000 + k));
     });
     waitForAllServers();
 
