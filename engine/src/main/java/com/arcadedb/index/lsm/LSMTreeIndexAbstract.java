@@ -1093,6 +1093,16 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     return scratch;
   }
 
+  /** The bytes a series compacted before negative zero was canonicalised hashed for the same key (issue #8920), as written. */
+  Binary serializeKeyAsWrittenForHashing(final Binary scratch, final Object[] keys) {
+    if (keys == null || keys.length != binaryKeyTypes.length)
+      return null;
+
+    scratch.clear();
+    writeKeys(scratch, keys);
+    return scratch;
+  }
+
   private void writeKeys(final Binary buffer, final Object[] keys) {
     // WRITE KEYS
     for (int i = 0; i < binaryKeyTypes.length; ++i) {
