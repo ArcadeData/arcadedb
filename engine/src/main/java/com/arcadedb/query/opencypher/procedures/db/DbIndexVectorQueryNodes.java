@@ -149,9 +149,7 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
       final Document record = neighbor.getFirst().asDocument();
       final float distance = neighbor.getSecond();
 
-      final float score = similarityFunction == VectorSimilarityFunction.EUCLIDEAN
-          ? 1.0f / (1.0f + distance)
-          : 1.0f - distance;
+      final float score = toNeo4jScore(similarityFunction, distance);
 
       final ResultInternal r = new ResultInternal();
       r.setProperty("node", record);
@@ -160,6 +158,20 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
     }
 
     return results.stream();
+  }
+
+  /**
+   * Maps the index's distance back to the score Neo4j's vector index reports, in [0, 1], higher is closer (issue #8963):
+   * {@code 1 / (1 + d^2)} for EUCLIDEAN (the distance is already the squared L2), {@code (1 + cosine) / 2} for COSINE
+   * (the distance is {@code 1 - cosine}) and {@code (1 + dot) / 2} for DOT_PRODUCT (the distance is the negated
+   * similarity). DOT_PRODUCT is documented to require unit vectors, which is what keeps it inside the range.
+   */
+  static float toNeo4jScore(final VectorSimilarityFunction similarityFunction, final float distance) {
+    return switch (similarityFunction) {
+      case EUCLIDEAN -> 1.0f / (1.0f + distance);
+      case COSINE -> Math.max(0.0f, Math.min(1.0f, 1.0f - distance / 2.0f));
+      case DOT_PRODUCT -> -distance;
+    };
   }
 
   /**

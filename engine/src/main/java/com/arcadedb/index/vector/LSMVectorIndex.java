@@ -1896,7 +1896,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           try {
             final float[] vector = readVectorFromOffset(VectorLocationIndex.offsetOf(offsetAndFlag),
                 VectorLocationIndex.isCompactedOf(offsetAndFlag));
-            return vector != null && vector.length == metadata.dimensions && !VectorUtils.isZeroVector(vector);
+            return vector != null && vector.length == metadata.dimensions && !isUnscorable(vector);
           } catch (final Exception e) {
             return false;
           }
@@ -1914,7 +1914,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
             if (vectorObj == null)
               return false;
             final float[] vector = VectorUtils.toFloatArray(vectorObj, metadata.encoding);
-            return vector.length == metadata.dimensions && !VectorUtils.isZeroVector(vector);
+            return vector.length == metadata.dimensions && !isUnscorable(vector);
           } catch (final Exception e) {
             return false;
           }
@@ -3171,7 +3171,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
               if (vectorObj != null) {
                 try {
                   final float[] vector = VectorUtils.toFloatArray(vectorObj, metadata.encoding);
-                  if (vector.length == metadata.dimensions && !VectorUtils.isZeroVector(vector)) {
+                  if (vector.length == metadata.dimensions && !isUnscorable(vector)) {
                     final int syntheticId = allocateVectorId();
                     ridToLatestVector.put(rid, new VectorEntryForGraphBuild(syntheticId, rid, false, -1));
                   }
@@ -3383,7 +3383,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
             try {
               final float[] vector = readVectorFromOffset(locationOffset, locationIsCompacted);
               if (vector != null && vector.length == metadata.dimensions) {
-                if (!VectorUtils.isZeroVector(vector)) {
+                if (!isUnscorable(vector)) {
                   vectorLocationSnapshot.addOrUpdate(vectorId, locationIsCompacted, locationOffset, vectorRid, false);
                   validVectorIds.add(vectorId);
                   // Only warm the cache up to the budget; the rest are re-read from index pages
@@ -3419,7 +3419,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
             // the old entry and adds a new id, so a hit here can never be a stale version of the vector.
             final VectorFloat<?> fromDelta = deltaSnapshotById.get(vectorId);
             if (fromDelta != null) {
-              if (fromDelta.length() == metadata.dimensions && !VectorUtils.isZeroVector(fromDelta)) {
+              if (fromDelta.length() == metadata.dimensions && !isUnscorable(fromDelta)) {
                 vectorLocationSnapshot.addOrUpdate(vectorId, locationIsCompacted, locationOffset, vectorRid, false);
                 validVectorIds.add(vectorId);
                 if (preloadedVectorCount < preloadBudget) {
@@ -3438,7 +3438,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
                 if (vectorObj != null) {
                   final float[] vector = VectorUtils.toFloatArray(vectorObj, metadata.encoding);
 
-                  if (vector.length == metadata.dimensions && !VectorUtils.isZeroVector(vector)) {
+                  if (vector.length == metadata.dimensions && !isUnscorable(vector)) {
                     vectorLocationSnapshot.addOrUpdate(vectorId, locationIsCompacted, locationOffset, vectorRid, false);
                     validVectorIds.add(vectorId);
                     if (preloadedVectorCount < preloadBudget) {
@@ -5790,17 +5790,30 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   private float[] dequantizeFromBinary(final byte[] packed,
       final VectorQuantizationMetadata.BinaryQuantizationMetadata qmeta) {
-    final float[] result = new float[qmeta.originalLength];
+    final int length = qmeta.originalLength;
+    final float[] result = new float[length];
 
-    for (int i = 0; i < qmeta.originalLength; i++) {
-      final int byteIndex = i / 8;
-      final int bitIndex = i % 8;
-      final boolean bitSet = (packed[byteIndex] & (1 << bitIndex)) != 0;
+    // One bit per dimension says "at or above the vector's own median" or "below it", i.e. the SIGN of the component
+    // once the vector is centred on its median. The reconstruction is that sign at unit norm, so scoring it with
+    // COSINE is a Hamming distance over the bits (cos = 1 - 2 * hamming / dimensions) and with EUCLIDEAN or DOT_PRODUCT
+    // it ranks the same way. Reconstructing as `bit ? median : 0` instead lost the sign of any data centred on zero
+    // and placed a record on the far side of the sphere from its own vector (issue #8960).
+    final float magnitude = (float) (1.0 / Math.sqrt(length));
 
-      // Reconstruct value based on bit: 1 -> above median, 0 -> below median
-      // This is a lossy approximation - we just use median or 0 as the values
-      result[i] = bitSet ? qmeta.median : 0.0f;
+    int ones = 0;
+    for (int i = 0; i < length; i++)
+      if ((packed[i / 8] & (1 << (i % 8))) != 0)
+        ones++;
+
+    if (ones == length) {
+      // Every component is at or above the median: the vector was constant, so there is nothing to centre. Keep what
+      // is known, the sign of the constant, which also gives the all-zero vector back as the origin.
+      Arrays.fill(result, Math.signum(qmeta.median) * magnitude);
+      return result;
     }
+
+    for (int i = 0; i < length; i++)
+      result[i] = (packed[i / 8] & (1 << (i % 8))) != 0 ? magnitude : -magnitude;
 
     return result;
   }
@@ -5990,7 +6003,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final float[] vector = VectorUtils.toFloatArray(raw, metadata.encoding);
       // Same validity rule as readPersistedVectorArray: a vector of the wrong arity, or an all-zero one, is not
       // something this index can score against and must be skipped rather than scored as if it were at the origin.
-      if (vector.length == metadata.dimensions && !VectorUtils.isZeroVector(vector))
+      if (vector.length == metadata.dimensions && !isUnscorable(vector))
         return vector;
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.FINE,
@@ -6069,7 +6082,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         }
       }
 
-      if (vector != null && vector.length == metadata.dimensions && !VectorUtils.isZeroVector(vector))
+      if (vector != null && vector.length == metadata.dimensions && !isUnscorable(vector))
         return vector;
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.FINE,
@@ -6236,6 +6249,19 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * True for a vector this index cannot score against: an all-zero one under COSINE (the similarity is undefined) and
+   * DOT_PRODUCT (which requires unit vectors). Under EUCLIDEAN the origin is a regular point with a well-defined
+   * distance, so it is indexed and returned like any other (issue #8962).
+   */
+  boolean isUnscorable(final float[] vector) {
+    return metadata.similarityFunction != VectorSimilarityFunction.EUCLIDEAN && VectorUtils.isZeroVector(vector);
+  }
+
+  boolean isUnscorable(final VectorFloat<?> vector) {
+    return metadata.similarityFunction != VectorSimilarityFunction.EUCLIDEAN && VectorUtils.isZeroVector(vector);
+  }
+
+  /**
    * The similarity handed to a graph node whose vector can no longer be read. Every JVector similarity function has
    * {@code 0} as its floor: {@code (1 + cosine) / 2} bottoms out there at {@code cosine = -1}, {@code 1 / (1 + d^2)}
    * approaches it from above, and {@code (1 + dot) / 2} bottoms out there for the unit-length vectors JVector
@@ -6243,6 +6269,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * behind every real candidate.
    */
   private static final float UNREADABLE_NODE_SCORE = 0.0f;
+
+  /** How many candidates a BINARY search fetches per requested neighbour before reranking them on the stored vectors. */
+  private static final int   BINARY_RERANK_OVERSAMPLE = 4;
 
   /**
    * The scoring function used to walk the graph: the configured similarity for a vector that can be read, and
@@ -6903,7 +6932,43 @@ public class LSMVectorIndex implements Index, IndexInternal {
    *         negative (DOT_PRODUCT) or {@code Float.MAX_VALUE} (a EUCLIDEAN score at or below zero), and
    *         sorting it descending returns the furthest neighbours first (issue #7140).
    */
-  public List<Pair<RID, Float>> findNeighborsFromVector(final float[] queryVector, int k, final int efSearch,
+  public List<Pair<RID, Float>> findNeighborsFromVector(final float[] queryVector, final int k, final int efSearch,
+      final Set<RID> allowedRIDs) {
+    if (metadata.quantizationType != VectorQuantizationType.BINARY || k <= 0 || queryVector == null)
+      return searchNeighbors(queryVector, k, efSearch, allowedRIDs);
+
+    // BINARY keeps one bit per dimension, which cannot tell apart two vectors that share their bits (a record queried
+    // by its own vector ties with every other record of the same signs). The graph answers with the oversampled
+    // candidates and the stored float vectors put them in order, which is the "approximate search with reranking"
+    // the quantization promises (issue #8960).
+    final int candidatesToFetch = k > Integer.MAX_VALUE / BINARY_RERANK_OVERSAMPLE ? Integer.MAX_VALUE : k * BINARY_RERANK_OVERSAMPLE;
+    final List<Pair<RID, Float>> candidates = searchNeighbors(queryVector, candidatesToFetch, efSearch, allowedRIDs);
+    return rerankOnStoredVectors(queryVector, candidates, k);
+  }
+
+  /**
+   * Re-scores {@code candidates} with the similarity function against the vectors the records store, nearest first,
+   * truncated to {@code k}. A candidate whose record is gone or carries no usable vector is dropped: its approximate
+   * distance is on another scale and cannot be ordered against the exact ones.
+   */
+  private List<Pair<RID, Float>> rerankOnStoredVectors(final float[] queryVector, final List<Pair<RID, Float>> candidates, final int k) {
+    if (candidates.isEmpty())
+      return candidates;
+
+    final VectorFloat<?> query = vts.createFloatVector(queryVector);
+    final List<Pair<RID, Float>> reranked = new ArrayList<>(candidates.size());
+    for (final Pair<RID, Float> candidate : candidates) {
+      final float[] stored = readRecordVectorArray(candidate.getFirst());
+      if (stored == null)
+        continue;
+      reranked.add(new Pair<>(candidate.getFirst(),
+          scoreToDistance(metadata.similarityFunction, metadata.similarityFunction.compare(query, vts.createFloatVector(stored)))));
+    }
+    reranked.sort(Comparator.comparingDouble(Pair::getSecond));
+    return reranked.size() > k ? new ArrayList<>(reranked.subList(0, k)) : reranked;
+  }
+
+  private List<Pair<RID, Float>> searchNeighbors(final float[] queryVector, int k, final int efSearch,
       final Set<RID> allowedRIDs) {
     // Track search metrics
     final long startTime = System.currentTimeMillis();
@@ -8390,6 +8455,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
         throw new IllegalArgumentException(
             "Vector dimension does not match index dimension " + metadata.dimensions + ": got "
                 + keys[0].getClass().getSimpleName() + " of length " + vector.length);
+
+      // No similarity can rank a NaN or an Infinity: it would be indexed and returned with a NaN or infinite distance, and
+      // under DOT_PRODUCT ahead of every finite record (issue #8962)
+      for (final float component : vector)
+        if (!Float.isFinite(component))
+          throw new IllegalArgumentException("Vector components must be finite numbers: got " + component);
 
       final RID rid = values[0];
 
