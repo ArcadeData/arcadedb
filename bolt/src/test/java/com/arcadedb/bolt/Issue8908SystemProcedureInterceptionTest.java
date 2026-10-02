@@ -140,7 +140,9 @@ class Issue8908SystemProcedureInterceptionTest {
     for (final String[] c : new String[][] { { "CALL db.ping() CREATE (:X)", "db.ping" },
         { "CALL db.ping() CREATE(:X)", "db.ping" }, { "CALL dbms.info() YIELD name MATCH (n) DELETE n", "dbms.info" },
         { "CALL dbms.info() YIELD name MERGE(n:X)", "dbms.info" }, { "CALL dbms.components() YIELD name SET x.y = 1", "dbms.components" },
-        { "CALL db.ping() FOREACH(a IN [1] | CREATE (:Y))", "db.ping" }, { "CALL db.ping() MATCH(n) RETURN n", "db.ping" } })
+        { "CALL db.ping() FOREACH(a IN [1] | CREATE (:Y))", "db.ping" }, { "CALL db.ping() MATCH(n) RETURN n", "db.ping" },
+        { "CALL db.ping();CREATE (:X)", "db.ping" }, { "CALL db.ping()CREATE(:X)", "db.ping" },
+        { "CALL db.ping() YIELD success RETURN success UNION RETURN 1 AS success", "db.ping" } })
       assertThat(BoltSystemProcedures.isSystemCall(BoltSystemProcedures.normalize(c[0]), c[1])).as(c[0]).isFalse();
   }
 
@@ -149,5 +151,10 @@ class Issue8908SystemProcedureInterceptionTest {
     assertThat(BoltSystemProcedures.normalize("// probe\nCALL db.labels()")).isEqualTo("call db.labels()");
     assertThat(BoltSystemProcedures.normalize("/* a */ /* b */\n CALL db.ping()")).isEqualTo("call db.ping()");
     assertThat(BoltSystemProcedures.isSchemaProcedureQuery(BoltSystemProcedures.normalize("// x\nCALL db.labels()"))).isTrue();
+  }
+
+  @Test
+  void anUnterminatedLeadingCommentLeavesNothingToServe() {
+    assertThat(BoltSystemProcedures.normalize("/* never closed CALL db.ping()")).isEmpty();
   }
 }
