@@ -127,6 +127,31 @@ class Issue8882FloatDoubleEqualityTest extends TestHelper {
   }
 
   @Test
+  void inlinePropertyMatchesTheWidenedDouble() {
+    setup();
+    assertThat(count("opencypher", "MATCH (n:T {g: $p, k: 0}) RETURN n", (double) 0.1f)).isEqualTo(1);
+    assertThat(count("opencypher", "MATCH (n:T {f: $p, k: 0}) RETURN n", (double) 0.1f)).isEqualTo(1);
+    assertThat(count("opencypher", "MATCH (n:T {g: $p, k: 0}) RETURN n", 0.2d)).isEqualTo(0);
+  }
+
+  @Test
+  void inListWithBigDecimalItem() {
+    setup();
+    assertThat(count("sql", "SELECT FROM T WHERE e IN [?] AND k = 0", new BigDecimal(0.1d).round(new MathContext(17)))).isEqualTo(1);
+    assertThat(count("sql", "SELECT FROM T WHERE d IN [?] AND k = 0", new BigDecimal(0.1d))).isEqualTo(1);
+    assertThat(count("sql", "SELECT FROM T WHERE e IN [?] AND k = 0", new BigDecimal("0.2"))).isEqualTo(0);
+  }
+
+  @Test
+  void orderingKeepsTheDecimalReading() {
+    setup();
+    // equality follows the index key, ordering keeps the decimal reading of the FLOAT (#8252): a deliberate split
+    assertThat(count("sql", "SELECT FROM T WHERE g = ? AND k = 0", (double) 0.1f)).isEqualTo(1);
+    assertThat(count("sql", "SELECT FROM T WHERE g >= ? AND k = 0", (double) 0.1f)).isEqualTo(0);
+    assertThat(count("sql", "SELECT FROM T WHERE g < ? AND k = 0", (double) 0.1f)).isEqualTo(1);
+  }
+
+  @Test
   void numbersEqualEdgeCases() {
     assertThat(Type.numbersEqual(0.1f, (double) 0.1f)).isTrue();
     assertThat(Type.numbersEqual((double) 0.1f, 0.1f)).isTrue();

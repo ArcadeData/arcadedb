@@ -444,6 +444,15 @@ public class ComparisonExpression implements BooleanExpression {
     };
   }
 
+  /** Cypher equality where a FLOAT also equals the double that narrows to it (issue #8882): 0 equals -0, NaN equals nothing. */
+  public static boolean floatAwareEquals(final Number left, final Number right) {
+    final double l = toComparableDouble(left);
+    final double r = toComparableDouble(right);
+    if (Double.isNaN(l) || Double.isNaN(r))
+      return false;
+    return l == r || Type.numbersEqual(left, right);
+  }
+
   /**
    * Widens a number for comparison, reading a {@link Float} through its decimal form rather than its bits. See
    * {@link Type#widenFloat}: this evaluator is the authoritative answer for a Cypher predicate, so it has to agree
@@ -453,15 +462,6 @@ public class ComparisonExpression implements BooleanExpression {
    *
    * @return the operand as a double
    */
-  /** Cypher equality where a FLOAT also equals the double that narrows to it (issue #8882): 0 equals -0, NaN equals nothing. */
-  private static boolean floatAwareEquals(final Number left, final Number right) {
-    final double l = toComparableDouble(left);
-    final double r = toComparableDouble(right);
-    if (Double.isNaN(l) || Double.isNaN(r))
-      return false;
-    return l == r || Type.numbersEqual(left, right);
-  }
-
   private static double toComparableDouble(final Number value) {
     return value instanceof Float float1 ? Type.widenFloat(float1) : value.doubleValue();
   }
