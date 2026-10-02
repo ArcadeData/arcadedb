@@ -3859,8 +3859,9 @@ public class PostgresNetworkExecutor extends Thread {
   private String clientMessage(final String message, final Throwable cause) {
     if (!server.isProductionMode())
       return message;
-    // The client no longer sees the text, so the server log is the only copy the operator has
-    LogManager.instance().log(this, Level.WARNING, "PSQL: %s", cause, message);
+    // The client no longer sees the text, so the server log is the only copy the operator has. A routine, client-driven
+    // failure (syntax error, duplicated key) is not an incident: the message alone, no stack trace
+    LogManager.instance().log(this, Level.INFO, "PSQL: %s", null, message);
     return ArcadeDBServer.CONCEALED_ERROR_MESSAGE;
   }
 

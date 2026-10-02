@@ -120,6 +120,8 @@ class Issue8921TemporalWrapperLookupTest {
   void zonedLiteralAgreesBetweenInlineAndWhereForms() {
     final long where = count("MATCH (p:N) WHERE p.d = datetime('2021-06-15T12:30:00Z') RETURN count(p) AS c");
     final long inline = count("MATCH (p:N {d: datetime('2021-06-15T12:30:00Z')}) RETURN count(p) AS c");
+    // all three stored rows hold 2021-06-15T12:30 read as UTC, the instant of the zoned literal
+    assertThat(where).isEqualTo(3);
     assertThat(inline).isEqualTo(where);
     final long indexed = count("MATCH (p:I {d: datetime('2021-06-15T12:30:00Z')}) RETURN count(p) AS c");
     assertThat(indexed).isEqualTo(where);
