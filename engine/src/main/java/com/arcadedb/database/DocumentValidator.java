@@ -114,10 +114,18 @@ public class DocumentValidator {
    * record and holds the immutable form; nothing in the rule needs more than {@code has()} and {@code get()}.
    */
   public static ExistenceConstraint unmetExistenceConstraint(final Document document, final Property p) {
-    final String name = p.getName();
-    if (p.isMandatory() && !document.has(name))
+    return unmetExistenceConstraint(document, p.getName(), p.isMandatory(), p.isNotNull());
+  }
+
+  /**
+   * The same rule for constraint flags the property does not carry yet: lets a caller that is about to add MANDATORY or
+   * NOTNULL ask whether a stored record would violate it (#8943) without changing the schema first.
+   */
+  public static ExistenceConstraint unmetExistenceConstraint(final Document document, final String name, final boolean mandatory,
+      final boolean notNull) {
+    if (mandatory && !document.has(name))
       return ExistenceConstraint.MANDATORY;
-    if (p.isNotNull() && document.has(name) && document.get(name) == null)
+    if (notNull && document.has(name) && document.get(name) == null)
       return ExistenceConstraint.NOT_NULL;
     return null;
   }
@@ -150,11 +158,16 @@ public class DocumentValidator {
    * one has no property to quote it from. The RID is left to the caller, which has its own place for it.
    */
   public static String describeUnmetExistenceConstraint(final Document record, final Property property) {
-    final ExistenceConstraint unmet = unmetExistenceConstraint(record, property);
+    return describeUnmetExistenceConstraint(record, property.getName(), unmetExistenceConstraint(record, property));
+  }
+
+  /** The sentence for a constraint already found unmet, so a caller that tested prospective flags words it the same way. */
+  public static String describeUnmetExistenceConstraint(final Document record, final String propertyName,
+      final ExistenceConstraint unmet) {
     if (unmet == null)
       return null;
 
-    final String named = "property '" + record.getType().getName() + "." + property.getName() + "'";
+    final String named = "property '" + record.getType().getName() + "." + propertyName + "'";
     return unmet == ExistenceConstraint.MANDATORY ?
         named + " is mandatory, but was never set" :
         named + " cannot be null";

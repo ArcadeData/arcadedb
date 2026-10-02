@@ -73,4 +73,29 @@ class Issue8937SelectOrderByFoldedIndexTest extends TestHelper {
     }
     assertThat(ordered("Ci", true, 3)).containsExactly("AY", "AZ", "AZb");
   }
+
+  @Test
+  void limitedOrderByOnACompositeFoldedIndexMatchesTheUnindexedAnswer() {
+    database.command("sql", "CREATE DOCUMENT TYPE Comp");
+    database.command("sql", "CREATE PROPERTY Comp.a INTEGER");
+    database.command("sql", "CREATE PROPERTY Comp.s STRING");
+    database.command("sql", "CREATE INDEX ON Comp (a, s COLLATE ci) NOTUNIQUE");
+    database.command("sql", "CREATE DOCUMENT TYPE CompPlain");
+    database.command("sql", "CREATE PROPERTY CompPlain.a INTEGER");
+    database.command("sql", "CREATE PROPERTY CompPlain.s STRING");
+    database.transaction(() -> {
+      for (final String v : VALUES) {
+        database.newDocument("Comp").set("a", 1).set("s", v).save();
+        database.newDocument("CompPlain").set("a", 1).set("s", v).save();
+      }
+    });
+
+    for (final boolean asc : new boolean[] { true, false }) {
+      final List<String> expected = database.select().fromType("CompPlain").where().property("a").eq().value(1)
+          .orderBy("s", asc).limit(4).documents().toList().stream().map(d -> d.getString("s")).toList();
+      final List<String> actual = database.select().fromType("Comp").where().property("a").eq().value(1)
+          .orderBy("s", asc).limit(4).documents().toList().stream().map(d -> d.getString("s")).toList();
+      assertThat(actual).isEqualTo(expected);
+    }
+  }
 }

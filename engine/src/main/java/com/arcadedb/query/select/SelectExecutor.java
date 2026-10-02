@@ -28,7 +28,7 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.MultiIndexCursor;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.vector.LSMVectorIndex;
-import com.arcadedb.schema.IndexMetadata;
+import com.arcadedb.query.sql.executor.SelectExecutionPlanner;
 import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.Pair;
 
@@ -97,13 +97,8 @@ public class SelectExecutor {
       this.index = index;
       this.property = property;
       this.order = order;
-      this.foldsKeys = foldsKeys(index);
+      this.foldsKeys = SelectExecutionPlanner.holdsFoldedKeys(index);
     }
-  }
-
-  static boolean foldsKeys(final Index index) {
-    final IndexMetadata metadata = index instanceof IndexInternal internal ? internal.getMetadata() : null;
-    return metadata != null && metadata.hasAnyCaseInsensitive();
   }
 
   public SelectExecutor(final Select select) {
@@ -513,7 +508,7 @@ public class SelectExecutor {
     }
 
     final boolean orderByElided = select.orderBy != null && select.orderBy.size() == 1 && trailingProperty != null
-        && select.orderBy.getFirst().getFirst().equals(trailingProperty) && !foldsKeys(bestIndex);
+        && select.orderBy.getFirst().getFirst().equals(trailingProperty) && !SelectExecutionPlanner.holdsFoldedKeys(bestIndex);
 
     // A KEY SHORTER THAN THE INDEX'S FULL ARITY IS A PREFIX, NOT AN EXACT KEY: get() PERFORMS A SINGLE POSITIONAL
     // LOOKUP AND ONLY RETURNS EVERY MATCH WHEN THE KEY'S ARITY MATCHES THE INDEX'S OWN EXACTLY, SO A PREFIX MUST GO
@@ -674,7 +669,7 @@ public class SelectExecutor {
   private boolean isOrderBySafeForCap(final SelectTreeNode leaf) {
     if (select.orderBy == null)
       return true;
-    if (leaf == null || select.orderBy.size() != 1 || foldsKeys(leaf.index))
+    if (leaf == null || select.orderBy.size() != 1 || SelectExecutionPlanner.holdsFoldedKeys(leaf.index))
       return false;
     final Pair<String, Boolean> orderBy = select.orderBy.getFirst();
     // UNCHECKED CAST IS SAFE: leaf CAME FROM soleExactLeaf(), WHICH ONLY EVER RETURNS A NODE WHOSE node.index IS
