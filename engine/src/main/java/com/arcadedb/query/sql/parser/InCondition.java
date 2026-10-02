@@ -65,6 +65,9 @@ public class InCondition extends BooleanExpression {
   /** Lazily assigned on the first row that can use the memo; see {@link #constantRightHandSide}. */
   private volatile String memoKey;
 
+  /** Lazily assigned key of {@link #operandIsSearched}'s per-execution memo. */
+  private volatile String searchedKey;
+
   public InCondition() {
   }
 
@@ -82,7 +85,7 @@ public class InCondition extends BooleanExpression {
       final Object rightVal = evaluateRight(currentRecord, context);
       if (rightVal == null)
         return null;
-      result = evaluateExpressionThreeValued(leftVal, rightVal);
+      result = evaluateExpressionThreeValued(leftVal, rightVal, operandIsSearched(context));
     }
 
     if (result == null)
@@ -122,7 +125,7 @@ public class InCondition extends BooleanExpression {
       final Object rightVal = evaluateRight(currentRecord, context);
       if (rightVal == null)
         return null;
-      result = evaluateExpressionThreeValued(leftVal, rightVal);
+      result = evaluateExpressionThreeValued(leftVal, rightVal, operandIsSearched(context));
     }
 
     if (result == null)
@@ -157,7 +160,7 @@ public class InCondition extends BooleanExpression {
 
     InListMembership membership = (InListMembership) context.getCachedValue(key);
     if (membership == null) {
-      membership = InListMembership.build(evaluateRight((Result) null, context));
+      membership = InListMembership.build(evaluateRight((Result) null, context), operandIsSearched(context));
       context.setCachedValue(key, membership);
     }
     return membership;
@@ -203,6 +206,33 @@ public class InCondition extends BooleanExpression {
     return Boolean.TRUE.equals(evaluateExpressionThreeValued(iLeft, iRight));
   }
 
+  /**
+   * Whether the left side is a searched value: an expression that needs no record (literal, parameter, record-free
+   * function call). Only then may the operand be converted to the item type of the right side ({@code ? IN typedList}).
+   * A record property is compared without converting the right-hand operands, like {@code =} and an index. A nested property, a method call or
+   * arithmetic on a property is also record-derived. A context variable (e.g. {@code LET $x = ...}) is treated as a searched value
+   * whatever it was computed from, because the context does not track where it came from.
+   * <p>
+   * The answer can depend on the execution context (script variables, bound parameters), and statements are cached and
+   * reused, so it is memoized per execution in the context, never on the node. It is decided on the first row and kept for the
+   * rest of the execution.
+   */
+  private boolean operandIsSearched(final CommandContext context) {
+    String key = searchedKey;
+    if (key == null) {
+      // Same benign race as memoKey
+      key = "$IN$S" + MEMO_KEY_SEQUENCE.incrementAndGet();
+      searchedKey = key;
+    }
+    Boolean searched = (Boolean) context.getCachedValue(key);
+    if (searched == null) {
+      // A bare name without '$' is always a record property, even when a context variable has the same name
+      searched = !(left.isBaseIdentifier() && !left.toString().startsWith("$")) && left.isEarlyCalculated(context);
+      context.setCachedValue(key, searched);
+    }
+    return searched;
+  }
+
   private static Object firstItem(final Set<?> set) {
     for (final Object o : set)
       if (o != null)
@@ -211,8 +241,8 @@ public class InCondition extends BooleanExpression {
   }
 
   // QueryOperatorEquals converts its 2nd argument to the class of the 1st, so try both directions
-  private static boolean equalsEitherWay(final Object left, final Object item) {
-    return QueryOperatorEquals.equals(left, item) || (mayMatchByConversion(left, item) && QueryOperatorEquals.equals(item, left));
+  private static boolean equalsEitherWay(final Object left, final Object item, final boolean convertOperand) {
+    return QueryOperatorEquals.equals(left, item) || (convertOperand && mayMatchByConversion(left, item) && QueryOperatorEquals.equals(item, left));
   }
 
   // False where QueryOperatorEquals is symmetric (same class, two numbers, records, embedded documents), so the reverse call adds nothing
@@ -223,14 +253,20 @@ public class InCondition extends BooleanExpression {
         || left instanceof EmbeddedDocument || item instanceof EmbeddedDocument);
   }
 
+  /** Converting variant, for callers whose left side is not a record property (e.g. the element of a list filter). */
+  protected static Boolean evaluateExpressionThreeValued(final Object iLeft, final Object iRight) {
+    return evaluateExpressionThreeValued(iLeft, iRight, true);
+  }
+
   /**
    * SQL three-valued membership test ({@code iLeft IN iRight}).
    *
    * @return {@code Boolean.TRUE} on a definite match, {@code Boolean.FALSE} on a definite
    * non-match, or {@code null} (UNKNOWN) when the left value is null or no match was found but the
    * right collection contains a null element. UNKNOWN is mapped to false at the WHERE boundary.
+   * @param convertOperand false when {@code iLeft} is a record property: it is compared without converting the items, like {@code =}
    */
-  protected static Boolean evaluateExpressionThreeValued(Object iLeft, final Object iRight) {
+  protected static Boolean evaluateExpressionThreeValued(Object iLeft, final Object iRight, final boolean convertOperand) {
     if (iLeft instanceof Result r && !r.isElement()) {
       final Set<String> names = r.getPropertyNames();
       if (names.size() == 1)
@@ -244,9 +280,9 @@ public class InCondition extends BooleanExpression {
           return Boolean.FALSE;
         // The hash probe is exact: a set whose items convert to the operand's class only needs a linear pass. A set is
         // taken as homogeneous (judged by its first item), so a big same-class set stays one hash probe
-        if (iLeft != null && mayMatchByConversion(iLeft, firstItem(set)))
+        if (convertOperand && iLeft != null && mayMatchByConversion(iLeft, firstItem(set)))
           for (final Object o : set)
-            if (o != null && equalsEitherWay(iLeft, o))
+            if (o != null && equalsEitherWay(iLeft, o, true))
               return Boolean.TRUE;
         // No match: UNKNOWN if the search value is null or the set holds a null element, else FALSE.
         return iLeft == null || set.contains(null) ? null : Boolean.FALSE;
@@ -260,7 +296,7 @@ public class InCondition extends BooleanExpression {
           sawNull = true;
           continue;
         }
-        if (equalsEitherWay(iLeft, o))
+        if (equalsEitherWay(iLeft, o, convertOperand))
           return Boolean.TRUE;
         if (MultiValue.isMultiValue(iLeft) && MultiValue.getSize(iLeft) == 1) {
 
@@ -284,7 +320,7 @@ public class InCondition extends BooleanExpression {
           sawNull = true;
           continue;
         }
-        if (equalsEitherWay(iLeft, o))
+        if (equalsEitherWay(iLeft, o, convertOperand))
           return Boolean.TRUE;
       }
       if (array.length == 0)

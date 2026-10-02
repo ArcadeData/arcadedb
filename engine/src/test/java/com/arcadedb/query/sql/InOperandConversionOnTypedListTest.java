@@ -83,8 +83,9 @@ class InOperandConversionOnTypedListTest extends TestHelper {
     // parameter bound to a Set and to an array, with a String operand against a Double item
     assertThat(count("SELECT FROM S WHERE ? IN ?", "7", new HashSet<>(List.of(7.0)))).isEqualTo(1);
     assertThat(count("SELECT FROM S WHERE ? IN ?", "7", new Object[] { 7.0 })).isEqualTo(1);
-    // literal list on the right, string property against doubles, and the reverse direction
-    assertThat(count("SELECT FROM S WHERE s IN [7.0, 8.0]")).isEqualTo(1);
+    // a property on the left is never converted against the operands (#8913), like "="
+    assertThat(count("SELECT FROM S WHERE s IN [7.0, 8.0]")).isEqualTo(0);
+    assertThat(count("SELECT FROM S WHERE s = 7.0")).isEqualTo(0);
     assertThat(count("SELECT FROM S WHERE ? IN l", 7L)).isEqualTo(1);
     // a null element keeps the three-valued logic: no match is UNKNOWN, so NOT IN does not return the row
     assertThat(count("SELECT FROM S WHERE '8' NOT IN [7.0, null]")).isEqualTo(0);

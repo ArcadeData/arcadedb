@@ -76,6 +76,8 @@ public final class InListMembership {
   private final Set<Object> keys;
   private final int         kind;
   private final boolean     containsNull;
+  /** False when the left side is a record property, which is never converted to the item type; fixed for the whole execution. */
+  private final boolean     convertOperand;
   /**
    * The finite Doubles of the list narrowed to float, and its finite Floats: a FLOAT also equals the double that
    * narrows to it ({@code Type.numbersEqual}, issue #8882), a relation the decimal keys cannot hold, so a Float probe
@@ -84,12 +86,14 @@ public final class InListMembership {
   private final float[]    narrowedDoubles;
   private final float[]    floats;
 
-  private InListMembership(final Object rightValue, final Set<Object> keys, final int kind, final boolean containsNull) {
-    this(rightValue, keys, kind, containsNull, null, null);
+  private InListMembership(final Object rightValue, final Set<Object> keys, final int kind, final boolean containsNull,
+      final boolean convertOperand) {
+    this(rightValue, keys, kind, containsNull, null, null, convertOperand);
   }
 
   private InListMembership(final Object rightValue, final Set<Object> keys, final int kind, final boolean containsNull,
-      final float[] narrowedDoubles, final float[] floats) {
+      final float[] narrowedDoubles, final float[] floats, final boolean convertOperand) {
+    this.convertOperand = convertOperand;
     this.narrowedDoubles = narrowedDoubles;
     this.floats = floats;
     this.rightValue = rightValue;
@@ -104,11 +108,16 @@ public final class InListMembership {
    * one shape to handle and the memo entry is written once either way.
    */
   public static InListMembership build(final Object rightValue) {
+    return build(rightValue, true);
+  }
+
+  /** @param convertOperand false when the left side is a record property, which is never converted to the item type */
+  public static InListMembership build(final Object rightValue, final boolean convertOperand) {
     if (!(rightValue instanceof Collection) && (rightValue == null || !rightValue.getClass().isArray()))
       // Only the two re-readable shapes a constant list ever takes. A scalar right-hand side degrades to an
       // equality test anyway; a ResultSet or a bare Iterable is a one-shot cursor that indexing here would
       // consume out from under the linear evaluator; a Map's membership semantics are the evaluator's to define.
-      return new InListMembership(rightValue, null, KIND_NONE, false);
+      return new InListMembership(rightValue, null, KIND_NONE, false, convertOperand);
 
     int kind = KIND_NONE;
     boolean containsNull = false;
@@ -126,11 +135,11 @@ public final class InListMembership {
       if (itemKind == KIND_NONE || (kind != KIND_NONE && kind != itemKind))
         // Unsupported element type, or a list mixing strings and numbers: the coercions between the two
         // kinds are the ones a hash set cannot reproduce, so decline rather than get them subtly wrong.
-        return new InListMembership(rightValue, null, KIND_NONE, false);
+        return new InListMembership(rightValue, null, KIND_NONE, false, convertOperand);
 
       final Object key = keyOf(item, itemKind);
       if (key == null)
-        return new InListMembership(rightValue, null, KIND_NONE, false);
+        return new InListMembership(rightValue, null, KIND_NONE, false, convertOperand);
 
       kind = itemKind;
       keys.add(key);
@@ -147,9 +156,9 @@ public final class InListMembership {
 
     if (kind == KIND_NONE)
       // Empty, or nulls only: cheap either way, and the linear evaluator already answers both exactly.
-      return new InListMembership(rightValue, null, KIND_NONE, containsNull);
+      return new InListMembership(rightValue, null, KIND_NONE, containsNull, convertOperand);
 
-    return new InListMembership(rightValue, keys, kind, containsNull, sortedFloats(narrowedDoubles), sortedFloats(floats));
+    return new InListMembership(rightValue, keys, kind, containsNull, sortedFloats(narrowedDoubles), sortedFloats(floats), convertOperand);
   }
 
   /**
@@ -170,7 +179,7 @@ public final class InListMembership {
         }
       }
     }
-    return InCondition.evaluateExpressionThreeValued(left, rightValue);
+    return InCondition.evaluateExpressionThreeValued(left, rightValue, convertOperand);
   }
 
   private static float[] sortedFloats(final Set<Float> set) {
