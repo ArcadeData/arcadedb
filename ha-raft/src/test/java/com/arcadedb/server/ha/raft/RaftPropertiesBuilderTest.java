@@ -172,6 +172,16 @@ class RaftPropertiesBuilderTest {
   }
 
   @Test
+  void zeroOrNegativeJvmPauseCloseThresholdDisablesTheClose() {
+    for (final long value : new long[] { 0L, -1L }) {
+      final ContextConfiguration config = new ContextConfiguration();
+      config.setValue(GlobalConfiguration.HA_JVM_PAUSE_CLOSE_THRESHOLD_MS, value);
+      final RaftProperties props = RaftPropertiesBuilder.build(config);
+      assertThat(RaftServerConfigKeys.closeThreshold(props).toLong(TimeUnit.DAYS)).isGreaterThanOrEqualTo(365L);
+    }
+  }
+
+  @Test
   void jvmPauseCloseThresholdCanBeRestoredToACustomValue() {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_JVM_PAUSE_CLOSE_THRESHOLD_MS, 90_000L);
