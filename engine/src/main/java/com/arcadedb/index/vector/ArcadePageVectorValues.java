@@ -308,7 +308,7 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
         return deletedSentinelVector;
       }
 
-      if (VectorUtils.isZeroVector(vector))
+      if (lsmIndex != null ? lsmIndex.isUnscorable(vector) : VectorUtils.isZeroVector(vector))
         return deletedSentinelVector;
 
       final VectorFloat<?> result = vts.createFloatVector(vector);

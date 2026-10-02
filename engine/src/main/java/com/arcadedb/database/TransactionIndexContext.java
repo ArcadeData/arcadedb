@@ -508,9 +508,12 @@ public class TransactionIndexContext {
       for (final Map.Entry<ComparableKey, Map<IndexKey, IndexKey>> keyValueEntries : keys.entrySet()) {
         final Collection<IndexKey> values = keyValueEntries.getValue().values();
         for (final IndexKey key : values) {
-          if (key.operation == IndexKey.IndexKeyOperation.REMOVE)
+          if (key.operation == IndexKey.IndexKeyOperation.REMOVE) {
             index.removeReplay(key.keyValues, key.rid);
-          else if (key.operation == IndexKey.IndexKeyOperation.REPLACE && key.oldRid != null)
+            if (key.oldRid != null && !key.oldRid.equals(key.rid))
+              // THE REMOVE DISPLACED A REPLACE: THE COMMITTED ENTRY IT WAS REPLACING MUST GO TOO (issue #8961)
+              index.removeReplay(key.keyValues, key.oldRid);
+          } else if (key.operation == IndexKey.IndexKeyOperation.REPLACE && key.oldRid != null)
             // REMOVE THE OLD RID THAT WAS REPLACED BY A NEW ONE IN THE SAME BUCKET
             index.removeReplay(key.keyValues, key.oldRid);
         }
@@ -784,13 +787,20 @@ public class TransactionIndexContext {
             v.operation = IndexKey.IndexKeyOperation.REPLACE;
             if (entry != null) {
               if (entry.operation == IndexKey.IndexKeyOperation.REMOVE)
-                // SAVE THE OLD RID SO IT CAN BE PROPERLY REMOVED FROM THE PERSISTED INDEX AT COMMIT TIME
-                v.oldRid = entry.rid;
+                // SAVE THE OLD RID SO IT CAN BE PROPERLY REMOVED FROM THE PERSISTED INDEX AT COMMIT TIME. A REMOVE THAT
+                // DISPLACED A REPLACE ALREADY CARRIES THE COMMITTED RID (REMOVE A, ADD B, REMOVE B, ADD C: issue #8961)
+                v.oldRid = entry.oldRid != null ? entry.oldRid : entry.rid;
               else if (entry.operation == IndexKey.IndexKeyOperation.REPLACE)
                 // PROPAGATE THE OLD RID FROM THE PREVIOUS REPLACE OPERATION (e.g. REMOVE → ADD → ADD)
                 v.oldRid = entry.oldRid;
             }
           }
+        } else if (v.operation == IndexKey.IndexKeyOperation.REMOVE && index.isUnique()) {
+          // THE REMOVE DISPLACES A REPLACE: KEEP THE COMMITTED RID THE REPLACE WAS GOING TO REMOVE, OR NOTHING LEFT IN THE
+          // TRANSACTION REMOVES IT FROM THE PERSISTED INDEX (issue #8961)
+          final IndexKey entry = values.get(v);
+          if (entry != null && entry.operation == IndexKey.IndexKeyOperation.REPLACE && entry.oldRid != null)
+            v.oldRid = entry.oldRid;
         }
       }
     }
@@ -1150,8 +1160,8 @@ public class TransactionIndexContext {
               if (existent == null || entry.getValue().operation == IndexKey.IndexKeyOperation.REMOVE) {
                 // MULTIPLE OPERATIONS ON THE SAME KEY (DIFFERENT BUCKETS), PREFER THE REMOVE ONE.
                 // For REPLACE entries that originated from a same-bucket REMOVE→ADD merge, use the oldRid (the actual deleted RID).
-                final RID deletedRid = entry.getValue().operation == IndexKey.IndexKeyOperation.REPLACE && entry.getValue().oldRid != null
-                    ? entry.getValue().oldRid
+                // oldRid is the committed RID a REPLACE, or a REMOVE that displaced one (issue #8961), stands for
+                final RID deletedRid = entry.getValue().oldRid != null ? entry.getValue().oldRid
                     : entry.getKey().rid;
                 entries.put(key, deletedRid);
               }

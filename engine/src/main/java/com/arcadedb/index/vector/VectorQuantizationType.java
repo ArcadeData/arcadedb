@@ -41,8 +41,9 @@ public enum VectorQuantizationType {
   /**
    * Binary quantization using median threshold to 1 bit per dimension.
    * Provides 32x memory compression (4 bytes/value → 1 bit/value).
-   * Uses Hamming distance instead of cosine/euclidean.
-   * Suitable for approximate search with reranking.
+   * Each stored vector is reconstructed as the sign of its components around its own median at unit norm, so scoring
+   * it with COSINE is a Hamming distance over the bits. A search fetches an oversampled candidate list from the graph
+   * and reranks it with the similarity function on the vectors the records store.
    */
   BINARY,
 
