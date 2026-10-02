@@ -76,6 +76,17 @@ class Issue8960BinaryQuantizationSelfMatchTest extends TestHelper {
   }
 
   @Test
+  void kLargerThanTheIndexReturnsEveryRecord() {
+    final String type = createType("TinyBinary", 4);
+    database.transaction(() -> {
+      database.newDocument(type).set("name", "A", "vector", new float[] { 0.9f, -0.1f, -0.2f, -0.8f }).save();
+      database.newDocument(type).set("name", "B", "vector", new float[] { 0.9f, 0.5f, 0.1f, 0.2f }).save();
+    });
+
+    assertThat(index(type).findNeighborsFromVector(new float[] { 0.9f, -0.1f, -0.2f, -0.8f }, 50, 100)).hasSize(2);
+  }
+
+  @Test
   void ownVectorFirstAndUsableRecallOnRandomVectors() {
     final Random random = new Random(42);
     final List<float[]> vectors = new ArrayList<>();
