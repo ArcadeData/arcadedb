@@ -53,8 +53,11 @@ import java.util.stream.Stream;
 final class BoltSystemProcedures {
   private static final Object[] NO_ARGS       = new Object[0];
   private static final String   CALL_PREFIX   = "call ";
+  /** Real probes are tiny; a longer statement is never matched, which also bounds the regex work on client input. */
+  private static final int      MAX_PROBE_LENGTH = 4096;
   private static final String   ITEM          = "(?:collect\\(\\w+\\)|\\w+)(?: as \\w+)?";
-  private static final Pattern  QUOTED        = Pattern.compile("'(?:[^'\\\\]|\\\\.)*'|\"(?:[^\"\\\\]|\\\\.)*\"");
+  private static final Pattern  QUOTED        = Pattern.compile(
+      "'[^'\\\\]*+(?:\\\\.[^'\\\\]*+)*+'|\"[^\"\\\\]*+(?:\\\\.[^\"\\\\]*+)*+\"");
   private static final Pattern  WHITESPACE    = Pattern.compile("\\s+");
   private static final Pattern  FOREIGN_CLAUSE = Pattern.compile(
       "(?<![\\w$.])(?:create|merge|set|delete|detach|remove|foreach|call|load|match|optional|union|use|finish|insert)\\b");
@@ -149,7 +152,7 @@ final class BoltSystemProcedures {
    * @return the offset just past {@code CALL <procedureName>} when the statement opens with it, else -1
    */
   private static int endOfCallName(final String normalized, final String procedureName) {
-    if (!normalized.startsWith(CALL_PREFIX)
+    if (normalized.length() > MAX_PROBE_LENGTH || !normalized.startsWith(CALL_PREFIX)
         || !normalized.regionMatches(CALL_PREFIX.length(), procedureName, 0, procedureName.length()))
       return -1;
     return CALL_PREFIX.length() + procedureName.length();
@@ -186,7 +189,7 @@ final class BoltSystemProcedures {
    */
   private static String[] schemaCallsOf(final String normalized) {
     // Every Bolt statement passes through here: bail out before any allocation unless it opens with a call.
-    if (!normalized.startsWith(CALL_PREFIX))
+    if (normalized.length() > MAX_PROBE_LENGTH || !normalized.startsWith(CALL_PREFIX))
       return null;
     final String[] segments = normalized.indexOf(" union ") < 0 ? new String[] { normalized } : normalized.split(" union ", -1);
     if (segments.length != 1 && segments.length != 3)
