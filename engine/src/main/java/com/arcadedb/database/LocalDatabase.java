@@ -114,6 +114,7 @@ import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.io.UncheckedIOException;
 import java.nio.BufferUnderflowException;
+import java.nio.channels.ClosedByInterruptException;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
@@ -2513,8 +2514,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       return callable.call();
 
     } catch (final ClosedChannelException e) {
+      // NEVER close() HERE: THIS THREAD HOLDS THE READ LOCK AND close() WAITS FOR THE WRITE LOCK, WHICH A
+      // ReentrantReadWriteLock NEVER GRANTS TO A READER, SO THE DATABASE WOULD NEVER CLOSE AGAIN (#8944)
       LogManager.instance().log(this, Level.SEVERE, "Database '%s' has some files that are closed", e, name);
-      close();
       throw new DatabaseOperationException("Database '" + name + "' has some files that are closed", e);
 
     } catch (final RuntimeException e) {
@@ -2539,8 +2541,13 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       return callable.call();
 
     } catch (final ClosedChannelException e) {
-      LogManager.instance().log(this, Level.SEVERE, "Database '%s' has some files that are closed", e, name);
-      close();
+      // A CHANNEL CLOSED BY AN INTERRUPT (A CANCELLED QUERY) IS NOT A FAILING DISK: PaginatedComponentFile REOPENS IT
+      if (e instanceof ClosedByInterruptException)
+        LogManager.instance().log(this, Level.WARNING, "Database '%s' has a file closed by an interrupt", e, name);
+      else {
+        LogManager.instance().log(this, Level.SEVERE, "Database '%s' has some files that are closed", e, name);
+        close();
+      }
       throw new DatabaseOperationException("Database '" + name + "' has some files that are closed", e);
 
     } catch (final RuntimeException e) {
