@@ -76,11 +76,17 @@ class Issue8948GAVReusedVertexRidTest extends TestHelper {
   @Test
   void reusedVertexPropertyUpdateAndDelete() throws Exception {
     createSchemaAndView();
+    final RID c = vertex("c").getIdentity();
     database.transaction(() -> vertex("c").delete());
     database.transaction(() -> {
       final MutableVertex nv = database.newVertex("V").set("name", "d").set("age", 20).save();
+      assertThat(nv.getIdentity()).as("precondition: the new vertex reuses the deleted RID").isEqualTo(c);
       vertex("a").newEdge("K", nv);
+      nv.newEdge("K", vertex("a"));
     });
+    final GraphAnalyticalView view = GraphAnalyticalViewRegistry.get(database, "g");
+    assertThat(view.getNodeId(c)).as("the reused vertex is an overflow node").isGreaterThanOrEqualTo(2);
+    assertThat(view.getEdgeCount()).isEqualTo(2);
     database.transaction(() -> vertex("d").set("age", 50).save());
     assertThat(count("MATCH (x:V)-[:K]->(y:V) WHERE y.age = 50 RETURN count(*) AS n")).isEqualTo(1L);
     database.transaction(() -> vertex("d").delete());
@@ -93,13 +99,18 @@ class Issue8948GAVReusedVertexRidTest extends TestHelper {
   @Test
   void slotReusedTwice() throws Exception {
     createSchemaAndView();
+    final RID c = vertex("c").getIdentity();
     database.transaction(() -> vertex("c").delete());
     database.transaction(() -> {
-      vertex("a").newEdge("K", database.newVertex("V").set("name", "d").set("age", 20).save());
+      final MutableVertex d = database.newVertex("V").set("name", "d").set("age", 20).save();
+      assertThat(d.getIdentity()).as("precondition: d reuses the deleted RID").isEqualTo(c);
+      vertex("a").newEdge("K", d);
     });
     database.transaction(() -> vertex("d").delete());
     database.transaction(() -> {
-      vertex("a").newEdge("K", database.newVertex("V").set("name", "e").set("age", 40).save());
+      final MutableVertex e = database.newVertex("V").set("name", "e").set("age", 40).save();
+      assertThat(e.getIdentity()).as("precondition: e reuses the same RID again").isEqualTo(c);
+      vertex("a").newEdge("K", e);
     });
     assertThat(count("MATCH (x:V)-[:K]->(y:V) RETURN count(*) AS n")).isEqualTo(1L);
     assertThat(count("MATCH (x:V)-[:K]->(y:V) WHERE y.age = 40 RETURN count(*) AS n")).isEqualTo(1L);

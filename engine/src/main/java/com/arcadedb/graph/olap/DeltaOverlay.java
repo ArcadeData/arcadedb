@@ -306,7 +306,10 @@ class DeltaOverlay {
       final int addedBaseId = baseMapping.getGlobalId(vd.rid);
       // A deleted base slot reused by this new vertex falls through to the overflow (#8948). A TxDelta is one
       // committed transaction and a freed slot is only reused after that commit, so the delete of the old
-      // vertex is always in an earlier merge than the add of the new one
+      // vertex is always in an earlier merge than the add of the new one. The same holds when buffered deltas are
+      // replayed over a freshly built base: if the scan already saw the new vertex in the slot, the replayed
+      // delete of the old one masks that base node and the replayed add re-creates it in the overflow, together
+      // with its replayed edges (overflow ids skip the base-CSR dedup), so each edge is counted exactly once
       if (addedBaseId >= 0 && !newDeleted.get(addedBaseId))
         continue; // already in base
       if (newOverflowIds.containsKey(vd.rid))
@@ -507,9 +510,10 @@ class DeltaOverlay {
     // Process property updates
     for (final var entry : delta.updatedProperties.entrySet()) {
       final int baseId = baseMapping.getGlobalId(entry.getKey());
-      if (baseId >= 0 && isReusedBaseSlot(baseId, entry.getKey(), newOverflowIds, newDeleted)) {
+      final RID updatedRid = entry.getKey();
+      if (baseId >= 0 && isReusedBaseSlot(baseId, updatedRid, newOverflowIds, newDeleted)) {
         // the vertex now holding a reused base slot lives in the overflow
-        final int idx = newOverflowIds.get(entry.getKey()) - baseNodeCount;
+        final int idx = newOverflowIds.get(updatedRid) - baseNodeCount;
         final Map<String, Object> merged = new HashMap<>(overflowPropsList.get(idx));
         merged.putAll(entry.getValue());
         overflowPropsList.set(idx, merged);
