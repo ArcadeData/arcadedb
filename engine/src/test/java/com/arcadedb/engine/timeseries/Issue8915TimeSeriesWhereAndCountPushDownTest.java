@@ -1,0 +1,250 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.engine.timeseries;
+
+import com.arcadedb.TestHelper;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
+import org.junit.jupiter.api.Test;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * Issues #8915, #8916 and #8917: the TIMESERIES planner answered differently from the same SQL over a document type.
+ * <ul>
+ *   <li>#8915: the aggregation push-down counted every row for {@code count(field)}, nulls included, as a Double;</li>
+ *   <li>#8916: a time range on one OR branch was applied to the whole WHERE;</li>
+ *   <li>#8917: two equalities on the same tag in one AND were unioned instead of intersected.</li>
+ * </ul>
+ * Each query runs against a TIMESERIES type and a document twin holding the same rows, before and after compaction.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+class Issue8915TimeSeriesWhereAndCountPushDownTest extends TestHelper {
+
+  private void load() {
+    database.command("sql", "CREATE TIMESERIES TYPE T TIMESTAMP ts TAGS (host STRING) FIELDS (v DOUBLE, n LONG)");
+    database.command("sql", "CREATE DOCUMENT TYPE D");
+    database.transaction(() -> {
+      for (int i = 1; i <= 4; i++) {
+        final Double v = i % 2 == 0 ? null : (double) i; // the even ones are null
+        database.command("sql", "INSERT INTO T SET ts = ?, host = ?, v = ?, n = 1", i * 1000L, i % 2 == 1 ? "a" : "b", v);
+        database.command("sql", "INSERT INTO D SET ts = ?, host = ?, v = ?, n = 1", i * 1000L, i % 2 == 1 ? "a" : "b", v);
+      }
+    });
+  }
+
+  private void forEachState(final Runnable check) {
+    load();
+    check.run();
+    database.command("sql", "COMPACT TIMESERIES TYPE T");
+    check.run();
+  }
+
+  private List<Object> ns(final String sql) {
+    final List<Object> out = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", sql)) {
+      while (rs.hasNext())
+        out.add(rs.next().getProperty("n"));
+    }
+    return out;
+  }
+
+  @Test
+  void countOfFieldSkipsNullsOnEveryPathAndIsALong() {
+    forEachState(() -> {
+      for (final String where : new String[] { "", "WHERE n > 0 " }) {
+        try (final ResultSet rs = database.query("sql",
+            "SELECT ts.timeBucket('1h', ts) AS b, count(v) AS cv, count(*) AS c FROM T " + where + "GROUP BY b")) {
+          assertThat(rs.hasNext()).isTrue();
+          final Result r = rs.next();
+          assertThat((Object) r.getProperty("cv")).as(where).isEqualTo(2L);
+          assertThat((Object) r.getProperty("c")).as(where).isEqualTo(4L);
+          assertThat(rs.hasNext()).isFalse();
+        }
+      }
+      try (final ResultSet rs = database.query("sql", "SELECT count(v) AS cv, count(*) AS c FROM T")) {
+        final Result r = rs.next();
+        assertThat((Object) r.getProperty("cv")).isEqualTo(2L);
+        assertThat((Object) r.getProperty("c")).isEqualTo(4L);
+      }
+    });
+  }
+
+  @Test
+  void orWithATimeRangeOnOneBranchKeepsTheOtherBranchRows() {
+    forEachState(() -> {
+      for (final String w : new String[] { "ts >= 3000 OR host = 'a'", "ts < 2000 OR ts >= 4000", "ts < 2000 OR ts >= 3000",
+          "(ts >= 3000 AND host = 'b') OR ts <= 1000", "ts BETWEEN 1000 AND 1000 OR ts = 4000", "ts > 4000 OR ts < 1000" }) {
+        final List<Object> expected = ns("SELECT v AS n FROM D WHERE " + w + " ORDER BY ts");
+        assertThat(ns("SELECT v AS n FROM T WHERE " + w + " ORDER BY ts")).as(w).isEqualTo(expected);
+        try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM T WHERE " + w)) {
+          assertThat(((Number) rs.next().getProperty("c")).longValue()).as(w).isEqualTo(
+              ((Number) database.query("sql", "SELECT count(*) AS c FROM D WHERE " + w).next().getProperty("c")).longValue());
+        }
+        // grouped, whether or not it is pushed down
+        try (final ResultSet rs = database.query("sql",
+            "SELECT ts.timeBucket('1h', ts) AS b, count(*) AS c FROM T WHERE " + w + " GROUP BY b");
+            final ResultSet ref = database.query("sql",
+                "SELECT ts.timeBucket('1h', ts) AS b, count(*) AS c FROM D WHERE " + w + " GROUP BY b")) {
+          final long got = rs.hasNext() ? ((Number) rs.next().getProperty("c")).longValue() : 0L;
+          final long want = ref.hasNext() ? ((Number) ref.next().getProperty("c")).longValue() : 0L;
+          assertThat(got).as("grouped " + w).isEqualTo(want);
+        }
+      }
+    });
+  }
+
+  /** All the rows fall in one hour bucket, so the first group row is the whole answer. */
+  private long groupedCount(final String type, final String where) {
+    try (final ResultSet rs = database.query("sql",
+        "SELECT ts.timeBucket('1h', ts) AS b, count(*) AS c FROM " + type + " WHERE " + where + " GROUP BY b")) {
+      return rs.hasNext() ? ((Number) rs.next().getProperty("c")).longValue() : 0L;
+    }
+  }
+
+  private String plan(final String sql, final Object... args) {
+    try (final ResultSet rs = database.query("sql", sql, args)) {
+      return rs.getExecutionPlan().orElseThrow().prettyPrint(0, 2);
+    }
+  }
+
+  @Test
+  void twoEqualitiesOnTheSameTagInOneAndMatchNothing() {
+    forEachState(() -> {
+      for (final String w : new String[] { "host = 'a' AND host = 'b'", "host = 'a' AND host = 'b' AND v > 0",
+          "(host = 'a' AND host = 'b') OR host = 'a'", "host = 'a' AND host = 'a'",
+          "host = 'a' AND host = 'b' AND host = 'a'" })
+        assertThat(groupedCount("T", w)).as(w).isEqualTo(groupedCount("D", w));
+      assertThat(groupedCount("T", "host = 'a' AND host = 'b'")).isZero();
+    });
+  }
+
+  @Test
+  void contradictoryBlocksAddNothingToTheTimeRangeUnion() {
+    forEachState(() -> {
+      for (final String w : new String[] { "(ts > 3000 AND ts < 2000) OR host = 'a'", "(ts > 3000 AND ts < 2000) OR ts >= 4000",
+          "(ts > 3000 AND ts < 2000) OR (ts > 5000 AND ts < 1000)" }) {
+        assertThat(ns("SELECT v AS n FROM T WHERE " + w + " ORDER BY ts")).as(w)
+            .isEqualTo(ns("SELECT v AS n FROM D WHERE " + w + " ORDER BY ts"));
+        assertThat(groupedCount("T", w)).as(w).isEqualTo(groupedCount("D", w));
+      }
+    });
+  }
+
+  @Test
+  void aNullTagParameterMatchesNothingOnEveryPath() {
+    forEachState(() -> {
+      try (final ResultSet rs = database.query("sql",
+          "SELECT ts.timeBucket('1h', ts) AS b, count(*) AS c FROM T WHERE host = ? GROUP BY b", (Object) null)) {
+        assertThat(rs.hasNext()).isFalse();
+      }
+      assertThat(ns("SELECT v AS n FROM T WHERE host = null")).isEqualTo(ns("SELECT v AS n FROM D WHERE host = null"));
+      try (final ResultSet rs = database.query("sql", "SELECT v AS n FROM T WHERE host = ?", (Object) null)) {
+        assertThat(rs.hasNext()).isFalse();
+      }
+    });
+  }
+
+  @Test
+  void pushDownOnlyTakesTheShapesItAnswersExactly() {
+    load();
+    final String head = "SELECT ts.timeBucket('1h', ts) AS b, count(*) AS c FROM T WHERE ";
+    assertThat(plan(head + "host = 'a' AND ts >= 1000 GROUP BY b")).contains("AGGREGATE FROM TIMESERIES");
+    assertThat(plan(head + "host = 'a' OR host = 'b' GROUP BY b")).as("an exact IN stays pushed down")
+        .contains("AGGREGATE FROM TIMESERIES");
+    assertThat(plan(head + "ts >= 1000 AND (host = 'a' OR host = 'b') GROUP BY b")).as("a shared time range keeps the IN exact")
+        .contains("AGGREGATE FROM TIMESERIES");
+    assertThat(plan(head + "(ts >= 1000 AND host = 'a') OR (ts >= 2000 AND host = 'b') GROUP BY b"))
+        .as("different ranges per block are not an exact union").doesNotContain("AGGREGATE FROM TIMESERIES");
+    assertThat(plan(head + "host = 'a' AND host = 'b' GROUP BY b")).doesNotContain("AGGREGATE FROM TIMESERIES");
+    assertThat(plan(head + "ts >= 3000 OR host = 'a' GROUP BY b")).doesNotContain("AGGREGATE FROM TIMESERIES");
+    assertThat(plan(head + "ts < 2000 OR ts >= 4000 GROUP BY b")).doesNotContain("AGGREGATE FROM TIMESERIES");
+    assertThat(plan("SELECT ts.timeBucket('1h', ts) AS b, count(v) AS c FROM T GROUP BY b"))
+        .doesNotContain("AGGREGATE FROM TIMESERIES");
+    assertThat(plan("SELECT ts.timeBucket('1h', ts) AS b, count(*) AS c FROM T GROUP BY b"))
+        .contains("AGGREGATE FROM TIMESERIES");
+  }
+
+  @Test
+  void parametersInOrAndTimeRangesAgreeWithTheDocumentTwin() {
+    forEachState(() -> {
+      for (final String t : new String[] { "T", "D" })
+        try (final ResultSet rs = database.query("sql",
+            "SELECT ts.timeBucket('1h', ts) AS b, count(*) AS c FROM " + t + " WHERE host = ? OR host = ? GROUP BY b", "a", "b")) {
+          assertThat(((Number) rs.next().getProperty("c")).longValue()).as(t).isEqualTo(4L);
+        }
+      for (final String t : new String[] { "T", "D" })
+        try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM " + t + " WHERE ts >= ? OR host = ?", 3000L, "a")) {
+          assertThat(((Number) rs.next().getProperty("c")).longValue()).as(t).isEqualTo(3L);
+        }
+    });
+  }
+
+  @Test
+  void aContradictoryRangeOrAnUnderstoodTimePredicateStaysExactOnThePushDown() {
+    forEachState(() -> {
+      for (final String w : new String[] { "ts > 3000 AND ts < 2000", "ts != 2000", "ts IN [1000, 2000]", "ts > 1000 AND host = n",
+          "host = n" })
+        assertThat(groupedCount("T", w)).as(w).isEqualTo(groupedCount("D", w));
+      assertThat(plan("SELECT ts.timeBucket('1h', ts) AS b, count(*) AS c FROM T WHERE ts != 2000 GROUP BY b"))
+          .doesNotContain("AGGREGATE FROM TIMESERIES");
+    });
+  }
+
+  @Test
+  void orOfTagsUnderASharedTimeRangeStaysExact() {
+    forEachState(() -> {
+      for (final String w : new String[] { "ts >= 2000 AND (host = 'a' OR host = 'b')", "ts >= 2000 AND (host = 'a' OR host = 'c')",
+          "(ts >= 1000 AND host = 'a') OR (ts >= 2000 AND host = 'b')", "ts > 3000 AND ts < 2000 AND (host = 'a' OR host = 'b')" })
+        assertThat(groupedCount("T", w)).as(w).isEqualTo(groupedCount("D", w));
+    });
+  }
+
+  @Test
+  void parametersInTheTimePredicatesOfEachBlockAreComparedByValue() {
+    forEachState(() -> {
+      final String sql = "SELECT ts.timeBucket('1h', ts) AS b, count(*) AS c FROM %s WHERE (ts >= ? AND host = ?) OR (ts >= ? AND host = ?) GROUP BY b";
+      for (final Object[] params : new Object[][] { { 1000L, "a", 3000L, "b" }, { 2000L, "a", 2000L, "b" } })
+        try (final ResultSet rs = database.query("sql", String.format(sql, "T"), params);
+            final ResultSet ref = database.query("sql", String.format(sql, "D"), params)) {
+          assertThat(((Number) rs.next().getProperty("c")).longValue()).isEqualTo(((Number) ref.next().getProperty("c")).longValue());
+        }
+      final String named = "SELECT ts.timeBucket('1h', ts) AS b, count(*) AS c FROM %s WHERE (ts >= :x AND host = 'a') OR (ts >= :y AND host = 'b') GROUP BY b";
+      final Map<String, Object> m = Map.of("x", 1000L, "y", 3000L);
+      try (final ResultSet rs = database.query("sql", String.format(named, "T"), m);
+          final ResultSet ref = database.query("sql", String.format(named, "D"), m)) {
+        assertThat(((Number) rs.next().getProperty("c")).longValue()).isEqualTo(((Number) ref.next().getProperty("c")).longValue());
+      }
+    });
+  }
+
+  @Test
+  void orOfTagsAcrossBlocksStaysExact() {
+    forEachState(() -> {
+      final String w = "host = 'a' OR host = 'b'";
+      assertThat(groupedCount("T", w)).isEqualTo(4L);
+      assertThat(groupedCount("T", "host = 'a' OR host = 'c'")).isEqualTo(groupedCount("D", "host = 'a' OR host = 'c'"));
+    });
+  }
+}
