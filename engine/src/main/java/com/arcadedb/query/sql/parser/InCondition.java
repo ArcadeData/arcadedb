@@ -203,6 +203,16 @@ public class InCondition extends BooleanExpression {
   }
 
   /**
+   * Equality of the search value against one right-hand item. The operand is first converted to the item type's side as
+   * {@link QueryOperatorEquals#equals} does for {@code item = operand}, and, when that finds nothing, the item is tried the
+   * other way round, so a String operand finds a Double item exactly as {@code list CONTAINS operand} and a BY ITEM index do
+   * (issue #8895).
+   */
+  private static boolean equalsEitherWay(final Object left, final Object item) {
+    return QueryOperatorEquals.equals(left, item) || (left.getClass() != item.getClass() && QueryOperatorEquals.equals(item, left));
+  }
+
+  /**
    * SQL three-valued membership test ({@code iLeft IN iRight}).
    *
    * @return {@code Boolean.TRUE} on a definite match, {@code Boolean.FALSE} on a definite
@@ -233,7 +243,7 @@ public class InCondition extends BooleanExpression {
           sawNull = true;
           continue;
         }
-        if (QueryOperatorEquals.equals(iLeft, o))
+        if (equalsEitherWay(iLeft, o))
           return Boolean.TRUE;
         if (MultiValue.isMultiValue(iLeft) && MultiValue.getSize(iLeft) == 1) {
 
@@ -257,7 +267,7 @@ public class InCondition extends BooleanExpression {
           sawNull = true;
           continue;
         }
-        if (QueryOperatorEquals.equals(iLeft, o))
+        if (equalsEitherWay(iLeft, o))
           return Boolean.TRUE;
       }
       if (array.length == 0)
