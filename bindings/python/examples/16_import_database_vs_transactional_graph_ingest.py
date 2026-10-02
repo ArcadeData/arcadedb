@@ -652,7 +652,7 @@ def run_graph_batch_graph_load(
         with db.graph_batch(
             batch_size=batch_size,
             expected_edge_count=edge_count,
-            bidirectional=False,
+            bidirectional=True,
             commit_every=batch_size,
             use_wal=False,
             parallel_flush=parallel > 1,

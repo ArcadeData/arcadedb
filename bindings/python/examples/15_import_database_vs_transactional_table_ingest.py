@@ -636,7 +636,9 @@ def run_import_documents_load(
                             staging_dir / f"{table_name}_chunk_{chunk_index:05d}.csv"
                         )
                         chunk_index += 1
-                        chunk_handle = chunk_path.open("w", encoding="utf-8")
+                        chunk_handle = chunk_path.open(
+                            "w", encoding="utf-8", newline=""
+                        )
                         chunk_handle.write(header)
 
                     def import_chunk(table_name: str = table_name) -> None:
