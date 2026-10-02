@@ -268,8 +268,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * Set once a graph build left records out because they share a vector id. A compaction of such an index declines
    * (it would erase the shared ids from the pages), so the garbage-ratio trigger must stop asking: each ask is a
    * full graph build that reclaims nothing, repeated after every commit. Cleared only by a new index instance,
-   * which is what the rebuild of CHECK DATABASE FIX produces. In memory only: after a restart the first build sets it
-   * again, at the cost of one build.
+   * which is what the rebuild of CHECK DATABASE FIX produces, or by a later build that finds nothing left out. In
+   * memory only: after a restart the first build sets it again, at the cost of one build.
    */
   private volatile boolean compactionBlockedBySharedIds;
   /** Records the last build left out of the graph for sharing a vector id; in memory only, like the block above. */
@@ -6477,8 +6477,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   private boolean collapseToWhatALoadKeeps(final LiveSetReplay replay) {
     final List<VectorEntryForGraphBuild> losers = replay.losers();
-    if (losers.isEmpty())
+    if (losers.isEmpty()) {
+      // A clean pass proves the condition cleared (the losers were deleted or the index was repaired in place).
+      recordsLeftOutBySharedIds = 0;
+      compactionBlockedBySharedIds = false;
       return false;
+    }
 
     for (final VectorEntryForGraphBuild loser : losers)
       replay.byRid.remove(loser.rid);
