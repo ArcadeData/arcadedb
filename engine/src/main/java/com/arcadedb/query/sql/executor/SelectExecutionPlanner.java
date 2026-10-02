@@ -5046,12 +5046,24 @@ public class SelectExecutionPlanner {
       decimalBound = isDecimalLiteral(condition.getRight(), context);
     else if (expression instanceof BetweenCondition between)
       decimalBound = isDecimalLiteral(between.getSecond(), context) || isDecimalLiteral(between.getThird(), context);
+    else if (expression instanceof InCondition in)
+      decimalBound = hasDecimalLiteralElement(in, context);
     else
       return false;
     if (!decimalBound)
       return false;
     final Property property = type.getPropertyIfExists(field);
     return property == null || property.getType() != Type.DECIMAL;
+  }
+
+  private static boolean hasDecimalLiteralElement(final InCondition in, final CommandContext context) {
+    final MathExpression right = in.getRightMathExpression();
+    if (right == null || !right.isLiteral() || !(right.execute((Result) null, context) instanceof Collection<?> values))
+      return false;
+    for (final Object value : values)
+      if (value instanceof BigDecimal)
+        return true;
+    return false;
   }
 
   private static boolean isDecimalLiteral(final Expression expression, final CommandContext context) {
