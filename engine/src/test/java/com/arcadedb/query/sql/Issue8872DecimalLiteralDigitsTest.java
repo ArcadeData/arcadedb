@@ -122,7 +122,7 @@ class Issue8872DecimalLiteralDigitsTest extends TestHelper {
 
   @Test
   void oversizedPrecisionStaysDouble() {
-    final String digits = "1".repeat(10_050) + ".5";
+    final String digits = "1".repeat(1_050) + ".5";
     try (final ResultSet rs = database.query("sql", "SELECT " + digits + " AS a")) {
       assertThat(rs.next().<Object>getProperty("a")).isInstanceOf(Double.class);
     }
@@ -224,6 +224,35 @@ class Issue8872DecimalLiteralDigitsTest extends TestHelper {
     assertThat(keys("SELECT k FROM X WHERE idx >= 1.5000000000000000000001")).isEmpty();
     assertThat(keys("SELECT k FROM X WHERE idx <= 1.5000000000000000000001")).containsExactly("row");
     assertThat(keys("SELECT k FROM X WHERE idx BETWEEN 1.4000000000000000000001 AND 1.5000000000000000000001")).containsExactly("row");
+  }
+
+  @Test
+  void updateDeleteAndInOnIndexedDecimalAndDouble() {
+    database.command("sql", "CREATE DOCUMENT TYPE W");
+    database.command("sql", "CREATE PROPERTY W.k STRING");
+    database.command("sql", "CREATE PROPERTY W.dec DECIMAL");
+    database.command("sql", "CREATE PROPERTY W.dbl DOUBLE");
+    database.command("sql", "CREATE INDEX ON W (dec) NOTUNIQUE");
+    database.command("sql", "CREATE INDEX ON W (dbl) NOTUNIQUE");
+    database.transaction(() -> database.newDocument("W").set("k", "row", "dec", new BigDecimal(EXACT), "dbl", 1.5d).save());
+    assertThat(keys("SELECT k FROM W WHERE dec IN [" + EXACT + "]")).containsExactly("row");
+    // the exact comparison finds nothing on the DOUBLE row, indexed or not, so UPDATE and DELETE touch nothing
+    database.transaction(() -> {
+      try (final ResultSet rs = database.command("sql", "UPDATE W SET k = 'changed' WHERE dbl = 1.5000000000000000000001")) {
+        assertThat(rs.next().<Long>getProperty("count")).isEqualTo(0L);
+      }
+      try (final ResultSet rs = database.command("sql", "DELETE FROM W WHERE dbl = 1.5000000000000000000001")) {
+        assertThat(rs.next().<Long>getProperty("count")).isEqualTo(0L);
+      }
+    });
+    assertThat(keys("SELECT k FROM W")).containsExactly("row");
+  }
+
+  @Test
+  void mixedShortAndLongLiteralArithmeticIsDecimal() {
+    try (final ResultSet rs = database.query("sql", "SELECT 0.1 + 1.2345678901234567890 AS a")) {
+      assertThat((BigDecimal) rs.next().getProperty("a")).isEqualByComparingTo(new BigDecimal("1.3345678901234567890"));
+    }
   }
 
   private List<String> keys(final String sql) {
