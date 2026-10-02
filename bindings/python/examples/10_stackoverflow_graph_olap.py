@@ -1187,7 +1187,7 @@ def arcadedb_insert_edges(
     with db.graph_batch(
         batch_size=max(1, len(rows)),
         expected_edge_count=max(1, len(rows)),
-        bidirectional=False,
+        bidirectional=True,
         commit_every=max(1, len(rows)),
         use_wal=False,
         parallel_flush=parallel_flush,
