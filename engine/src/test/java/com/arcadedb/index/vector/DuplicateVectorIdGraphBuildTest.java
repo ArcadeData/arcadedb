@@ -26,6 +26,8 @@ import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+import java.util.Arrays;
+import java.util.Collection;
 import java.util.Random;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -58,7 +60,7 @@ class DuplicateVectorIdGraphBuildTest extends TestHelper {
 
     vectorIndex().buildVectorGraphNow();
     final int[] built = vectorIndex().getOrdinalToVectorIdForTest();
-    assertThat(java.util.Arrays.stream(built).distinct().count())
+    assertThat(Arrays.stream(built).distinct().count())
         .as("the graph must not carry two nodes for one vector id (%d nodes)", built.length).isEqualTo(built.length);
     reopenDatabase();
 
@@ -74,7 +76,7 @@ class DuplicateVectorIdGraphBuildTest extends TestHelper {
 
     assertThat(vectorIndex().checkIntegrity()).as("the shared ids must be reported").hasSize(1);
     try (final ResultSet rs = database.command("sql", "CHECK DATABASE")) {
-      assertThat(rs.next().<java.util.Collection<String>>getProperty("corruptedIndexes"))
+      assertThat(rs.next().<Collection<String>>getProperty("corruptedIndexes"))
           .as("a plain check names the index and changes nothing")
           .anyMatch(name -> name.startsWith("Doc_0_"));
     }
@@ -98,8 +100,66 @@ class DuplicateVectorIdGraphBuildTest extends TestHelper {
     assertThat(vectorIndex().getStats().get("graphRebuildCount")).as("the loop is over").isEqualTo(0L);
   }
 
-  /** Leaves the pages with {@code COLLISIONS} pairs of records carrying the same vector id, then reopens the database. */
-  private void createTwoRecordsOnOneVectorId() {
+  @Test
+  void threeRecordsOnOneVectorIdLeaveNoLoop() {
+    createIndexedDocs();
+    final LSMVectorIndex index = vectorIndex();
+    final int id = index.residentLocationsForTest().getVectorIdsForRid(ridOf(0))[0];
+    final RID second = ridOf(1000);
+    final RID third = ridOf(1001);
+    database.transaction(() -> {
+      index.persistEntryForTest(id, second, embedding(1000));
+      index.persistEntryForTest(id, third, embedding(1001));
+    });
+    reopenDatabase();
+
+    assertThat(vectorIndex().checkIntegrity()).as("one finding naming the records that lost the id").hasSize(1);
+    assertNoLoopAfterABuild();
+  }
+
+  /** A tombstone written for one record of a shared id removes the id for the other one as well, in a load. */
+  @Test
+  void aTombstoneForOneRecordOfASharedIdLeavesNoLoop() {
+    createIndexedDocs();
+    final LSMVectorIndex index = vectorIndex();
+    final RID owner = ridOf(0);
+    final int id = index.residentLocationsForTest().getVectorIdsForRid(owner)[0];
+    final RID other = ridOf(1000);
+    database.transaction(() -> index.persistEntryForTest(id, other, embedding(1000)));
+    database.transaction(() -> index.persistTombstoneForTest(id, owner));
+    reopenDatabase();
+
+    assertNoLoopAfterABuild();
+  }
+
+  /** The same two entries in the other order: the tombstone lands first and the later live entry wins the id. */
+  @Test
+  void aTombstoneBeforeTheOtherRecordsEntryLeavesNoLoop() {
+    createIndexedDocs();
+    final LSMVectorIndex index = vectorIndex();
+    final RID owner = ridOf(0);
+    final int id = index.residentLocationsForTest().getVectorIdsForRid(owner)[0];
+    final RID other = ridOf(1000);
+    database.transaction(() -> index.persistTombstoneForTest(id, owner));
+    database.transaction(() -> index.persistEntryForTest(id, other, embedding(1000)));
+    reopenDatabase();
+
+    assertNoLoopAfterABuild();
+  }
+
+  private void assertNoLoopAfterABuild() {
+    vectorIndex().buildVectorGraphNow();
+    final int[] built = vectorIndex().getOrdinalToVectorIdForTest();
+    assertThat(Arrays.stream(built).distinct().count()).as("one node per vector id").isEqualTo(built.length);
+    reopenDatabase();
+
+    assertThat(vectorIndex().findNeighborsFromVector(embedding(5), 5, 64)).isNotEmpty();
+    assertThat(vectorIndex().getStats().get("graphRebuildCount"))
+        .as("the graph the build persisted must describe the set the next load reconstructs").isEqualTo(0L);
+  }
+
+  /** The index, {@code LIVE} indexed records and a few more without an embedding, so nothing is indexed for them yet. */
+  private void createIndexedDocs() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE Doc");
       database.command("sql", "CREATE PROPERTY Doc.id INTEGER");
@@ -111,13 +171,14 @@ class DuplicateVectorIdGraphBuildTest extends TestHelper {
     database.transaction(() -> {
       for (int i = 0; i < LIVE; i++)
         database.command("sql", "INSERT INTO Doc SET id = ?, embedding = ?", i, embedding(i));
-    });
-
-    // Records without an embedding of their own, so the index holds nothing for them yet.
-    database.transaction(() -> {
       for (int k = 0; k < COLLISIONS; k++)
         database.command("sql", "INSERT INTO Doc SET id = ?", 1000 + k);
     });
+  }
+
+  /** Leaves the pages with {@code COLLISIONS} pairs of records carrying the same vector id, then reopens the database. */
+  private void createTwoRecordsOnOneVectorId() {
+    createIndexedDocs();
 
     // Record 1000+k is written onto the vector id record k already owns.
     final LSMVectorIndex index = vectorIndex();
