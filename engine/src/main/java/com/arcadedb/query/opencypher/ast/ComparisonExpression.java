@@ -487,19 +487,23 @@ public class ComparisonExpression implements BooleanExpression {
   }
 
   private static int exactCompare(final Number left, final Number right) {
-    return toExactDecimal(left).compareTo(toExactDecimal(right));
+    // A floating point number meeting an integer is read by its BINARY value: past 2^53 its shortest decimal is not the
+    // number it holds (2^60 prints as 1.152921504606847E18), which would order it wrongly against a neighbouring long
+    final boolean binary = !(left instanceof BigDecimal) && !(right instanceof BigDecimal);
+    return toExactDecimal(left, binary).compareTo(toExactDecimal(right, binary));
   }
 
   /**
-   * Reads a Double through its shortest decimal form ({@code BigDecimal.valueOf}), NOT its binary value: the same
-   * reading {@link Type#normalizeNumberForKey} gives GROUP BY and the indexes, so a predicate agrees with them.
+   * Reads a Double through its shortest decimal form ({@code BigDecimal.valueOf}) against a BigDecimal, as
+   * {@link Type#normalizeNumberForKey} does for GROUP BY and the indexes, so {@code 0.1d} meets the decimal 0.1. Against
+   * an integer ({@code binary}) it reads the exact binary value instead.
    */
-  private static BigDecimal toExactDecimal(final Number value) {
+  private static BigDecimal toExactDecimal(final Number value, final boolean binary) {
     return switch (value) {
       case BigDecimal bigDecimal -> bigDecimal;
       case BigInteger bigInteger -> new BigDecimal(bigInteger);
-      case Double d -> BigDecimal.valueOf(d);
-      case Float f -> BigDecimal.valueOf(Type.widenFloat(f));
+      case Double d -> binary ? new BigDecimal(d) : BigDecimal.valueOf(d);
+      case Float f -> binary ? new BigDecimal(Type.widenFloat(f)) : BigDecimal.valueOf(Type.widenFloat(f));
       default -> BigDecimal.valueOf(value.longValue());
     };
   }
