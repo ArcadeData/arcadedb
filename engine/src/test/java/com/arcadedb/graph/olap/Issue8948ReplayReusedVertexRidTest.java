@@ -124,4 +124,31 @@ class Issue8948ReplayReusedVertexRidTest {
 
     assertThat(twice.getDeltaEdgeCount()).isEqualTo(once.getDeltaEdgeCount());
   }
+
+  /** An edge joining two reused slots, both replayed, is subtracted from the fresh base's count once, not twice. */
+  @Test
+  void anEdgeBetweenTwoReusedSlotsIsSubtractedOnce() {
+    final RID second = new RID(1, 2);
+    final NodeIdMapping mapping = new NodeIdMapping(1);
+    final int bucket = mapping.registerBucket(1, "V", 3);
+    for (int i = 0; i < 3; i++)
+      mapping.addNode(bucket, i);
+    mapping.compact();
+    // fresh base: one edge 1 -> 2 between the two reused slots
+    final CSRAdjacencyIndex csr = new CSRAdjacencyIndex(new int[] { 0, 0, 1, 1 }, new int[] { 2 }, new int[] { 0, 0, 0, 1 }, new int[] { 1 }, 3, 1);
+    final Map<String, CSRAdjacencyIndex> fresh = Map.of(EDGE_TYPE, csr);
+    final DeltaOverlay.PreCompactionPairCount preCount = (type, src, tgt) -> 0;
+
+    final TxDelta deleteOld = new TxDelta();
+    deleteOld.deletedVertices.add(REUSED);
+    deleteOld.deletedVertices.add(second);
+    final TxDelta addNew = new TxDelta();
+    addNew.addedVertices.add(new TxDelta.VertexDelta(REUSED, Map.of()));
+    addNew.addedVertices.add(new TxDelta.VertexDelta(second, Map.of()));
+    addNew.addedEdges.add(new TxDelta.EdgeDelta(EDGE_TYPE, REUSED, second, EDGE));
+
+    final DeltaOverlay overlay = new DeltaOverlay(mapping.size()).merge(deleteOld, mapping, fresh, preCount).merge(addNew, mapping, fresh, preCount);
+
+    assertThat(csr.getEdgeCount() + overlay.getDeltaEdgeCount()).as("one edge, counted once").isEqualTo(1);
+  }
 }

@@ -313,10 +313,8 @@ class DeltaOverlay {
       if (addedBaseId >= 0 && baseCsrPerType != null) {
         // Replay over a fresh base that already holds the new vertex: its masked base node still carries the
         // edges the scan captured, and the replayed edges are re-added on the overflow node, so stop counting them.
-        // Known limit: an edge joining two such reused slots is subtracted once per endpoint (both slots reused within
-        // one replay window, an edge between them); the count only steers the compaction trigger and heals on rebuild
         for (final CSRAdjacencyIndex csr : baseCsrPerType.values())
-          newDeltaEdgeCount -= incidentEdges(csr, addedBaseId);
+          newDeltaEdgeCount -= incidentEdges(csr, addedBaseId, baseMapping, newOverflowIds, newDeleted);
       }
       final int overflowId = baseNodeCount + newOverflowCount;
       newOverflowIds.put(vd.rid, overflowId);
@@ -799,16 +797,31 @@ class DeltaOverlay {
     return deletedBase.get(baseId) && overflowIds.containsKey(rid);
   }
 
-  /** Edges of the CSR touching the node, a self-loop counted once. */
-  private static int incidentEdges(final CSRAdjacencyIndex csr, final int nodeId) {
+  /**
+   * Edges of the CSR touching the node, a self-loop counted once. An edge whose other end is a reused slot already
+   * re-added to the overflow was subtracted when that slot was processed, so it is not subtracted again.
+   */
+  private static int incidentEdges(final CSRAdjacencyIndex csr, final int nodeId, final NodeIdMapping baseMapping,
+      final Map<RID, Integer> overflowIds, final BitSet deletedBase) {
     if (nodeId >= csr.getNodeCount())
       return 0;
-    // a self-loop sits in both the out and the in list of the node, so it is subtracted once
-    int count = csr.outDegree(nodeId) + csr.inDegree(nodeId);
-    for (int i = csr.outOffset(nodeId), end = csr.outOffsetEnd(nodeId); i < end; i++)
-      if (csr.outNeighbor(nodeId, i) == nodeId)
-        count--;
+    int count = 0;
+    for (int i = csr.outOffset(nodeId), end = csr.outOffsetEnd(nodeId); i < end; i++) {
+      final int other = csr.outNeighbor(nodeId, i);
+      if (other == nodeId || !isReadded(other, baseMapping, overflowIds, deletedBase))
+        count++;
+    }
+    for (int i = csr.inOffset(nodeId), end = csr.inOffsetEnd(nodeId); i < end; i++) {
+      final int other = csr.inNeighbor(nodeId, i);
+      if (other != nodeId && !isReadded(other, baseMapping, overflowIds, deletedBase))
+        count++;
+    }
     return count;
+  }
+
+  private static boolean isReadded(final int baseId, final NodeIdMapping baseMapping, final Map<RID, Integer> overflowIds,
+      final BitSet deletedBase) {
+    return deletedBase.get(baseId) && overflowIds.containsKey(baseMapping.getRID(baseId));
   }
 
   private static int resolveNodeId(final RID rid, final NodeIdMapping baseMapping,
