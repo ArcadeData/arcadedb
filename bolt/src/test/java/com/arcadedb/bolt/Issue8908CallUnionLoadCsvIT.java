@@ -82,8 +82,22 @@ public class Issue8908CallUnionLoadCsvIT extends BaseBoltServerTest {
           WITH x, row
           RETURN x
           """.formatted(csv.getAbsolutePath())).list();
+      // 3 rows: the header line is a data row too, as there is no WITH HEADERS
       assertThat(rows).hasSize(3);
       assertThat(rows).allMatch(r -> r.get("x").isNull());
+    }
+  }
+
+  @Test
+  void neo4jBrowserConnectProbeIsStillServed() {
+    try (final Driver driver = GraphDatabase.driver(getServerBoltUrl(), AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS),
+        Config.builder().withoutEncryption().build()); final Session session = driver.session()) {
+      final List<Record> rows = session.run(
+          "CALL dbms.components() YIELD name, versions, edition UNWIND versions AS version RETURN name, version, edition").list();
+      assertThat(rows).isNotEmpty();
+      assertThat(rows.getFirst().get("name").asString()).isEqualTo("Neo4j Kernel");
+
+      assertThat(session.run("// probe\nCALL db.ping()").list()).hasSize(1);
     }
   }
 }

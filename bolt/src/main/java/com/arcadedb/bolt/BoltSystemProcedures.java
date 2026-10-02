@@ -83,10 +83,31 @@ final class BoltSystemProcedures {
    *
    * @param query the raw query text
    *
-   * @return the normalized form used by every {@code contains}/{@code startsWith} check
+   * @return the normalized form used by every anchored match
    */
   static String normalize(final String query) {
-    return query.trim().toLowerCase(Locale.ROOT).replaceAll("\\s+", " ");
+    return stripLeadingComments(query.trim()).toLowerCase(Locale.ROOT).replaceAll("\\s+", " ");
+  }
+
+  /**
+   * Drops the {@code //} and block comments a driver or tool may put in front of a statement, so that the anchored
+   * matching sees the statement itself. Done on the raw text, because normalizing collapses the newline that ends a
+   * line comment.
+   */
+  private static String stripLeadingComments(final String trimmed) {
+    String text = trimmed;
+    while (text.startsWith("//") || text.startsWith("/*")) {
+      final int end;
+      if (text.startsWith("//")) {
+        final int newline = text.indexOf('\n');
+        end = newline < 0 ? text.length() : newline + 1;
+      } else {
+        final int close = text.indexOf("*/");
+        end = close < 0 ? text.length() : close + 2;
+      }
+      text = text.substring(end).trim();
+    }
+    return text;
   }
 
   /**
@@ -122,11 +143,30 @@ final class BoltSystemProcedures {
   }
 
   /**
+   * Answers whether the normalized query opens with a call to the named Bolt-only system procedure ({@code dbms.*},
+   * {@code db.ping}). Unlike the schema procedures these exist nowhere but in the Bolt interception, so a statement
+   * declined here would fail in the engine as an unknown procedure; what follows the call is therefore left to the
+   * tail handling (YIELD / WHERE / UNWIND, as Neo4j Browser sends it). Only the anchoring and the token boundary are
+   * required, which is what keeps a mere mention of the name elsewhere in a larger statement out (issue #8908).
+   */
+  static boolean isSystemCall(final String normalized, final String procedureName) {
+    final int end = CALL_PREFIX.length() + procedureName.length();
+    if (!normalized.startsWith(CALL_PREFIX) || !normalized.regionMatches(CALL_PREFIX.length(), procedureName, 0,
+        procedureName.length()))
+      return false;
+    return end == normalized.length() || normalized.charAt(end) == '(' || normalized.charAt(end) == ' '
+        || normalized.charAt(end) == ';';
+  }
+
+  /**
    * Splits the statement into its UNION segments and returns the schema procedure each one calls, or null when the
    * statement is not exactly one schema call or the three of them combined.
    */
   private static String[] schemaCallsOf(final String normalized) {
-    final String[] segments = normalized.split(" union ", -1);
+    // Every Bolt statement passes through here: bail out before any allocation unless it opens with a call.
+    if (!normalized.startsWith(CALL_PREFIX))
+      return null;
+    final String[] segments = normalized.indexOf(" union ") < 0 ? new String[] { normalized } : normalized.split(" union ", -1);
     if (segments.length != 1 && segments.length != 3)
       return null;
 
@@ -264,8 +304,8 @@ final class BoltSystemProcedures {
   /**
    * Detects a call to the named procedure that passes at least one argument, e.g. {@code CALL db.labels('x')}.
    * <p>
-   * The Bolt interception matches procedure names by substring and cannot evaluate arguments, so a call that
-   * carries any is handed to the Cypher engine rather than answered here.
+   * The Bolt interception only has the query TEXT and cannot evaluate arguments, so a call that carries any is
+   * handed to the Cypher engine rather than answered here.
    * </p>
    * <p>
    * This is not a Cypher tokenizer and must not be mistaken for one: it walks to the first {@code )} after the

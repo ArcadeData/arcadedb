@@ -99,7 +99,6 @@ class Issue8908SystemProcedureInterceptionTest {
         "CALL dbms.info() YIELD id CREATE (:X)" }) {
       final String normalized = BoltSystemProcedures.normalize(query);
       assertThat(BoltSystemProcedures.isSchemaProcedureQuery(normalized)).as(query).isFalse();
-      assertThat(BoltSystemProcedures.isStandaloneCall(normalized, "dbms.info")).as(query).isFalse();
     }
   }
 
@@ -123,5 +122,24 @@ class Issue8908SystemProcedureInterceptionTest {
   @Test
   void showCommandsAreAnchoredToo() {
     assertThat(BoltSystemProcedures.normalize("MATCH (n) RETURN 'show current user'").startsWith("show current user")).isFalse();
+  }
+
+  @Test
+  void boltOnlyProceduresKeepTheirTailsButNeedTheAnchor() {
+    assertThat(BoltSystemProcedures.isSystemCall(BoltSystemProcedures.normalize(
+        "CALL dbms.components() YIELD name, versions, edition UNWIND versions AS version RETURN name, version, edition"),
+        "dbms.components")).isTrue();
+    assertThat(BoltSystemProcedures.isSystemCall(BoltSystemProcedures.normalize(
+        "CALL dbms.listDatabases() YIELD name WHERE name = 'x'"), "dbms.listdatabases")).isTrue();
+    assertThat(BoltSystemProcedures.isSystemCall("call db.pingall()", "db.ping")).isFalse();
+    assertThat(BoltSystemProcedures.isSystemCall(BoltSystemProcedures.normalize(
+        "MATCH (n) RETURN 'call dbms.components()'"), "dbms.components")).isFalse();
+  }
+
+  @Test
+  void leadingCommentsDoNotHideTheStatement() {
+    assertThat(BoltSystemProcedures.normalize("// probe\nCALL db.labels()")).isEqualTo("call db.labels()");
+    assertThat(BoltSystemProcedures.normalize("/* a */ /* b */\n CALL db.ping()")).isEqualTo("call db.ping()");
+    assertThat(BoltSystemProcedures.isSchemaProcedureQuery(BoltSystemProcedures.normalize("// x\nCALL db.labels()"))).isTrue();
   }
 }
