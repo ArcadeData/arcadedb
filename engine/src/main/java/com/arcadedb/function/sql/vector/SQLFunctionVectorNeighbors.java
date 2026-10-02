@@ -121,6 +121,10 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
       }
     }
 
+    // A FILTER THAT MATCHED NOTHING IS NOT "NO FILTER": NO RECORD CAN SATISFY IT (ISSUE #8959)
+    if (allowedRIDs != null && allowedRIDs.isEmpty())
+      return new ArrayList<>(0);
+
     // Parse the index specification: TYPE[property] or just index name
     final String specifiedTypeName;
     final String propertyName;
