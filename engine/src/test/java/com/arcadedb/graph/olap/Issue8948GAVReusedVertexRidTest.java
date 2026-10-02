@@ -120,6 +120,16 @@ class Issue8948GAVReusedVertexRidTest extends TestHelper {
     database.command("sql", "DROP GRAPH ANALYTICAL VIEW g");
   }
 
+  /** A plain new vertex (no slot reuse) must take later property updates too. */
+  @Test
+  void propertyUpdateOfPlainNewVertex() throws Exception {
+    createSchemaAndView();
+    database.transaction(() -> vertex("a").newEdge("K", database.newVertex("V").set("name", "n").set("age", 20).save()));
+    database.transaction(() -> vertex("n").set("age", 60).save());
+    assertThat(count("MATCH (x:V)-[:K]->(y:V) WHERE y.age = 60 RETURN count(*) AS n")).isEqualTo(1L);
+    database.command("sql", "DROP GRAPH ANALYTICAL VIEW g");
+  }
+
   private void createSchemaAndView() throws Exception {
     database.command("sql", "CREATE VERTEX TYPE V");
     database.command("sql", "CREATE PROPERTY V.name STRING");
