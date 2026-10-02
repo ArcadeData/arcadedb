@@ -28,6 +28,11 @@ import java.util.logging.Level;
  * The trusted-proxy rules an API token mint applies to a cleartext connection, shared by the HTTP route
  * ({@code PostApiTokenHandler}) and the gRPC {@code CreateApiToken} RPC ({@code GrpcTransportSecurityInterceptor})
  * so the two control planes keep one trust boundary rather than two copies of it (issues #7804, #7821).
+ * <p>
+ * A listed proxy reports the client's scheme through {@code X-Forwarded-Proto}, through the standard RFC 7239
+ * {@code Forwarded} header, or both (issue #7822). {@link #reportedForwardedProto} flattens whatever arrived into one
+ * comma-separated list of schemes, one per hop, and {@link #forwardedProtoIsFullyEncrypted} requires every one of them
+ * to be https.
  */
 public final class ApiTokenTrustedProxies {
   private ApiTokenTrustedProxies() {
@@ -66,10 +71,195 @@ public final class ApiTokenTrustedProxies {
   }
 
   /**
-   * Whether every hop that reported a scheme in {@code X-Forwarded-Proto} encrypted its leg. The header carries
-   * one entry per proxy, oldest (the client's own leg) first; one cleartext hop anywhere in the chain put the
-   * response on a wire in the clear, and it does not matter which one. A blank or absent header reports nothing,
-   * and nothing is not https.
+   * Every scheme the request's proxies reported, from {@code X-Forwarded-Proto} and from the RFC 7239 {@code Forwarded}
+   * header alike, as the one comma-separated list {@link #forwardedProtoIsFullyEncrypted} checks; {@code null} when
+   * neither header is present. The two are concatenated rather than either one preferred, so every scheme reported in
+   * either header has to be https (issue #7822): a proxy writes one of them honestly and a client can inject the other,
+   * and preferring a header would let the injected one outvote the honest one whenever the proxy happened to write the
+   * other.
+   *
+   * @param xForwardedProto every {@code X-Forwarded-Proto} value in the order received, or null when absent
+   * @param forwarded       every {@code Forwarded} header line in the order received, or null when absent
+   */
+  public static String reportedForwardedProto(final Iterable<String> xForwardedProto, final Iterable<String> forwarded) {
+    final String fromXForwardedProto = joinForwardedProto(xForwardedProto);
+    final String fromForwarded = isEmpty(forwarded) ? null : protosOfForwarded(forwarded);
+    if (fromForwarded == null)
+      return fromXForwardedProto;
+    if (fromXForwardedProto == null)
+      return fromForwarded;
+    return fromXForwardedProto + "," + fromForwarded;
+  }
+
+  /**
+   * Flattens every {@code X-Forwarded-Proto} value into one comma-separated list, so that all of them are read and not
+   * just the first, or {@code null} when the header is absent.
+   * <p>
+   * This is the difference between trusting the proxy and trusting whoever reached it. A proxy configured to
+   * <em>append</em> rather than overwrite leaves a client-supplied header in place and adds its own after it, so the
+   * request arrives carrying two values and the client wrote the first one. Requiring every value makes an injected
+   * one useless: an injected {@code https} still leaves the proxy's own honest {@code http} in the list.
+   */
+  public static String joinForwardedProto(final Iterable<String> values) {
+    return isEmpty(values) ? null : String.join(",", values);
+  }
+
+  /**
+   * Parses every RFC 7239 {@code Forwarded} header line into one {@code proto} per element, comma-separated in the
+   * order received - the parsing counterpart of {@link #joinForwardedProto}. RFC 7239 allows several lines and several
+   * comma-separated elements per line, each element being one hop: a {@code ;}-separated list of {@code name=value}
+   * pairs whose value may be a quoted string, so a comma or semicolon inside quotes is part of the value.
+   * <p>
+   * Each element contributes exactly one entry, and the entry is empty - a hop that reported nothing, which
+   * {@link #forwardedProtoIsFullyEncrypted} refuses - whenever the element carries no {@code proto}, is malformed, or
+   * reports something that is not a URI scheme. The missing-{@code proto} case is the one that matters: a proxy that
+   * appends an element recording only {@code for=} would otherwise leave a client-injected {@code proto=https} as the
+   * only scheme in the header, and have it believed.
+   */
+  private static String protosOfForwarded(final Iterable<String> lines) {
+    final StringBuilder protos = new StringBuilder(16);
+    final StringBuilder token = new StringBuilder(32);
+    // A flag rather than protos.length() > 0: an empty first entry (a hop that reported nothing) leaves protos empty
+    // yet still needs the separator before the next entry.
+    boolean noEntryYet = true;
+    for (final String line : lines)
+      noEntryYet = parseForwardedLine(line == null ? "" : line, protos, token, noEntryYet);
+    return protos.toString();
+  }
+
+  /**
+   * Appends one entry to {@code protos} per element of {@code line}. {@code token} is scratch space shared across
+   * lines to avoid an allocation per line; it is reset here and carries nothing from one call to the next.
+   *
+   * @return whether {@code protos} is still empty of entries, i.e. the next entry needs no leading comma
+   */
+  private static boolean parseForwardedLine(final String line, final StringBuilder protos, final StringBuilder token,
+      final boolean noEntryBefore) {
+    token.setLength(0);
+    boolean noEntryYet = noEntryBefore;
+    String name = null;
+    String proto = null;
+    boolean malformed = false;
+    boolean inQuotes = false;
+    // A value that was a quoted string: it is taken verbatim, and nothing but whitespace may follow its closing quote.
+    boolean quoted = false;
+
+    final int length = line.length();
+    // One position past the end acts as a closing ',' so the last element is emitted like every other.
+    for (int i = 0; i <= length; i++) {
+      final char c = i < length ? line.charAt(i) : ',';
+
+      if (inQuotes && i < length) {
+        if (c == '\\' && i + 1 < length)
+          token.append(line.charAt(++i));
+        else if (c == '"')
+          inQuotes = false;
+        else
+          token.append(c);
+        continue;
+      }
+
+      switch (c) {
+      case '"' -> {
+        // A quoted string is only legal as a whole value: not as a name, not after a token or another quoted string.
+        if (name == null || quoted || !isBlank(token))
+          malformed = true;
+        else {
+          token.setLength(0);
+          inQuotes = true;
+          quoted = true;
+        }
+      }
+      case '=' -> {
+        if (name != null)
+          malformed = true;
+        else {
+          // Trimmed, so "proto = https" is read although RFC 7239 allows no whitespace around '='. Lenient only in
+          // what it parses: the value still has to be exactly a URI scheme, and https to pass.
+          name = token.toString().trim();
+          token.setLength(0);
+        }
+      }
+      case ';', ',' -> {
+        if (inQuotes) {
+          // Only reachable at the end of the line: the quoted string was never closed.
+          malformed = true;
+          inQuotes = false;
+        }
+
+        if (name == null) {
+          // A bare token is not a pair; an empty pair (a stray ';') carries nothing either way.
+          if (!isBlank(token))
+            malformed = true;
+        } else if (name.isEmpty())
+          malformed = true;
+        else if ("proto".equalsIgnoreCase(name)) {
+          if (proto != null)
+            malformed = true; // RFC 7239 section 4: a parameter MUST NOT occur more than once per element
+          else
+            proto = quoted ? token.toString() : token.toString().trim();
+        }
+        name = null;
+        quoted = false;
+        token.setLength(0);
+
+        if (c == ',') {
+          if (!noEntryYet)
+            protos.append(',');
+          noEntryYet = false;
+          if (!malformed && proto != null && isUriScheme(proto))
+            protos.append(proto);
+          proto = null;
+          malformed = false;
+        }
+      }
+      default -> {
+        if (!quoted)
+          token.append(c);
+        else if (!Character.isWhitespace(c))
+          malformed = true;
+      }
+      }
+    }
+    return noEntryYet;
+  }
+
+  /**
+   * RFC 3986 {@code scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )}. Anything else - a comma or blank above all,
+   * which a quoted value could otherwise smuggle into the joined list as extra hops - is not a scheme.
+   */
+  private static boolean isUriScheme(final String value) {
+    if (value.isEmpty())
+      return false;
+    for (int i = 0; i < value.length(); i++) {
+      final char c = value.charAt(i);
+      final boolean alpha = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+      if (i == 0 ? !alpha : !(alpha || (c >= '0' && c <= '9') || c == '+' || c == '-' || c == '.'))
+        return false;
+    }
+    return true;
+  }
+
+  /**
+   * {@link String#isBlank()} without materializing the builder: the parse runs on every cleartext gRPC call from a
+   * listed proxy that carries a {@code forwarded} key, not only on mints.
+   */
+  private static boolean isBlank(final CharSequence value) {
+    for (int i = 0; i < value.length(); i++)
+      if (!Character.isWhitespace(value.charAt(i)))
+        return false;
+    return true;
+  }
+
+  private static boolean isEmpty(final Iterable<String> values) {
+    return values == null || !values.iterator().hasNext();
+  }
+
+  /**
+   * Whether every hop that reported a scheme encrypted its leg, given the list {@link #reportedForwardedProto}
+   * builds. The list carries one entry per proxy, oldest (the client's own leg) first; one cleartext hop anywhere
+   * in the chain put the response on a wire in the clear, and it does not matter which one. A blank or absent list
+   * reports nothing, and nothing is not https.
    * <p>
    * The {@code -1} limit is load-bearing, not tidiness. {@code String.split} discards trailing empty strings by
    * default, so {@code "https,"} would come back as a single {@code ["https"]} and read as one fully-encrypted
