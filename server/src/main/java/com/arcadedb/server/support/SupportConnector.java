@@ -26,6 +26,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.URI;
+import java.net.URISyntaxException;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
@@ -153,6 +154,9 @@ public class SupportConnector implements AutoCloseable {
     final long interval = answer.getLong("interval", 3L);
     if (deviceCode.isEmpty() || userCode.isEmpty() || !isHttpUrl(verifyUrl))
       throw new SupportException("portal_error", "The portal answered in a form this server does not understand");
+    // The address Studio and the console send a person to must be the portal this server was configured for, whatever the portal says
+    if (!isSameOrigin(verifyUrl, portalUrl))
+      throw new SupportException("portal_error", "The portal returned an address outside its own origin");
 
     final Session created = new Session(userCode, verifyUrl, System.currentTimeMillis() + expiresIn * 1000L);
     session = created;
@@ -396,6 +400,29 @@ public class SupportConnector implements AutoCloseable {
 
   private static String truncate(final String s, final int max) {
     return s == null ? "" : s.length() <= max ? s : s.substring(0, max);
+  }
+
+  /**
+   * Whether {@code url} has the same scheme, host and port as {@code portalUrl} (an absent port is the default one of the scheme).
+   * The configured portal URL was validated already (HTTPS, or HTTP only for localhost), so plain HTTP elsewhere cannot match.
+   */
+  static boolean isSameOrigin(final String url, final String portalUrl) {
+    try {
+      final URI a = new URI(url);
+      final URI b = new URI(portalUrl);
+      if (a.getScheme() == null || b.getScheme() == null || a.getHost() == null || b.getHost() == null || a.getUserInfo() != null)
+        return false;
+      return a.getScheme().equalsIgnoreCase(b.getScheme()) && a.getHost().equalsIgnoreCase(b.getHost())
+          && effectivePort(a) == effectivePort(b);
+    } catch (final URISyntaxException e) {
+      return false;
+    }
+  }
+
+  private static int effectivePort(final URI uri) {
+    if (uri.getPort() != -1)
+      return uri.getPort();
+    return "https".equalsIgnoreCase(uri.getScheme()) ? 443 : 80;
   }
 
   private static boolean isHttpUrl(final String url) {

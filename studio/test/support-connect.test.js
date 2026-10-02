@@ -86,6 +86,7 @@ function load(opts = {}) {
     supportInstallation: null,
     supportInstallationError: null,
     supportIssues: [],
+    URL,
     console,
   };
   vm.createContext(context);
@@ -99,6 +100,14 @@ test("the portal address is followed only when it is a plain http(s) link", () =
   assert.equal(run('supportConnectSafeUrl("http://localhost:3000/#/connect")'), "http://localhost:3000/#/connect");
   for (const bad of ["javascript:alert(1)", "data:text/html,x", "//evil.example", "https://a b", "", null, 5])
     assert.equal(run("supportConnectSafeUrl(" + JSON.stringify(bad) + ")"), null, String(bad));
+});
+
+test("when the configured portal is known the address must be on its origin", () => {
+  const { run, context } = load();
+  context.supportStatus = { portalUrl: "https://portal.arcadedb.com" };
+  assert.equal(run('supportConnectSafeUrl("https://portal.arcadedb.com/#/connect?code=A")'), "https://portal.arcadedb.com/#/connect?code=A");
+  for (const bad of ["https://evil.example/#/connect", "http://portal.arcadedb.com/#/connect", "https://portal.arcadedb.com.evil.example/", "https://portal.arcadedb.com:444/"])
+    assert.equal(run("supportConnectSafeUrl(" + JSON.stringify(bad) + ")"), null, bad);
 });
 
 test("the code is shown escaped, with the link only when it is safe, and a Cancel", () => {
