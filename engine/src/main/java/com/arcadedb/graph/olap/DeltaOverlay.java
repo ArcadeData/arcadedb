@@ -303,8 +303,9 @@ class DeltaOverlay {
 
     // Process added vertices
     for (final TxDelta.VertexDelta vd : delta.addedVertices) {
-      if (baseMapping.getGlobalId(vd.rid) >= 0)
-        continue; // already in base
+      final int addedBaseId = baseMapping.getGlobalId(vd.rid);
+      if (addedBaseId >= 0 && !newDeleted.get(addedBaseId))
+        continue; // already in base (a deleted base slot reused by this new vertex falls through to the overflow, #8948)
       if (newOverflowIds.containsKey(vd.rid))
         continue; // already in overflow
       final int overflowId = baseNodeCount + newOverflowCount;
@@ -317,7 +318,7 @@ class DeltaOverlay {
     // Process deleted vertices
     for (final RID rid : delta.deletedVertices) {
       final int baseId = baseMapping.getGlobalId(rid);
-      if (baseId >= 0)
+      if (baseId >= 0 && !(newDeleted.get(baseId) && newOverflowIds.containsKey(rid)))
         newDeleted.set(baseId);
       else {
         final Integer overflowId = newOverflowIds.remove(rid);
@@ -333,8 +334,8 @@ class DeltaOverlay {
     if (baseCsrPerType != null && !delta.deletedEdges.isEmpty()) {
       sameDeltaDeleted = new HashSet<>();
       for (final TxDelta.EdgeDelta ed : delta.deletedEdges) {
-        final int s = resolveNodeId(ed.source, baseMapping, newOverflowIds);
-        final int t = resolveNodeId(ed.target, baseMapping, newOverflowIds);
+        final int s = resolveNodeId(ed.source, baseMapping, newOverflowIds, newDeleted);
+        final int t = resolveNodeId(ed.target, baseMapping, newOverflowIds, newDeleted);
         if (s >= 0 && t >= 0)
           sameDeltaDeleted.add(packEdge(s, t));
       }
@@ -343,8 +344,8 @@ class DeltaOverlay {
     // Process added edges
     Set<RID> alreadyInFreshBase = null;
     for (final TxDelta.EdgeDelta ed : delta.addedEdges) {
-      final int srcId = resolveNodeId(ed.source, baseMapping, newOverflowIds);
-      final int tgtId = resolveNodeId(ed.target, baseMapping, newOverflowIds);
+      final int srcId = resolveNodeId(ed.source, baseMapping, newOverflowIds, newDeleted);
+      final int tgtId = resolveNodeId(ed.target, baseMapping, newOverflowIds, newDeleted);
       if (srcId < 0 || tgtId < 0)
         continue; // endpoint not in view
       // Post-compaction re-application: if the freshly built base CSR already captured this edge (the
@@ -423,8 +424,8 @@ class DeltaOverlay {
 
     // Process deleted edges
     for (final TxDelta.EdgeDelta ed : delta.deletedEdges) {
-      final int srcId = resolveNodeId(ed.source, baseMapping, newOverflowIds);
-      final int tgtId = resolveNodeId(ed.target, baseMapping, newOverflowIds);
+      final int srcId = resolveNodeId(ed.source, baseMapping, newOverflowIds, newDeleted);
+      final int tgtId = resolveNodeId(ed.target, baseMapping, newOverflowIds, newDeleted);
       if (srcId < 0 || tgtId < 0)
         continue;
       // The edge was added by THIS overlay window and is now gone: the add and the delete are one no-op, so
@@ -503,7 +504,14 @@ class DeltaOverlay {
     // Process property updates
     for (final var entry : delta.updatedProperties.entrySet()) {
       final int baseId = baseMapping.getGlobalId(entry.getKey());
-      if (baseId >= 0)
+      final Integer reusedOverflowId = baseId >= 0 && newDeleted.get(baseId) ? newOverflowIds.get(entry.getKey()) : null;
+      if (reusedOverflowId != null) {
+        // the vertex now holding a reused base slot lives in the overflow
+        final int idx = reusedOverflowId - baseNodeCount;
+        final Map<String, Object> merged = new HashMap<>(overflowPropsList.get(idx));
+        merged.putAll(entry.getValue());
+        overflowPropsList.set(idx, merged);
+      } else if (baseId >= 0)
         newPropOverrides.merge(baseId, entry.getValue(), (old, nw) -> { old.putAll(nw); return old; });
     }
 
@@ -582,8 +590,9 @@ class DeltaOverlay {
 
   int resolveNodeId(final RID rid, final NodeIdMapping baseMapping) {
     final int baseId = baseMapping.getGlobalId(rid);
-    if (baseId >= 0)
+    if (baseId >= 0 && !deletedBaseNodes.get(baseId))
       return baseId;
+    // The base slot may have been deleted and reused by a new vertex with the same RID (#8948)
     final Integer overflowId = overflowNodeIds.get(rid);
     return overflowId != null ? overflowId : -1;
   }
@@ -770,10 +779,12 @@ class DeltaOverlay {
   // --- Internals ---
 
   private static int resolveNodeId(final RID rid, final NodeIdMapping baseMapping,
-      final Map<RID, Integer> overflowIds) {
+      final Map<RID, Integer> overflowIds, final BitSet deletedBase) {
     final int baseId = baseMapping.getGlobalId(rid);
-    if (baseId >= 0)
+    if (baseId >= 0 && !deletedBase.get(baseId))
       return baseId;
+    // A base slot whose vertex was deleted may be reused by a new vertex with the same RID (#8948): that
+    // vertex lives in the overflow, the base node stays deleted
     final Integer overflowId = overflowIds.get(rid);
     return overflowId != null ? overflowId : -1;
   }
