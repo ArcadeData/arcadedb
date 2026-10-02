@@ -20,8 +20,6 @@ package com.arcadedb.remote;
 
 import java.net.URI;
 import java.net.URLEncoder;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -252,10 +250,9 @@ public class RemoteServer extends RemoteHttpComponent {
     body.put("expiresAt", expiresAt);
     body.put("permissions", permissions != null ? permissions : new JSONObject());
 
-    final String url = getUrl("server/api-tokens");
-    checkTransportCarriesSecrets(url);
-
-    return securityRequestTo(url, "POST", body, "create api token").getJSONObject("result");
+    // Checked against each URL the request is about to be sent to: failover changes the host that writes the token back.
+    return controlPlaneRequest("POST", "server/api-tokens", body, "create api token", this::checkTransportCarriesSecrets)
+        .getJSONObject("result");
   }
 
   /**
@@ -306,62 +303,20 @@ public class RemoteServer extends RemoteHttpComponent {
   }
 
   /**
-   * Sends one request against a {@code /server/*} route and returns its parsed body.
+   * Sends one request against a {@code /server/*} route and returns its parsed body, empty rather than null when the
+   * route answered with none.
    * <p>
-   * The request goes to the node this client is connected to, with no leader preference of its own,
-   * because each route already settles its own cluster semantics: the {@code /server/users} routes
-   * forward to the leader themselves (issue #7380), and the group and API-token routes submit a Raft
-   * entry through the group committer, which reaches the leader without the client choosing it.
+   * It goes through {@link #controlPlaneRequest}, the {@code httpCommand} loop every server command uses, so a node
+   * that is mid-election is waited out, and one that is down is replaced when {@code NETWORK_SAME_SERVER_ERROR_RETRIES}
+   * allows more than one attempt, exactly as for {@code createUser} (issue #8710), and a write
+   * whose answer was lost is not sent again. The leader is preferred; the {@code /server/users} routes forward to it
+   * themselves (issue #7380) and the group and API-token routes submit a Raft entry, so reaching a follower still works.
    *
    * @param path the route and query string, relative to {@code /api/v<n>/}
    */
   private JSONObject securityRequest(final String method, final String path, final JSONObject body,
       final String operation) {
-    return securityRequestTo(getUrl(path), method, body, operation);
-  }
-
-  /**
-   * Sends one request against a {@code /server/*} route and returns its parsed body, empty rather than
-   * null when the route answered with none.
-   * <p>
-   * It goes through {@link #sendWithWatchdog}, not through {@code httpClient.send}: an admin call that
-   * hangs must be bounded by the same budget as every other request this driver makes (issue #5847).
-   */
-  private JSONObject securityRequestTo(final String url, final String method, final JSONObject body,
-      final String operation) {
-    try {
-      HttpRequest.Builder builder = createRequestBuilder(method, url);
-
-      if (body != null)
-        builder = builder.method(method, HttpRequest.BodyPublishers.ofString(getRequestPayload(body)))
-            .header("Content-Type", "application/json");
-      else if ("GET".equals(method))
-        builder = builder.GET();
-      else
-        builder = builder.method(method, HttpRequest.BodyPublishers.noBody());
-
-      final HttpResponse<String> response = sendWithWatchdog(builder.build());
-
-      // 200 and 201 are both success on these routes: POST /server/users and POST /server/api-tokens
-      // answer 201, every other route answers 200.
-      if (response.statusCode() != 200 && response.statusCode() != 201) {
-        final Exception detail = manageException(response, operation);
-        if (detail instanceof final RuntimeException runtime)
-          throw runtime;
-        throw new RemoteException("Error on executing '" + operation + "'", detail);
-      }
-
-      final String payload = response.body();
-      return payload == null || payload.isBlank() ? new JSONObject() : new JSONObject(payload);
-
-    } catch (final InterruptedException e) {
-      Thread.currentThread().interrupt();
-      throw new RemoteException("Error on executing '" + operation + "': interrupted", e);
-    } catch (final RuntimeException e) {
-      throw e;
-    } catch (final Exception e) {
-      throw new RemoteException("Error on executing '" + operation + "'", e);
-    }
+    return controlPlaneRequest(method, path, body, operation, null);
   }
 
   private static JSONObject toDatabasesDocument(final Map<String, List<String>> databases) {

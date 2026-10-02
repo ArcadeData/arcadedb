@@ -116,7 +116,13 @@ public final class SnapshotInstaller {
   static final String SNAPSHOT_SWAP_STATE_TMP_FILE = SNAPSHOT_SWAP_STATE_FILE + ".tmp";
 
   private enum SwapPhase {
-    BACKING_UP, INSTALLING, INSTALLED, ROLLING_BACK, RESTORING
+    BACKING_UP, INSTALLING, INSTALLED,
+    /**
+     * The reopen that validates the installed snapshot returned a verdict - it failed - and the rollback it asks for
+     * has not yet published ROLLING_BACK. Recovery must finish that rollback, not roll the bad snapshot forward (#8305).
+     * Unknown to older nodes, which refuse it and keep every file.
+     */
+    VALIDATION_FAILED, ROLLING_BACK, RESTORING
   }
 
   /**
@@ -639,7 +645,7 @@ public final class SnapshotInstaller {
         // phase. Either way the marker is the single recovery hook.
         LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
             "Installed snapshot for '%s' failed to open; rolling back to the previous local copy", openEx, databaseName);
-        rollbackToBackup(dbPath, snapshotBackup);
+        rollbackAfterFailedValidation(dbPath, snapshotBackup);
         reopenQuietly(server, databaseName);
         throw new IOException("Snapshot for '" + databaseName
             + "' downloaded but failed to open; rolled back to the previous local copy", openEx);
@@ -1106,6 +1112,25 @@ public final class SnapshotInstaller {
   }
 
   /**
+   * Records the verdict of the failed validation before acting on it, then rolls back. Without the record, the interval
+   * between the failed reopen and the published ROLLING_BACK would leave the phase at INSTALLED, which recovery reads as
+   * "roll forward" and answers by deleting the backup it was about to restore (#8305). Only worth recording when there
+   * is a backup to roll back to; a failure to record is logged and the rollback is still attempted.
+   */
+  static void rollbackAfterFailedValidation(final Path dbPath, final Path snapshotBackup) {
+    if (Files.isDirectory(snapshotBackup)) {
+      try {
+        writeSwapPhase(dbPath, SwapPhase.VALIDATION_FAILED);
+      } catch (final IOException e) {
+        LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
+            "Failed to record that the installed snapshot for %s does not open: %s. Attempting the rollback anyway", e, dbPath,
+            e.getMessage());
+      }
+    }
+    rollbackToBackup(dbPath, snapshotBackup);
+  }
+
+  /**
    * Rolls the live database directory back to the retained {@code .snapshot-backup} copy after a
    * post-swap failure. Clears the failed snapshot files first so entries present only in the failed
    * snapshot do not linger, then moves the backup contents back into place.
@@ -1500,10 +1525,22 @@ public final class SnapshotInstaller {
           resumeRollback(dbDir, snapshotBackup);
           deleteDirectoryIfExists(snapshotNew);
         }
+        case VALIDATION_FAILED -> {
+          // The installed snapshot was already observed not to open, so the retained backup is the copy to keep (#8305).
+          if (Files.isDirectory(snapshotBackup)) {
+            writeSwapPhase(dbDir, SwapPhase.ROLLING_BACK);
+            resumeRollback(dbDir, snapshotBackup);
+            deleteDirectoryIfExists(snapshotNew);
+          } else
+            LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
+                "The installed snapshot in %s was recorded as failing validation but no backup is left to restore: keeping it",
+                null, dbDir);
+        }
         case INSTALLED -> {
           // Every snapshot file is live, but the reopen that validates it never completed (a completed one clears
-          // the marker before deleting anything). Roll forward: the leader's snapshot is authoritative, and
-          // restoring the backup here would only trigger another install.
+          // the marker before deleting anything), or a failed one published VALIDATION_FAILED, handled above (#8305).
+          // Roll forward: the leader's snapshot is authoritative, and restoring the backup here would only trigger
+          // another install.
         }
         default -> throw new IOException("Unhandled snapshot swap phase " + phase + " in " + dbDir);
         }

@@ -497,6 +497,8 @@ class Issue8368BootstrapPassWindowTest {
         RaftPeer.newBuilder().setId(REMOTE_PEER).build()));
     // Port 1 refuses at once: the conclusion the failed pass sends it is best effort and must not delay the test.
     when(ha.getHttpAddresses()).thenReturn(Map.of(REMOTE_PEER, "localhost:1"));
+    // The elected source has answered this leader recently, which the transfer to it requires (issue #8714).
+    when(ha.followerContactPeers()).thenReturn(Set.of(REMOTE_PEER.toString()));
     // The election dials a declared endpoint only when it identifies the peer alone (issue #8033).
     when(ha.getUnambiguousPeerHttpAddress(REMOTE_PEER)).thenReturn("localhost:1");
     return ha;

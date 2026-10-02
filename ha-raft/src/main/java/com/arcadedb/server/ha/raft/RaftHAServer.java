@@ -4762,8 +4762,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * unit-tested without a running division.
    */
   Set<String> handoffReachablePeers() {
-    final Set<String> reachable = handoffReachablePeerIds(getFollowerStates(), handoffContactWindowMs);
-    return withoutServiceGapPeers(reachable, peerCapabilities.peersWithServiceGap());
+    return withoutServiceGapPeers(followerContactPeers(), peerCapabilities.peersWithServiceGap());
+  }
+
+  /** The followers that answered this leader recently, without the service-gap screen of {@link #handoffReachablePeers()}. */
+  Set<String> followerContactPeers() {
+    return handoffReachablePeerIds(getFollowerStates(), handoffContactWindowMs);
   }
 
   /**
