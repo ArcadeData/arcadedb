@@ -121,6 +121,14 @@ class Issue8919FloatRangeBoundTest extends TestHelper {
     }
   }
 
+  @Test
+  void aTinyBoundNarrowingToTheStoredFloatIsNeitherAboveNorBelowIt() {
+    database.transaction(() -> database.command("sql", "INSERT INTO N SET id = 4, v = 0.0, d = 0.0"));
+    assertThat(sql("SELECT id FROM N WHERE v = 1e-50")).containsExactly(4);
+    assertThat(sql("SELECT id FROM N WHERE v < 1e-50 AND id = 4")).isEmpty();
+    assertThat(sql("SELECT id FROM N WHERE v >= 1e-50 AND id = 4")).containsExactly(4);
+  }
+
   private List<Integer> sql(final String statement) {
     return ids(database.query("sql", statement + " ORDER BY id"));
   }

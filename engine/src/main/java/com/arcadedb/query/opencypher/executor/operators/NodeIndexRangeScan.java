@@ -648,7 +648,9 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
     // An integer a DOUBLE (2^53) or a FLOAT (2^24) key cannot hold is rounded by the index and compared exactly by the filter:
     // the enclosing filter answers it (issue #8919)
     if (bound instanceof Long || bound instanceof Integer || bound instanceof Short || bound instanceof Byte) {
-      final long limit = indexKeyType == Type.DOUBLE ? 1L << 53 : indexKeyType == Type.FLOAT ? 1L << 24 : Long.MAX_VALUE;
+      if (indexKeyType != Type.DOUBLE && indexKeyType != Type.FLOAT)
+        return true;
+      final long limit = indexKeyType == Type.DOUBLE ? 1L << 53 : 1L << 24;
       final long value = ((Number) bound).longValue();
       return value <= limit && value >= -limit;
     }

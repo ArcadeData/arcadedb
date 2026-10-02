@@ -230,7 +230,7 @@ public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
     // The hint is derived from the buckets of the FROM type alone, while the allow-list now covers its sub-types too (issue #8958):
     // intersecting would drop their records, so a type with sub-types is not narrowed
     final DocumentType type = context.getDatabase().getSchema().getType(typeName);
-    if (type != null && !type.getSubTypes().isEmpty())
+    if (!type.getSubTypes().isEmpty())
       return allowedBucketIds;
     final Object hintIds = context.getVariable(CommandContext.PARTITION_PRUNED_BUCKET_FILE_IDS_VAR);
     if (!(hintIds instanceof IntHashSet hintSet) || hintSet.isEmpty())
