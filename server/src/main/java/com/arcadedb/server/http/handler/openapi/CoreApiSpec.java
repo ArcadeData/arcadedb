@@ -908,6 +908,18 @@ public class CoreApiSpec implements OpenApiContributor {
         A failure raised after the 200 had already been sent. The status code cannot be taken back at that \
         point, so the failure is reported in band and no 'stats' line follows.""");
     error.addProperty("message", SpecBuilders.string("Why the stream failed"));
+    error.addProperty("status", SpecBuilders.integer("""
+        HTTP status the buffered encoding would have answered the same failure with, decided by the same error \
+        mapping: 503 for a retryable conflict, 409 for a duplicated key, 403 for a security refusal, 413 when \
+        arcadedb.server.httpQueryMaxResultRows cut the result short, 500 for an unexpected failure (issue \
+        #8235). Key on this rather than on 'message' to decide whether to retry."""));
+    error.addProperty("exception", SpecBuilders.string("""
+        Class name of the reported exception, the value the buffered error body carries in its 'exception' \
+        member."""));
+    error.addProperty("exceptionArgs", SpecBuilders.string("""
+        Structured arguments of the failure, as the buffered error body carries them: present only for a failure \
+        that has any, e.g. 'index|keys|rid' for a duplicated key."""));
+    error.setRequired(List.of("message", "status"));
     schema.addProperty("error", error);
     return schema;
   }
