@@ -158,7 +158,7 @@ class Issue8915TimeSeriesWhereAndCountPushDownTest extends TestHelper {
           "SELECT ts.timeBucket('1h', ts) AS b, count(*) AS c FROM T WHERE host = ? GROUP BY b", (Object) null)) {
         assertThat(rs.hasNext()).isFalse();
       }
-      assertThat(ns("SELECT v AS n FROM T WHERE host = ?".replace("?", "null"))).isEqualTo(ns("SELECT v AS n FROM D WHERE host = null"));
+      assertThat(ns("SELECT v AS n FROM T WHERE host = null")).isEqualTo(ns("SELECT v AS n FROM D WHERE host = null"));
       try (final ResultSet rs = database.query("sql", "SELECT v AS n FROM T WHERE host = ?", (Object) null)) {
         assertThat(rs.hasNext()).isFalse();
       }
@@ -170,6 +170,8 @@ class Issue8915TimeSeriesWhereAndCountPushDownTest extends TestHelper {
     load();
     final String head = "SELECT ts.timeBucket('1h', ts) AS b, count(*) AS c FROM T WHERE ";
     assertThat(plan(head + "host = 'a' AND ts >= 1000 GROUP BY b")).contains("AGGREGATE FROM TIMESERIES");
+    assertThat(plan(head + "host = 'a' OR host = 'b' GROUP BY b")).as("an exact IN stays pushed down")
+        .contains("AGGREGATE FROM TIMESERIES");
     assertThat(plan(head + "host = 'a' AND host = 'b' GROUP BY b")).doesNotContain("AGGREGATE FROM TIMESERIES");
     assertThat(plan(head + "ts >= 3000 OR host = 'a' GROUP BY b")).doesNotContain("AGGREGATE FROM TIMESERIES");
     assertThat(plan(head + "ts < 2000 OR ts >= 4000 GROUP BY b")).doesNotContain("AGGREGATE FROM TIMESERIES");
