@@ -2516,7 +2516,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     } catch (final ClosedChannelException e) {
       // NEVER close() HERE: THIS THREAD HOLDS THE READ LOCK AND close() WAITS FOR THE WRITE LOCK, WHICH A
       // ReentrantReadWriteLock NEVER GRANTS TO A READER, SO THE DATABASE WOULD NEVER CLOSE AGAIN (#8944). THE CALLER
-      // GETS THE EXCEPTION AND A LATER WRITE-LOCK PATH CLOSES ON A GENUINELY FAILING FILE
+      // GETS THE EXCEPTION AND DECIDES
       if (e instanceof ClosedByInterruptException)
         LogManager.instance().log(this, Level.WARNING, "Database '%s' has a file closed by an interrupt", e, name);
       else

@@ -67,6 +67,7 @@ class PaginatedComponentFileReadRetryTest {
     @Override
     protected void open(final String filePath, final MODE mode) throws FileNotFoundException {
       super.open(filePath, mode);
+      // NULL WHILE THE SUPERCLASS CONSTRUCTOR RUNS: open() IS CALLED FROM IT, BEFORE THIS CLASS'S FIELD INITIALIZERS
       if (closeAfterOpens != null && closeAfterOpens.get() > 0 && closeAfterOpens.decrementAndGet() >= 0)
         closeChannel();
     }

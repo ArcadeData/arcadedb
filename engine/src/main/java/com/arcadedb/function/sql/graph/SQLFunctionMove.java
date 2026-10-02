@@ -75,10 +75,11 @@ public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
         // A VIEW ONLY ACCELERATES: ITS REVERSE INDEX HOLDS THE INCOMING SIDE OF A UNIDIRECTIONAL TYPE, WHICH A FUNCTION
         // CALLED ON ITS OWN MUST NOT ANSWER, OR in()/both() WOULD RETURN DIFFERENT ROWS WITH AND WITHOUT A VIEW AND
         // DISAGREE WITH inE() AND THE VERTEX API (ISSUE #8939). A PATTERN WALK ANSWERS IT, VIEW OR NOT (ISSUE #8625)
-        final boolean storedSideOnly = iDirection != Vertex.DIRECTION.OUT && !IncomingEdgeLookup.isWalkingPattern()
-            && IncomingEdgeLookup.isAnyUnidirectional(database.getSchema(), iLabels != null ? iLabels : NO_LABELS);
-        final GraphTraversalProvider provider =
-            storedSideOnly ? null : GraphTraversalProviderRegistry.findProvider(database, iLabels);
+        GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(database, iLabels);
+        // ASKED ONLY WHEN A VIEW EXISTS, SO THE NO-VIEW PATH PAYS NOTHING
+        if (provider != null && iDirection != Vertex.DIRECTION.OUT && !IncomingEdgeLookup.isWalkingPattern()
+            && IncomingEdgeLookup.isAnyUnidirectional(database.getSchema(), iLabels != null ? iLabels : NO_LABELS))
+          provider = null;
         if (provider != null) {
           final int nodeId = provider.getNodeId(vertex.getIdentity());
           if (nodeId >= 0) {
