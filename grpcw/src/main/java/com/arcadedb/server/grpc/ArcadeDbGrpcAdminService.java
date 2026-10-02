@@ -572,14 +572,16 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
   static void requireTransportSafeForSecrets() throws StatusException {
     // Names the trusted-proxy setting because an operator behind a TLS-terminating proxy is reading this
     // message to find out why the mint is refused, and the proxy is the one thing they cannot fix by
-    // reconnecting (issue #7821).
+    // reconnecting (issue #7821). The forwarded hint is there because a proto-less element refuses the mint even
+    // when x-forwarded-proto reports https (issue #7822), which is not what an operator would guess.
     if (!Boolean.TRUE.equals(GrpcTransportSecurityInterceptor.SECRET_SAFE_TRANSPORT_KEY.get()))
       throw Status.FAILED_PRECONDITION.withDescription(
               "Refusing to return API token material over an unprotected transport. Enable gRPC TLS "
                   + "(arcadedb.grpc.tls.enabled), issue the token from a client on the loopback interface, or list "
                   + "the reverse proxy that terminates TLS in front of this server in "
                   + GlobalConfiguration.SERVER_API_TOKEN_TRUSTED_PROXIES.getKey()
-                  + " and have it send the x-forwarded-proto metadata.")
+                  + " and have it send the x-forwarded-proto or forwarded (RFC 7239) metadata. If the call carries "
+                  + "forwarded metadata, every element of it must include proto=https.")
           .asException();
   }
 

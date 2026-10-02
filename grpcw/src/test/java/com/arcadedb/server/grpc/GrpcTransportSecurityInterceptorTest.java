@@ -185,6 +185,60 @@ class GrpcTransportSecurityInterceptorTest {
     assertThat(decisionFor(interceptor, proxy(), false, forwardedProto("https, http"))).isFalse();
   }
 
+  // ------------------------------------------------------------------------------------------------
+  // Issue #7822: a listed proxy can report the scheme through the RFC 7239 Forwarded header, which
+  // arrives as the forwarded metadata key, read with the same rules as for HTTP.
+  // ------------------------------------------------------------------------------------------------
+
+  static Metadata forwarded(final Metadata metadata, final String... lines) {
+    for (final String line : lines)
+      metadata.put(GrpcTransportSecurityInterceptor.FORWARDED_KEY, line);
+    return metadata;
+  }
+
+  @Test
+  void aListedProxyReportingHttpsThroughForwardedVouchesForTheCall() {
+    final GrpcTransportSecurityInterceptor interceptor = new GrpcTransportSecurityInterceptor(() -> PROXY_IP);
+    assertThat(decisionFor(interceptor, proxy(), false, forwarded(new Metadata(), "for=203.0.113.7;proto=https")))
+        .isTrue();
+    assertThat(decisionFor(interceptor, proxy(), false, forwarded(new Metadata(), "proto=https", "proto=\"https\"")))
+        .isTrue();
+  }
+
+  @Test
+  void theForwardedKeyFromAnUnlistedPeerOrAnEmptyListIsIgnored() {
+    assertThat(decisionFor(new GrpcTransportSecurityInterceptor(() -> PROXY_IP), remote(), false,
+        forwarded(new Metadata(), "proto=https"))).isFalse();
+    assertThat(decisionFor(new GrpcTransportSecurityInterceptor(() -> ""), proxy(), false,
+        forwarded(new Metadata(), "proto=https"))).isFalse();
+  }
+
+  /**
+   * Every Forwarded element is a hop: one cleartext, empty or proto-less element refuses the call, so a
+   * client-injected {@code proto=https} cannot stand alone after an appending proxy that recorded only {@code for=}.
+   */
+  @Test
+  void everyForwardedElementMustReportHttps() {
+    final GrpcTransportSecurityInterceptor interceptor = new GrpcTransportSecurityInterceptor(() -> PROXY_IP);
+    assertThat(decisionFor(interceptor, proxy(), false, forwarded(new Metadata(), "proto=https, proto=http"))).isFalse();
+    assertThat(decisionFor(interceptor, proxy(), false, forwarded(new Metadata(), "proto=https", "for=a"))).isFalse();
+    assertThat(decisionFor(interceptor, proxy(), false, forwarded(new Metadata(), "proto=https,"))).isFalse();
+    assertThat(decisionFor(interceptor, proxy(), false, forwarded(new Metadata(), "proto=\"https,https\""))).isFalse();
+  }
+
+  /**
+   * With both keys present, neither outvotes the other: whichever one a client injected, the one the proxy wrote
+   * honestly still has to say https.
+   */
+  @Test
+  void withBothKeysEverySchemeInEitherMustBeHttps() {
+    final GrpcTransportSecurityInterceptor interceptor = new GrpcTransportSecurityInterceptor(() -> PROXY_IP);
+    assertThat(decisionFor(interceptor, proxy(), false, forwarded(forwardedProto("https"), "proto=https"))).isTrue();
+    assertThat(decisionFor(interceptor, proxy(), false, forwarded(forwardedProto("http"), "proto=https"))).isFalse();
+    assertThat(decisionFor(interceptor, proxy(), false, forwarded(forwardedProto("https"), "proto=http"))).isFalse();
+    assertThat(decisionFor(interceptor, proxy(), false, forwarded(forwardedProto("https"), "for=a"))).isFalse();
+  }
+
   /** A typo in an allow-list has to deny, never widen. */
   @Test
   void anUnparseableListTrustsNoProxy() {

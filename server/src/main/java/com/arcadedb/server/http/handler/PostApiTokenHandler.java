@@ -29,6 +29,7 @@ import com.arcadedb.server.security.ApiTokenTrustedProxies;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.IPAddressBlocklist;
 import io.undertow.server.HttpServerExchange;
+import io.undertow.util.HeaderMap;
 
 import java.io.IOException;
 import java.net.InetAddress;
@@ -54,8 +55,9 @@ import java.util.logging.Level;
  * Issue #7804 settled the two questions that left open. The default flips in 27.1.1, stated on the
  * setting itself so an operator reads the window rather than discovering it; and a TLS-terminating
  * reverse proxy can vouch for the leg it terminated, but only from a peer address the operator listed
- * in {@link GlobalConfiguration#SERVER_API_TOKEN_TRUSTED_PROXIES} - see {@link #isTransportSafeForSecrets}. The gRPC
- * mint reads the same list, through the {@code x-forwarded-proto} metadata key, with the same
+ * in {@link GlobalConfiguration#SERVER_API_TOKEN_TRUSTED_PROXIES} - see {@link #isTransportSafeForSecrets}. The proxy
+ * reports the scheme through {@code X-Forwarded-Proto} or the RFC 7239 {@code Forwarded} header (issue #7822). The gRPC
+ * mint reads the same list, through the {@code x-forwarded-proto} and {@code forwarded} metadata keys, with the same
  * {@link ApiTokenTrustedProxies} helpers (issue #7821).
  * Studio renders the 412 through {@code apiTokenTransportRefusal()} in {@code studio-security.js}.
  * <p>
@@ -71,6 +73,8 @@ import java.util.logging.Level;
  */
 public class PostApiTokenHandler extends AbstractServerHttpHandler {
   static final String X_FORWARDED_PROTO = "X-Forwarded-Proto";
+  /** The RFC 7239 header, read with the same rule as {@link #X_FORWARDED_PROTO} (issue #7822). */
+  static final String FORWARDED         = "Forwarded";
 
   private final ServerControlPlane controlPlane;
 
@@ -90,7 +94,7 @@ public class PostApiTokenHandler extends AbstractServerHttpHandler {
     // an administrative operation measured in units per day, and the list is a handful of entries, so the
     // parse is not on any path where it could be measured.
     final ExecutionResponse refusal = checkTransport(exchange.getRequestScheme(), exchange.getSourceAddress(),
-        joinForwardedProto(exchange.getRequestHeaders().get(X_FORWARDED_PROTO)),
+        forwardedProtoOf(exchange.getRequestHeaders()),
         parseTrustedProxies(configuration.getValueAsString(GlobalConfiguration.SERVER_API_TOKEN_TRUSTED_PROXIES)),
         configuration.getValueAsBoolean(GlobalConfiguration.SERVER_API_TOKEN_REQUIRE_SECURE_TRANSPORT));
     if (refusal != null)
@@ -162,7 +166,7 @@ public class PostApiTokenHandler extends AbstractServerHttpHandler {
    * As above, additionally letting a reverse proxy the operator has listed vouch for the leg it terminated
    * (issue #7804).
    *
-   * @param forwardedProto the {@code X-Forwarded-Proto} header as received, or null
+   * @param forwardedProto every scheme the proxies reported, as {@link #forwardedProtoOf} flattens it, or null
    * @param trustedProxies the peers whose {@code forwardedProto} is worth reading, or null for none
    */
   static ExecutionResponse checkTransport(final String scheme, final InetSocketAddress peer,
@@ -178,7 +182,8 @@ public class PostApiTokenHandler extends AbstractServerHttpHandler {
           "API tokens can only be minted over HTTPS or from a loopback client. Connect over TLS, set "
               + GlobalConfiguration.SERVER_API_TOKEN_TRUSTED_PROXIES.getKey()
               + " if a reverse proxy terminates TLS in front of this server, or set "
-              + GlobalConfiguration.SERVER_API_TOKEN_REQUIRE_SECURE_TRANSPORT.getKey() + "=false to allow it")
+              + GlobalConfiguration.SERVER_API_TOKEN_REQUIRE_SECURE_TRANSPORT.getKey() + "=false to allow it. "
+              + "If the request carries a Forwarded header, every element of it must include proto=https")
           .toString());
 
     LogManager.instance().log(PostApiTokenHandler.class, Level.WARNING,
@@ -194,24 +199,19 @@ public class PostApiTokenHandler extends AbstractServerHttpHandler {
   }
 
   /**
-   * Flattens every {@code X-Forwarded-Proto} header on the request into the one comma-separated list
-   * {@link #forwardedProtoIsFullyEncrypted} checks, so that all of them are read and not just the first.
-   * <p>
-   * This is the difference between trusting the proxy and trusting whoever reached it. A proxy configured to
-   * <em>append</em> rather than overwrite leaves a client-supplied header in place and adds its own after it,
-   * so the request arrives carrying two values and the client wrote the first one. Reading only that first
-   * value would let a cleartext client send {@code X-Forwarded-Proto: https} and have it believed, which is
-   * the exact forgery the trusted-proxy list exists to prevent. Requiring every value instead makes an
-   * injected one useless: an injected {@code https} still leaves the proxy's own honest {@code http} in the
-   * list, and the mint is refused.
+   * Every scheme the request's proxies reported, from {@code X-Forwarded-Proto} and from the RFC 7239
+   * {@code Forwarded} header alike, as the one comma-separated list {@link #forwardedProtoIsFullyEncrypted} checks.
+   * The handler reads the headers through this method, so a test that drives it drives the live path.
    *
-   * @param values every value of the header, in order, or null when the header is absent
+   * @see ApiTokenTrustedProxies#reportedForwardedProto(Iterable, Iterable)
    */
-  static String joinForwardedProto(final Collection<String> values) {
-    if (values == null || values.isEmpty())
-      return null;
+  static String forwardedProtoOf(final HeaderMap headers) {
+    return ApiTokenTrustedProxies.reportedForwardedProto(headers.get(X_FORWARDED_PROTO), headers.get(FORWARDED));
+  }
 
-    return String.join(",", values);
+  /** @see ApiTokenTrustedProxies#joinForwardedProto(Iterable) */
+  static String joinForwardedProto(final Collection<String> values) {
+    return ApiTokenTrustedProxies.joinForwardedProto(values);
   }
 
   /** @see ApiTokenTrustedProxies#forwardedProtoIsFullyEncrypted(String) */
@@ -224,7 +224,8 @@ public class PostApiTokenHandler extends AbstractServerHttpHandler {
    * Either the transport is encrypted, or the peer is on the loopback interface, where the bytes never
    * reach a network - the same pair of conditions {@code GrpcTransportSecurityInterceptor} applies.
    * <p>
-   * Read from the live connection, and from {@code X-Forwarded-Proto} only when the peer that sent it is one
+   * Read from the live connection, and from {@code X-Forwarded-Proto} or {@code Forwarded} (see
+   * {@link #forwardedProtoOf}) only when the peer that sent it is one
    * the operator listed in {@link GlobalConfiguration#SERVER_API_TOKEN_TRUSTED_PROXIES}. The header is written
    * by whoever connected, and a caller asking for a token is exactly the caller who would forge it, so on its
    * own it proves nothing; what the list adds is an operator saying which peers are their own infrastructure
@@ -239,7 +240,7 @@ public class PostApiTokenHandler extends AbstractServerHttpHandler {
   }
 
   /**
-   * @param forwardedProto the {@code X-Forwarded-Proto} header as received, or null
+   * @param forwardedProto every scheme the proxies reported, as {@link #forwardedProtoOf} flattens it, or null
    * @param trustedProxies the peers whose {@code forwardedProto} is worth reading, or null for none
    *
    * @see #isTransportSafeForSecrets(String, InetSocketAddress)

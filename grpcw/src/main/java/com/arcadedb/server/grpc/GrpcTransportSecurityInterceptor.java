@@ -59,7 +59,10 @@ import java.util.function.Supplier;
  * setting, {@code arcadedb.server.apiTokenTrustedProxies}, so the two control planes keep one trust boundary
  * (#7309, #7372). gRPC metadata travels as HTTP/2 headers, so the proxy's report arrives as the
  * {@code x-forwarded-proto} metadata key: Envoy adds it to gRPC requests on its own, and nginx's
- * {@code grpc_pass} adds it with {@code grpc_set_header X-Forwarded-Proto $scheme}. It is read only when the
+ * {@code grpc_pass} adds it with {@code grpc_set_header X-Forwarded-Proto $scheme}. A proxy that reports the
+ * scheme through the RFC 7239 {@code Forwarded} header instead arrives as the {@code forwarded} key, and is read on
+ * the same terms as the HTTP header of that name (issue #7822): with both keys present, every scheme in either has to
+ * be https. The metadata is read only when the
  * direct peer is on the list - the caller asking for a token is exactly the caller who would forge it - and
  * every value must report {@code https}, so a client-supplied value a proxy appended to rather than replaced
  * cannot outvote the proxy's own. With the list empty, the shipped default, the metadata is never read and
@@ -96,6 +99,12 @@ public class GrpcTransportSecurityInterceptor implements ServerInterceptor {
    */
   static final Metadata.Key<String> X_FORWARDED_PROTO_KEY = Metadata.Key.of("x-forwarded-proto",
       Metadata.ASCII_STRING_MARSHALLER);
+
+  /**
+   * The metadata key an RFC 7239 proxy reports the client's scheme in, as the {@code proto=} parameter of a
+   * {@code Forwarded} header (issue #7822).
+   */
+  static final Metadata.Key<String> FORWARDED_KEY = Metadata.Key.of("forwarded", Metadata.ASCII_STRING_MARSHALLER);
 
   private static final TrustedProxies NO_TRUSTED_PROXIES = new TrustedProxies("", IPAddressBlocklist.parse(null));
 
@@ -167,8 +176,11 @@ public class GrpcTransportSecurityInterceptor implements ServerInterceptor {
     if (proxies.isEmpty() || !proxies.isBlocked(address))
       return false;
 
-    final Iterable<String> values = headers != null ? headers.getAll(X_FORWARDED_PROTO_KEY) : null;
-    return values != null && ApiTokenTrustedProxies.forwardedProtoIsFullyEncrypted(String.join(",", values));
+    if (headers == null)
+      return false;
+
+    return ApiTokenTrustedProxies.forwardedProtoIsFullyEncrypted(ApiTokenTrustedProxies.reportedForwardedProto(
+        headers.getAll(X_FORWARDED_PROTO_KEY), headers.getAll(FORWARDED_KEY)));
   }
 
   /**
