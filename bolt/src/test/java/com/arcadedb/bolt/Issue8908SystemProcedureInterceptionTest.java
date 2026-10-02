@@ -199,4 +199,19 @@ class Issue8908SystemProcedureInterceptionTest {
     assertThat(BoltSystemProcedures.isSystemCall(BoltSystemProcedures.normalize("CALL db.ping() /* CREATE (:X) */"), "db.ping")).isTrue();
     assertThat(BoltSystemProcedures.isSystemCall(BoltSystemProcedures.normalize("CALL db.ping() /* x */ CREATE (:X)"), "db.ping")).isFalse();
   }
+
+  @Test
+  void anAliasOrAnUncollectedUnionIsLeftToTheEngine() {
+    assertThat(BoltSystemProcedures.isSchemaProcedureQuery(BoltSystemProcedures.normalize(
+        "CALL db.labels() YIELD label RETURN label AS name"))).isFalse();
+    assertThat(BoltSystemProcedures.isSchemaProcedureQuery(BoltSystemProcedures.normalize(
+        "CALL db.labels() YIELD label RETURN label UNION CALL db.relationshipTypes() YIELD relationshipType "
+            + "RETURN relationshipType UNION CALL db.propertyKeys() YIELD propertyKey RETURN propertyKey"))).isFalse();
+  }
+
+  @Test
+  void aBacktickIdentifierInTheTailDoesNotDeclineABoltOnlyCall() {
+    assertThat(BoltSystemProcedures.isSystemCall(BoltSystemProcedures.normalize(
+        "CALL dbms.listDatabases() YIELD name WHERE `create` = 1"), "dbms.listdatabases")).isTrue();
+  }
 }
