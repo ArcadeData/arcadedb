@@ -108,9 +108,9 @@ class GrpcTransportSecurityInterceptorTest {
   // for the leg it terminated through the x-forwarded-proto metadata key, exactly as it does for HTTP.
   // ------------------------------------------------------------------------------------------------
 
-  private static final String PROXY_IP = "10.0.0.5";
+  static final String PROXY_IP = "10.0.0.5";
 
-  private static InetSocketAddress proxy() {
+  static InetSocketAddress proxy() {
     return new InetSocketAddress(PROXY_IP, 51000);
   }
 
@@ -118,7 +118,7 @@ class GrpcTransportSecurityInterceptorTest {
     return new InetSocketAddress("203.0.113.7", 51000);
   }
 
-  private static Metadata forwardedProto(final String... values) {
+  static Metadata forwardedProto(final String... values) {
     final Metadata metadata = new Metadata();
     for (final String value : values)
       metadata.put(GrpcTransportSecurityInterceptor.X_FORWARDED_PROTO_KEY, value);
@@ -309,7 +309,7 @@ class GrpcTransportSecurityInterceptorTest {
    * Runs one call through the interceptor and reports the value it published, which is the only thing
    * the interceptor produces.
    */
-  private static boolean decisionFor(final GrpcTransportSecurityInterceptor interceptor,
+  static boolean decisionFor(final GrpcTransportSecurityInterceptor interceptor,
       final SocketAddress remoteAddress, final boolean tls, final Metadata headers) {
     final Attributes.Builder attributes = Attributes.newBuilder();
     if (remoteAddress != null)
