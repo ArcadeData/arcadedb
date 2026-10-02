@@ -542,10 +542,11 @@ public class BinaryComparator {
     else if (!a.getClass().equals(b.getClass()) &&//
         a instanceof Number number && b instanceof Number number1) {
       return Type.numbersEqual(number, number1);
-    } else if (a instanceof BigDecimal decimal && b instanceof BigDecimal decimal1)
+    } else if (a instanceof BigDecimal decimal && b instanceof BigDecimal decimal1) {
       // BigDecimal.equals() compares the scale too, so 19.9 was not 19.90 (issue #8890). Never drive a hash structure with
       // this: hashCode() still sees the scale, use Type.normalizeNumberForKey for a key
       return decimal.compareTo(decimal1) == 0;
+    }
     return a.equals(b);
   }
 

@@ -37,7 +37,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue8892SysdateInstantTest extends TestHelper {
-  private static final long TOLERANCE_MS = 60_000L;
+  private static final long TOLERANCE_MS = 10 * 60_000L; // the offsets under test are 4 hours and more
 
   private TimeZone previousZone;
 
