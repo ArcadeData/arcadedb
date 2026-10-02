@@ -157,6 +157,11 @@ public final class InListMembership {
    * {@link InCondition#evaluateExpressionThreeValued}.
    */
   public Boolean evaluate(final Object left) {
+    return evaluate(left, true);
+  }
+
+  /** @param convertOperand false when {@code left} is a record property, which is never converted to the item type (#8913) */
+  public Boolean evaluate(final Object left, final boolean convertOperand) {
     if (keys != null && left != null) {
       final int leftKind = kindOf(left);
       if (leftKind == kind) {
@@ -170,7 +175,7 @@ public final class InListMembership {
         }
       }
     }
-    return InCondition.evaluateExpressionThreeValued(left, rightValue);
+    return InCondition.evaluateExpressionThreeValued(left, rightValue, convertOperand);
   }
 
   private static float[] sortedFloats(final Set<Float> set) {
