@@ -1011,18 +1011,13 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   }
 
   /**
-   * Points every worker at {@code database} from its next read on (issue #8292). Called by
-   * {@code LocalDatabase.setWrappedDatabaseInstance()} when the HA plugin wraps the database, so an executor created
-   * before the wrap - a parallel {@code SELECT} or a scheduled index compaction while the server was starting - stops
-   * committing on the inner instance, where a commit applies its pages on this node only and replicates nothing.
-   * <p>
-   * A worker in the middle of a batch begins through one instance and commits through the other. That is still one
-   * transaction: every wrapper delegates to the same embedded database, and the transaction lives in the worker's
-   * thread context, keyed by the database path.
+   * Points every worker at {@code database} from its next read on. Only {@code LocalDatabase.setWrappedDatabaseInstance()}
+   * calls it; see there for why. A worker in the middle of a batch begins through one instance and commits through the
+   * other, and that is still one transaction: every wrapper delegates to the same embedded database, and the
+   * transaction lives in the worker's thread context, keyed by the database path.
    */
   public void rebindDatabase(final DatabaseInternal database) {
-    if (database != null)
-      this.database = database;
+    this.database = database;
   }
 
   public DatabaseAsyncExecutorImpl(final DatabaseInternal database, final ContextConfiguration configuration) {
