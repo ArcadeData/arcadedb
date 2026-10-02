@@ -33,9 +33,21 @@ var supportConnectError = null; // a failure of starting, as supportError() retu
 var supportConnectTimer = null;
 var supportConnectBlocked = false; // the browser did not open the new tab: the link is shown instead
 
-/** The portal address the user is sent to, only when it is a plain http(s) URL: never a javascript: or data: one. */
+/**
+ * The portal address the user is sent to, only when it is a plain http(s) URL (never a javascript: or data: one) and, when the
+ * configured portal is known, on exactly its origin: the server refuses any other address, this is the second check.
+ */
 function supportConnectSafeUrl(url) {
-  return typeof url === "string" && /^https?:\/\/[^\s]+$/i.test(url) ? url : null;
+  if (typeof url !== "string" || !/^https?:\/\/[^\s]+$/i.test(url)) return null;
+  var portal = typeof supportStatus !== "undefined" && supportStatus && supportStatus.portalUrl;
+  if (portal) {
+    try {
+      if (new URL(url).origin !== new URL(portal).origin) return null;
+    } catch (e) {
+      return null;
+    }
+  }
+  return url;
 }
 
 /** The sentence for what happened to the installation when the server registered itself, or "" when there is nothing to say. */

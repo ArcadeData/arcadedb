@@ -299,4 +299,30 @@ class SupportConnectTest extends BaseGraphServerTest {
     portal.handler = r -> new MockPortal.Response(200, "{\"deviceCode\":\"x\",\"userCode\":\"y\",\"verifyUrl\":\"javascript:alert(1)\"}");
     assertThat(call("POST", "/api/v1/server/support/connect", null).json().getString("error")).isEqualTo("portal_error");
   }
+
+  @Test
+  void aVerifyUrlOutsideThePortalsOriginIsRefusedAndNothingIsStarted() throws Exception {
+    for (final String foreign : new String[] { "https://evil.example/#/connect?code=ABCD-EFGH",
+        portal.url().replace("127.0.0.1", "127.0.0.2") + "/#/connect",
+        portal.url().replaceFirst(":\\d+", ":1") + "/#/connect",
+        "http://portal.arcadedb.com/#/connect", "https://user:pw@portal.arcadedb.com/#/connect" }) {
+      portal.handler = r -> new MockPortal.Response(200, new JSONObject().put("deviceCode", DEVICE_CODE).put("userCode", USER_CODE)
+          .put("verifyUrl", foreign).put("expiresIn", 600).put("interval", 1).toString());
+      final Resp resp = call("POST", "/api/v1/server/support/connect", null);
+      assertThat(resp.json().getString("error")).as(foreign).isEqualTo("portal_error");
+      assertThat(resp.json().getString("message")).contains("outside its own origin");
+      assertThat(call("GET", "/api/v1/server/support/connect", null).json().getString("status")).as(foreign).isEqualTo("none");
+    }
+  }
+
+  @Test
+  void sameOriginIgnoresCaseAndTheDefaultPort() {
+    assertThat(SupportConnector.isSameOrigin("https://Portal.ArcadeDB.com/#/connect", "https://portal.arcadedb.com")).isTrue();
+    assertThat(SupportConnector.isSameOrigin("https://portal.arcadedb.com:443/x", "https://portal.arcadedb.com")).isTrue();
+    assertThat(SupportConnector.isSameOrigin("https://portal.arcadedb.com:444/x", "https://portal.arcadedb.com")).isFalse();
+    assertThat(SupportConnector.isSameOrigin("http://portal.arcadedb.com/x", "https://portal.arcadedb.com")).isFalse();
+    assertThat(SupportConnector.isSameOrigin("https://portal.arcadedb.com.evil.example/x", "https://portal.arcadedb.com")).isFalse();
+    assertThat(SupportConnector.isSameOrigin("//portal.arcadedb.com/x", "https://portal.arcadedb.com")).isFalse();
+    assertThat(SupportConnector.isSameOrigin("not a url", "https://portal.arcadedb.com")).isFalse();
+  }
 }
