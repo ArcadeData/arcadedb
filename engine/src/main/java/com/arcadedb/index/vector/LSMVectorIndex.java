@@ -5710,7 +5710,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     // All bits set is how a CONSTANT vector (the all-zero one included) is stored. A vector that is not constant but
     // sits on its minimum for at least half of its components (median == minimum, e.g. [0, 0, 0, 5]) would collide with
-    // it and read back as the origin, so its minimum components are put below the median instead (PR #8969 review).
+    // it and read back as the origin, so its minimum components are put below the median instead.
     float min = vector[0];
     float max = vector[0];
     for (final float v : vector) {
@@ -6998,6 +6998,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
       if (queryVector.length != metadata.dimensions)
         throw new IllegalArgumentException(
             "Query vector dimension " + queryVector.length + " does not match index dimension " + metadata.dimensions);
+
+      for (final float component : queryVector)
+        if (!Float.isFinite(component))
+          throw new IllegalArgumentException("Query vector components must be finite numbers: got " + component);
 
       // Check if query vector is all zeros (would cause NaN with cosine similarity)
       if (metadata.similarityFunction == VectorSimilarityFunction.COSINE && VectorUtils.isZeroVector(queryVector))
@@ -8472,8 +8476,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
                 + keys[0].getClass().getSimpleName() + " of length " + vector.length);
 
       // No similarity can rank a NaN or an Infinity: it would be indexed and returned with a NaN or infinite distance, and
-      // under DOT_PRODUCT ahead of every finite record (issue #8962)
-      // Not on replay: a vector accepted before this check must not block recovery, rebuild or compaction
+      // under DOT_PRODUCT ahead of every finite record (issue #8962). Not checked on replay, so that a vector accepted before
+      // this check existed cannot block recovery, rebuild or compaction.
       if (!replay)
         for (final float component : vector)
           if (!Float.isFinite(component))

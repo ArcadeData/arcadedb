@@ -87,6 +87,28 @@ class Issue8960BinaryQuantizationSelfMatchTest extends TestHelper {
   }
 
   @Test
+  void ownVectorFirstUnderEuclideanAndDotProduct() {
+    for (final String similarity : List.of("EUCLIDEAN", "DOT_PRODUCT")) {
+      final String type = "Bin" + similarity;
+      database.command("sql", "CREATE DOCUMENT TYPE " + type + " BUCKETS 1");
+      database.command("sql", "CREATE PROPERTY " + type + ".vector ARRAY_OF_FLOATS");
+      database.command("sql", "CREATE INDEX ON " + type + " (vector) LSM_VECTOR METADATA { \"dimensions\": 4, \"similarity\": \""
+          + similarity + "\", \"quantization\": \"BINARY\" }");
+      database.transaction(() -> {
+        database.newDocument(type).set("name", "A", "vector", new float[] { 0.5f, -0.5f, 0.5f, -0.5f }).save();
+        database.newDocument(type).set("name", "B", "vector", new float[] { 0.5f, 0.5f, 0.5f, 0.5f }).save();
+        database.newDocument(type).set("name", "C", "vector", new float[] { -0.5f, 0.5f, -0.5f, 0.5f }).save();
+      });
+
+      final List<Pair<RID, Float>> hits = index(type).findNeighborsFromVector(new float[] { 0.5f, -0.5f, 0.5f, -0.5f }, 3, 100);
+
+      assertThat(hits).as(similarity).hasSize(3);
+      assertThat(hits.get(0).getFirst().asDocument().getString("name")).as(similarity).isEqualTo("A");
+      assertThat(hits.get(2).getFirst().asDocument().getString("name")).as(similarity).isEqualTo("C");
+    }
+  }
+
+  @Test
   void ownVectorFirstAndUsableRecallOnRandomVectors() {
     final Random random = new Random(42);
     final List<float[]> vectors = new ArrayList<>();

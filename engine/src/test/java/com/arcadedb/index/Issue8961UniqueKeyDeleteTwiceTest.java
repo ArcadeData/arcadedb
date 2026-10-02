@@ -75,4 +75,37 @@ class Issue8961UniqueKeyDeleteTwiceTest extends TestHelper {
     }
     assertThat(database.getSchema().getIndexByName("Item[code]").get(new Object[] { "y" }).estimateSize()).isZero();
   }
+
+  @Test
+  void rollbackAfterTheSequenceLeavesTheCommittedEntryUntouched() {
+    try {
+      database.transaction(() -> {
+        database.query("sql", "SELECT FROM Item WHERE code = 'x'").next().getRecord().get().asDocument().delete();
+        final MutableDocument b = database.newDocument("Item").set("code", "x").save();
+        b.delete();
+        database.newDocument("Item").set("code", "x").save();
+        throw new IllegalStateException("rollback");
+      });
+    } catch (final IllegalStateException expected) {
+      // rolled back
+    }
+
+    assertThat(database.query("sql", "SELECT FROM Item WHERE code = 'x'").stream().count()).isEqualTo(1);
+    final IndexCursor cursor = database.getSchema().getIndexByName("Item[code]").get(new Object[] { "x" });
+    assertThat(cursor.estimateSize()).isEqualTo(1);
+    assertThat(cursor.next().getIdentity().toString()).isEqualTo("#1:0");
+  }
+
+  @Test
+  void longerChainEndingInADeleteLeavesNoEntry() {
+    database.transaction(() -> {
+      database.query("sql", "SELECT FROM Item WHERE code = 'x'").next().getRecord().get().asDocument().delete();
+      final MutableDocument b = database.newDocument("Item").set("code", "x").save();
+      b.delete();
+      final MutableDocument c = database.newDocument("Item").set("code", "x").save();
+      c.delete();
+    });
+
+    assertThat(database.getSchema().getIndexByName("Item[code]").get(new Object[] { "x" }).estimateSize()).isZero();
+  }
 }

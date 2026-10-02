@@ -65,6 +65,15 @@ class Issue8962ZeroAndNonFiniteVectorTest extends TestHelper {
   }
 
   @Test
+  void nonFiniteQueryVectorIsRejected() {
+    final String type = create("EUCLIDEAN");
+    database.transaction(() -> database.newDocument(type).set("name", "a", "vector", new float[] { 1f, 1f }).save());
+
+    assertThatThrownBy(() -> database.query("sql", "SELECT FROM (SELECT expand(vectorNeighbors('" + type + "[vector]', ?, 3)))",
+        (Object) new float[] { Float.NaN, 1f }).close()).hasStackTraceContaining("finite");
+  }
+
+  @Test
   void cosineKeepsAcceptingZeroPlaceholderVectors() {
     final String type = create("COSINE");
     database.transaction(() -> {
