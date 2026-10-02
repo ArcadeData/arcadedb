@@ -77,6 +77,9 @@ public class PaginatedComponentFile extends ComponentFile {
    */
   private volatile int totalPages;
 
+  /** Reopen-and-retry rounds of a read whose channel was closed under it (an interrupt landing again during the retry). */
+  private static final int READ_REOPEN_ATTEMPTS = 5;
+
   /**
    * Updates {@link #totalPages} atomically WITHOUT an {@code AtomicInteger}: {@link #open} runs from the superclass
    * constructor, before this class's field initializers, so an object field would still be null when it has to be
@@ -87,9 +90,6 @@ public class PaginatedComponentFile extends ComponentFile {
       AtomicIntegerFieldUpdater.newUpdater(PaginatedComponentFile.class, "totalPages");
 
   /** Nothing happened to the file since its last successful fsync: forcing it would persist nothing (issue #8626). */
-  /** Reopen-and-retry rounds of a read whose channel was closed under it (an interrupt landing again during the retry). */
-  private static final int READ_REOPEN_ATTEMPTS = 5;
-
   static final int SYNC_CLEAN    = 0;
   /** A page was written since the last successful fsync: the data has to be forced, the metadata does not. */
   static final int SYNC_DATA     = 1;

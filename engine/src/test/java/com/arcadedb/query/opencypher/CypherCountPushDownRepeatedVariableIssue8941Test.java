@@ -80,6 +80,18 @@ class CypherCountPushDownRepeatedVariableIssue8941Test extends TestHelper {
   }
 
   @Test
+  void starDetectorDeclinesARepeatedVariable() {
+    // the labelled self-loop is what the star (degree product) detector claimed before the fix
+    final String[] patterns = { "(c:V)-[:K]->(c)", "(c:V)-[:K]->(y)<-[:K]-(c)", "(c:V)-[:K]->(y)-[:K]->(y)", "(c:V)-[:K]->(y), (c)-[:K]->(y)" };
+    for (final String pattern : patterns) {
+      assertThat(database.query("opencypher", "EXPLAIN MATCH " + pattern + " RETURN count(*) AS n").getExecutionPlan().get().prettyPrint(0, 2))
+          .as(pattern).doesNotContain("COUNT STAR JOIN");
+      assertThat(count("MATCH " + pattern + " RETURN count(*) AS n")).as(pattern)
+          .isEqualTo(count("MATCH " + pattern + " WITH 1 AS one RETURN count(*) AS n"));
+    }
+  }
+
+  @Test
   void distinctVariablesStillUseThePushDown() {
     assertThat(count("MATCH (x:V)-[:K]->(y:V) RETURN count(*) AS n")).isEqualTo(3);
     assertThat(database.query("opencypher", "EXPLAIN MATCH (x:V)-[:K]->(y:V) RETURN count(*) AS n").getExecutionPlan().get().prettyPrint(0, 2))
