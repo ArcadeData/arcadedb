@@ -47,6 +47,12 @@ import java.util.logging.Level;
  */
 class RaftPropertiesBuilder {
 
+  /**
+   * Close threshold used when {@code arcadedb.ha.jvmPauseCloseThresholdMs} disables the Ratis JVM-pause close (issue
+   * #8898). TimeDuration has no "disabled" value, so out of reach is ten years.
+   */
+  static final TimeDuration JVM_PAUSE_CLOSE_DISABLED = TimeDuration.valueOf(3650, TimeUnit.DAYS);
+
   private RaftPropertiesBuilder() {
   }
 
@@ -315,6 +321,12 @@ class RaftPropertiesBuilder {
           which must stay >= appendBufferSize + 8 bytes) if transactions or records bigger than that must \
           replicate.""",
           appendBuffer.getSize(), grpcMessageSizeMax);
+
+    // Issue #8898: Ratis closes the whole division on a long JVM pause, and the in-place restart that followed did
+    // not recover the follower. 0 (default) puts that close out of reach; a leader still steps down on a pause.
+    final long jvmPauseCloseMs = configuration.getValueAsLong(GlobalConfiguration.HA_JVM_PAUSE_CLOSE_THRESHOLD_MS);
+    RaftServerConfigKeys.setCloseThreshold(properties,
+        jvmPauseCloseMs > 0 ? TimeDuration.valueOf(jvmPauseCloseMs, TimeUnit.MILLISECONDS) : JVM_PAUSE_CLOSE_DISABLED);
 
     // Leader lease: consistent reads without round-trip
     RaftServerConfigKeys.Read.setLeaderLeaseEnabled(properties, true);

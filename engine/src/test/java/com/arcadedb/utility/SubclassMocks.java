@@ -16,7 +16,7 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.server.ha.raft;
+package com.arcadedb.utility;
 
 import org.mockito.Answers;
 import org.mockito.MockMakers;
@@ -24,7 +24,7 @@ import org.mockito.Mockito;
 import org.mockito.stubbing.Answer;
 
 /**
- * Mocks built by Mockito's SUBCLASS mock maker instead of the default inline one (issue #8021).
+ * Mocks built by Mockito's SUBCLASS mock maker instead of the default inline one (issues #8021, #8851).
  * <p>
  * The inline mock maker does not make a new class: it retransforms the mocked class in place, so a mock is an
  * instance of the real {@code LocalDatabase} whose methods now carry a dispatch to the mock handler. Code the JIT
@@ -39,21 +39,25 @@ import org.mockito.stubbing.Answer;
  * implementation, on every JIT. Use these for the classes a test hands to production code it then drives, where
  * that production code is warm in a shared fork - the inline maker remains the right choice for final classes and
  * static mocking, which a subclass cannot express.
+ * <p>
+ * A test class can route every bare {@code mock(...)} call through this class by statically importing
+ * {@code SubclassMocks.mock} in place of {@code Mockito.mock}. {@code InlineMocksOfJitWarmTypesTest} (server module)
+ * holds the rule for the engine types the HA and HTTP layers delegate to.
  */
-final class SubclassMocks {
+public final class SubclassMocks {
   private SubclassMocks() {
   }
 
-  static <T> T mock(final Class<T> type) {
+  public static <T> T mock(final Class<T> type) {
     return Mockito.mock(type, Mockito.withSettings().mockMaker(MockMakers.SUBCLASS));
   }
 
-  static <T> T mock(final Class<T> type, final Answer<?> defaultAnswer) {
+  public static <T> T mock(final Class<T> type, final Answer<?> defaultAnswer) {
     return Mockito.mock(type, Mockito.withSettings().mockMaker(MockMakers.SUBCLASS).defaultAnswer(defaultAnswer));
   }
 
   @SuppressWarnings("unchecked")
-  static <T> T spy(final T instance) {
+  public static <T> T spy(final T instance) {
     return Mockito.mock((Class<T>) instance.getClass(), Mockito.withSettings().mockMaker(MockMakers.SUBCLASS)
         .spiedInstance(instance).defaultAnswer(Answers.CALLS_REAL_METHODS));
   }

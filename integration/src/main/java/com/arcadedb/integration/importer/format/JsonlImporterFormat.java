@@ -902,9 +902,57 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
    */
   private Map<String, Set<RID>> loadProperties(DatabaseInternal database, MutableDocument imported, JSONObject properties) {
     Map<String, Object> json2map = json2map(database, properties);
+    restoreNumberFidelity(imported.getType(), properties, json2map);
     final Map<String, Set<RID>> unresolved = remapLinkProperties(imported.getType(), json2map);
     imported.fromMap(json2map);
     return unresolved;
+  }
+
+  /**
+   * Undoes what the generic JSON parse does to numbers on the record path (issue #8871), driven by the declared
+   * property types: FLOAT/DOUBLE values exported as the {@link NonFiniteNumbers} markers ("PosInfinity", "NegInfinity")
+   * are decoded back (scalar or LIST OF FLOAT/DOUBLE), and DECIMAL values (scalar or LIST OF DECIMAL) are re-read from
+   * their JSON text instead of the double the parse produced, which dropped every digit past the 17th. A property with
+   * no declared type is left as it is: there is no schema to say that a marker string is a number.
+   */
+  private static void restoreNumberFidelity(final DocumentType type, final JSONObject json, final Map<String, Object> map) {
+    if (type == null)
+      return;
+
+    for (final Map.Entry<String, Object> entry : map.entrySet()) {
+      final Property property = type.getPolymorphicPropertyIfExists(entry.getKey());
+      if (property == null || entry.getValue() == null)
+        continue;
+
+      final Type propertyType = property.getType();
+      if (propertyType == Type.FLOAT || propertyType == Type.DOUBLE) {
+        if (entry.getValue() instanceof String text) {
+          final Double marker = NonFiniteNumbers.decode(text);
+          if (marker != null)
+            entry.setValue(marker);
+        }
+      } else if (propertyType == Type.DECIMAL) {
+        if (entry.getValue() instanceof Number)
+          entry.setValue(json.getBigDecimal(entry.getKey()));
+      } else if (propertyType == Type.LIST && entry.getValue() instanceof List<?> list) {
+        // json2map built a fresh mutable ArrayList, so the items are replaced in place and nothing is allocated
+        @SuppressWarnings("unchecked") final List<Object> items = (List<Object>) list;
+        final String ofType = property.getOfType();
+        if (Type.DECIMAL.name().equalsIgnoreCase(ofType)) {
+          final JSONArray array = json.getJSONArray(entry.getKey());
+          for (int i = 0; i < items.size(); ++i)
+            if (items.get(i) instanceof Number)
+              items.set(i, array.getBigDecimal(i));
+        } else if (Type.DOUBLE.name().equalsIgnoreCase(ofType) || Type.FLOAT.name().equalsIgnoreCase(ofType)) {
+          for (int i = 0; i < items.size(); ++i)
+            if (items.get(i) instanceof String text) {
+              final Double marker = NonFiniteNumbers.decode(text);
+              if (marker != null)
+                items.set(i, marker);
+            }
+        }
+      }
+    }
   }
 
   /**

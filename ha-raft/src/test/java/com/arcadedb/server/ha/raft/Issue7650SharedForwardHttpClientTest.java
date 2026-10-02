@@ -27,8 +27,8 @@ import org.junit.jupiter.api.Test;
 import java.lang.reflect.Field;
 import java.net.http.HttpClient;
 
+import static com.arcadedb.utility.SubclassMocks.mock;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**

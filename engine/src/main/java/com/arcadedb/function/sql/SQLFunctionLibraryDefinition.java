@@ -23,6 +23,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.Collections;
+import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
@@ -67,7 +68,7 @@ public class SQLFunctionLibraryDefinition implements FunctionLibraryDefinition<S
     json.put("language", getLanguage());
 
     final JSONObject functionsJSON = new JSONObject();
-    for (final SQLFunctionDefinition f : functions.values()) {
+    for (final SQLFunctionDefinition f : new TreeMap<>(functions).values()) {
       final JSONObject fJSON = new JSONObject();
       fJSON.put("code", f.getImplementation());
       fJSON.put("parameters", new JSONArray(f.getParameters()));

@@ -1940,9 +1940,11 @@ public class SelectStatementExecutionTest extends TestHelper {
         .isInstanceOf(CommandExecutionException.class)
         .hasMessageContaining("'distinct' is supported only as the whole SELECT projection");
 
-    assertThatThrownBy(() -> database.query("sql", "SELECT first(distinct(x)) FROM (SELECT expand([1,2,3,1]) AS x)").close())
-        .isInstanceOf(CommandExecutionException.class)
-        .hasMessageContaining("'distinct' is supported only as the whole SELECT projection");
+    // Inside an aggregate function the DISTINCT modifier is the standard `count(DISTINCT x)` form, so a parenthesized
+    // argument is read as `count(DISTINCT (x))` instead of a nested distinct() call (issue #8889)
+    try (final ResultSet result = database.query("sql", "SELECT count(distinct(x)) AS n FROM (SELECT expand([1,2,3,1]) AS x)")) {
+      assertThat(result.next().<Long>getProperty("n")).isEqualTo(3L);
+    }
   }
 
   @Test

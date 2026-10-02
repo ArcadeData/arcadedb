@@ -298,6 +298,7 @@ public class BinaryTypes {
   public static Class<?> getClassFromType(final byte type) {
     return switch (type) {
       case BinaryTypes.TYPE_STRING, BinaryTypes.TYPE_COMPRESSED_STRING -> String.class;
+      case BinaryTypes.TYPE_BOOLEAN -> Boolean.class;
       case BinaryTypes.TYPE_INT -> Integer.class;
       case BinaryTypes.TYPE_SHORT -> Short.class;
       case BinaryTypes.TYPE_LONG -> Long.class;

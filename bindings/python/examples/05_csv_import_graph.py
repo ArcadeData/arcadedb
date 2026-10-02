@@ -1058,7 +1058,7 @@ EXPECTED_RESULTS = {
             {
                 "name": "Query 4: Top 10 most rated movies (SQL - Aggregations)",
                 "count": 10,
-                "sample": {"top_movie": "", "top_movie_count": 508},
+                "sample": {"top_movie": "Forrest Gump (1994)", "top_movie_count": 315},
             },
             {
                 "name": "Query 5: Top 10 most tagged movies (SQL - Aggregations)",

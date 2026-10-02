@@ -1,0 +1,329 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.query.sql;
+
+import com.arcadedb.TestHelper;
+import com.arcadedb.query.sql.antlr.SQLAntlrParser;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
+import org.junit.jupiter.api.Test;
+
+import java.math.BigDecimal;
+import java.util.ArrayList;
+import java.util.List;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * Regression test for issue #8872: a suffix-less decimal literal was always parsed as a double, so a DECIMAL
+ * property set or compared with a literal of more than ~16 significant digits lost the rest.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+class Issue8872DecimalLiteralDigitsTest extends TestHelper {
+  private static final String EXACT = "12345678901234567890.123456789012345678";
+
+  @Override
+  protected void beginTest() {
+    database.command("sql", "CREATE DOCUMENT TYPE T");
+    database.command("sql", "CREATE PROPERTY T.k STRING");
+    database.command("sql", "CREATE PROPERTY T.dec DECIMAL");
+  }
+
+  @Test
+  void literalKeepsAllDigitsOnInsertAndLookup() {
+    final BigDecimal v = new BigDecimal(EXACT);
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO T SET k = 'parameter', dec = ?", v);
+      database.command("sql", "INSERT INTO T SET k = 'literal', dec = " + EXACT);
+      database.command("sql", "INSERT INTO T SET k = 'string', dec = '" + EXACT + "'");
+      database.newDocument("T").set("k", "api", "dec", v).save();
+    });
+
+    try (final ResultSet rs = database.query("sql", "SELECT k, dec FROM T")) {
+      while (rs.hasNext()) {
+        final Result r = rs.next();
+        assertThat((BigDecimal) r.getProperty("dec")).as(r.<String>getProperty("k")).isEqualByComparingTo(v);
+      }
+    }
+    assertThat(keys("SELECT k FROM T WHERE dec = " + EXACT)).containsExactlyInAnyOrder("parameter", "literal", "string", "api");
+    assertThat(keys("SELECT k FROM T WHERE dec = -" + EXACT)).isEmpty();
+  }
+
+  @Test
+  void shortLiteralsStayDoubles() {
+    try (final ResultSet rs = database.query("sql", "SELECT 0.1 AS a, 1.5e3 AS b, -2.25 AS c")) {
+      final Result r = rs.next();
+      assertThat(r.<Object>getProperty("a")).isEqualTo(0.1d);
+      assertThat(r.<Object>getProperty("b")).isEqualTo(1500d);
+      assertThat(r.<Object>getProperty("c")).isEqualTo(-2.25d);
+    }
+  }
+
+  @Test
+  void negativeLongLiteral() {
+    try (final ResultSet rs = database.query("sql", "SELECT -" + EXACT + " AS a")) {
+      assertThat((BigDecimal) rs.next().getProperty("a")).isEqualByComparingTo(new BigDecimal("-" + EXACT));
+    }
+  }
+
+  @Test
+  void indexedDecimalAndDoubleLookups() {
+    database.command("sql", "CREATE DOCUMENT TYPE I");
+    database.command("sql", "CREATE PROPERTY I.k STRING");
+    database.command("sql", "CREATE PROPERTY I.dec DECIMAL");
+    database.command("sql", "CREATE PROPERTY I.dbl DOUBLE");
+    database.command("sql", "CREATE INDEX ON I (dec) NOTUNIQUE");
+    database.command("sql", "CREATE INDEX ON I (dbl) NOTUNIQUE");
+    final BigDecimal v = new BigDecimal(EXACT);
+    database.transaction(() -> {
+      database.newDocument("I").set("k", "exact", "dec", v, "dbl", 1.5d).save();
+      database.newDocument("I").set("k", "above", "dec", v.add(BigDecimal.ONE), "dbl", 2.5d).save();
+    });
+    assertThat(keys("SELECT k FROM I WHERE dec = " + EXACT)).containsExactly("exact");
+    assertThat(keys("SELECT k FROM I WHERE dec > " + EXACT)).containsExactly("above");
+    assertThat(keys("SELECT k FROM I WHERE dec >= " + EXACT)).containsExactlyInAnyOrder("exact", "above");
+    assertThat(keys("SELECT k FROM I WHERE dbl = 1.5000000000000000")).containsExactly("exact");
+    assertThat(keys("SELECT k FROM I WHERE dbl > 1.5000000000000000000001")).containsExactly("above");
+  }
+
+  @Test
+  void arithmeticWithLongLiteral() {
+    try (final ResultSet rs = database.query("sql", "SELECT " + EXACT + " + 1 AS a")) {
+      assertThat((BigDecimal) rs.next().getProperty("a")).isEqualByComparingTo(new BigDecimal(EXACT).add(BigDecimal.ONE));
+    }
+  }
+
+  @Test
+  void longAndShortLiteralsPickTheirType() {
+    try (final ResultSet rs = database.query("sql", "SELECT 0.1000000000000000 AS a, 1.2345678901234567890e5 AS b, 123456789012345.5 AS c")) {
+      final Result r = rs.next();
+      assertThat(r.<Object>getProperty("a")).isEqualTo(0.1d);
+      assertThat(r.<Object>getProperty("b")).isInstanceOf(BigDecimal.class);
+      assertThat(r.<Object>getProperty("c")).isEqualTo(123456789012345.5d);
+    }
+  }
+
+  @Test
+  void oversizedScaleStaysDouble() {
+    final String literal = "0." + "0".repeat(449) + "1234567890123456789";
+    try (final ResultSet rs = database.query("sql", "SELECT " + literal + " AS a")) {
+      assertThat(rs.next().<Object>getProperty("a")).isInstanceOf(Double.class);
+    }
+  }
+
+  @Test
+  void commonFunctionsAcceptLongLiterals() {
+    try (final ResultSet rs = database.query("sql",
+        "SELECT pow(2.12345678901234567890, 2) AS r, abs(-1.2345678901234567890) AS a, sqrt(2.2345678901234567890) AS s,"
+            + " geo.point(12.12345678901234567890, 41.1234567890123456789) AS p")) {
+      final Result r = rs.next();
+      assertThat(r.<Object>getProperty("r")).isNotNull();
+      assertThat(r.<Object>getProperty("a")).isNotNull();
+      assertThat(r.<Object>getProperty("s")).isNotNull();
+      assertThat(r.<Object>getProperty("p")).isNotNull();
+    }
+  }
+
+  @Test
+  void hexAndExtremeExponentsStayDoubles() {
+    try (final ResultSet rs = database.query("sql", "SELECT 0x1.0000000000000p0 AS a, 1e999999999 AS b, 1e-999999999 AS c")) {
+      final Result r = rs.next();
+      assertThat(r.<Object>getProperty("a")).isEqualTo(1d);
+      assertThat(r.<Object>getProperty("b")).isEqualTo(Double.POSITIVE_INFINITY);
+      assertThat(r.<Object>getProperty("c")).isEqualTo(0d);
+    }
+  }
+
+  @Test
+  void underflowingExponentAndDSuffixStayDoubles() {
+    try (final ResultSet rs = database.query("sql", "SELECT 1.0000000000000000e-9999999999 AS a, " + EXACT + "D AS b")) {
+      final Result r = rs.next();
+      assertThat(r.<Object>getProperty("a")).isEqualTo(0d);
+      assertThat(r.<Object>getProperty("b")).isInstanceOf(Double.class);
+    }
+  }
+
+  @Test
+  void renderedLiteralReparsesToTheSameValue() {
+    for (final String literal : new String[] { "12345678901234567890.", "12345678901234567890e0", "-12345678901234567890.", EXACT, "1.2345678901234567890e30" }) {
+      final StringBuilder rendered = new StringBuilder();
+      new SQLAntlrParser(null).parse("SELECT " + literal + " AS a").toString(null, rendered);
+      try (final ResultSet rs = database.query("sql", rendered.toString())) {
+        assertThat((BigDecimal) rs.next().getProperty("a")).as(literal).isEqualByComparingTo(new BigDecimal(literal.endsWith(".") ? literal + "0" : literal));
+      }
+    }
+  }
+
+  @Test
+  void longLiteralAssignedToDoubleProperty() {
+    database.command("sql", "CREATE DOCUMENT TYPE D");
+    database.command("sql", "CREATE PROPERTY D.v DOUBLE");
+    database.transaction(() -> database.command("sql", "INSERT INTO D SET v = 1.2345678901234567890"));
+    try (final ResultSet rs = database.query("sql", "SELECT v FROM D")) {
+      assertThat(rs.next().<Double>getProperty("v")).isEqualTo(1.2345678901234567890d);
+    }
+  }
+
+  @Test
+  void doublePropertyTimesLongLiteralIsExactDecimal() {
+    database.command("sql", "CREATE DOCUMENT TYPE M");
+    database.command("sql", "CREATE PROPERTY M.v DOUBLE");
+    database.transaction(() -> database.command("sql", "INSERT INTO M SET v = 2.0"));
+    try (final ResultSet rs = database.query("sql", "SELECT v * 3.14159265358979323846 AS a FROM M")) {
+      assertThat(rs.next().<Object>getProperty("a")).isInstanceOf(BigDecimal.class);
+    }
+  }
+
+  @Test
+  void negativeLongLiteralAsDecimalIndexKey() {
+    database.command("sql", "CREATE DOCUMENT TYPE N");
+    database.command("sql", "CREATE PROPERTY N.k STRING");
+    database.command("sql", "CREATE PROPERTY N.dec DECIMAL");
+    database.command("sql", "CREATE INDEX ON N (dec) NOTUNIQUE");
+    database.transaction(() -> database.newDocument("N").set("k", "neg", "dec", new BigDecimal("-" + EXACT)).save());
+    try (final ResultSet rs = database.query("sql", "SELECT k FROM N WHERE dec = -" + EXACT)) {
+      assertThat(rs.next().<String>getProperty("k")).isEqualTo("neg");
+    }
+  }
+
+  @Test
+  void seventeenDigitRoundTripLiteralMatchesStoredDoubleWithoutIndex() {
+    database.command("sql", "CREATE DOCUMENT TYPE U");
+    database.command("sql", "CREATE PROPERTY U.k STRING");
+    database.command("sql", "CREATE PROPERTY U.d2 DOUBLE");
+    database.transaction(() -> {
+      database.newDocument("U").set("k", "tenth", "d2", 0.1d).save();
+      database.newDocument("U").set("k", "third", "d2", 1d / 3).save();
+    });
+    assertThat(keys("SELECT k FROM U WHERE d2 = 0.10000000000000001")).containsExactly("tenth");
+    assertThat(keys("SELECT k FROM U WHERE d2 = 0.33333333333333331")).containsExactly("third");
+    try (final ResultSet rs = database.query("sql", "SELECT 0.10000000000000001 AS a")) {
+      assertThat(rs.next().<Object>getProperty("a")).isEqualTo(0.1d);
+    }
+  }
+
+  @Test
+  void indexedAndUnindexedDoubleAgreeOnALongLiteral() {
+    database.command("sql", "CREATE DOCUMENT TYPE X");
+    database.command("sql", "CREATE PROPERTY X.k STRING");
+    database.command("sql", "CREATE PROPERTY X.plain DOUBLE");
+    database.command("sql", "CREATE PROPERTY X.idx DOUBLE");
+    database.command("sql", "CREATE INDEX ON X (idx) NOTUNIQUE");
+    database.transaction(() -> database.newDocument("X").set("k", "row", "plain", 1.5d, "idx", 1.5d).save());
+    for (final String op : new String[] { "=", ">=", "<=", ">", "<" }) {
+      final String literal = "1.5000000000000000000001";
+      assertThat(keys("SELECT k FROM X WHERE idx " + op + " " + literal)).as("idx " + op)
+          .isEqualTo(keys("SELECT k FROM X WHERE plain " + op + " " + literal));
+    }
+    assertThat(keys("SELECT k FROM X WHERE idx IN [1.5000000000000000000001]")).isEqualTo(keys("SELECT k FROM X WHERE plain IN [1.5000000000000000000001]"));
+    assertThat(keys("SELECT k FROM X WHERE idx IN [1.5000000000000000000001]")).isEmpty();
+    assertThat(keys("SELECT k FROM X WHERE idx >= 1.5000000000000000000001")).isEmpty();
+    assertThat(keys("SELECT k FROM X WHERE idx <= 1.5000000000000000000001")).containsExactly("row");
+    assertThat(keys("SELECT k FROM X WHERE idx BETWEEN 1.4000000000000000000001 AND 1.5000000000000000000001")).containsExactly("row");
+  }
+
+  @Test
+  void updateDeleteAndInOnIndexedDecimalAndDouble() {
+    database.command("sql", "CREATE DOCUMENT TYPE W");
+    database.command("sql", "CREATE PROPERTY W.k STRING");
+    database.command("sql", "CREATE PROPERTY W.dec DECIMAL");
+    database.command("sql", "CREATE PROPERTY W.dbl DOUBLE");
+    database.command("sql", "CREATE INDEX ON W (dec) NOTUNIQUE");
+    database.command("sql", "CREATE INDEX ON W (dbl) NOTUNIQUE");
+    database.transaction(() -> database.newDocument("W").set("k", "row", "dec", new BigDecimal(EXACT), "dbl", 1.5d).save());
+    assertThat(keys("SELECT k FROM W WHERE dec IN [" + EXACT + "]")).containsExactly("row");
+    // the exact comparison finds nothing on the DOUBLE row, indexed or not, so UPDATE and DELETE touch nothing
+    database.transaction(() -> {
+      try (final ResultSet rs = database.command("sql", "UPDATE W SET k = 'changed' WHERE dbl = 1.5000000000000000000001")) {
+        assertThat(rs.next().<Long>getProperty("count")).isEqualTo(0L);
+      }
+      try (final ResultSet rs = database.command("sql", "DELETE FROM W WHERE dbl = 1.5000000000000000000001")) {
+        assertThat(rs.next().<Long>getProperty("count")).isEqualTo(0L);
+      }
+    });
+    assertThat(keys("SELECT k FROM W")).containsExactly("row");
+  }
+
+  @Test
+  void mixedShortAndLongLiteralArithmeticIsDecimal() {
+    try (final ResultSet rs = database.query("sql", "SELECT 0.1 + 1.2345678901234567890 AS a")) {
+      assertThat((BigDecimal) rs.next().getProperty("a")).isEqualByComparingTo(new BigDecimal("1.3345678901234567890"));
+    }
+  }
+
+  @Test
+  void nonFiniteDoubleTimesLongLiteralDoesNotThrow() {
+    database.command("sql", "CREATE DOCUMENT TYPE F");
+    database.command("sql", "CREATE PROPERTY F.v DOUBLE");
+    database.transaction(() -> database.newDocument("F").set("v", Double.POSITIVE_INFINITY).save());
+    try (final ResultSet rs = database.query("sql",
+        "SELECT v * 3.14159265358979323846 AS a, 3.14159265358979323846 * v AS b, 1e999999999 * 1.2345678901234567890 AS c FROM F")) {
+      final Result r = rs.next();
+      assertThat(r.<Object>getProperty("a")).isEqualTo(Double.POSITIVE_INFINITY);
+      assertThat(r.<Object>getProperty("b")).isEqualTo(Double.POSITIVE_INFINITY);
+      assertThat(r.<Object>getProperty("c")).isEqualTo(Double.POSITIVE_INFINITY);
+    }
+  }
+
+  @Test
+  void reversedComparisonOrderByAndLimitWithLongLiteral() {
+    database.command("sql", "CREATE DOCUMENT TYPE O");
+    database.command("sql", "CREATE PROPERTY O.k STRING");
+    database.command("sql", "CREATE PROPERTY O.idx DOUBLE");
+    database.command("sql", "CREATE INDEX ON O (idx) NOTUNIQUE");
+    database.transaction(() -> database.newDocument("O").set("k", "row", "idx", 1.5d).save());
+    assertThat(keys("SELECT k FROM O WHERE 1.5000000000000000000001 > idx")).containsExactly("row");
+    assertThat(keys("SELECT k FROM O WHERE 1.5000000000000000000001 <= idx")).isEmpty();
+    assertThat(keys("SELECT k FROM O WHERE idx < 1.5000000000000000000001 ORDER BY idx")).containsExactly("row");
+    assertThat(keys("SELECT k FROM O LIMIT 1.5000000000000000000001")).hasSize(1);
+  }
+
+  @Test
+  void notEqualsBetweenAndDoubleNegationOnDecimal() {
+    database.command("sql", "CREATE DOCUMENT TYPE Q");
+    database.command("sql", "CREATE PROPERTY Q.k STRING");
+    database.command("sql", "CREATE PROPERTY Q.dec DECIMAL");
+    database.command("sql", "CREATE INDEX ON Q (dec) NOTUNIQUE");
+    database.transaction(() -> database.newDocument("Q").set("k", "row", "dec", new BigDecimal(EXACT)).save());
+    assertThat(keys("SELECT k FROM Q WHERE dec <> " + EXACT)).isEmpty();
+    assertThat(keys("SELECT k FROM Q WHERE dec != " + EXACT.replace("12345", "12346"))).containsExactly("row");
+    assertThat(keys("SELECT k FROM Q WHERE dec BETWEEN " + EXACT + " AND " + EXACT)).containsExactly("row");
+    try (final ResultSet rs = database.query("sql", "SELECT - -" + EXACT + " AS a")) {
+      assertThat((BigDecimal) rs.next().getProperty("a")).isEqualByComparingTo(new BigDecimal(EXACT));
+    }
+  }
+
+  /** pins the documented limit: a 17 digit literal is a double, so it does not reach a DECIMAL beyond double precision */
+  @Test
+  void seventeenDigitLiteralOnDecimalGoesThroughTheDouble() {
+    try (final ResultSet rs = database.query("sql", "SELECT 0.12345678901234567 AS a")) {
+      assertThat(rs.next().<Object>getProperty("a")).isInstanceOf(Double.class);
+    }
+  }
+
+  private List<String> keys(final String sql) {
+    final List<String> ks = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", sql)) {
+      while (rs.hasNext())
+        ks.add(rs.next().getProperty("k"));
+    }
+    return ks;
+  }
+}

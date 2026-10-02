@@ -211,6 +211,7 @@ import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
 
+import java.math.BigDecimal;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -312,6 +313,10 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    * the inner one.
    */
   private static final String NO_TARGET_ALIAS = "";
+  /** significant digits a double can carry: a literal with no more than this stays a double (issue #8872) */
+  private static final int MAX_DOUBLE_DIGITS = 17;
+  /** bound on the decimal places or exponent (scale) of a literal kept as an exact BigDecimal rather than a double (issue #8872) */
+  private static final int MAX_EXACT_DECIMAL_SCALE = 400;
 
   /** Target aliases of the statements currently being built, innermost first. See {@link #resolveTargetAlias}. */
   private final Deque<String> targetAliases = new ArrayDeque<>();
@@ -3141,7 +3146,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    * <p>
    * Negates the ALREADY-PARSED value rather than re-parsing a {@code "-"}-prefixed text, so the folded literal keeps
    * exactly the numeric type {@code 0 - X} used to produce ({@code -2147483648} stays a {@code Long}, an
-   * {@code L}-suffixed literal stays a {@code Long}, a suffix-less decimal stays a {@code Double}) and the sign lands
+   * {@code L}-suffixed literal stays a {@code Long}, a suffix-less decimal stays a {@code Double} unless it needs a
+   * {@code BigDecimal} to keep its digits) and the sign lands
    * correctly on every literal shape the visitors accept, not only on plain decimal.
    * <p>
    * A literal carrying a MODIFIER is left alone: a suffix binds tighter than the sign, so {@code -1.toString()} is
@@ -3161,8 +3167,10 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       negated = -f;
     else if (value instanceof final Double d)
       negated = -d;
+    else if (value instanceof final BigDecimal bd)
+      negated = bd.negate();
     else
-      // A magnitude the visitors could not represent as one of the four above has no folded form that is certainly
+      // A magnitude the visitors could not represent as one of the five above has no folded form that is certainly
       // equivalent, so leave it to the arithmetic.
       return null;
 
@@ -3381,13 +3389,14 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       if (text.endsWith("F") || text.endsWith("f")) {
         number.value = Float.parseFloat(text.substring(0, text.length() - 1));
       } else if (text.endsWith("D") || text.endsWith("d")) {
+        // the D suffix asks for a double, so it never takes the exact BigDecimal path of a suffix-less literal
         number.value = Double.parseDouble(text.substring(0, text.length() - 1));
       } else {
         // A suffix-less literal is a double. Parsing it as a float made `0.05` mean 0.05000000074505806, which
         // silently dropped every record sitting exactly on the boundary of a comparison against a DOUBLE or DECIMAL
         // property, and turned any magnitude above Float.MAX_VALUE into infinity. The `F` suffix asks for single
         // precision (issue #7609).
-        number.value = Double.parseDouble(text);
+        number.value = parseSuffixlessDecimal(text);
       }
     } catch (final NumberFormatException e) {
       throw new CommandSQLParsingException("Invalid floating point: " + text);
@@ -3395,6 +3404,36 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     baseExpr.number = number;
     return baseExpr;
+  }
+
+  /**
+   * Parses a suffix-less decimal literal (issue #8872). It stays a {@link Double} when a double holds it: at most 17
+   * significant digits (the {@code printf("%.17g"} round-trip form, which must keep matching the stored double), or a
+   * value the double prints back as the same number. A literal with more digits than that, which a double would truncate,
+   * is kept as an exact {@link BigDecimal} so a DECIMAL target or comparison sees what the user typed. Accepted
+   * limitation: a 16 or 17 digit literal on a DECIMAL property still goes through the double.
+   * <p>
+   * Hex floats, values outside the double range and a scale beyond {@link #MAX_EXACT_DECIMAL_SCALE} stay doubles, so a
+   * hostile exponent cannot become a BigDecimal whose arithmetic expands about a billion digits (the scale cap and the finite
+   * double range together bound the precision). Text of 15 characters or fewer is always a double (cheap pre-filter).
+   */
+  private static Number parseSuffixlessDecimal(final String text) {
+    final double d = Double.parseDouble(text);
+    if (text.length() > 15 && !Double.isInfinite(d)) {
+      try {
+        final BigDecimal exact = new BigDecimal(text);
+        final int precision = exact.precision();
+        // up to 17 significant digits is what a double carries (the `printf("%.17g")` round-trip form): such a literal IS
+        // the double, and turning it into a BigDecimal would stop it matching the stored double in an unindexed scan
+        if (precision > MAX_DOUBLE_DIGITS && Math.abs(exact.scale()) <= MAX_EXACT_DECIMAL_SCALE
+            && exact.compareTo(new BigDecimal(Double.toString(d))) != 0)
+          return exact;
+      } catch (final NumberFormatException ignore) {
+        // a hex float (BigDecimal rejects it) or an exponent that does not fit an int (underflow to 0.0): the double is
+        // what the literal always evaluated to
+      }
+    }
+    return d;
   }
 
   /**
@@ -3621,7 +3660,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
   /**
    * Function call visitor - parses function name and parameters.
-   * Grammar: identifier LPAREN (STAR | expression (COMMA expression)*)? RPAREN
+   * Grammar: identifier LPAREN (STAR | DISTINCT? expression (COMMA expression)*)? RPAREN
    */
   @Override
   public FunctionCall visitFunctionCall(final SQLParser.FunctionCallContext ctx) {
@@ -3650,6 +3689,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         params.add(starExpr);
         funcCall.params = params;
       } else if (CollectionUtils.isNotEmpty(ctx.expression())) {
+        // Aggregate over the distinct values only: count(DISTINCT x), sum(DISTINCT x)... (issue #8889)
+        funcCall.distinct = ctx.DISTINCT() != null;
         // Regular parameters
         final List<Expression> params = new ArrayList<>();
         for (final SQLParser.ExpressionContext exprCtx : ctx.expression()) {

@@ -339,7 +339,7 @@ public abstract class AbstractProperty implements Property {
     if (regexp != null)
       json.put("regexp", regexp);
 
-    json.put("custom", new JSONObject(custom));
+    json.put("custom", new JSONObject(new TreeMap<>(custom)));
 
     return json;
   }

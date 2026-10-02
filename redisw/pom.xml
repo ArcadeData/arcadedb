@@ -58,6 +58,21 @@
             <type>jar</type>
             <scope>test</scope>
         </dependency>
+        <!-- Raft cluster fixture (BaseRaftHATest) for the follower-routing IT of a redis batch (issue #8278). Test scope
+             only: redisw must not depend on ha-raft at runtime, the same wiring bolt and grpcw use. -->
+        <dependency>
+            <groupId>com.arcadedb</groupId>
+            <artifactId>arcadedb-ha-raft</artifactId>
+            <version>${project.parent.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.arcadedb</groupId>
+            <artifactId>arcadedb-ha-raft</artifactId>
+            <version>${project.parent.version}</version>
+            <scope>test</scope>
+            <type>test-jar</type>
+        </dependency>
     </dependencies>
 
     <build>

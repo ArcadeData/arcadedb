@@ -2284,10 +2284,19 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         LogManager.instance().log(this, Level.FINE, "Error closing old client: %s", t, t.getMessage());
       }
       try {
-        if (oldServer != null)
+        if (oldServer != null) {
           oldServer.close();
+          // Issue #8898: a close that returns with the server not CLOSED means a second server is about to start
+          // beside one that may still answer the leader. This does not see a close that Ratis already performed
+          // itself (close() is then a no-op that reports CLOSED), nor a gRPC shutdown that close() swallowed.
+          final LifeCycle.State afterClose = oldServer.getLifeCycleState();
+          if (afterClose != LifeCycle.State.CLOSED)
+            LogManager.instance().log(this, Level.WARNING,
+                "Old Ratis server is %s after close(); restart proceeds anyway",
+                afterClose);
+        }
       } catch (final Throwable t) {
-        LogManager.instance().log(this, Level.FINE, "Error closing old server: %s", t, t.getMessage());
+        LogManager.instance().log(this, Level.WARNING, "Error closing old Ratis server before restart: %s", t, t.getMessage());
       }
 
       try {
@@ -2341,7 +2350,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
             offerTimeout, grpcMessageSizeMax, maxQueuedBytes, this::refreshRaftClient);
 
         restartFailureCount = 0;
-        HALog.log(this, HALog.BASIC, "Ratis recovered successfully");
+        LogManager.instance().log(this, Level.INFO, "Ratis restarted in place (%s storage)", formatStorage ? "reformatted" : "recovered");
       } catch (final Throwable t) {
         restartFailureCount++;
         LogManager.instance().log(this, Level.SEVERE,
@@ -4762,8 +4771,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * unit-tested without a running division.
    */
   Set<String> handoffReachablePeers() {
-    final Set<String> reachable = handoffReachablePeerIds(getFollowerStates(), handoffContactWindowMs);
-    return withoutServiceGapPeers(reachable, peerCapabilities.peersWithServiceGap());
+    return withoutServiceGapPeers(followerContactPeers(), peerCapabilities.peersWithServiceGap());
+  }
+
+  /** The followers that answered this leader recently, without the service-gap screen of {@link #handoffReachablePeers()}. */
+  Set<String> followerContactPeers() {
+    return handoffReachablePeerIds(getFollowerStates(), handoffContactWindowMs);
   }
 
   /**

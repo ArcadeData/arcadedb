@@ -4000,6 +4000,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     final String intendedLeaderId = LeaderForwardContext.stableLeaderId(
         leaderIdBeforeDial != null ? leaderIdBeforeDial.toString() : null,
         leaderIdAfterDial != null ? leaderIdAfterDial.toString() : null);
+    // The refusal hold is keyed on the node dialled, even when leadership moved during the resolution (issue #8709).
+    final String holdLeaderId = LeaderForwardContext.holdLeaderId(intendedLeaderId,
+        leaderIdBeforeDial != null ? leaderIdBeforeDial.toString() : null);
 
     // The cluster named an HTTPS endpoint for the leader and this node cannot reach it. Posting the write to the
     // plain listener instead would put it, and the cluster token below, on the wire in clear; refuse with the
@@ -4207,8 +4210,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         // this node's own view stops naming it, a retry would go straight back to it and be refused the same way,
         // hundreds of times a second for a caller that retries without back-off (issue #8480). Hold the refusal
         // until the view moves, bounded by the same wait a leaderless forward gets, so the retry dials the new one.
-        if (refusedByTheLeaderItNamedNoOther(refusal, intendedLeaderId))
-          awaitLeaderViewMovedFrom(raft::getLeaderId, intendedLeaderId, leaderWaitMs, LEADER_WAIT_POLL_INTERVAL_MS);
+        if (refusedByTheLeaderItNamedNoOther(refusal, holdLeaderId))
+          awaitLeaderViewMovedFrom(raft::getLeaderId, holdLeaderId, leaderWaitMs, LEADER_WAIT_POLL_INTERVAL_MS);
         throw refusal;
       }
 

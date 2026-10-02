@@ -481,8 +481,9 @@ public class TypeConversionTest extends TestHelper {
     database.command("sql", "alter database dateTimeImplementation `java.time.LocalDateTime`");
     try {
       database.begin();
-      // Store the reference time at the start
-      final LocalDateTime referenceTime = LocalDateTime.now();
+      // Store the reference time at the start. A LocalDateTime is stored as a UTC wall clock, which is the clock
+      // sysdate() reads (issue #8892): a JVM-local one would sit hours away from it on any non-UTC machine
+      final LocalDateTime referenceTime = LocalDateTime.now(ZoneOffset.UTC);
 
       // Insert records with specific offsets from reference time
       database.command("sql", "insert into ConversionTest set datetime_micros = ?",
@@ -549,7 +550,7 @@ public class TypeConversionTest extends TestHelper {
               from ConversionTest
               where abs( datetime_micros - sysdate() ) < duration(100000000000, 'nanosecond')
               """,
-          DateUtils.getFormatter("yyyy-MM-dd HH:mm:ss.SSS").format(LocalDateTime.now()));
+          DateUtils.getFormatter("yyyy-MM-dd HH:mm:ss.SSS").format(LocalDateTime.now(ZoneOffset.UTC)));
 
       resultsize = StreamSupport.stream(resultSet, false)
           .peek(r -> assertThat(r.<Duration>getProperty("diff")).isNegative())
@@ -563,7 +564,7 @@ public class TypeConversionTest extends TestHelper {
               from ConversionTest
               where abs( datetime_micros - sysdate() ) < duration(3, "second")
               """,
-          DateUtils.getFormatter("yyyy-MM-dd HH:mm:ss.SSS").format(LocalDateTime.now()));
+          DateUtils.getFormatter("yyyy-MM-dd HH:mm:ss.SSS").format(LocalDateTime.now(ZoneOffset.UTC)));
 
       resultsize = StreamSupport.stream(resultSet, false)
           .peek(r -> assertThat(r.<Duration>getProperty("diff")).isNegative())

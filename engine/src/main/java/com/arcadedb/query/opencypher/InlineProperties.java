@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Document;
+import com.arcadedb.query.opencypher.ast.ComparisonExpression;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
@@ -184,7 +185,7 @@ public final class InlineProperties {
   private static boolean numbersEqual(final Number a, final Number b) {
     if (isIntegral(a) && isIntegral(b))
       return a.longValue() == b.longValue();
-    return a.doubleValue() == b.doubleValue();
+    return ComparisonExpression.floatAwareEquals(a, b);
   }
 
   private static boolean isIntegral(final Number number) {

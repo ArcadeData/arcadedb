@@ -33,6 +33,7 @@ import org.junit.jupiter.api.Test;
 import java.time.LocalDate;
 import java.util.Calendar;
 import java.util.Date;
+import java.util.List;
 import java.util.Map;
 import java.util.TimeZone;
 
@@ -196,4 +197,18 @@ class JsonGraphSerializerTest extends TestHelper {
     assertThat(encoded).isEqualTo(birth.toEpochDay());
   }
 
+  /**
+   * Issue #8871: a non-finite item inside a list used to be rewritten to 0 by JSONArray.put(Number); it travels as the
+   * NonFiniteNumbers marker, like the scalar case.
+   */
+  @Test
+  void nonFiniteListItemsAreEncodedAsMarkers() {
+    final MutableVertex[] v = new MutableVertex[1];
+    database.transaction(() -> v[0] = database.newVertex("TestVertexType")
+        .set("ds", List.of(1.5, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, Double.NaN, Float.NEGATIVE_INFINITY)).save());
+
+    final String json = jsonGraphSerializer.serializeGraphElement(v[0]).toString();
+
+    assertThat(JsonPath.<List<Object>>read(json, "$.p.ds")).containsExactly(1.5, "PosInfinity", "NegInfinity", "NaN", "NegInfinity");
+  }
 }

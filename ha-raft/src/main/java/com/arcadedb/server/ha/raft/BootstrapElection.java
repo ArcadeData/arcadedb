@@ -105,6 +105,10 @@ import java.util.logging.Level;
  */
 class BootstrapElection {
 
+  /** How long the transfer to the elected source waits for it to be proven reachable (issue #8714). */
+  static final long REACHABILITY_WAIT_MS = 2_000L;
+  private static final long REACHABILITY_POLL_MS = 100L;
+
   /**
    * Single attempt outcome. Used by tests; production code only inspects {@link #COMMITTED} vs
    * the rest to know whether the protocol can stop running on subsequent leader changes.
@@ -251,6 +255,46 @@ class BootstrapElection {
       if (outcome != Outcome.TRANSFERRED)
         concludePass(passId, committed);
     }
+  }
+
+  /**
+   * The targeted transfer to the elected source, screened and budgeted like the hand-off drivers (issue #8714). While a
+   * targeted transfer is pending Ratis refuses every write on this leader, so a source that died after answering the
+   * collection must not hold the whole bootstrap timeout: the budget is the slice a hand-off candidate gets
+   * ({@link RaftClusterManager#candidateTransferBudgetMs}), and the transfer is only issued once the source is proven
+   * reachable by {@link RaftHAServer#followerContactPeers()}, waiting at most {@link #REACHABILITY_WAIT_MS} for the
+   * first acknowledgement of this leader's term.
+   *
+   * @throws IllegalStateException if the source is not proven reachable, so the pass fails and is retried next term
+   */
+  void transferToElectedSource(final String sourceId, final long timeoutMs) {
+    transferToElectedSource(sourceId, timeoutMs, REACHABILITY_WAIT_MS);
+  }
+
+  void transferToElectedSource(final String sourceId, final long timeoutMs, final long reachabilityWaitMs) {
+    transferToElectedSource(sourceId, timeoutMs, reachabilityWaitMs, () -> {
+    });
+  }
+
+  /** As above, running {@code beforeTransfer} once the source is proven reachable and just before the transfer is issued. */
+  void transferToElectedSource(final String sourceId, final long timeoutMs, final long reachabilityWaitMs,
+      final Runnable beforeTransfer) {
+    final long budgetMs = RaftClusterManager.candidateTransferBudgetMs(timeoutMs, timeoutMs);
+    final long reachabilityDeadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(Math.min(budgetMs, reachabilityWaitMs));
+    // Follower contact only, not the service-gap screen of handoffReachablePeers(): during bootstrap every node may
+    // report a gap for a database it has not loaded yet, and the elected source is chosen for its data, not its readiness.
+    while (!haServer.followerContactPeers().contains(sourceId)) {
+      if (System.nanoTime() - reachabilityDeadline >= 0)
+        throw new IllegalStateException("elected source " + sourceId + " is not reachable from this leader");
+      try {
+        Thread.sleep(REACHABILITY_POLL_MS);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw new IllegalStateException("interrupted while waiting for elected source " + sourceId, e);
+      }
+    }
+    beforeTransfer.run();
+    haServer.transferLeadership(sourceId, budgetMs);
   }
 
   /**
@@ -1002,13 +1046,18 @@ class BootstrapElection {
       final Set<String> toHold = new HashSet<>(states.keySet());
       toHold.addAll(held);
       final ArcadeStateMachine stateMachine = haServer.getStateMachine();
-      if (stateMachine != null)
-        stateMachine.announceBootstrapPass(passId, toHold, 2L * timeoutMs);
+      // Announced only once the source is proven reachable, so a screen that refuses leaves the unbounded self-hold alone.
+      // Deliberately not rolled back if the transfer itself then fails: that is the behaviour of a failed transfer before #8714
+      final Runnable announce = () -> {
+        if (stateMachine != null)
+          stateMachine.announceBootstrapPass(passId, toHold, 2L * timeoutMs);
+      };
       try {
-        haServer.transferLeadership(source.toString(), timeoutMs);
+        transferToElectedSource(source.toString(), timeoutMs, REACHABILITY_WAIT_MS, announce);
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.WARNING,
-            "Bootstrap: leadership transfer to %s failed: %s; will retry next term", source, e.getMessage());
+            "Bootstrap: leadership transfer to %s failed or was not issued (a slow source may exceed its budget slice): %s; "
+                + "will retry next term", source, e.getMessage());
         throw new RuntimeException(e);
       }
       return Outcome.TRANSFERRED;

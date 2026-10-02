@@ -829,6 +829,14 @@ public enum Type {
             return truncateToPropertyPrecision(time, property);
         } else if (value instanceof Number number) {
           return DateUtils.date(database, DateUtils.numberToEpochUnits(number), LocalDateTime.class);
+        } else if (value instanceof Instant instant) {
+          // the moment as the stored value reads back (UTC wall clock, as the Date and Number branches do), so an
+          // equality lookup agrees with the ordering path and with the index key
+          return truncateToPropertyPrecision(LocalDateTime.ofInstant(instant, ZoneOffset.UTC), property);
+        } else if (value instanceof ZonedDateTime zoned) {
+          return truncateToPropertyPrecision(LocalDateTime.ofInstant(zoned.toInstant(), ZoneOffset.UTC), property);
+        } else if (value instanceof OffsetDateTime offset) {
+          return truncateToPropertyPrecision(LocalDateTime.ofInstant(offset.toInstant(), ZoneOffset.UTC), property);
         } else if (value instanceof Date date)
           return DateUtils.dateTime(database, date.getTime(), ChronoUnit.MILLIS, LocalDateTime.class,
               property != null ? DateUtils.getPrecisionFromType(property.getType()) : ChronoUnit.MILLIS);
@@ -1565,6 +1573,62 @@ public enum Type {
     if (value instanceof Double double1)
       return !double1.isNaN() && !double1.isInfinite();
     return true;
+  }
+
+  /**
+   * Equality between two numbers of possibly different types. Besides what {@link #castComparableNumber} answers it
+   * accepts a narrower floating type as equal when the other operand converts to it exactly: a FLOAT holding 0.1f
+   * equals the double 0.10000000149011612 ({@code (double) f}, what a client reading the FLOAT back hands in) and a
+   * DOUBLE holding 0.1 equals the BigDecimal 0.10000000000000001. That is the rule an index applies to its key
+   * ({@code Type.convert} to the key type), so a lookup answers the same with and without the index (issue #8882).
+   * Ordering is untouched: it keeps the decimal reading of {@link #widenFloat}.
+   * <p>
+   * The relation is not transitive (0.1f equals both 0.1 and 0.10000000149011612, which differ) and the Double/BigDecimal
+   * rule is as loose as the double's ulp, as the index's is: never use it for hashing or grouping. NaN equals NaN here, as
+   * {@code Double.equals} says; a caller needing the IEEE answer (Cypher) guards for it.
+   *
+   * @param left  the first operand
+   * @param right the second operand
+   *
+   * @return {@code true} when the two numbers are equal
+   */
+  public static boolean numbersEqual(final Number left, final Number right) {
+    // a BigDecimal is always finite, and the promotion below cannot read NaN or an infinity as one
+    if ((right instanceof BigDecimal && !isFinite(left)) || (left instanceof BigDecimal && !isFinite(right)))
+      return false;
+
+    // Float against Double is the common scan pair: answered without the array castComparableNumber allocates
+    if (left instanceof Float f && right instanceof Double d)
+      return floatEqualsDouble(f, d);
+    if (left instanceof Double d && right instanceof Float f)
+      return floatEqualsDouble(f, d);
+
+    final Number[] pair = castComparableNumber(left, right);
+    if (pair[0].equals(pair[1]))
+      return true;
+
+    if (left instanceof Float f)
+      return narrowsTo(f, right);
+    if (right instanceof Float f)
+      return narrowsTo(f, left);
+    if (left instanceof Double d && right instanceof BigDecimal bd)
+      return Double.isFinite(d) && Double.compare(d, bd.doubleValue()) == 0;
+    if (left instanceof BigDecimal bd && right instanceof Double d)
+      return Double.isFinite(d) && Double.compare(d, bd.doubleValue()) == 0;
+    return false;
+  }
+
+  // Deliberately as loose as the index key: Type.convert narrows the operand, so 1e-50 reads as 0.0f and finds it (#8882)
+  private static boolean floatEqualsDouble(final float f, final double d) {
+    // same answer as the castComparableNumber path: the decimal reading of f, else the double that narrows to f
+    return Double.compare(widenFloat(f), d) == 0 || narrowsTo(f, d);
+  }
+
+  private static boolean narrowsTo(final float f, final Number other) {
+    if (other instanceof Double || other instanceof BigDecimal)
+      // Float.compare, not ==: negative zero is not zero, as Double.equals reads it
+      return Float.isFinite(f) && Float.compare(f, other.floatValue()) == 0;
+    return false;
   }
 
   public static Number[] castComparableNumber(Number left, Number right) {

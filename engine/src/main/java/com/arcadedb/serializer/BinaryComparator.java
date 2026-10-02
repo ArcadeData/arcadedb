@@ -516,6 +516,21 @@ public class BinaryComparator {
     return Integer.compare(buffer1[mismatch] & 0xFF, buffer2.getByte(buffer2.position() - 1) & 0xFF);
   }
 
+  /**
+   * The exact twin of {@link #equals(Object, Object)} for key matching inside hash chains, where the FLOAT/DOUBLE
+   * looseness of {@link Type#numbersEqual} would let a Double key overwrite a Float one (issue #8882).
+   */
+  public static boolean equalsExact(final Object a, final Object b) {
+    if (a instanceof BigDecimal && b instanceof BigDecimal)
+      // scale-sensitive on purpose: BigDecimal.hashCode() is, and these keys pick their slot by hash
+      return a.equals(b);
+    if (!(a != null && b != null && !a.getClass().equals(b.getClass()) && a instanceof Number number && b instanceof Number number1))
+      return equals(a, b);
+    final Number[] pair = Type.castComparableNumber(number, number1);
+    return pair[0].equals(pair[1]);
+  }
+
+  /** Numbers of different classes follow {@link Type#numbersEqual}: not transitive, so never a hash or grouping key. */
   public static boolean equals(final Object a, final Object b) {
     if (a == b)
       return true;
@@ -529,9 +544,10 @@ public class BinaryComparator {
       return equalsBinary(binary, binary1);
     else if (!a.getClass().equals(b.getClass()) &&//
         a instanceof Number number && b instanceof Number number1) {
-      final Number[] pair = Type.castComparableNumber(number, number1);
-      return pair[0].equals(pair[1]);
-    }
+      return Type.numbersEqual(number, number1);
+    } else if (a instanceof BigDecimal decimal && b instanceof BigDecimal decimal1)
+      // compareTo, not equals(): 19.9 and 19.90 are one value, as the index, GROUP BY and the range answer
+      return decimal.compareTo(decimal1) == 0;
     return a.equals(b);
   }
 

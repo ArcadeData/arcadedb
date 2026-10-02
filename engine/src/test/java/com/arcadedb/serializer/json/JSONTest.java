@@ -628,4 +628,18 @@ class JSONTest extends TestHelper {
 //    }
 //    System.out.println("JSON long: " + (System.currentTimeMillis() - beginTime) + "ms");
 //  }
+
+  /**
+   * Issue #8871: the array counterpart of getBigDecimal(String) parses the JSON text, so no digit is lost through a double.
+   */
+  @Test
+  void arrayGetBigDecimalKeepsEveryDigit() {
+    final JSONArray array = new JSONArray("[12345678901234567890.123456789012345678, null, \"text\", 7]");
+
+    assertThat(array.getBigDecimal(0)).isEqualByComparingTo(new BigDecimal("12345678901234567890.123456789012345678"));
+    assertThat(array.getBigDecimal(3)).isEqualByComparingTo(BigDecimal.valueOf(7));
+    assertThatThrownBy(() -> array.getBigDecimal(1)).isInstanceOf(JSONException.class);
+    assertThatThrownBy(() -> array.getBigDecimal(2)).isInstanceOf(JSONException.class);
+    assertThatThrownBy(() -> array.getBigDecimal(10)).isInstanceOf(JSONException.class);
+  }
 }

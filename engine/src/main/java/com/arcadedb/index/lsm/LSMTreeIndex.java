@@ -557,7 +557,16 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   @Override
   public IndexCursor get(final Object[] keys, final int limit) {
     checkIsValid();
-    final Object[] convertedKeys = convertKeys(keys);
+    final Object[] convertedKeys;
+    try {
+      convertedKeys = convertKeys(keys);
+    } catch (final IllegalArgumentException e) {
+      LogManager.instance().log(this, Level.FINE, "Lookup key cannot be read as the key types of index '%s': no row", e, getName());
+      // A lookup key the declared type cannot read ('7.0' against an INTEGER key; NumberFormatException is an IllegalArgumentException) cannot equal any indexed
+      // key: it answers no row, as the same predicate does without the index (issue #8888). A WRITE of such a key
+      // still fails in put(), which is the build/insert contract convertIndexKeyOrNull documents.
+      return EMPTY_CURSOR;
+    }
 
     if (getDatabase().getTransaction().getStatus() == TransactionContext.STATUS.BEGUN) {
       Set<IndexCursorEntry> txChanges = null;

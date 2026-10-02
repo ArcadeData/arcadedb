@@ -26,8 +26,8 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import static com.arcadedb.utility.SubclassMocks.mock;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
 
 /**
  * The handshake between the committing thread and the Raft apply thread over a transaction this node originated

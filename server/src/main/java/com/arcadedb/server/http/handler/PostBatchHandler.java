@@ -1928,6 +1928,8 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     final String leaderIdBeforeDial = ha.getLeaderPeerId();
     final LeaderDial dial = LeaderDial.resolve(ha, httpClient);
     final String intendedLeaderId = LeaderForwardContext.stableLeaderId(leaderIdBeforeDial, ha.getLeaderPeerId());
+    // The refusal hold is keyed on the node dialled, even when leadership moved during the resolution (issue #8709).
+    final String holdLeaderId = LeaderForwardContext.holdLeaderId(intendedLeaderId, leaderIdBeforeDial);
     if (dial == null)
       return new ExecutionResponse(503,
           "{ \"error\" : \"Cannot forward batch to leader: leader address is not available\"}");
@@ -2007,7 +2009,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
         // among those is held until this node's view moves, as on the buffered encoding below (issue #8486).
         return LeaderCommandForwarder.holdUnnamedNotTheLeaderRefusal(relayNdJsonFromLeader(exchange, databaseName, url,
                 LeaderDial.sendBounded(dial.client(), request, HttpResponse.BodyHandlers.ofInputStream(), deadlineMs),
-                deadlineMs, body), ha, intendedLeaderId, httpServer.getServer().getConfiguration());
+                deadlineMs, body), ha, holdLeaderId, httpServer.getServer().getConfiguration());
 
       final HttpResponse<String> response = LeaderDial.sendBounded(dial.client(), request,
           HttpResponse.BodyHandlers.ofString(), deadlineMs);
@@ -2023,7 +2025,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       // back to it (issue #8486).
       return LeaderCommandForwarder.holdUnnamedNotTheLeaderRefusal(
           LeaderCommandForwarder.relayedResponse(response.statusCode(), response.body(), response.headers()), ha,
-          intendedLeaderId, httpServer.getServer().getConfiguration());
+          holdLeaderId, httpServer.getServer().getConfiguration());
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
       LogManager.instance().log(this, Level.WARNING, "Interrupted while forwarding /batch to leader at %s", url);

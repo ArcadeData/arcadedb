@@ -74,6 +74,33 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
   }
 
   /**
+   * The key type of a {@code BY ITEM} index over a LIST: the declared {@code OF} item type when it is a plain scalar, so
+   * a lookup by a number of another Java type ({@code CONTAINS 7} against a {@code LIST OF DOUBLE} holding {@code 7.0})
+   * is converted to the stored type the way a scan compares it (issue #8890). STRING is kept for:
+   * <ul>
+   *   <li>a list with no declared item type, since lists can hold heterogeneous values;</li>
+   *   <li>non-scalar items (links, embedded documents, nested collections);</li>
+   *   <li>BOOLEAN, since a lookup by the text 'true' cannot be read as a boolean key;</li>
+   *   <li>a FULL_TEXT index, which tokenizes text.</li>
+   * </ul>
+   */
+  static Type listItemKeyType(final Property property, final Schema.INDEX_TYPE indexType) {
+    if (indexType == Schema.INDEX_TYPE.FULL_TEXT)
+      return Type.STRING;
+
+    final String ofType = property.getOfType();
+    final Type itemType = ofType != null ? Type.getTypeByName(ofType) : null;
+    if (itemType == null)
+      return Type.STRING;
+
+    return switch (itemType) {
+      case LIST, MAP, EMBEDDED, LINK, BINARY, BOOLEAN, ARRAY_OF_SHORTS, ARRAY_OF_INTEGERS, ARRAY_OF_LONGS, ARRAY_OF_FLOATS,
+           ARRAY_OF_DOUBLES -> Type.STRING;
+      default -> itemType;
+    };
+  }
+
+  /**
    * The one copy constructor of the whole builder hierarchy: the specialised builders {@link #withType} swaps in -
    * {@link TypeFullTextIndexBuilder}, {@link TypeLSMVectorIndexBuilder}, {@link TypeLSMSparseVectorIndexBuilder} and
    * {@link TypeGeoIndexBuilder} - all delegate here, each supplying only the two things that make it different: the
@@ -433,9 +460,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
         }
 
         if (isByItem) {
-          // For BY ITEM on LIST, the key type should be STRING (since list items are indexed individually).
-          // Lists can contain heterogeneous types, so we use STRING as a generic type for list items
-          keyTypes[i++] = Type.STRING;
+          keyTypes[i++] = listItemKeyType(property, indexType);
         } else if (isByKey) {
           // MAP keys are strings
           keyTypes[i++] = Type.STRING;

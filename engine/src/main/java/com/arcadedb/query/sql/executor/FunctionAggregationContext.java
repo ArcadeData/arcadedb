@@ -21,9 +21,15 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.function.HeapBufferingFunction;
 import com.arcadedb.function.sql.SQLAggregatedFunction;
 import com.arcadedb.query.sql.parser.Expression;
+import com.arcadedb.schema.Type;
 
+import java.lang.reflect.Array;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Delegates to an aggregate function for aggregation calculation
@@ -31,13 +37,19 @@ import java.util.List;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class FunctionAggregationContext implements AggregationContext, HeapBufferingFunction {
+  // a NULL is one more distinct value: the function sees it once, and ignores it or keeps it as it always did
+  private static final Object NULL_KEY = new Object();
+
   private final SQLFunction        aggregateFunction;
   private       List<Expression>   params;
   // WHAT A FUNCTION THAT KEEPS EVERY VALUE HOLDS (list(), percentile()...), CHARGED TO THE HEAP BUDGET OF ALL THE
   // QUERIES THROUGH THE OPERATION OF THE STEP THAT AGGREGATES (ISSUE #8591); NULL FOR A RUNNING STATE OF FIXED SIZE
   private       OperationHeapLimit heapLimit;
+  // THE DISTINCT VALUES ALREADY GIVEN TO THE FUNCTION - count(DISTINCT x) - OR NULL WHEN IT SEES EVERY VALUE (ISSUE #8889)
+  private final Set<Object>      seen;
 
-  public FunctionAggregationContext(final SQLFunction function, final List<Expression> params) {
+  public FunctionAggregationContext(final SQLFunction function, final List<Expression> params, final boolean distinct) {
+    this.seen = distinct ? new HashSet<>() : null;
     this.aggregateFunction = function;
     this.params = params;
     if (this.params == null)
@@ -51,7 +63,8 @@ public class FunctionAggregationContext implements AggregationContext, HeapBuffe
 
   @Override
   public void setHeapLimit(final OperationHeapLimit owner) {
-    if (aggregateFunction instanceof SQLAggregatedFunction function && function.holdsEveryValue())
+    // a DISTINCT aggregate remembers every distinct value it has seen, whatever the function keeps itself
+    if (seen != null || aggregateFunction instanceof SQLAggregatedFunction function && function.holdsEveryValue())
       heapLimit = owner.child(aggregateFunction.getName() + "()");
   }
 
@@ -62,7 +75,8 @@ public class FunctionAggregationContext implements AggregationContext, HeapBuffe
 
   @Override
   public boolean canMerge() {
-    return aggregateFunction instanceof SQLAggregatedFunction function && function.canMergePartials();
+    // the distinct values seen by two partial states cannot be told apart once each has folded them into its result
+    return seen == null && aggregateFunction instanceof SQLAggregatedFunction function && function.canMergePartials();
   }
 
   @Override
@@ -77,8 +91,61 @@ public class FunctionAggregationContext implements AggregationContext, HeapBuffe
     for (final Expression expr : params)
       paramValues.add(expr.execute(next, context));
 
+    if (seen != null && !firstTimeSeen(paramValues))
+      return;
+
     aggregateFunction.execute(next, null, null, paramValues.toArray(), context);
-    if (heapLimit != null)
+    // a DISTINCT call is charged through the set of distinct values it remembers, which share the function's own items
+    if (heapLimit != null && seen == null)
       heapLimit.chargeElement(paramValues.size() == 1 ? paramValues.getFirst() : paramValues, 0);
+  }
+
+  /**
+   * Records the argument values and tells whether they are new. Equality follows the rule of GROUP BY and SELECT
+   * DISTINCT: numbers meet in a canonical form, so {@code 1} and {@code 1.0}, or {@code 19.9} and {@code 19.90}, are
+   * one value. A NULL is one more value, seen once.
+   */
+  private boolean firstTimeSeen(final List<Object> paramValues) {
+    final Object element;
+    if (paramValues.size() == 1) {
+      // the common count(DISTINCT x): no array, no wrapping list
+      element = normalizeForKey(paramValues.getFirst());
+    } else {
+      final Object[] key = new Object[paramValues.size()];
+      for (int i = 0; i < key.length; i++)
+        key[i] = normalizeForKey(paramValues.get(i));
+      element = Arrays.asList(key);
+    }
+
+    if (!seen.add(element))
+      return false;
+
+    if (heapLimit != null)
+      heapLimit.add(seen.size(), element, HeapEstimator.HASH_ENTRY_BYTES + HeapEstimator.OBJECT_BYTES);
+    return true;
+  }
+
+  private static Object normalizeForKey(final Object value) {
+    if (value == null)
+      return NULL_KEY;
+    if (value instanceof Collection<?> collection) {
+      final List<Object> items = new ArrayList<>(collection.size());
+      for (final Object item : collection)
+        items.add(item == null ? null : normalizeForKey(item));
+      return items;
+    }
+    return value.getClass().isArray() ? normalizeForKey(arrayItems(value)) : Type.normalizeNumberForKey(value);
+  }
+
+  /** A Java array compares by identity: its content is what makes two values the same */
+  private static List<Object> arrayItems(final Object array) {
+    if (array instanceof Object[] objects)
+      return Arrays.asList(objects);
+
+    final int length = Array.getLength(array);
+    final List<Object> items = new ArrayList<>(length);
+    for (int i = 0; i < length; i++)
+      items.add(Array.get(array, i));
+    return items;
   }
 }

@@ -35,8 +35,8 @@ import org.junit.jupiter.api.Test;
 import java.io.File;
 import java.util.List;
 
+import static com.arcadedb.utility.SubclassMocks.mock;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
