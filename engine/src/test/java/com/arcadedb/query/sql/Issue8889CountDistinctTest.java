@@ -159,7 +159,7 @@ class Issue8889CountDistinctTest extends TestHelper {
     load();
     assertThatThrownBy(() -> database.query("sql", "SELECT abs(DISTINCT b) AS n FROM P").next())
         .isInstanceOf(CommandExecutionException.class)
-        .hasMessageContaining("DISTINCT is supported only inside an aggregate function");
+        .hasMessageContaining("DISTINCT is supported only by an aggregate function");
   }
 
   @Test
@@ -177,7 +177,7 @@ class Issue8889CountDistinctTest extends TestHelper {
   }
 
   @Test
-  void distinctInsideAnExpressionHavingAndOrderBy() {
+  void distinctInsideAnExpressionFilterAndOrderBy() {
     load();
     try (final ResultSet rs = database.query("sql", "SELECT count(DISTINCT b) + 1 AS n, count(DISTINCT b) * 1.0 / count(*) AS r FROM P")) {
       final var row = rs.next();
@@ -203,8 +203,11 @@ class Issue8889CountDistinctTest extends TestHelper {
       database.newDocument("Nl").set("w", 1).save();
       database.newDocument("Nl").set("w", 2).save();
     });
-    try (final ResultSet rs = database.query("sql", "SELECT list(DISTINCT v) AS l FROM Nl")) {
-      assertThat(rs.next().<List<Object>>getProperty("l")).hasSizeLessThanOrEqualTo(2);
+    // list() skips a NULL, so the one NULL the DISTINCT set lets through leaves the list exactly as list(v)
+    try (final ResultSet rs = database.query("sql", "SELECT list(DISTINCT v) AS l, list(v) AS all FROM Nl")) {
+      final var row = rs.next();
+      assertThat(row.<List<Object>>getProperty("l")).containsExactly(1);
+      assertThat(row.<List<Object>>getProperty("all")).containsExactly(1);
     }
   }
 

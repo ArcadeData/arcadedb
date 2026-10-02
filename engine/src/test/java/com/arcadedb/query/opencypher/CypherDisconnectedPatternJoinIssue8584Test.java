@@ -240,6 +240,19 @@ class CypherDisconnectedPatternJoinIssue8584Test extends TestHelper {
   }
 
   @Test
+  void aLongAndADoubleAbovePowerOfTwoFiftyThreeMeetInTheJoinAsInTheScan() {
+    database.transaction(() -> {
+      database.getSchema().createVertexType("PowL");
+      database.getSchema().createVertexType("PowD");
+      database.newVertex("PowL").set("id", 1).set("x", 1L << 60).save();
+      database.newVertex("PowL").set("id", 2).set("x", (1L << 60) + 1).save();
+      database.newVertex("PowD").set("id", 1).set("y", 1152921504606846976.0d).save();
+    });
+    final String query = "MATCH (a:PowL), (b:PowD) WHERE a.x = b.y RETURN a.id AS a, b.id AS b";
+    assertThat(assertSameAsFilteredProduct(query, "a.x = b.y")).containsExactly("1/1");
+  }
+
+  @Test
   void aKeyDeclaredOfAnotherKindIsNotSought() {
     // A LONG against a STRING index would read the whole label for every person: the planner knows it from the schema
     final String query = "MATCH (p:Person), (c:City) WHERE c.code = p.zip RETURN p.id AS a, c.id AS b";
