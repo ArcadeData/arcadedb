@@ -43,10 +43,10 @@ class Issue8882FloatDoubleEqualityTest extends TestHelper {
     setup();
     for (int i = 0; i < FLOATS.length; i++) {
       final float f = FLOATS[i];
-      assertAll(i, "f", "g", (double) f);
-      assertAll(i, "f", "g", Float.valueOf(f));
-      assertAll(i, "f", "g", Double.valueOf(Float.toString(f)));
-      assertAll(i, "f", "g", new BigDecimal(f).round(new MathContext(9)));
+      assertFoundEverywhere(i, "f", "g", (double) f);
+      assertFoundEverywhere(i, "f", "g", Float.valueOf(f));
+      assertFoundEverywhere(i, "f", "g", Double.valueOf(Float.toString(f)));
+      assertFoundEverywhere(i, "f", "g", new BigDecimal(f).round(new MathContext(9)));
     }
   }
 
@@ -55,9 +55,9 @@ class Issue8882FloatDoubleEqualityTest extends TestHelper {
     setup();
     for (int i = 0; i < DOUBLES.length; i++) {
       final double d = DOUBLES[i];
-      assertAll(i, "d", "e", new BigDecimal(d).round(new MathContext(17)));
-      assertAll(i, "d", "e", new BigDecimal(d));
-      assertAll(i, "d", "e", Double.valueOf(d));
+      assertFoundEverywhere(i, "d", "e", new BigDecimal(d).round(new MathContext(17)));
+      assertFoundEverywhere(i, "d", "e", new BigDecimal(d));
+      assertFoundEverywhere(i, "d", "e", Double.valueOf(d));
     }
   }
 
@@ -107,6 +107,26 @@ class Issue8882FloatDoubleEqualityTest extends TestHelper {
   }
 
   @Test
+  void inListMissesStayThreeValued() {
+    setup();
+    // a miss on a mixed Float/Double list stays a plain FALSE, and UNKNOWN once the list holds a null
+    assertThat(count("sql", "SELECT FROM T WHERE g IN [0.2, 0.3] AND k = 0")).isEqualTo(0);
+    assertThat(count("sql", "SELECT FROM T WHERE NOT (g IN [0.2, 0.3]) AND k = 0")).isEqualTo(1);
+    assertThat(count("sql", "SELECT FROM T WHERE NOT (g IN [0.2, null]) AND k = 0")).isEqualTo(0);
+    assertThat(count("sql", "SELECT FROM T WHERE g IN [?, null] AND k = 0", (double) 0.1f)).isEqualTo(1);
+    assertThat(count("opencypher", "MATCH (n:T) WHERE n.g IN [$p, 7.5] AND n.k = 0 RETURN n", (double) 0.1f)).isEqualTo(1);
+  }
+
+  @Test
+  void negationAndNearMissesThroughTheIndex() {
+    setup();
+    assertThat(count("sql", "SELECT FROM T WHERE g <> ? AND k = 0", (double) 0.1f)).isEqualTo(0);
+    assertThat(count("sql", "SELECT FROM T WHERE NOT (g = ?) AND k = 0", (double) 0.1f)).isEqualTo(0);
+    assertThat(count("sql", "SELECT FROM T WHERE f = ? AND k = 0", 0.10000001d)).isEqualTo(0);
+    assertThat(count("sql", "SELECT FROM T WHERE d = ? AND k = 0", 0.1000000000000001d)).isEqualTo(0);
+  }
+
+  @Test
   void numbersEqualEdgeCases() {
     assertThat(Type.numbersEqual(0.1f, (double) 0.1f)).isTrue();
     assertThat(Type.numbersEqual((double) 0.1f, 0.1f)).isTrue();
@@ -139,7 +159,7 @@ class Issue8882FloatDoubleEqualityTest extends TestHelper {
     });
   }
 
-  private void assertAll(final int k, final String indexed, final String plain, final Object param) {
+  private void assertFoundEverywhere(final int k, final String indexed, final String plain, final Object param) {
     final String label = param.getClass().getSimpleName() + " " + param + " k=" + k;
     for (final String p : new String[] { indexed, plain }) {
       assertThat(count("sql", "SELECT FROM T WHERE " + p + " = ? AND k = " + k, param)).as("sql " + p + " " + label).isEqualTo(1);
@@ -149,24 +169,11 @@ class Issue8882FloatDoubleEqualityTest extends TestHelper {
   }
 
   private int count(final String language, final String query, final Object... params) {
-    final Object param = params == null || params.length == 0 ? null : params.length == 1 ? params[0] : null;
-    if (params != null && params.length > 1)
-      return countMulti(language, query, params);
+    final boolean none = params == null || params.length == 0;
     int n = 0;
-    try (final ResultSet rs = param == null ?
+    try (final ResultSet rs = none ?
         database.query(language, query) :
-        language.equals("sql") ? database.query(language, query, param) : database.query(language, query, Map.of("p", param))) {
-      while (rs.hasNext()) {
-        rs.next();
-        n++;
-      }
-    }
-    return n;
-  }
-
-  private int countMulti(final String language, final String query, final Object[] params) {
-    int n = 0;
-    try (final ResultSet rs = database.query(language, query, params)) {
+        language.equals("sql") ? database.query(language, query, params) : database.query(language, query, Map.of("p", params[0]))) {
       while (rs.hasNext()) {
         rs.next();
         n++;
