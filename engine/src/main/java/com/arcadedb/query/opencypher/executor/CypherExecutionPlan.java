@@ -7152,18 +7152,18 @@ public class CypherExecutionPlan {
 
         final int totalHops = pathPattern.getRelationshipCount();
 
-        // Every non-central node of the arm - the far endpoint and any interior node of a multi-hop
-        // arm alike - is a label, inline property filter, or dynamic label the degree product cannot
-        // enforce: it counts degree off the arm's edge types and directions alone, with no field on
-        // Arm for a per-hop endpoint type or filter, so (:Author), (:Author {status:'active'}) and ()
-        // built the same operator and the same, over-counted, answer. Decline the push-down rather
-        // than silently drop the filter, exactly as the central variable's own check already does
-        // above (issue #6337 for labels, #6431 for properties/dynamic labels, both siblings of #6322).
+        // A label on a non-central node (the far endpoint or an interior node of a multi-hop arm) is a filter on what the
+        // hop reaches: the operator carries it per hop and enforces it (#6337), so (:Author) and () no longer build the
+        // same operator. An inline property filter, a dynamic label or a label set one name cannot stand for is still
+        // something the operator has no way to check, so it declines the push-down rather than silently drop it
+        // (#6431, #6322).
         for (int i = 0; i <= totalHops; i++) {
           if (i == centralNodeIdx)
             continue;
           final NodePattern node = pathPattern.getNode(i);
-          if (node.hasLabels() || node.hasProperties() || node.hasDynamicLabels())
+          if (node.hasProperties() || node.hasDynamicLabels())
+            return null;
+          if (node.hasLabels() && !hasPushDownRepresentableLabel(node))
             return null;
         }
 
@@ -7851,8 +7851,11 @@ public class CypherExecutionPlan {
       final int endIdx, final boolean optional) {
     final int hops = endIdx - centralIdx;
     final String[] edgeTypes = new String[hops];
+    final String[] endpointLabels = new String[hops];
     final Vertex.DIRECTION[] directions = new Vertex.DIRECTION[hops];
     for (int i = 0; i < hops; i++) {
+      final NodePattern reached = pathPattern.getNode(centralIdx + i + 1);
+      endpointLabels[i] = reached.hasLabels() ? reached.getLabels().get(0) : null;
       final RelationshipPattern rel = pathPattern.getRelationship(centralIdx + i);
       if (rel.isVariableLength() || (rel.getVariable() != null && !rel.getVariable().isEmpty())
           || rel.hasProperties() || !rel.hasTypes() || rel.getTypes().size() != 1)
@@ -7862,7 +7865,7 @@ public class CypherExecutionPlan {
       directions[i] = dir == Direction.OUT ? Vertex.DIRECTION.OUT
           : dir == Direction.IN ? Vertex.DIRECTION.IN : Vertex.DIRECTION.BOTH;
     }
-    return new DegreeProductOp.Arm(edgeTypes, directions, optional);
+    return new DegreeProductOp.Arm(edgeTypes, directions, optional, endpointLabels);
   }
 
   /**
@@ -7873,8 +7876,11 @@ public class CypherExecutionPlan {
       final int endIdx, final boolean optional) {
     final int hops = centralIdx - endIdx;
     final String[] edgeTypes = new String[hops];
+    final String[] endpointLabels = new String[hops];
     final Vertex.DIRECTION[] directions = new Vertex.DIRECTION[hops];
     for (int i = 0; i < hops; i++) {
+      final NodePattern reached = pathPattern.getNode(centralIdx - 1 - i);
+      endpointLabels[i] = reached.hasLabels() ? reached.getLabels().get(0) : null;
       // Walk backward from centralIdx: rel at (centralIdx-1), (centralIdx-2), ...
       final RelationshipPattern rel = pathPattern.getRelationship(centralIdx - 1 - i);
       if (rel.isVariableLength() || (rel.getVariable() != null && !rel.getVariable().isEmpty())
@@ -7886,7 +7892,7 @@ public class CypherExecutionPlan {
       directions[i] = dir == Direction.OUT ? Vertex.DIRECTION.OUT
           : dir == Direction.IN ? Vertex.DIRECTION.IN : Vertex.DIRECTION.BOTH;
     }
-    return new DegreeProductOp.Arm(edgeTypes, directions, optional);
+    return new DegreeProductOp.Arm(edgeTypes, directions, optional, endpointLabels);
   }
 
   private String extractIdFilter(final WhereClause whereClause, final String variable) {

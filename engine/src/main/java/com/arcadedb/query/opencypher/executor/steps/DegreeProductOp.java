@@ -27,6 +27,7 @@ import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.utility.IntHashSet;
 
 import java.util.HashMap;
 import java.util.Iterator;
@@ -46,14 +47,40 @@ public final class DegreeProductOp implements CountOp {
    * A single arm extending from the central node.
    */
   public static final class Arm {
-    final String[] edgeTypes;
-    final Vertex.DIRECTION[] directions;
-    final boolean optional;
+    final String[]            edgeTypes;
+    final Vertex.DIRECTION[]  directions;
+    final boolean             optional;
+    /** One entry per hop: the label of the node that hop reaches, or null for none. The array itself is null when no hop has one. */
+    final String[]            endpointLabels;
 
     public Arm(final String[] edgeTypes, final Vertex.DIRECTION[] directions, final boolean optional) {
+      this(edgeTypes, directions, optional, null);
+    }
+
+    public Arm(final String[] edgeTypes, final Vertex.DIRECTION[] directions, final boolean optional,
+        final String[] endpointLabels) {
       this.edgeTypes = edgeTypes;
       this.directions = directions;
       this.optional = optional;
+      boolean any = false;
+      if (endpointLabels != null)
+        for (final String label : endpointLabels)
+          any |= label != null;
+      this.endpointLabels = any ? endpointLabels : null;
+    }
+
+    boolean hasEndpointLabel() {
+      return endpointLabels != null;
+    }
+
+    /** The bucket ids each hop's endpoint label stands for (sub-types included), null where the hop has no label. */
+    IntHashSet[] endpointBuckets(final Database db) {
+      if (endpointLabels == null)
+        return null;
+      final IntHashSet[] buckets = new IntHashSet[edgeTypes.length];
+      for (int h = 0; h < buckets.length; h++)
+        buckets[h] = CSRCountUtils.buildValidBuckets(db, endpointLabels[h]);
+      return buckets;
     }
   }
 
@@ -94,30 +121,119 @@ public final class DegreeProductOp implements CountOp {
 
     final int nodeIdUpperBound = provider.getNodeIdUpperBound();
 
-    // Fast path: when all arms are single-hop, pre-fetch NeighborViews and scan
-    // degree offset arrays directly. This is pure array arithmetic — no method dispatch,
-    // no getRID calls, no object allocation in the hot loop. Mandatory-arm degree=0
-    // naturally filters non-central-type nodes (e.g., only Messages have both
-    // HAS_TAG OUT > 0 and HAS_CREATOR OUT > 0).
-    final NeighborView[] armViews = new NeighborView[arms.length];
-    boolean allSingleHopViews = true;
+    // An endpoint label is a filter on the far end of the arm, which the degree of the central node alone does not carry
+    // (#6337). Resolve each arm's label to bucket ids once. A label the edge type already implies - every edge of that
+    // type and direction ends in the label's buckets - changes nothing, so the arm keeps the plain degree and the array
+    // arithmetic below; only an arm whose label really filters pays for a filtered degree array.
+    final IntHashSet[][] armBuckets = new IntHashSet[arms.length][];
+    boolean anyLabelled = false;
     for (int a = 0; a < arms.length; a++) {
+      armBuckets[a] = arms[a].endpointBuckets(db);
+      anyLabelled |= armBuckets[a] != null;
+    }
+    final int[] bucketIds = anyLabelled ? precomputeBucketIds(provider, nodeIdUpperBound, guard) : null;
+    final int[][] filteredDegrees = new int[arms.length][];
+    boolean anyFiltered = false;
+    boolean needsPerNode = false;
+    for (int a = 0; a < arms.length; a++) {
+      if (armBuckets[a] == null)
+        continue;
       if (arms[a].edgeTypes.length != 1) {
-        allSingleHopViews = false;
-        break;
+        needsPerNode = true;
+        continue;
       }
-      armViews[a] = provider.getNeighborView(arms[a].directions[0], arms[a].edgeTypes[0]);
-      if (armViews[a] == null) {
-        allSingleHopViews = false;
-        break;
+      final IntHashSet far = armBuckets[a][0];
+      if (far == null)
+        continue;
+      final NeighborView view = provider.getNeighborView(arms[a].directions[0], arms[a].edgeTypes[0]);
+      if (view == null) {
+        needsPerNode = true;
+        continue;
       }
+      if (endpointLabelIsImplied(provider, arms[a], view, far, bucketIds, nodeIdUpperBound, guard))
+        continue;
+      filteredDegrees[a] = filteredDegrees(provider, view, far, bucketIds, nodeIdUpperBound, guard);
+      anyFiltered = true;
     }
 
-    if (allSingleHopViews)
-      return executeFastScan(provider, armViews, nodeIdUpperBound, guard);
+    if (!needsPerNode) {
+      // Fast path: when all arms are single-hop, pre-fetch NeighborViews and scan
+      // degree offset arrays directly. This is pure array arithmetic — no method dispatch,
+      // no getRID calls, no object allocation in the hot loop. Mandatory-arm degree=0
+      // naturally filters non-central-type nodes (e.g., only Messages have both
+      // HAS_TAG OUT > 0 and HAS_CREATOR OUT > 0).
+      final NeighborView[] armViews = new NeighborView[arms.length];
+      boolean allSingleHopViews = true;
+      for (int a = 0; a < arms.length; a++) {
+        if (arms[a].edgeTypes.length != 1) {
+          allSingleHopViews = false;
+          break;
+        }
+        armViews[a] = provider.getNeighborView(arms[a].directions[0], arms[a].edgeTypes[0]);
+        if (armViews[a] == null) {
+          allSingleHopViews = false;
+          break;
+        }
+      }
+
+      if (allSingleHopViews)
+        return executeFastScan(provider, armViews, anyFiltered ? filteredDegrees : null, nodeIdUpperBound, guard);
+    }
 
     // Slow path: per-node CSR lookup (fallback for multi-hop arms or missing views)
-    return executePerNode(provider, db, nodeIdUpperBound, guard);
+    return executePerNode(provider, db, armBuckets, bucketIds, nodeIdUpperBound, guard);
+  }
+
+  /**
+   * Whether every edge of the arm's type and direction already ends in the label's buckets, which makes the label a
+   * no-op for this arm. The edges that end in the label's vertices are counted off the opposite direction's degrees
+   * (one pass over the nodes, not over the edges) and compared to all the edges of the type.
+   */
+  private static boolean endpointLabelIsImplied(final GraphTraversalProvider provider, final Arm arm, final NeighborView view,
+      final IntHashSet farBuckets, final int[] bucketIds, final int nodeIdUpperBound, final WorkGuard guard) {
+    final Vertex.DIRECTION direction = arm.directions[0];
+    if (direction == Vertex.DIRECTION.BOTH)
+      return false;
+    final Vertex.DIRECTION opposite = direction == Vertex.DIRECTION.OUT ? Vertex.DIRECTION.IN : Vertex.DIRECTION.OUT;
+    final NeighborView reverse = provider.getNeighborView(opposite, arm.edgeTypes[0]);
+    if (reverse == null || reverse.edgeCount() != view.edgeCount())
+      return false;
+    long endingInLabel = 0;
+    for (int v = 0; v < nodeIdUpperBound; v++) {
+      guard.checkPeriodically(v);
+      if (provider.isNodeLive(v) && farBuckets.contains(bucketIds[v]))
+        endingInLabel += reverse.degree(v);
+    }
+    return endingInLabel == view.edgeCount();
+  }
+
+  /** The degree of every node counting only the neighbors whose bucket is in {@code farBuckets}. */
+  private static int[] filteredDegrees(final GraphTraversalProvider provider, final NeighborView view,
+      final IntHashSet farBuckets, final int[] bucketIds, final int nodeIdUpperBound, final WorkGuard guard) {
+    final int[] degrees = new int[nodeIdUpperBound];
+    final int[] neighbors = view.neighbors();
+    for (int v = 0; v < nodeIdUpperBound; v++) {
+      guard.checkPeriodically(v);
+      if (!provider.isNodeLive(v))
+        continue;
+      int count = 0;
+      for (int j = view.offset(v), end = view.offsetEnd(v); j < end; j++)
+        if (farBuckets.contains(bucketIds[neighbors[j]]))
+          count++;
+      degrees[v] = count;
+    }
+    return degrees;
+  }
+
+  private static int[] precomputeBucketIds(final GraphTraversalProvider provider, final int nodeIdUpperBound,
+      final WorkGuard guard) {
+    final int[] bucketIds = new int[nodeIdUpperBound];
+    for (int v = 0; v < nodeIdUpperBound; v++) {
+      guard.checkPeriodically(v);
+      if (provider.isNodeLive(v))
+        bucketIds[v] = provider.getRID(v).getBucketId();
+    }
+    return bucketIds;
   }
 
   /**
@@ -128,7 +244,7 @@ public final class DegreeProductOp implements CountOp {
    * Compared to per-node countEdges: ~20M method calls at ~150ns = ~3s (75x slower).
    */
   private long executeFastScan(final GraphTraversalProvider provider, final NeighborView[] armViews,
-      final int nodeIdUpperBound, final WorkGuard guard) {
+      final int[][] filteredDegrees, final int nodeIdUpperBound, final WorkGuard guard) {
     // Reorder: check mandatory arms first for early exit, optional arms last
     final int[] mandatoryIdx = new int[arms.length];
     final int[] optionalIdx = new int[arms.length];
@@ -149,7 +265,8 @@ public final class DegreeProductOp implements CountOp {
       long product = 1;
       boolean skip = false;
       for (int i = 0; i < mandatoryCount; i++) {
-        final int degree = armViews[mandatoryIdx[i]].degree(v);
+        final int[] filtered = filteredDegrees == null ? null : filteredDegrees[mandatoryIdx[i]];
+        final int degree = filtered != null ? filtered[v] : armViews[mandatoryIdx[i]].degree(v);
         if (degree == 0) {
           skip = true;
           break;
@@ -160,8 +277,10 @@ public final class DegreeProductOp implements CountOp {
         continue;
 
       // Optional arms: use max(1, degree)
-      for (int i = 0; i < optionalCount; i++)
-        product *= Math.max(1, armViews[optionalIdx[i]].degree(v));
+      for (int i = 0; i < optionalCount; i++) {
+        final int[] filtered = filteredDegrees == null ? null : filteredDegrees[optionalIdx[i]];
+        product *= Math.max(1, filtered != null ? filtered[v] : armViews[optionalIdx[i]].degree(v));
+      }
 
       total += product;
     }
@@ -177,13 +296,21 @@ public final class DegreeProductOp implements CountOp {
    * Bulk: 4 array scans × 5M reads ≈ 40ms.
    * Per-node countEdges: 20M method calls × 150ns ≈ 3s.
    */
-  private long executePerNode(final GraphTraversalProvider provider, final Database db,
-      final int nodeIdUpperBound, final WorkGuard guard) {
+  private long executePerNode(final GraphTraversalProvider provider, final Database db, final IntHashSet[][] armBuckets,
+      final int[] bucketIds, final int nodeIdUpperBound, final WorkGuard guard) {
     // Pre-compute degree arrays: one int[] per arm, indexed by nodeId
     final int[][] armDegrees = new int[arms.length][];
     for (int a = 0; a < arms.length; a++) {
       final int[] degrees = new int[nodeIdUpperBound];
-      if (arms[a].edgeTypes.length == 1) {
+      if (armBuckets[a] != null) {
+        // A labelled arm counts only the endpoints of the label, hop by hop (#6337)
+        for (int v = 0; v < nodeIdUpperBound; v++) {
+          guard.checkPeriodically(v);
+          if (!provider.isNodeLive(v))
+            continue;
+          degrees[v] = CSRCountUtils.walkArm(provider, v, arms[a].edgeTypes, arms[a].directions, armBuckets[a]).length;
+        }
+      } else if (arms[a].edgeTypes.length == 1) {
         // Bulk degree computation — single pass over CSR offset arrays
         provider.getDegrees(degrees, arms[a].directions[0], arms[a].edgeTypes[0]);
       } else {
@@ -261,6 +388,9 @@ public final class DegreeProductOp implements CountOp {
   @SuppressWarnings("unchecked")
   private long executeOLTPDegreeMap(final Database db, final WorkGuard guard) {
     final HashMap<RID, int[]> degreesPerVertex = new HashMap<>();
+    final IntHashSet[][] armBuckets = new IntHashSet[arms.length][];
+    for (int a = 0; a < arms.length; a++)
+      armBuckets[a] = arms[a].endpointBuckets(db);
 
     // For each arm, iterate all edges of that type and count per central vertex
     for (int a = 0; a < arms.length; a++) {
@@ -285,15 +415,23 @@ public final class DegreeProductOp implements CountOp {
         // If arm direction is OUT, the central vertex is the OUT vertex of the edge.
         // If arm direction is IN, the central vertex is the IN vertex of the edge.
         // If BOTH, count from both vertices.
+        // The far end has to be of the arm's endpoint label when it has one (#6337).
+        final IntHashSet farBuckets = armBuckets[a] == null ? null : armBuckets[a][0];
         final RID centralRid;
-        if (dir == Vertex.DIRECTION.OUT)
+        if (dir == Vertex.DIRECTION.OUT) {
           centralRid = edge.getOut();
-        else if (dir == Vertex.DIRECTION.IN)
+          if (farBuckets != null && !farBuckets.contains(edge.getIn().getBucketId()))
+            continue;
+        } else if (dir == Vertex.DIRECTION.IN) {
           centralRid = edge.getIn();
-        else {
-          // BOTH: count for both vertices
-          incrementDegree(degreesPerVertex, edge.getOut(), a);
-          incrementDegree(degreesPerVertex, edge.getIn(), a);
+          if (farBuckets != null && !farBuckets.contains(edge.getOut().getBucketId()))
+            continue;
+        } else {
+          // BOTH: count for both vertices, each one taking the other as its far end
+          if (farBuckets == null || farBuckets.contains(edge.getIn().getBucketId()))
+            incrementDegree(degreesPerVertex, edge.getOut(), a);
+          if (farBuckets == null || farBuckets.contains(edge.getOut().getBucketId()))
+            incrementDegree(degreesPerVertex, edge.getIn(), a);
           continue;
         }
         incrementDegree(degreesPerVertex, centralRid, a);
@@ -359,17 +497,22 @@ public final class DegreeProductOp implements CountOp {
    * Fallback for multi-hop arms: per-vertex iteration.
    */
   private long executeOLTPPerVertex(final Database db, final WorkGuard guard) {
+    final IntHashSet[][] armBuckets = new IntHashSet[arms.length][];
+    for (int a = 0; a < arms.length; a++)
+      armBuckets[a] = arms[a].endpointBuckets(db);
+
     long total = 0;
     for (final Iterator<? extends Identifiable> it = db.iterateType(centralLabel, true); it.hasNext(); ) {
       guard.check();
       final Vertex v = it.next().asVertex();
       long product = 1;
-      for (final Arm arm : arms) {
+      for (int a = 0; a < arms.length; a++) {
+        final Arm arm = arms[a];
         long armCount;
-        if (arm.edgeTypes.length == 1)
+        if (arm.edgeTypes.length == 1 && armBuckets[a] == null)
           armCount = v.countEdges(arm.directions[0], arm.edgeTypes[0]);
         else
-          armCount = countArmOLTP(v, arm, 0);
+          armCount = countArmOLTP(v, arm, armBuckets[a], 0);
 
         if (arm.optional)
           product *= Math.max(1, armCount);
@@ -386,16 +529,22 @@ public final class DegreeProductOp implements CountOp {
     return total;
   }
 
-  private long countArmOLTP(final Vertex vertex, final Arm arm, final int hopIndex) {
+  private long countArmOLTP(final Vertex vertex, final Arm arm, final IntHashSet[] buckets, final int hopIndex) {
     if (hopIndex >= arm.edgeTypes.length)
       return 1;
-    // Tail optimization: at the last hop, use countEdges instead of loading all neighbor vertices
-    if (hopIndex == arm.edgeTypes.length - 1)
+    final IntHashSet reached = buckets == null ? null : buckets[hopIndex];
+    // Tail optimization: at the last hop with nothing to check on the endpoint, use countEdges instead of loading all
+    // neighbor vertices
+    if (hopIndex == arm.edgeTypes.length - 1 && reached == null)
       return vertex.countEdges(arm.directions[hopIndex], arm.edgeTypes[hopIndex]);
     long count = 0;
     final Iterator<Vertex> neighbors = vertex.getVertices(arm.directions[hopIndex], arm.edgeTypes[hopIndex]).iterator();
-    while (neighbors.hasNext())
-      count += countArmOLTP(neighbors.next(), arm, hopIndex + 1);
+    while (neighbors.hasNext()) {
+      final Vertex next = neighbors.next();
+      if (reached != null && !reached.contains(next.getIdentity().getBucketId()))
+        continue;
+      count += countArmOLTP(next, arm, buckets, hopIndex + 1);
+    }
     return count;
   }
 
@@ -412,6 +561,8 @@ public final class DegreeProductOp implements CountOp {
         sb.append(arms[i].directions[j] == Vertex.DIRECTION.OUT ? "-[:" : "<-[:");
         sb.append(arms[i].edgeTypes[j]);
         sb.append(arms[i].directions[j] == Vertex.DIRECTION.OUT ? "]->" : "]-");
+        if (arms[i].endpointLabels != null && arms[i].endpointLabels[j] != null)
+          sb.append("(:").append(arms[i].endpointLabels[j]).append(")");
       }
     }
     return sb.toString();
