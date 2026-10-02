@@ -20,6 +20,7 @@ package com.arcadedb.server.support;
 
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
 import com.arcadedb.server.http.handler.ExecutionResponse;
@@ -45,7 +46,7 @@ import java.util.logging.Level;
  */
 public class SupportHandler extends AbstractServerHttpHandler {
   public enum Action {
-    STATUS, REGISTER, UNREGISTER, REGISTER_INSTALLATION, PREVIEW, CREATE_ISSUE, LIST_ISSUES, GET_ISSUE, COMMENT, STAGE_SCREENSHOT, DISCARD_SCREENSHOT, ANSWER_REQUEST, ANSWER_REQUESTS, SET_OPEN, ATTACH, BUNDLE
+    STATUS, REGISTER, UNREGISTER, REGISTER_INSTALLATION, CONNECT_START, CONNECT_STATUS, CONNECT_CANCEL, PREVIEW, CREATE_ISSUE, LIST_ISSUES, GET_ISSUE, COMMENT, STAGE_SCREENSHOT, DISCARD_SCREENSHOT, ANSWER_REQUEST, ANSWER_REQUESTS, SET_OPEN, ATTACH, BUNDLE
   }
 
   private final Action action;
@@ -75,6 +76,12 @@ public class SupportHandler extends AbstractServerHttpHandler {
           yield new ExecutionResponse(204, "");
         }
         case REGISTER_INSTALLATION -> new ExecutionResponse(200, service.registerInstallation());
+        case CONNECT_START -> json(200, connectStart(service, payload));
+        case CONNECT_STATUS -> json(200, service.getConnector().status());
+        case CONNECT_CANCEL -> {
+          service.getConnector().cancel();
+          yield new ExecutionResponse(204, "");
+        }
         case PREVIEW -> json(200, service.preview(required(payload)));
         case CREATE_ISSUE -> new ExecutionResponse(201, service.createIssue(required(payload)));
         case LIST_ISSUES -> new ExecutionResponse(200, service.listIssues(getQueryParameter(exchange, "status", "open")));
@@ -109,6 +116,12 @@ public class SupportHandler extends AbstractServerHttpHandler {
       // A temp file, a zip or a read of the logs failed on this server: not the caller's request
       return error(new SupportException("internal_error", "The operation failed on the server: " + e.getClass().getSimpleName()));
     }
+  }
+
+  private JSONObject connectStart(final SupportService service, final JSONObject payload) {
+    final String label = payload == null ? "" : payload.getString("label", "");
+    final ArcadeDBServer server = httpServer.getServer();
+    return service.getConnector().start(label, server.getInstanceId(), SupportConnector.localHost(server.getServerName()));
   }
 
   private ExecutionResponse register(final SupportService service, final JSONObject payload) {

@@ -60,7 +60,7 @@ import java.util.regex.Pattern;
  */
 public class SupportPortalClient {
   // Static so all clients in the JVM share one client: each instance spawns a SelectorManager NIO thread
-  private static final HttpClient HTTP_CLIENT = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10))
+  static final HttpClient HTTP_CLIENT = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10))
       .followRedirects(HttpClient.Redirect.NEVER).build();
 
   private static final java.util.regex.Pattern PROCESS_REFUSAL = java.util.regex.Pattern.compile(

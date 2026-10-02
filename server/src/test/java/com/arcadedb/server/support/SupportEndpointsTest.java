@@ -227,7 +227,8 @@ class SupportEndpointsTest extends BaseGraphServerTest {
         { "POST", "/api/v1/server/support/issues/1/requests/rq_0123abcd/response" },
         { "POST", "/api/v1/server/support/issues/1/responses" },
         { "POST", "/api/v1/server/support/screenshots" }, { "DELETE", "/api/v1/server/support/screenshots/shot_x" },
-        { "POST", "/api/v1/server/support/bundle" }, { "POST", "/api/v1/server/support/installation" } };
+        { "POST", "/api/v1/server/support/bundle" }, { "POST", "/api/v1/server/support/installation" },
+        { "POST", "/api/v1/server/support/connect" }, { "GET", "/api/v1/server/support/connect" }, { "DELETE", "/api/v1/server/support/connect" } };
 
     // a user that is not root
     assertThat(call("POST", "/api/v1/server/users", new JSONObject().put("name", "bob").put("password", "bobs-password-1234").toString())

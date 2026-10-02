@@ -552,8 +552,9 @@ public class RemoteHttpComponent extends RWLockContext {
         if (this instanceof RemoteDatabase remoteDb)
           remoteDb.captureResponseHeaders(response);
 
-        // POST /server/users and POST /server/api-tokens answer 201, every other control-plane route 200
-        if (response.statusCode() != 200 && !(controlPlane != null && response.statusCode() == 201)) {
+        // POST /server/users and POST /server/api-tokens answer 201, DELETE /server/support/connect answers 204 (no body),
+        // every other control-plane route 200
+        if (response.statusCode() != 200 && !(controlPlane != null && (response.statusCode() == 201 || response.statusCode() == 204))) {
           lastException = manageException(response, errorOperation);
           // A control-plane write is never replayed on an empty answer: the server may have applied it
           if (lastException instanceof RuntimeException && "Empty payload received".equals(lastException.getMessage())

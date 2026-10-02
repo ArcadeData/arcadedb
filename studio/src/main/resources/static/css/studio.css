@@ -4351,6 +4351,15 @@ body.col-resizing * {
 
 /* ---- Support page: status line, issues, popups ---- */
 
+.support-connect-code {
+  font-family: var(--bs-font-monospace, monospace);
+  font-size: 2rem;
+  font-weight: 600;
+  letter-spacing: 0.25em;
+  margin: 4px 0 8px;
+  user-select: all;
+}
+
 .support-register-head {
   display: flex;
   align-items: center;

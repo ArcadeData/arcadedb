@@ -1464,10 +1464,17 @@ public enum GlobalConfiguration {
 
   INSTANCE_ID("arcadedb.instance.id", SCOPE.DATABASE,
       "Optional instance id (format 'adb-' followed by a lowercase UUID) to use instead of the one ArcadeDB generates and "
-          + "persists in the file 'instance.id' of the server configuration directory. Set it when that directory is read-only "
-          + "or is copied between nodes. The id identifies this instance (standalone server, HA node or embedded engine) to "
-          + "ArcadeData support. It is NOT a credential and is never used for authentication. Empty means generated. "
-          + "A malformed value is ignored with a warning", String.class, ""),
+          + "persists in the file '.instance.id' of the databases directory (or, where older versions kept it, 'instance.id' of "
+          + "the server configuration directory). Set it when no directory is writable or persistent. The id identifies this "
+          + "instance (standalone server, HA node or embedded engine) to ArcadeData support. It is NOT a credential and is "
+          + "never used for authentication. Empty means generated. A malformed value is ignored with a warning", String.class,
+      ""),
+
+  INSTANCE_DERIVED("arcadedb.instance.derived", SCOPE.SERVER,
+      "Computes the instance id from the cluster name (arcadedb.ha.clusterName) and the server name (arcadedb.server.name) "
+          + "instead of generating and persisting it, so a server with no persistent directory (a container without a volume, "
+          + "a Kubernetes StatefulSet pod) keeps the same id on every restart. The names must be unique per node and stable "
+          + "(a StatefulSet pod name is). Ignored when arcadedb.instance.id is set", Boolean.class, false),
 
   SUPPORT_URL("arcadedb.support.url", SCOPE.SERVER,
       "Base URL of the ArcadeData customer portal used by the Support tab of Studio. Must be HTTPS (plain HTTP is accepted only "
@@ -1483,6 +1490,13 @@ public enum GlobalConfiguration {
       "Client key (a 'wsk_...' workspace key) of the ArcadeData customer portal used by the Support tab of Studio. It is a "
           + "credential: it is masked when settings are listed or dumped, never returned by any API and never logged. "
           + "Empty means not set", String.class, ""),
+
+  SUPPORT_AUTO_REGISTER("arcadedb.support.autoRegister", SCOPE.SERVER,
+      "Registers the server as an installation of its workspace in the ArcadeData customer portal without anybody opening "
+          + "Studio: once shortly after the start of a server that holds a support key (arcadedb.support.clientKey or the file "
+          + "'support.json'), and then once a day. It sends the same redacted diagnostics Studio sends (never logs, never "
+          + "database contents) and only fills fields the portal has blank. Set it to false to register only from Studio or the "
+          + "console", Boolean.class, true),
 
   SERVER_ROOT_PASSWORD("arcadedb.server.rootPassword", SCOPE.SERVER,
       "Password for root user to use at first startup of the server. Set this to avoid asking the password to the user",

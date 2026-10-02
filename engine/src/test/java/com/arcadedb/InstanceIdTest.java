@@ -60,4 +60,24 @@ class InstanceIdTest {
     assertThat(a).hasSize(40);
     assertThat(InstanceId.generate()).isNotEqualTo(a);
   }
+
+  @Test
+  void derivedIdIsValidStableAndDifferentPerServer() {
+    final String a = InstanceId.derive("prod", "arcadedb-0");
+
+    assertThat(InstanceId.isValid(a)).isTrue();
+    assertThat(InstanceId.derive("prod", "arcadedb-0")).isEqualTo(a);
+    assertThat(InstanceId.derive("prod", "arcadedb-1")).isNotEqualTo(a);
+    assertThat(InstanceId.derive("staging", "arcadedb-0")).isNotEqualTo(a);
+    // version 5 and RFC 4122 variant
+    assertThat(a.charAt(4 + 8 + 1 + 4 + 1)).isEqualTo('5');
+    assertThat("89ab").contains(String.valueOf(a.charAt(4 + 8 + 1 + 4 + 1 + 4 + 1)));
+  }
+
+  @Test
+  void derivedIdMatchesTheKnownVersion5Vector() {
+    // pinned so the derivation (namespace, separator, encoding) can never change silently
+    assertThat(InstanceId.derive("arcadedb", "ArcadeDB_0")).isEqualTo("adb-4bf83bde-6821-53f7-9822-6f84523eaf02");
+    assertThat(InstanceId.derive(null, null)).isEqualTo(InstanceId.derive("", ""));
+  }
 }

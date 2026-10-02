@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.info;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.InstanceId;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
@@ -60,11 +61,14 @@ class ServerInfoTest extends BaseGraphServerTest {
   }
 
   @Test
-  void instanceIdIsReportedAndPersistedInTheConfigDirectory() throws Exception {
+  void instanceIdIsReportedAndPersistedInTheDatabasesDirectory() throws Exception {
     final String id = ServerInfo.toJSON(getServer(0), db -> true, false).getString("instanceId");
 
     assertThat(InstanceId.isValid(id)).isTrue();
     assertThat(id).isEqualTo(getServer(0).getInstanceId());
-    assertThat(Files.readString(Path.of(getServer(0).getConfigPath(), InstanceIdResolver.FILE_NAME)).trim()).isEqualTo(id);
+    final Path file = Path.of(getServer(0).getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY),
+        InstanceIdResolver.FILE_NAME);
+    assertThat(Files.readAllLines(file).get(0).trim()).isEqualTo(id);
+    assertThat(Files.readString(file)).contains("server=" + getServer(0).getServerName());
   }
 }

@@ -553,7 +553,9 @@ public class ArcadeDBServer {
 
     createDirectories();
 
-    instanceId = InstanceIdResolver.resolve(configuration, Paths.get(serverConfigPath));
+    instanceId = InstanceIdResolver.resolve(configuration, Paths.get(serverConfigPath),
+        Paths.get(configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY)),
+        configuration.getValueAsString(GlobalConfiguration.HA_CLUSTER_NAME), serverName);
     LogManager.instance().log(this, Level.INFO, "Instance id: %s", instanceId);
 
     loadDatabases(false);
@@ -621,6 +623,11 @@ public class ArcadeDBServer {
     pluginManager.startPlugins(ServerPlugin.PluginInstallationPriority.AFTER_DATABASES_OPEN);
 
     status = STATUS.ONLINE;
+
+    // A server registered with a support key registers itself as an installation of the portal (after a delay, in the background)
+    if (supportService != null)
+      CodeUtils.executeIgnoringExceptions(supportService::startAutoRegistration, "Error on starting the support auto registration",
+          false);
 
     LogManager.instance().log(this, Level.INFO, "Available query languages: %s",
         QueryEngineManager.getInstance().getAvailableLanguages());
