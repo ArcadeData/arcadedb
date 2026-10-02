@@ -1589,6 +1589,12 @@ public enum Type {
     if ((right instanceof BigDecimal && !isFinite(left)) || (left instanceof BigDecimal && !isFinite(right)))
       return false;
 
+    // Float against Double is the common scan pair: answered without the array castComparableNumber allocates
+    if (left instanceof Float f && right instanceof Double d)
+      return floatEqualsDouble(f, d);
+    if (left instanceof Double d && right instanceof Float f)
+      return floatEqualsDouble(f, d);
+
     final Number[] pair = castComparableNumber(left, right);
     if (pair[0].equals(pair[1]))
       return true;
@@ -1605,6 +1611,11 @@ public enum Type {
   }
 
   // Deliberately as loose as the index key: Type.convert narrows the operand, so 1e-50 reads as 0.0f and finds it (#8882)
+  private static boolean floatEqualsDouble(final float f, final double d) {
+    // same answer as the castComparableNumber path: the decimal reading of f, else the double that narrows to f
+    return Double.valueOf(widenFloat(f)).equals(d) || narrowsTo(f, d);
+  }
+
   private static boolean narrowsTo(final float f, final Number other) {
     if (other instanceof Double || other instanceof BigDecimal)
       // Float.compare, not ==: negative zero is not zero, as Double.equals reads it

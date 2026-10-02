@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.BinaryComparator;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -178,6 +179,20 @@ class Issue8882FloatDoubleEqualityTest extends TestHelper {
   }
 
   @Test
+  void notEqualsIsTheNegationAcrossFloatAndDouble() {
+    setup();
+    assertThat(count("opencypher", "MATCH (n:T) WHERE n.g <> $p AND n.k = 0 RETURN n", 0.2d)).isEqualTo(1);
+    assertThat(count("opencypher", "MATCH (n:T) WHERE n.g <> $p AND n.k = 0 RETURN n", (double) 0.1f)).isEqualTo(0);
+    assertThat(count("sql", "SELECT FROM T WHERE g <> ? AND k = 0", 0.2d)).isEqualTo(1);
+  }
+
+  @Test
+  void binaryComparatorFollowsTheSameRule() {
+    assertThat(BinaryComparator.equals(0.1f, (double) 0.1f)).isTrue();
+    assertThat(BinaryComparator.equals(0.1f, 0.2d)).isFalse();
+  }
+
+  @Test
   void numbersEqualEdgeCases() {
     assertThat(Type.numbersEqual(0.1f, (double) 0.1f)).isTrue();
     assertThat(Type.numbersEqual((double) 0.1f, 0.1f)).isTrue();
@@ -191,6 +206,8 @@ class Issue8882FloatDoubleEqualityTest extends TestHelper {
     assertThat(Type.numbersEqual(Double.POSITIVE_INFINITY, new BigDecimal("1e400"))).isFalse();
     assertThat(Type.numbersEqual(0.1d, new BigDecimal("0.10000000000000001"))).isTrue();
     assertThat(Type.numbersEqual(0.1d, new BigDecimal("0.1000000000000001"))).isFalse();
+    assertThat(Type.numbersEqual(0.1d, new BigDecimal("0.1"))).isTrue();
+    assertThat(Type.numbersEqual(Float.NaN, Double.NaN)).isTrue();
     assertThat(Type.numbersEqual(1.5f, 1)).isFalse();
     assertThat(Type.numbersEqual(2.0f, 2)).isTrue();
   }
