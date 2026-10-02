@@ -230,8 +230,10 @@ public class ComparisonExpression implements BooleanExpression {
           case GREATER_THAN_OR_EQUAL -> leftNum >= rightNum;
         };
       }
-      if ((operator == Operator.EQUALS || operator == Operator.NOT_EQUALS) && (left instanceof Float || right instanceof Float))
-        return operator == Operator.EQUALS == floatAwareEquals((Number) left, (Number) right);
+      if ((operator == Operator.EQUALS || operator == Operator.NOT_EQUALS) && (left instanceof Float || right instanceof Float)) {
+        final boolean equal = floatAwareEquals((Number) left, (Number) right);
+        return operator == Operator.EQUALS ? equal : !equal;
+      }
       // A Float reaches the comparison through its decimal form, as the SQL comparator does: the primitive widening
       // reproduces the single precision rounding error, so a FLOAT property holding 0.05 did not equal the literal
       // 0.05 - which Cypher reads as a 64-bit float. Neo4j has no 32-bit float to disagree with (issue #7609).
