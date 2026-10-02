@@ -304,7 +304,9 @@ class DeltaOverlay {
     // Process added vertices
     for (final TxDelta.VertexDelta vd : delta.addedVertices) {
       final int addedBaseId = baseMapping.getGlobalId(vd.rid);
-      // A deleted base slot reused by this new vertex falls through to the overflow (#8948)
+      // A deleted base slot reused by this new vertex falls through to the overflow (#8948). A TxDelta is one
+      // committed transaction and a freed slot is only reused after that commit, so the delete of the old
+      // vertex is always in an earlier merge than the add of the new one
       if (addedBaseId >= 0 && !newDeleted.get(addedBaseId))
         continue; // already in base
       if (newOverflowIds.containsKey(vd.rid))
@@ -319,7 +321,7 @@ class DeltaOverlay {
     // Process deleted vertices
     for (final RID rid : delta.deletedVertices) {
       final int baseId = baseMapping.getGlobalId(rid);
-      if (baseId >= 0 && !(newDeleted.get(baseId) && newOverflowIds.containsKey(rid)))
+      if (baseId >= 0 && !isReusedBaseSlot(baseId, rid, newOverflowIds, newDeleted))
         newDeleted.set(baseId);
       else {
         final Integer overflowId = newOverflowIds.remove(rid);
@@ -505,10 +507,9 @@ class DeltaOverlay {
     // Process property updates
     for (final var entry : delta.updatedProperties.entrySet()) {
       final int baseId = baseMapping.getGlobalId(entry.getKey());
-      final Integer reusedOverflowId = baseId >= 0 && newDeleted.get(baseId) ? newOverflowIds.get(entry.getKey()) : null;
-      if (reusedOverflowId != null) {
+      if (baseId >= 0 && isReusedBaseSlot(baseId, entry.getKey(), newOverflowIds, newDeleted)) {
         // the vertex now holding a reused base slot lives in the overflow
-        final int idx = reusedOverflowId - baseNodeCount;
+        final int idx = newOverflowIds.get(entry.getKey()) - baseNodeCount;
         final Map<String, Object> merged = new HashMap<>(overflowPropsList.get(idx));
         merged.putAll(entry.getValue());
         overflowPropsList.set(idx, merged);
@@ -774,10 +775,20 @@ class DeltaOverlay {
 
   // --- Internals ---
 
+  /**
+   * True when the base slot's original vertex is deleted and a new vertex with the same RID lives in the overflow
+   * (#8948). Cascaded deletes of that new vertex's edges are withdrawn by edge identity, so they never depend on
+   * the stale base id this resolves to once the overflow entry is gone.
+   */
+  private static boolean isReusedBaseSlot(final int baseId, final RID rid, final Map<RID, Integer> overflowIds,
+      final BitSet deletedBase) {
+    return deletedBase.get(baseId) && overflowIds.containsKey(rid);
+  }
+
   private static int resolveNodeId(final RID rid, final NodeIdMapping baseMapping,
       final Map<RID, Integer> overflowIds, final BitSet deletedBase) {
     final int baseId = baseMapping.getGlobalId(rid);
-    if (baseId >= 0 && !(deletedBase.get(baseId) && overflowIds.containsKey(rid)))
+    if (baseId >= 0 && !isReusedBaseSlot(baseId, rid, overflowIds, deletedBase))
       return baseId;
     // A base slot whose vertex was deleted may be reused by a new vertex with the same RID (#8948): that
     // vertex lives in the overflow, the base node stays deleted
