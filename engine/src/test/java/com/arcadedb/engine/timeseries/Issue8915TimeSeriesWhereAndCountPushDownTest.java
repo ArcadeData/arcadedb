@@ -183,6 +183,21 @@ class Issue8915TimeSeriesWhereAndCountPushDownTest extends TestHelper {
   }
 
   @Test
+  void parametersInOrAndTimeRangesAgreeWithTheDocumentTwin() {
+    forEachState(() -> {
+      for (final String t : new String[] { "T", "D" })
+        try (final ResultSet rs = database.query("sql",
+            "SELECT ts.timeBucket('1h', ts) AS b, count(*) AS c FROM " + t + " WHERE host = ? OR host = ? GROUP BY b", "a", "b")) {
+          assertThat(((Number) rs.next().getProperty("c")).longValue()).as(t).isEqualTo(4L);
+        }
+      for (final String t : new String[] { "T", "D" })
+        try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM " + t + " WHERE ts >= ? OR host = ?", 3000L, "a")) {
+          assertThat(((Number) rs.next().getProperty("c")).longValue()).as(t).isEqualTo(3L);
+        }
+    });
+  }
+
+  @Test
   void orOfTagsAcrossBlocksStaysExact() {
     forEachState(() -> {
       final String w = "host = 'a' OR host = 'b'";
