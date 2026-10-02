@@ -148,6 +148,29 @@ class Issue8942UnwrittenValidationVerdictTest {
     assertThat(staged).doesNotExist();
   }
 
+  /** A prepared record left by a swap that failed and rolled itself back is removed by the next recovery pass. */
+  @Test
+  void preparedVerdictLeftByAFailedSwapIsCleanedUp() throws Exception {
+    final Path databases = root.resolve("databases");
+    final Path live = databases.resolve(DB_NAME);
+    final Path backup = live.resolve(SnapshotInstaller.SNAPSHOT_BACKUP_DIR);
+    final Path marker = live.resolve(SnapshotInstaller.SNAPSHOT_PENDING_FILE);
+    createDatabase(live, "old");
+    Files.writeString(marker, "");
+
+    SnapshotInstaller.prepareValidationFailedVerdict(live);
+    // A missing staging directory makes phase 2 fail after the originals moved, and atomicSwap restores them.
+    assertThatThrownBy(() -> SnapshotInstaller.atomicSwap(live, live.resolve(SnapshotInstaller.SNAPSHOT_NEW_DIR), backup))
+        .isInstanceOf(IOException.class);
+    assertThat(live.resolve(SnapshotInstaller.SNAPSHOT_VALIDATION_FAILED_FILE)).exists();
+
+    SnapshotInstaller.recoverPendingSnapshotSwaps(databases);
+
+    assertDatabaseValue(live, "old");
+    assertThat(marker).doesNotExist();
+    assertThat(live.resolve(SnapshotInstaller.SNAPSHOT_VALIDATION_FAILED_FILE)).doesNotExist();
+  }
+
   /** On a full volume the record may be created and its write fail: the refused install leaves no partial record. */
   @Test
   void partiallyWrittenVerdictIsRemovedWhenPreparingFails() throws Exception {

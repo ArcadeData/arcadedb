@@ -603,18 +603,23 @@ public final class SnapshotInstaller {
    * skipping the HA wrapper's replicated-close semantics: this is a local file swap, not a cluster-wide close).
    * On a swap or reopen failure the previous copy is restored and reopened so the node never stays closed; the
    * caller's {@code .snapshot-pending} marker remains the single startup-recovery hook.
+   * <p>
+   * The install is refused, with nothing moved, when the record of a failed validation cannot be prepared first. This
+   * trades availability on an almost full volume for never losing that verdict (issue #8942): do not relax it into a
+   * warning.
    */
   static void swapAndReopen(final String databaseName, final Path dbPath, final Path snapshotNew,
       final Path snapshotBackup, final Path pendingMarker, final ArcadeDBServer server) throws IOException {
-    synchronized (server.getDatabasesLock()) {
-      // Prepared while nothing has moved, so a failed validation can record its verdict without free space (#8942).
-      try {
-        prepareValidationFailedVerdict(dbPath);
-      } catch (final IOException e) {
-        throw new IOException("Refusing to install the snapshot for '" + databaseName + "': cannot prepare the record of "
-            + "a failed validation in " + dbPath + " (typically a full volume). The live database is untouched", e);
-      }
+    // Prepared while nothing has moved, so a failed validation can record its verdict without free space (#8942).
+    // Outside the registry lock: the install's maintenance slot already excludes every other writer of this directory.
+    try {
+      prepareValidationFailedVerdict(dbPath);
+    } catch (final IOException e) {
+      throw new IOException("Refusing to install the snapshot for '" + databaseName + "': cannot prepare the record of "
+          + "a failed validation in " + dbPath + " (typically a full volume). The live database is untouched", e);
+    }
 
+    synchronized (server.getDatabasesLock()) {
       // Close + deregister the live database now that a complete snapshot is staged on disk. The DB
       // must be closed before the file move so no open handles point at the directory being swapped.
       closeLocalDatabaseIfOpen(server, databaseName);
@@ -1074,8 +1079,6 @@ public final class SnapshotInstaller {
    */
   private static void reconcileRetainedBackup(final String databaseName, final Path dbPath, final Path snapshotBackup,
       final Path pendingMarker, final ArcadeDBServer server) throws IOException {
-    // An unpublished SNAPSHOT_VALIDATION_FAILED_FILE is deliberately not part of this test: it is never read as a phase,
-    // and the install's own deleteSwapState below removes it.
     if (!Files.exists(pendingMarker)
         || (!Files.isDirectory(snapshotBackup) && !Files.exists(dbPath.resolve(SNAPSHOT_SWAP_STATE_FILE))
         && !Files.exists(dbPath.resolve(SNAPSHOT_SWAP_STATE_TMP_FILE))
