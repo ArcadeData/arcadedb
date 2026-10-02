@@ -116,6 +116,7 @@ class Issue8915TimeSeriesWhereAndCountPushDownTest extends TestHelper {
     });
   }
 
+  /** All the rows fall in one hour bucket, so the first group row is the whole answer. */
   private long groupedCount(final String type, final String where) {
     try (final ResultSet rs = database.query("sql",
         "SELECT ts.timeBucket('1h', ts) AS b, count(*) AS c FROM " + type + " WHERE " + where + " GROUP BY b")) {

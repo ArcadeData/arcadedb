@@ -3404,7 +3404,8 @@ public class SelectExecutionPlanner {
       final String rightStr = binary.right != null ? binary.right.toString().trim() : null;
       final String tagName = isTimeSeriesTagColumn(columns, leftStr) ? leftStr
           : isTimeSeriesTagColumn(columns, rightStr) ? rightStr : null;
-      // Two equalities on the same tag are pushed down as an IN of both values, again a superset.
+      // Two equalities on the same tag are an intersection (an empty one when the values differ) that the extracted
+      // tag filter does not model as an exact filter, so they are left to the residual filter.
       if (tagName == null || !constrainedTags.add(tagName))
         return false;
 
