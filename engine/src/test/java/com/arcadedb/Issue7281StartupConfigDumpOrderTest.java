@@ -59,8 +59,6 @@ class Issue7281StartupConfigDumpOrderTest {
     } finally {
       System.clearProperty(GlobalConfiguration.DUMP_CONFIG_AT_STARTUP.getKey());
       System.clearProperty(LATER_SETTING.getKey());
-      // Reset while the capturing logger is still installed: resetting DUMP_CONFIG_AT_STARTUP runs its callback,
-      // which dumps, and the rest of the suite does not need that in its log.
       GlobalConfiguration.DUMP_CONFIG_AT_STARTUP.reset();
       LATER_SETTING.reset();
       LogManager.instance().setLogger(previousLogger);
@@ -86,6 +84,27 @@ class Issue7281StartupConfigDumpOrderTest {
       assertThat(captured.text()).contains("ARCADEDB").contains(" configuration:");
     } finally {
       GlobalConfiguration.DUMP_CONFIG_AT_STARTUP.reset();
+      LogManager.instance().setLogger(previousLogger);
+    }
+  }
+
+  /**
+   * Regression test: {@code reset()} runs the setting's callback (#7121), and the callback used to dump whatever the
+   * value was, so every {@code resetAll()} - which test fixtures call - printed the whole configuration although the
+   * flag was never turned on. Only {@code true} may dump.
+   */
+  @Test
+  void resettingTheFlagToItsDefaultDoesNotDump() {
+    final CapturingLogger captured = new CapturingLogger();
+    final Logger previousLogger = LogManager.instance().getLogger();
+    LogManager.instance().setLogger(captured);
+    try {
+      GlobalConfiguration.DUMP_CONFIG_AT_STARTUP.reset();
+      GlobalConfiguration.resetAll();
+      GlobalConfiguration.DUMP_CONFIG_AT_STARTUP.setValue(false);
+
+      assertThat(captured.text()).doesNotContain(" configuration:");
+    } finally {
       LogManager.instance().setLogger(previousLogger);
     }
   }

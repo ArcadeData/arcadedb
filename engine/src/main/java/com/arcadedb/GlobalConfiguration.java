@@ -48,7 +48,10 @@ public enum GlobalConfiguration {
   // log while /api/v1/server correctly answered true for the same setting, and concluded the flag had been ignored.
   DUMP_CONFIG_AT_STARTUP("arcadedb.dumpConfigAtStartup", SCOPE.JVM, "Dumps the configuration at startup", Boolean.class, false,
       value -> {
-        dumpConfigurationOrDefer();
+        // Only an enabled flag dumps: reset() runs this callback too (#7121), so resetAll() would otherwise print
+        // the whole configuration on every call.
+        if (Boolean.TRUE.equals(value))
+          dumpConfigurationOrDefer();
         return value;
       }),
 
