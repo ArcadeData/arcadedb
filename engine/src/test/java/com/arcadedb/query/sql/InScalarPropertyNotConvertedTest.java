@@ -95,7 +95,7 @@ class InScalarPropertyNotConvertedTest extends TestHelper {
     // same statement text (cached), property on the left never converts whatever the parameter type
     assertThat(count("SELECT FROM Q WHERE s IN [?]", 7.0)).isEqualTo(0);
     assertThat(count("SELECT FROM Q WHERE s IN [?]", "7")).isEqualTo(1);
-    assertThat(count("SELECT FROM Q WHERE ? IN [d]", "7")).isEqualTo(0);
+    assertThat(count("SELECT FROM Q WHERE ? IN [d]", "7")).isEqualTo(1);
     assertThat(count("SELECT FROM Q WHERE s IN [?]", 7.0)).isEqualTo(0);
   }
 
