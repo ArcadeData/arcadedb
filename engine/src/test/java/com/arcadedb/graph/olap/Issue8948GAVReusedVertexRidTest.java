@@ -66,6 +66,50 @@ class Issue8948GAVReusedVertexRidTest extends TestHelper {
     assertCounts();
   }
 
+  @Test
+  void deletingVertexWithEdgesKeepsEdgeCountInStep() throws Exception {
+    createSchemaAndView();
+    database.transaction(() -> {
+      vertex("a").newEdge("K", vertex("c"));
+      vertex("c").newEdge("K", vertex("a"));
+    });
+    final GraphAnalyticalView gav = GraphAnalyticalViewRegistry.get(database, "g");
+    assertThat(gav.getEdgeCount()).isEqualTo(2);
+    database.transaction(() -> vertex("c").delete());
+    assertThat(gav.getEdgeCount()).as("cascaded edge deletions must still be recorded").isEqualTo(0);
+    assertThat(count("MATCH (x:V)-[:K]->(y:V) RETURN count(*) AS n")).isEqualTo(0L);
+    database.command("sql", "DROP GRAPH ANALYTICAL VIEW g");
+  }
+
+  @Test
+  void reusedVertexPropertyUpdateAndDelete() throws Exception {
+    createSchemaAndView();
+    database.transaction(() -> vertex("c").delete());
+    database.transaction(() -> {
+      final MutableVertex nv = database.newVertex("V").set("name", "d").set("age", 20).save();
+      vertex("a").newEdge("K", nv);
+    });
+    database.transaction(() -> vertex("d").set("age", 50).save());
+    assertThat(count("MATCH (x:V)-[:K]->(y:V) WHERE y.age = 50 RETURN count(*) AS n")).isEqualTo(1L);
+    database.transaction(() -> vertex("d").delete());
+    assertThat(count("MATCH (x:V)-[:K]->(y:V) RETURN count(*) AS n")).isEqualTo(0L);
+    assertThat(count("MATCH (y:V) RETURN count(*) AS n")).isEqualTo(1L);
+    database.command("sql", "DROP GRAPH ANALYTICAL VIEW g");
+  }
+
+  private void createSchemaAndView() throws Exception {
+    database.command("sql", "CREATE VERTEX TYPE V");
+    database.command("sql", "CREATE PROPERTY V.name STRING");
+    database.command("sql", "CREATE PROPERTY V.age INTEGER");
+    database.command("sql", "CREATE EDGE TYPE K");
+    database.transaction(() -> {
+      database.newVertex("V").set("name", "a").set("age", 30).save();
+      database.newVertex("V").set("name", "c").set("age", 10).save();
+    });
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW g VERTEX TYPES (V) EDGE TYPES (K) PROPERTIES (age) UPDATE MODE SYNCHRONOUS");
+    GraphAnalyticalViewRegistry.get(database, "g").awaitReady(60, TimeUnit.SECONDS);
+  }
+
   private void assertCounts() {
     assertThat(count("MATCH (x:V)-[:K]->(y:V) RETURN count(*) AS n")).isEqualTo(2L);
     assertThat(count("MATCH (x:V)-[:K]->(y:V) WHERE y.age > 15 RETURN count(*) AS n")).isEqualTo(2L);
