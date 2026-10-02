@@ -21,6 +21,7 @@ package com.arcadedb.server.support;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
 import com.arcadedb.server.http.handler.ExecutionResponse;
@@ -121,7 +122,10 @@ public class SupportHandler extends AbstractServerHttpHandler {
   private JSONObject connectStart(final SupportService service, final JSONObject payload) {
     final String label = payload == null ? "" : payload.getString("label", "");
     final ArcadeDBServer server = httpServer.getServer();
-    return service.getConnector().start(label, server.getInstanceId(), SupportConnector.localHost(server.getServerName()));
+    final HAServerPlugin ha = server.getHA();
+    final JSONObject attributes = SupportConnector.attributesOf(SupportConnector.localHost(server.getServerName()), server.getServerName(),
+        ha == null ? null : ha.getClusterName(), ha == null ? 0 : ha.getConfiguredServers());
+    return service.getConnector().start(label, server.getInstanceId(), attributes);
   }
 
   private ExecutionResponse register(final SupportService service, final JSONObject payload) {
