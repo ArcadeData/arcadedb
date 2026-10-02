@@ -7872,6 +7872,16 @@ public class CypherExecutionPlan {
    * Builds a star-join arm going forward from centralIdx toward endIdx in the path pattern.
    * Direction is preserved as-is from the pattern.
    */
+  /**
+   * The one label a star-join arm carries for the node a hop reaches, or null when it has none. Relies on
+   * {@link #hasPushDownRepresentableLabel} having declined every other label shape (a label set, a dynamic label) in
+   * {@code tryDetectStarCountStar} before an arm is built, so taking the first label is taking the only one.
+   */
+  private static String endpointLabelOf(final NodePattern node) {
+    assert !node.hasLabels() || node.getLabels().size() == 1 : "a multi-label endpoint must have declined the push-down";
+    return node.hasLabels() ? node.getLabels().get(0) : null;
+  }
+
   private DegreeProductOp.Arm buildArmForward(final PathPattern pathPattern, final int centralIdx,
       final int endIdx, final boolean optional) {
     final int hops = endIdx - centralIdx;
@@ -7879,8 +7889,7 @@ public class CypherExecutionPlan {
     final String[] endpointLabels = new String[hops];
     final Vertex.DIRECTION[] directions = new Vertex.DIRECTION[hops];
     for (int i = 0; i < hops; i++) {
-      final NodePattern reached = pathPattern.getNode(centralIdx + i + 1);
-      endpointLabels[i] = reached.hasLabels() ? reached.getLabels().get(0) : null;
+      endpointLabels[i] = endpointLabelOf(pathPattern.getNode(centralIdx + i + 1));
       final RelationshipPattern rel = pathPattern.getRelationship(centralIdx + i);
       if (rel.isVariableLength() || (rel.getVariable() != null && !rel.getVariable().isEmpty())
           || rel.hasProperties() || !rel.hasTypes() || rel.getTypes().size() != 1)
@@ -7904,8 +7913,7 @@ public class CypherExecutionPlan {
     final String[] endpointLabels = new String[hops];
     final Vertex.DIRECTION[] directions = new Vertex.DIRECTION[hops];
     for (int i = 0; i < hops; i++) {
-      final NodePattern reached = pathPattern.getNode(centralIdx - 1 - i);
-      endpointLabels[i] = reached.hasLabels() ? reached.getLabels().get(0) : null;
+      endpointLabels[i] = endpointLabelOf(pathPattern.getNode(centralIdx - 1 - i));
       // Walk backward from centralIdx: rel at (centralIdx-1), (centralIdx-2), ...
       final RelationshipPattern rel = pathPattern.getRelationship(centralIdx - 1 - i);
       if (rel.isVariableLength() || (rel.getVariable() != null && !rel.getVariable().isEmpty())
