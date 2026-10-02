@@ -30,7 +30,8 @@ import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 
 /**
- * Returns the current date time. If the `zoneid` parameter is passed, then a ZonedDateTime instance is returned, otherwise a LocalDateTime.
+ * Returns the current date time. If the `zoneid` parameter is passed, then a ZonedDateTime instance is returned, in that zone, otherwise a
+ * LocalDateTime holding the UTC wall clock, which is how the engine stores a DATETIME (issue #8892).
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  * @see SQLFunctionDate

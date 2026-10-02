@@ -40,13 +40,14 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue8890CollectionIndexKeyTypeTest extends TestHelper {
+  private int typeCounter = 0;
 
   private long count(final String sql, final Object... args) {
     return database.query("sql", sql, args).stream().count();
   }
 
   private void assertIndexedAndScanAgree(final String listType, final Object stored, final long expected, final Object... operands) {
-    final String type = "L" + Math.abs((listType + stored + expected).hashCode());
+    final String type = "L" + typeCounter++;
     database.command("sql", "CREATE DOCUMENT TYPE " + type);
     database.command("sql", "CREATE PROPERTY " + type + ".a " + listType);
     database.command("sql", "CREATE PROPERTY " + type + ".b " + listType);
@@ -135,6 +136,17 @@ class Issue8890CollectionIndexKeyTypeTest extends TestHelper {
     assertThat(count("SELECT FROM W WHERE i BETWEEN ? AND ?", "6.0", "8.0"))
         .isEqualTo(count("SELECT FROM W WHERE j BETWEEN ? AND ?", "6.0", "8.0"));
     assertThat(count("SELECT FROM W WHERE i IN ?", List.of("7.0", "x"))).isEqualTo(count("SELECT FROM W WHERE j IN ?", List.of("7.0", "x")));
+  }
+
+  @Test
+  void theIndexApiAnswersNoRowForAnUnreadableKey() {
+    database.command("sql", "CREATE DOCUMENT TYPE Z");
+    database.command("sql", "CREATE PROPERTY Z.i INTEGER");
+    database.command("sql", "CREATE INDEX ON Z (i) NOTUNIQUE");
+    database.transaction(() -> database.newDocument("Z").set("i", 7).save());
+    final Index index = database.getSchema().getType("Z").getPolymorphicIndexByProperties("i");
+    assertThat(index.get(new Object[] { "7.0" }).hasNext()).isFalse();
+    assertThat(index.get(new Object[] { "7" }).hasNext()).isTrue();
   }
 
   @Test
