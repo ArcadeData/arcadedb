@@ -458,6 +458,10 @@ public class ComparisonExpression implements BooleanExpression {
    * {@code 2^53 + 1} (long) differs from {@code 2^53.0} (double) while {@code 0.1d} equals the decimal {@code 0.1}.
    */
   private static boolean needsExactComparison(final Number left, final Number right) {
+    // the common Double/Float pairs leave at once: only a long, a BigInteger or a BigDecimal can lose precision
+    if (!(left instanceof Long || left instanceof BigInteger || left instanceof BigDecimal || right instanceof Long
+        || right instanceof BigInteger || right instanceof BigDecimal))
+      return false;
     if (!isFinite(left) || !isFinite(right))
       return false;
     if (left instanceof BigInteger || right instanceof BigInteger || isLongBeyondDoublePrecision(left)
