@@ -114,6 +114,12 @@ public final class SnapshotInstaller {
   static final String SNAPSHOT_COMPLETE_FILE = ".snapshot-complete";
   static final String SNAPSHOT_SWAP_STATE_FILE = ".snapshot-swap-state";
   static final String SNAPSHOT_SWAP_STATE_TMP_FILE = SNAPSHOT_SWAP_STATE_FILE + ".tmp";
+  /**
+   * A VALIDATION_FAILED phase record written and fsynced before the swap starts, so that a failed validating reopen
+   * can publish its verdict with a rename rather than a fresh write (issue #8942). Never read as a phase on its own:
+   * only {@link #rollbackAfterFailedValidation} publishes it, and every swap-state cleanup deletes it.
+   */
+  static final String SNAPSHOT_VALIDATION_FAILED_FILE = SNAPSHOT_SWAP_STATE_FILE + ".validation-failed";
 
   private enum SwapPhase {
     BACKING_UP, INSTALLING, INSTALLED,
@@ -601,6 +607,13 @@ public final class SnapshotInstaller {
   static void swapAndReopen(final String databaseName, final Path dbPath, final Path snapshotNew,
       final Path snapshotBackup, final Path pendingMarker, final ArcadeDBServer server) throws IOException {
     synchronized (server.getDatabasesLock()) {
+      // Prepare the record of a failed validation while nothing has moved yet (issue #8942). Writing it once the
+      // reopen has failed needs free space, and a full volume is the condition this path most often runs under:
+      // a verdict that could not be written left the phase at INSTALLED, which recovery rolls forward by deleting
+      // the backup - the only copy that opens. Publishing a prepared record is a rename. If even preparing it fails,
+      // refuse the install here, with the live database still open and untouched.
+      prepareValidationFailedVerdict(dbPath);
+
       // Close + deregister the live database now that a complete snapshot is staged on disk. The DB
       // must be closed before the file move so no open handles point at the directory being swapped.
       closeLocalDatabaseIfOpen(server, databaseName);
@@ -1115,12 +1128,16 @@ public final class SnapshotInstaller {
    * Records the verdict of the failed validation before acting on it, then rolls back. Without the record, the interval
    * between the failed reopen and the published ROLLING_BACK would leave the phase at INSTALLED, which recovery reads as
    * "roll forward" and answers by deleting the backup it was about to restore (#8305). Only worth recording when there
-   * is a backup to roll back to; a failure to record is logged and the rollback is still attempted.
+   * is a backup to roll back to.
+   * <p>
+   * The record is the one {@link #prepareValidationFailedVerdict} wrote before the swap, published by a rename that
+   * needs no free space, so the verdict survives the full volume that typically makes the rollback fail too (#8942).
+   * Without a prepared record it is written afresh. A failure to record is logged and the rollback is still attempted.
    */
   static void rollbackAfterFailedValidation(final Path dbPath, final Path snapshotBackup) {
     if (Files.isDirectory(snapshotBackup)) {
       try {
-        writeSwapPhase(dbPath, SwapPhase.VALIDATION_FAILED);
+        publishValidationFailedVerdict(dbPath);
       } catch (final IOException e) {
         LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
             "Failed to record that the installed snapshot for %s does not open: %s. Attempting the rollback anyway", e, dbPath,
@@ -1128,6 +1145,29 @@ public final class SnapshotInstaller {
       }
     }
     rollbackToBackup(dbPath, snapshotBackup);
+  }
+
+  /**
+   * Writes a VALIDATION_FAILED phase record durably under a name recovery never reads as a phase, ready for
+   * {@link #publishValidationFailedVerdict} to rename over {@code .snapshot-swap-state} (issue #8942).
+   */
+  static void prepareValidationFailedVerdict(final Path dbPath) throws IOException {
+    writeFileForced(dbPath.resolve(SNAPSHOT_VALIDATION_FAILED_FILE), SwapPhase.VALIDATION_FAILED.name());
+    fsyncDirectory(dbPath);
+  }
+
+  /** Publishes VALIDATION_FAILED from the prepared record when there is one, by a fresh phase write otherwise. */
+  private static void publishValidationFailedVerdict(final Path dbPath) throws IOException {
+    final Path prepared = dbPath.resolve(SNAPSHOT_VALIDATION_FAILED_FILE);
+    if (!Files.isRegularFile(prepared)) {
+      writeSwapPhase(dbPath, SwapPhase.VALIDATION_FAILED);
+      return;
+    }
+    // A rename onto an existing entry of the same directory allocates no data block, unlike the write it replaces.
+    Files.move(prepared, dbPath.resolve(SNAPSHOT_SWAP_STATE_FILE), StandardCopyOption.ATOMIC_MOVE,
+        StandardCopyOption.REPLACE_EXISTING);
+    fsyncDirectory(dbPath);
+    snapshotSwapProgress(SwapPhase.VALIDATION_FAILED.name());
   }
 
   /**
@@ -1678,6 +1718,7 @@ public final class SnapshotInstaller {
   private static void deleteSwapState(final Path dbDir) throws IOException {
     Files.deleteIfExists(dbDir.resolve(SNAPSHOT_SWAP_STATE_FILE));
     Files.deleteIfExists(dbDir.resolve(SNAPSHOT_SWAP_STATE_TMP_FILE));
+    Files.deleteIfExists(dbDir.resolve(SNAPSHOT_VALIDATION_FAILED_FILE));
     fsyncDirectory(dbDir);
   }
 
