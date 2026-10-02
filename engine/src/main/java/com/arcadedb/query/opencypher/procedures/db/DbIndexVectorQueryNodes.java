@@ -217,7 +217,7 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
             "No vector index found on property '" + propertyName + "' for type '" + typeName + "'");
 
       final Set<Integer> allowedBucketIds = new HashSet<>();
-      for (final Bucket bucket : type.getBuckets(false))
+      for (final Bucket bucket : type.getBuckets(true))
         allowedBucketIds.add(bucket.getFileId());
 
       return filterVectorIndexes(typeIndex, allowedBucketIds);

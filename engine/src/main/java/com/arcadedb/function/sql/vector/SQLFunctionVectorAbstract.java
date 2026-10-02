@@ -206,7 +206,7 @@ public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
 
   /**
    * Narrows {@code allowedBucketIds} (the per-type bucket allow-list assembled from
-   * {@code DocumentType.getBuckets(false)}) to the partition-pruned subset stashed on the
+   * {@code DocumentType.getBuckets(true)}) to the partition-pruned subset stashed on the
    * {@link CommandContext} by {@code SelectExecutionPlanner.derivePartitionPrunedClusters}.
    * <p>
    * Returns the input unchanged when the planner did not stash a hint, when the hint was

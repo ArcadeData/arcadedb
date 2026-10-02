@@ -30,6 +30,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.utility.DateUtils;
@@ -1606,28 +1607,45 @@ public enum Type {
     final Number[] pair = castComparableNumber(left, right);
     if (pair[0].equals(pair[1]))
       return true;
+    // Double.equals separates the two zeros; IEEE 754 and openCypher do not (issue #8920)
+    if (pair[0] instanceof Double a && pair[1] instanceof Double b && a == 0.0d && b == 0.0d)
+      return true;
 
     if (left instanceof Float f)
       return narrowsTo(f, right);
     if (right instanceof Float f)
       return narrowsTo(f, left);
     if (left instanceof Double d && right instanceof BigDecimal bd)
-      return Double.isFinite(d) && Double.compare(d, bd.doubleValue()) == 0;
+      return Double.isFinite(d) && BinaryComparator.compareDoubles(d, bd.doubleValue()) == 0;
     if (left instanceof BigDecimal bd && right instanceof Double d)
-      return Double.isFinite(d) && Double.compare(d, bd.doubleValue()) == 0;
+      return Double.isFinite(d) && BinaryComparator.compareDoubles(d, bd.doubleValue()) == 0;
     return false;
   }
 
   // Deliberately as loose as the index key: Type.convert narrows the operand, so 1e-50 reads as 0.0f and finds it (#8882)
   private static boolean floatEqualsDouble(final float f, final double d) {
     // same answer as the castComparableNumber path: the decimal reading of f, else the double that narrows to f
-    return Double.compare(widenFloat(f), d) == 0 || narrowsTo(f, d);
+    return BinaryComparator.compareDoubles(widenFloat(f), d) == 0 || narrowsTo(f, d);
+  }
+
+  /**
+   * True when one operand is a {@code Float} and the other a {@code Double} or {@code BigDecimal} that narrows to it: the pair
+   * {@link #numbersEqual} calls equal and the index, which converts a bound to its FLOAT key, finds together (issue #8882).
+   * The ordering operators ask it first, so a value is never equal to a bound and less than it at once (issue #8919). Allocates
+   * nothing.
+   */
+  public static boolean floatNarrowsToOperand(final Number left, final Number right) {
+    if (left instanceof Float f)
+      return narrowsTo(f, right);
+    if (right instanceof Float f)
+      return narrowsTo(f, left);
+    return false;
   }
 
   private static boolean narrowsTo(final float f, final Number other) {
     if (other instanceof Double || other instanceof BigDecimal)
-      // Float.compare, not ==: negative zero is not zero, as Double.equals reads it
-      return Float.isFinite(f) && Float.compare(f, other.floatValue()) == 0;
+      // + 0.0f maps negative zero onto zero, which is one value (issue #8920); Float.compare is for the NaN-free total order
+      return Float.isFinite(f) && Float.compare(f + 0.0f, other.floatValue() + 0.0f) == 0;
     return false;
   }
 

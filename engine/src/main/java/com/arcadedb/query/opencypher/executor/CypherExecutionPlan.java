@@ -155,6 +155,7 @@ import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.opencypher.procedures.CypherProcedureRegistry;
 import com.arcadedb.query.opencypher.rewriter.ExpressionRewriter;
+import com.arcadedb.index.IndexException;
 import com.arcadedb.index.RangeIndex;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
@@ -2850,22 +2851,27 @@ public class CypherExecutionPlan {
     // type is inherited by this one, and a relationship pattern already matches every subtype of the type it
     // names. MatchEdgeByIndexStep filters an inherited index's cursor back down to that same rule.
     TypeIndex bestIndex = null;
+    List<String> bestKeyProps = null;
     int bestPrefix = 0;
-    for (final TypeIndex index : edgeType.getAllIndexes(true)) {
-      if (index.getType() != Schema.INDEX_TYPE.LSM_TREE)
-        continue; // a full-text or vector index does not answer an equality on its key
-      final List<String> keyProps = index.getPropertyNames();
-      int prefix = 0;
-      while (prefix < keyProps.size() && predicates.containsKey(keyProps.get(prefix)))
-        prefix++;
-      if (prefix == 0)
-        continue;
-      if (prefix < keyProps.size() && !index.supportsOrderedIterations())
-        continue; // a prefix seek needs the range cursor
-      if (bestIndex == null || prefix > bestPrefix
-          || (prefix == bestPrefix && keyProps.size() < bestIndex.getPropertyNames().size())) {
-        bestIndex = index;
-        bestPrefix = prefix;
+    for (final TypeIndex index : TypeIndex.filterReadyForQueries(edgeType.getAllIndexes(true))) {
+      try {
+        if (index.getType() != Schema.INDEX_TYPE.LSM_TREE)
+          continue; // a full-text or vector index does not answer an equality on its key
+        final List<String> keyProps = index.getPropertyNames();
+        int prefix = 0;
+        while (prefix < keyProps.size() && predicates.containsKey(keyProps.get(prefix)))
+          prefix++;
+        if (prefix == 0)
+          continue;
+        if (prefix < keyProps.size() && !index.supportsOrderedIterations())
+          continue; // a prefix seek needs the range cursor
+        if (bestIndex == null || prefix > bestPrefix || (prefix == bestPrefix && keyProps.size() < bestKeyProps.size())) {
+          bestIndex = index;
+          bestKeyProps = keyProps;
+          bestPrefix = prefix;
+        }
+      } catch (final IndexException e) {
+        // dropped or rebuilt by a concurrent DDL while being read: not a candidate (issue #8918)
       }
     }
     if (bestIndex == null)
@@ -2874,7 +2880,7 @@ public class CypherExecutionPlan {
     final String[] propertyNames = new String[bestPrefix];
     final Object[] keyValues = new Object[bestPrefix];
     for (int i = 0; i < bestPrefix; i++) {
-      propertyNames[i] = bestIndex.getPropertyNames().get(i);
+      propertyNames[i] = bestKeyProps.get(i);
       keyValues[i] = predicates.get(propertyNames[i]);
     }
 
