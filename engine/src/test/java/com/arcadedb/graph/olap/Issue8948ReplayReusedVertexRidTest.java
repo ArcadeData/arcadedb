@@ -101,4 +101,27 @@ class Issue8948ReplayReusedVertexRidTest {
     update.updatedProperties.put(REUSED, Map.of("age", 21));
     assertThat(overlay.merge(update, mapping, fresh, (type, src, tgt) -> 0).getPropertyOverride(newId, "age")).isEqualTo(21);
   }
+
+  /** Merging the same add delta twice must not subtract the fresh base's edges twice. */
+  @Test
+  void replayingTheSameAddTwiceIsIdempotent() {
+    final NodeIdMapping mapping = new NodeIdMapping(1);
+    final int bucket = mapping.registerBucket(1, "V", 2);
+    mapping.addNode(bucket, 0);
+    mapping.addNode(bucket, 1);
+    mapping.compact();
+    final CSRAdjacencyIndex csr = new CSRAdjacencyIndex(new int[] { 0, 1, 1 }, new int[] { 1 }, new int[] { 0, 0, 1 }, new int[] { 0 }, 2, 1);
+    final Map<String, CSRAdjacencyIndex> fresh = Map.of(EDGE_TYPE, csr);
+    final DeltaOverlay.PreCompactionPairCount preCount = (type, src, tgt) -> 0;
+
+    final TxDelta deleteOld = new TxDelta();
+    deleteOld.deletedVertices.add(REUSED);
+    final TxDelta addNew = new TxDelta();
+    addNew.addedVertices.add(new TxDelta.VertexDelta(REUSED, Map.of()));
+
+    final DeltaOverlay once = new DeltaOverlay(mapping.size()).merge(deleteOld, mapping, fresh, preCount).merge(addNew, mapping, fresh, preCount);
+    final DeltaOverlay twice = once.merge(addNew, mapping, fresh, preCount);
+
+    assertThat(twice.getDeltaEdgeCount()).isEqualTo(once.getDeltaEdgeCount());
+  }
 }
