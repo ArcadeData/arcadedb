@@ -2311,7 +2311,7 @@ public class GraphEngine {
    * Whether the varargs describe at least one property. A single {@link Map} argument is how a caller hands over a
    * property map, so an EMPTY map means "no properties" exactly like no arguments at all (issue #8056).
    */
-  private static boolean describesProperties(final Object[] properties) {
+  static boolean describesProperties(final Object[] properties) {
     if (properties == null || properties.length == 0)
       return false;
     return !(properties.length == 1 && properties[0] instanceof Map<?, ?> map && map.isEmpty());
