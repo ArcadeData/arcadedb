@@ -511,9 +511,12 @@ class DeltaOverlay {
     for (final var entry : delta.updatedProperties.entrySet()) {
       final int baseId = baseMapping.getGlobalId(entry.getKey());
       final RID updatedRid = entry.getKey();
-      if (baseId >= 0 && isReusedBaseSlot(baseId, updatedRid, newOverflowIds, newDeleted)) {
-        // the vertex now holding a reused base slot lives in the overflow
-        final int idx = newOverflowIds.get(updatedRid) - baseNodeCount;
+      // An update to a vertex that lives in the overflow (added by an earlier delta, or sitting on a reused base
+      // slot, #8948) lands in its overflow properties; only an update to a live base vertex becomes an override
+      final Integer overflowId = baseId < 0 || isReusedBaseSlot(baseId, updatedRid, newOverflowIds, newDeleted)
+          ? newOverflowIds.get(updatedRid) : null;
+      if (overflowId != null) {
+        final int idx = overflowId - baseNodeCount;
         final Map<String, Object> merged = new HashMap<>(overflowPropsList.get(idx));
         merged.putAll(entry.getValue());
         overflowPropsList.set(idx, merged);
