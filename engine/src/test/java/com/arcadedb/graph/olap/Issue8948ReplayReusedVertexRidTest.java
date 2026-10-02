@@ -35,9 +35,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class Issue8948ReplayReusedVertexRidTest {
   private static final String EDGE_TYPE = "K";
-  private static final RID    A          = new RID(1, 0);
-  private static final RID    REUSED     = new RID(1, 1);
-  private static final RID    EDGE       = new RID(2, 20);
+  private static final RID    A      = new RID(1, 0);
+  private static final RID    REUSED = new RID(1, 1);
+  private static final RID    EDGE   = new RID(2, 20);
 
   @Test
   void replayedReuseOverAFreshBaseThatAlreadySawTheNewVertexCountsTheEdgeOnce() {

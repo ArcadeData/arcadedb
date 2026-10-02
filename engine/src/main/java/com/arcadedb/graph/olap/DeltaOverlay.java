@@ -312,7 +312,9 @@ class DeltaOverlay {
         continue; // already in overflow
       if (addedBaseId >= 0 && baseCsrPerType != null) {
         // Replay over a fresh base that already holds the new vertex: its masked base node still carries the
-        // edges the scan captured, and the replayed edges are re-added on the overflow node, so stop counting them
+        // edges the scan captured, and the replayed edges are re-added on the overflow node, so stop counting them.
+        // Known limit: an edge joining two such reused slots is subtracted once per endpoint (both slots reused within
+        // one replay window, an edge between them); the count only steers the compaction trigger and heals on rebuild
         for (final CSRAdjacencyIndex csr : baseCsrPerType.values())
           newDeltaEdgeCount -= incidentEdges(csr, addedBaseId);
       }
