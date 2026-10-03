@@ -6368,7 +6368,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * follows the entries replayed, never the largest id: 12 bytes per slot, so about 12-24 bytes per entry when ids
    * are dense and up to about 48 in the worst case, against the ~100 bytes per record of the RID map held beside it.
    */
-  private static final class IdOwners {
+  static final class IdOwners {
     /** The bucket value of an id whose last page entry is a tombstone. */
     static final int DELETED = -1;
 
@@ -6392,7 +6392,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
     long position(final int id) {
       if (id < denseBucket.length)
         return densePosition[id];
-      return sparsePosition[find(id)];
+      final int slot = find(id);
+      return keys[slot] != 0 ? sparsePosition[slot] : 0L;
     }
 
     void put(final int id, final int bucket, final long position) {
