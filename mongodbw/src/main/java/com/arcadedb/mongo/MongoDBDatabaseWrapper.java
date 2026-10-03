@@ -45,6 +45,7 @@ import de.bwaldvogel.mongo.backend.QueryResult;
 import de.bwaldvogel.mongo.backend.Utils;
 import de.bwaldvogel.mongo.backend.aggregation.Aggregation;
 import de.bwaldvogel.mongo.bson.Document;
+import de.bwaldvogel.mongo.bson.Decimal128;
 import de.bwaldvogel.mongo.bson.ObjectId;
 import de.bwaldvogel.mongo.exception.ErrorCode;
 import de.bwaldvogel.mongo.exception.MongoServerError;
@@ -53,6 +54,7 @@ import de.bwaldvogel.mongo.oplog.Oplog;
 import de.bwaldvogel.mongo.wire.message.MongoQuery;
 import io.netty.channel.Channel;
 
+import java.math.BigDecimal;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
@@ -708,13 +710,26 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         for (final Map.Entry<String, Object> f : operand.entrySet()) {
           final Number current = (Number) record.get(f.getKey());
           final Number delta = (Number) f.getValue();
-          record.set(f.getKey(), current == null ? delta : current.doubleValue() + delta.doubleValue());
+          if (current == null)
+            record.set(f.getKey(), delta);
+          else if (current instanceof BigDecimal || delta instanceof Decimal128)
+            record.set(f.getKey(), toBigDecimal(current).add(toBigDecimal(delta)));
+          else
+            record.set(f.getKey(), current.doubleValue() + delta.doubleValue());
         }
       }
       default -> throw new UnsupportedOperationException("Unsupported update operator '" + op + "'");
       }
     }
     return idIsObjectId;
+  }
+
+  private static BigDecimal toBigDecimal(final Number number) {
+    if (number instanceof BigDecimal decimal)
+      return decimal;
+    if (number instanceof Decimal128 decimal)
+      return (BigDecimal) MongoBsonValues.toStored(decimal);
+    return BigDecimal.valueOf(number.doubleValue());
   }
 
   /**
@@ -731,7 +746,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
     if (isReplacement(u)) {
       sql.append(" CONTENT ");
-      MongoDBToSqlTranslator.buildValue(sql, params, documentToMap(u));
+      MongoDBToSqlTranslator.bindStored(sql, params, documentToMap(u));
       return;
     }
 
@@ -741,7 +756,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       switch (op) {
       case "$set" -> {
         sql.append(" MERGE ");
-        MongoDBToSqlTranslator.buildValue(sql, params, documentToMap(operand));
+        MongoDBToSqlTranslator.bindStored(sql, params, documentToMap(operand));
       }
       case "$unset" -> {
         sql.append(" REMOVE ");
@@ -801,8 +816,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
   private static Object toMapValue(final Object value) {
     if (value instanceof Document document) {
-      if (document.get(MongoBsonValues.TAG) instanceof String)
-        throw new MongoServerError(ErrorCode.BadValue, "The field name '" + MongoBsonValues.TAG + "' is reserved");
+      MongoBsonValues.checkNotReserved(document);
       return documentToMap(document);
     } else if (value instanceof List<?> list) {
       final List<Object> converted = new ArrayList<>(list.size());

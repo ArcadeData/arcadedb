@@ -34,6 +34,7 @@ import de.bwaldvogel.mongo.exception.MongoServerError;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -65,37 +66,36 @@ final class MongoBsonValues {
   }
 
   /**
-   * Whether {@link #toStored} changes this value: an ObjectId, or a BSON type the engine stores in another form.
+   * Whether {@link #toStored} may change this value, that is whether it is anything but a plain string, number or boolean.
    */
   static boolean needsConversion(final Object value) {
-    return value instanceof ObjectId || value instanceof Decimal128 || value instanceof BinData || value instanceof BsonTimestamp
-        || value instanceof MinKey || value instanceof MaxKey || value instanceof BsonJavaScript || value instanceof LegacyUUID;
+    return !(value == null || value instanceof String || value instanceof Boolean || value instanceof Number && !(value instanceof Decimal128));
   }
 
   /**
    * Converts a value used in a filter into the form it is stored in. A regular expression is left alone: as a filter value it
-   * is a pattern to match, not a value to compare. Known limitation: an equality filter on a binary value does not match,
-   * because the stored map holds a byte array, which the engine compares by reference.
+   * is a pattern to match, not a value to compare. A Decimal128 NaN or Infinity is refused, as it is on insert.
    */
   static Object toBound(final Object value) {
-    return needsConversion(value) ? toStored(value) : value;
+    return needsConversion(value) && !(value instanceof BsonRegularExpression) ? toStored(value) : value;
   }
 
   /**
    * Converts a value received from a client into the form stored in the database. An {@link ObjectId} becomes its hex string.
+   * A map or list is copied only when an element changes.
    *
    * @throws MongoServerError if the value (or an element nested in it) has a type that cannot be stored
    */
   @SuppressWarnings("unchecked")
   static Object toStored(final Object value) {
-    if (value == null || value instanceof String || value instanceof Number && !(value instanceof Decimal128) || value instanceof Boolean)
+    if (!needsConversion(value))
       return value;
     if (value instanceof ObjectId id)
       return id.getHexData();
     if (value instanceof Decimal128 decimal)
       return toBigDecimal(decimal);
     if (value instanceof BinData bin)
-      return tagged(BIN_DATA, "data", bin.getData());
+      return tagged(BIN_DATA, "data", Base64.getEncoder().encodeToString(bin.getData()));
     if (value instanceof BsonRegularExpression regex)
       return tagged(REGEX, "pattern", regex.getPattern(), "options", regex.getOptions() != null ? regex.getOptions() : "");
     if (value instanceof BsonTimestamp timestamp)
@@ -108,31 +108,75 @@ final class MongoBsonValues {
       return tagged(JAVASCRIPT, "code", script.getCode());
     if (value instanceof LegacyUUID uuid)
       return tagged(LEGACY_UUID, "uuid", uuid.getUuid().toString());
-    if (value instanceof Map<?, ?> map) {
-      if (map.get(TAG) instanceof String)
-        throw new MongoServerError(ErrorCode.BadValue, "The field name '" + TAG + "' is reserved");
-      final Map<String, Object> converted = LinkedHashMap.newLinkedHashMap(map.size());
-      for (final Map.Entry<String, Object> entry : ((Map<String, Object>) map).entrySet())
-        converted.put(entry.getKey(), toStored(entry.getValue()));
-      return converted;
-    }
-    if (value instanceof List<?> list) {
-      final List<Object> converted = new ArrayList<>(list.size());
-      for (final Object item : list)
-        converted.add(toStored(item));
-      return converted;
-    }
+    if (value instanceof Map<?, ?> map)
+      return mapToStored((Map<String, Object>) map);
+    if (value instanceof List<?> list)
+      return listToStored(list);
     if (BinaryTypes.getTypeFromValue(value, null) == -1)
       throw new MongoServerError(ErrorCode.BadValue, "The BSON type " + value.getClass().getSimpleName() + " is not supported");
     return value;
   }
 
   /**
+   * Refuses a document that uses the reserved tag as a field name, whatever the type of its value.
+   */
+  static void checkNotReserved(final Map<?, ?> map) {
+    if (map.containsKey(TAG))
+      throw new MongoServerError(ErrorCode.BadValue, "The field name '" + TAG + "' is reserved");
+  }
+
+  private static Object mapToStored(final Map<String, Object> map) {
+    checkNotReserved(map);
+    Map<String, Object> converted = null;
+    int i = 0;
+    for (final Map.Entry<String, Object> entry : map.entrySet()) {
+      final Object original = entry.getValue();
+      final Object stored = toStored(original);
+      if (stored != original && converted == null) {
+        // first change: copy what was seen unchanged so far
+        converted = LinkedHashMap.newLinkedHashMap(map.size());
+        int j = 0;
+        for (final Map.Entry<String, Object> previous : map.entrySet()) {
+          if (j++ >= i)
+            break;
+          converted.put(previous.getKey(), previous.getValue());
+        }
+      }
+      if (converted != null)
+        converted.put(entry.getKey(), stored);
+      ++i;
+    }
+    return converted != null ? converted : map;
+  }
+
+  private static Object listToStored(final List<?> list) {
+    List<Object> converted = null;
+    for (int i = 0; i < list.size(); i++) {
+      final Object original = list.get(i);
+      final Object stored = toStored(original);
+      if (stored != original && converted == null) {
+        converted = new ArrayList<>(list.size());
+        for (int j = 0; j < i; j++)
+          converted.add(list.get(j));
+      }
+      if (converted != null)
+        converted.add(stored);
+    }
+    return converted != null ? converted : list;
+  }
+
+  /**
    * Turns a stored tagged map or DECIMAL back into the BSON object it was written from; any other value is returned as is.
    */
   static Object toBson(final Object value) {
-    if (value instanceof BigDecimal decimal)
-      return new Decimal128(decimal);
+    if (value instanceof BigDecimal decimal) {
+      try {
+        return new Decimal128(decimal);
+      } catch (final ArithmeticException | IllegalArgumentException e) {
+        // more than 34 significant digits or an exponent out of range: keep the response readable
+        return decimal.doubleValue();
+      }
+    }
     if (value instanceof Map<?, ?> map && map.get(TAG) instanceof String kind)
       return fromTagged(kind, map);
     return value;
@@ -146,7 +190,7 @@ final class MongoBsonValues {
     try {
       return decimal.toBigDecimal();
     } catch (final ArithmeticException e) {
-      // BigDecimal HAS NO NEGATIVE ZERO: IT IS STORED AS ZERO, WHICH COMPARES EQUAL TO IT
+      // BigDecimal has no negative zero: store it as zero, which compares equal
       if (decimal.doubleValue() == 0)
         return BigDecimal.ZERO;
       throw new MongoServerError(ErrorCode.BadValue, "The Decimal128 value " + decimal + " (NaN or Infinity) cannot be stored");
@@ -166,24 +210,16 @@ final class MongoBsonValues {
   }
 
   private static Object decode(final String kind, final Map<?, ?> map) {
-    switch (kind) {
-    case BIN_DATA:
-      return new BinData((byte[]) map.get("data"));
-    case REGEX:
-      return new BsonRegularExpression((String) map.get("pattern"), (String) map.get("options"));
-    case TIMESTAMP:
-      return new BsonTimestamp(((Number) map.get("value")).longValue());
-    case MIN_KEY:
-      return MinKey.getInstance();
-    case MAX_KEY:
-      return MaxKey.getInstance();
-    case JAVASCRIPT:
-      return new BsonJavaScript((String) map.get("code"));
-    case LEGACY_UUID:
-      return new LegacyUUID(UUID.fromString((String) map.get("uuid")));
-    default:
-      return map;
-    }
+    return switch (kind) {
+      case BIN_DATA -> new BinData(Base64.getDecoder().decode((String) map.get("data")));
+      case REGEX -> new BsonRegularExpression((String) map.get("pattern"), (String) map.get("options"));
+      case TIMESTAMP -> new BsonTimestamp(((Number) map.get("value")).longValue());
+      case MIN_KEY -> MinKey.getInstance();
+      case MAX_KEY -> MaxKey.getInstance();
+      case JAVASCRIPT -> new BsonJavaScript((String) map.get("code"));
+      case LEGACY_UUID -> new LegacyUUID(UUID.fromString((String) map.get("uuid")));
+      default -> map;
+    };
   }
 
   private static Map<String, Object> tagged(final String kind, final Object... keyValues) {
