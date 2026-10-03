@@ -4138,6 +4138,10 @@ body.col-resizing * {
   color: var(--text-muted);
 }
 
+.support-nav {
+  margin-top: 1rem;
+}
+
 .support-nav .nav-link {
   color: var(--text-secondary);
   font-size: 0.86rem;
