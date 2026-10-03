@@ -369,6 +369,9 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
     // the existing index cannot hold this key: rebuild it with the narrowest key type that holds both kinds. A failed rebuild
     // must not leave the collection without the index it had, so that one is put back.
     final boolean numeric = isNumeric(current) && isNumeric(keyType);
+    LogManager.instance().log(MongoDBCollectionWrapper.class, Level.INFO,
+        "Rebuilding the unique index on _id of collection '%s' with %s keys: writes to it wait until it is done", null, collectionName,
+        numeric ? Type.DOUBLE : Type.STRING);
     database.getSchema().dropIndex(existing.getName());
     if (!createIdIndex(database, collectionName, numeric ? Type.DOUBLE : Type.STRING, false))
       createIdIndex(database, collectionName, current, false);
