@@ -117,4 +117,13 @@ class Issue9113InScalarAndSubqueryScanEqualityTest extends TestHelper {
     });
     assertThat(ids("S", "k IN (SELECT ref FROM Ln)")).isEmpty();
   }
+
+  @Test
+  void subqueryStringAgainstNumberAgreesWithTheListForm() {
+    load();
+    database.transaction(() -> database.newDocument("Src").set("s", "7").save());
+    // whatever "=" and the list form decide for a STRING against a number, the sub-query form decides the same
+    assertThat(ids("S", "k IN (SELECT s FROM Src WHERE s IS NOT NULL)")).isEqualTo(ids("S", "k IN ['7']"));
+    assertThat(ids("S", "k IN (SELECT s FROM Src WHERE s IS NOT NULL)")).isEqualTo(ids("S", "k = '7'"));
+  }
 }
