@@ -85,7 +85,8 @@ public final class HealthMonitor {
 
     /**
      * Whether this division was restarted in place and the leader's appends have not been seen reaching it since (no new
-     * entry, no newer term with a known leader). The stale-term signature then proves no divergence (issue #8901).
+     * entry, no newer term with a known leader). The stale-term signature then proves no divergence (issue #8901). The
+     * divergence reformat is itself an in-place restart, so a reformat that did not help is held the same way.
      */
     default boolean isReplicationPathUnprovenSinceRestart() {
       return false;
@@ -976,6 +977,11 @@ public final class HealthMonitor {
     stuckConfirmed = false;
   }
 
+  /** Package-private for tests: how many dead-path WARNINGs were logged (issue #8901). */
+  int getDeadPathReports() {
+    return deadPathReports;
+  }
+
   /**
    * Whether the current stuck-at-stale-term streak (if any) has been observed on at least two consecutive
    * ticks (issue #8289). {@link HealthTarget#isFollowerStuckDiverged()} itself is raw and momentary - a
@@ -989,11 +995,6 @@ public final class HealthMonitor {
    * <p>
    * Independent of {@link #divergedFollowerRecoveryEnabled}: see {@link #checkStuckFollower()}.
    */
-  /** Package-private for tests: how many dead-path WARNINGs were logged (issue #8901). */
-  int getDeadPathReports() {
-    return deadPathReports;
-  }
-
   boolean isFollowerStuckDivergedConfirmed() {
     return stuckConfirmed;
   }

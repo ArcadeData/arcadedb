@@ -270,11 +270,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // threads - the health monitor and, since #5345, the log compaction scheduler - read it. Every reader
   // still copies it to a local before use so a concurrent reassignment cannot null it mid-method.
   private volatile RaftServer                raftServer;
-  // Issue #8901: the division's position right after the latest in-place restartRatis(), PENDING_BASELINE when it
-  // could not be read then, null when never restarted in place or once the path was proven. restartRatis() overwrites
-  // it unconditionally after start(), so a tick that read the new division against the previous baseline in between
-  // is corrected by that write; evaluations only ever compare-and-set.
-  private final    AtomicReference<InPlaceRestartBaseline> inPlaceRestartBaseline = new AtomicReference<>();
+  // Issue #8901: the division's position right after the latest in-place restartRatis() (the reformat included),
+  // PENDING_BASELINE from before the new server starts until it can be read, null when never restarted in place or once
+  // the path was proven. Evaluations only ever compare-and-set.
+  private final    AtomicReference<InPlaceRestartBaseline>  inPlaceRestartBaseline = new AtomicReference<>();
   private          RaftClient                raftClient;
   private volatile RaftProperties            raftProperties;
   private volatile RaftTransactionBroker     transactionBroker;
@@ -2533,6 +2532,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
         final Parameters recoveryParameters = buildParameters(configuration);
 
+        // Before the new server can take anything: a tick in between holds, and so does a start() that throws.
+        inPlaceRestartBaseline.set(PENDING_BASELINE);
         this.raftServer = RaftServer.newBuilder()
             .setServerId(localPeerId)
             .setGroup(raftGroup)
