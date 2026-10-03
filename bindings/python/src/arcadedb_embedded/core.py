@@ -268,20 +268,37 @@ class Database:
             # honoring commit_every batches like the fast path.
             n = 0
             was_active = self.is_transaction_active()
-            if not was_active:
-                self.begin()
-            for row in rows:
-                doc = self.new_document(type_name)
-                for k, v in row.items():
-                    doc.set(k, v)
-                doc.save()
-                n += 1
-                if not was_active and commit_every > 0 and n % commit_every == 0:
-                    self.commit()
+            try:
+                # begin() inside the try: a ^C landing right after it must
+                # still reach the rollback below.
+                if not was_active:
                     self.begin()
-            if not was_active:
-                self.commit()
-            return n
+                for row in rows:
+                    doc = self.new_document(type_name)
+                    for k, v in row.items():
+                        doc.set(k, v)
+                    doc.save()
+                    n += 1
+                    if not was_active and commit_every > 0 and n % commit_every == 0:
+                        self.commit()
+                        self.begin()
+                if not was_active:
+                    self.commit()
+                return n
+            except BaseException:
+                # Any exit other than the final commit must roll back the
+                # transaction this method opened, as run_in_transaction does
+                # (#7108, #7882): this branch runs precisely for values the
+                # fast path could not serialise, the likeliest to make set()
+                # raise. BaseException so ^C/SystemExit cannot leak it either.
+                # A caller's own transaction (was_active) is left to the caller.
+                if not was_active:
+                    try:
+                        if self.is_transaction_active():
+                            self.rollback()
+                    except Exception:  # nosec B110 - best-effort rollback
+                        pass
+                raise
         try:
             batcher = _java_class("com.arcadedb.python.DocumentBatcher")
             count = int(

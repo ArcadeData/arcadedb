@@ -122,8 +122,10 @@ class GraphBatch:
         started_transaction = False
         try:
             if not self._java_db.isTransactionActive():
-                self._java_db.begin()
+                # Flag first: an interrupt right after begin() must still roll
+                # back; the handler re-checks isTransactionActive() anyway.
                 started_transaction = True
+                self._java_db.begin()
 
             if properties:
                 java_vertex = self._java_graph_batch.createVertex(
@@ -136,12 +138,19 @@ class GraphBatch:
                 self._java_db.commit()
 
             return Vertex(java_vertex)
-        except Exception as e:
+        except BaseException as e:
+            # BaseException, not Exception: a KeyboardInterrupt/SystemExit
+            # between the begin() above and the commit() must not leak the
+            # transaction this method started (#7882). Only ordinary failures
+            # are translated to ArcadeDBError; the rest propagate unchanged.
             if started_transaction:
                 try:
-                    self._java_db.rollback()
+                    if self._java_db.isTransactionActive():
+                        self._java_db.rollback()
                 except Exception:
                     log_swallowed_exception(_LOGGER, "during batch vertex rollback")
+            if not isinstance(e, Exception):
+                raise
             raise ArcadeDBError(
                 f"Failed to create batch vertex of type '{type_name}': {e}"
             ) from e

@@ -102,6 +102,8 @@ public class Issue6950RecordImageGuardTest extends TestHelper {
     final RID rid = createRecord("x".repeat(200_000));
     final Binary image = imageOf(rid);
 
+    database.transaction(() -> assertThat(guard(rid, image)).as("an untouched multi-page record is the one that was read").isFalse());
+
     replaceValueWith(rid, "y".repeat(200_000));
 
     database.transaction(() -> assertThat(guard(rid, image))

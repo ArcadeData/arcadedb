@@ -1137,7 +1137,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * content returns {@code false}: it is not a record of its own. A freed or deleted slot also returns {@code false}:
    * the commit's own vanished-record check (#4959) is what reports that one.
    * <p>
-   * Never throws. A page that cannot be read where a record was is not a reason to fail a write that would otherwise
+   * Throws only the retryable {@link ConcurrentModificationException} of a multi-page record found moving while it was
+   * assembled. A page that cannot be read where a record was is not a reason to fail a write that would otherwise
    * succeed, and the commit-time version check is still behind it.
    *
    * @param readImage the image the update is diffed against - the record's own buffer, the same one
@@ -1171,6 +1172,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // byte loop through the page accessors: this runs on the write path, once per record taken for update.
       return !page.isSameContentAs((int) (recordPositionInPage + recordSize[1]), readImage, 0, size);
 
+    } catch (final ConcurrentModificationException e) {
+      // #8982: assembling a multi-page record found it moving under the read - the conflict this check exists to report
+      throw e;
     } catch (final Exception e) {
       LogManager.instance()
           .log(this, Level.FINE, "Unable to re-read record %s on page %s while taking it for update", e, rid,

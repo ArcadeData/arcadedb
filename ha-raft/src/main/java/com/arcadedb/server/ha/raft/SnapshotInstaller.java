@@ -114,6 +114,12 @@ public final class SnapshotInstaller {
   static final String SNAPSHOT_COMPLETE_FILE = ".snapshot-complete";
   static final String SNAPSHOT_SWAP_STATE_FILE = ".snapshot-swap-state";
   static final String SNAPSHOT_SWAP_STATE_TMP_FILE = SNAPSHOT_SWAP_STATE_FILE + ".tmp";
+  /**
+   * A VALIDATION_FAILED phase record written and fsynced before the swap starts, so that a failed validating reopen
+   * can publish its verdict with a rename rather than a fresh write (issue #8942). Never read as a phase on its own:
+   * only {@link #rollbackAfterFailedValidation} publishes it, and every swap-state cleanup deletes it.
+   */
+  static final String SNAPSHOT_VALIDATION_FAILED_FILE = SNAPSHOT_SWAP_STATE_FILE + ".validation-failed";
 
   private enum SwapPhase {
     BACKING_UP, INSTALLING, INSTALLED,
@@ -597,9 +603,22 @@ public final class SnapshotInstaller {
    * skipping the HA wrapper's replicated-close semantics: this is a local file swap, not a cluster-wide close).
    * On a swap or reopen failure the previous copy is restored and reopened so the node never stays closed; the
    * caller's {@code .snapshot-pending} marker remains the single startup-recovery hook.
+   * <p>
+   * The install is refused, with nothing moved, when the record of a failed validation cannot be prepared first. This
+   * trades availability on an almost full volume for never losing that verdict (issue #8942): do not relax it into a
+   * warning.
    */
   static void swapAndReopen(final String databaseName, final Path dbPath, final Path snapshotNew,
       final Path snapshotBackup, final Path pendingMarker, final ArcadeDBServer server) throws IOException {
+    // Prepared while nothing has moved, so a failed validation can record its verdict without free space (#8942).
+    // Outside the registry lock: the install's maintenance slot already excludes every other writer of this directory.
+    try {
+      prepareValidationFailedVerdict(dbPath);
+    } catch (final IOException e) {
+      throw new IOException("Refusing to install the snapshot for '" + databaseName + "': cannot prepare the record of "
+          + "a failed validation in " + dbPath + " (typically a full volume). The live database is untouched", e);
+    }
+
     synchronized (server.getDatabasesLock()) {
       // Close + deregister the live database now that a complete snapshot is staged on disk. The DB
       // must be closed before the file move so no open handles point at the directory being swapped.
@@ -1115,12 +1134,16 @@ public final class SnapshotInstaller {
    * Records the verdict of the failed validation before acting on it, then rolls back. Without the record, the interval
    * between the failed reopen and the published ROLLING_BACK would leave the phase at INSTALLED, which recovery reads as
    * "roll forward" and answers by deleting the backup it was about to restore (#8305). Only worth recording when there
-   * is a backup to roll back to; a failure to record is logged and the rollback is still attempted.
+   * is a backup to roll back to.
+   * <p>
+   * The record is the one {@link #prepareValidationFailedVerdict} wrote before the swap, published by a rename that
+   * needs no free space, so the verdict survives the full volume that typically makes the rollback fail too (#8942).
+   * Without a prepared record it is written afresh. A failure to record is logged and the rollback is still attempted.
    */
   static void rollbackAfterFailedValidation(final Path dbPath, final Path snapshotBackup) {
     if (Files.isDirectory(snapshotBackup)) {
       try {
-        writeSwapPhase(dbPath, SwapPhase.VALIDATION_FAILED);
+        publishValidationFailedVerdict(dbPath);
       } catch (final IOException e) {
         LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
             "Failed to record that the installed snapshot for %s does not open: %s. Attempting the rollback anyway", e, dbPath,
@@ -1128,6 +1151,56 @@ public final class SnapshotInstaller {
       }
     }
     rollbackToBackup(dbPath, snapshotBackup);
+  }
+
+  /**
+   * Writes a VALIDATION_FAILED phase record durably under a name recovery never reads as a phase, ready for
+   * {@link #publishValidationFailedVerdict} to rename over {@code .snapshot-swap-state} (issue #8942).
+   */
+  static void prepareValidationFailedVerdict(final Path dbPath) throws IOException {
+    final Path prepared = dbPath.resolve(SNAPSHOT_VALIDATION_FAILED_FILE);
+    try {
+      writeFileForced(prepared, SwapPhase.VALIDATION_FAILED.name());
+    } catch (final IOException e) {
+      // A full volume can create the file and fail the write: leave the directory as the refused install found it.
+      try {
+        Files.deleteIfExists(prepared);
+      } catch (final IOException cleanup) {
+        e.addSuppressed(cleanup);
+      }
+      throw e;
+    }
+    fsyncDirectory(dbPath);
+  }
+
+  /**
+   * Publishes VALIDATION_FAILED from the prepared record when there is one, by a fresh phase write otherwise. A record
+   * left behind by an earlier install that failed its swap is never published stale: {@link #swapAndReopen} rewrites
+   * it before every swap, and that is the only path that reaches here after a swap.
+   */
+  private static void publishValidationFailedVerdict(final Path dbPath) throws IOException {
+    final Path prepared = dbPath.resolve(SNAPSHOT_VALIDATION_FAILED_FILE);
+    if (!Files.isRegularFile(prepared)) {
+      writeSwapPhase(dbPath, SwapPhase.VALIDATION_FAILED);
+      return;
+    }
+    // A rename onto an existing entry of the same directory typically allocates no data block, unlike the write it
+    // replaces (a copy-on-write filesystem on an exhausted pool may still refuse it: #8950).
+    try {
+      Files.move(prepared, dbPath.resolve(SNAPSHOT_SWAP_STATE_FILE), StandardCopyOption.ATOMIC_MOVE,
+          StandardCopyOption.REPLACE_EXISTING);
+    } catch (final IOException renameFailure) {
+      // Never weaker than the fresh write this replaced: the rename may have failed for a reason the write survives.
+      try {
+        writeSwapPhase(dbPath, SwapPhase.VALIDATION_FAILED);
+        return;
+      } catch (final IOException writeFailure) {
+        writeFailure.addSuppressed(renameFailure);
+        throw writeFailure;
+      }
+    }
+    fsyncDirectory(dbPath);
+    snapshotSwapProgress(SwapPhase.VALIDATION_FAILED.name());
   }
 
   /**
@@ -1678,6 +1751,7 @@ public final class SnapshotInstaller {
   private static void deleteSwapState(final Path dbDir) throws IOException {
     Files.deleteIfExists(dbDir.resolve(SNAPSHOT_SWAP_STATE_FILE));
     Files.deleteIfExists(dbDir.resolve(SNAPSHOT_SWAP_STATE_TMP_FILE));
+    Files.deleteIfExists(dbDir.resolve(SNAPSHOT_VALIDATION_FAILED_FILE));
     fsyncDirectory(dbDir);
   }
 
