@@ -33,7 +33,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Issue #8901, against real Ratis: the signal that holds the stale-term reformat back is armed by the in-place restart
  * the health monitor performs, and is cleared by the first replicated entry the restarted division takes. A node that
- * was never restarted in place never holds the reformat back (issue #4741).
+ * was never restarted in place never holds the reformat back (issue #4741). The dead path itself - the leader's log
+ * stream still bound to the closed instance - is not reproduced here: it is timing-dependent (#8898, #8900), so the
+ * hold it triggers is covered by {@code Issue8901DeadReplicationPathNoReformatTest} at the health-monitor level.
  */
 @Tag("slow")
 class Issue8901ReplicationPathAfterInPlaceRestartIT extends BaseRaftHATest {
