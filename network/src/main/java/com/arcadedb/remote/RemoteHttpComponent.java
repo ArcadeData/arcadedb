@@ -494,6 +494,8 @@ public class RemoteHttpComponent extends RWLockContext {
     // Whether an earlier attempt may have reached the server: only then does the retry name the server process it expects, because a
     // request that provably never left (connection refused) is a first execution, whatever process answers it now
     boolean mayHaveBeenSent = false;
+    // The process each server was known to be when the call started: another thread's answer in between must not change what this retry expects
+    final Map<String, String> instancesAtStart = requestId != null ? new HashMap<>(serverReplayInstances) : Map.of();
 
     for (int retry = 0; retry < maxAttempts && connectToServer != null; ++retry) {
       server = connectToServer.getFirst() + ":" + connectToServer.getSecond();
@@ -521,7 +523,7 @@ public class RemoteHttpComponent extends RWLockContext {
 
         if (requestId != null) {
           requestBuilder = requestBuilder.header(HEADER_REQUEST_ID, requestId);
-          final String advertisedInstance = serverReplayInstances.get(server);
+          final String advertisedInstance = instancesAtStart.get(server);
           if (retry > 0 && mayHaveBeenSent && advertisedInstance != null)
             requestBuilder = requestBuilder.header(HEADER_REPLAY_INSTANCE, advertisedInstance);
         }
@@ -622,7 +624,7 @@ public class RemoteHttpComponent extends RWLockContext {
 
         if (connectionStrategy == CONNECTION_STRATEGY.FIXED || stickyPinned) {
           // The same server, which holds the entry of a write it applied: with the id on the request the replay is answered, not run again
-          refuseToReplayAPossiblyAppliedRequest(e, replayable || requestId != null && serverReplayInstances.containsKey(server), messageLabel,
+          refuseToReplayAPossiblyAppliedRequest(e, replayable || requestId != null && instancesAtStart.containsKey(server), messageLabel,
               connectToServer);
           LogManager.instance()
               .log(this, Level.WARNING, "Remote server (%s:%d) seems unreachable, retrying...",
