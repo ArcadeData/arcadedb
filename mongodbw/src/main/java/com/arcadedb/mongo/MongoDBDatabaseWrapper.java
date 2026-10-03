@@ -58,6 +58,7 @@ import io.netty.channel.Channel;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.Lock;
 import java.util.logging.Level;
 
 import static de.bwaldvogel.mongo.backend.Utils.markOkay;
@@ -584,6 +585,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
     int n = 0;
     if (database.getSchema().existsType(collectionName) && deletes != null) {
+      final Lock indexLock = MongoDBCollectionWrapper.idIndexLock(database, collectionName).readLock();
+      indexLock.lock();
       database.begin();
       try {
         for (final Document del : deletes) {
@@ -603,6 +606,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       } catch (final RuntimeException e) {
         database.rollback();
         throw e;
+      } finally {
+        indexLock.unlock();
       }
     }
 
@@ -631,6 +636,9 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       // a schema change cannot happen inside the transaction: an upsert creates the collection with its _id index up front
       prepareUpsertIdIndex(collectionName, updates);
 
+      // the transaction maintains the unique _id index, which must not be dropped and rebuilt under it
+      final Lock indexLock = MongoDBCollectionWrapper.idIndexLock(database, collectionName).readLock();
+      indexLock.lock();
       database.begin();
       try {
         int index = 0;
@@ -656,6 +664,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       } catch (final RuntimeException e) {
         database.rollback();
         throw e;
+      } finally {
+        indexLock.unlock();
       }
     }
 
@@ -690,9 +700,12 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         id = setter.get("_id");
         hasId = true;
       }
-      // an operator document ({$in: ..}, {$gt: ..}) says nothing about the key of the document that would be inserted
-      if (id instanceof Document)
-        continue;
+      // an operator document says nothing about the key of the document that would be inserted, but for $eq: without it the
+      // upsert stores a generated ObjectId
+      if (id instanceof Document operators) {
+        id = operators.get("$eq");
+        hasId = operators.containsKey("$eq");
+      }
 
       database.getSchema().getOrCreateDocumentType(collectionName);
       final Object sample = hasId && id != null ? id : new ObjectId();

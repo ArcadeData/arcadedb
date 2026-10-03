@@ -346,7 +346,7 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
     final Type keyType = requiredKeyType(ids);
     final TypeIndex existing = findUniqueIdIndex(database.getSchema().getType(collectionName));
     if (existing == null) {
-      createIdIndex(database, collectionName, keyType);
+      createIdIndex(database, collectionName, keyType, true);
       return;
     }
 
@@ -354,10 +354,12 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
     if (holds(current, keyType))
       return;
 
-    // the existing index cannot hold this key: rebuild it with the narrowest key type that holds both kinds
+    // the existing index cannot hold this key: rebuild it with the narrowest key type that holds both kinds. A failed rebuild
+    // must not leave the collection without the index it had, so that one is put back.
     final boolean numeric = isNumeric(current) && isNumeric(keyType);
     database.getSchema().dropIndex(existing.getName());
-    createIdIndex(database, collectionName, numeric ? Type.DOUBLE : Type.STRING);
+    if (!createIdIndex(database, collectionName, numeric ? Type.DOUBLE : Type.STRING, false))
+      createIdIndex(database, collectionName, current, false);
   }
 
   private static boolean isNumeric(final Type type) {
@@ -391,7 +393,12 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
     return result;
   }
 
-  private static void createIdIndex(final Database database, final String collectionName, final Type keyType) {
+  /**
+   * @param permanent whether a duplicate found while building makes the collection stay on the by-hand check for good: only for
+   *                  the first build, a failed rebuild leaves the previous index (restored by the caller) in charge
+   */
+  private static boolean createIdIndex(final Database database, final String collectionName, final Type keyType,
+      final boolean permanent) {
     try {
       final TypeIndexBuilder builder = database.getSchema().buildTypeIndex(collectionName, new String[] { "_id" });
       builder.withType(Schema.INDEX_TYPE.LSM_TREE);
@@ -399,9 +406,10 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
       builder.withIgnoreIfExists(true);
       builder.withDefaultKeyTypesForUndeclaredProperties(new Type[] { keyType });
       builder.create();
+      return true;
     } catch (final RuntimeException e) {
       // only duplicates are permanent: any other failure (a timeout, a lock) may well succeed on the next insert
-      if (ErrorCategory.of(e) == ErrorCategory.DUPLICATED_KEY)
+      if (permanent && ErrorCategory.of(e) == ErrorCategory.DUPLICATED_KEY)
         ID_INDEX_GAVE_UP.add(idIndexKey(database, collectionName));
       // never leave a half built index behind
       final TypeIndex partial = findUniqueIdIndex(database.getSchema().getType(collectionName));
@@ -410,6 +418,7 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
       LogManager.instance().log(MongoDBCollectionWrapper.class, Level.WARNING,
           "Cannot create the unique index on _id of collection '%s': duplicates of _id will be checked on insert (%s)", null,
           collectionName, e.getMessage());
+      return false;
     }
   }
 
