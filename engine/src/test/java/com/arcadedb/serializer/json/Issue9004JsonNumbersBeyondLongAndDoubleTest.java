@@ -115,6 +115,12 @@ class Issue9004JsonNumbersBeyondLongAndDoubleTest extends TestHelper {
   }
 
   @Test
+  void listsOfDoublesAndBigDecimalsConvertToAVectorProperty() {
+    assertThat((float[]) Type.convert(database, List.of(0.5, 1.5), float[].class)).containsExactly(0.5f, 1.5f);
+    assertThat((float[]) Type.convert(database, List.of(new BigDecimal("0.1234567890123456789"), 2), float[].class)).hasSize(2);
+  }
+
+  @Test
   void numericArraysAreExact() {
     final Map<String, Object> map = new JSONObject(
         "{\"d\":[0.1,3.141592653589793],\"big\":[1,18446744073709551617],\"mixed\":[2,3.5],\"wide\":[1.5,1.23456789012345678901234567890]}").toMap(true);
