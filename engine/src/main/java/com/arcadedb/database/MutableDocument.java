@@ -636,6 +636,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
           list.set(i, newRecord);
         }
       }
+      return materialiseListElements(list, propertyName);
     } else if (value instanceof Map) {
       final Map<String, Object> map = (Map<String, Object>) value;
       for (final Map.Entry<String, Object> entry : map.entrySet()) {
@@ -653,9 +654,65 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
         }
       }
 
-      return transformMapToEmbedded(map, propertyName);
+      return transformMapToEmbedded(materialiseMapValues(map, propertyName), propertyName);
     }
     return value;
+  }
+
+  /**
+   * For a {@code LIST OF <document type>} or {@code MAP OF <document type>} property, the declared document type name;
+   * null for any other property, including one whose {@code ofType} is a scalar type (#9111).
+   */
+  private String documentTypeOfCollectionElements(final String propertyName) {
+    if (database == null || type == null)
+      return null;
+
+    final Property property = type.getPolymorphicPropertyIfExists(propertyName);
+    if (property == null || (property.getType() != Type.LIST && property.getType() != Type.MAP))
+      return null;
+
+    final String ofType = property.getOfType();
+    return ofType == null || Type.getTypeByName(ofType) != null ? null : ofType;
+  }
+
+  /**
+   * Turns the plain map elements of a {@code LIST OF <document type>} into embedded documents of the declared type,
+   * honouring an explicit {@code "@type"} entry, exactly as {@link #transformMapToEmbedded} does for
+   * {@code EMBEDDED OF <type>} (#9111). Elements that are not maps are left for the validator, which refuses them.
+   *
+   * @return the list itself when nothing had to change, otherwise a copy (the caller's list may be immutable)
+   */
+  private List<Object> materialiseListElements(final List<Object> list, final String propertyName) {
+    final String ofType = list.isEmpty() ? null : documentTypeOfCollectionElements(propertyName);
+    if (ofType == null)
+      return list;
+
+    List<Object> result = list;
+    for (int i = 0; i < list.size(); i++)
+      if (list.get(i) instanceof Map<?, ?> element) {
+        if (result == list)
+          result = new ArrayList<>(list);
+        result.set(i, mapToEmbedded((Map<String, Object>) element, propertyName, ofType));
+      }
+    return result;
+  }
+
+  /**
+   * Same as {@link #materialiseListElements} for the values of a {@code MAP OF <document type>}.
+   */
+  private Map<String, Object> materialiseMapValues(final Map<String, Object> map, final String propertyName) {
+    final String ofType = map.isEmpty() ? null : documentTypeOfCollectionElements(propertyName);
+    if (ofType == null)
+      return map;
+
+    Map<String, Object> result = map;
+    for (final Map.Entry<String, Object> entry : map.entrySet())
+      if (entry.getValue() instanceof Map<?, ?> element) {
+        if (result == map)
+          result = new LinkedHashMap<>(map);
+        result.put(entry.getKey(), mapToEmbedded((Map<String, Object>) element, propertyName, ofType));
+      }
+    return result;
   }
 
   /**
@@ -701,15 +758,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     final String embType;
     if (explicitType != null) {
       embType = explicitType.toString();
-      if (ofType != null && !ofType.equals(embType)) {
-        // VALIDATE THE SCHEMA CONSTRAINT HERE, WHERE THE PROPERTY NAME IS STILL IN HAND, RATHER THAN LEAVING IT ALL
-        // TO DocumentValidator AT SAVE TIME
-        final DocumentType embSchemaType = database.getSchema().getType(embType);
-        if (!embSchemaType.instanceOf(ofType))
-          throw new ValidationException(
-              "Embedded type '" + embType + "' is not compatible with the type defined in the schema constraint '"
-                  + ofType + "' for property '" + propertyName + "'");
-      }
+      requireEmbeddedTypeCompatible(embType, ofType, propertyName);
     } else if (ofType != null)
       embType = ofType;
     else if (embeddedProperty)
@@ -723,5 +772,29 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     final MutableEmbeddedDocument embedded = newEmbeddedDocument(embType, propertyName);
     embedded.fromMap(map);
     return embedded;
+  }
+
+  private MutableEmbeddedDocument mapToEmbedded(final Map<String, Object> map, final String propertyName, final String ofType) {
+    final Object explicitType = map.get("@type");
+    final String embType = explicitType != null ? explicitType.toString() : ofType;
+    requireEmbeddedTypeCompatible(embType, ofType, propertyName);
+    final MutableEmbeddedDocument embedded = newEmbeddedDocument(embType, propertyName);
+    embedded.fromMap(map);
+    return embedded;
+  }
+
+  /**
+   * VALIDATES THE SCHEMA CONSTRAINT HERE, WHERE THE PROPERTY NAME IS STILL IN HAND, RATHER THAN LEAVING IT ALL TO
+   * DocumentValidator AT SAVE TIME
+   */
+  private void requireEmbeddedTypeCompatible(final String embType, final String ofType, final String propertyName) {
+    if (ofType == null || ofType.equals(embType))
+      return;
+
+    final DocumentType embSchemaType = database.getSchema().getType(embType);
+    if (!embSchemaType.instanceOf(ofType))
+      throw new ValidationException(
+          "Embedded type '" + embType + "' is not compatible with the type defined in the schema constraint '" + ofType
+              + "' for property '" + propertyName + "'");
   }
 }

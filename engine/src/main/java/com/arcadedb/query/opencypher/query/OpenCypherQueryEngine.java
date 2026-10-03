@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.DeferredExistenceChecks;
+import com.arcadedb.database.ExistingRecordsCheck;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParameterMissingException;
@@ -562,6 +563,15 @@ public class OpenCypherQueryEngine implements QueryEngine {
     final String[] propertyNames = ddl.getPropertyNames().toArray(new String[0]);
 
     autoCreateDDLType(schema, ddl, typeName);
+
+    // An existence constraint over a node that lacks the property is refused, as Neo4j does (#9112): the node would stay
+    // in the database unable to take any update, and out of any index on the property. Checked first, so a refusal leaves
+    // no property or index behind.
+    final CypherDDLStatement.ConstraintKind kind = ddl.getConstraintKind();
+    if (kind == CypherDDLStatement.ConstraintKind.NOT_NULL || kind == CypherDDLStatement.ConstraintKind.KEY)
+      for (final String propName : propertyNames)
+        ExistingRecordsCheck.requireExistence(schema.getEmbedded().getDatabase(), schema.getType(typeName), propName, true,
+            false);
 
     // For TYPED constraints, resolve the target type first so properties are created with the correct type
     final boolean isTyped = ddl.getConstraintKind() == CypherDDLStatement.ConstraintKind.TYPED;
