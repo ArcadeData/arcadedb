@@ -21,6 +21,7 @@ package com.arcadedb.serializer.json;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.utility.DateUtils;
+import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
@@ -671,11 +672,42 @@ public class JSONObject implements Map<String, Object> {
   // PRIMITIVE ARRAYS (float[], double[], int[], long[], short[], byte[], ...): serialized element-by-element via reflection instead of
   // falling through to the generic toString() (which would emit "[F@..."), wherever the array sits: a property, a map value or a list element.
   private static JsonElement primitiveArrayToElement(final Object array) {
-    final int length = Array.getLength(array);
-    final JSONArray result = new JSONArray(length);
-    for (int i = 0; i < length; i++)
-      result.put(Array.get(array, i));
-    return result.getInternal();
+    // TYPED LOOPS FOR THE COMMON CASES (EMBEDDINGS, BINARY): NO BOXING, NO TYPE SWITCH PER ELEMENT
+    final JsonArray result;
+    switch (array) {
+    case float[] floats -> {
+      result = new JsonArray(floats.length);
+      for (final float f : floats)
+        result.add(Float.isFinite(f) ? new JsonPrimitive(f) : JsonNull.INSTANCE);
+    }
+    case double[] doubles -> {
+      result = new JsonArray(doubles.length);
+      for (final double d : doubles)
+        result.add(Double.isFinite(d) ? new JsonPrimitive(d) : JsonNull.INSTANCE);
+    }
+    case int[] ints -> {
+      result = new JsonArray(ints.length);
+      for (final int i : ints)
+        result.add(i);
+    }
+    case long[] longs -> {
+      result = new JsonArray(longs.length);
+      for (final long l : longs)
+        result.add(l);
+    }
+    case byte[] bytes -> {
+      result = new JsonArray(bytes.length);
+      for (final byte b : bytes)
+        result.add(b);
+    }
+    default -> {
+      final int length = Array.getLength(array);
+      result = new JsonArray(length);
+      for (int i = 0; i < length; i++)
+        result.add(objectToElement(Array.get(array, i)));
+    }
+    }
+    return result;
   }
 
   protected static JsonElement objectToElement(final Object object) {
