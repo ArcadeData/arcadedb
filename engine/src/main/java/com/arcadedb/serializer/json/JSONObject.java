@@ -804,7 +804,7 @@ public class JSONObject implements Map<String, Object> {
   }
 
   /**
-   * Checks recursively and replace NaN values with zero.
+   * Checks recursively and replaces NaN and infinite values with null.
    */
   public void validate() {
     // Deliberately doubleValue() and not isNonFinite(): this repairs numbers read from parsed text (a lazily parsed "NaN" token is not a Double)

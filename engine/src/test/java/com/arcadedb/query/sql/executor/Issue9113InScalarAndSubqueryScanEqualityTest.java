@@ -144,6 +144,9 @@ class Issue9113InScalarAndSubqueryScanEqualityTest extends TestHelper {
       assertThat(ids("S", col + " IN (SELECT " + src + " FROM Src WHERE " + src + " IS NOT NULL)")).as(col)
           .isEqualTo(ids("S", col + " IN [" + literal + "]"));
     }
+    // the shared answer is a match, not a shared miss
+    assertThat(ids("S", "t IN (SELECT ts FROM Src WHERE ts IS NOT NULL)")).containsExactly(1);
+    assertThat(ids("S", "m IN (SELECT ms FROM Src WHERE ms IS NOT NULL)")).containsExactly(1);
   }
 
   @Test
@@ -159,5 +162,14 @@ class Issue9113InScalarAndSubqueryScanEqualityTest extends TestHelper {
     load();
     assertIndexAndScanFind("k IN ?", List.of(3L, 7, 9));
     assertIndexAndScanFind("k IN ?", new int[] { 3, 7 });
+  }
+
+  @Test
+  void equalsOnTheScanTypeMatchesByValue() {
+    load();
+    assertIndexAndScanFind("l = ?", 5);
+    assertIndexAndScanFind("m = ?", new BigDecimal("1.50"));
+    assertIndexAndScanFind("k = ?", 7L);
+    assertThat(ids("S", "m = ?", new BigDecimal("1.51"))).isEmpty();
   }
 }
