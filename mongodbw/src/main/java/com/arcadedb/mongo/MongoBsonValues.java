@@ -66,7 +66,9 @@ final class MongoBsonValues {
 
   private static final AtomicBoolean WIDE_DECIMAL_WARNED = new AtomicBoolean();
 
-  private static final String OBJECT_ID = "objectId";
+  // an ObjectId outside _id is kept as a prefixed string, not a map, so that it stays comparable and usable as an index key
+  static final String OBJECT_ID_PREFIX = "$oid:";
+
   // binary is held as Base64 text, not byte[]: a byte[] inside a map compares by identity, which would break eq and $in filters
   private static final String BIN_DATA = "binData";
   private static final String REGEX = "regex";
@@ -95,7 +97,7 @@ final class MongoBsonValues {
   }
 
   /**
-   * Converts a value received from a client into the form stored in the database. An {@link ObjectId} becomes a tagged map; use {@link #toStored(String, Object)} for an {@code _id}.
+   * Converts a value received from a client into the form stored in the database. An {@link ObjectId} becomes the string {@code $oid:<hex>}; use {@link #toStored(String, Object)} for an {@code _id}.
    * A map or list is copied only when an element changes.
    *
    * @throws MongoServerError if the value (or an element nested in it) has a type that cannot be stored
@@ -105,7 +107,7 @@ final class MongoBsonValues {
     if (!needsConversion(value))
       return value;
     if (value instanceof ObjectId id)
-      return tagged(OBJECT_ID, "hex", id.getHexData());
+      return OBJECT_ID_PREFIX + id.getHexData();
     if (value instanceof Decimal128 decimal)
       return toBigDecimal(decimal);
     if (value instanceof BinData bin)
@@ -164,20 +166,6 @@ final class MongoBsonValues {
 
   private static Object idToStored(final Object value) {
     return value instanceof ObjectId id ? id.getHexData() : toStored(value);
-  }
-
-  private static byte[] hexToBytes(final String hex) {
-    if (hex == null || hex.length() != 24)
-      throw new IllegalArgumentException("Not an ObjectId hex string");
-    final byte[] bytes = new byte[12];
-    for (int i = 0; i < 24; i += 2) {
-      final int high = Character.digit(hex.charAt(i), 16);
-      final int low = Character.digit(hex.charAt(i + 1), 16);
-      if (high < 0 || low < 0)
-        throw new IllegalArgumentException("Not an ObjectId hex string");
-      bytes[i / 2] = (byte) ((high << 4) + low);
-    }
-    return bytes;
   }
 
   /**
@@ -243,9 +231,20 @@ final class MongoBsonValues {
         return decimal.doubleValue();
       }
     }
+    if (value instanceof String string && isStoredObjectId(string)) {
+      try {
+        return MongoDBToSqlTranslator.getObjectId(string.substring(OBJECT_ID_PREFIX.length()));
+      } catch (final IllegalArgumentException e) {
+        return value;
+      }
+    }
     if (value instanceof Map<?, ?> map && map.get(TAG) instanceof String kind)
       return fromTagged(kind, map);
     return value;
+  }
+
+  static boolean isStoredObjectId(final String string) {
+    return string.startsWith(OBJECT_ID_PREFIX);
   }
 
   static boolean isTagged(final Object value) {
@@ -295,7 +294,6 @@ final class MongoBsonValues {
 
   private static Object decode(final String kind, final Map<?, ?> map) {
     return switch (kind) {
-      case OBJECT_ID -> new ObjectId(hexToBytes((String) map.get("hex")));
       case BIN_DATA -> new BinData(Base64.getDecoder().decode((String) map.get("data")));
       case REGEX -> new BsonRegularExpression((String) map.get("pattern"), (String) map.get("options"));
       case TIMESTAMP -> new BsonTimestamp(((Number) map.get("value")).longValue());

@@ -328,4 +328,14 @@ public class MongoDBBsonTypesRoundTripTest extends BaseMongoServerTest {
     assertThat(collection.find(eq("ref", oid)).first().get("_id")).isEqualTo(62);
     assertThat(collection.find(in("ref", List.of(oid))).first().get("_id")).isEqualTo(62);
   }
+
+  @Test
+  void indexedNonIdObjectIdFieldStillWorks() {
+    collection.createIndex(new Document("ref", 1));
+    final ObjectId oid = new ObjectId("507f1f77bcf86cd799439014");
+    collection.insertOne(new Document("_id", 63).append("ref", oid));
+    collection.insertOne(new Document("_id", 64).append("ref", new ObjectId("507f1f77bcf86cd799439015")));
+    assertThat(collection.find(eq("ref", oid)).first().get("_id")).isEqualTo(63);
+    assertThat(collection.find(in("ref", List.of(oid))).first().get("_id")).isEqualTo(63);
+  }
 }
