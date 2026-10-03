@@ -580,8 +580,7 @@ class TypeTest extends TestHelper {
   void convertToShort() {
     assertThat(Type.convert(database, (short) 1, Short.class)).isEqualTo((short) 1);
     assertThat(Type.convert(database, "42", Short.class)).isEqualTo((short) 42);
-    // an empty string is no number (issue #9027)
-    assertThatThrownBy(() -> Type.convert(database, "", Short.class)).isInstanceOf(NumberFormatException.class);
+    assertThat(Type.convert(database, "", Short.class)).isEqualTo((short) 0);
     assertThat(Type.convert(database, 42, Short.class)).isEqualTo((short) 42);
     assertThat(Type.convert(database, 42L, Short.TYPE)).isEqualTo((short) 42);
     // BOUNDARY VALUES MUST STILL CONVERT
@@ -610,8 +609,7 @@ class TypeTest extends TestHelper {
   void convertToInteger() {
     assertThat(Type.convert(database, 1, Integer.class)).isEqualTo(1);
     assertThat(Type.convert(database, "42", Integer.class)).isEqualTo(42);
-    // an empty string is no number (issue #9027)
-    assertThatThrownBy(() -> Type.convert(database, "", Integer.class)).isInstanceOf(NumberFormatException.class);
+    assertThat(Type.convert(database, "", Integer.class)).isEqualTo(0);
     assertThat(Type.convert(database, 42L, Integer.class)).isEqualTo(42);
     assertThat(Type.convert(database, 42L, Integer.TYPE)).isEqualTo(42);
     // BOUNDARY VALUES MUST STILL CONVERT
@@ -690,8 +688,7 @@ class TypeTest extends TestHelper {
   void convertToLong() {
     assertThat(Type.convert(database, 1L, Long.class)).isEqualTo(1L);
     assertThat(Type.convert(database, "42", Long.class)).isEqualTo(42L);
-    // an empty string is no number (issue #9027)
-    assertThatThrownBy(() -> Type.convert(database, "", Long.class)).isInstanceOf(NumberFormatException.class);
+    assertThat(Type.convert(database, "", Long.class)).isEqualTo(0L);
     assertThat(Type.convert(database, 42, Long.class)).isEqualTo(42L);
     assertThat(Type.convert(database, 42, Long.TYPE)).isEqualTo(42L);
   }
@@ -700,8 +697,7 @@ class TypeTest extends TestHelper {
   void convertToFloat() {
     assertThat(Type.convert(database, 1.0f, Float.class)).isEqualTo(1.0f);
     assertThat(Type.convert(database, "3.14", Float.class)).isEqualTo(3.14f);
-    // an empty string is no number (issue #9027)
-    assertThatThrownBy(() -> Type.convert(database, "", Float.class)).isInstanceOf(NumberFormatException.class);
+    assertThat(Type.convert(database, "", Float.class)).isEqualTo(0f);
     assertThat(Type.convert(database, 42, Float.class)).isEqualTo(42.0f);
     assertThat(Type.convert(database, 42, Float.TYPE)).isEqualTo(42.0f);
   }
@@ -710,8 +706,7 @@ class TypeTest extends TestHelper {
   void convertToDouble() {
     assertThat(Type.convert(database, 1.0, Double.class)).isEqualTo(1.0);
     assertThat(Type.convert(database, "3.14", Double.class)).isEqualTo(3.14);
-    // an empty string is no number (issue #9027)
-    assertThatThrownBy(() -> Type.convert(database, "", Double.class)).isInstanceOf(NumberFormatException.class);
+    assertThat(Type.convert(database, "", Double.class)).isEqualTo(0.0);
     assertThat(Type.convert(database, 42, Double.class)).isEqualTo(42.0);
     assertThat(Type.convert(database, 42, Double.TYPE)).isEqualTo(42.0);
     // Float precision fix: Float -> Double via string parsing

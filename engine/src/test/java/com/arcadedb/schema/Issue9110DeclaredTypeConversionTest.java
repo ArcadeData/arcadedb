@@ -45,7 +45,7 @@ class Issue9110DeclaredTypeConversionTest extends TestHelper {
   private void assertRefused(final String typeName, final String property, final Object value) {
     assertThatThrownBy(() -> database.transaction(() -> database.newDocument(typeName).set(property, value).save()))
         .as("%s <- %s", property, value == null ? null : value.getClass().getSimpleName() + " " + value)
-        .isInstanceOf(RuntimeException.class);
+        .isInstanceOf(IllegalArgumentException.class);
   }
 
   private Object roundTrip(final String typeName, final String property, final Object value) {
@@ -166,7 +166,6 @@ class Issue9110DeclaredTypeConversionTest extends TestHelper {
     type.createProperty("str", Type.STRING);
 
     assertRefused("Keep9110", "dec", true);
-    assertRefused("Keep9110", "dt", "1791000000000");
     assertRefused("Keep9110", "dt", "");
     assertRefused("Keep9110", "dt", true);
     assertRefused("Keep9110", "dtm", new HashMap<>(Map.of("a", 1)));
@@ -186,6 +185,60 @@ class Issue9110DeclaredTypeConversionTest extends TestHelper {
     type.createProperty("dt", Type.DATETIME);
     for (final String p : new String[] { "i", "flag", "dec", "dt" })
       assertRefused("Bytes9110", p, new byte[] { 1, 2, 3 });
+  }
+
+  @Test
+  void digitOnlyStringIsAnEpochCountForEveryDateTarget() {
+    final DocumentType type = database.getSchema().createDocumentType("Epoch9110");
+    type.createProperty("dt", Type.DATETIME);
+    type.createProperty("d", Type.DATE);
+    assertThat(roundTrip("Epoch9110", "dt", "1791000000000")).isEqualTo(roundTrip("Epoch9110", "dt", 1791000000000L));
+    assertThat(roundTrip("Epoch9110", "dt", "1791000000000")).isNotNull();
+  }
+
+  @Test
+  void crossJavaTimeShapesConvert() {
+    final DocumentType type = database.getSchema().createDocumentType("Time9110");
+    type.createProperty("dt", Type.DATETIME);
+    type.createProperty("d", Type.DATE);
+    final java.time.OffsetDateTime offset = java.time.OffsetDateTime.parse("2026-10-03T10:15:30+02:00");
+    assertThat(roundTrip("Time9110", "dt", offset)).isNotNull();
+    assertThat(roundTrip("Time9110", "dt", java.time.ZonedDateTime.parse("2026-10-03T10:15:30Z"))).isNotNull();
+    assertThat(roundTrip("Time9110", "dt", java.time.Instant.parse("2026-10-03T10:15:30Z"))).isNotNull();
+    assertThat(roundTrip("Time9110", "dt", LocalDate.of(2026, 10, 3))).isNotNull();
+    assertThat(roundTrip("Time9110", "d", offset)).isNotNull();
+    assertThat(roundTrip("Time9110", "d", java.time.ZonedDateTime.parse("2026-10-03T10:15:30Z"))).isNotNull();
+    assertThat(Type.convert(database, offset, java.time.Instant.class)).isEqualTo(offset.toInstant());
+    assertThat(Type.convert(database, java.time.LocalDateTime.of(2026, 10, 3, 10, 0), java.time.ZonedDateTime.class))
+        .isNotNull();
+    assertThat(Type.convert(database, java.time.LocalDateTime.of(2026, 10, 3, 10, 0), java.time.Instant.class)).isNotNull();
+  }
+
+  @Test
+  void nanIsRefusedByABooleanProperty() {
+    database.getSchema().createDocumentType("Nan9110").createProperty("flag", Type.BOOLEAN);
+    assertRefused("Nan9110", "flag", Double.NaN);
+  }
+
+  @Test
+  void gettersOnSchemalessDataKeepTheirLenientBehavior() {
+    database.getSchema().createDocumentType("Loose9110");
+    database.transaction(() -> {
+      database.newDocument("Loose9110").set("a", new ArrayList<>(List.of(1, 2))).set("b", "").set("c", true).save();
+    });
+    final Document d = database.query("sql", "SELECT FROM Loose9110").next().getElement().get();
+    assertThat(d.getInteger("a")).isNull();
+    assertThat(d.getInteger("b")).isEqualTo(0);
+    assertThat(d.getInteger("c")).isNull();
+  }
+
+  @Test
+  void indexedIntegerLookupByBooleanDoesNotThrow() {
+    final DocumentType type = database.getSchema().createDocumentType("Look9110");
+    type.createProperty("i", Type.INTEGER);
+    type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "i");
+    database.transaction(() -> database.newDocument("Look9110").set("i", 1).save());
+    assertThat(database.query("sql", "SELECT FROM Look9110 WHERE i = true").hasNext()).isFalse();
   }
 
   @Test
