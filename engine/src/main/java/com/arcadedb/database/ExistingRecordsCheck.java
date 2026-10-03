@@ -100,7 +100,7 @@ public final class ExistingRecordsCheck {
   public static void requireDeclaration(final Database db, final DocumentType type, final Property property) {
     final DocumentValidator.StoredValueConstraints constraints = DocumentValidator.StoredValueConstraints.of(db, property);
     // Nothing a stored record holds can violate this declaration (e.g. a plain STRING with no flags): skip the full read
-    if (!property.isMandatory() && !property.isNotNull() && !constraints.canBeViolatedOn(property.getType()))
+    if (!property.isMandatory() && !property.isNotNull() && !constraints.canBeViolatedOn(property))
       return;
 
     final Iterator<Record> records = db.iterateType(type.getName(), true);
