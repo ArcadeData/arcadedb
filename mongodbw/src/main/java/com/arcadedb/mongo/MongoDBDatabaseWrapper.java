@@ -21,6 +21,7 @@ package com.arcadedb.mongo;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.ProtocolContext;
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.log.LogManager;
@@ -308,6 +309,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
   @Override
   public void drop(final Oplog opLog) {
+    MongoDBCollectionWrapper.forgetIdIndexes(database);
     database.drop();
   }
 
@@ -741,27 +743,29 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
   private int executeUpdateOnRecords(final String collectionName, final Document q, final Document u, final boolean multi) {
     final Map<String, Object> params = new HashMap<>();
-    final StringBuilder sql = new StringBuilder("SELECT FROM ").append(Identifier.quote(collectionName));
+    final StringBuilder sql = new StringBuilder("SELECT @rid FROM ").append(Identifier.quote(collectionName));
     appendWhere(sql, params, q);
     if (!multi)
       sql.append(" LIMIT 1");
 
-    // collect first: the records are modified while the result set would still be open on them
-    final List<MutableDocument> records = new ArrayList<>();
+    // collect the RIDs first (the records are modified while the result set would still be open on them), and load each record
+    // in turn: only identities are held on the heap, not every matching document
+    final List<RID> rids = new ArrayList<>();
     try (final ResultSet rs = database.query("sql", sql.toString(), params)) {
       while (rs.hasNext())
-        rs.next().getElement().ifPresent(element -> records.add(element.modify()));
+        rs.next().getIdentity().ifPresent(rids::add);
     }
 
     final boolean replacement = isReplacement(u);
-    for (final MutableDocument record : records) {
+    for (final RID rid : rids) {
+      final MutableDocument record = rid.asDocument().modify();
       if (replacement)
         replaceContent(record, u);
       else
         applyOperatorsToDocument(record, u);
       record.save();
     }
-    return records.size();
+    return rids.size();
   }
 
   /**
