@@ -151,6 +151,11 @@ final class OldRatisServerTermination {
    * proceeds without the check, as it did before issue #8900, and says so once.
    */
   static Map<String, Server> grpcServersOf(final RaftServerRpc rpc) {
+    return serversOf(rpc);
+  }
+
+  /** {@link #grpcServersOf} on any object, so the reflective read can be tested without a Ratis RPC. */
+  static Map<String, Server> serversOf(final Object rpc) {
     if (rpc == null || serversFieldUnavailable)
       return Map.of();
     try {
@@ -191,6 +196,12 @@ final class OldRatisServerTermination {
         "Cannot read the gRPC servers of the Ratis RPC layer (%s); an in-place Ratis restart will not verify that the "
             + "old server's gRPC services terminated (issue #8900)", e.toString());
     return Map.of();
+  }
+
+  /** Forgets the cached field and the latch. Tests only: both are process-wide. */
+  static void resetForTesting() {
+    serversField = null;
+    serversFieldUnavailable = false;
   }
 
   private static Field findField(final Class<?> type, final String name) {

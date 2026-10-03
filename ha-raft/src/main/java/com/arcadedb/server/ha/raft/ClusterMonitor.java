@@ -603,6 +603,7 @@ public class ClusterMonitor {
       state.channelLastResetAtMs = -1;
       state.channelResetCount = 0;
       state.channelResetGaveUp = false;
+      state.channelEarlyResetDone = false;
       return;
     }
 
@@ -616,11 +617,28 @@ public class ClusterMonitor {
     // Only act once a full interval has elapsed since the streak start (first attempt) or the last reset
     // (subsequent attempts). A follower that reconnects within an interval clears the streak above and is
     // never reset, so an in-progress reconnection is not disrupted.
-    // Issue #8900: the FIRST attempt does not wait when the follower answered outside Raft after the streak began. It
-    // is up and refusing every Raft RPC - in #8898 the leader's appends kept reaching a CLOSED division through the
+    // Issue #8900: one EXTRA reset, at once, when the follower answered outside Raft after the streak began. It is up
+    // and refusing every Raft RPC - in #8898 the leader's appends kept reaching a CLOSED division through the
     // connection of a server that had been replaced - and a fresh channel reconnects to whatever holds the port now.
-    final boolean refusing = state.channelResetCount == 0 && answeredOutsideRaftSince(replicaId, state.channelUnreachableSinceMs);
-    if (!refusing && now - state.channelLastResetAtMs < peerChannelResetDurationMs)
+    // It is not counted against CHANNEL_RESET_MAX_ATTEMPTS and does not move channelLastResetAtMs, so the regular
+    // schedule and the #5346 escalation (a leadership transfer) keep exactly the timing they had: "answers over HTTP"
+    // also matches a slow in-place restart or a Raft-port-only network problem, which must not escalate any sooner.
+    if (!state.channelEarlyResetDone && state.channelResetCount == 0
+        && answeredOutsideRaftSince(replicaId, state.channelUnreachableSinceMs)) {
+      state.channelEarlyResetDone = true;
+      LogManager.instance().log(this, Level.WARNING,
+          "Follower '%s' answers over HTTP but no Raft RPC to it has succeeded for %dms; resetting its replication "
+              + "channel now so the leader reconnects to the server holding its Raft port (issue #8900).",
+          replicaId, lastRpcElapsedMs);
+      try {
+        unreachablePeerChannelHandler.accept(replicaId);
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Channel-reset recovery for follower '%s' failed: %s", replicaId, e.getMessage());
+      }
+      return;
+    }
+    if (now - state.channelLastResetAtMs < peerChannelResetDurationMs)
       return;
 
     if (state.channelResetCount >= CHANNEL_RESET_MAX_ATTEMPTS) {
@@ -652,16 +670,10 @@ public class ClusterMonitor {
 
     state.channelResetCount++;
     state.channelLastResetAtMs = now;
-    if (refusing)
-      LogManager.instance().log(this, Level.WARNING,
-          "Follower '%s' answers over HTTP but no Raft RPC to it has succeeded for %dms; triggering a replication-channel "
-              + "reset (attempt %d/%d) so the leader reconnects to the server now holding its Raft port (issue #8900).",
-          replicaId, lastRpcElapsedMs, state.channelResetCount, CHANNEL_RESET_MAX_ATTEMPTS);
-    else
-      LogManager.instance().log(this, Level.WARNING,
-          "Follower '%s' unreachable for %dms; triggering a replication-channel reset (attempt %d/%d) to force a fresh "
-              + "DNS re-resolution and reconnect.",
-          replicaId, now - state.channelUnreachableSinceMs, state.channelResetCount, CHANNEL_RESET_MAX_ATTEMPTS);
+    LogManager.instance().log(this, Level.WARNING,
+        "Follower '%s' unreachable for %dms; triggering a replication-channel reset (attempt %d/%d) to force a fresh "
+            + "DNS re-resolution and reconnect.",
+        replicaId, now - state.channelUnreachableSinceMs, state.channelResetCount, CHANNEL_RESET_MAX_ATTEMPTS);
     try {
       unreachablePeerChannelHandler.accept(replicaId);
     } catch (final Exception e) {
@@ -835,6 +847,8 @@ public class ClusterMonitor {
     long          channelLastResetAtMs      = -1;
     int           channelResetCount         = 0;
     boolean       channelResetGaveUp        = false;
+    // Whether this streak already had its #8900 early reset of a follower that answers outside Raft.
+    boolean       channelEarlyResetDone     = false;
 
     ReplicaState(final long initialMatchIndex, final long initialLeaderCommitIndex) {
       this.lastMatchIndex = initialMatchIndex;

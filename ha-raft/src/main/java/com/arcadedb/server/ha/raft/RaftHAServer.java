@@ -113,6 +113,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.BiConsumer;
 import java.util.function.LongSupplier;
+import java.util.function.ToLongFunction;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -575,10 +576,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // all the same is refused by a live node, and its channel is reset without waiting out the unreachable interval.
     // observedAtMs is compared with ClusterMonitor's clock: both are System.currentTimeMillis outside tests, and a test
     // that fakes one must fake the other or the comparison means nothing.
-    this.clusterMonitor.setPeerLastAnsweredAt(peerId -> {
-      final PeerCapabilityRegistry.Advertisement advertisement = peerCapabilities.freshAdvertisementOf(peerId);
-      return advertisement != null ? advertisement.observedAtMs() : -1L;
-    });
+    this.clusterMonitor.setPeerLastAnsweredAt(peerLastAnsweredAt(peerCapabilities));
     this.handoffContactWindowMs = handoffContactWindowMs(
         configuration.getValueAsInteger(GlobalConfiguration.HA_ELECTION_TIMEOUT_MIN), peerUnreachableThresholdMs);
     this.quorum = Quorum.parse(configuration.getValueAsString(GlobalConfiguration.HA_QUORUM));
@@ -802,6 +800,17 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         }
       }
     });
+  }
+
+  /**
+   * When each peer last answered over HTTP, as {@link ClusterMonitor#setPeerLastAnsweredAt} reads it (issue #8900): the
+   * time of its fresh capability advertisement, or -1 when it has none. Package-private for the wiring test.
+   */
+  static ToLongFunction<String> peerLastAnsweredAt(final PeerCapabilityRegistry registry) {
+    return peerId -> {
+      final PeerCapabilityRegistry.Advertisement advertisement = registry.freshAdvertisementOf(peerId);
+      return advertisement != null ? advertisement.observedAtMs() : -1L;
+    };
   }
 
   /**
@@ -2330,6 +2339,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       // Issue #8900: the waits below end early on a shutdown (stop() does not take recoveryLock) or an interrupt (the
       // health monitor being stopped), and such an ending is not a failed restart.
       final BooleanSupplier abandoned = () -> shutdownRequested || Thread.currentThread().isInterrupted();
+      if (!shutdownRequested && Thread.currentThread().isInterrupted())
+        LogManager.instance().log(this, Level.WARNING,
+            "In-place Ratis restart called on an interrupted thread without a shutdown; it will be abandoned and the next "
+                + "health tick retries it (issue #8900)");
       // Issue #8900: read before the close, which empties the server's group map.
       RaftServer.Division oldDivision = null;
       if (oldServer != null)
@@ -2342,7 +2355,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         if (oldServer != null) {
           // Issue #8900: Ratis may already be closing this server on another thread - the JVM-pause monitor does it on
           // its own thread. close() below would then be a no-op that still INTERRUPTS that thread (pauseMonitor.stop()),
-          // cutting its gRPC shutdown short, so let that close finish first.
+          // cutting its gRPC shutdown short, so let that close finish first. This reads the PROXY state: an #8651 zombie
+          // (proxy RUNNING, division stuck CLOSING) does not wait here.
           final LifeCycle.State beforeClose = OldRatisServerTermination.awaitCloseInProgress(oldServer::getLifeCycleState,
               OldRatisServerTermination.CLOSE_IN_PROGRESS_WAIT_MS, abandoned);
           if (abandoned.getAsBoolean()) {

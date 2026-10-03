@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.log.LogManager;
 import org.apache.ratis.server.RaftServer;
+import org.apache.ratis.thirdparty.io.grpc.Server;
 import org.apache.ratis.util.LifeCycle;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Tag;
@@ -106,7 +107,7 @@ class Issue8900ClosedServerInPlaceRestartIT extends BaseRaftHATest {
     // and none is still running beside the new server.
     final var oldGrpcServers = OldRatisServerTermination.grpcServersOf(oldServer.getServerRpc());
     assertThat(oldGrpcServers).as("the old server's gRPC services must be readable").isNotEmpty();
-    assertThat(oldGrpcServers.values()).allMatch(server -> server.isTerminated());
+    assertThat(oldGrpcServers.values()).allMatch(Server::isTerminated);
 
     // Writes made after the restart reach it: the leader's appends land on the new division.
     final int leader = awaitLeader();
@@ -128,7 +129,7 @@ class Issue8900ClosedServerInPlaceRestartIT extends BaseRaftHATest {
     // The restarted node must be a working voter: stop another node (the leader when it is not the restarted one), and
     // the restarted node and the last one must elect a leader and commit.
     final int victim = leader != target ? leader : (target + 1) % getServerCount();
-    final int survivor = 3 - target - victim;
+    final int survivor = otherThan(target, victim);
     LogManager.instance().log(this, Level.INFO, "TEST: stopping server %d", victim);
     getServer(victim).stop();
     Awaitility.await().atMost(60, TimeUnit.SECONDS).pollInterval(200, TimeUnit.MILLISECONDS)
@@ -142,6 +143,13 @@ class Issue8900ClosedServerInPlaceRestartIT extends BaseRaftHATest {
           assertThat(countOn(target, "AfterStop")).isEqualTo(10L);
           assertThat(countOn(survivor, "AfterStop")).isEqualTo(10L);
         });
+  }
+
+  private int otherThan(final int a, final int b) {
+    for (int i = 0; i < getServerCount(); i++)
+      if (i != a && i != b)
+        return i;
+    throw new IllegalStateException("no third server");
   }
 
   private int awaitLeader() {
@@ -165,7 +173,9 @@ class Issue8900ClosedServerInPlaceRestartIT extends BaseRaftHATest {
   /**
    * Closes {@code server} the way {@code RaftServerProxy.handleJvmPause} does: {@code close()} on a thread that the
    * proxy's {@code JvmPauseMonitor} knows as its own, so the in-place restart's {@code pauseMonitor.stop()} interrupts
-   * it exactly as it interrupts the real monitor thread. With {@code interrupt}, the close runs interrupted, the
+   * it exactly as it interrupts the real monitor thread. Reads the private {@code RaftServerProxy.pauseMonitor} and
+   * {@code JvmPauseMonitor.threadRef} fields, verified against Apache Ratis 3.3.1: after a Ratis upgrade a failure here
+   * means the fields moved, not that the recovery broke. With {@code interrupt}, the close runs interrupted, the
    * cut-short shutdown of the #8898 incident.
    */
   private static void closeLikeThePauseMonitor(final RaftServer server, final boolean interrupt) throws Exception {

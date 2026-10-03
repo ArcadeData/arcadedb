@@ -24,10 +24,15 @@ import org.apache.ratis.thirdparty.io.grpc.Server;
 import org.apache.ratis.util.LifeCycle;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.ToLongFunction;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -120,6 +125,76 @@ class OldRatisServerTerminationTest {
   @Test
   void aNonGrpcRpcHasNoServersToCheck() {
     assertThat(OldRatisServerTermination.grpcServersOf(null)).isEmpty();
+  }
+
+  @Test
+  void theServersMapIsReadReflectively() {
+    OldRatisServerTermination.resetForTesting();
+    try {
+      final FakeServer server = new FakeServer(false, true);
+      final Map<String, Server> servers = OldRatisServerTermination.serversOf(new RpcWithServers(server));
+      assertThat(servers).containsOnlyKeys("GrpcServerProtocolService");
+      assertThat(servers.get("GrpcServerProtocolService")).isSameAs(server);
+
+      // Another class without the field: nothing to check, and the check stays on for the next restart.
+      assertThat(OldRatisServerTermination.serversOf(new Object())).isEmpty();
+      assertThat(OldRatisServerTermination.serversOf(new RpcWithServers(server))).hasSize(1);
+    } finally {
+      OldRatisServerTermination.resetForTesting();
+    }
+  }
+
+  @Test
+  void aServersFieldThatIsNotAMapIsIgnored() {
+    OldRatisServerTermination.resetForTesting();
+    try {
+      assertThat(OldRatisServerTermination.serversOf(new RpcWithWrongField())).isEmpty();
+    } finally {
+      OldRatisServerTermination.resetForTesting();
+    }
+  }
+
+  /** Shaped like {@code GrpcServicesImpl}: a private {@code servers} map from service name to gRPC server. */
+  private static final class RpcWithServers {
+    private final Map<String, Server> servers = new LinkedHashMap<>();
+
+    RpcWithServers(final Server server) {
+      servers.put("GrpcServerProtocolService", server);
+    }
+  }
+
+  private static final class RpcWithWrongField {
+    @SuppressWarnings("unused")
+    private final String servers = "not a map";
+  }
+
+  @Test
+  void peerLastAnsweredAtIsTheFreshAdvertisementTime() {
+    final AtomicLong now = new AtomicLong(1_000_000L);
+    final PeerCapabilityRegistry registry = new PeerCapabilityRegistry();
+    registry.setClock(now::get);
+    final ToLongFunction<String> lastAnswered = RaftHAServer.peerLastAnsweredAt(registry);
+
+    assertThat(lastAnswered.applyAsLong("peer-1")).isEqualTo(-1L);
+
+    registry.record(registry.generation(), "peer-1", Set.of("schema-delta"), "test");
+    assertThat(lastAnswered.applyAsLong("peer-1")).isEqualTo(1_000_000L);
+
+    // Fed to ClusterMonitor on the same clock: an answer after the streak start is what the early reset needs.
+    final List<String> resets = new ArrayList<>();
+    final ClusterMonitor monitor = new ClusterMonitor(10L, 0L, null, false, 10_000L, 30_000L, resets::add);
+    monitor.setClock(now::get);
+    monitor.setPeerLastAnsweredAt(lastAnswered);
+    monitor.updateLeaderCommitIndex(1000L);
+    monitor.updateReplicaMatchIndex("peer-1", 1000L, 12_000L); // streak starts at 1_000_000
+    now.addAndGet(5_000L);
+    registry.record(registry.generation(), "peer-1", Set.of("schema-delta"), "test");
+    monitor.updateReplicaMatchIndex("peer-1", 1000L, 17_000L);
+    assertThat(resets).containsExactly("peer-1");
+
+    // Expired past the TTL: unknown again.
+    now.addAndGet(PeerCapabilityRegistry.ADVERTISEMENT_TTL_MS + 1);
+    assertThat(lastAnswered.applyAsLong("peer-1")).isEqualTo(-1L);
   }
 
   @Test
