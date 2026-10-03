@@ -632,11 +632,8 @@ public class JSONObject implements Map<String, Object> {
         if (strValue.contains(".") || strValue.contains("e") || strValue.contains("E")) {
           // Contains decimal point or scientific notation: a double, unless it carries more digits than a double holds
           final double doubleVal = primitive.getAsDouble();
-          if (strValue.length() > 15) {
-            final BigDecimal exact = new BigDecimal(strValue);
-            if (!Double.isFinite(doubleVal) || exact.compareTo(new BigDecimal(Double.toString(doubleVal))) != 0)
-              return exact;
-          }
+          if (strValue.length() > 15 && (!Double.isFinite(doubleVal) || !sameSignificantDigits(strValue, Double.toString(doubleVal))))
+            return new BigDecimal(strValue);
           return doubleVal;
         } else {
           // Check if it fits in an Integer or a Long. LazilyParsedNumber.longValue() would silently keep the low 64 bits of a
@@ -663,6 +660,36 @@ public class JSONObject implements Map<String, Object> {
       return new JSONArray(element.getAsJsonArray());
 
     throw new IllegalArgumentException("Element " + element + " not supported");
+  }
+
+  /**
+   * Whether two decimal renderings of the same number carry the same significant digits (sign, decimal point, exponent and the zeros
+   * around the digits ignored). {@link Double#toString(double)} is the shortest rendering that parses back to the double, so a token
+   * with the same digits holds nothing a double loses; it is cheaper than building a {@link BigDecimal} for the comparison.
+   */
+  private static boolean sameSignificantDigits(final String token, final String shortest) {
+    return significantDigits(token).equals(significantDigits(shortest));
+  }
+
+  private static String significantDigits(final String number) {
+    int end = number.length();
+    for (int i = 0; i < end; i++) {
+      final char c = number.charAt(i);
+      if (c == 'e' || c == 'E') {
+        end = i;
+        break;
+      }
+    }
+    final StringBuilder digits = new StringBuilder(end);
+    for (int i = 0; i < end; i++) {
+      final char c = number.charAt(i);
+      if (c >= '0' && c <= '9' && !(c == '0' && digits.length() == 0))
+        digits.append(c);
+    }
+    int len = digits.length();
+    while (len > 0 && digits.charAt(len - 1) == '0')
+      len--;
+    return digits.substring(0, len);
   }
 
   /**
