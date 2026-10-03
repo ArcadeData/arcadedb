@@ -305,6 +305,26 @@ class Issue9110DeclaredTypeConversionTest extends TestHelper {
   }
 
   @Test
+  void nanToLongKeepsFailingWithoutAProperty() {
+    assertThatThrownBy(() -> Type.convert(database, Double.NaN, Long.class)).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> Type.convertOrKeep(database, Double.NaN, Long.class)).isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  void dateKeepsReadingADigitOnlyStringAsAnEpochCount() {
+    final DocumentType type = database.getSchema().createDocumentType("DateDigits9110");
+    type.createProperty("d", Type.DATE);
+    // DATE has always read a digit-only string as an epoch count (days), unlike the DATETIME targets
+    assertThat(roundTrip("DateDigits9110", "d", "20")).isEqualTo(LocalDate.of(1970, 1, 21));
+  }
+
+  @Test
+  void aListPropertyKeepsAcceptingNonLinkMembers() {
+    database.getSchema().createDocumentType("ListMix9110").createProperty("l", Type.LIST);
+    assertThat(roundTrip("ListMix9110", "l", new ArrayList<>(List.of("a", 1, true)))).isEqualTo(List.of("a", 1, true));
+  }
+
+  @Test
   void emptyCollectionIsRefusedByALinkProperty() {
     database.getSchema().createDocumentType("LinkEmpty9110").createProperty("link", Type.LINK);
     assertRefused("LinkEmpty9110", "link", new ArrayList<>());
