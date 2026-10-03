@@ -19,10 +19,14 @@
 package com.arcadedb.index;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
+
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -128,5 +132,32 @@ class Issue8983HashIndexKeyChangeTest extends TestHelper {
     database.transaction(() -> database.command("sql", "UPDATE Big SET k = 1 WHERE k = 0"));
     assertThat(database.getSchema().getType("Big").getPolymorphicIndexByProperties("k").countEntries()).isEqualTo(1);
     assertThat(count("SELECT count(*) AS c FROM Big WHERE k = 1")).isEqualTo(1);
+  }
+
+  @Test
+  void recordsSwappingUniqueKeysInOneTransactionKeepEveryEntry() {
+    // The ADD of a key is queued before the REMOVE of the record that held it: the REMOVE must not displace the ADD
+    for (final String kind : new String[] { "UNIQUE", "UNIQUE_HASH" }) {
+      final String t = create("S_" + kind, kind);
+      database.command("sql", "CREATE PROPERTY " + t + ".n INTEGER");
+      database.transaction(() -> {
+        for (int i = 0; i < 5; i++)
+          database.newDocument(t).set("k", i).set("n", i).save();
+      });
+      database.transaction(() -> {
+        final List<MutableDocument> docs = new ArrayList<>();
+        try (final ResultSet rs = database.query("sql", "SELECT FROM " + t)) {
+          while (rs.hasNext())
+            docs.add(rs.next().getRecord().orElseThrow().asDocument().modify());
+        }
+        for (final MutableDocument d : docs)
+          d.set("k", 4 - d.getInteger("n")).save();
+      });
+      assertThat(database.getSchema().getType(t).getPolymorphicIndexByProperties("k").countEntries()).as(kind).isEqualTo(5);
+      for (int i = 0; i < 5; i++)
+        try (final ResultSet rs = database.query("sql", "SELECT n FROM " + t + " WHERE k = " + i)) {
+          assertThat(rs.next().<Integer>getProperty("n")).as(kind + " k=" + i).isEqualTo(4 - i);
+        }
+    }
   }
 }

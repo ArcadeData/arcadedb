@@ -756,7 +756,8 @@ public class TransactionIndexContext {
     TreeMap<ComparableKey, Map<IndexKey, IndexKey>> keys = indexEntries.get(indexName);
 
     final ComparableKey k = new ComparableKey(keysValues);
-    final IndexKey v = new IndexKey(index.isUnique(), operation, keysValues, rid, sequence++);
+    IndexKey v = new IndexKey(index.isUnique(), operation, keysValues, rid, sequence++);
+    boolean addKeptByRemove = false;
 
     Map<IndexKey, IndexKey> values;
     if (keys == null) {
@@ -801,11 +802,20 @@ public class TransactionIndexContext {
           final IndexKey entry = values.get(v);
           if (entry != null && entry.operation == IndexKey.IndexKeyOperation.REPLACE && entry.oldRid != null)
             v.oldRid = entry.oldRid;
+
+          if (entry != null && entry.operation != IndexKey.IndexKeyOperation.REMOVE && !entry.rid.equals(rid)) {
+            // #8983: ADD B, then REMOVE A on the same key - two records swapping keys, the ADD queued first. A unique index
+            // keeps one entry per key, so storing the REMOVE would displace the ADD and the new holder of the key would
+            // never be indexed. Keep the ADD as a REPLACE that also removes the committed holder A.
+            v = new IndexKey(true, IndexKey.IndexKeyOperation.REPLACE, entry.keyValues, entry.rid, v.sequence);
+            v.oldRid = entry.oldRid != null ? entry.oldRid : rid;
+            addKeptByRemove = true;
+          }
         }
       }
     }
 
-    if (index.isUnique() && !LSMTreeIndexAbstract.isKeyNull(keysValues) &&
+    if (!addKeptByRemove && index.isUnique() && !LSMTreeIndexAbstract.isKeyNull(keysValues) &&
         (v.operation == IndexKey.IndexKeyOperation.ADD || v.operation == IndexKey.IndexKeyOperation.REPLACE)) {
       // CHECK FOR UNIQUE ON OTHER SUB-INDEXES
       // Skip duplicate check for NULL keys - SQL standard: NULL != NULL (multiple NULLs allowed in unique index)
