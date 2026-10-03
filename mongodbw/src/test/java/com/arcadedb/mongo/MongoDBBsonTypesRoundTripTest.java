@@ -357,4 +357,13 @@ public class MongoDBBsonTypesRoundTripTest extends BaseMongoServerTest {
     assertThat(collection.find(new Document("ref", new Document("$eq", oid))).into(new ArrayList<>())).hasSize(2);
     assertThat(collection.find(new Document("ref", new Document("$ne", oid))).into(new ArrayList<>())).isEmpty();
   }
+
+  @Test
+  void idStringsWithAReservedPrefixRoundTripAndMatchFilters() {
+    collection.insertOne(new Document("_id", "$oid:abc").append("n", 1));
+    collection.insertOne(new Document("_id", "$str:x").append("n", 2));
+    assertThat(collection.find(eq("_id", "$oid:abc")).first().get("n")).isEqualTo(1);
+    assertThat(collection.find(in("_id", List.of("$str:x"))).first().get("n")).isEqualTo(2);
+    assertThat(collection.find(eq("_id", "$str:x")).first().get("_id")).isEqualTo("$str:x");
+  }
 }

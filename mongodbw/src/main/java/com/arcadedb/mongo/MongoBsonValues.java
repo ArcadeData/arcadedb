@@ -171,9 +171,7 @@ final class MongoBsonValues {
   }
 
   private static Object idToStored(final Object value) {
-    // an _id keeps a string as it is: the escape only exists for the ObjectId form used outside _id
-    if (value instanceof String)
-      return value;
+    // a string _id is escaped like any other string, so that filters (which escape too) and reads (which unescape) agree
     return value instanceof ObjectId id ? id.getHexData() : toStored(value);
   }
 
