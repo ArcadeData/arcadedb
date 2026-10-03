@@ -168,4 +168,18 @@ class Issue8973OrderByAggregateTest extends TestHelper {
     }
     return ks;
   }
+
+  @Test
+  void twoDifferentAggregatesInOrderByAndTwoProjectedAggregates() {
+    // the alias numbering must continue across the projection split and the ORDER BY split, or two aggregates share one alias
+    assertThat(keysOnly("SELECT k, sum(v) AS s, max(v) AS m FROM G GROUP BY k ORDER BY count(*) DESC, sum(v) ASC")).containsExactly(3, 1, 2);
+    assertThat(keysOnly("SELECT k, count(*) AS c FROM G GROUP BY k ORDER BY max(v) DESC, count(*) ASC")).containsExactly(1, 2, 3);
+
+    final List<Number> counts = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", "SELECT k, count(*) AS c, sum(v) AS s FROM G GROUP BY k ORDER BY sum(v) DESC")) {
+      while (rs.hasNext())
+        counts.add(rs.next().getProperty("c"));
+    }
+    assertThat(counts).extracting(Number::intValue).containsExactly(2, 1, 3);
+  }
 }
