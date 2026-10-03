@@ -21,6 +21,7 @@ package com.arcadedb.mongo;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -399,7 +400,9 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
       builder.withDefaultKeyTypesForUndeclaredProperties(new Type[] { keyType });
       builder.create();
     } catch (final RuntimeException e) {
-      ID_INDEX_GAVE_UP.add(idIndexKey(database, collectionName));
+      // only duplicates are permanent: any other failure (a timeout, a lock) may well succeed on the next insert
+      if (ErrorCategory.of(e) == ErrorCategory.DUPLICATED_KEY)
+        ID_INDEX_GAVE_UP.add(idIndexKey(database, collectionName));
       // never leave a half built index behind
       final TypeIndex partial = findUniqueIdIndex(database.getSchema().getType(collectionName));
       if (partial != null)

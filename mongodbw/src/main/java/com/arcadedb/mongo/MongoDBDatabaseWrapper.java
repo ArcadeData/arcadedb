@@ -695,12 +695,14 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         continue;
 
       database.getSchema().getOrCreateDocumentType(collectionName);
-      if (matchesAny(collectionName, q))
+      final Object sample = hasId && id != null ? id : new ObjectId();
+      // nothing to do when the index already holds this kind of key: no need to look for a match either
+      if (MongoDBCollectionWrapper.idIndexSatisfies(database, collectionName, List.of(sample)) || matchesAny(collectionName, q))
         continue;
 
       if (samples == null)
         samples = new ArrayList<>();
-      samples.add(hasId && id != null ? id : new ObjectId());
+      samples.add(sample);
     }
 
     if (samples != null)
@@ -740,10 +742,6 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   }
 
   /**
-   * Whether any operator targets a dotted path. All of them go through the record path together, so {@code $set}, {@code $unset}
-   * and {@code $inc} behave the same (nested paths created, integral {@code $inc} kept integral) however they are combined.
-   */
-  /**
    * Whether an update operator targets the {@code _id}: MongoDB's {@code _id} is immutable, which only the record path can check
    * against the stored value.
    */
@@ -767,6 +765,10 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     }
   }
 
+  /**
+   * Whether any operator targets a dotted path. All of them go through the record path together, so {@code $set}, {@code $unset}
+   * and {@code $inc} behave the same (nested paths created, integral {@code $inc} kept integral) however they are combined.
+   */
   private static boolean setsDottedPath(final Document u) {
     for (final Object operand : u.values())
       if (operand instanceof Document fields)
