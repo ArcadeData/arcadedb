@@ -663,14 +663,16 @@ public class JSONObject implements Map<String, Object> {
   /**
    * JSON has no literal for NaN and the infinities: every writer in this class turns them into {@code null}, never into a number
    * (a {@code 0} would be indistinguishable from a measurement). The integral types and the big numbers are finite by construction, so
-   * a huge {@link java.math.BigDecimal} is not mistaken for an infinity. Any other {@link Number} is asked for its double value, so a
+   * a huge {@link BigDecimal} is not mistaken for an infinity. Any other {@link Number} is asked for its double value, so a
    * lazily parsed token outside the double range is treated as non-finite as well.
    */
   static boolean isNonFinite(final Number number) {
+    if (number instanceof Double || number instanceof Float)
+      return !Double.isFinite(number.doubleValue());
     if (number == null || number instanceof Integer || number instanceof Long || number instanceof BigDecimal || number instanceof BigInteger
         || number instanceof Short || number instanceof Byte)
       return false;
-    // Double, Float and any other Number (e.g. a lazily parsed "NaN" token): ask for its double value
+    // any other Number (e.g. a lazily parsed "NaN" token): ask for its double value
     return !Double.isFinite(number.doubleValue());
   }
 
@@ -808,11 +810,10 @@ public class JSONObject implements Map<String, Object> {
    * Checks recursively and replaces NaN and infinite values with null.
    */
   public void validate() {
-    // Deliberately doubleValue() and not isNonFinite(): this repairs numbers read from parsed text (a lazily parsed "NaN" token is not a Double)
     for (String key : keySet()) {
       Object value = get(key);
       if (value instanceof Number number) {
-        if (Double.isNaN(number.doubleValue()) || Double.isInfinite(number.doubleValue()))
+        if (isNonFinite(number))
           // FIX NAN NUMBERS
           put(key, (Number) null);
       } else if (value instanceof JSONObject nObject) {
@@ -821,7 +822,7 @@ public class JSONObject implements Map<String, Object> {
         for (int i = 0; i < array.length(); i++) {
           final Object arrayValue = array.get(i);
           if (arrayValue instanceof Number number) {
-            if (Double.isNaN(number.doubleValue()) || Double.isInfinite(number.doubleValue()))
+            if (isNonFinite(number))
               // FIX NAN NUMBERS
               array.put(i, null);
           } else if (arrayValue instanceof JSONObject nObject) {
