@@ -95,7 +95,9 @@ public enum PostgresType {
   ARRAY_DOUBLE(1022, "_float8", 701, 0, Collection.class, -1, value -> parseArrayFromString(value, Double::parseDouble)),
   ARRAY_TEXT(1009, "_text", 25, 0, Collection.class, -1, value -> parseArrayFromString(value, s -> s)),
   ARRAY_JSON(199, "_json", 114, 0, Collection.class, -1, value -> parseArrayFromString(value, s -> s)),
-  ARRAY_BOOLEAN(1000, "_bool", 16, 0, Collection.class, -1, value -> parseArrayFromString(value, Boolean::parseBoolean));
+  ARRAY_BOOLEAN(1000, "_bool", 16, 0, Collection.class, -1, value -> parseArrayFromString(value, Boolean::parseBoolean)),
+  // numeric[]: the one array type that holds every integer, long, float, double and BigDecimal exactly (issue #9008)
+  ARRAY_NUMERIC(1231, "_numeric", 1700, 0, Collection.class, -1, value -> parseArrayFromString(value, BigDecimal::new));
 
   private static final Map<Integer, PostgresType> CODE_MAP = Arrays.stream(values())
       .collect(Collectors.toMap(type -> type.code, type -> type));
@@ -614,18 +616,9 @@ public enum PostgresType {
     } else if (val instanceof Record) {
       return PostgresType.JSON;
     } else if (val instanceof Collection<?> collection) {
-      // Determine element type from the first non-null element
-      return collection.stream()
-          .filter(Objects::nonNull)
-          .findFirst()
-          .map(PostgresType::getArrayTypeForElementType)
-          .orElse(PostgresType.ARRAY_TEXT);
+      return getArrayTypeForElements(collection.iterator());
     } else if (val instanceof Iterable<?> iterable) {
-      return StreamSupport.stream(iterable.spliterator(), false)
-          .filter(Objects::nonNull)
-          .findFirst()
-          .map(PostgresType::getArrayTypeForElementType)
-          .orElse(PostgresType.ARRAY_TEXT);
+      return getArrayTypeForElements(iterable.iterator());
 
     } else if (val instanceof Iterator<?> iterator) {
       while (iterator.hasNext()) {
@@ -723,14 +716,14 @@ public enum PostgresType {
       return JSON;
 
     // Every branch must agree with getArrayTypeForElementType, which types a populated list from its first
-    // element: a mismatch would make a column's OID depend on whether the list is empty. DECIMAL therefore
-    // falls through to ARRAY_TEXT, because a list of BigDecimal has no match there either.
+    // element: a mismatch would make a column's OID depend on whether the list is empty.
     return switch (elementType) {
       case BOOLEAN -> ARRAY_BOOLEAN;
       case INTEGER, SHORT, BYTE -> ARRAY_INT;
       case LONG -> ARRAY_LONG;
       case FLOAT -> ARRAY_REAL;
       case DOUBLE -> ARRAY_DOUBLE;
+      case DECIMAL -> ARRAY_NUMERIC;
       // Nested collections (issue #5365) join maps and embedded documents in being carried as a JSON document:
       // a Postgres array is rectangular and homogeneous, an ArcadeDB nested list is neither.
       case MAP, EMBEDDED, LIST, ARRAY_OF_SHORTS, ARRAY_OF_INTEGERS, ARRAY_OF_LONGS, ARRAY_OF_FLOATS, ARRAY_OF_DOUBLES -> JSON;
@@ -1117,6 +1110,92 @@ public enum PostgresType {
   /**
    * Determines the appropriate array type based on the element type.
    */
+  /**
+   * The array type that can hold EVERY non-null element, not just the first one (issue #9008): a list loaded from
+   * JSON can mix integers and doubles, or numbers and text, and an {@code int4[]} announced from the first element
+   * made a client read {@code [1, 2.5]} as {@code [1, 2]} or fail on the rest.
+   */
+  private static PostgresType getArrayTypeForElements(final Iterator<?> elements) {
+    PostgresType type = null;
+    while (elements.hasNext()) {
+      final Object element = elements.next();
+      if (element == null)
+        continue;
+      final PostgresType elementType = getArrayTypeForElementType(element);
+      type = type == null ? elementType : mergeTypes(type, elementType, true);
+      if (type == ARRAY_TEXT)
+        break; // text[] holds anything: nothing left to widen
+    }
+    return type != null ? type : ARRAY_TEXT;
+  }
+
+  private static int numericRank(final PostgresType type) {
+    return switch (type) {
+      case SMALLINT -> 0;
+      case INTEGER, ARRAY_INT -> 1;
+      case LONG, ARRAY_LONG -> 2;
+      case REAL, ARRAY_REAL -> 3;
+      case DOUBLE, ARRAY_DOUBLE -> 4;
+      case NUMERIC, ARRAY_NUMERIC -> 5;
+      default -> -1;
+    };
+  }
+
+  /**
+   * The narrowest type that holds every value of both {@code a} and {@code b}, used to type a column over all the rows
+   * of a result and a list over all its elements (issue #9008, #9009). Integers widen to long, integers and floats to
+   * double, a long meeting a float (beyond 2^53 a double is not exact) or a BigDecimal to numeric. Anything else that
+   * differs falls back to the one type every value can be written under: varchar for a column, text[] for a list.
+   *
+   * @param listElements true when merging the element types of ONE list (so json, which stands for a list of
+   *                     documents there, merges into text[]); false when merging the types of one column across rows
+   */
+  public static PostgresType mergeTypes(final PostgresType a, final PostgresType b, final boolean listElements) {
+    if (a == b)
+      return a;
+
+    final int rankA = numericRank(a);
+    final int rankB = numericRank(b);
+    if (rankA >= 0 && rankB >= 0 && a.isArrayType() == b.isArrayType()) {
+      final int low = Math.min(rankA, rankB);
+      final int high = Math.max(rankA, rankB);
+      final int rank;
+      if (high == 5)
+        rank = 5;
+      else if (high <= 2 || low >= 3)
+        rank = high;
+      else
+        rank = low == 2 ? 5 : 4; // an integer or smallint with a float is a double, a long with a float is numeric
+      final boolean array = a.isArrayType();
+      return switch (rank) {
+        case 0, 1 -> array ? ARRAY_INT : INTEGER;
+        case 2 -> array ? ARRAY_LONG : LONG;
+        case 3 -> array ? ARRAY_REAL : REAL;
+        case 4 -> array ? ARRAY_DOUBLE : DOUBLE;
+        default -> array ? ARRAY_NUMERIC : NUMERIC;
+      };
+    }
+
+    if (listElements || a.isArrayType() && b.isArrayType())
+      return ARRAY_TEXT;
+    return VARCHAR;
+  }
+
+  /**
+   * The type to announce for a property that the schema does not declare, when the announcement has to stay true for
+   * rows that are not the ones inspected - the statement-level layout a client keeps and reuses (issue #9009). A
+   * schemaless property can hold an integer in one record and a long, a double or text in the next, so only text can
+   * be promised for it: every scalar becomes varchar and every list text[], while json and bytea, which carry their
+   * own framing, are left as they are.
+   */
+  public static PostgresType stableTypeForUndeclared(final PostgresType type) {
+    if (type == JSON || type == BYTEA || type == VARCHAR)
+      return type;
+    if (type.isArrayType())
+      return ARRAY_TEXT;
+    return type.isNativeScalarType() ? VARCHAR : type;
+  }
+
   public static PostgresType getArrayTypeForElementType(Object element) {
     if (element instanceof Integer ||
         element instanceof Short ||
@@ -1132,6 +1211,8 @@ public enum PostgresType {
       return ARRAY_LONG;
     if (element instanceof Boolean)
       return ARRAY_BOOLEAN;
+    if (element instanceof BigDecimal)
+      return ARRAY_NUMERIC;
     if (element instanceof String)
       return ARRAY_TEXT;
     // A list of documents is advertised as a single json value holding a JSON array, not as json[] (issue
@@ -1235,7 +1316,7 @@ public enum PostgresType {
         // (json_send emits it verbatim); the length is already provided by the Bind message.
         yield parseJsonText(new String(valueAsBytes, DatabaseFactory.getDefaultCharset()));
       }
-      case ARRAY_INT, ARRAY_LONG, ARRAY_DOUBLE, ARRAY_REAL, ARRAY_TEXT, ARRAY_BOOLEAN, ARRAY_CHAR, ARRAY_JSON ->
+      case ARRAY_INT, ARRAY_LONG, ARRAY_DOUBLE, ARRAY_REAL, ARRAY_TEXT, ARRAY_BOOLEAN, ARRAY_CHAR, ARRAY_JSON, ARRAY_NUMERIC ->
           deserializeBinaryArray(buffer);
     };
   }
@@ -1298,6 +1379,8 @@ public enum PostgresType {
       return buf.getFloat();
     if (elemOid == DOUBLE.code)
       return buf.getDouble();
+    if (elemOid == NUMERIC.code)
+      return parseNumericBinary(buf);
     // text/varchar/bpchar/json/unknown - raw bytes are already the UTF-8 string content.
     return new String(bytes, DatabaseFactory.getDefaultCharset());
   }
@@ -1313,7 +1396,8 @@ public enum PostgresType {
         this == ARRAY_REAL ||
         this == ARRAY_TEXT ||
         this == ARRAY_JSON ||
-        this == ARRAY_BOOLEAN;
+        this == ARRAY_BOOLEAN ||
+        this == ARRAY_NUMERIC;
   }
 
   /**
