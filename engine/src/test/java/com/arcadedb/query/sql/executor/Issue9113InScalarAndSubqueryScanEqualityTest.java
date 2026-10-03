@@ -172,4 +172,13 @@ class Issue9113InScalarAndSubqueryScanEqualityTest extends TestHelper {
     assertIndexAndScanFind("k = ?", 7L);
     assertThat(ids("S", "m = ?", new BigDecimal("1.51"))).isEmpty();
   }
+
+  @Test
+  void incompatibleTypesAreAMissNotAnError() {
+    load();
+    database.transaction(() -> database.newDocument("Src").set("word", "not a number").save());
+    assertThat(ids("S", "k IN (SELECT word FROM Src WHERE word IS NOT NULL)")).isEmpty();
+    assertThat(ids("S", "t IN (SELECT word FROM Src WHERE word IS NOT NULL)")).isEmpty();
+    assertThat(ids("S", "k IN (?)", "not a number")).isEmpty();
+  }
 }
