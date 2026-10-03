@@ -760,7 +760,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
 
         final String currentPrincipal = user != null ? user.getName() : null;
 
-        final IdempotencyCache.Reservation reservation = claimIdempotencyKey(exchange, idempotencyKey, currentPrincipal);
+        final IdempotencyCache.Reservation reservation = claimIdempotencyKey(exchange, idempotencyKey, currentPrincipal,
+            exchange.getRequestHeaders().getFirst(IdempotencyCache.HEADER_REPLAY_INSTANCE) != null);
         if (reservation == null)
           return;
         if (reservation.isReserved()) {
@@ -770,9 +771,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
           if (exchange.getRequestHeaders().getFirst(IdempotencyCache.HEADER_REPLAY_INSTANCE) != null) {
             httpServer.getIdempotencyCache().abort(idempotencyKey, reservation);
             idempotencyReservation = null;
-            new ExecutionResponse(412, error2json("The answer to the request is no longer available",
-                "The earlier attempt may have been applied and its answer was not kept: the request is not run again", null, null, null))
-                .send(exchange);
+            sendReplayUnavailable(exchange);
             return;
           }
         }
@@ -784,7 +783,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
         // client's key leaves the reservation on the own key to the finally block, which releases it.
         if (trustedClientKey != null && !trustedClientKey.equals(idempotencyKey)) {
           final IdempotencyCache.Reservation clientReservation = claimIdempotencyKey(exchange, trustedClientKey,
-              currentPrincipal);
+              currentPrincipal, false);
           if (clientReservation == null)
             return;
           if (clientReservation.isReserved()) {
@@ -1452,12 +1451,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * another principal, or the identical request settled without a replayable one).
    */
   private IdempotencyCache.Reservation claimIdempotencyKey(final HttpServerExchange exchange, final String key,
-      final String currentPrincipal) {
+      final String currentPrincipal, final boolean isReplay) {
     final IdempotencyCache.Reservation reservation = httpServer.getIdempotencyCache().reserve(key);
     if (reservation.isHit()) {
       if (replayCachedResponse(exchange, reservation.entry(), currentPrincipal))
         return null;
-      // Principal mismatch: fall through and execute as this caller, without owning the reservation.
+      // Principal mismatch: fall through and execute as this caller, without owning the reservation. A replay never executes (issue #8526).
+      if (isReplay) {
+        sendReplayUnavailable(exchange);
+        return null;
+      }
     } else if (reservation.isInFlight()) {
       // A concurrent identical retry is already executing. Wait briefly for its result rather than running
       // the write a second time.
@@ -1473,9 +1476,20 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       if (replayCachedResponse(exchange, httpServer.getIdempotencyCache().get(key), currentPrincipal))
         return null;
       // Settled without a replayable answer (it failed, or its response was not cacheable), or cached for a
-      // different principal: execute as this caller, without owning the reservation.
+      // different principal: execute as this caller, without owning the reservation. A replay never executes (issue #8526).
+      if (isReplay) {
+        sendReplayUnavailable(exchange);
+        return null;
+      }
     }
     return reservation;
+  }
+
+  /** Answers a replay the cache cannot answer: the earlier attempt may have been applied, so the request is not run again. */
+  private void sendReplayUnavailable(final HttpServerExchange exchange) {
+    new ExecutionResponse(412, error2json("The answer to the request is no longer available",
+        "The earlier attempt may have been applied and its answer was not kept: the request is not run again", null, null, null))
+        .send(exchange);
   }
 
   /**
