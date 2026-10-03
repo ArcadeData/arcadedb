@@ -116,4 +116,14 @@ class Issue9114JsonArrayNonFiniteAndByteArrayTest {
     assertThat(new JSONArray().put((Number) (short) 3).put((Number) (byte) 4).put(new AtomicLong(5)).toString())
         .isEqualTo("[3,4,5]");
   }
+
+  @Test
+  void validateKeepsAHugeBigDecimalAndRepairsNonFinite() {
+    final JSONObject json = new JSONObject().put("big", new BigDecimal("1e400")).put("parsed", (Object) new LazilyParsedNumber("NaN"));
+    json.put("arr", new JSONArray().put(new BigDecimal("1e400")).put(new LazilyParsedNumber("Infinity")));
+    json.validate();
+    assertThat(json.get("big")).isEqualTo(new BigDecimal("1e400"));
+    assertThat(json.isNull("parsed")).isTrue();
+    assertThat(json.getJSONArray("arr").toString()).isEqualTo("[1E+400,null]");
+  }
 }

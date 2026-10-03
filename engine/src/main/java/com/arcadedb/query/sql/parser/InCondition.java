@@ -263,7 +263,7 @@ public class InCondition extends BooleanExpression {
    * @return {@code Boolean.TRUE} on a definite match, {@code Boolean.FALSE} on a definite
    * non-match, or {@code null} (UNKNOWN) when the left value is null or no match was found but the
    * right collection contains a null element. UNKNOWN is mapped to false at the WHERE boundary.
-   * @param convertOperand false when {@code iLeft} is a record property: it is compared without converting the items, like {@code =}
+   * @param convertOperand false when {@code iLeft} is a record property: it is compared without converting the items, like {@code =}; a sub-query row is the exception, it converts either way in QueryOperatorEquals
    */
   protected static Boolean evaluateExpressionThreeValued(Object iLeft, final Object iRight, final boolean convertOperand) {
     if (iLeft instanceof Result r && !r.isElement()) {
