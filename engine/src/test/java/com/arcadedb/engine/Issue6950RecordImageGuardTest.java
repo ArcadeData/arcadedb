@@ -98,15 +98,18 @@ public class Issue6950RecordImageGuardTest extends TestHelper {
   }
 
   @Test
-  void aMultiPageRecordIsNotReportedAsChanged() {
+  void aMultiPageRecordIsComparedAsAWhole() {
+    // #8982: the head chunk holds only the start of the record, so the guard assembles the chain and compares all of it
     final RID rid = createRecord("x".repeat(200_000));
     final Binary image = imageOf(rid);
+
+    database.transaction(() -> assertThat(guard(rid, image)).as("an untouched multi-page record is the one that was read").isFalse());
 
     replaceValueWith(rid, "y".repeat(200_000));
 
     database.transaction(() -> assertThat(guard(rid, image))
-        .as("a head chunk keeps its body off this page, so the slot cannot answer: the off-page fingerprint does")
-        .isFalse());
+        .as("a change past the head chunk is a change to the record")
+        .isTrue());
   }
 
   private boolean guard(final RID rid, final Binary image) {
