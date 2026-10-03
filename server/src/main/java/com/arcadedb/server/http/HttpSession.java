@@ -226,7 +226,7 @@ public class HttpSession implements QuerySession {
 
         if (rolledBackByFailure && rollbackOnFailure && !endsSession)
           throw new HttpSessionException("Remote transaction '" + id
-              + "' was rolled back after a failed command: its earlier changes are lost, nothing more can run in it. Send /rollback to end the session");
+              + "' was rolled back after a failed command and cannot run anything more. Send /rollback to end the session");
 
         LogManager.instance().log(this, Level.FINE, "Executing session %s for user %s", id, user.getName());
         callback.call();
@@ -241,15 +241,14 @@ public class HttpSession implements QuerySession {
         // InterruptedException AND SILENTLY SKIP THE ROLLBACK
         if (rollbackOnFailure) {
           final boolean hadChanges = transaction != null && transaction.isActive() && transaction.hasChanges();
-          if (rollbackIfActive()) {
-            if (hadChanges)
-              // WORK THE CLIENT WROTE BEFORE THE FAILURE IS GONE: THE SESSION MUST NOT PRETEND OTHERWISE (issue #9006)
-              rolledBackByFailure = true;
-            else
-              // NOTHING WAS LOST (A FAILED READ, AN ERROR BEFORE THE FIRST WRITE): THE SESSION GOES ON IN A FRESH TRANSACTION
-              // INSTEAD OF FALLING BACK TO AUTOCOMMIT
-              restartTransaction();
-          }
+          final boolean rolledBack = rollbackIfActive();
+          if (hadChanges)
+            // WORK THE CLIENT WROTE BEFORE THE FAILURE IS GONE (OR ITS ROLLBACK FAILED): THE SESSION MUST NOT PRETEND OTHERWISE (issue #9006)
+            rolledBackByFailure = true;
+          else if (rolledBack)
+            // NOTHING WAS LOST (A FAILED READ, AN ERROR BEFORE THE FIRST WRITE): THE SESSION GOES ON IN A FRESH TRANSACTION
+            // INSTEAD OF FALLING BACK TO AUTOCOMMIT
+            restartTransaction();
         }
         throw e;
       } finally {
