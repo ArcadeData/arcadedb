@@ -267,12 +267,13 @@ function showSupportView(view) {
     $("#supportViewIssues").hide();
     $("#supportViewAi").show();
     if (typeof initAi === "function") initAi();
-    supportFitAi();
-    setTimeout(supportFitAi, 150);
+    supportSyncToolbar();
+    setTimeout(supportSyncToolbar, 150);
     return;
   }
 
   $("#supportViewAi").hide();
+  $("#aiToolbar").hide();
   $("#supportViewIssues").show();
   if (supportLoaded && supportStatus && supportStatus.registered && supportIssues == null && !supportCurrentIssue) loadSupportIssues();
 }
@@ -294,6 +295,18 @@ if (typeof ResizeObserver !== "undefined")
     var section = document.getElementById("supportSection");
     if (section) new ResizeObserver(supportFitAi).observe(section);
   });
+
+/** The AI controls in the tab bar are shown only while the AI view is the one on screen and the assistant is active. */
+function supportSyncToolbar() {
+  $("#aiToolbar").toggle(supportCurrentView === "ai" && $("#aiActivePanel").is(":visible"));
+  supportFitAi();
+}
+
+$(function () {
+  var panel = document.getElementById("aiActivePanel");
+  if (panel && typeof MutationObserver !== "undefined")
+    new MutationObserver(supportSyncToolbar).observe(panel, { attributes: true, attributeFilter: ["style", "class"] });
+});
 
 /** What opening the Support tab does: the view that was last shown (the AI Assistant the first time). */
 function initSupportTab() {

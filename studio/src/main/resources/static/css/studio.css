@@ -4150,9 +4150,32 @@ body.col-resizing * {
 }
 
 /* The two tabs under the status card of the Support page: the AI Assistant and the Issues */
+.support-tabs-bar {
+  position: relative;
+  margin-top: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
 .support-tabs {
-  margin-top: 1rem;
   border-bottom: 1px solid var(--border-color, #dee2e6);
+}
+
+/* The AI controls (database, usage, mode) live in the tab bar, on its right: it saves the header row of the chat */
+.support-ai-toolbar {
+  position: absolute;
+  right: 0;
+  bottom: 3px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+@media (max-width: 1250px) {
+  .support-ai-toolbar {
+    position: static;
+    flex-wrap: wrap;
+    padding: 6px 0;
+  }
 }
 
 .support-tabs .nav-link {
