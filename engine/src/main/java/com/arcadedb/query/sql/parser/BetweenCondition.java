@@ -63,7 +63,7 @@ public class BetweenCondition extends BooleanExpression {
 
     // A bound with no defined ordering against firstValue (e.g. a non-numeric String bound on a numeric column)
     // makes the comparison undefined, not an error: report "not between" rather than let the raw conversion
-    // failure (e.g. NumberFormatException) escape (#5900).
+    // failure (e.g. NumberFormatException) escape (#5900). That verdict is false even when the other bound is null
     if (secondValue != null) {
       secondValue = Type.convertOrNull(context.getDatabase(), secondValue, firstValue.getClass());
       if (secondValue == null)
@@ -75,8 +75,8 @@ public class BetweenCondition extends BooleanExpression {
         return false;
     }
 
-    final Boolean lower = secondValue == null ? null : isAtLeast(firstValue, secondValue);
-    final Boolean upper = thirdValue == null ? null : isAtMost(firstValue, thirdValue);
+    final Boolean lower = secondValue == null ? null : isOnTheRightSide(firstValue, secondValue, 1);
+    final Boolean upper = thirdValue == null ? null : isOnTheRightSide(firstValue, thirdValue, -1);
     if (Boolean.FALSE.equals(lower) || Boolean.FALSE.equals(upper))
       return false;
     return lower == null || upper == null ? null : Boolean.TRUE;
@@ -89,18 +89,14 @@ public class BetweenCondition extends BooleanExpression {
    * {@code k BETWEEN a AND b} now agrees with {@code k >= a AND k <= b} and with the index serving either, which a scan
    * of the type relies on when it stands in for that index (issue #8333).
    */
-  private static boolean isAtLeast(final Object value, final Object from) {
+  /**
+   * Compares through {@link BinaryComparator#compareTo(Object, Object)}; {@code sign} is 1 for "at least" (the lower bound) and
+   * -1 for "at most" (the upper bound). A value with no defined ordering against the bound is not between, as LeOperator and
+   * GeOperator report it (#5900).
+   */
+  private static boolean isOnTheRightSide(final Object value, final Object bound, final int sign) {
     try {
-      return BinaryComparator.compareTo(value, from) >= 0;
-    } catch (final IllegalArgumentException | IndexOutOfBoundsException e) {
-      // No defined ordering between the value and a bound, as LeOperator and GeOperator report it (#5900)
-      return false;
-    }
-  }
-
-  private static boolean isAtMost(final Object value, final Object to) {
-    try {
-      return BinaryComparator.compareTo(value, to) <= 0;
+      return Integer.signum(BinaryComparator.compareTo(value, bound)) != -sign;
     } catch (final IllegalArgumentException | IndexOutOfBoundsException e) {
       return false;
     }
