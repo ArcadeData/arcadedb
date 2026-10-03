@@ -249,9 +249,15 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
   /**
    * @param ids the {@code _id} values about to be stored. When they (or an earlier insert) mix kinds, a numeric key cannot hold
    *            them all: the index is rebuilt with string keys, which accept anything and keep the uniqueness check fast, at
-   *            the price of the ordering of a collection whose {@code _id} has no single order anyway.
+   *            the price of the ordering of a collection whose {@code _id} has no single order anyway, and of numeric equality:
+   *            {@code 2} and {@code 2.0} are then different keys.
    */
-  static void ensureIdIndex(final Database database, final String collectionName, final Collection<?> ids) {
+  static synchronized void ensureIdIndex(final Database database, final String collectionName, final Collection<?> ids) {
+    // synchronized: a rebuild drops and recreates the index, which another connection must never observe half done (the check
+    // is a few lookups, taken once per insert)
+    if (ids.isEmpty())
+      return;
+
     Type needed = null;
     boolean mixed = false;
     for (final Object id : ids) {
@@ -263,8 +269,6 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
       if (type == null)
         mixed = true;
     }
-    if (ids.isEmpty())
-      return;
     final Type keyType = mixed ? Type.STRING : needed;
 
     final DocumentType type = database.getSchema().getType(collectionName);

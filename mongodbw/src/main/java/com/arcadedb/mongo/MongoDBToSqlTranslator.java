@@ -312,9 +312,10 @@ public class MongoDBToSqlTranslator {
       throw new IllegalArgumentException("Invalid regular expression '" + pattern + "': " + e.getDescription(), e);
     }
 
+    // in comments mode (x), also set inline by the pattern itself, a trailing "# comment" would swallow the wrapper's closing
+    // parenthesis: that fails to compile here, as a clean error instead of at query time
     final String wrapped = "(?s:.*)(?" + flags + ":" + pattern + (flags.indexOf("x") >= 0 ? "\n" : "") + ")(?s:.*)";
     try {
-      // an inline (?x) in the pattern itself would swallow the closing parenthesis of the wrapper
       Pattern.compile(wrapped);
     } catch (final PatternSyntaxException e) {
       throw new IllegalArgumentException("Invalid regular expression '" + pattern + "': " + e.getDescription(), e);

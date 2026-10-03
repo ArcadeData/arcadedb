@@ -30,6 +30,7 @@ import com.mongodb.ServerAddress;
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.model.IndexOptions;
 import com.mongodb.client.model.InsertManyOptions;
+import com.mongodb.client.model.UpdateOptions;
 import org.bson.Document;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -382,12 +383,27 @@ public class MongoDBWireSemanticsTest extends BaseMongoServerTest {
     assertThat(collection.updateMany(new Document(), Document.parse("{$set: {'a.m': 5}}")).getModifiedCount()).isEqualTo(2);
     assertThat(ids("{'a.m': 5}")).containsExactly(1, 2);
 
-    try {
-      collection.insertMany(List.of(new Document("_id", 3), new Document("_id", 1), new Document("_id", 4), new Document("_id", 2)),
-          new InsertManyOptions().ordered(false));
-    } catch (final MongoBulkWriteException e) {
-      assertThat(e.getWriteErrors()).extracting(w -> w.getIndex()).containsExactly(1, 3);
-    }
+    assertThatThrownBy(() -> collection.insertMany(
+        List.of(new Document("_id", 3), new Document("_id", 1), new Document("_id", 4), new Document("_id", 2)),
+        new InsertManyOptions().ordered(false))).isInstanceOfSatisfying(MongoBulkWriteException.class,
+        e -> assertThat(e.getWriteErrors()).extracting(w -> w.getIndex()).containsExactly(1, 3));
     assertThat(collection.countDocuments()).isEqualTo(4);
+  }
+
+  @Test
+  void mixedIdKindsKeepUniqueness() {
+    collection.insertOne(new Document("_id", 1));
+    collection.insertOne(new Document("_id", "abc"));
+    assertThatThrownBy(() -> collection.insertOne(new Document("_id", 1))).isInstanceOf(MongoWriteException.class);
+    assertThatThrownBy(() -> collection.insertOne(new Document("_id", "abc"))).isInstanceOf(MongoWriteException.class);
+    assertThat(collection.countDocuments()).isEqualTo(2);
+  }
+
+  @Test
+  void upsertOnAFreshCollection() {
+    collection.updateOne(new Document("_id", 7), Document.parse("{$set: {a: 1}}"), new UpdateOptions().upsert(true));
+    collection.updateOne(new Document("k", "x"), Document.parse("{$set: {a: 1}}"), new UpdateOptions().upsert(true));
+    assertThat(collection.countDocuments()).isEqualTo(2);
+    assertThatThrownBy(() -> collection.insertOne(new Document("_id", 7))).isInstanceOf(MongoWriteException.class);
   }
 }
