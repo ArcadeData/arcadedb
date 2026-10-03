@@ -1281,9 +1281,14 @@ public enum Type {
         return ((BigDecimal) a).add(new BigDecimal(b.shortValue()));
       }
       case Float v -> {
+        // A WIDENED long SUM MUST SURVIVE A LATER NaN/INFINITY, WHICH A BigDecimal CANNOT HOLD
+        if (!Float.isFinite(b.floatValue()))
+          return b.floatValue();
         return ((BigDecimal) a).add(floatToBigDecimal(b.floatValue()));
       }
       case Double v -> {
+        if (!Double.isFinite(b.doubleValue()))
+          return b.doubleValue();
         return ((BigDecimal) a).add(BigDecimal.valueOf(b.doubleValue()));
       }
       case BigDecimal decimal -> {

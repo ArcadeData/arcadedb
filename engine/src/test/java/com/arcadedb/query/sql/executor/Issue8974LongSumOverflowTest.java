@@ -86,12 +86,40 @@ class Issue8974LongSumOverflowTest extends TestHelper {
   }
 
   @Test
-  void avgMixOfDecimalAndOverflowingLongsStaysDecimal() {
+  void negativeOverflowAndGroupedAvgAtSqlLevel() {
+    database.command("sql", "CREATE VERTEX TYPE M");
+    database.command("sql", "CREATE PROPERTY M.g INTEGER");
+    database.command("sql", "CREATE PROPERTY M.n LONG");
+    database.transaction(() -> {
+      for (int i = 0; i < 3; i++)
+        database.newVertex("M").set("g", 1, "n", -4_000_000_000_000_000_000L).save();
+      database.newVertex("M").set("g", 2, "n", 7L).save();
+    });
+    try (final ResultSet rs = database.query("sql", "SELECT g, sum(n) AS s, avg(n) AS a FROM M GROUP BY g ORDER BY g")) {
+      final Result g1 = rs.next();
+      assertThat(new BigDecimal(g1.<Number>getProperty("s").toString())).isEqualByComparingTo("-12000000000000000000");
+      assertThat(g1.<Number>getProperty("a").doubleValue()).isEqualTo(-4.0E18);
+      final Result g2 = rs.next();
+      assertThat(g2.<Number>getProperty("s").longValue()).isEqualTo(7L);
+      assertThat(g2.<Number>getProperty("a").doubleValue()).isEqualTo(7.0);
+    }
+  }
+
+  @Test
+  void widenedSumSurvivesNonFiniteOperand() {
+    final Number widened = Type.increment(Long.MAX_VALUE, 1L);
+    assertThat(Type.increment(widened, Double.NaN).doubleValue()).isNaN();
+    assertThat(Type.increment(widened, Double.POSITIVE_INFINITY).doubleValue()).isEqualTo(Double.POSITIVE_INFINITY);
+    assertThat(Type.increment(widened, Float.NaN).floatValue()).isNaN();
+  }
+
+  @Test
+  void widenedSumPlusDecimalStaysDecimal() {
     assertThat(Type.increment(Type.increment(Long.MAX_VALUE, 1L), new BigDecimal("1.5"))).isEqualTo(new BigDecimal("9223372036854775809.5"));
   }
 
   @Test
-  void parallelSumMergesPartials() {
+  void largeSumOverManyRowsWidens() {
     database.transaction(() -> {
       for (int i = 0; i < 3000; i++)
         database.newVertex("L").set("n", 4_000_000_000_000_000L).save();

@@ -99,19 +99,30 @@ class Issue8973OrderByAggregateTest extends TestHelper {
   }
 
   @Test
-  void aggregateOrderByWhereTheExtraProjectionIsSkipped() {
+  void aggregateOrderByWithLoneStarAndUnwindKeepsRows() {
     // the early-exit shapes of addOrderByProjections must not be switched into the aggregate split path
-    try (final ResultSet rs = database.query("sql", "SELECT * FROM G GROUP BY k ORDER BY count(*)")) {
-      while (rs.hasNext())
+    try (final ResultSet rs = database.query("sql", "SELECT * FROM G ORDER BY count(*)")) {
+      int rows = 0;
+      while (rs.hasNext()) {
         rs.next();
-    } catch (final RuntimeException ignored) {
-      // a rejection is acceptable, a wrong plan or a hang is not
+        rows++;
+      }
+      assertThat(rows).isGreaterThan(0);
+    } catch (final RuntimeException e) {
+      // a clear rejection is acceptable, silently wrong rows are not
+      assertThat(e.getMessage()).isNotNull();
     }
-    try (final ResultSet rs = database.query("sql", "SELECT k, count(*) AS c FROM G GROUP BY k ORDER BY count(*) DESC UNWIND k")) {
+
+    database.command("sql", "CREATE DOCUMENT TYPE U");
+    database.transaction(() -> {
+      database.newDocument("U").set("k", 1, "tags", List.of("a", "b")).save();
+      database.newDocument("U").set("k", 2, "tags", List.of("a")).save();
+    });
+    final List<Integer> ks = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", "SELECT k, tags FROM U ORDER BY k DESC UNWIND tags")) {
       while (rs.hasNext())
-        rs.next();
-    } catch (final RuntimeException ignored) {
-      // same
+        ks.add(rs.next().<Number>getProperty("k").intValue());
     }
+    assertThat(ks).containsExactly(2, 1, 1);
   }
 }
