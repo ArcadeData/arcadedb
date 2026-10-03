@@ -663,7 +663,8 @@ public class JSONObject implements Map<String, Object> {
   /**
    * JSON has no literal for NaN and the infinities: every writer in this class turns them into {@code null}, never into a number
    * (a {@code 0} would be indistinguishable from a measurement). The integral types and the big numbers are finite by construction, so
-   * a huge {@link java.math.BigDecimal} is not mistaken for an infinity.
+   * a huge {@link java.math.BigDecimal} is not mistaken for an infinity. Any other {@link Number} is asked for its double value, so a
+   * lazily parsed token outside the double range is treated as non-finite as well.
    */
   static boolean isNonFinite(final Number number) {
     if (number == null || number instanceof Integer || number instanceof Long || number instanceof BigDecimal || number instanceof BigInteger

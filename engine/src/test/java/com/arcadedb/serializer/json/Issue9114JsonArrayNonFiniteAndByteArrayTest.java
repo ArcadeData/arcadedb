@@ -26,6 +26,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -108,5 +109,11 @@ class Issue9114JsonArrayNonFiniteAndByteArrayTest {
     assertThat(new JSONObject().put("v", parsed).isNull("v")).isTrue();
     assertThat(new JSONArray().put(parsed).toString()).isEqualTo("[null]");
     assertThat(new JSONArray().put(new LazilyParsedNumber("12")).toString()).isEqualTo("[12]");
+  }
+
+  @Test
+  void smallIntegralNumbersAreLeftAlone() {
+    assertThat(new JSONArray().put((Number) (short) 3).put((Number) (byte) 4).put(new AtomicLong(5)).toString())
+        .isEqualTo("[3,4,5]");
   }
 }

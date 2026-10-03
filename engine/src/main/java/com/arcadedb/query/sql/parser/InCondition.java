@@ -336,7 +336,7 @@ public class InCondition extends BooleanExpression {
           sawNull = true;
           continue;
         }
-        // A sub-query row is a Result, which equals() compares by its first property: no reverse conversion applies
+        // A sub-query row is a Result: equals() compares its first property, converting either way inside comparesValues()/valueEquals()
         if (QueryOperatorEquals.equals(iLeft, o))
           return Boolean.TRUE;
       }

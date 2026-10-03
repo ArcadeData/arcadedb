@@ -98,7 +98,7 @@ public class QueryOperatorEquals {
     if (fieldValue instanceof Identifiable || fieldValue instanceof Result)
       return false;
     // same class or two numbers: the comparison is symmetric, so the reverse call would repeat the one that just failed
-    if (other == null || fieldValue.getClass() == other.getClass() || fieldValue instanceof Number && other instanceof Number)
+    if (other == null || fieldValue.getClass() == other.getClass() || (fieldValue instanceof Number && other instanceof Number))
       return equals(fieldValue, other);
     return equals(other, fieldValue) || equals(fieldValue, other);
   }
