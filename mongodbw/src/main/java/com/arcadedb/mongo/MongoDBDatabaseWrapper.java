@@ -850,7 +850,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       record.set("_id", newId);
     for (final Map.Entry<String, Object> entry : replacement.entrySet())
       if (!"_id".equals(entry.getKey()))
-        record.set(entry.getKey(), "_id".equals(entry.getKey()) ? idValue(entry.getValue()) : toMapValue(entry.getValue()));
+        record.set(entry.getKey(), toMapValue(entry.getValue()));
   }
 
   private Object executeUpsert(final String collectionName, final Document q, final Document u) {
@@ -945,6 +945,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       }
       case "$inc" -> {
         for (final Map.Entry<String, Object> f : operand.entrySet())
+          // toStored: a Decimal128 delta added to a missing field is a Number that must still become a DECIMAL
           setPath(record, f.getKey(), MongoBsonValues.toStored(add(numberOf(getPath(record, f.getKey())), numberOf(f.getValue()))));
       }
       default -> throw new UnsupportedOperationException("Unsupported update operator '" + op + "'");
@@ -1195,16 +1196,16 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   }
 
   /**
-   * Converts a BSON document into the map bound as the payload of {@code UPDATE ... MERGE} / {@code ... CONTENT}. Insertion
-   * order is preserved so a replacement document reaches the record in wire order.
-   */
-  /**
    * An {@code _id} value in its stored form: an ObjectId is its hex string.
    */
   private static Object idValue(final Object value) {
     return MongoBsonValues.toStored("_id", value);
   }
 
+  /**
+   * Converts a BSON document into the map bound as the payload of {@code UPDATE ... MERGE} / {@code ... CONTENT}. Insertion
+   * order is preserved so a replacement document reaches the record in wire order.
+   */
   private static Map<String, Object> documentToMap(final Document doc, final boolean topLevel) {
     final Map<String, Object> map = LinkedHashMap.newLinkedHashMap(doc.size());
     for (final Map.Entry<String, Object> entry : doc.entrySet())
