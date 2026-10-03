@@ -436,7 +436,12 @@ public enum Type {
         return Double.toString(d);
       decimal = BigDecimal.valueOf(d);
     }
-    return decimal.signum() == 0 ? "0" : decimal.stripTrailingZeros().toPlainString();
+    if (decimal.signum() == 0)
+      return "0";
+    // a plain spelling of an extreme exponent is as long as the exponent: such a number keeps its scientific text
+    if (Math.abs((long) decimal.precision() - decimal.scale()) > 400)
+      return decimal.stripTrailingZeros().toString();
+    return decimal.stripTrailingZeros().toPlainString();
   }
 
   /**

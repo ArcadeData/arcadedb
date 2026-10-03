@@ -3052,6 +3052,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * the index lock and so does this, in the same order. When the lock is already held by this thread (the rewrite itself asks for
    * it too) nothing is taken and nothing is released here.
    *
+   * Only the mutable data file is locked, not every file of the index: it is the one the rewrite replaces and the only one commits
+   * append to (the compacted sub-index is read-only).
+   *
    * @return the file id to release, or -1 when this call did not take the lock
    *
    * @throws TimeoutException when the commits of the index did not leave the file free: the compaction is retried later

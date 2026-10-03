@@ -22,6 +22,9 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
+import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.index.IndexException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Tag;
@@ -31,6 +34,7 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -60,6 +64,7 @@ class Issue9071CompactionDuringConcurrentWritesTest extends TestHelper {
     });
 
     final AtomicBoolean stop = new AtomicBoolean();
+    final AtomicInteger compactions = new AtomicInteger();
     final AtomicReference<Throwable> failure = new AtomicReference<>();
     final List<Thread> threads = new ArrayList<>();
     for (int t = 0; t < WRITERS; t++) {
@@ -92,11 +97,14 @@ class Issue9071CompactionDuringConcurrentWritesTest extends TestHelper {
           try (final ResultSet rs = database.command("sql", "COMPACT INDEX `P[emb]`")) {
             while (rs.hasNext())
               rs.next();
+            compactions.incrementAndGet();
+          } catch (final TimeoutException | IndexException e) {
+            // a compaction the writers did not leave room for is retried by the next round
           }
           Thread.sleep(250);
         }
-      } catch (final Exception e) {
-        // a compaction that cannot run now is retried by the loop
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
       }
     }));
 
@@ -107,6 +115,7 @@ class Issue9071CompactionDuringConcurrentWritesTest extends TestHelper {
       t.join();
 
     assertThat(failure.get()).as("a writer failed").isNull();
+    assertThat(compactions.get()).as("compactions that ran while the writers were committing").isGreaterThan(0);
     assertThat(missing()).as("records missing before the close").isEmpty();
 
     reopenDatabase();
@@ -115,7 +124,7 @@ class Issue9071CompactionDuringConcurrentWritesTest extends TestHelper {
 
   private List<String> missing() {
     final List<String> missing = new ArrayList<>();
-    final Iterator<com.arcadedb.database.Record> it = database.iterateType("P", false);
+    final Iterator<Record> it = database.iterateType("P", false);
     while (it.hasNext()) {
       final Document d = (Document) it.next();
       final Object e = d.get("emb");

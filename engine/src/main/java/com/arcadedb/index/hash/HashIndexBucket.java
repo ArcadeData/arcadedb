@@ -734,6 +734,12 @@ public class HashIndexBucket extends PaginatedComponent {
         return;
       }
 
+      // The dead space of removed and grown entries is only reclaimed when an entry does not fit, as everywhere else
+      if (compactPage(overflowPage, entryCount) == entryCount && totalNeeded <= freeSpace(overflowPage, entryCount)) {
+        insertEntryInPage(overflowPage, entryCount, serializedKey, serializedRID);
+        return;
+      }
+
       if (entryCount == 0)
         throw entryTooLarge(totalNeeded, freeSpace(overflowPage, 0));
 
@@ -1553,8 +1559,12 @@ public class HashIndexBucket extends PaginatedComponent {
    * @return the entry count after compaction (unchanged, but returned for convenience)
    */
   private int compactPage(final MutablePage page, final int entryCount) {
-    if (entryCount == 0)
+    if (entryCount == 0) {
+      // Nothing live, so nothing to move, but the data area still ends where the last removed or grown entry left it: a page
+      // that emptied that way offered almost no space and could not take any entry (issue #9034 follow-up)
+      page.writeShort(BUCKET_DATA_END, (short) BUCKET_CONTENT_START);
       return 0;
+    }
 
     // Collect all live entries with their slot positions
     final byte[][] entries = new byte[entryCount][];
@@ -2039,8 +2049,10 @@ public class HashIndexBucket extends PaginatedComponent {
 
   // ─── RID READING ─────────────────────────────────────────
 
-  /** Two varInts of up to 10 bytes each. */
-  private static final int MAX_COMPRESSED_RID_SIZE = 20;
+  /** A varInt takes up to 10 bytes. */
+  private static final int MAX_VARINT_SIZE = 10;
+  /** Two varInts. */
+  private static final int MAX_COMPRESSED_RID_SIZE = 2 * MAX_VARINT_SIZE;
 
   private RID readCompressedRID(final BasePage page, final int offset) {
     // Compressed RID: bucketId (varInt) + position (varInt)
@@ -2083,7 +2095,7 @@ public class HashIndexBucket extends PaginatedComponent {
 
   /** A view over the varInt at {@code offset}: at most 10 bytes, never more than the page has left (issue #9034). */
   private static Binary varIntView(final BasePage page, final int offset) {
-    return page.getImmutableView(offset, Math.min(10, page.getMaxContentSize() - offset));
+    return page.getImmutableView(offset, Math.min(MAX_VARINT_SIZE, page.getMaxContentSize() - offset));
   }
 
   private int readVarIntFromPage(final BasePage page, final int offset) {
