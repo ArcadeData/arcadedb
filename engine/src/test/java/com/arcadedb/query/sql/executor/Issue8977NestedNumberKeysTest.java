@@ -24,9 +24,11 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -90,5 +92,26 @@ class Issue8977NestedNumberKeysTest extends TestHelper {
   @Test
   void setsKeyByContentNotIterationOrder() {
     assertThat(Type.normalizeForKey(new LinkedHashSet<>(List.of(1, 2, 3)))).isEqualTo(Type.normalizeForKey(new LinkedHashSet<>(List.of(3L, 2L, 1L))));
+  }
+
+  @Test
+  void normalizeForKeyShapes() {
+    // list vs set stay different, sets ignore order, nested containers and null items are handled
+    assertThat(Type.normalizeForKey(List.of(1, 2))).isEqualTo(Type.normalizeForKey(new Object[] { 1L, 2.0d }));
+    assertThat(Type.normalizeForKey(List.of(1, 2))).isNotEqualTo(Type.normalizeForKey(Set.of(1, 2)));
+    assertThat(Type.normalizeForKey(Map.of("a", List.of(1, Map.of("b", 2))))).isEqualTo(Type.normalizeForKey(Map.of("a", List.of(1L, Map.of("b", 2.0d)))));
+    assertThat(Type.normalizeForKey(Arrays.asList(1, null))).isEqualTo(Type.normalizeForKey(Arrays.asList(1L, null)));
+    assertThat(Type.normalizeForKey(null)).isNull();
+    // a collection that holds nothing to canonicalize is returned as it is
+    final List<String> plain = List.of("a", "b");
+    assertThat(Type.normalizeForKey(plain)).isSameAs(plain);
+  }
+
+  @Test
+  void primitiveArraysKeyByContentWithoutBoxing() {
+    assertThat(Type.normalizeForKey(new float[] { 1f, 2f })).isEqualTo(Type.normalizeForKey(new float[] { 1f, 2f }));
+    assertThat(Type.normalizeForKey(new float[] { 1f, 2f })).isNotEqualTo(Type.normalizeForKey(new float[] { 1f, 3f }));
+    assertThat(Type.normalizeForKey(new byte[] { 1 })).isNotEqualTo(Type.normalizeForKey(new int[] { 1 }));
+    assertThat(Type.normalizeForKey(new byte[] { 1, 2 }).hashCode()).isEqualTo(Type.normalizeForKey(new byte[] { 1, 2 }).hashCode());
   }
 }

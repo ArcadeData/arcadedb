@@ -286,7 +286,7 @@ public class Modifier extends SimpleNode {
       } else if (MultiValue.isMultiValue(target)) {
         final List<Object> result = new ArrayList<>();
         for (final Object o : MultiValue.getMultiValueIterable(target)) {
-          if (Boolean.TRUE.equals(condition.evaluate(target, context)))
+          if (Boolean.TRUE.equals(condition.evaluate(o, context)))
             result.add(o);
         }
         return result;
