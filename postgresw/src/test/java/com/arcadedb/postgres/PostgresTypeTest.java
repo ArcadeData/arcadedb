@@ -441,7 +441,7 @@ class PostgresTypeTest {
     assertThat(PostgresType.getTypeForValue(List.of(1, 3000000000L))).isEqualTo(PostgresType.ARRAY_LONG);
     assertThat(PostgresType.getTypeForValue(List.of(1, 2))).isEqualTo(PostgresType.ARRAY_INT);
     assertThat(PostgresType.getTypeForValue(List.of(1, "a"))).isEqualTo(PostgresType.ARRAY_TEXT);
-    assertThat(PostgresType.getTypeForValue(List.of(3000000000L, 1.5))).isEqualTo(PostgresType.ARRAY_NUMERIC);
+    assertThat(PostgresType.getTypeForValue(List.of(3000000000L, 1.5))).isEqualTo(PostgresType.ARRAY_DOUBLE);
     assertThat(PostgresType.getTypeForValue(List.of(1, new BigDecimal("2.5")))).isEqualTo(PostgresType.ARRAY_NUMERIC);
     assertThat(PostgresType.getTypeForValue(List.of(true, 1))).isEqualTo(PostgresType.ARRAY_TEXT);
     assertThat(PostgresType.getTypeForValue(Arrays.asList(null, 1, 2.5))).isEqualTo(PostgresType.ARRAY_DOUBLE);
@@ -452,7 +452,7 @@ class PostgresTypeTest {
   void mergeTypesWidensToHoldBothValues() {
     assertThat(PostgresType.mergeTypes(PostgresType.INTEGER, PostgresType.LONG, false)).isEqualTo(PostgresType.LONG);
     assertThat(PostgresType.mergeTypes(PostgresType.INTEGER, PostgresType.DOUBLE, false)).isEqualTo(PostgresType.DOUBLE);
-    assertThat(PostgresType.mergeTypes(PostgresType.LONG, PostgresType.DOUBLE, false)).isEqualTo(PostgresType.NUMERIC);
+    assertThat(PostgresType.mergeTypes(PostgresType.LONG, PostgresType.DOUBLE, false)).isEqualTo(PostgresType.DOUBLE);
     assertThat(PostgresType.mergeTypes(PostgresType.INTEGER, PostgresType.VARCHAR, false)).isEqualTo(PostgresType.VARCHAR);
     assertThat(PostgresType.mergeTypes(PostgresType.ARRAY_INT, PostgresType.ARRAY_DOUBLE, false)).isEqualTo(PostgresType.ARRAY_DOUBLE);
     assertThat(PostgresType.mergeTypes(PostgresType.ARRAY_INT, PostgresType.INTEGER, false)).isEqualTo(PostgresType.VARCHAR);

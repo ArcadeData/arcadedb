@@ -1451,6 +1451,10 @@ public class PostgresNetworkExecutor extends Thread {
           continue;
         }
 
+        // varchar holds every value and absorbs every other type: nothing left to widen, so skip the inspection
+        if (known && columns.get(p) == PostgresType.VARCHAR && (nullOnly == null || !nullOnly.contains(p)))
+          continue;
+
         PostgresType pgType = PostgresType.getTypeForValue(value);
 
         // An empty list carries no element to infer the type from, so getTypeForValue falls back to text[].

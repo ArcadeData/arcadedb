@@ -10669,7 +10669,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
     final AtomicLong bytesInCurrentChunk = new AtomicLong(0);
 
     // scanBucket() logs and swallows whatever its callback throws, so a failed chunk commit is parked here, the scan
-    // is stopped, and the failure is rethrown below for build() to roll back and mark the index INVALID (issue #8906)
+    // is stopped, and the failure is rethrown below for build() to roll back and mark the index INVALID (issue #8906).
+    // Deliberately only the commit: a record that cannot be indexed is skipped and logged by design, while a failed
+    // commit leaves the transaction unusable and every later record failing for the same reason
     final AtomicReference<RuntimeException> chunkCommitFailure = new AtomicReference<>();
 
     // Scan the bucket and index all documents

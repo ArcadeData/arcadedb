@@ -20,8 +20,8 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.DatabaseFactory;
 
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
