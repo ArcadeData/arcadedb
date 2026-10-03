@@ -681,7 +681,15 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         continue;
 
       final Document q = upd.get("q") instanceof Document filter ? filter : new Document();
-      final Object id = q.get("_id");
+      Object id = q.get("_id");
+      boolean hasId = q.containsKey("_id");
+      // the stored _id can also come from the update itself: a replacement's, or $set's
+      final Document u = upd.get("u") instanceof Document update ? update : new Document();
+      final Document setter = isReplacement(u) ? u : u.get("$set") instanceof Document set ? set : null;
+      if (setter != null && setter.containsKey("_id")) {
+        id = setter.get("_id");
+        hasId = true;
+      }
       // an operator document ({$in: ..}, {$gt: ..}) says nothing about the key of the document that would be inserted
       if (id instanceof Document)
         continue;
@@ -692,13 +700,16 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
       if (samples == null)
         samples = new ArrayList<>();
-      samples.add(id != null ? id : new ObjectId());
+      samples.add(hasId && id != null ? id : new ObjectId());
     }
 
     if (samples != null)
       MongoDBCollectionWrapper.ensureIdIndexLocked(database, collectionName, samples);
   }
 
+  /**
+   * Advisory: it only decides whether to touch the index ahead of the transaction, the match can change before it starts.
+   */
   private boolean matchesAny(final String collectionName, final Document q) {
     final Map<String, Object> params = new HashMap<>();
     final StringBuilder sql = new StringBuilder("SELECT @rid FROM ").append(Identifier.quote(collectionName));
@@ -715,7 +726,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
     // A replacement must keep the stored _id and $set on a dotted path must reach into the embedded document: neither can be
     // expressed as a single SQL UPDATE, so those are applied to each matching record. Everything else stays one SQL UPDATE.
-    if (isReplacement(u) || setsDottedPath(u))
+    if (isReplacement(u) || setsDottedPath(u) || touchesId(u))
       return executeUpdateOnRecords(collectionName, q, u, multi);
 
     final Map<String, Object> params = new HashMap<>();
@@ -732,6 +743,30 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * Whether any operator targets a dotted path. All of them go through the record path together, so {@code $set}, {@code $unset}
    * and {@code $inc} behave the same (nested paths created, integral {@code $inc} kept integral) however they are combined.
    */
+  /**
+   * Whether an update operator targets the {@code _id}: MongoDB's {@code _id} is immutable, which only the record path can check
+   * against the stored value.
+   */
+  private static boolean touchesId(final Document u) {
+    for (final Object operand : u.values())
+      if (operand instanceof Document fields && fields.containsKey("_id"))
+        return true;
+    return false;
+  }
+
+  /**
+   * An operator may set the {@code _id} to the value it already has, but never change or remove it (error 66).
+   */
+  private static void checkIdUntouched(final MutableDocument record, final Document u) {
+    final Object stored = record.get("_id");
+    for (final Map.Entry<String, Object> op : u.entrySet()) {
+      if (!(op.getValue() instanceof Document fields) || !fields.containsKey("_id"))
+        continue;
+      if (!"$set".equals(op.getKey()) || (stored != null && !sameId(stored, normalizeIdValue(fields.get("_id")))))
+        throw new MongoServerError(66, "ImmutableField", "Performing an update on the path '_id' would modify the immutable field '_id'");
+    }
+  }
+
   private static boolean setsDottedPath(final Document u) {
     for (final Object operand : u.values())
       if (operand instanceof Document fields)
@@ -761,8 +796,10 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       final MutableDocument record = rid.asDocument().modify();
       if (replacement)
         replaceContent(record, u);
-      else
+      else {
+        checkIdUntouched(record, u);
         applyOperatorsToDocument(record, u);
+      }
       record.save();
     }
     return rids.size();
