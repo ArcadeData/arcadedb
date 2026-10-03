@@ -126,17 +126,17 @@ class MongoDBUpdateValueBindingTest {
   }
 
   @Test
-  void anObjectIdIsBoundAsItsHexString() {
+  void anObjectIdInANonIdFieldIsBoundAsATaggedMap() {
     final StringBuilder sql = new StringBuilder();
     final Map<String, Object> params = new HashMap<>();
 
     final ObjectId id = new ObjectId();
     MongoDBDatabaseWrapper.appendUpdateOperations(sql, params, new Document("$set", new Document("ref", id)));
 
-    // an ObjectId has no SQL type: the wrapper stores it as hex text, and that conversion must survive the binding
+    // an ObjectId has no SQL type: a non-_id field stores it as a tagged map that keeps its type (#9062)
     final Object bound = ((Map<?, ?>) params.get("p0")).get("ref");
-    assertThat(bound).isInstanceOf(String.class);
-    assertThat((String) bound).hasSize(id.toByteArray().length * 2).matches("[0-9a-f]+");
+    assertThat(bound).isInstanceOf(Map.class);
+    assertThat(((Map<?, ?>) bound).get("hex")).isEqualTo(id.getHexData());
   }
 
   @Test

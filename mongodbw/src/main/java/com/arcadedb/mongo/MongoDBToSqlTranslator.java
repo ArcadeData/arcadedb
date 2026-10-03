@@ -49,7 +49,8 @@ public class MongoDBToSqlTranslator {
         buffer.append(" AND ");
 
       final Object key = entry.getKey();
-      final Object value = entry.getValue();
+      // a filter on _id matches the stored hex string; any other field matches the tagged ObjectId (see toBound)
+      final Object value = "_id".equals(key) ? MongoBsonValues.idFilter(entry.getValue()) : entry.getValue();
 
       if (key instanceof String string && string.startsWith("$"))
         buildExpression(buffer, params, null, string, value);
