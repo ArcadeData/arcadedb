@@ -3052,6 +3052,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * the index lock and so does this, in the same order. When the lock is already held by this thread (the rewrite itself asks for
    * it too) nothing is taken and nothing is released here.
    *
+   * Lock order: this runs under {@code graphBuildLock}, and no commit path takes the file lock and then {@code graphBuildLock}
+   * (commits take the file lock, then the index lock; only searches and rebuild threads take {@code graphBuildLock}, holding no file
+   * lock), so the two cannot invert. A {@link TimeoutException} is what {@link #compact()} treats as "retry later".
+   * <p>
    * Only the mutable data file is locked, not every file of the index: it is the one the rewrite replaces and the only one commits
    * append to (the compacted sub-index is read-only).
    *
@@ -3310,6 +3314,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     final boolean locationIndexAlreadyPublished = compactDataFile && !leftRecordsOut && rewriteDataFileWithLiveEntries(
         ridToLatestVector.values());
     if (locationIndexAlreadyPublished) {
+      // (The file lock is held here: it was taken by this build, or by a caller that holds it for the whole build.)
       // The rewrite renumbered every vector and reset the id sequence to the dense count, so the snapshot taken above is a
       // high-water mark of ids that no longer exist: kept, it would trim as "already in the graph" the ids the next commits
       // hand out below it (issue #9071). Nothing has been committed since the pages were read, so the current sequence is the

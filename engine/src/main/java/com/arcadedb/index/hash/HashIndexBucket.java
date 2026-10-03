@@ -735,7 +735,8 @@ public class HashIndexBucket extends PaginatedComponent {
       }
 
       // The dead space of removed and grown entries is only reclaimed when an entry does not fit, as everywhere else
-      if (compactPage(overflowPage, entryCount) == entryCount && totalNeeded <= freeSpace(overflowPage, entryCount)) {
+      if (hasDeadSpace(overflowPage, entryCount) && compactPage(overflowPage, entryCount) == entryCount
+          && totalNeeded <= freeSpace(overflowPage, entryCount)) {
         insertEntryInPage(overflowPage, entryCount, serializedKey, serializedRID);
         return;
       }
@@ -1549,6 +1550,14 @@ public class HashIndexBucket extends PaginatedComponent {
     // Note: dataEnd stays the same (dead space). We'll recover it during splits.
     page.writeShort(BUCKET_ENTRY_COUNT, (short) (entryCount - 1));
     return removedCount;
+  }
+
+  /** True when the data area holds more bytes than the live entries need: removed and grown entries leave holes. */
+  private boolean hasDeadSpace(final BasePage page, final int entryCount) {
+    int live = 0;
+    for (int i = 0; i < entryCount; i++)
+      live += getEntrySize(page, readSlot(page, i));
+    return (page.readShort(BUCKET_DATA_END) & 0xFFFF) - BUCKET_CONTENT_START > live;
   }
 
   /**

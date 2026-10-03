@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Property;
+import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -127,6 +128,22 @@ class CypherIndexMixedNumericIssue8999Test {
     assertThat(run("MATCH (n:B) WHERE n.id = 4 RETURN n.x AS x")).containsExactly("def");
     final Property declared = database.getSchema().getType("B").getPropertyIfExists("x");
     assertThat(declared).isNull();
+  }
+
+  @Test
+  void integralAndFloatingValuesSettleOnTheWidestType() {
+    database.transaction(() -> {
+      database.getSchema().createVertexType("W1");
+      database.getSchema().createVertexType("W2");
+      database.newVertex("W1").set("x", 1).save();
+      database.newVertex("W1").set("x", 5_000_000_000L).save();
+      database.newVertex("W2").set("x", 1.5f).save();
+      database.newVertex("W2").set("x", 2.5d).save();
+    });
+    database.command("opencypher", "CREATE INDEX FOR (n:W1) ON (n.x)");
+    database.command("opencypher", "CREATE INDEX FOR (n:W2) ON (n.x)");
+    assertThat(database.getSchema().getType("W1").getProperty("x").getType()).isEqualTo(Type.LONG);
+    assertThat(database.getSchema().getType("W2").getProperty("x").getType()).isEqualTo(Type.DOUBLE);
   }
 
   private List<List<String>> run(final String[] queries) {
