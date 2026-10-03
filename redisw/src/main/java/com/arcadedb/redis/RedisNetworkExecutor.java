@@ -267,12 +267,18 @@ public class RedisNetworkExecutor extends Thread {
       // raw ClassCastException from the generic catch-all instead of this message. No handler actually
       // consumes a nested array argument today, so that's an obscure, already-non-crashing edge case rather
       // than a gap worth a recursive check for.
+      // Only SET, ECHO and PING carry opaque bytes (issue #9057). Every other command parses its arguments as text, where
+      // an escaped byte would be a lone surrogate, so it gets the replacement character instead.
+      final boolean binarySafe = "SET".equals(cmdString) || "ECHO".equals(cmdString) || "PING".equals(cmdString);
       for (int i = 1; i < list.size(); i++) {
-        if (list.get(i) == null) {
+        final Object arg = list.get(i);
+        if (arg == null) {
           value.append("-ERR Protocol error: unexpected null bulk string argument");
           appendCrLf();
           return;
         }
+        if (!binarySafe && arg instanceof String str)
+          list.set(i, RedisBinaryCodec.sanitize(str));
       }
 
       // Redis maps commands directly to engine operations rather than going through
@@ -550,11 +556,13 @@ public class RedisNetworkExecutor extends Thread {
       // Transient mode: resolve every key BEFORE writing the array header, so a failure can never leave a reply that is
       // shorter than its header announces (issue #9055). A RID with no record keeps its place as a null entry.
       final List<String> values = new ArrayList<>(keys.size());
+      Database database = null;
       for (final Object keyObj : keys) {
         final String key = keyObj.toString();
         if (key.startsWith("#")) {
           // BY RID - persistent mode
-          final Database database = getAuthorizedDatabase(bucketName);
+          if (database == null)
+            database = getAuthorizedDatabase(bucketName);
           Record record;
           try {
             record = database.lookupByRID(new RID(key), true);
