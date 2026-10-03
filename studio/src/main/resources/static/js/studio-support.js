@@ -429,7 +429,14 @@ function supportStatusPanelHtml(s) {
     (supportDetailsOpen ? "true" : "false") +
     '" aria-controls="supportStatusDetails" title="Show the registration details">';
   html += '<span class="support-status-icon"><i class="fa ' + icon + '"></i></span>';
-  html += '<span class="support-status-text"><span class="support-status-title">' + title + '</span><span class="support-hint">' + sub.join(" &middot; ") + "</span></span>";
+  html +=
+    '<span class="support-status-text"><span class="support-status-title">' +
+    title +
+    '</span><span class="support-hint" title="' +
+    supportEsc($("<div>").html(sub.join(" \u00b7 ")).text()) +
+    '">' +
+    sub.join(" &middot; ") +
+    "</span></span>";
   html += '<span class="support-status-chevron' + (supportDetailsOpen ? " open" : "") + '"><i class="fa fa-chevron-down"></i></span>';
   html += "</button>";
   html += '<div class="support-status-actions">';

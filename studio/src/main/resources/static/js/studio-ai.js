@@ -1160,7 +1160,7 @@ function aiDrawChart(id) {
   .done(function (data) {
     if (aiChartSpecs[id] !== spec || !document.getElementById(id + "_body")) return; // redrawn or deleted meanwhile
     var model = aiChartModel(data && data.result, spec);
-    if (model.categories.length === 0) {
+    if (model.categories.length === 0 || model.series.length === 0) {
       aiChartNote(id, "fa-circle-info", "var(--text-muted)", "The query returned no rows with a number in " + spec.y.join(", ") + ", so there is nothing to chart.");
       return;
     }
@@ -1170,6 +1170,9 @@ function aiDrawChart(id) {
     var chart = new ApexCharts(document.getElementById(id + "_plot"), aiChartOptions(spec, model, dark));
     aiChartInstances[id] = chart;
     chart.render();
+    // A column the chart did not name exactly was substituted: say so, small and muted (text, never HTML)
+    for (var n = 0; n < model.notes.length; n++)
+      body.append($('<div style="font-size: 0.75rem; color: var(--text-muted);"></div>').text(model.notes[n]));
     if (model.dropped > 0)
       body.append('<div style="font-size: 0.75rem; color: var(--text-muted);">' + model.dropped + ' row(s) without a usable number were left out.</div>');
   })

@@ -199,3 +199,90 @@ test("the HTML escapes every column name and every value", () => {
   assert.ok(html.includes("&lt;script&gt;alert(1)&lt;/script&gt;"));
   assert.ok(html.includes("a&amp;b"));
 });
+
+// ---- the model names columns a little differently from the query's real ones ----
+
+test("a column the model spelled with other case is the same column", () => {
+  const m = plain(ctx.aiChartModel([{ Style: "Ale", Beers: 5 }, { Style: "Lager", Beers: 7 }], Object.assign(valid(), { x: "style", y: ["BEERS"] })));
+  assert.deepEqual(m.categories, ["Ale", "Lager"]);
+  assert.deepEqual(m.series, [{ name: "Beers", data: [5, 7] }]);
+  assert.deepEqual(m.notes, []);
+});
+
+test("x \"style\" resolves to the one column style_name (suffix and prefix match), silently", () => {
+  const rows = [{ style_name: "Ale", beers: 5 }, { style_name: "Lager", beers: 7 }];
+  const m = plain(ctx.aiChartModel(rows, Object.assign(valid(), { x: "style", y: ["beers"] })));
+  assert.deepEqual(m.categories, ["Ale", "Lager"]);
+  assert.equal(m.x, "style_name");
+  assert.deepEqual(m.notes, []);
+  const byEnd = plain(ctx.aiChartModel([{ beer_style: "Ale", n: 1 }], Object.assign(valid(), { x: "style" })));
+  assert.equal(byEnd.x, "beer_style");
+  assert.deepEqual(byEnd.notes, []);
+});
+
+test("an ambiguous name is no match: two columns fit, so none is guessed", () => {
+  const rows = [{ style_name: "Ale", style_code: "A1", n: 3 }];
+  assert.equal(ctx.aiChartResolve("style", ["style_name", "style_code", "n"]), null);
+  const m = plain(ctx.aiChartModel(rows, Object.assign(valid(), { x: "style" })));
+  assert.equal(m.x, "style_name"); // the fallback: the first non-numeric column
+  assert.equal(m.notes.length, 1);
+  assert.match(m.notes[0], /style_name/);
+});
+
+test("a missing x falls back to the first non-numeric column and says so; the result has no NaN anywhere", () => {
+  const rows = [{ "@rid": "#1:1", cnt: 4, label: "A" }, { "@rid": "#1:2", cnt: 6, label: "B" }];
+  const m = plain(ctx.aiChartModel(rows, Object.assign(valid(), { x: "nothing", y: ["cnt"] })));
+  assert.deepEqual(m.categories, ["A", "B"]); // "@rid" is text too, but internal columns are not picked as the categories
+  assert.equal(m.x, "label");
+  assert.equal(m.series[0].data.join(), "4,6");
+  assert.ok(m.notes.length === 1);
+  assert.ok(m.categories.every((c) => c !== "NaN" && c !== "undefined"));
+});
+
+test("a missing y falls back to the first numeric column not used as x, with a note", () => {
+  const rows = [{ name: "A", total: 4, other: 1 }, { name: "B", total: 6, other: 2 }];
+  const m = plain(ctx.aiChartModel(rows, Object.assign(valid(), { x: "name", y: ["missing"] })));
+  assert.deepEqual(m.y, ["total"]);
+  assert.deepEqual(m.series, [{ name: "total", data: [4, 6] }]);
+  assert.match(m.notes[0], /total/);
+});
+
+test("a null, undefined, empty or NaN category is \"(none)\", never NaN or undefined", () => {
+  const m = plain(ctx.aiChartModel([{ s: null, n: 1 }, { s: undefined, n: 2 }, { s: "", n: 3 }, { s: NaN, n: 4 }, { n: 5 }, { s: "ok", n: 6 }], valid()));
+  assert.deepEqual(m.categories, ["(none)", "(none)", "(none)", "(none)", "(none)", "ok"]);
+  assert.equal(ctx.aiChartLabel(NaN), "(none)");
+  assert.equal(ctx.aiChartLabel(Infinity), "(none)");
+  assert.equal(ctx.aiChartLabel("  "), "(none)");
+  assert.equal(ctx.aiChartLabel(0), "0");
+});
+
+test("when every value is not a number there is nothing to chart (no NaN points)", () => {
+  const m = plain(ctx.aiChartModel([{ s: "a", n: "x" }, { s: "b", n: NaN }, { s: "c", n: null }], valid()));
+  assert.equal(m.categories.length, 0);
+  assert.equal(m.dropped, 3);
+});
+
+test("no columns at all (an empty result) is an empty model, not an error", () => {
+  const m = plain(ctx.aiChartModel([], valid()));
+  assert.equal(m.categories.length, 0);
+  assert.deepEqual(m.series, []); // no columns, so nothing to name a series after
+  assert.deepEqual(m.notes, []);
+});
+
+test("a horizontal chart gets an explicit category axis, so labels are never read as numbers", () => {
+  const model = ctx.aiChartModel([{ s: "a", n: 1 }], valid());
+  const options = ctx.aiChartOptions(Object.assign(valid(), { type: "horizontalBar" }), model, false);
+  assert.equal(options.xaxis.type, "category");
+});
+
+test("a number formatter is on the axis that shows numbers: a horizontal chart's category names are never turned into NaN", () => {
+  const model = ctx.aiChartModel([{ s: "American-Style Pale Ale", n: 1.234567 }], valid());
+  const horizontal = ctx.aiChartOptions(Object.assign(valid(), { type: "horizontalBar" }), model, false);
+  const yFormat = horizontal.yaxis && horizontal.yaxis.labels && horizontal.yaxis.labels.formatter;
+  assert.ok(!yFormat || yFormat("American-Style Pale Ale") === "American-Style Pale Ale"); // the y axis carries the names
+  assert.equal(horizontal.xaxis.labels.formatter(1.234567), 1.2346);
+  assert.equal(horizontal.xaxis.labels.formatter("text"), "text");
+  const vertical = ctx.aiChartOptions(Object.assign(valid(), { type: "bar" }), model, false);
+  assert.equal(vertical.yaxis.labels.formatter(2.5), 2.5);
+  assert.equal(vertical.yaxis.labels.formatter(null), "");
+});

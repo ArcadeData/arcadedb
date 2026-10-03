@@ -72,7 +72,8 @@ function aiChartNumber(value) {
 }
 
 /**
- * A category label: any value as short text. Nested values become short JSON.
+ * A category label: any value as short text. Nested values become short JSON. Null, undefined, an empty text and a number that is
+ * not a number (NaN, Infinity) are all "(none)": a label never reads "NaN" or "undefined".
  *
  * ⚠️ ApexCharts puts some of its texts (the legend of a pie, the tooltip) into the page as HTML, and a label is whatever a
  * database holds. Observed: a category called `<img src=x onerror=alert(1)>` ran its script in a donut's legend. So the
@@ -81,28 +82,119 @@ function aiChartNumber(value) {
  */
 function aiChartLabel(value) {
   var text;
-  if (value === null || value === undefined) text = "(none)";
+  if (value === null || value === undefined || (typeof value === "number" && !isFinite(value))) text = "(none)";
   else if (typeof value === "object") text = JSON.stringify(value);
   else text = String(value);
+  if (text.trim() === "") text = "(none)";
   text = text.replace(/</g, "\u2039").replace(/>/g, "\u203a").replace(/"/g, "\u201d").replace(/'/g, "\u2019");
   return text.length > AI_CHART_LABEL_LENGTH ? text.substring(0, AI_CHART_LABEL_LENGTH - 1) + "…" : text;
 }
 
+/** The column names of a result, in the order they first appear in the first rows. */
+function aiChartColumns(rows) {
+  var columns = [];
+  var seen = {};
+  for (var r = 0; r < rows.length && r < 20; r++) {
+    var row = rows[r];
+    if (!row || typeof row !== "object") continue;
+    var keys = Object.keys(row);
+    for (var k = 0; k < keys.length; k++)
+      if (!seen[keys[k]]) {
+        seen[keys[k]] = true;
+        columns.push(keys[k]);
+      }
+  }
+  return columns;
+}
+
 /**
- * The points of a chart from the rows of its query: `{categories: [text], series: [{name, data: [number|null]}], dropped}`.
+ * The real column a name from the model stands for, or null. The model often names a column a little differently from the query
+ * ("style" for `style_name`). In order, and only when exactly ONE column fits at that step: the name itself; the same ignoring
+ * case; a column that starts or ends with the name after an underscore ("style_name", "beer_style"); a column that starts or ends
+ * with the name ignoring case. Two columns fitting is no match: guessing between them would draw the wrong chart.
+ */
+function aiChartResolve(name, columns) {
+  if (typeof name !== "string" || name === "") return null;
+  if (columns.indexOf(name) >= 0) return name;
+  var lower = name.toLowerCase();
+  var steps = [
+    function (c) {
+      return c.toLowerCase() === lower;
+    },
+    function (c) {
+      var l = c.toLowerCase();
+      return l.indexOf(lower + "_") === 0 || (l.length > lower.length + 1 && l.lastIndexOf("_" + lower) === l.length - lower.length - 1);
+    },
+    function (c) {
+      var l = c.toLowerCase();
+      return l.length > lower.length && (l.indexOf(lower) === 0 || l.lastIndexOf(lower) === l.length - lower.length);
+    }
+  ];
+  for (var i = 0; i < steps.length; i++) {
+    var hits = columns.filter(steps[i]);
+    if (hits.length === 1) return hits[0];
+    if (hits.length > 1) return null;
+  }
+  return null;
+}
+
+/** A column is numeric when it has at least one value and every non-empty value is a number (or numeric text). */
+function aiChartIsNumeric(rows, column) {
+  var seen = 0;
+  for (var r = 0; r < rows.length && r < 50; r++) {
+    var v = rows[r] && typeof rows[r] === "object" ? rows[r][column] : undefined;
+    if (v === null || v === undefined || v === "") continue;
+    if (isNaN(aiChartNumber(v))) return false;
+    seen++;
+  }
+  return seen > 0;
+}
+
+/**
+ * The points of a chart from the rows of its query:
+ * `{categories: [text], series: [{name, data: [number|null]}], dropped, x, y: [columns], notes: [text]}`.
+ * The columns the model named are matched to the real ones (aiChartResolve); an x that matches nothing falls back to the first
+ * non-numeric column, a y that matches nothing to the first numeric column not used as x, and each fallback is said in `notes`.
  * A row whose measures are all non-numeric is skipped; with several measures a single non-numeric one is a gap (null), not a
  * zero. At most 100 rows are used. Pie and donut charts take the first measure only and skip negative values.
  */
 function aiChartModel(records, spec) {
   var pie = spec.type === "pie" || spec.type === "donut";
-  var ys = pie ? [spec.y[0]] : spec.y;
+  var rows = Array.isArray(records) ? records : [];
+  var columns = aiChartColumns(rows);
+  var notes = [];
+
+  var x = aiChartResolve(spec.x, columns);
+  if (x === null && columns.length > 0) {
+    var firstText = columns.filter(function (c) {
+      return c.charAt(0) !== "@" && !aiChartIsNumeric(rows, c);
+    })[0];
+    x = firstText !== undefined ? firstText : null;
+    if (x !== null) notes.push("showing " + x + " as the categories (the chart asked for \"" + spec.x + "\")");
+  }
+
+  var ys = [];
+  spec.y.forEach(function (name) {
+    var col = aiChartResolve(name, columns);
+    if (col !== null && col !== x && ys.indexOf(col) < 0) ys.push(col);
+  });
+  if (ys.length === 0) {
+    var firstNumber = columns.filter(function (c) {
+      return c !== x && aiChartIsNumeric(rows, c);
+    })[0];
+    if (firstNumber !== undefined) {
+      ys.push(firstNumber);
+      notes.push("showing " + firstNumber + " as the values (the chart asked for \"" + spec.y.join(", ") + "\")");
+    }
+  }
+  if (pie) ys = ys.slice(0, 1);
+
   var categories = [];
   var data = ys.map(function () {
     return [];
   });
   var used = 0;
   var dropped = 0;
-  var rows = Array.isArray(records) ? records : [];
   for (var r = 0; r < rows.length; r++) {
     var row = rows[r];
     if (!row || typeof row !== "object") {
@@ -123,7 +215,7 @@ function aiChartModel(records, spec) {
       dropped++;
       continue;
     }
-    categories.push(aiChartLabel(row[spec.x]));
+    categories.push(aiChartLabel(x === null ? undefined : row[x]));
     for (var k = 0; k < values.length; k++) data[k].push(isNaN(values[k]) || (pie && values[k] < 0) ? (pie ? 0 : null) : values[k]);
     used++;
   }
@@ -132,7 +224,10 @@ function aiChartModel(records, spec) {
     series: ys.map(function (name, index) {
       return { name: name, data: data[index] };
     }),
-    dropped: dropped
+    dropped: dropped,
+    x: x,
+    y: ys,
+    notes: notes
   };
 }
 
@@ -155,14 +250,23 @@ function aiChartOptions(spec, model, dark) {
   var options = {
     chart: { type: apexType, height: horizontal ? Math.max(240, 60 + model.categories.length * 30) : 320, background: "transparent", toolbar: { show: true } },
     series: model.series,
-    xaxis: { categories: model.categories, labels: { rotate: horizontal ? 0 : -45, trim: true } },
-    yaxis: { labels: { formatter: function (val) { return val != null ? Number(Number(val).toFixed(4)) : ""; } } },
+    xaxis: { type: "category", categories: model.categories, labels: { rotate: horizontal ? 0 : -45, trim: true } },
+    yaxis: { labels: {} },
     stroke: { curve: "smooth", width: bars ? 0 : 2 },
     dataLabels: { enabled: false },
     legend: { show: model.series.length > 1, position: "bottom" },
     theme: theme
   };
-  if (horizontal) options.plotOptions = { bar: { horizontal: true } };
+  // ⚠️ The NUMBER formatter goes on the axis that shows numbers. ApexCharts flips the axes of a horizontal bar chart: the
+  // category names are then on the y axis, and a number formatter there turned every name into "NaN" (observed).
+  var number = function (val) {
+    var n = Number(val);
+    return val === null || val === undefined || val === "" ? "" : isNaN(n) ? String(val) : Number(n.toFixed(4));
+  };
+  if (horizontal) {
+    options.plotOptions = { bar: { horizontal: true } };
+    options.xaxis.labels = { formatter: number };
+  } else options.yaxis.labels.formatter = number;
   return options;
 }
 

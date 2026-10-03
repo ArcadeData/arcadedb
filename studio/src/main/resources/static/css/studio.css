@@ -4427,8 +4427,8 @@ body.col-resizing * {
 .support-register-head {
   display: flex;
   align-items: center;
-  gap: 14px;
-  margin-bottom: 12px;
+  gap: 12px;
+  margin-bottom: 8px;
 }
 
 .support-status {
@@ -4438,7 +4438,7 @@ body.col-resizing * {
   border: 1px solid var(--status-border);
   background: var(--status-bg);
   border-radius: 10px;
-  margin-bottom: 18px;
+  margin-bottom: 10px;
   overflow: hidden;
 }
 
@@ -4472,19 +4472,22 @@ body.col-resizing * {
   --status-border: #6b2a2a;
 }
 
+/* One slim line: icon, title, the plan summary (ellipsized when the window is narrow), chevron, refresh. */
 .support-status-bar {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding-right: 12px;
+  gap: 10px;
+  padding-right: 8px;
+  min-height: 42px;
 }
 
 .support-status-main {
   flex: 1;
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 12px 14px;
+  gap: 10px;
+  min-width: 0;
+  padding: 5px 12px;
   background: none;
   border: 0;
   text-align: left;
@@ -4498,21 +4501,34 @@ body.col-resizing * {
 }
 
 .support-status-icon {
-  font-size: 1.5rem;
+  font-size: 1.15rem;
   color: var(--status-fg);
   line-height: 1;
 }
 
 .support-status-text {
   display: flex;
-  flex-direction: column;
+  flex: 1 1 auto;
+  flex-direction: row;
+  align-items: baseline;
+  gap: 10px;
   min-width: 0;
 }
 
 .support-status-title {
-  font-size: 1.05rem;
+  flex: 0 0 auto;
+  font-size: 0.98rem;
   font-weight: 600;
+  white-space: nowrap;
   color: var(--status-fg);
+}
+
+.support-status-text .support-hint {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .support-status-chevron {
@@ -4527,7 +4543,14 @@ body.col-resizing * {
 
 .support-status-actions {
   display: flex;
+  flex: 0 0 auto;
   gap: 8px;
+}
+
+.support-status-actions .btn {
+  padding-top: 2px;
+  padding-bottom: 2px;
+  white-space: nowrap;
 }
 
 .support-status-details {
