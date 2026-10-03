@@ -226,6 +226,10 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
   private void insertInTransaction(final List<Document> list) {
     // a type without the unique index (made through SQL or Studio, or already holding duplicates) is checked by hand
     final boolean checkByHand = !hasUniqueIdIndex(database.getSchema().getType(collectionName));
+    if (checkByHand && ID_INDEX_SLOW_PATH_LOGGED.add(idIndexKey(database, collectionName)))
+      LogManager.instance().log(this, Level.WARNING,
+          "Collection '%s' has no unique index on _id: every insert checks the _id with a query, which is slow on a big collection", null,
+          collectionName);
 
     database.begin();
     try {
@@ -254,6 +258,10 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
     }
   }
 
+  /**
+   * Best effort, not a uniqueness guarantee: a check followed by an insert, with no lock against other writers, so two
+   * concurrent inserts of the same {@code _id} can both pass. It is only the fallback for a collection without the unique index.
+   */
   private void checkIdIsFree(final Object id) {
     final Object bound = id instanceof ObjectId objectId ? objectId.getHexData() : id;
     try (final ResultSet rs = database.query("SQL", "select @rid from " + Identifier.quote(collectionName) + " where _id = :id limit 1",
@@ -271,6 +279,8 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
    */
   private static final Set<String> ID_INDEX_GAVE_UP = ConcurrentHashMap.newKeySet();
 
+  private static final Set<String> ID_INDEX_SLOW_PATH_LOGGED = ConcurrentHashMap.newKeySet();
+
   private static String idIndexKey(final Database database, final String collectionName) {
     return database.getDatabasePath() + "/" + collectionName;
   }
@@ -282,6 +292,7 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
     final String prefix = database.getDatabasePath() + "/";
     ID_INDEX_LOCKS.keySet().removeIf(key -> key.startsWith(prefix));
     ID_INDEX_GAVE_UP.removeIf(key -> key.startsWith(prefix));
+    ID_INDEX_SLOW_PATH_LOGGED.removeIf(key -> key.startsWith(prefix));
   }
 
   /**
@@ -292,6 +303,7 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
     final String key = idIndexKey(database, collectionName);
     ID_INDEX_LOCKS.remove(key);
     ID_INDEX_GAVE_UP.remove(key);
+    ID_INDEX_SLOW_PATH_LOGGED.remove(key);
   }
 
   /**
