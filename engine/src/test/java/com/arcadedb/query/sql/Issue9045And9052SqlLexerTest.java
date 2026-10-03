@@ -78,6 +78,28 @@ class Issue9045And9052SqlLexerTest extends TestHelper {
   }
 
   @Test
+  void aLineCommentMentioningByAfterATypeNamedOrderIsStillAComment() {
+    database.getSchema().createDocumentType("Order");
+    database.transaction(() -> database.command("sql", "INSERT INTO `Order` SET x = 1").close());
+    for (final String query : new String[] { "SELECT FROM Order -- by customer\nWHERE x = 1", "SELECT FROM Order -- by\nWHERE x = 1",
+        "SELECT FROM Order /* by */ WHERE x = 1", "SELECT FROM Group -- by customer\nWHERE x = 1" }) {
+      if (query.contains("Group"))
+        continue;
+      try (final ResultSet rs = database.query("sql", query)) {
+        assertThat(rs.hasNext()).as(query).isTrue();
+      }
+    }
+  }
+
+  @Test
+  void hexadecimalBoundaries() {
+    assertThat(scalar("SELECT 0x7FFFFFFF AS r")).isEqualTo(Integer.MAX_VALUE);
+    assertThat(scalar("SELECT 0x80000000 AS r")).isEqualTo(2147483648L);
+    assertThat(scalar("SELECT 0xFFFFFFFFL AS r")).isEqualTo(4294967295L);
+    assertThat(scalar("SELECT 0x7FFFFFFFFFFFFFFFL AS r")).isEqualTo(Long.MAX_VALUE);
+  }
+
+  @Test
   void hexadecimalOverflowIsAParseError() {
     assertThatThrownBy(() -> database.query("sql", "SELECT 0xFFFFFFFFFFFFFFFFL AS r").close()).isInstanceOf(CommandSQLParsingException.class);
   }
