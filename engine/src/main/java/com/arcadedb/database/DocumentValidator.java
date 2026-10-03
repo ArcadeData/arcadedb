@@ -229,6 +229,11 @@ public class DocumentValidator {
 
   /** NaN and the infinities have no integral value at all, so they never survive a narrowing */
   private static boolean sameIntegralValue(final Number original, final Number narrowed) {
+    if ((original instanceof Byte || original instanceof Short || original instanceof Integer || original instanceof Long)
+        && (narrowed instanceof Byte || narrowed instanceof Short || narrowed instanceof Integer || narrowed instanceof Long))
+      // the common case, and an allocation-free one
+      return original.longValue() == narrowed.longValue();
+
     final double asDouble = original.doubleValue();
     if (Double.isNaN(asDouble) || Double.isInfinite(asDouble))
       return false;
@@ -247,13 +252,17 @@ public class DocumentValidator {
     final Type type = p.getType();
     if (bound == null || !isScalarType(type))
       return;
+    Object converted;
+    Throwable cause = null;
     try {
-      if (Type.convert(database, bound, type.getJavaImplementation(database), p) == null)
-        throw new IllegalArgumentException("null");
+      converted = Type.convert(database, bound, type.getJavaImplementation(database), p);
     } catch (final RuntimeException e) {
-      throw new CommandExecutionException("The " + side + " '" + bound + "' of property '" + owner.getName() + "."
-          + p.getName() + "' cannot be read as " + type, e);
+      converted = null;
+      cause = e;
     }
+    if (converted == null)
+      throw new CommandExecutionException("The " + side + " '" + bound + "' of property '" + owner.getName() + "." + p.getName()
+          + "' cannot be read as " + type, cause);
   }
 
   private static boolean isScalarType(final Type type) {
