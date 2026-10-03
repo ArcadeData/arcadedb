@@ -191,7 +191,8 @@ public final class LeaderForwardContext {
     if (leaderIdBeforeDial != null && !leaderIdBeforeDial.isBlank())
       return leaderIdBeforeDial;
     // No leader was named before the dial, yet the address was resolved in between: the id read after it is the only one
-    // the forward has (issue #8925).
+    // the forward has (issue #8925). Leadership may have moved during the resolution, so it is the best available key,
+    // not a guarantee of the node dialled; a mismatch only costs a bounded wait.
     return leaderIdAfterDial == null || leaderIdAfterDial.isBlank() ? null : leaderIdAfterDial;
   }
 
