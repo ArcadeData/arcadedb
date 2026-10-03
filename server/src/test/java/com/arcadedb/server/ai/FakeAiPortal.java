@@ -28,6 +28,7 @@ import io.undertow.util.HttpString;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -86,6 +87,21 @@ final class FakeAiPortal implements AutoCloseable {
             new JSONObject().put("response", text).put("commands", commands).put("toolCalls", calls)
                 .put("usage", new JSONObject().put("turns", 4).put("spent", 3.41).put("budget", 20.0).put("percent", 17))),
         new JSONObject().put("type", "done"));
+  }
+
+  /** A plain answer that also asks Studio to draw charts (the portal's {@code charts} member of the result). */
+  static List<JSONObject> answerWithCharts(final String text, final JSONArray charts) {
+    final List<JSONObject> events = new ArrayList<>(answer(text, List.of()));
+    events.get(1).getJSONObject("data").put("charts", charts);
+    return events;
+  }
+
+  static JSONObject chart(final String type, final String query, final String x, final String... y) {
+    final JSONArray columns = new JSONArray();
+    for (final String column : y)
+      columns.put(column);
+    return new JSONObject().put("type", type).put("title", "A chart").put("language", "sql").put("query", query).put("x", x)
+        .put("y", columns);
   }
 
   static JSONObject toolCall(final String id, final String name, final JSONObject arguments) {

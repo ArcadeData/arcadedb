@@ -220,6 +220,30 @@ class AiPortalServerTest extends BaseGraphServerTest {
   }
 
   @Test
+  void theChartsReachTheBrowserAndAreSavedWithTheChatSoItRedrawsThem() throws Exception {
+    final JSONArray charts = new JSONArray()
+        .put(FakeAiPortal.chart("donut", "SELECT name, count(*) AS n FROM " + VERTEX1_TYPE_NAME + " GROUP BY name", "name", "n"))
+        .put(FakeAiPortal.chart("bar", "SELECT 1", "x; evil", "n"));
+    portal.script = body -> FakeAiPortal.answerWithCharts("A chart for you", charts);
+
+    final Reply reply = call("POST", "/chat/stream", question());
+
+    final List<JSONObject> events = reply.events();
+    final JSONObject done = events.get(events.size() - 1);
+    assertThat(done.getString("type")).isEqualTo("done");
+    assertThat(done.getJSONArray("charts").length()).isEqualTo(1);
+    assertThat(done.getJSONArray("charts").getJSONObject(0).getString("type")).isEqualTo("donut");
+
+    final String chatId = done.getString("chatId");
+    final JSONObject saved = call("GET", "/chats/" + chatId, null).json();
+    final JSONArray messages = saved.getJSONArray("messages");
+    final JSONObject last = messages.getJSONObject(messages.length() - 1);
+    assertThat(last.getString("role")).isEqualTo("assistant");
+    assertThat(last.getJSONArray("charts").length()).isEqualTo(1);
+    assertThat(last.getJSONArray("charts").getJSONObject(0).getString("query")).startsWith("SELECT name, count(*)");
+  }
+
+  @Test
   void theReviewFirstChatLetsTheModelReadButNeverRunsAQuery() throws Exception {
     portal.script = body -> body.getInt("round") == 0
         ? FakeAiPortal.answer("", List.of(FakeAiPortal.toolCall("t1", "query_database",

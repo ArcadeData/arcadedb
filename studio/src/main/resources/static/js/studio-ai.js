@@ -699,6 +699,9 @@ function aiHandleResponse(data) {
   var assistantMsg = { role: "assistant", content: data.response, timestamp: new Date().toISOString() };
   if (data.commands && data.commands.length > 0)
     assistantMsg.commands = data.commands;
+  var charts = aiChartsClean(data.charts);
+  if (charts.length > 0)
+    assistantMsg.charts = charts;
   if (data.toolCalls && data.toolCalls.length > 0)
     assistantMsg.toolCalls = data.toolCalls;
   aiMessages.push(assistantMsg);
@@ -740,6 +743,9 @@ function aiUpdateLiveTools(liveId, toolCalls) {
       icon = "fa-database";
       label = '<code style="background: var(--bg-reference); padding: 1px 4px; border-radius: 3px; font-size: 0.8em; color: var(--text-muted);">' +
         escapeHtml(tc.args.command) + '</code>';
+    } else if (tc.tool === "get_type") {
+      icon = "fa-sitemap";
+      label = "Looked at type " + escapeHtml(tc.args && tc.args.name ? tc.args.name : "");
     } else if (tc.tool === "get_schema") {
       icon = "fa-sitemap";
       label = "Fetching schema";
@@ -802,6 +808,7 @@ function aiSetSending(sending) {
 
 function aiRenderMessages() {
   var container = $("#aiMessages");
+  aiDestroyCharts();
   container.empty();
   aiCommandBlockCounter = 0;
 
@@ -825,6 +832,7 @@ function aiRenderMessages() {
       container.append(aiRenderAssistantMessage(msg, i));
   }
 
+  aiDrawCharts();
   aiScrollToBottom();
 }
 
@@ -855,6 +863,11 @@ function aiRenderAssistantMessage(msg, msgIndex) {
     html += aiRenderToolCallLog(msg.toolCalls);
 
   html += '<div class="ai-message-content" style="color: var(--text-primary); line-height: 1.6;">' + contentHtml + '</div>';
+
+  // Charts the assistant asked for: Studio runs their queries (read-only) and draws them once the page is built
+  if (msg.charts && msg.charts.length > 0)
+    for (var c = 0; c < msg.charts.length; c++)
+      html += aiRenderChartShell(msg.charts[c]);
 
   // Render command blocks if present
   if (msg.commands && msg.commands.length > 0) {
@@ -929,6 +942,7 @@ function aiRenderCommandBlock(cmd, index, msgIndex) {
     '<div style="display: flex; align-items: center; gap: 8px;">' +
     '<button class="btn btn-sm" style="background: transparent; color: var(--text-muted); border: 1px solid var(--border-main); font-size: 0.8rem;" onclick="aiOpenInQuery(\'' + blockId + '\')">' +
     '<i class="fa fa-terminal me-1"></i>Open in Query</button>' +
+    '<button id="' + blockId + '_toggle" class="btn btn-sm" style="display: none; background: transparent; color: var(--text-muted); border: 1px solid var(--border-main); font-size: 0.8rem;" onclick="aiToggleResults(\'' + blockId + '\')"></button>' +
     '<button class="btn btn-sm" style="background: var(--color-brand); color: white; border: none; font-size: 0.8rem;" onclick="aiExecuteCommand(this, \'' + blockId + '\')">' +
     '<i class="fa fa-play me-1"></i>Execute</button></div></div>' +
     '</div>';
@@ -956,9 +970,11 @@ function aiOpenInQuery(blockId) {
   var pre = document.getElementById(blockId);
   if (!pre) return;
 
-  var command = pre.getAttribute("data-command");
-  var language = pre.getAttribute("data-language") || "sql";
+  aiOpenQueryPanel(pre.getAttribute("data-language") || "sql", pre.getAttribute("data-command"));
+}
 
+/** Shows a command in the Query panel's editor (does not run it). */
+function aiOpenQueryPanel(language, command) {
   // Switch to Query tab
   var queryTab = document.getElementById("tab-query-sel");
   if (queryTab) queryTab.click();
@@ -1009,12 +1025,9 @@ function aiExecuteCommand(button, blockId) {
   })
   .done(function(data) {
     btn.prop("disabled", false).html('<i class="fa fa-play me-1"></i>Execute');
-    var resultCount = data.result ? data.result.length : 0;
-    resultDiv.show().html('<i class="fa fa-check-circle me-1" style="color: #28a745;"></i> <span style="color: var(--text-primary);">Success' +
-      (resultCount > 0 ? ' (' + resultCount + ' results)' : '') + '</span>');
-
-    // Auto-hide after 8 seconds
-    setTimeout(function() { resultDiv.fadeOut(300); }, 8000);
+    // A result with rows stays (collapsible); a bare "Success" (a write) fades after 8 seconds
+    if (!aiShowCommandResult(blockId, data))
+      setTimeout(function() { resultDiv.fadeOut(300); }, 8000);
   })
   .fail(function(jqXHR) {
     btn.prop("disabled", false).html('<i class="fa fa-play me-1"></i>Execute');
@@ -1025,6 +1038,150 @@ function aiExecuteCommand(button, blockId) {
       else if (errData.error) errorMsg = errData.error;
     } catch (e) { /* ignore */ }
     resultDiv.show().html('<i class="fa fa-circle-exclamation me-1" style="color: #dc3545;"></i> <span style="color: #dc3545;">' + escapeHtml(errorMsg) + '</span>');
+  });
+}
+
+// ===== Command results (the Execute buttons) =====
+
+/** A result of up to this many rows starts expanded under its command; a bigger one starts collapsed behind the button. */
+var AI_RESULT_EXPANDED_ROWS = 10;
+
+/**
+ * Shows what a command returned under its card: the status line and, when it returned records, a compact table in a panel
+ * the toggle button opens and closes. @return true when a table was added (such a result stays; a bare "Success" fades).
+ */
+function aiShowCommandResult(blockId, data) {
+  var records = data && data.result;
+  var count = Array.isArray(records) ? records.length : 0;
+  var table = aiResultTable(records);
+  var html = '<i class="fa fa-check-circle me-1" style="color: #28a745;"></i> <span style="color: var(--text-primary);">Success' +
+    (count > 0 ? ' (' + count + ' results)' : '') + '</span>';
+  if (table) {
+    html += '<div id="' + blockId + '_table" style="display: ' + (table.total <= AI_RESULT_EXPANDED_ROWS ? "block" : "none") + ';">' +
+      aiResultTableHtml(table, escapeHtml);
+    if (table.truncated)
+      html += '<div class="mt-1" style="font-size: 0.78rem; color: var(--text-muted);">' + (table.total - table.rows.length) +
+        ' more rows: <a href="#" onclick="aiOpenInQuery(\'' + blockId + '\'); return false;">open in Query</a></div>';
+    html += '</div>';
+  }
+  $("#" + blockId + "_result").show().html(html);
+  var toggle = $("#" + blockId + "_toggle");
+  if (table) {
+    toggle.data("count", table.total).show();
+    aiSyncToggle(blockId);
+  } else
+    toggle.hide();
+  return !!table;
+}
+
+function aiToggleResults(blockId) {
+  $("#" + blockId + "_table").toggle();
+  aiSyncToggle(blockId);
+}
+
+function aiSyncToggle(blockId) {
+  var open = $("#" + blockId + "_table").css("display") !== "none";
+  $("#" + blockId + "_toggle").html('<i class="fa fa-chevron-' + (open ? "up" : "down") + ' me-1"></i>' +
+    (open ? "Hide results" : "Show results (" + $("#" + blockId + "_toggle").data("count") + ")"));
+}
+
+// ===== Charts the assistant asks for =====
+// The model sends {type, title, language, query, x, y[]}; Studio runs the query itself through api/v1/query, which the engine
+// refuses when it would write, and draws the rows with ApexCharts (pure parts in studio-ai-chart.js). The rows never go
+// back to the model. Everything that came from the model or the database is escaped or handed over as text.
+
+var aiChartSpecs = {};
+var aiChartInstances = {};
+var aiChartCounter = 0;
+
+function aiDestroyCharts() {
+  for (var id in aiChartInstances) {
+    try {
+      aiChartInstances[id].destroy();
+    } catch (e) { /* the element is already gone */ }
+  }
+  aiChartInstances = {};
+  aiChartSpecs = {};
+}
+
+function aiRenderChartShell(spec) {
+  var id = "aiChart_" + (aiChartCounter++);
+  aiChartSpecs[id] = spec;
+  return '<div class="ai-chart" id="' + id + '" data-chart-id="' + id + '" style="margin-top: 10px; border: 1px solid var(--border-main); border-radius: 8px; overflow: hidden; background: var(--bg-card);">' +
+    '<div style="padding: 8px 12px; background: var(--bg-sidebar); border-bottom: 1px solid var(--border-main); display: flex; align-items: center; justify-content: space-between; gap: 8px;">' +
+    '<span style="font-weight: 600; font-size: 0.9rem;"><i class="fa fa-chart-simple me-1"></i>' + escapeHtml(spec.title || "Chart") + '</span>' +
+    '<button class="btn btn-sm" style="background: transparent; color: var(--text-muted); border: 1px solid var(--border-main); font-size: 0.78rem;" onclick="aiChartOpenInQuery(\'' + id + '\')">' +
+    '<i class="fa fa-terminal me-1"></i>Open in Query</button></div>' +
+    '<div id="' + id + '_body" style="padding: 8px 12px;"><div class="text-muted" style="font-size: 0.85rem;"><i class="fa fa-spinner fa-spin me-1"></i>Running the query...</div></div>' +
+    '</div>';
+}
+
+function aiChartOpenInQuery(id) {
+  var spec = aiChartSpecs[id];
+  if (spec) aiOpenQueryPanel(spec.language, spec.query);
+}
+
+function aiChartNote(id, icon, color, text) {
+  $("#" + id + "_body").html('<div style="font-size: 0.85rem; color: ' + color + ';"><i class="fa ' + icon + ' me-1"></i>' + escapeHtml(text) + '</div>');
+}
+
+/** Runs and draws every chart on the page that has not been drawn yet. */
+function aiDrawCharts() {
+  $("#aiMessages .ai-chart").each(function () {
+    var id = $(this).attr("data-chart-id");
+    if (aiChartSpecs[id] && !$(this).attr("data-drawn")) {
+      $(this).attr("data-drawn", "1");
+      aiDrawChart(id);
+    }
+  });
+}
+
+function aiDrawChart(id) {
+  var spec = aiChartSpecs[id];
+  var db = aiGetCurrentDatabase();
+  if (!db) {
+    aiChartNote(id, "fa-circle-info", "var(--text-muted)", "Select a database to draw this chart.");
+    return;
+  }
+  if (typeof ApexCharts === "undefined") {
+    aiChartNote(id, "fa-circle-exclamation", "#dc3545", "The charting library is not loaded.");
+    return;
+  }
+  // api/v1/query is the read-only door: a query that would write is refused by the engine, never executed
+  jQuery.ajax({
+    type: "POST",
+    url: "api/v1/query/" + encodeDatabaseName(db),
+    data: JSON.stringify({ language: spec.language, command: spec.query, limit: 200 }),
+    contentType: "application/json",
+    beforeSend: function (xhr) {
+      xhr.setRequestHeader("Authorization", globalCredentials);
+    }
+  })
+  .done(function (data) {
+    if (aiChartSpecs[id] !== spec || !document.getElementById(id + "_body")) return; // redrawn or deleted meanwhile
+    var model = aiChartModel(data && data.result, spec);
+    if (model.categories.length === 0) {
+      aiChartNote(id, "fa-circle-info", "var(--text-muted)", "The query returned no rows with a number in " + spec.y.join(", ") + ", so there is nothing to chart.");
+      return;
+    }
+    var body = $("#" + id + "_body");
+    body.empty().append('<div id="' + id + '_plot"></div>');
+    var dark = document.documentElement.getAttribute("data-theme") === "dark";
+    var chart = new ApexCharts(document.getElementById(id + "_plot"), aiChartOptions(spec, model, dark));
+    aiChartInstances[id] = chart;
+    chart.render();
+    if (model.dropped > 0)
+      body.append('<div style="font-size: 0.75rem; color: var(--text-muted);">' + model.dropped + ' row(s) without a usable number were left out.</div>');
+  })
+  .fail(function (jqXHR) {
+    if (aiChartSpecs[id] !== spec) return;
+    var message = "The query failed";
+    try {
+      var err = JSON.parse(jqXHR.responseText);
+      if (err.detail) message = err.detail;
+      else if (err.error) message = err.error;
+    } catch (e) { /* keep the generic message */ }
+    aiChartNote(id, "fa-circle-exclamation", "#dc3545", message);
   });
 }
 
@@ -1081,9 +1238,7 @@ function aiRunSequential(commands, index, allBtn) {
   })
   .done(function(data) {
     item.btn.prop("disabled", false).html('<i class="fa fa-play me-1"></i>Execute');
-    var resultCount = data.result ? data.result.length : 0;
-    resultDiv.show().html('<i class="fa fa-check-circle me-1" style="color: #28a745;"></i> <span style="color: var(--text-primary);">Success' +
-      (resultCount > 0 ? ' (' + resultCount + ' results)' : '') + '</span>');
+    aiShowCommandResult(item.blockId, data);
     aiRunSequential(commands, index + 1, allBtn);
   })
   .fail(function(jqXHR) {

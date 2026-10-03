@@ -104,6 +104,18 @@ class AiPortalChatTest {
   }
 
   @Test
+  void theChartsOfTheResultAreKeptValidatedAndInvalidOnesAreDropped() throws IOException {
+    final JSONArray charts = new JSONArray().put(FakeAiPortal.chart("bar", "SELECT s, count(*) AS n FROM B GROUP BY s", "s", "n"))
+        .put(FakeAiPortal.chart("radar", "SELECT 1", "a", "b"));
+    portal.script = body -> FakeAiPortal.answerWithCharts("Here is a chart", charts);
+
+    final AiPortalChat.Answer answer = new AiPortalChat(client, 5_000).run(request(), new RecordingTools(), sink);
+
+    assertThat(answer.charts().length()).isEqualTo(1);
+    assertThat(answer.charts().getJSONObject(0).getString("type")).isEqualTo("bar");
+  }
+
+  @Test
   void aPlainAnswerStreamsTextAndEndsWithTheResult() throws IOException {
     final JSONArray commands = new JSONArray().put(new JSONObject().put("purpose", "p").put("language", "sql").put("command", "select 1"));
     portal.script = body -> FakeAiPortal.answer("Forty two", List.of(), commands);

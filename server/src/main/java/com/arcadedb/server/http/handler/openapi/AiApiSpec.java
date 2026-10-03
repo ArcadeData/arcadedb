@@ -357,6 +357,9 @@ public class AiApiSpec implements OpenApiContributor {
     schema.addProperty("commands", SpecBuilders.arrayOf(
         SpecBuilders.ref("AiCommand"),
         "SQL commands the assistant proposes. Absent when it proposes none."));
+    schema.addProperty("charts", SpecBuilders.arrayOf(SpecBuilders.freeFormObject(
+        "{type, title, language, query, x, y[]}: Studio runs the read-only query itself and draws the rows"),
+        "Charts the assistant asks Studio to draw (at most 3, validated by this server). Absent when it asks for none."));
     schema.addProperty("toolCalls", SpecBuilders.arrayOf(
         SpecBuilders.ref("AiToolCall"),
         "Tools the assistant invoked while answering. Absent when it invoked none."));
@@ -501,6 +504,9 @@ public class AiApiSpec implements OpenApiContributor {
         "The assistant's reply, on 'done'. The same value POST /api/v1/ai/chat returns under this name"));
     schema.addProperty("commands", SpecBuilders.arrayOf(SpecBuilders.ref("AiCommand"),
         "SQL commands the assistant proposes, on 'done'. Absent or empty when it proposes none"));
+    schema.addProperty("charts", SpecBuilders.arrayOf(SpecBuilders.freeFormObject(
+        "{type, title, language, query, x, y[]}: Studio runs the read-only query itself and draws the rows"),
+        "Charts the assistant asks Studio to draw, on 'done' (at most 3). Absent when it asks for none"));
     schema.addProperty("chatId", SpecBuilders.string("""
         Chat this exchange belongs to, on 'done'. Added by this server, not by the gateway, and the chat is \
         persisted before this event is written - so a client that has seen it can read the chat back \
