@@ -94,6 +94,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.SortedMap;
 import java.util.TreeMap;
@@ -268,6 +269,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // threads - the health monitor and, since #5345, the log compaction scheduler - read it. Every reader
   // still copies it to a local before use so a concurrent reassignment cannot null it mid-method.
   private volatile RaftServer                raftServer;
+  // Issue #8901: the last log entry and the term of the division right after the latest in-place restartRatis(), or
+  // null when it was never restarted in place in this process. Written under recoveryLock, read by the health monitor.
+  private volatile InPlaceRestartBaseline    inPlaceRestartBaseline;
+  // Set when the baseline above could not be read right after the restart; the health monitor then reads it once the
+  // division answers, before trusting any comparison against it.
+  private volatile boolean                   inPlaceRestartBaselinePending;
   private          RaftClient                raftClient;
   private volatile RaftProperties            raftProperties;
   private volatile RaftTransactionBroker     transactionBroker;
@@ -2029,6 +2036,80 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     return floorMs;
   }
 
+  /**
+   * Where the division stood right after an in-place restart (issue #8901): its last log entry ({@code null} for an
+   * empty log, e.g. right after the divergence reformat) and its current term.
+   */
+  record InPlaceRestartBaseline(TermIndex lastEntry, long term) {
+  }
+
+  /**
+   * Records the baseline {@link #isReplicationPathUnprovenSinceRestart()} compares against, right after
+   * {@link #restartRatis(boolean)} started the new server. An unreadable division leaves it pending, to be read on the
+   * next health tick, rather than failing a restart that has already succeeded.
+   */
+  private void captureInPlaceRestartBaseline() {
+    final InPlaceRestartBaseline baseline = readReplicationPosition();
+    inPlaceRestartBaseline = baseline;
+    inPlaceRestartBaselinePending = baseline == null;
+  }
+
+  /** The division's last log entry and current term, or {@code null} when they cannot be read. */
+  private InPlaceRestartBaseline readReplicationPosition() {
+    final RaftServer server = raftServer;
+    if (server == null)
+      return null;
+    try {
+      final var division = server.getDivision(raftGroup.getGroupId());
+      return new InPlaceRestartBaseline(division.getRaftLog().getLastEntryTermIndex(), division.getInfo().getCurrentTerm());
+    } catch (final Exception e) {
+      // Same Ratis IllegalStateException window as isReadyForTraffic() (issue #5271).
+      LogManager.instance().log(this, Level.FINE, "Cannot read the Raft log position of the restarted division", e);
+      return null;
+    }
+  }
+
+  /**
+   * {@inheritDoc}
+   * <p>
+   * Compares the division's last log entry and current term with the ones it had right after the latest in-place
+   * {@link #restartRatis(boolean)}. A changed last entry means an entry-carrying append reached the running server
+   * and was accepted; a changed term means a new leader, whose appenders open their streams to the running server.
+   * Neither proves the path while the division is unreadable, so that answers {@code true} and holds the reformat.
+   */
+  @Override
+  public boolean isReplicationPathUnprovenSinceRestart() {
+    if (inPlaceRestartBaselinePending) {
+      final InPlaceRestartBaseline baseline = readReplicationPosition();
+      if (baseline == null)
+        return true;
+      inPlaceRestartBaseline = baseline;
+      inPlaceRestartBaselinePending = false;
+      return true; // read only now: nothing to compare against yet
+    }
+    final InPlaceRestartBaseline baseline = inPlaceRestartBaseline;
+    if (baseline == null)
+      return false;
+    final InPlaceRestartBaseline current = readReplicationPosition();
+    if (current == null)
+      return true;
+    return replicationPathUnproven(baseline, current.lastEntry(), current.term());
+  }
+
+  /**
+   * Pure decision behind {@link #isReplicationPathUnprovenSinceRestart()}, package-private for testing. {@code true}
+   * when the division was restarted in place ({@code baseline != null}) and neither its last log entry nor its term has
+   * moved since, or the current term cannot be read ({@code currentTerm < 0}).
+   */
+  static boolean replicationPathUnproven(final InPlaceRestartBaseline baseline, final TermIndex currentLastEntry,
+      final long currentTerm) {
+    if (baseline == null)
+      return false;
+    if (currentTerm < 0)
+      return true;
+    return currentTerm == baseline.term() && Objects.equals(currentLastEntry, baseline.lastEntry());
+  }
+
   @Override
   public void recoverFromDivergence() {
     if (shutdownRequested || isLeader())
@@ -2454,6 +2535,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
           HALog.log(this, HALog.BASIC, "Recovery abandoned: shutdown requested while the new Ratis server was starting");
           return;
         }
+        captureInPlaceRestartBaseline();
         this.raftProperties = properties;
         this.raftClient = buildRaftClient(raftGroup, properties, recoveryParameters);
 
