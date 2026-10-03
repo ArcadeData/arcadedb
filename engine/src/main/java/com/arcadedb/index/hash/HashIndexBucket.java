@@ -2039,9 +2039,12 @@ public class HashIndexBucket extends PaginatedComponent {
 
   // ─── RID READING ─────────────────────────────────────────
 
+  /** Two varInts of up to 10 bytes each. */
+  private static final int MAX_COMPRESSED_RID_SIZE = 20;
+
   private RID readCompressedRID(final BasePage page, final int offset) {
     // Compressed RID: bucketId (varInt) + position (varInt)
-    final Binary view = page.getImmutableView(offset, 20); // max ~20 bytes for 2 varInts
+    final Binary view = ridView(page, offset);
     final long bucketId = view.getNumber();
     final long position = view.getNumber();
     return new RID((int) bucketId, position);
@@ -2051,8 +2054,17 @@ public class HashIndexBucket extends PaginatedComponent {
     return Binary.getNumberSpace(rid.getBucketId()) + Binary.getNumberSpace(rid.getPosition());
   }
 
+  /**
+   * A view over the compressed RID at {@code offset}: at most 20 bytes (two varInts), but never more than the page has left after
+   * the offset. A grown entry is written at the end of the used area, so a RID can end a few bytes before the slot directory at
+   * the end of the page, where a fixed 20 byte window overruns the page buffer (issue #9034).
+   */
+  private static Binary ridView(final BasePage page, final int offset) {
+    return page.getImmutableView(offset, Math.min(MAX_COMPRESSED_RID_SIZE, page.getMaxContentSize() - offset));
+  }
+
   private int compressedRIDSizeFromPage(final BasePage page, final int offset) {
-    final Binary view = page.getImmutableView(offset, 20);
+    final Binary view = ridView(page, offset);
     final int startPos = view.position();
     view.getNumber(); // bucketId
     view.getNumber(); // position
@@ -2069,8 +2081,13 @@ public class HashIndexBucket extends PaginatedComponent {
 
   // ─── VARINT HELPERS ──────────────────────────────────────
 
+  /** A view over the varInt at {@code offset}: at most 10 bytes, never more than the page has left (issue #9034). */
+  private static Binary varIntView(final BasePage page, final int offset) {
+    return page.getImmutableView(offset, Math.min(10, page.getMaxContentSize() - offset));
+  }
+
   private int readVarIntFromPage(final BasePage page, final int offset) {
-    final Binary view = page.getImmutableView(offset, 10);
+    final Binary view = varIntView(page, offset);
     return (int) view.getNumber();
   }
 
@@ -2084,7 +2101,7 @@ public class HashIndexBucket extends PaginatedComponent {
    * Returns [dataLength, varIntByteSize].
    */
   private int[] readVarIntAndSize(final BasePage page, final int offset) {
-    final Binary view = page.getImmutableView(offset, 10);
+    final Binary view = varIntView(page, offset);
     final int startPos = view.position();
     final long value = view.getUnsignedNumber();
     return new int[] { (int) value, view.position() - startPos };
@@ -2099,7 +2116,7 @@ public class HashIndexBucket extends PaginatedComponent {
   }
 
   private int getVarNumberSize(final BasePage page, final int offset) {
-    final Binary view = page.getImmutableView(offset, 10);
+    final Binary view = varIntView(page, offset);
     final int startPos = view.position();
     view.getNumber();
     return view.position() - startPos;

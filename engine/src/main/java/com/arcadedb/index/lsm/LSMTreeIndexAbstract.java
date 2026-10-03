@@ -538,6 +538,28 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     return buffer.position() - startsAt;
   }
 
+  /**
+   * The position of the value area of every entry in {@code [firstKeyPos, lastKeyPos]}, a run of entries that compare equal to
+   * the search key. Entries of one run compare EQUAL, which is not the same as being serialized with the same number of bytes: a
+   * numeric key is stored as a variable-length number, so 0f and -0f (one key to the comparator) take 1 and 5 bytes (issue #9033).
+   * The key size of {@code mid}, which the caller already measured, is reused for that entry and every other one is measured on
+   * its own, so applying one entry's key size to the whole run no longer lands a value position in the middle of an entry.
+   */
+  protected int[] valuePositionsOfRun(final Binary currentPageBuffer, final int startIndexArray, final int keyLength,
+      final int firstKeyPos, final int lastKeyPos, final int mid, final int midKeySerializedSize) {
+    final int[] positions = new int[lastKeyPos - firstKeyPos + 1];
+    for (int i = firstKeyPos; i <= lastKeyPos; ++i) {
+      final int entryPos = currentPageBuffer.getInt(startIndexArray + (i * INT_SERIALIZED_SIZE));
+      if (i == mid)
+        positions[i - firstKeyPos] = entryPos + midKeySerializedSize;
+      else {
+        currentPageBuffer.position(entryPos);
+        positions[i - firstKeyPos] = entryPos + getSerializedKeySize(currentPageBuffer, keyLength);
+      }
+    }
+    return positions;
+  }
+
   protected Object[] convertKeys(final Object[] keys, final byte[] keyTypes) {
     // Declared-type narrowing AND case-insensitive folding both happen here; this layers only the disk-storage
     // byte[]-for-String probe encoding on top, so a case-insensitive String is never folded twice.
