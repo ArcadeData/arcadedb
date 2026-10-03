@@ -19,10 +19,13 @@
 package com.arcadedb.mongo;
 
 import de.bwaldvogel.mongo.bson.BsonTimestamp;
+import de.bwaldvogel.mongo.bson.LegacyUUID;
+import de.bwaldvogel.mongo.exception.MongoServerError;
 import org.junit.jupiter.api.Test;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -54,9 +57,19 @@ class MongoBsonValuesTest {
   }
 
   @Test
-  void roundTripAndRefusal() {
+  void timestampRoundTrip() {
     final Object stored = MongoBsonValues.toStored(new BsonTimestamp(123456789L));
     assertThat(MongoBsonValues.toBson(stored)).isEqualTo(new BsonTimestamp(123456789L));
-    assertThatThrownBy(() -> MongoBsonValues.toStored(new Object())).isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  void legacyUuidRoundTrip() {
+    final LegacyUUID uuid = new LegacyUUID(UUID.randomUUID());
+    assertThat(MongoBsonValues.toBson(MongoBsonValues.toStored(uuid))).isEqualTo(uuid);
+  }
+
+  @Test
+  void unsupportedTypeIsRefused() {
+    assertThatThrownBy(() -> MongoBsonValues.toStored(new Object())).isInstanceOf(MongoServerError.class);
   }
 }

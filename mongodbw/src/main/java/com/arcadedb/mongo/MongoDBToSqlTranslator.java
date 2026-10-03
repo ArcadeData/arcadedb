@@ -201,15 +201,15 @@ public class MongoDBToSqlTranslator {
    */
   protected static void buildCollection(final StringBuilder buffer, final Map<String, Object> params, final Collection coll) {
     // avoid the copy on the common case where nothing needs normalizing
-    boolean hasObjectId = false;
+    boolean needsConversion = false;
     for (final Object element : coll)
       if (MongoBsonValues.needsConversion(element)) {
-        hasObjectId = true;
+        needsConversion = true;
         break;
       }
 
     Collection<?> normalized = coll;
-    if (hasObjectId) {
+    if (needsConversion) {
       final List<Object> converted = new ArrayList<>(coll.size());
       for (final Object element : coll)
         converted.add(MongoBsonValues.toBound(element));
