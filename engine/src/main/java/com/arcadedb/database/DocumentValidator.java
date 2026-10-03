@@ -205,7 +205,7 @@ public class DocumentValidator {
         return;
       }
       if (converted instanceof Number narrowed && stored instanceof Number original && isIntegralType(type)
-          && new BigDecimal(original.toString()).compareTo(new BigDecimal(narrowed.toString())) != 0) {
+          && !sameIntegralValue(original, narrowed)) {
         // a LONG over an INTEGER declaration, or 3.7 over a SHORT, would be silently truncated: not the same value
         if (constraints.checkType())
           throwValidationException(document.getType(), p,
@@ -225,6 +225,14 @@ public class DocumentValidator {
 
     if (constraints.max() != null)
       validateMaxValue(document, p, value, constraints.max());
+  }
+
+  /** NaN and the infinities have no integral value at all, so they never survive a narrowing */
+  private static boolean sameIntegralValue(final Number original, final Number narrowed) {
+    final double asDouble = original.doubleValue();
+    if (Double.isNaN(asDouble) || Double.isInfinite(asDouble))
+      return false;
+    return new BigDecimal(original.toString()).compareTo(new BigDecimal(narrowed.toString())) == 0;
   }
 
   private static boolean isIntegralType(final Type type) {
@@ -599,6 +607,10 @@ public class DocumentValidator {
     }
   }
 
+  private static String declaredAs(final boolean isMap, final String ofType) {
+    return isMap ? "a MAP of <String,'" + ofType + "'>" : "LIST of '" + ofType + "'";
+  }
+
   /**
    * Checks one element of a {@code LIST OF} / {@code MAP OF} property against the declared {@code ofType}.
    * <p>
@@ -608,10 +620,6 @@ public class DocumentValidator {
    * refuses everything else: a map has already been turned into an embedded document by the write path, so a value that
    * is still a plain scalar or map here is not one (#9111).
    */
-  private static String declaredAs(final boolean isMap, final String ofType) {
-    return isMap ? "a MAP of <String,'" + ofType + "'>" : "LIST of '" + ofType + "'";
-  }
-
   private static void validateCollectionElement(final Document document, final Property p, final String ofType,
       final Type embType, final Object item, final boolean isMap, final Object fieldValue) {
     if (ofType == null || (item == null && embType == null))
