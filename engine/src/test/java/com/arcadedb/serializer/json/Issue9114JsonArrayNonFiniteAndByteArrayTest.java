@@ -58,6 +58,13 @@ class Issue9114JsonArrayNonFiniteAndByteArrayTest extends TestHelper {
   }
 
   @Test
+  void negativeInfinityDoubleArrayAndNullNumber() {
+    assertThat(new JSONArray().put((Number) Double.NEGATIVE_INFINITY).toString()).isEqualTo("[null]");
+    assertThat(new JSONObject().put("v", new double[] { Double.NaN, 2D }).getJSONArray("v").toString()).isEqualTo("[null,2.0]");
+    assertThat(new JSONArray().put((Number) null).toString()).isEqualTo("[null]");
+  }
+
+  @Test
   void finiteNumbersKeepTheirValue() {
     assertThat(new JSONArray(List.of(1, 2L, 3.5d, new BigDecimal("1e400"))).toString()).isEqualTo("[1,2,3.5,1E+400]");
   }

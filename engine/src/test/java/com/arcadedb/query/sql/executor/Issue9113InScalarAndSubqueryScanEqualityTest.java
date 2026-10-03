@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.MutableDocument;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -94,5 +95,26 @@ class Issue9113InScalarAndSubqueryScanEqualityTest extends TestHelper {
     assertIndexAndScanFind("m IN (SELECT m FROM Src)");
     assertIndexAndScanFind("d IN (SELECT d FROM Src)");
     assertThat(ids("S", "k IN (SELECT l FROM Src)")).isEmpty();
+  }
+
+  @Test
+  void subqueryRowHoldingAListMatchesElementWiseByValue() {
+    load();
+    database.transaction(() -> database.newDocument("Src").set("nums", new ArrayList<>(List.of(3.0, 7.0))).save());
+    assertThat(ids("S", "k IN (SELECT nums FROM Src WHERE nums IS NOT NULL)")).containsExactly(1);
+    assertThat(ids("S", "k IN (SELECT nums FROM Src WHERE nums IS NOT NULL) AND l = 6")).isEmpty();
+  }
+
+  @Test
+  void subqueryRowHoldingALinkDoesNotRecurse() {
+    load();
+    database.command("sql", "CREATE DOCUMENT TYPE Ln");
+    database.command("sql", "CREATE PROPERTY Ln.ref LINK");
+    database.transaction(() -> {
+      final MutableDocument a = database.newDocument("Ln").save();
+      final MutableDocument b = database.newDocument("Ln").set("ref", a.getIdentity()).save();
+      a.set("ref", b.getIdentity()).save();
+    });
+    assertThat(ids("S", "k IN (SELECT ref FROM Ln)")).isEmpty();
   }
 }
