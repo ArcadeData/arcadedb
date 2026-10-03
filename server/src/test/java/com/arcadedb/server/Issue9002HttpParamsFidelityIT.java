@@ -200,6 +200,29 @@ class Issue9002HttpParamsFidelityIT extends BaseGraphServerTest {
     assertThat(count("S9006")).isZero();
   }
 
+  @Test
+  void aReplayWithoutACachedAnswerIsRefusedNotRunAgain() throws Exception {
+    final String body = "{\"language\":\"sql\",\"command\":\"INSERT INTO S9006 SET name = 'once'\"}";
+    // the write ran once and its answer was kept: the replay (naming this process) gets that answer
+    assertThat(postWithRequestId("replay-9002-a", null, body).statusCode()).isEqualTo(200);
+    assertThat(postWithRequestId("replay-9002-a", IdempotencyCache.PROCESS_ID, body).statusCode()).isEqualTo(200);
+    assertThat(count("S9006")).isEqualTo(1);
+
+    // a replay of a request this process has no answer for does not run: the earlier attempt may have applied it
+    assertThat(postWithRequestId("replay-9002-b", IdempotencyCache.PROCESS_ID, body).statusCode()).isEqualTo(412);
+    assertThat(count("S9006")).isEqualTo(1);
+  }
+
+  private HttpResponse<String> postWithRequestId(final String requestId, final String instance, final String body) throws Exception {
+    final HttpRequest.Builder b = HttpRequest.newBuilder(URI.create(getServerHttpUrl(0, "/api/v1/command/" + getDatabaseName())))
+        .header("Authorization",
+            "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes(StandardCharsets.UTF_8)))
+        .header("Content-Type", "application/json").header("X-Request-Id", requestId);
+    if (instance != null)
+      b.header("X-ArcadeDB-Replay-Instance", instance);
+    return http.send(b.POST(HttpRequest.BodyPublishers.ofString(body)).build(), HttpResponse.BodyHandlers.ofString());
+  }
+
   private long count(final String type) {
     try (final ResultSet rs = getServerDatabase(0, getDatabaseName()).query("sql", "SELECT count(*) AS c FROM " + type)) {
       return rs.next().<Number>getProperty("c").longValue();

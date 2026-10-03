@@ -763,8 +763,19 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
         final IdempotencyCache.Reservation reservation = claimIdempotencyKey(exchange, idempotencyKey, currentPrincipal);
         if (reservation == null)
           return;
-        if (reservation.isReserved())
+        if (reservation.isReserved()) {
           idempotencyReservation = reservation;
+          // A replay (the client names this process and says an earlier attempt may have reached it) that finds no cached answer - it
+          // was too big to keep, expired or was evicted - must not run: the earlier attempt may have applied it (issue #8526)
+          if (exchange.getRequestHeaders().getFirst(IdempotencyCache.HEADER_REPLAY_INSTANCE) != null) {
+            httpServer.getIdempotencyCache().abort(idempotencyKey, reservation);
+            idempotencyReservation = null;
+            new ExecutionResponse(412, error2json("The answer to the request is no longer available",
+                "The earlier attempt may have been applied and its answer was not kept: the request is not run again", null, null, null))
+                .send(exchange);
+            return;
+          }
+        }
 
         // A peer forwarded this request and named the key the client's own request has on the peer (issue #8347). The
         // client may send its retry straight here, where it computes that key from its own body: claim it too, so the
