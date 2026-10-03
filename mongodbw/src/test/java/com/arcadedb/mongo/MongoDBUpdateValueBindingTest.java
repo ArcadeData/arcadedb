@@ -126,17 +126,16 @@ class MongoDBUpdateValueBindingTest {
   }
 
   @Test
-  void anObjectIdInANonIdFieldIsBoundAsATaggedMap() {
+  void anObjectIdInANonIdFieldIsBoundAsAPrefixedString() {
     final StringBuilder sql = new StringBuilder();
     final Map<String, Object> params = new HashMap<>();
 
     final ObjectId id = new ObjectId();
     MongoDBDatabaseWrapper.appendUpdateOperations(sql, params, new Document("$set", new Document("ref", id)));
 
-    // an ObjectId has no SQL type: a non-_id field stores it as a tagged map that keeps its type (#9062)
+    // an ObjectId has no SQL type: a non-_id field stores it as a prefixed string that keeps its type (#9062)
     final Object bound = ((Map<?, ?>) params.get("p0")).get("ref");
-    assertThat(bound).isInstanceOf(Map.class);
-    assertThat(((Map<?, ?>) bound).get("hex")).isEqualTo(id.getHexData());
+    assertThat(bound).isEqualTo("$oid:" + id.getHexData());
   }
 
   @Test

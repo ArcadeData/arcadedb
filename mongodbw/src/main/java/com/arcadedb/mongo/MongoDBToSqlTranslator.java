@@ -384,6 +384,8 @@ public class MongoDBToSqlTranslator {
       return value;
     else if (value instanceof BigDecimal)
       return MongoBsonValues.toBson(value);
+    else if (value instanceof String string && MongoBsonValues.isStoredObjectId(string))
+      return MongoBsonValues.toBson(value);
     else if (MongoBsonValues.isTagged(value)) {
       final Object bson = MongoBsonValues.toBson(value);
       // a malformed tag stays a plain map and is converted like any other embedded document
