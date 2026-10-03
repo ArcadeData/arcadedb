@@ -267,7 +267,7 @@ class CypherDisconnectedPatternJoinIssue8584Test extends TestHelper {
     final List<String> pairs = assertSameAsFilteredProduct(query, "c.rating = p.score");
     // Every person's score is the rating of the city of the same index, 0.05 included...
     assertThat(pairs).contains("1/1", "3/3", "9/9");
-    // ...and a zero of either sign is sought under both: 0.0 finds the -0.0 city, -0.0 the 0.0 one
+    // ...and a zero of either sign finds both (issue #8920): 0.0 finds the -0.0 city, -0.0 the 0.0 one
     assertThat(pairs).contains("0/0", "0/1001", "7/0", "7/1001").hasSize(PERSONS - 1 + 3);
   }
 

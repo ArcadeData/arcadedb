@@ -341,7 +341,7 @@ public final class CypherFunctionHelper {
       return Integer.compare(rankA, rankB);
     // Same type category - compare within type
     if (a instanceof Number && b instanceof Number)
-      return Double.compare(((Number) a).doubleValue(), ((Number) b).doubleValue());
+      return BinaryComparator.compareDoubles(((Number) a).doubleValue(), ((Number) b).doubleValue());
     if (a instanceof String && b instanceof String)
       return BinaryComparator.compareStrings((String) a, (String) b);
     if (a instanceof Boolean && b instanceof Boolean)

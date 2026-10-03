@@ -104,6 +104,7 @@ import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.Pair;
 
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
@@ -4706,12 +4707,7 @@ public class SelectExecutionPlanner {
    * index metadata must do the same.
    */
   private static List<TypeIndex> plannableIndexes(final Collection<TypeIndex> indexes) {
-    final List<TypeIndex> result = new ArrayList<>(indexes.size());
-    for (final TypeIndex index : indexes) {
-      if (isPlannable(index))
-        result.add(index);
-    }
-    return result;
+    return TypeIndex.filterReadyForQueries(indexes);
   }
 
   /**
@@ -5101,42 +5097,56 @@ public class SelectExecutionPlanner {
   }
 
   /**
-   * True when a comparison against a property that is not a DECIMAL has a literal BigDecimal bound, a decimal literal a
-   * double cannot hold (issue #8872). A key index converts the bound to its key type, so on a DOUBLE key it would answer for
-   * the rounded bound, and neither the rows it returns nor the ones it leaves out follow the exact comparison a scan makes.
-   * Such a condition is left to the scan, so the indexed and the unindexed query agree.
+   * True when a comparison against a property has a literal bound its key type cannot hold: a BigDecimal on a property that is
+   * not a DECIMAL (issue #8872), or an integer above the range a DOUBLE (2^53) or a FLOAT (2^24) holds exactly (issue #8919). A
+   * key index converts the bound to its key type, so it would answer for the rounded bound, and neither the rows it returns nor
+   * the ones it leaves out follow the exact comparison a scan makes. Such a condition is left to the scan, so the indexed and
+   * the unindexed query agree. A double bound on a FLOAT key is not one of them: the FLOAT reads as equal to the double that
+   * narrows to it on both sides (issue #8882), and the ordering operators follow that rule too.
    */
   private static boolean hasLossyDecimalLiteralBound(final BooleanExpression expression, final DocumentType type, final String field,
       final CommandContext context) {
-    final boolean decimalBound;
-    if (expression instanceof BinaryCondition condition)
-      decimalBound = isDecimalLiteral(condition.getRight(), context);
-    else if (expression instanceof BetweenCondition between)
-      decimalBound = isDecimalLiteral(between.getSecond(), context) || isDecimalLiteral(between.getThird(), context);
-    else if (expression instanceof InCondition in)
-      decimalBound = hasDecimalLiteralElement(in, context);
-    else
-      return false;
-    if (!decimalBound)
-      return false;
-    // a null property is unreachable (an index needs a declared property); treated as lossy to stay on the safe scan path
-    // any non-DECIMAL key type (DOUBLE, FLOAT, INTEGER, LONG) would round or truncate the bound; the scan is slower but exact
     final Property property = type.getPropertyIfExists(field);
-    return property == null || property.getType() != Type.DECIMAL;
-  }
-
-  private static boolean hasDecimalLiteralElement(final InCondition in, final CommandContext context) {
-    final MathExpression right = in.getRightMathExpression();
-    if (right == null || !right.isLiteral() || !(right.execute((Result) null, context) instanceof Collection<?> values))
-      return false;
-    for (final Object value : values)
-      if (value instanceof BigDecimal)
-        return true;
+    if (expression instanceof BinaryCondition condition)
+      return isLossyBound(literalValue(condition.getRight(), context), property);
+    if (expression instanceof BetweenCondition between)
+      return isLossyBound(literalValue(between.getSecond(), context), property)
+          || isLossyBound(literalValue(between.getThird(), context), property);
+    if (expression instanceof InCondition in) {
+      final MathExpression right = in.getRightMathExpression();
+      if (right == null || !right.isLiteral() || !(right.execute((Result) null, context) instanceof Collection<?> values))
+        return false;
+      for (final Object value : values)
+        if (isLossyBound(value, property))
+          return true;
+    }
     return false;
   }
 
-  private static boolean isDecimalLiteral(final Expression expression, final CommandContext context) {
-    return expression != null && expression.isLiteral() && expression.execute((Result) null, context) instanceof BigDecimal;
+  private static Object literalValue(final Expression expression, final CommandContext context) {
+    return expression != null && expression.isLiteral() ? expression.execute((Result) null, context) : null;
+  }
+
+  private static boolean isLossyBound(final Object bound, final Property property) {
+    if (bound instanceof BigDecimal)
+      // a null property is unreachable (an index needs a declared property); treated as lossy to stay on the safe scan path
+      // any non-DECIMAL key type (DOUBLE, FLOAT, INTEGER, LONG) would round or truncate the bound; the scan is slower but exact
+      return property == null || property.getType() != Type.DECIMAL;
+    if (property == null || !(bound instanceof Byte || bound instanceof Short || bound instanceof Integer || bound instanceof Long
+        || bound instanceof BigInteger))
+      return false;
+    final long exactLimit;
+    switch (property.getType()) {
+    case DOUBLE -> exactLimit = 1L << 53;
+    case FLOAT -> exactLimit = 1L << 24;
+    default -> {
+      return false;
+    }
+    }
+    if (bound instanceof BigInteger bigInteger)
+      return bigInteger.abs().compareTo(BigInteger.valueOf(exactLimit)) > 0;
+    final long value = ((Number) bound).longValue();
+    return value > exactLimit || value < -exactLimit;
   }
 
   /**

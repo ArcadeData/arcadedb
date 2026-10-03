@@ -152,7 +152,7 @@ public class BinaryComparator {
         return -1;
       }
 
-      return Double.compare(v1, v2);
+      return compareDoubles(v1, v2);
     }
 
     case BinaryTypes.TYPE_BOOLEAN: {
@@ -450,7 +450,7 @@ public class BinaryComparator {
       return BigDecimal.valueOf(value1).compareTo((BigDecimal) value2);
 
     if (Type.isExactAsDouble(value1) || !Type.isFinite(value2))
-      return Double.compare(value1, toDouble(value2, type2));
+      return compareDoubles(value1, toDouble(value2, type2));
 
     return BigDecimal.valueOf(value1).compareTo(Type.floatingToBigDecimal(value2));
   }
@@ -477,11 +477,11 @@ public class BinaryComparator {
     case "Infinity":
     case "+Infinity":
     case "-Infinity":
-      return Double.compare(value1.doubleValue(), Double.parseDouble(string));
+      return compareDoubles(value1.doubleValue(), Double.parseDouble(string));
     }
 
     if (string.indexOf('.') >= 0 || string.indexOf('e') >= 0 || string.indexOf('E') >= 0)
-      return Double.compare(value1.doubleValue(), Double.parseDouble(string));
+      return compareDoubles(value1.doubleValue(), Double.parseDouble(string));
 
     try {
       return Long.compare(value1.longValue(), Long.parseLong(string));
@@ -551,6 +551,11 @@ public class BinaryComparator {
     } else if (a instanceof BigDecimal decimal && b instanceof BigDecimal decimal1)
       // compareTo, not equals(): 19.9 and 19.90 are one value, as the index, GROUP BY and the range answer
       return decimal.compareTo(decimal1) == 0;
+    else if (a instanceof Double d && b instanceof Double d1)
+      // Double.equals() separates -0.0 from 0.0, which IEEE 754, openCypher and the index all treat as one value (issue #8920)
+      return d.equals(d1) || (d == 0.0d && d1 == 0.0d);
+    else if (a instanceof Float f && b instanceof Float f1)
+      return f.equals(f1) || (f == 0.0f && f1 == 0.0f);
     return a.equals(b);
   }
 
@@ -634,7 +639,12 @@ public class BinaryComparator {
             "Comparison between " + a.getClass().getName() + " and " + b.getClass().getName() + " not supported");
       return DateUtils.dateTimeToTimestampInferringStringPrecision(a, ChronoUnit.NANOS)
           .compareTo(DateUtils.dateTimeToTimestampInferringStringPrecision(b, ChronoUnit.NANOS));
-    } else if (a.getClass() == b.getClass())
+    } else if (a instanceof Double da && b instanceof Double db)
+      // Double.compareTo orders -0.0 below 0.0 (issue #8920)
+      return compareDoubles(da, db);
+    else if (a instanceof Float fa && b instanceof Float fb)
+      return Float.compare(fa + 0.0f, fb + 0.0f);
+    else if (a.getClass() == b.getClass())
       // Deliberately unguarded, unlike the class-mismatch branches below: two instances of the SAME class that
       // does not implement Comparable is exactly the case LtOperatorTest/GeOperatorTest/LeOperatorTest pin as
       // "genuinely not orderable" and expect to throw ClassCastException here (they wrap it in a try/catch and
@@ -718,7 +728,7 @@ public class BinaryComparator {
       return -compareIntegralAgainstFloatingNumber(b.longValue(), a);
 
     if (!Type.isFinite(a) || !Type.isFinite(b))
-      return Double.compare(a.doubleValue(), b.doubleValue());
+      return compareDoubles(a.doubleValue(), b.doubleValue());
     return Type.floatingToBigDecimal(a).compareTo(Type.floatingToBigDecimal(b));
   }
 
@@ -726,7 +736,7 @@ public class BinaryComparator {
     if (b instanceof BigDecimal bigDecimal)
       return new BigDecimal(a).compareTo(bigDecimal);
     if (!Type.isFinite(b))
-      return Double.compare(Type.finiteDoubleValue(a), b.doubleValue());
+      return compareDoubles(Type.finiteDoubleValue(a), b.doubleValue());
     return new BigDecimal(a).compareTo(Type.floatingToBigDecimal(b));
   }
 
@@ -737,7 +747,7 @@ public class BinaryComparator {
       // a Float reads as its shortest decimal (Type.widenFloat), as the typed path's toDouble() and every other arm of
       // compareNumbers read it: its exact binary expansion can put an integer on the other side of the float and make
       // the order intransitive (issue #8252)
-      return Double.compare(a, b instanceof Float float1 ? Type.widenFloat(float1) : b.doubleValue());
+      return compareDoubles(a, b instanceof Float float1 ? Type.widenFloat(float1) : b.doubleValue());
     return BigDecimal.valueOf(a).compareTo(Type.floatingToBigDecimal(b));
   }
 
@@ -805,6 +815,15 @@ public class BinaryComparator {
     return i > 0 && Character.isHighSurrogate(s.charAt(i - 1));
   }
 
+  /**
+   * {@link Double#compare} with negative zero equal to zero, as IEEE 754 and openCypher have it (issue #8920): the total order
+   * {@code Double.compare} implements puts -0.0 below 0.0, so a stored -0.0 would be equal to 0.0 and less than it at once.
+   * Adding 0.0 maps -0.0 onto 0.0 and changes no other value, NaN included, which keeps {@code Double.compare}'s total order.
+   */
+  public static int compareDoubles(final double a, final double b) {
+    return Double.compare(a + 0.0, b + 0.0);
+  }
+
   public static int compareBytes(final byte[] buffer1, final byte[] buffer2) {
     return UnsignedBytesComparator.BEST_COMPARATOR.compare(buffer1, buffer2);
   }
@@ -819,7 +838,7 @@ public class BinaryComparator {
    * of key identity - two spellings of one key land in different places, so a lookup for one cannot find the other
    * and a unique constraint does not see the collision.
    * <p>
-   * {@link BigDecimal} is that type, and the only one today. Serialization writes the SCALE followed by the
+   * {@link BigDecimal} is that type, and negative zero the other (issue #8920). Serialization writes the SCALE followed by the
    * unscaled bytes, while the comparator goes through {@code BigDecimal.compareTo}, which ignores scale: {@code 5}
    * and {@code 5.00} are one key to the comparator and two byte strings to the serializer (issues #7613, #7767).
    * {@code stripTrailingZeros} maps every {@code compareTo}-equal BigDecimal onto one representation, which is the
@@ -834,8 +853,30 @@ public class BinaryComparator {
    * @return the canonical representation, or {@code value} itself when it needs no rewriting
    */
   public static Object canonicalizeForByteEquality(final Object value) {
-    final BigDecimal rewritten = rewriteForByteEquality(value);
+    final Object rewritten = rewriteForByteEquality(value);
     return rewritten != null ? rewritten : value;
+  }
+
+  /**
+   * The key with every floating-point zero turned into negative zero, or null when it has none. A series compacted before
+   * negative zero was canonicalised (issue #8920) hashed such a key under its negative spelling in the bloom filter, so a
+   * lookup probes that spelling too.
+   */
+  public static Object[] withNegativeZeros(final Object[] keys) {
+    Object[] negated = null;
+    for (int i = 0; i < keys.length; i++) {
+      final Object zero;
+      if (keys[i] instanceof Double d && d == 0.0d)
+        zero = -0.0d;
+      else if (keys[i] instanceof Float f && f == 0.0f)
+        zero = -0.0f;
+      else
+        continue;
+      if (negated == null)
+        negated = keys.clone();
+      negated[i] = zero;
+    }
+    return negated;
   }
 
   /**
@@ -850,7 +891,7 @@ public class BinaryComparator {
     boolean copied = false;
 
     for (int i = 0; i < keys.length; i++) {
-      final BigDecimal rewritten = rewriteForByteEquality(keys[i]);
+      final Object rewritten = rewriteForByteEquality(keys[i]);
       if (rewritten == null)
         continue;
 
@@ -869,13 +910,20 @@ public class BinaryComparator {
    * comparator compares it". Saying it with {@code null} rather than by handing the value back unchanged is what
    * lets the array form tell "nothing to do" from "rewritten" without comparing object references.
    */
-  private static BigDecimal rewriteForByteEquality(final Object value) {
+  private static Object rewriteForByteEquality(final Object value) {
     if (value instanceof BigDecimal decimal) {
       final BigDecimal stripped = decimal.stripTrailingZeros();
       // Equal scales mean equal unscaled values too (same number, same scale), so the bytes already match and the
       // original instance is kept rather than a copy of it.
       if (stripped.scale() != decimal.scale())
         return stripped;
+    } else if (value instanceof Double d) {
+      // -0.0 and 0.0 are one key to the comparator and two bit patterns to the serializer (issue #8920)
+      if (d == 0.0d && Double.doubleToRawLongBits(d) != 0L)
+        return 0.0d;
+    } else if (value instanceof Float f) {
+      if (f == 0.0f && Float.floatToRawIntBits(f) != 0)
+        return 0.0f;
     }
     return null;
   }

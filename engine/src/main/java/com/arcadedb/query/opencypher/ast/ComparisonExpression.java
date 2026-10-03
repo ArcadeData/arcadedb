@@ -236,9 +236,16 @@ public class ComparisonExpression implements BooleanExpression {
       // 2^53 + 1 collapse onto the same double and a scan answered two rows where the index answered one (issue #8888)
       if (needsExactComparison((Number) left, (Number) right))
         return numericCompare(exactCompare((Number) left, (Number) right), 0);
-      if ((operator == Operator.EQUALS || operator == Operator.NOT_EQUALS) && (left instanceof Float || right instanceof Float)) {
+      if (left instanceof Float || right instanceof Float) {
         final boolean equal = floatAwareEquals((Number) left, (Number) right);
-        return operator == Operator.EQUALS ? equal : !equal;
+        if (operator == Operator.EQUALS)
+          return equal;
+        if (operator == Operator.NOT_EQUALS)
+          return !equal;
+        // a FLOAT equal to the bound is neither below nor above it, so the four ordering operators agree with `=` and with the
+        // index, which converts the bound to its FLOAT key (issue #8919)
+        if (equal)
+          return operator == Operator.LESS_THAN_OR_EQUAL || operator == Operator.GREATER_THAN_OR_EQUAL;
       }
       // A Float reaches the comparison through its decimal form, as the SQL comparator does: the primitive widening
       // reproduces the single precision rounding error, so a FLOAT property holding 0.05 did not equal the literal
