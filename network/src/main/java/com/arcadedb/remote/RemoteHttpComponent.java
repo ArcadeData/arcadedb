@@ -616,8 +616,7 @@ public class RemoteHttpComponent extends RWLockContext {
 
       } catch (final IOException | ServerIsNotTheLeaderException e) {
         lastException = e;
-        if (e instanceof IOException ioe && !provablyNeverSent(ioe))
-          mayHaveBeenSent = true;
+        mayHaveBeenSent |= mayHaveReachedTheServer(e);
 
         if (!autoReconnect || retry + 1 >= maxRetry)
           break;
@@ -730,6 +729,11 @@ public class RemoteHttpComponent extends RWLockContext {
    * of {@link #sendWithWatchdog} - can be raised after the server read the request and applied it, with only the
    * response lost on the way back.
    */
+  /** Whether the failure leaves open that the server read the request: an I/O failure that is not a failure to connect. */
+  private static boolean mayHaveReachedTheServer(final Exception e) {
+    return e instanceof IOException ioe && !provablyNeverSent(ioe);
+  }
+
   static boolean provablyNeverSent(final IOException e) {
     for (Throwable t = e; t != null; t = t.getCause() == t ? null : t.getCause())
       if (t instanceof ConnectException || t instanceof HttpConnectTimeoutException)
