@@ -62,6 +62,7 @@ final class MongoBsonValues {
 
   private static final AtomicBoolean WIDE_DECIMAL_WARNED = new AtomicBoolean();
 
+  private static final String OBJECT_ID = "objectId";
   private static final String BIN_DATA = "binData";
   private static final String REGEX = "regex";
   private static final String TIMESTAMP = "timestamp";
@@ -89,7 +90,7 @@ final class MongoBsonValues {
   }
 
   /**
-   * Converts a value received from a client into the form stored in the database. An {@link ObjectId} becomes its hex string.
+   * Converts a value received from a client into the form stored in the database. An {@link ObjectId} becomes a tagged map; use {@link #toStored(String, Object)} for an {@code _id}.
    * A map or list is copied only when an element changes.
    *
    * @throws MongoServerError if the value (or an element nested in it) has a type that cannot be stored
@@ -99,7 +100,7 @@ final class MongoBsonValues {
     if (!needsConversion(value))
       return value;
     if (value instanceof ObjectId id)
-      return id.getHexData();
+      return tagged(OBJECT_ID, "hex", id.getHexData());
     if (value instanceof Decimal128 decimal)
       return toBigDecimal(decimal);
     if (value instanceof BinData bin)
@@ -123,6 +124,55 @@ final class MongoBsonValues {
     if (BinaryTypes.getTypeFromValue(value, null) == -1)
       throw new MongoServerError(ErrorCode.BadValue, "The BSON type " + value.getClass().getSimpleName() + " is not supported");
     return value;
+  }
+
+  /**
+   * Converts a value for the named top-level field. An {@code _id} keeps an {@link ObjectId} as its plain hex string, the form
+   * the primary key lookups and indexes match on; every other field stores it as a tagged map that keeps its type.
+   */
+  static Object toStored(final String field, final Object value) {
+    return "_id".equals(field) ? idToStored(value) : toStored(value);
+  }
+
+  /**
+   * Replaces every {@link ObjectId} in a filter on {@code _id} (a plain value, an operator document or a list) with its hex
+   * string, so that it matches the stored {@code _id}.
+   */
+  @SuppressWarnings("unchecked")
+  static Object idFilter(final Object value) {
+    if (value instanceof ObjectId id)
+      return id.getHexData();
+    if (value instanceof Document document) {
+      final Document converted = new Document();
+      for (final Map.Entry<String, Object> entry : document.entrySet())
+        converted.put(entry.getKey(), idFilter(entry.getValue()));
+      return converted;
+    }
+    if (value instanceof List<?> list) {
+      final List<Object> converted = new ArrayList<>(list.size());
+      for (final Object item : list)
+        converted.add(idFilter(item));
+      return converted;
+    }
+    return value;
+  }
+
+  private static Object idToStored(final Object value) {
+    return value instanceof ObjectId id ? id.getHexData() : toStored(value);
+  }
+
+  private static byte[] hexToBytes(final String hex) {
+    if (hex == null || hex.length() != 24)
+      throw new IllegalArgumentException("Not an ObjectId hex string");
+    final byte[] bytes = new byte[12];
+    for (int i = 0; i < 24; i += 2) {
+      final int high = Character.digit(hex.charAt(i), 16);
+      final int low = Character.digit(hex.charAt(i + 1), 16);
+      if (high < 0 || low < 0)
+        throw new IllegalArgumentException("Not an ObjectId hex string");
+      bytes[i / 2] = (byte) ((high << 4) + low);
+    }
+    return bytes;
   }
 
   /**
@@ -240,6 +290,7 @@ final class MongoBsonValues {
 
   private static Object decode(final String kind, final Map<?, ?> map) {
     return switch (kind) {
+      case OBJECT_ID -> new ObjectId(hexToBytes((String) map.get("hex")));
       case BIN_DATA -> new BinData(Base64.getDecoder().decode((String) map.get("data")));
       case REGEX -> new BsonRegularExpression((String) map.get("pattern"), (String) map.get("options"));
       case TIMESTAMP -> new BsonTimestamp(((Number) map.get("value")).longValue());

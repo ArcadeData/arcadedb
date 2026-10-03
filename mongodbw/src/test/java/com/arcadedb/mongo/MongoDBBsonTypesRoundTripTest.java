@@ -35,6 +35,7 @@ import org.bson.types.Code;
 import org.bson.types.Decimal128;
 import org.bson.types.MaxKey;
 import org.bson.types.MinKey;
+import org.bson.types.ObjectId;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -300,5 +301,22 @@ public class MongoDBBsonTypesRoundTripTest extends BaseMongoServerTest {
     final Document back = collection.find(eq("_id", 50)).first();
     assertThat(back).isNotNull();
     assertThat(((Document) back.get("v")).get(MongoBsonValues.TAG)).isEqualTo("timestamp");
+  }
+
+  @Test
+  void objectIdInANonIdFieldKeepsItsType() {
+    final ObjectId oid = new ObjectId("507f1f77bcf86cd799439011");
+    assertThat(roundTrip(60, oid)).isEqualTo(oid);
+    assertThat(collection.find(eq("v", oid)).first().get("_id")).isEqualTo(60);
+    assertThat(collection.find(in("v", List.of(oid))).first().get("_id")).isEqualTo(60);
+  }
+
+  @Test
+  void objectIdInAnArrayAndAfterUpdateKeepsItsType() {
+    final ObjectId oid = new ObjectId("507f1f77bcf86cd799439012");
+    collection.insertOne(new Document("_id", 61).append("refs", List.of(oid)));
+    assertThat(((List<?>) collection.find(eq("_id", 61)).first().get("refs")).get(0)).isEqualTo(oid);
+    collection.updateOne(eq("_id", 61), set("ref", oid));
+    assertThat(collection.find(eq("_id", 61)).first().get("ref")).isEqualTo(oid);
   }
 }

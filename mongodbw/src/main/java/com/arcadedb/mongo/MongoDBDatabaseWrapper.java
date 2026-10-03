@@ -637,14 +637,14 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
               continue;
             if ("_id".equals(field) && eqValue instanceof ObjectId)
               idIsObjectId = true;
-            record.set(field, MongoBsonValues.toStored(eqValue));
+            record.set(field, MongoBsonValues.toStored(field, eqValue));
           }
         } else {
           if (value instanceof BsonRegularExpression)
             continue;
           if ("_id".equals(field) && value instanceof ObjectId)
             idIsObjectId = true;
-          record.set(field, MongoBsonValues.toStored(value));
+          record.set(field, MongoBsonValues.toStored(field, value));
         }
       }
 
@@ -656,7 +656,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         // replacement's own _id is some other type.
         if ("_id".equals(entry.getKey()))
           idIsObjectId = value instanceof ObjectId;
-        record.set(entry.getKey(), MongoBsonValues.toStored(value));
+        record.set(entry.getKey(), MongoBsonValues.toStored(entry.getKey(), value));
       }
     } else {
       final Boolean setIdIsObjectId = applyOperatorsToDocument(record, u);
@@ -697,7 +697,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
           final Object value = f.getValue();
           if ("_id".equals(f.getKey()))
             idIsObjectId = value instanceof ObjectId;
-          record.set(f.getKey(), MongoBsonValues.toStored(value));
+          record.set(f.getKey(), MongoBsonValues.toStored(f.getKey(), value));
         }
       }
       case "$unset" -> {
@@ -739,7 +739,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
     if (isReplacement(u)) {
       sql.append(" CONTENT ");
-      MongoDBToSqlTranslator.bindStored(sql, params, documentToMap(u));
+      MongoDBToSqlTranslator.bindStored(sql, params, documentToMap(u, true));
       return;
     }
 
@@ -749,7 +749,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       switch (op) {
       case "$set" -> {
         sql.append(" MERGE ");
-        MongoDBToSqlTranslator.bindStored(sql, params, documentToMap(operand));
+        MongoDBToSqlTranslator.bindStored(sql, params, documentToMap(operand, true));
       }
       case "$unset" -> {
         sql.append(" REMOVE ");
@@ -800,17 +800,17 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * Converts a BSON document into the map bound as the payload of {@code UPDATE ... MERGE} / {@code ... CONTENT}. Insertion
    * order is preserved so a replacement document reaches the record in wire order.
    */
-  private static Map<String, Object> documentToMap(final Document doc) {
+  private static Map<String, Object> documentToMap(final Document doc, final boolean topLevel) {
     final Map<String, Object> map = LinkedHashMap.newLinkedHashMap(doc.size());
     for (final Map.Entry<String, Object> entry : doc.entrySet())
-      map.put(entry.getKey(), toMapValue(entry.getValue()));
+      map.put(entry.getKey(), topLevel && "_id".equals(entry.getKey()) ? MongoBsonValues.toStored("_id", entry.getValue()) : toMapValue(entry.getValue()));
     return map;
   }
 
   private static Object toMapValue(final Object value) {
     if (value instanceof Document document) {
       MongoBsonValues.checkNotReserved(document);
-      return documentToMap(document);
+      return documentToMap(document, false);
     } else if (value instanceof List<?> list) {
       final List<Object> converted = new ArrayList<>(list.size());
       for (final Object item : list)

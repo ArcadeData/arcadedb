@@ -228,7 +228,7 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
         final MutableDocument record = database.newDocument(collectionName);
 
         for (final Map.Entry<String, Object> p : d.entrySet()) {
-          record.set(p.getKey(), MongoBsonValues.toStored(p.getValue()));
+          record.set(p.getKey(), MongoBsonValues.toStored(p.getKey(), p.getValue()));
         }
 
         record.save();
