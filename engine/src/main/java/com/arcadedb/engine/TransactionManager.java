@@ -32,10 +32,9 @@ import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.index.vector.LSMVectorIndexCompacted;
 import com.arcadedb.index.vector.LSMVectorIndexMutable;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.LockException;
 import com.arcadedb.utility.LockManager;
-
-import com.arcadedb.utility.IntHashSet;
 
 import java.io.*;
 import java.nio.channels.ClosedByInterruptException;
@@ -43,7 +42,6 @@ import java.nio.channels.ClosedChannelException;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.util.*;
-import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
