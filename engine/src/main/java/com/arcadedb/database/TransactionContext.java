@@ -26,6 +26,7 @@ import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PageManager;
+import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.engine.WALFile;
@@ -277,9 +278,11 @@ public class TransactionContext implements Transaction {
   private       UnidirectionalEdgeChanges            unidirectionalEdgeChanges;
   // #8986: the targets of the unidirectional edges this transaction created, as (bucket id, position), checked at commit
   private       LongHashSet                          unidirectionalEdgeTargets;
-  // #8986: TransactionManager.getUnidirectionalEdgeCommits() when this transaction first scanned for the edges ending in
+  // #8986: TransactionManager.getUnidirectionalEdgeSequence() when this transaction first scanned for the edges ending in
   // a vertex it deletes, or -1 when it did not
   private       long                                 unidirectionalScanEpoch = -1L;
+  // #8986: the buckets of the records this transaction deleted, to ask which of them received unidirectional edges since
+  private       IntHashSet                           deletedBuckets;
   // #8610: identifies the transaction a vertex was read in. Drawn from one JVM-wide sequence, not counted per context,
   // so that a nested transaction (a context of its own) can never share a value with the one it is nested in.
   private static final AtomicLong                    BEGIN_SEQUENCE        = new AtomicLong();
@@ -2539,8 +2542,11 @@ public class TransactionContext implements Transaction {
 
       // #8986: AFTER the edges are published and while their targets' files are still locked, so a delete that did not
       // see them has either taken its epoch before this bump, and fails at its commit, or after it, and saw them
-      if (unidirectionalEdgeTargets != null)
-        database.getTransactionManager().unidirectionalEdgesCommitted();
+      if (unidirectionalEdgeTargets != null) {
+        final IntHashSet targetBuckets = new IntHashSet();
+        unidirectionalEdgeTargets.forEach(target -> targetBuckets.add((int) (target >>> UNIDIRECTIONAL_TARGET_BUCKET_SHIFT)));
+        database.getTransactionManager().unidirectionalEdgesCommitted(targetBuckets);
+      }
 
       // UPDATE RECORD COUNT
       bucketRecordDelta.forEach((bucketId, delta) -> {
@@ -2833,7 +2839,7 @@ public class TransactionContext implements Transaction {
    */
   public void noteUnidirectionalEdgeScan() {
     if (unidirectionalScanEpoch < 0L)
-      unidirectionalScanEpoch = database.getTransactionManager().getUnidirectionalEdgeCommits();
+      unidirectionalScanEpoch = database.getTransactionManager().getUnidirectionalEdgeSequence();
   }
 
   /** The unidirectional edge changes of this context, created on the first call. */
@@ -2851,6 +2857,7 @@ public class TransactionContext implements Transaction {
   public void reset() {
     unidirectionalEdgeTargets = null;
     unidirectionalScanEpoch = -1L;
+    deletedBuckets = null;
     if (unidirectionalEdgeChanges != null)
       unidirectionalEdgeChanges.transactionEnded();
     // #7933: FIRST, while the file locks below are still held. This is the point every conclusion that is NOT a
@@ -3009,18 +3016,27 @@ public class TransactionContext implements Transaction {
    * <ul>
    * <li>An edge whose target was deleted and committed since is refused, as the same sequence on a bidirectional type
    * is, because that edge also writes the target's incoming list.</li>
-   * <li>A delete whose scan started before another transaction published unidirectional edges is refused, so the retry
-   * scans again and finds them. Targets are not compared: the scan is a snapshot of whole types, and the answer is
-   * only needed while two such transactions overlap.</li>
+   * <li>A delete whose scan started before another transaction published unidirectional edges ending in a bucket it
+   * deletes from is refused, so the retry scans again and finds them. Per bucket rather than per vertex: the scan is a
+   * snapshot of whole types.</li>
+   * </ul>
+   * Known limits: with an explicit lock list the first check runs without the target-file lock, so a delete can still
+   * commit between the check and the publish; and the first check asks whether a record sits at the target RID, so a
+   * new record that reused the freed slot passes it.
+   * <ul>
    * </ul>
    * The first holds because the files of the targets are locked by {@link #lockFilesFromChanges()} until the edges are
    * published, the second because the counter is bumped by {@link #publishCommittedPages} before that lock is released.
    */
   private void checkUnidirectionalEdgesAgainstConcurrentDeletes() {
-    if (unidirectionalScanEpoch >= 0L && !deletedRecordsInTx.isEmpty()
-        && database.getTransactionManager().getUnidirectionalEdgeCommits() != unidirectionalScanEpoch)
-      throw new ConcurrentModificationException("A unidirectional edge ending in a vertex deleted by this transaction was "
-          + "committed by a concurrent transaction after the edges to delete were looked up. Please retry the operation");
+    if (unidirectionalScanEpoch >= 0L && deletedBuckets != null) {
+      final TransactionManager manager = database.getTransactionManager();
+      final boolean[] moved = new boolean[1];
+      deletedBuckets.forEach(bucketId -> moved[0] |= manager.hasUnidirectionalEdgesCommittedSince(bucketId, unidirectionalScanEpoch));
+      if (moved[0])
+        throw new ConcurrentModificationException("A unidirectional edge ending in a vertex deleted by this transaction was "
+            + "committed by a concurrent transaction after the edges to delete were looked up. Please retry the operation");
+    }
 
     if (unidirectionalEdgeTargets == null)
       return;
@@ -3282,6 +3298,9 @@ public class TransactionContext implements Transaction {
    */
   public void addDeletedRecord(final RID rid) {
     deletedRecordsInTx.add(rid);
+    if (deletedBuckets == null)
+      deletedBuckets = new IntHashSet();
+    deletedBuckets.add(rid.getBucketId());
     // A record deleted after an in-tx update no longer needs its indexed-state snapshot (#4935): the delete
     // removes the index entries through its own path, so drop the retained memory right away.
     if (updatedRecordsIndexSnapshot != null)

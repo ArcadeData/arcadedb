@@ -35,12 +35,16 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.LockException;
 import com.arcadedb.utility.LockManager;
 
+import com.arcadedb.utility.IntHashSet;
+
 import java.io.*;
 import java.nio.channels.ClosedByInterruptException;
 import java.nio.channels.ClosedChannelException;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.util.*;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
@@ -65,8 +69,9 @@ public class TransactionManager {
   private final String                       logContext;
   private final Timer                        task;
   private final AtomicLong                   transactionIds      = new AtomicLong();
-  // BUMPED AFTER A TRANSACTION THAT CREATED UNIDIRECTIONAL EDGES PUBLISHED THEM, UNDER THE LOCK OF THE FILES OF THEIR TARGETS (ISSUE #8986)
-  private final AtomicLong                   unidirectionalEdgeCommits = new AtomicLong();
+  // Sequence of the transactions that published unidirectional edges, and the last one that did for each target bucket (#8986)
+  private final AtomicLong                   unidirectionalEdgeSequence = new AtomicLong();
+  private final Map<Integer, Long>           unidirectionalEdgeLastCommit = new ConcurrentHashMap<>();
   private final AtomicLong                   logFileCounter      = new AtomicLong();
   private final LockManager<Integer, Object> fileIdsLockManager  = new LockManager<>();
   private final AtomicLong                   statsPagesWritten   = new AtomicLong();
@@ -111,13 +116,23 @@ public class TransactionManager {
    */
   private final ReentrantReadWriteLock       applyLock           = new ReentrantReadWriteLock();
 
-  /** How many transactions published unidirectional edges: a delete that scanned for them before one did cannot commit (#8986). */
-  public long getUnidirectionalEdgeCommits() {
-    return unidirectionalEdgeCommits.get();
+  /** The sequence a delete takes before it scans for the unidirectional edges ending in its vertices (#8986). */
+  public long getUnidirectionalEdgeSequence() {
+    return unidirectionalEdgeSequence.get();
   }
 
-  public void unidirectionalEdgesCommitted() {
-    unidirectionalEdgeCommits.incrementAndGet();
+  /** Whether a transaction published unidirectional edges ending in {@code bucketId} after {@code sequence} was taken. */
+  public boolean hasUnidirectionalEdgesCommittedSince(final int bucketId, final long sequence) {
+    return unidirectionalEdgeLastCommit.getOrDefault(bucketId, 0L) > sequence;
+  }
+
+  /**
+   * Called after a transaction published unidirectional edges ending in {@code targetBuckets}, and while the files of
+   * those buckets are still locked by it, so a delete holding their lock sees the sequence moved or the edges.
+   */
+  public void unidirectionalEdgesCommitted(final IntHashSet targetBuckets) {
+    final long sequence = unidirectionalEdgeSequence.incrementAndGet();
+    targetBuckets.forEach(bucketId -> unidirectionalEdgeLastCommit.put(bucketId, sequence));
   }
 
   public TransactionManager(final DatabaseInternal database) {
