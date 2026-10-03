@@ -128,6 +128,9 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
     // or EXCEPTION cannot vote or accept a leader's contact - surfacing it here is the only way an
     // operator can see that the cluster is running without failover margin.
     response.put("raftState", raftHAServer.getRaftLifeCycleState().name());
+    // What raftState cannot show (issue #8900): a division can report RUNNING while the leader's appends never reach
+    // it. How long ago this follower last heard from its leader, -1 on the leader or with no leader known.
+    response.put("leaderContactElapsedMs", raftHAServer.getLeaderContactElapsedMs());
 
     // The raw role is not the same as the ability to serve: a node that has just won an election
     // rejects writes with the retryable LeaderNotReadyException until it has committed its
