@@ -601,7 +601,8 @@ public class DocumentValidator {
         throwValidationException(document.getType(), p,
             "has been declared as " + declaredAs + " but a link to type '" + embSchemaType.getName() + "' is used. Value: "
                 + fieldValue);
-    } else
+    } else if (!(item instanceof String link && RID.is(link)))
+      // a link written as a "#bucket:position" string is what JSON and HTTP clients send, and has always been accepted
       throwValidationException(document.getType(), p,
           "has been declared as " + declaredAs + " but a value that is not a document of that type is used (" + item.getClass()
               .getSimpleName() + "). Value: " + fieldValue);

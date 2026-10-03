@@ -112,7 +112,8 @@ class Issue9111ListOfDateAndDocumentTypesTest extends TestHelper {
     database.command("sql", "CREATE DOCUMENT TYPE R");
     database.command("sql", "CREATE PROPERTY R.p LIST OF DATETIME_MICROS");
     assertThatThrownBy(() -> database.transaction(
-        () -> database.newDocument("R").set("p", new ArrayList<>(List.of("not a date"))).save())).isInstanceOf(Exception.class);
+        () -> database.newDocument("R").set("p", new ArrayList<>(List.of("not a date"))).save())).isInstanceOf(
+        IllegalArgumentException.class).hasMessageContaining("'p'");
   }
 
   private void declareAddress() {
@@ -130,7 +131,7 @@ class Issue9111ListOfDateAndDocumentTypesTest extends TestHelper {
         ValidationException.class).hasMessageContaining("LIST of 'Address'");
     assertThatThrownBy(
         () -> database.transaction(() -> database.command("sql", "INSERT INTO Person SET addresses = [1, 'two']").close()))
-        .isInstanceOf(Exception.class);
+        .isInstanceOf(ValidationException.class);
   }
 
   @Test
@@ -143,7 +144,8 @@ class Issue9111ListOfDateAndDocumentTypesTest extends TestHelper {
         () -> database.newDocument("Person").set("addresses", new ArrayList<>(List.of(other))).save())).isInstanceOf(
         ValidationException.class).hasMessageContaining("Other");
     assertThatThrownBy(() -> database.transaction(() -> database.command("sql",
-        "INSERT INTO Person SET addresses = [{\"@type\": \"Other\", \"city\": \"Rome\"}]").close())).isInstanceOf(Exception.class);
+        "INSERT INTO Person SET addresses = [{\"@type\": \"Other\", \"city\": \"Rome\"}]").close())).isInstanceOf(
+        ValidationException.class);
   }
 
   @Test
@@ -191,6 +193,35 @@ class Issue9111ListOfDateAndDocumentTypesTest extends TestHelper {
     final List<Object> withNull = new ArrayList<>();
     withNull.add(null);
     database.transaction(() -> database.newDocument("Person").set("addresses", withNull).save());
+    assertThat(database.countType("Person", true)).isEqualTo(1);
+  }
+
+  @Test
+  void listOfStringStillRefusesADate() {
+    database.command("sql", "CREATE DOCUMENT TYPE LS");
+    database.command("sql", "CREATE PROPERTY LS.p LIST OF STRING");
+    assertThatThrownBy(() -> database.transaction(
+        () -> database.newDocument("LS").set("p", new ArrayList<>(List.of(new Date()))).save())).isInstanceOf(
+        ValidationException.class);
+  }
+
+  @Test
+  void listOfDateAcceptsInstantAndZonedDateTime() {
+    database.command("sql", "CREATE DOCUMENT TYPE LZ");
+    database.command("sql", "CREATE PROPERTY LZ.p LIST OF DATE");
+    database.command("sql", "CREATE PROPERTY LZ.q LIST OF DATETIME_MICROS");
+    database.transaction(() -> database.newDocument("LZ")
+        .set("p", new ArrayList<>(List.of(java.time.Instant.now(), java.time.ZonedDateTime.now())))
+        .set("q", new ArrayList<>(List.of(java.time.Instant.now(), java.time.ZonedDateTime.now()))).save());
+    assertThat(database.countType("LZ", true)).isEqualTo(1);
+  }
+
+  @Test
+  void listOfDocumentTypeStillAcceptsALinkWrittenAsAString() {
+    declareAddress();
+    final RID[] rid = new RID[1];
+    database.transaction(() -> rid[0] = database.newDocument("Address").set("city", "Rome").save().getIdentity());
+    database.transaction(() -> database.newDocument("Person").set("addresses", new ArrayList<>(List.of(rid[0].toString()))).save());
     assertThat(database.countType("Person", true)).isEqualTo(1);
   }
 }
