@@ -1106,7 +1106,8 @@ public class OpenCypherQueryEngine implements QueryEngine {
 
         if (temporalPrecision != null)
           // a value that is no temporal next to temporal ones reads as an unreadable date, which an index keys under null
-          // (issue #8090): it neither resets the kind nor narrows the precision
+          // (issue #8090): it neither resets the kind nor narrows the precision. A temporal value that comes AFTER a value of
+          // another kind is not skipped the same way: the first kind settled the type, so there is no DATETIME to fall back to
           continue;
 
         final Type valueType;

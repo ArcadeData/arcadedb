@@ -598,12 +598,24 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
    * The key size of {@code mid}, which the caller already measured, is reused for that entry and every other one is measured on
    * its own, so applying one entry's key size to the whole run no longer lands a value position in the middle of an entry.
    */
+  /**
+   * Only floating point and decimal keys can compare equal and still take a different number of bytes (0f and -0f, 1.5 and 1.50);
+   * every other type serializes equal values to equal bytes, so a run of them needs no per-entry measuring.
+   */
+  private boolean keySizeMayVaryAmongEqualKeys() {
+    for (final byte type : binaryKeyTypes)
+      if (type == BinaryTypes.TYPE_FLOAT || type == BinaryTypes.TYPE_DOUBLE || type == BinaryTypes.TYPE_DECIMAL)
+        return true;
+    return false;
+  }
+
   protected int[] valuePositionsOfRun(final Binary currentPageBuffer, final int startIndexArray, final int keyLength,
       final int firstKeyPos, final int lastKeyPos, final int mid, final int midKeySerializedSize) {
     final int[] positions = new int[lastKeyPos - firstKeyPos + 1];
+    final boolean sizeMayVary = keySizeMayVaryAmongEqualKeys();
     for (int i = firstKeyPos; i <= lastKeyPos; ++i) {
       final int entryPos = currentPageBuffer.getInt(startIndexArray + (i * INT_SERIALIZED_SIZE));
-      if (i == mid)
+      if (i == mid || !sizeMayVary)
         positions[i - firstKeyPos] = entryPos + midKeySerializedSize;
       else {
         currentPageBuffer.position(entryPos);

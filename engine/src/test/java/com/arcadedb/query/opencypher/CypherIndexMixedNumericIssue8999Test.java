@@ -114,7 +114,7 @@ class CypherIndexMixedNumericIssue8999Test {
   }
 
   @Test
-  void failedIndexBuildLeavesNoDeclaredProperty() {
+  void indexOverIntegersAndStringsIsBuiltWithoutDeclaringAType() {
     database.transaction(() -> database.command("opencypher", "CREATE (:B {id: 1, x: 3}), (:B {id: 2, x: 'abc'})"));
     // Neo4j builds the index over integers and strings alike
     database.command("opencypher", "CREATE INDEX FOR (n:B) ON (n.x)");
@@ -137,11 +137,15 @@ class CypherIndexMixedNumericIssue8999Test {
   }
 
   private List<String> run(final String query) {
+    return run(query, query.contains("AS c") ? "c" : query.contains("AS x") ? "x" : "id");
+  }
+
+  private List<String> run(final String query, final String column) {
     final List<String> out = new ArrayList<>();
     database.transaction(() -> {
       try (final ResultSet rs = database.command("opencypher", query)) {
         while (rs.hasNext()) {
-          final Object value = rs.next().getProperty(firstColumn(query));
+          final Object value = rs.next().getProperty(column);
           out.add(String.valueOf(value));
         }
       }
@@ -149,7 +153,4 @@ class CypherIndexMixedNumericIssue8999Test {
     return out;
   }
 
-  private static String firstColumn(final String query) {
-    return query.contains("AS c") ? "c" : query.contains("AS x") ? "x" : "id";
-  }
 }
