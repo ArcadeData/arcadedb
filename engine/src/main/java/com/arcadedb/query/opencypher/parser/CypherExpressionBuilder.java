@@ -2536,8 +2536,7 @@ class CypherExpressionBuilder {
       labels = labelPredicate.requiredLabels();
       if (variable == null)
         variable = ParserUtils.newLabelExpressionVariable();
-      labelCheck = new LabelCheckExpression(new VariableExpression(variable), labelPredicate,
-          variable + ctx.labelExpression().getText());
+      labelCheck = ParserUtils.labelCheckOn(variable, labelPredicate, ctx.labelExpression());
     } else if (ctx.labelExpression() != null) {
       labels = extractLabels(ctx.labelExpression());
       labelDisjunction = ParserUtils.isLabelDisjunction(ctx.labelExpression());
@@ -2557,7 +2556,7 @@ class CypherExpressionBuilder {
     BooleanExpression whereExpression = null;
     if (ctx.expression() != null)
       whereExpression = new BooleanCoercionExpression(parseExpression(ctx.expression()));
-    whereExpression = andLabelCheck(labelCheck, whereExpression);
+    whereExpression = ParserUtils.andLabelCheck(labelCheck, whereExpression);
 
     return new NodePattern(variable, labels, null, properties, propertiesParameterName, labelDisjunction, whereExpression);
   }
@@ -2580,14 +2579,12 @@ class CypherExpressionBuilder {
     final LabelPredicate labelPredicate = ParserUtils.buildRelationshipTypePredicate(ctx.labelExpression());
     if (labelPredicate != null) {
       if (ctx.pathLength() != null)
-        throw new CommandParsingException("UnexpectedSyntax: the label expression '" + ctx.labelExpression().getText()
-            + "' is not supported on a variable-length relationship yet: only a type or a '|' of types is");
+        ParserUtils.rejectOnVariableLengthRelationship(ctx.labelExpression());
       final List<String> required = labelPredicate.requiredLabels();
       types = required.isEmpty() ? null : required;
       if (variable == null)
         variable = ParserUtils.newLabelExpressionVariable();
-      labelCheck = new LabelCheckExpression(new VariableExpression(variable), labelPredicate,
-          variable + ctx.labelExpression().getText());
+      labelCheck = ParserUtils.labelCheckOn(variable, labelPredicate, ctx.labelExpression());
     } else if (ctx.labelExpression() != null) {
       types = extractLabels(ctx.labelExpression());
     }
@@ -2627,7 +2624,7 @@ class CypherExpressionBuilder {
     BooleanExpression whereExpression = null;
     if (ctx.expression() != null)
       whereExpression = new BooleanCoercionExpression(parseExpression(ctx.expression()));
-    whereExpression = andLabelCheck(labelCheck, whereExpression);
+    whereExpression = ParserUtils.andLabelCheck(labelCheck, whereExpression);
 
     return new RelationshipPattern(variable, types, direction, properties, propertiesParameterName, minHops, maxHops,
         whereExpression);
@@ -2645,14 +2642,6 @@ class CypherExpressionBuilder {
    */
   private List<String> extractLabels(final Cypher25Parser.LabelExpressionContext ctx) {
     return ParserUtils.extractLabels(ctx);
-  }
-
-  private static BooleanExpression andLabelCheck(final BooleanExpression labelCheck, final BooleanExpression where) {
-    if (labelCheck == null)
-      return where;
-    if (where == null)
-      return labelCheck;
-    return new LogicalExpression(LogicalExpression.Operator.AND, labelCheck, where);
   }
 
   /**

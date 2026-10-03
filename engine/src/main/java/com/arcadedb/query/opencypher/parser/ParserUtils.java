@@ -20,7 +20,11 @@ package com.arcadedb.query.opencypher.parser;
 
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.opencypher.InternalVariables;
+import com.arcadedb.query.opencypher.ast.BooleanExpression;
+import com.arcadedb.query.opencypher.ast.LabelCheckExpression;
 import com.arcadedb.query.opencypher.ast.LabelPredicate;
+import com.arcadedb.query.opencypher.ast.LogicalExpression;
+import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.grammar.Cypher25Parser;
 
 import org.antlr.v4.runtime.ParserRuleContext;
@@ -180,6 +184,33 @@ public class ParserUtils {
   }
 
   private static final AtomicLong LABEL_EXPRESSION_VARIABLE_COUNTER = new AtomicLong();
+
+  /**
+   * The predicate a pattern element carries for a label expression {@link #buildLabelPredicate} returned, checked
+   * against the element bound to {@code variable}.
+   */
+  public static LabelCheckExpression labelCheckOn(final String variable, final LabelPredicate predicate,
+      final Cypher25Parser.LabelExpressionContext ctx) {
+    return new LabelCheckExpression(new VariableExpression(variable), predicate, variable + ctx.getText());
+  }
+
+  /** ANDs a pattern element's label check (may be null) with its inline WHERE predicate (may be null). */
+  public static BooleanExpression andLabelCheck(final BooleanExpression labelCheck, final BooleanExpression where) {
+    if (labelCheck == null)
+      return where;
+    if (where == null)
+      return labelCheck;
+    return new LogicalExpression(LogicalExpression.Operator.AND, labelCheck, where);
+  }
+
+  /**
+   * The variable-length expansion filters each hop on a type list only, so a relationship label expression that
+   * needs a predicate is refused there rather than run with its operators dropped (issue #9117 tracks support).
+   */
+  public static void rejectOnVariableLengthRelationship(final Cypher25Parser.LabelExpressionContext ctx) {
+    throw new CommandParsingException("UnexpectedSyntax: the label expression '" + ctx.getText()
+        + "' is not supported on a variable-length relationship yet: only a type or a '|' of types is");
+  }
 
   private static boolean isPlainLabelExpression(final ParseTree node) {
     if (!isFreeOfNegationAndWildcard(node))

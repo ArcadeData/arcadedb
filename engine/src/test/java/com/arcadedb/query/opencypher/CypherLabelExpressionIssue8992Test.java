@@ -223,9 +223,50 @@ class CypherLabelExpressionIssue8992Test {
 
   @Test
   void variableLengthRelationshipRefusesWhatItCannotEvaluate() {
-    // Refused with an error naming the expression rather than run with the operator dropped.
+    // Refused with an error naming the expression rather than run with the operator dropped (#9117).
     assertThatThrownBy(() -> column("MATCH ()-[:!R*1..2]->() RETURN 1 AS x", "x"))
         .isInstanceOf(CommandParsingException.class).hasMessageContaining("!R");
+    assertThatThrownBy(() -> column("MATCH ()-[r:R&S*1..3]->() RETURN 1 AS x", "x"))
+        .isInstanceOf(CommandParsingException.class).hasMessageContaining("R&S");
+    assertThatThrownBy(() -> column("MATCH p = shortestPath((a {id: 1})-[:!R*]-(b {id: 4})) RETURN p", "p"))
+        .isInstanceOf(CommandParsingException.class).hasMessageContaining("!R");
+  }
+
+  @Test
+  void variableLengthRelationshipStillAcceptsAPlainTypeDisjunction() {
+    // The guard above must not catch the forms the expansion has always handled.
+    assertThat(column("MATCH (a {id: 1})-[:S|R*1..2]->(b) RETURN b.id AS id ORDER BY id", "id")).containsExactly(2, 3, 5);
+    assertThat(column("MATCH (a {id: 1})-[:R*1..2]->(b) RETURN b.id AS id ORDER BY id", "id")).containsExactly(2);
+  }
+
+  @Test
+  void subtypesFollowTheSameRuleAsThePlainPattern() {
+    // A label or a relationship type also matches its subtypes in a plain pattern; the expression must agree.
+    database.getSchema().createVertexType("A2").addSuperType("A");
+    database.getSchema().createEdgeType("R2").addSuperType("R");
+    database.transaction(() -> database.command("opencypher", "CREATE (:A2 {id: 6})-[:R2]->(:C {id: 7})"));
+
+    assertThat(column("MATCH (n:A) RETURN n.id AS id ORDER BY id", "id")).containsExactly(1, 3, 6);
+    assertThat(column("MATCH (n:A&!B) RETURN n.id AS id ORDER BY id", "id")).containsExactly(1, 6);
+    assertThat(column("MATCH (n:!A) RETURN n.id AS id ORDER BY id", "id")).containsExactly(2, 4, 5, 7);
+    assertThat(column("MATCH (n) WHERE n:!A RETURN n.id AS id ORDER BY id", "id")).containsExactly(2, 4, 5, 7);
+
+    assertThat(column("MATCH ()-[r:R]->() RETURN type(r) AS t ORDER BY t", "t")).containsExactly("R", "R", "R2");
+    assertThat(column("MATCH ()-[r:R&!S]->() RETURN type(r) AS t ORDER BY t", "t")).containsExactly("R", "R", "R2");
+    assertThat(column("MATCH ()-[r:!R]->() RETURN type(r) AS t ORDER BY t", "t")).containsExactly("S", "T");
+    assertThat(column("MATCH ()-[r]->() WHERE r:!R RETURN type(r) AS t ORDER BY t", "t")).containsExactly("S", "T");
+  }
+
+  @Test
+  void precedenceParityAndQuotedNames() {
+    assertThat(column("MATCH (n:!!A) RETURN n.id AS id ORDER BY id", "id")).containsExactly(1, 3);
+    // & binds tighter than |: A|(B&C)
+    assertThat(column("MATCH (n:A|B&C) RETURN n.id AS id ORDER BY id", "id")).containsExactly(1, 3);
+    assertThat(column("MATCH (n:((A))&!(B|C)) RETURN n.id AS id ORDER BY id", "id")).containsExactly(1);
+
+    database.transaction(() -> database.command("opencypher", "CREATE (:`Event Message` {id: 8})"));
+    assertThat(column("MATCH (n:`Event Message`|!%) RETURN n.id AS id ORDER BY id", "id")).containsExactly(4, 8);
+    assertThat(column("MATCH (n) WHERE n:!`Event Message`&!A&!B&!C RETURN n.id AS id", "id")).containsExactly(4);
   }
 
   @Test
@@ -245,6 +286,16 @@ class CypherLabelExpressionIssue8992Test {
   }
 
   @Test
+  void writesNestedInForeachAndCallRefuseToo() {
+    assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher", "FOREACH (x IN [1] | CREATE (:!A))")))
+        .isInstanceOf(CommandParsingException.class).hasMessageContaining("CREATE");
+    assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher", "CALL { CREATE (:!A) } RETURN 1 AS x")))
+        .isInstanceOf(CommandParsingException.class).hasMessageContaining("CREATE");
+    assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher", "FOREACH (x IN [1] | MERGE (:A|!B))")))
+        .isInstanceOf(CommandParsingException.class).hasMessageContaining("MERGE");
+  }
+
+  @Test
   void mergeRefusesTheWildcard() {
     assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher", "MERGE (n:%)")))
         .isInstanceOf(CommandParsingException.class).hasMessageContaining("MERGE");
@@ -254,7 +305,7 @@ class CypherLabelExpressionIssue8992Test {
   void conjunctionIsPrintedAsConjunctionInExplain() {
     try (final ResultSet rs = database.query("opencypher", "EXPLAIN MATCH (n:A:B) RETURN n")) {
       final String plan = rs.getExecutionPlan().orElseThrow().prettyPrint(0, 2);
-      assertThat(plan).doesNotContain("(n:A|B)");
+      assertThat(plan).contains("MATCH NODE (n:A:B)").doesNotContain("(n:A|B)");
     }
     assertThat(column("MATCH (n:A:B) RETURN n.id AS id", "id")).containsExactly(3);
   }

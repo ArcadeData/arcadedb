@@ -44,8 +44,12 @@ public abstract sealed class LabelPredicate {
   /** True when the predicate holds for a node of the given type. */
   public abstract boolean matchesVertexType(DocumentType type);
 
-  /** True when the predicate holds for a relationship of the given type. */
-  public abstract boolean matchesEdgeType(String edgeType);
+  /**
+   * True when the predicate holds for a relationship of the given type. A type name holds for a subtype too, the same
+   * way a relationship pattern's type filter matches it ({@code MatchRelationshipStep} tests {@code instanceOf}), so
+   * {@code [r:R&!S]} returns every relationship {@code [r:R]} returns that is not an {@code S}.
+   */
+  public abstract boolean matchesEdgeType(DocumentType edgeType);
 
   /**
    * The label names every match must carry: the plain positive names among the top-level conjuncts. A node that
@@ -87,8 +91,8 @@ public abstract sealed class LabelPredicate {
     }
 
     @Override
-    public boolean matchesEdgeType(final String edgeType) {
-      return label.equals(edgeType);
+    public boolean matchesEdgeType(final DocumentType edgeType) {
+      return edgeType != null && edgeType.instanceOf(label);
     }
 
     @Override
@@ -110,7 +114,7 @@ public abstract sealed class LabelPredicate {
     }
 
     @Override
-    public boolean matchesEdgeType(final String edgeType) {
+    public boolean matchesEdgeType(final DocumentType edgeType) {
       return edgeType != null;
     }
 
@@ -134,7 +138,7 @@ public abstract sealed class LabelPredicate {
     }
 
     @Override
-    public boolean matchesEdgeType(final String edgeType) {
+    public boolean matchesEdgeType(final DocumentType edgeType) {
       return !operand.matchesEdgeType(edgeType);
     }
 
@@ -149,7 +153,7 @@ public abstract sealed class LabelPredicate {
     private final LabelPredicate[] operands;
 
     public And(final LabelPredicate[] operands) {
-      this.operands = operands;
+      this.operands = operands.clone();
     }
 
     @Override
@@ -161,7 +165,7 @@ public abstract sealed class LabelPredicate {
     }
 
     @Override
-    public boolean matchesEdgeType(final String edgeType) {
+    public boolean matchesEdgeType(final DocumentType edgeType) {
       for (final LabelPredicate operand : operands)
         if (!operand.matchesEdgeType(edgeType))
           return false;
@@ -189,7 +193,7 @@ public abstract sealed class LabelPredicate {
     private final LabelPredicate[] operands;
 
     public Or(final LabelPredicate[] operands) {
-      this.operands = operands;
+      this.operands = operands.clone();
     }
 
     @Override
@@ -201,7 +205,7 @@ public abstract sealed class LabelPredicate {
     }
 
     @Override
-    public boolean matchesEdgeType(final String edgeType) {
+    public boolean matchesEdgeType(final DocumentType edgeType) {
       for (final LabelPredicate operand : operands)
         if (operand.matchesEdgeType(edgeType))
           return true;

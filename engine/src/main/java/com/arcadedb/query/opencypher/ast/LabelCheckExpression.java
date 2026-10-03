@@ -105,7 +105,7 @@ public class LabelCheckExpression implements BooleanExpression {
       if (value instanceof Vertex vertex)
         return predicate.matchesVertexType(vertex.getType());
       if (value instanceof Edge edge)
-        return predicate.matchesEdgeType(edge.getTypeName());
+        return predicate.matchesEdgeType(edge.getType());
       return false;
     }
 
