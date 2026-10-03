@@ -143,4 +143,34 @@ class Issue9019GraphBatchEdgeSchemaTest extends TestHelper {
       assertThat(edge.get("label")).isEqualTo("x");
     }
   }
+
+  @Test
+  void legacyLightEdgeOverrideStillAppliesDefaultsAndMandatory() {
+    declare("E_LDFLT9019", "STRING (default 'dflt')");
+    declare("E_LMAND9019", "STRING (mandatory true)");
+
+    final RID[] v = vertices();
+    try (final GraphBatch b = database.batch().withLightEdges(true).build()) {
+      b.newEdge(v[0], "E_LDFLT9019", v[1]);
+    }
+    assertThat(edgeOf(v[0], "E_LDFLT9019").get("p")).isEqualTo("dflt");
+
+    final RID[] w = vertices();
+    assertThatThrownBy(() -> {
+      try (final GraphBatch b = database.batch().withLightEdges(true).build()) {
+        b.newEdge(w[0], "E_LMAND9019", w[1]);
+      }
+    }).isInstanceOf(RuntimeException.class);
+  }
+
+  @Test
+  void malformedPropertyArgumentsAreRefused() {
+    final RID[] v = vertices();
+    try (final GraphBatch b = database.batch().build()) {
+      assertThatThrownBy(() -> b.newEdge(v[0], "E9020", v[1], "odd")).isInstanceOf(IllegalArgumentException.class);
+      final Map<String, Object> nullKey = new LinkedHashMap<>();
+      nullKey.put(null, 1);
+      assertThatThrownBy(() -> b.newEdge(v[0], "E9020", v[1], nullKey)).isInstanceOf(IllegalArgumentException.class);
+    }
+  }
 }

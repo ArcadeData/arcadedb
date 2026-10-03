@@ -27,7 +27,6 @@ import java.nio.charset.CharsetDecoder;
 import java.nio.charset.CoderResult;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
-import java.util.Arrays;
 
 /**
  * Lossless bytes &lt;-&gt; {@link String} codec for Redis bulk strings, which are binary-safe on the wire (issue #9057).
@@ -90,7 +89,7 @@ final class RedisBinaryCodec {
     if (!utf8() || !hasEscape(s))
       return s.getBytes(DatabaseFactory.getDefaultCharset());
 
-    final byte[] out = new byte[s.length() * 3];
+    final byte[] out = new byte[escapedLength(s)];
     int pos = 0;
     final int len = s.length();
     for (int i = 0; i < len; i++) {
@@ -116,13 +115,47 @@ final class RedisBinaryCodec {
         out[pos++] = (byte) (0x80 | (c & 0x3F));
       }
     }
-    return Arrays.copyOf(out, pos);
+    return out;
   }
 
   static int encodedLength(final String s) {
-    if (!utf8() || !hasEscape(s))
+    if (!utf8())
       return s.getBytes(DatabaseFactory.getDefaultCharset()).length;
-    return encode(s).length;
+    return escapedLength(s);
+  }
+
+  /** Counts the encoded bytes without building them. */
+  private static int escapedLength(final String s) {
+    int n = 0;
+    final int len = s.length();
+    for (int i = 0; i < len; i++) {
+      final char c = s.charAt(i);
+      if (c < 0x80 || isEscape(s, i, c))
+        n++;
+      else if (c < 0x800)
+        n += 2;
+      else if (Character.isHighSurrogate(c) && i + 1 < len && Character.isLowSurrogate(s.charAt(i + 1))) {
+        n += 4;
+        i++;
+      } else
+        n += Character.isSurrogate(c) ? 1 : 3;
+    }
+    return n;
+  }
+
+  /**
+   * Replaces every escaped byte with U+FFFD, which is what an invalid byte became before the codec existed. For the
+   * arguments of commands that parse their text (JSON, SQL, names), where a lone surrogate would not survive.
+   */
+  static String sanitize(final String s) {
+    if (!hasEscape(s))
+      return s;
+    final StringBuilder sb = new StringBuilder(s.length());
+    for (int i = 0; i < s.length(); i++) {
+      final char c = s.charAt(i);
+      sb.append(isEscape(s, i, c) ? '\uFFFD' : c);
+    }
+    return sb.toString();
   }
 
   private static boolean hasEscape(final String s) {
