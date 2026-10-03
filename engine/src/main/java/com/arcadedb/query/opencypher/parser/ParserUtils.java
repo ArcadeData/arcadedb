@@ -41,6 +41,9 @@ import java.util.concurrent.atomic.AtomicLong;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class ParserUtils {
+  // Numbers the internal variables newLabelExpressionVariable() hands out; global, see that method.
+  private static final AtomicLong LABEL_EXPRESSION_VARIABLE_COUNTER = new AtomicLong();
+
 
   /**
    * Strips backticks from an escaped symbolic name.
@@ -182,8 +185,6 @@ public class ParserUtils {
   public static String newLabelExpressionVariable() {
     return InternalVariables.PREFIX + "lblexpr" + LABEL_EXPRESSION_VARIABLE_COUNTER.getAndIncrement();
   }
-
-  private static final AtomicLong LABEL_EXPRESSION_VARIABLE_COUNTER = new AtomicLong();
 
   /**
    * The predicate a pattern element carries for a label expression {@link #buildLabelPredicate} returned, checked

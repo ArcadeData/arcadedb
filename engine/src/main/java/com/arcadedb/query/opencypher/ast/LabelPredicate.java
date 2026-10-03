@@ -110,7 +110,13 @@ public abstract sealed class LabelPredicate {
 
     @Override
     public boolean matchesVertexType(final DocumentType type) {
-      return type != null && !Labels.getLabels(type).isEmpty();
+      if (type == null)
+        return false;
+      // The common case - an ordinary type that extends nothing - is a label by itself; only the no-label sentinel
+      // is not. Anything else goes through the label walk, which allocates.
+      if (type.getSuperTypes().isEmpty())
+        return !Labels.NO_LABEL_TYPE.equals(type.getName());
+      return !Labels.getLabels(type).isEmpty();
     }
 
     @Override

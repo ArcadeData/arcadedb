@@ -197,6 +197,22 @@ class CypherLabelExpressionIssue8992Test {
   }
 
   @Test
+  void withStarDoesNotExposeTheVariableEither() {
+    try (final ResultSet rs = database.query("opencypher", "MATCH (:!A)-[r:T]->(:!%) WITH * RETURN *")) {
+      final List<Result> rows = rs.stream().toList();
+      assertThat(rows).hasSize(1);
+      assertThat(rows.getFirst().getPropertyNames()).containsExactly("r");
+    }
+  }
+
+  @Test
+  void labelExpressionOnAShortestPathEndpoint() {
+    assertThat(column("MATCH p = shortestPath((a:!A {id: 2})-[*]-(b:C|!% {id: 5})) RETURN length(p) AS l", "l"))
+        .containsExactly(3L);
+    assertThat(column("MATCH p = shortestPath((a:!B {id: 2})-[*]-(b {id: 5})) RETURN length(p) AS l", "l")).isEmpty();
+  }
+
+  @Test
   void optionalMatchKeepsTheRowWhenTheNegationExcludesEveryCandidate() {
     assertThat(column("MATCH (n {id: 2}) OPTIONAL MATCH (n)-->(m:!%&!A) RETURN m.id AS id", "id")).containsExactly(4);
     final List<Object> ids = column("MATCH (n {id: 2}) OPTIONAL MATCH (n)-->(m:%) RETURN m.id AS id", "id");
@@ -213,6 +229,10 @@ class CypherLabelExpressionIssue8992Test {
     assertThat(column("MATCH ()-[r:!R]->() RETURN count(r) AS c", "c")).containsExactly(2L);
     assertThat(column("MATCH ()-[:!R]->() RETURN count(*) AS c", "c")).containsExactly(2L);
     assertThat(column("MATCH (:A)-[:!R]->() RETURN count(*) AS c", "c")).containsExactly(1L);
+    // A positive label stays on the pattern for the scan, which makes a type-counter push-down tempting.
+    assertThat(column("MATCH (n:A&!B) RETURN count(n) AS c", "c")).containsExactly(1L);
+    assertThat(column("MATCH (:A&!B) RETURN count(*) AS c", "c")).containsExactly(1L);
+    assertThat(column("MATCH (:A&!B)-[:R]->() RETURN count(*) AS c", "c")).containsExactly(1L);
   }
 
   @Test
@@ -282,6 +302,9 @@ class CypherLabelExpressionIssue8992Test {
     assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher", "CREATE (n:!A)")))
         .isInstanceOf(CommandParsingException.class).hasMessageContaining("CREATE");
     assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher", "CREATE (:A)-[:!R]->(:B)")))
+        .isInstanceOf(CommandParsingException.class).hasMessageContaining("CREATE");
+    // A conjunction of relationship types cannot be created either: a relationship has exactly one type.
+    assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher", "CREATE (:A)-[:R&S]->(:B)")))
         .isInstanceOf(CommandParsingException.class).hasMessageContaining("CREATE");
   }
 
