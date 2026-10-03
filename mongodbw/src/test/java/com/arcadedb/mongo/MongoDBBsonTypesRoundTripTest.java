@@ -40,7 +40,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 
 import static com.mongodb.client.model.Filters.eq;
 import static com.mongodb.client.model.Filters.gt;
@@ -288,5 +290,15 @@ public class MongoDBBsonTypesRoundTripTest extends BaseMongoServerTest {
     collection.insertOne(new Document("_id", 48).append("x", 1));
     assertThatThrownBy(() -> collection.updateOne(eq("_id", 48), set("v", Decimal128.NaN))).isInstanceOf(MongoCommandException.class);
     assertThat(collection.find(eq("_id", 48)).first().containsKey("v")).isFalse();
+  }
+
+  @Test
+  void malformedTagWithNestedDateStillReads() {
+    final Database db = getServer(0).getDatabase(getDatabaseName());
+    db.transaction(() -> db.newDocument("bson").set("_id", 50)
+        .set("v", Map.of(MongoBsonValues.TAG, "timestamp", "when", LocalDateTime.of(2024, 1, 2, 3, 4))).save());
+    final Document back = collection.find(eq("_id", 50)).first();
+    assertThat(back).isNotNull();
+    assertThat(((Document) back.get("v")).get(MongoBsonValues.TAG)).isEqualTo("timestamp");
   }
 }
