@@ -632,7 +632,7 @@ public class JSONObject implements Map<String, Object> {
         if (strValue.contains(".") || strValue.contains("e") || strValue.contains("E")) {
           // Contains decimal point or scientific notation: a double, unless it carries more digits than a double holds
           final double doubleVal = primitive.getAsDouble();
-          if ((strValue.length() > 15 || !Double.isFinite(doubleVal)) && !isExactDouble(strValue, doubleVal))
+          if ((strValue.length() > 15 || Math.abs(doubleVal) < Double.MIN_NORMAL || !Double.isFinite(doubleVal)) && !isExactDouble(strValue, doubleVal))
             return new BigDecimal(strValue);
           return doubleVal;
         } else {

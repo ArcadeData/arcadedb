@@ -63,6 +63,7 @@ import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Consumer;
 import java.util.logging.Level;
@@ -107,8 +108,9 @@ public class RemoteHttpComponent extends RWLockContext {
   private volatile Pair<String, Integer>       leaderServer;
   private volatile int                         currentReplicaServerIndex = -1;
   // Learned from any response of the server: it answers a request that carries the same X-Request-Id from its replay cache. The value
-  // names the server process, which a retry sends back so a server that restarted since refuses it (issue #8526)
-  private volatile String                      serverReplayInstance;
+  // names the server process, kept per server (host:port) and sent back by a retry to that same server only, so a server that restarted
+  // since refuses it while a failover to another server is not affected (issue #8526)
+  final            Map<String, String>        serverReplayInstances   = new ConcurrentHashMap<>();
   static final     String                      HEADER_REQUEST_ID         = "X-Request-Id";
   static final     String                      HEADER_REPLAY_PROTECTION  = "X-ArcadeDB-Replay-Protection";
   static final     String                      HEADER_REPLAY_INSTANCE    = "X-ArcadeDB-Replay-Instance";
@@ -487,7 +489,9 @@ public class RemoteHttpComponent extends RWLockContext {
     // One id per logical call, sent again with every attempt, so that a write whose response was lost can be sent again: the server
     // answers the replay from its IdempotencyCache instead of running the statement twice (issue #8526). Not for a request inside
     // a remote transaction, whose outcome is not settled until the commit and which the server never caches.
-    final boolean replayProtected = !replayable && controlPlane == null && "POST".equalsIgnoreCase(method) && payloadCommand != null
+    // Only the command route, which the server caches by request id (other routes may opt out of the cache)
+    final boolean replayProtected = !replayable && controlPlane == null && "command".equals(operation) && "POST".equalsIgnoreCase(method)
+        && payloadCommand != null
         && !(this instanceof RemoteDatabase sessionDb && sessionDb.getSessionId() != null);
     final String requestId = replayProtected ? UUID.randomUUID().toString() : null;
 
@@ -517,8 +521,9 @@ public class RemoteHttpComponent extends RWLockContext {
 
         if (requestId != null) {
           requestBuilder = requestBuilder.header(HEADER_REQUEST_ID, requestId);
-          if (retry > 0 && serverReplayInstance != null)
-            requestBuilder = requestBuilder.header(HEADER_REPLAY_INSTANCE, serverReplayInstance);
+          final String advertisedInstance = serverReplayInstances.get(server);
+          if (retry > 0 && advertisedInstance != null)
+            requestBuilder = requestBuilder.header(HEADER_REPLAY_INSTANCE, advertisedInstance);
         }
 
         HttpRequest request;
@@ -568,7 +573,8 @@ public class RemoteHttpComponent extends RWLockContext {
 
         HttpResponse<String> response = sendWithWatchdog(request);
 
-        response.headers().firstValue(HEADER_REPLAY_PROTECTION).ifPresent(instance -> serverReplayInstance = instance);
+        final String replayServer = server;
+        response.headers().firstValue(HEADER_REPLAY_PROTECTION).ifPresent(instance -> serverReplayInstances.put(replayServer, instance));
 
         // Capture commit-index from response for read-your-writes consistency.
         if (this instanceof RemoteDatabase remoteDb)
@@ -614,7 +620,7 @@ public class RemoteHttpComponent extends RWLockContext {
 
         if (connectionStrategy == CONNECTION_STRATEGY.FIXED || stickyPinned) {
           // The same server, which holds the entry of a write it applied: with the id on the request the replay is answered, not run again
-          refuseToReplayAPossiblyAppliedRequest(e, replayable || requestId != null && serverReplayInstance != null, messageLabel,
+          refuseToReplayAPossiblyAppliedRequest(e, replayable || requestId != null && serverReplayInstances.containsKey(server), messageLabel,
               connectToServer);
           LogManager.instance()
               .log(this, Level.WARNING, "Remote server (%s:%d) seems unreachable, retrying...",
