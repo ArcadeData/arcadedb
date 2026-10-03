@@ -1042,14 +1042,21 @@ public class SelectExecutionPlanner {
   }
 
   /**
+   * Shared by {@link #splitProjectionsForGroupBy} and {@link #addOrderByProjections}: the ORDER BY can get extra projections only when
+   * none of these early-exit conditions holds.
+   */
+  private static boolean canAddOrderByProjections(final QueryPlanningInfo info) {
+    return !(info.orderApplied || info.expand || info.unwind != null || info.orderBy == null || info.orderBy.getItems().size() == 0
+        || info.projection == null || info.projection.getItems() == null || (info.projection.getItems().size() == 1
+        && info.projection.getItems().getFirst().isAll()));
+  }
+
+  /**
    * creates additional projections for ORDER BY
    */
   private static void addOrderByProjections(final QueryPlanningInfo info, final CommandContext context) {
-    if (info.orderApplied || info.expand || info.unwind != null || info.orderBy == null || info.orderBy.getItems().size() == 0
-        || info.projection == null || info.projection.getItems() == null || (info.projection.getItems().size() == 1
-        && info.projection.getItems().getFirst().isAll())) {
+    if (!canAddOrderByProjections(info))
       return;
-    }
 
     final OrderBy newOrderBy = info.orderBy.copy();
     final List<ProjectionItem> additionalOrderByProjections = calculateAdditionalOrderByProjections(info.projection.getAllAliases(),
@@ -1069,7 +1076,10 @@ public class SelectExecutionPlanner {
           // AN AGGREGATE IN ORDER BY (ORDER BY sum(v)) MUST BE SPLIT LIKE ANY AGGREGATE IN THE PROJECTION, OTHERWISE IT IS EVALUATED PER
           // RECORD AND THE GROUP TAKES THE VALUE OF ITS FIRST RECORD (#8973)
           final AggregateProjectionSplit split = new AggregateProjectionSplit();
+          // CONTINUE THE GENERATED ALIAS NUMBERING OF THE PROJECTION SPLIT, OTHERWISE TWO AGGREGATES SHARE ONE ALIAS AND ACCUMULATE TWICE
+          split.setNextAliasId(info.nextAggregateAliasId);
           final ProjectionItem post = item.splitForAggregation(split, context);
+          info.nextAggregateAliasId = split.getNextAliasId();
           post.setAlias(new Identifier(item.getAlias(), true));
           if (info.preAggregateProjection == null) {
             info.preAggregateProjection = new Projection();
@@ -1201,7 +1211,7 @@ public class SelectExecutionPlanner {
         }
 
     // AN AGGREGATE ONLY IN ORDER BY (SELECT k ... GROUP BY k ORDER BY count(*)) ALSO NEEDS THE SPLIT, addOrderByProjections() ADDS ITS PARTS (#8973)
-    if (!isSplitted && info.orderBy != null && info.orderBy.getItems() != null)
+    if (!isSplitted && canAddOrderByProjections(info))
       for (final OrderByItem orderItem : info.orderBy.getItems())
         if (orderItem.expression != null && orderItem.expression.isAggregate(context)) {
           isSplitted = true;
@@ -1232,6 +1242,7 @@ public class SelectExecutionPlanner {
     }
 
     //bind split projections to the execution planner
+    info.nextAggregateAliasId = result.getNextAliasId();
     if (isSplitted) {
       info.preAggregateProjection = preAggregate;
       if (info.preAggregateProjection.getItems() == null || info.preAggregateProjection.getItems().size() == 0) {

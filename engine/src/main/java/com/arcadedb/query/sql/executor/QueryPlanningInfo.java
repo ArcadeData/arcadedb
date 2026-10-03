@@ -48,6 +48,7 @@ public class QueryPlanningInfo {
   Projection aggregateProjection;
   Projection projection             = null;
   Projection projectionAfterOrderBy = null;
+  int        nextAggregateAliasId   = 0;
   Projection projectionAfterUnwind  = null;
 
   LetClause globalLetClause  = null;
@@ -94,6 +95,7 @@ public class QueryPlanningInfo {
     result.aggregateProjection = this.aggregateProjection;
     result.projection = this.projection;
     result.projectionAfterOrderBy = this.projectionAfterOrderBy;
+    result.nextAggregateAliasId = this.nextAggregateAliasId;
     result.projectionAfterUnwind = this.projectionAfterUnwind;
     result.globalLetClause = this.globalLetClause;
     result.globalLetPresent = this.globalLetPresent;
