@@ -312,6 +312,16 @@ public class SQLQueryEngine implements QueryEngine {
               }
 
               @Override
+              public int getMinArgs() {
+                return statelessFn.getMinArgs();
+              }
+
+              @Override
+              public int getMaxArgs() {
+                return statelessFn.getMaxArgs();
+              }
+
+              @Override
               public String getSyntax() {
                 return statelessFn.getName() + "(...)";
               }

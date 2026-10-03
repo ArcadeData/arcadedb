@@ -160,9 +160,10 @@ public class JsonSerializer {
         for (final Map.Entry<String, Object> entry : document.toMap().entrySet()) {
           // Issue #4149: keep precision-aware formatting on the projection branch too.
           Object projValue = serializeObject(database, entry.getValue());
-          if (type != null && type.existsProperty(entry.getKey()))
-            projValue = formatTemporalForPrecision(projValue, type.getProperty(entry.getKey()).getType(),
-                schemaDateTimeFormat, schemaDateFormat);
+          // Undeclared properties go through it too (null type = the value's own precision), as in serializeDocument (#9005).
+          projValue = formatTemporalForPrecision(projValue,
+              type != null && type.existsProperty(entry.getKey()) ? type.getProperty(entry.getKey()).getType() : null,
+              schemaDateTimeFormat, schemaDateFormat);
           object.put(entry.getKey(), projValue);
         }
         return object;

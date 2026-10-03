@@ -80,8 +80,8 @@ DEFINED: D E F I N E D;
 DEFINE: D E F I N E;
 
 // Ordering Keywords
-ORDER_BY: O R D E R WS+ B Y;
-GROUP_BY: G R O U P WS+ B Y;
+ORDER_BY: O R D E R GAP+ B Y;
+GROUP_BY: G R O U P GAP+ B Y;
 BY: B Y;
 COLLATE: C O L L A T E;
 ASC: A S C;
@@ -543,6 +543,13 @@ BLOCK_COMMENT
 
 WS
     : [ \t\r\n\f]+ -> channel(HIDDEN)
+    ;
+
+// Whitespace or a comment: the two-word keywords ORDER BY / GROUP BY are single tokens, so comments between the words must be part of the token
+fragment GAP
+    : [ \t\r\n\f]
+    | '--' ' ' ~[\r\n]*
+    | '/*' .*? '*/'
     ;
 
 // ============================================================================
