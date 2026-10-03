@@ -558,7 +558,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       // holds them too when it is composite, as it drops a key only when every property is null (issue #8978)
       if (convertedTo != null && (convertedFrom == null || convertedTo.length > convertedFrom.length)
           && index.supportsOrderedIterations() && (index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.INDEX
-          || index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.SKIP && index.getPropertyNames().size() > 1)) {
+          || (index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.SKIP && index.getPropertyNames().size() > 1))) {
         final int prefix = convertedFrom == null ? 0 : convertedFrom.length;
         final Object[] extended = new Object[prefix + 1];
         if (prefix > 0)
