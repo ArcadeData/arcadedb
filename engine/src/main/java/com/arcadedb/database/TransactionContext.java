@@ -141,6 +141,7 @@ public class TransactionContext implements Transaction {
   private static final int                           RECORDS_CACHE_CAPACITY = 1024;
   private static final int                           PAGES_CACHE_CAPACITY   = 64;
   private static final int                           DELETED_SET_CAPACITY   = 256;
+  // a record position must fit the 40 low bits of a packed (bucket id, position) target
   private static final int                           UNIDIRECTIONAL_TARGET_BUCKET_SHIFT = 40;
   private       Map<RID, Record>                     immutableRecordsCache = new HashMap<>(RECORDS_CACHE_CAPACITY);
   private       Map<RID, Record>                     modifiedRecordsCache  = new HashMap<>(RECORDS_CACHE_CAPACITY);
@@ -281,8 +282,8 @@ public class TransactionContext implements Transaction {
   // #8986: TransactionManager.getUnidirectionalEdgeSequence() when this transaction first scanned for the edges ending in
   // a vertex it deletes, or -1 when it did not
   private       long                                 unidirectionalScanEpoch = -1L;
-  // #8986: the buckets of the records this transaction deleted, to ask which of them received unidirectional edges since
-  private       IntHashSet                           deletedBuckets;
+  // #8986: the buckets of the vertices whose incoming unidirectional edges were scanned for, to ask which of them received some since
+  private       IntHashSet                           scannedBuckets;
   // #8610: identifies the transaction a vertex was read in. Drawn from one JVM-wide sequence, not counted per context,
   // so that a nested transaction (a context of its own) can never share a value with the one it is nested in.
   private static final AtomicLong                    BEGIN_SEQUENCE        = new AtomicLong();
@@ -2837,9 +2838,15 @@ public class TransactionContext implements Transaction {
    * A delete of this transaction is about to scan for the unidirectional edges ending in its vertex. An edge another
    * transaction publishes after this point is one the scan cannot find, so the commit refuses to go on (#8986).
    */
-  public void noteUnidirectionalEdgeScan() {
+  public void noteUnidirectionalEdgeScan(final int vertexBucketId) {
+    // The epoch of the FIRST scan: the delete lookup shares one snapshot per transaction, so a later vertex is covered by it too.
+    // REPEATABLE_READ does not weaken it: the scan reads committed edges at the time of the snapshot, and an edge committed
+    // before the epoch was taken is visible to it
     if (unidirectionalScanEpoch < 0L)
       unidirectionalScanEpoch = database.getTransactionManager().getUnidirectionalEdgeSequence();
+    if (scannedBuckets == null)
+      scannedBuckets = new IntHashSet();
+    scannedBuckets.add(vertexBucketId);
   }
 
   /** The unidirectional edge changes of this context, created on the first call. */
@@ -2857,7 +2864,7 @@ public class TransactionContext implements Transaction {
   public void reset() {
     unidirectionalEdgeTargets = null;
     unidirectionalScanEpoch = -1L;
-    deletedBuckets = null;
+    scannedBuckets = null;
     if (unidirectionalEdgeChanges != null)
       unidirectionalEdgeChanges.transactionEnded();
     // #7933: FIRST, while the file locks below are still held. This is the point every conclusion that is NOT a
@@ -3028,10 +3035,10 @@ public class TransactionContext implements Transaction {
    * new record that reused the freed slot passes it.
    */
   private void checkUnidirectionalEdgesAgainstConcurrentDeletes() {
-    if (unidirectionalScanEpoch >= 0L && deletedBuckets != null) {
+    if (unidirectionalScanEpoch >= 0L && scannedBuckets != null) {
       final TransactionManager manager = database.getTransactionManager();
       final boolean[] moved = new boolean[1];
-      deletedBuckets.forEach(bucketId -> moved[0] |= manager.hasUnidirectionalEdgesCommittedSince(bucketId, unidirectionalScanEpoch));
+      scannedBuckets.forEach(bucketId -> moved[0] |= manager.hasUnidirectionalEdgesCommittedSince(bucketId, unidirectionalScanEpoch));
       if (moved[0])
         throw new ConcurrentModificationException("A unidirectional edge ending in a vertex deleted by this transaction was "
             + "committed by a concurrent transaction after the edges to delete were looked up. Please retry the operation");
@@ -3297,9 +3304,6 @@ public class TransactionContext implements Transaction {
    */
   public void addDeletedRecord(final RID rid) {
     deletedRecordsInTx.add(rid);
-    if (deletedBuckets == null)
-      deletedBuckets = new IntHashSet();
-    deletedBuckets.add(rid.getBucketId());
     // A record deleted after an in-tx update no longer needs its indexed-state snapshot (#4935): the delete
     // removes the index entries through its own path, so drop the retained memory right away.
     if (updatedRecordsIndexSnapshot != null)

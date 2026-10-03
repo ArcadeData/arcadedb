@@ -262,7 +262,7 @@ public final class IncomingEdgeLookup {
     if (tx != null)
       // BEFORE THE SCAN, AND BEFORE TYPES WITH NO EDGE YET ARE LEFT OUT: AN EDGE COMMITTED FROM HERE ON IS ONE THE DELETE DOES
       // NOT SEE, AND ITS COMMIT MUST FAIL (ISSUE #8986)
-      tx.noteUnidirectionalEdgeScan();
+      tx.noteUnidirectionalEdgeScan(target.getBucketId());
 
     final List<String> types = new ArrayList<>(2);
     for (final String name : cachedClosure(schema, null).unidirectional)
