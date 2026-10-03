@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.RecordNotFoundException;
@@ -285,51 +286,42 @@ public class ShortestPathStep extends AbstractExecutionStep {
   }
 
   /**
-   * Enumerates every simple path between {@code source} and {@code target} sharing the minimum length.
-   * <p>
-   * Implementation: layered BFS that records, for each visited vertex, the full set of predecessors that
-   * reached it on the same BFS layer. Once {@code target} is discovered, BFS halts at the end of that
-   * layer (any further expansion would only find longer paths) and all paths are reconstructed by
-   * back-tracking through the predecessor multimap. Respects relationship direction and the type filter
-   * declared in the pattern.
-   * <p>
-   * For issue #4239: {@code allShortestPaths()} must return every path of the minimal length, not just
-   * one. The legacy implementation returned the single path that {@link SQLFunctionShortestPath} happened
-   * to find first, violating the OpenCypher contract.
+   * Enumerates every path between {@code source} and {@code target} sharing the minimum length, honouring the
+   * pattern's inline edge constraint, direction, type filter and hop bounds.
    */
   private List<List<Object>> computeAllShortestPaths(final Vertex source, final Vertex target, final Result inputResult,
       final CommandContext context) {
-    // Inline edge constraints must be enforced on every hop; the vertex-only BFS below cannot see edge
-    // properties, so delegate to the edge-aware variant when a property map or inline WHERE is declared.
     final HopBounds bounds = patternHopBounds();
 
+    // Inline edge constraints must be enforced on every hop; the vertex-only BFS cannot see edge properties,
+    // so delegate to the edge-aware variant when a property map or inline WHERE is declared.
     final EdgeConstraint constraint = edgeConstraint(inputResult, context);
     if (constraint != null)
       return computeFilteredAllShortestPaths(source, target, patternDirection(), patternEdgeTypesArray(), constraint,
           bounds, context.getDatabase(), context);
 
-    final List<String> edgeTypes;
-    if (pattern.getRelationshipCount() > 0 && pattern.getRelationship(0).hasTypes())
-      edgeTypes = pattern.getRelationship(0).getTypes();
-    else
-      edgeTypes = null;
+    return computeAllShortestPaths(source, target, patternDirection(), patternEdgeTypesArray(), bounds, context);
+  }
 
-    Vertex.DIRECTION direction = Vertex.DIRECTION.BOTH;
-    if (pattern.getRelationshipCount() > 0) {
-      final Direction dir = pattern.getRelationship(0).getDirection();
-      switch (dir) {
-        case OUT:
-          direction = Vertex.DIRECTION.OUT;
-          break;
-        case IN:
-          direction = Vertex.DIRECTION.IN;
-          break;
-        default:
-          direction = Vertex.DIRECTION.BOTH;
-      }
-    }
-
-    final Database database = context.getDatabase();
+  /**
+   * Enumerates every path between {@code source} and {@code target} sharing the minimum length, with no
+   * per-edge constraint.
+   * <p>
+   * Implementation: layered BFS over vertices that records, for each visited vertex, the distinct
+   * predecessors that reached it on the same BFS layer. Once {@code target} is discovered, BFS halts at the
+   * end of that layer (any further expansion would only find longer paths) and the paths are reconstructed
+   * by back-tracking through the predecessor multimap, branching on EVERY relationship that joins two
+   * consecutive vertices: parallel relationships are distinct paths (issue #8995).
+   * <p>
+   * For issue #4239: {@code allShortestPaths()} must return every path of the minimal length, not just
+   * one. Shared by the {@code MATCH p = allShortestPaths(...)} form and the {@code RETURN allShortestPaths(...)}
+   * expression form.
+   *
+   * @param edgeTypes restrict edges to these types, or null/empty to allow any type
+   * @param bounds    the {@code *min..max} hop bounds declared on the pattern relationship (issue #7009)
+   */
+  public static List<List<Object>> computeAllShortestPaths(final Vertex source, final Vertex target,
+      final Vertex.DIRECTION direction, final String[] edgeTypes, final HopBounds bounds, final CommandContext context) {
     final RID sourceRid = source.getIdentity();
     final RID targetRid = target.getIdentity();
 
@@ -343,11 +335,14 @@ public class ShortestPathStep extends AbstractExecutionStep {
       return Collections.singletonList(singleNode);
     }
 
-    final String[] typesArray = edgeTypes == null || edgeTypes.isEmpty() ? null : edgeTypes.toArray(new String[0]);
+    final String[] typesArray = edgeTypes == null || edgeTypes.length == 0 ? null : edgeTypes;
 
     // distance from source. Acts as visited-set too.
     final Map<RID, Integer> distance = new HashMap<>();
-    // For each vertex, the set of parents that reached it at the same BFS depth (= co-shortest predecessors).
+    // For each vertex, the distinct parents that reached it at the same BFS depth (= co-shortest predecessors).
+    // A parent appears once however many parallel relationships join it to the vertex: the relationships are
+    // enumerated at reconstruction time, so recording the parent once per relationship would multiply every
+    // path through it by the same factor a second time.
     final Map<RID, List<RID>> predecessors = new HashMap<>();
     distance.put(sourceRid, 0);
 
@@ -377,6 +372,7 @@ public class ShortestPathStep extends AbstractExecutionStep {
       final Set<RID> nextLayerSeen = new HashSet<>();
 
       for (final Vertex v : currentLayer) {
+        final RID vRid = v.getIdentity();
         // The incoming side of a unidirectional edge type comes from the query's lookup (issue #8625)
         for (final Iterator<Vertex> neighbors = IncomingEdgeLookup.getVertices(context, v, direction, typesArray);
             neighbors.hasNext(); ) {
@@ -386,15 +382,18 @@ public class ShortestPathStep extends AbstractExecutionStep {
           if (existing == null) {
             distance.put(neighborRid, currentDepth + 1);
             final List<RID> parents = new ArrayList<>(1);
-            parents.add(v.getIdentity());
+            parents.add(vRid);
             predecessors.put(neighborRid, parents);
             if (neighborRid.equals(targetRid))
               foundDepth = currentDepth + 1;
             else if (nextLayerSeen.add(neighborRid))
               nextLayer.add(neighbor);
           } else if (existing == currentDepth + 1) {
-            // Another co-shortest predecessor at the same BFS depth.
-            predecessors.get(neighborRid).add(v.getIdentity());
+            // Another co-shortest predecessor at the same BFS depth. Every relationship of v is walked before the
+            // next vertex of the layer, so a parallel relationship from v finds v as the last parent recorded.
+            final List<RID> parents = predecessors.get(neighborRid);
+            if (!parents.get(parents.size() - 1).equals(vRid))
+              parents.add(vRid);
           }
         }
       }
@@ -407,15 +406,11 @@ public class ShortestPathStep extends AbstractExecutionStep {
     if (foundDepth < 0 || !bounds.accepts(foundDepth))
       return Collections.emptyList();
 
-    // Backtrack from target through every predecessor chain to produce every path of length foundDepth.
-    final List<List<RID>> ridPaths = new ArrayList<>();
-    final Deque<RID> stack = new ArrayDeque<>();
-    stack.push(targetRid);
-    buildAllPaths(targetRid, sourceRid, predecessors, stack, ridPaths);
-
-    final List<List<Object>> result = new ArrayList<>(ridPaths.size());
-    for (final List<RID> ridPath : ridPaths)
-      result.add(resolvePathWithEdges(ridPath, direction, edgeTypes, database));
+    // Backtrack from target through every predecessor chain and every relationship joining each hop.
+    final Database database = context.getDatabase();
+    final List<List<Object>> result = new ArrayList<>();
+    final Deque<Object> stack = new ArrayDeque<>();
+    buildAllPaths(target, sourceRid, predecessors, direction, typesArray, database, stack, result);
     return result;
   }
 
@@ -923,21 +918,38 @@ public class ShortestPathStep extends AbstractExecutionStep {
     }
   }
 
-  private static void buildAllPaths(final RID current, final RID sourceRid, final Map<RID, List<RID>> predecessors,
-      final Deque<RID> stack, final List<List<RID>> out) {
-    if (current.equals(sourceRid)) {
+  /**
+   * Back-tracks from {@code current} to the source, pushing vertices and relationships so the stack reads
+   * source-to-target. Each hop branches on every relationship joining the parent to the current vertex, so
+   * parallel relationships yield distinct paths (issue #8995).
+   */
+  private static void buildAllPaths(final Vertex current, final RID sourceRid, final Map<RID, List<RID>> predecessors,
+      final Vertex.DIRECTION direction, final String[] edgeTypes, final Database database, final Deque<Object> stack,
+      final List<List<Object>> out) {
+    stack.push(current);
+    final RID currentRid = current.getIdentity();
+    if (currentRid.equals(sourceRid)) {
       // stack pushes from target down to source, so iterating head-to-tail yields source-to-target.
       out.add(new ArrayList<>(stack));
-      return;
-    }
-    final List<RID> parents = predecessors.get(current);
-    if (parents == null)
-      return;
-    for (final RID parent : parents) {
-      stack.push(parent);
-      buildAllPaths(parent, sourceRid, predecessors, stack, out);
       stack.pop();
+      return;
     }
+    final List<RID> parents = predecessors.get(currentRid);
+    if (parents != null) {
+      final List<Edge> connecting = new ArrayList<>(1);
+      for (final RID parentRid : parents) {
+        final Vertex parent = (Vertex) database.lookupByRID(parentRid, true);
+        connecting.clear();
+        collectConnectingEdges(parent, current, direction, edgeTypes, false, connecting);
+        // The recursion below allocates its own list per frame, so iterating this one while it runs is safe.
+        for (final Edge edge : connecting) {
+          stack.push(edge);
+          buildAllPaths(parent, sourceRid, predecessors, direction, edgeTypes, database, stack, out);
+          stack.pop();
+        }
+      }
+    }
+    stack.pop();
   }
 
   /**
@@ -981,48 +993,59 @@ public class ShortestPathStep extends AbstractExecutionStep {
    */
   private static Edge findConnectingEdge(final Vertex from, final Vertex to, final Vertex.DIRECTION direction,
       final List<String> edgeTypes) {
-    final Vertex.DIRECTION[] directions = direction == Vertex.DIRECTION.BOTH ?
-        new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN } :
-        new Vertex.DIRECTION[] { direction };
+    final String[] typesArray = edgeTypes == null || edgeTypes.isEmpty() ? null : edgeTypes.toArray(new String[0]);
+    final List<Edge> found = new ArrayList<>(1);
+    collectConnectingEdges(from, to, direction, typesArray, true, found);
+    return found.isEmpty() ? null : found.get(0);
+  }
 
-    final String[] typesArray = edgeTypes == null || edgeTypes.isEmpty() ? null :
-        edgeTypes.toArray(new String[0]);
+  /**
+   * Collects the relationships joining {@code from} to {@code to} when walked in {@code direction}, stopping at the
+   * first one when {@code firstOnly} is set.
+   * <p>
+   * The edge lists are filtered on the neighbour pointer they hold, so only the relationships that actually reach
+   * {@code to} are loaded rather than every relationship of {@code from}; over an edge type declared unidirectional,
+   * which stores no incoming side, they are looked for from the end that stores them (issue #8625).
+   *
+   * @param typesArray restrict edges to these types, or null to allow any type
+   */
+  private static void collectConnectingEdges(final Vertex from, final Vertex to, final Vertex.DIRECTION direction,
+      final String[] typesArray, final boolean firstOnly, final List<Edge> out) {
+    final RID fromRid = from.getIdentity();
+    final RID toRid = to.getIdentity();
 
-    for (final Vertex.DIRECTION dir : directions) {
-      // An edge type declared unidirectional stores no incoming side: the edge is found from the end that stores it
-      // (issue #8625)
-      if (dir == Vertex.DIRECTION.IN
-          && IncomingEdgeLookup.isIncomingSideMissing(from.getDatabase().getSchema(), dir, typesArray)) {
-        final Iterator<Edge> connecting = from instanceof VertexInternal internal ?
-            IncomingEdgeLookup.getEdgesConnectedTo(internal, Vertex.DIRECTION.IN, to.getIdentity(), typesArray) :
-            to.getEdges(Vertex.DIRECTION.OUT, typesArray).iterator();
-        while (connecting.hasNext()) {
-          final Edge edge = connecting.next();
-          try {
-            if (edge.getIn().equals(from.getIdentity()))
-              return edge;
-          } catch (final RecordNotFoundException e) {
-            GhostEdgeReporter.reportSkipped(e);
-          }
-        }
-        continue;
-      }
+    for (final Vertex.DIRECTION dir : expandDirections(direction)) {
+      final boolean incomingSideMissing = dir == Vertex.DIRECTION.IN
+          && IncomingEdgeLookup.isIncomingSideMissing(from.getDatabase().getSchema(), dir, typesArray);
 
-      final Iterable<Edge> edges = typesArray != null ?
-          from.getEdges(dir, typesArray) :
-          from.getEdges(dir);
+      final Iterator<Edge> connecting;
+      if (from instanceof VertexInternal internal)
+        connecting = incomingSideMissing ?
+            IncomingEdgeLookup.getEdgesConnectedTo(internal, dir, toRid, typesArray) :
+            ((DatabaseInternal) from.getDatabase()).getGraphEngine().getEdgesConnectedTo(internal, dir, toRid, typesArray);
+      else if (incomingSideMissing)
+        connecting = to.getEdges(Vertex.DIRECTION.OUT, typesArray).iterator();
+      else
+        connecting = (typesArray != null ? from.getEdges(dir, typesArray) : from.getEdges(dir)).iterator();
 
-      for (final Edge edge : edges) {
+      while (connecting.hasNext()) {
+        final Edge edge = connecting.next();
         try {
-          final RID connected = dir == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut();
-          if (connected.equals(to.getIdentity()))
-            return edge;
+          // The neighbour-filtered iterators answer only edges joining the two ends; the check is for the unfiltered
+          // fallbacks, where the incoming-side one walks every outgoing edge of the other end.
+          final boolean joins = dir == Vertex.DIRECTION.OUT ?
+              edge.getIn().equals(toRid) :
+              edge.getOut().equals(toRid) && edge.getIn().equals(fromRid);
+          if (joins) {
+            out.add(edge);
+            if (firstOnly)
+              return;
+          }
         } catch (final RecordNotFoundException e) {
           GhostEdgeReporter.reportSkipped(e);
         }
       }
     }
-    return null;
   }
 
   @Override
