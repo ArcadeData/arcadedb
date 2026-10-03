@@ -78,7 +78,10 @@ class Issue9113InScalarAndSubqueryScanEqualityTest extends TestHelper {
     assertIndexAndScanFind("l IN (?)", 5);
     assertIndexAndScanFind("m IN (?)", new BigDecimal("1.50"));
     assertIndexAndScanFind("t IN (?)", new Date(T));
+    assertIndexAndScanFind("d IN (?)", 0.0);
     assertThat(ids("S", "k IN (?)", 8L)).isEmpty();
+    assertThat(ids("S", "m IN (?)", new BigDecimal("1.51"))).isEmpty();
+    assertThat(ids("S", "t IN (?)", new Date(T + 1))).isEmpty();
   }
 
   @Test
