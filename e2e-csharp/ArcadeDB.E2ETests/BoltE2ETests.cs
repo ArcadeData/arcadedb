@@ -13,6 +13,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ *
  * Bolt protocol conformance suite for issue #4886.
  * Implements every non-TLS, non-HA scenario in bolt/conformance/spec.yaml
  * (issue #4883) against the official Neo4j.Driver NuGet package. Every

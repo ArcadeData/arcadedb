@@ -54,3 +54,8 @@ SPDX-License-Identifier = "Apache-2.0"
 path = ["glama.json","server.json"]
 SPDX-FileCopyrightText = "Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)"
 SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
+path = [".github/scripts/package.json",".github/scripts/tests/fixtures/**","bolt/conformance/badge.json","bolt/conformance/tools/testdata/**","e2e-go/go.sum","ha-raft/config/*.json*","studio/test/*.json"]
+SPDX-FileCopyrightText = "Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)"
+SPDX-License-Identifier = "Apache-2.0"

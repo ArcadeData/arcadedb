@@ -24,6 +24,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.*;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.ErrorCategory;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
@@ -54,6 +55,9 @@ import java.util.function.UnaryOperator;
 import java.util.logging.Level;
 
 public class RedisNetworkExecutor extends Thread {
+  /** Commands whose arguments are opaque bytes (issue #9057); see the argument loop in the command dispatch. */
+  private static final Set<String> BINARY_SAFE_COMMANDS = Set.of("SET", "ECHO", "PING");
+
   private final    ArcadeDBServer      server;
   private final    ChannelBinaryServer channel;
   private volatile boolean             shutdown         = false;
@@ -211,7 +215,7 @@ public class RedisNetworkExecutor extends Thread {
   public void replyToClient(final StringBuilder response) throws IOException {
     LogManager.instance().log(this, Level.FINE, "Redis wrapper: Sending response back to the client '%s'...", response);
 
-    final byte[] buffer = response.toString().getBytes(DatabaseFactory.getDefaultCharset());
+    final byte[] buffer = RedisBinaryCodec.encode(response);
 
     channel.outStream.write(buffer);
     channel.flush();
@@ -266,12 +270,21 @@ public class RedisNetworkExecutor extends Thread {
       // raw ClassCastException from the generic catch-all instead of this message. No handler actually
       // consumes a nested array argument today, so that's an obscure, already-non-crashing edge case rather
       // than a gap worth a recursive check for.
+      // Only SET, ECHO and PING carry opaque bytes (issue #9057). Every other command parses its arguments as text, where
+      // an escaped byte would be a lone surrogate, so it gets the replacement character instead.
+      // A new command that handles opaque bytes must be added here. The KEY of SET is text like the key of every lookup
+      // command (GET, EXISTS, DEL...), so it is sanitized the same way and stays findable.
+      final boolean binarySafe = BINARY_SAFE_COMMANDS.contains(cmdString);
+      final boolean keyIsText = "SET".equals(cmdString);
       for (int i = 1; i < list.size(); i++) {
-        if (list.get(i) == null) {
+        final Object arg = list.get(i);
+        if (arg == null) {
           value.append("-ERR Protocol error: unexpected null bulk string argument");
           appendCrLf();
           return;
         }
+        if ((!binarySafe || (keyIsText && i == 1)) && arg instanceof String str)
+          list.set(i, RedisBinaryCodec.sanitize(str));
       }
 
       // Redis maps commands directly to engine operations rather than going through
@@ -546,23 +559,32 @@ public class RedisNetworkExecutor extends Thread {
     // Check for transient mode: no dot in bucketName
     final int pos = bucketName.indexOf(".");
     if (pos < 0) {
-      // Transient mode: get from globalVariables
-      value.append("*");
-      value.append(keys.size());
-
+      // Transient mode: resolve every key BEFORE writing the array header, so a failure can never leave a reply that is
+      // shorter than its header announces (issue #9055). A RID with no record keeps its place as a null entry.
+      final List<String> values = new ArrayList<>(keys.size());
+      Database database = null;
       for (final Object keyObj : keys) {
-        appendCrLf();
         final String key = keyObj.toString();
         if (key.startsWith("#")) {
           // BY RID - persistent mode
-          final Database database = getAuthorizedDatabase(bucketName);
-          final Record record = database.lookupByRID(new RID(key), true);
-          respondValue(record != null ? record.toJSON(true) : null, true);
-        } else {
-          // Transient mode
-          final String transientValue = getTransientValue(bucketName, key);
-          respondValue(transientValue, true);
-        }
+          if (database == null)
+            database = getAuthorizedDatabase(bucketName);
+          Record record;
+          try {
+            record = database.lookupByRID(new RID(key), true);
+          } catch (final RecordNotFoundException e) {
+            record = null;
+          }
+          values.add(record != null ? record.toJSON(true).toString() : null);
+        } else
+          values.add(getTransientValue(bucketName, key));
+      }
+
+      value.append("*");
+      value.append(values.size());
+      for (final String v : values) {
+        appendCrLf();
+        respondValue(v, true);
       }
     } else {
       // Persistent mode: get records from database
@@ -649,7 +671,7 @@ public class RedisNetworkExecutor extends Thread {
     if (decimal) {
       final String text = newValue.toString();
       value.append("$");
-      value.append(text.getBytes(DatabaseFactory.getDefaultCharset()).length);
+      value.append(RedisBinaryCodec.encodedLength(text));
       appendCrLf();
       value.append(text);
     } else {
@@ -1161,7 +1183,7 @@ public class RedisNetworkExecutor extends Thread {
       // chars onto something byte-oriented, which is a larger change than this correctness fix warrants.
       final String text = v.toString();
       value.append("$");
-      value.append(text.getBytes(DatabaseFactory.getDefaultCharset()).length);
+      value.append(RedisBinaryCodec.encodedLength(text));
       appendCrLf();
       value.append(text);
     }
@@ -1186,7 +1208,7 @@ public class RedisNetworkExecutor extends Thread {
     for (; read < size && !shutdown; ++read)
       bytes[read] = readNext();
 
-    return new String(bytes, 0, read, DatabaseFactory.getDefaultCharset());
+    return RedisBinaryCodec.decode(bytes, read);
   }
 
   private byte readNext() throws IOException {

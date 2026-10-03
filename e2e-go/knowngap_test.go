@@ -13,6 +13,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
+// SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+// SPDX-License-Identifier: Apache-2.0
+//
 
 package e2e_go
 
