@@ -355,10 +355,9 @@ public class JSONArray implements Iterable<Object> {
     return this;
   }
 
-  public JSONArray put(Number object) {
-    if (Double.isNaN(object.doubleValue()) || Double.isInfinite(object.doubleValue()))
-      object = 0;
-    array.add(object);
+  public JSONArray put(final Number object) {
+    // NaN AND THE INFINITIES HAVE NO JSON LITERAL: null, as JSONObject.put(String, Number) does; a null number is JSON null too
+    array.add(object == null || JSONObject.isNonFinite(object) ? JsonNull.INSTANCE : new JsonPrimitive(object));
     return this;
   }
 
