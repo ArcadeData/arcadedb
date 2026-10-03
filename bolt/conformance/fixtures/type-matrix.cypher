@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+// SPDX-License-Identifier: Apache-2.0
+//
 // Bolt conformance type-round-trip fixture (issue #4883).
 // Seed via HTTP /command (language=cypher), NOT via a Bolt session - see
 // fixtures.type_matrix.seeded_by in spec.yaml for why.
