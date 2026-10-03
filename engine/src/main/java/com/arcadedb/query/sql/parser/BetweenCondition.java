@@ -42,58 +42,44 @@ public class BetweenCondition extends BooleanExpression {
 
   @Override
   public Boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
-    final Object firstValue = first.execute(currentRecord, context);
-    if (firstValue == null)
-      return null;
+    return evaluate(first.execute(currentRecord, context), second.execute(currentRecord, context), third.execute(currentRecord, context),
+        context);
+  }
 
-    Object secondValue = second.execute(currentRecord, context);
-    if (secondValue == null)
+  @Override
+  public Boolean evaluate(final Result currentRecord, final CommandContext context) {
+    return evaluate(first.execute(currentRecord, context), second.execute(currentRecord, context), third.execute(currentRecord, context),
+        context);
+  }
+
+  /**
+   * {@code x BETWEEN a AND b} is {@code x >= a AND x <= b} under SQL three-valued logic: a null operand makes its side unknown,
+   * and a side that is false still decides the result, so {@code 1 BETWEEN 5 AND NULL} is false while
+   * {@code 7 BETWEEN 5 AND NULL} is unknown (issue #8979).
+   */
+  private static Boolean evaluate(final Object firstValue, Object secondValue, Object thirdValue, final CommandContext context) {
+    if (firstValue == null)
       return null;
 
     // A bound with no defined ordering against firstValue (e.g. a non-numeric String bound on a numeric column)
     // makes the comparison undefined, not an error: report "not between" rather than let the raw conversion
     // failure (e.g. NumberFormatException) escape (#5900).
-    secondValue = Type.convertOrNull(context.getDatabase(), secondValue, firstValue.getClass());
-    if (secondValue == null) {
-      return false;
+    if (secondValue != null) {
+      secondValue = Type.convertOrNull(context.getDatabase(), secondValue, firstValue.getClass());
+      if (secondValue == null)
+        return false;
+    }
+    if (thirdValue != null) {
+      thirdValue = Type.convertOrNull(context.getDatabase(), thirdValue, firstValue.getClass());
+      if (thirdValue == null)
+        return false;
     }
 
-    Object thirdValue = third.execute(currentRecord, context);
-    if (thirdValue == null)
-      return null;
-
-    thirdValue = Type.convertOrNull(context.getDatabase(), thirdValue, firstValue.getClass());
-    if (thirdValue == null) {
+    final Boolean lower = secondValue == null ? null : isAtLeast(firstValue, secondValue);
+    final Boolean upper = thirdValue == null ? null : isAtMost(firstValue, thirdValue);
+    if (Boolean.FALSE.equals(lower) || Boolean.FALSE.equals(upper))
       return false;
-    }
-
-    return isBetween(firstValue, secondValue, thirdValue);
-  }
-
-  @Override
-  public Boolean evaluate(final Result currentRecord, final CommandContext context) {
-    final Object firstValue = first.execute(currentRecord, context);
-    if (firstValue == null)
-      return null;
-
-    Object secondValue = second.execute(currentRecord, context);
-    if (secondValue == null)
-      return null;
-
-    secondValue = Type.convertOrNull(context.getDatabase(), secondValue, firstValue.getClass());
-    if (secondValue == null) {
-      return false;
-    }
-
-    Object thirdValue = third.execute(currentRecord, context);
-    if (thirdValue == null)
-      return null;
-    thirdValue = Type.convertOrNull(context.getDatabase(), thirdValue, firstValue.getClass());
-    if (thirdValue == null) {
-      return false;
-    }
-
-    return isBetween(firstValue, secondValue, thirdValue);
+    return lower == null || upper == null ? null : Boolean.TRUE;
   }
 
   /**
@@ -103,11 +89,19 @@ public class BetweenCondition extends BooleanExpression {
    * {@code k BETWEEN a AND b} now agrees with {@code k >= a AND k <= b} and with the index serving either, which a scan
    * of the type relies on when it stands in for that index (issue #8333).
    */
-  private static boolean isBetween(final Object value, final Object from, final Object to) {
+  private static boolean isAtLeast(final Object value, final Object from) {
     try {
-      return BinaryComparator.compareTo(value, from) >= 0 && BinaryComparator.compareTo(value, to) <= 0;
+      return BinaryComparator.compareTo(value, from) >= 0;
     } catch (final IllegalArgumentException | IndexOutOfBoundsException e) {
       // No defined ordering between the value and a bound, as LeOperator and GeOperator report it (#5900)
+      return false;
+    }
+  }
+
+  private static boolean isAtMost(final Object value, final Object to) {
+    try {
+      return BinaryComparator.compareTo(value, to) <= 0;
+    } catch (final IllegalArgumentException | IndexOutOfBoundsException e) {
       return false;
     }
   }
