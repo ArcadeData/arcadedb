@@ -108,16 +108,20 @@ public final class ExistingRecordsCheck {
       if (!(records.next() instanceof Document document))
         continue;
       final DocumentValidator.ExistenceConstraint unmet = DocumentValidator.unmetExistenceConstraint(document, property);
-      final String prefix = "Cannot create property '" + type.getName() + "." + property.getName() + "': record "
-          + document.getIdentity() + " violates it, ";
-      final String suffix = ". Fix or delete the non-conforming records first";
       if (unmet != null)
-        throw new CommandExecutionException(prefix + DocumentValidator.describeUnmetExistenceConstraint(document, property) + suffix);
+        throw new CommandExecutionException(
+            createRefusal(type, property, document, DocumentValidator.describeUnmetExistenceConstraint(document, property)));
       try {
         DocumentValidator.validateStoredValue(document, property, constraints);
       } catch (final ValidationException e) {
-        throw new CommandExecutionException(prefix + e.getMessage() + suffix, e);
+        throw new CommandExecutionException(createRefusal(type, property, document, e.getMessage()), e);
       }
     }
+  }
+
+  private static String createRefusal(final DocumentType type, final Property property, final Document document,
+      final String reason) {
+    return "Cannot create property '" + type.getName() + "." + property.getName() + "': record " + document.getIdentity()
+        + " violates it, " + reason + ". Fix or delete the non-conforming records first";
   }
 }

@@ -272,4 +272,12 @@ class Issue9112ExistingRecordsConstraintsTest extends TestHelper {
         CommandExecutionException.class);
     assertThat(hasProperty("T", "v")).isFalse();
   }
+
+  @Test
+  void createPropertyRefusesNaNOverAnIntegralType() {
+    database.command("sql", "CREATE DOCUMENT TYPE T");
+    database.transaction(() -> database.newDocument("T").set("v", Double.NaN).save());
+    assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY T.v INTEGER")).isInstanceOf(CommandExecutionException.class);
+    assertThat(hasProperty("T", "v")).isFalse();
+  }
 }
