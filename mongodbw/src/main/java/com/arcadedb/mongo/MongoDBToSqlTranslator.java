@@ -369,8 +369,15 @@ public class MongoDBToSqlTranslator {
   private static Object toBsonValue(final Object value) {
     if (value instanceof Instant)
       return value;
-    else if (MongoBsonValues.isTagged(value) || value instanceof BigDecimal)
+    else if (value instanceof BigDecimal)
       return MongoBsonValues.toBson(value);
+    else if (MongoBsonValues.isTagged(value)) {
+      final Object bson = MongoBsonValues.toBson(value);
+      // a malformed tag stays a plain map and is converted like any other embedded document
+      if (bson != value)
+        return bson;
+      return convertMapToMongoDB((Map<String, Object>) value);
+    }
     else if (value instanceof LocalDateTime dateTime)
       return dateTime.toInstant(ZoneOffset.UTC);
     else if (value instanceof LocalDate date)
