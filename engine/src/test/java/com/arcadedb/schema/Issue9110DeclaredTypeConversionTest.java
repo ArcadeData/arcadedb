@@ -130,16 +130,16 @@ class Issue9110DeclaredTypeConversionTest extends TestHelper {
   @Test
   void numberToBooleanIsFalseOnlyForZero() {
     database.getSchema().createDocumentType("Bool9110").createProperty("flag", Type.BOOLEAN);
-    assertThat(roundTrip("Bool9110", "flag", 0)).isEqualTo(false);
-    assertThat(roundTrip("Bool9110", "flag", 0.0d)).isEqualTo(false);
-    assertThat(roundTrip("Bool9110", "flag", BigDecimal.ZERO)).isEqualTo(false);
-    assertThat(roundTrip("Bool9110", "flag", 1)).isEqualTo(true);
-    assertThat(roundTrip("Bool9110", "flag", 2)).isEqualTo(true);
-    assertThat(roundTrip("Bool9110", "flag", 0.5d)).isEqualTo(true);
-    assertThat(roundTrip("Bool9110", "flag", -0.5d)).isEqualTo(true);
-    assertThat(roundTrip("Bool9110", "flag", 4294967296L)).isEqualTo(true);
-    assertThat(roundTrip("Bool9110", "flag", 1e10d)).isEqualTo(true);
-    assertThat(roundTrip("Bool9110", "flag", "TRUE")).isEqualTo(true);
+    assertThat((Boolean) roundTrip("Bool9110", "flag", 0)).isFalse();
+    assertThat((Boolean) roundTrip("Bool9110", "flag", 0.0d)).isFalse();
+    assertThat((Boolean) roundTrip("Bool9110", "flag", BigDecimal.ZERO)).isFalse();
+    assertThat((Boolean) roundTrip("Bool9110", "flag", 1)).isTrue();
+    assertThat((Boolean) roundTrip("Bool9110", "flag", 2)).isTrue();
+    assertThat((Boolean) roundTrip("Bool9110", "flag", 0.5d)).isTrue();
+    assertThat((Boolean) roundTrip("Bool9110", "flag", -0.5d)).isTrue();
+    assertThat((Boolean) roundTrip("Bool9110", "flag", 4294967296L)).isTrue();
+    assertThat((Boolean) roundTrip("Bool9110", "flag", 1e10d)).isTrue();
+    assertThat((Boolean) roundTrip("Bool9110", "flag", "TRUE")).isTrue();
 
     assertRefused("Bool9110", "flag", new ArrayList<>(List.of(1, 2)));
     assertRefused("Bool9110", "flag", LocalDate.of(2026, 10, 3));
@@ -322,6 +322,15 @@ class Issue9110DeclaredTypeConversionTest extends TestHelper {
   void aListPropertyKeepsAcceptingNonLinkMembers() {
     database.getSchema().createDocumentType("ListMix9110").createProperty("l", Type.LIST);
     assertThat(roundTrip("ListMix9110", "l", new ArrayList<>(List.of("a", 1, true)))).isEqualTo(List.of("a", 1, true));
+  }
+
+  @Test
+  void nullMemberOfALinkListIsRefusedWithAClearMessage() {
+    database.getSchema().createDocumentType("LinkNull9110").createProperty("link", Type.LINK);
+    final List<Object> list = new ArrayList<>();
+    list.add(null);
+    assertThatThrownBy(() -> database.transaction(() -> database.newDocument("LinkNull9110").set("link", list).save()))
+        .isInstanceOf(IllegalArgumentException.class).hasStackTraceContaining("link");
   }
 
   @Test
