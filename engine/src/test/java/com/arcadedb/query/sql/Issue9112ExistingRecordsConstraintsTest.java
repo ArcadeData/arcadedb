@@ -280,4 +280,13 @@ class Issue9112ExistingRecordsConstraintsTest extends TestHelper {
     assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY T.v INTEGER")).isInstanceOf(CommandExecutionException.class);
     assertThat(hasProperty("T", "v")).isFalse();
   }
+
+  @Test
+  void createPropertyOverBooleanAcceptsBooleanLikeValues() {
+    database.command("sql", "CREATE DOCUMENT TYPE T");
+    insert("T", "v = true");
+    insert("T", "v = 1");
+    database.command("sql", "CREATE PROPERTY T.v BOOLEAN");
+    assertThat(hasProperty("T", "v")).isTrue();
+  }
 }
