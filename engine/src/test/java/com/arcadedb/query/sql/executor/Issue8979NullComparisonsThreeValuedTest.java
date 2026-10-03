@@ -109,4 +109,23 @@ class Issue8979NullComparisonsThreeValuedTest extends TestHelper {
       assertThat(rs.hasNext()).isFalse();
     }
   }
+
+  @Test
+  void unknownIsNotMetInModifierFilterAndScriptControlFlow() {
+    database.command("sql", "CREATE DOCUMENT TYPE D");
+    database.transaction(() -> database.command("sql", "INSERT INTO D SET items = [{x: 1}, {x: 9}, {y: 2}, {x: null}]"));
+    try (final ResultSet rs = database.query("sql", "SELECT items[x > 5] AS hit FROM D")) {
+      final List<?> hit = rs.next().getProperty("hit");
+      assertThat(hit).hasSize(1);
+    }
+
+    try (final ResultSet rs = database.command("sqlscript", "LET $v = null;\nIF ($v > 5) {\n  RETURN 'yes';\n}\nRETURN 'no';")) {
+      assertThat(rs.next().<String>getProperty("value")).isEqualTo("no");
+    }
+
+    try (final ResultSet rs = database.command("sqlscript",
+        "LET $v = null;\nLET $n = 0;\nWHILE ($v < 10) {\n  LET $n = $n + 1;\n}\nRETURN $n;")) {
+      assertThat(rs.next().<Number>getProperty("value").intValue()).isZero();
+    }
+  }
 }

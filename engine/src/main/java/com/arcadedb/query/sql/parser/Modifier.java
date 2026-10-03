@@ -143,7 +143,7 @@ public class Modifier extends SimpleNode {
     if (iResult.getClass().isArray()) {
       for (int i = 0; i < Array.getLength(iResult); i++) {
         final Object item = Array.get(iResult, i);
-        if (condition.evaluate(item, context))
+        if (Boolean.TRUE.equals(condition.evaluate(item, context)))
           result.add(item);
       }
       return result;
@@ -157,7 +157,7 @@ public class Modifier extends SimpleNode {
     if (iResult instanceof Iterator iterator) {
       while (iterator.hasNext()) {
         final Object item = iterator.next();
-        if (condition.evaluate(item, context))
+        if (Boolean.TRUE.equals(condition.evaluate(item, context)))
           result.add(item);
       }
     }
@@ -279,14 +279,14 @@ public class Modifier extends SimpleNode {
       return arrayRange.execute(currentRecord, target, context);
     else if (condition != null) {
       if (target instanceof Result || target instanceof Identifiable || target instanceof Map) {
-        if (condition.evaluate(target, context))
+        if (Boolean.TRUE.equals(condition.evaluate(target, context)))
           return target;
         else
           return null;
       } else if (MultiValue.isMultiValue(target)) {
         final List<Object> result = new ArrayList<>();
         for (final Object o : MultiValue.getMultiValueIterable(target)) {
-          if (condition.evaluate(target, context))
+          if (Boolean.TRUE.equals(condition.evaluate(target, context)))
             result.add(o);
         }
         return result;

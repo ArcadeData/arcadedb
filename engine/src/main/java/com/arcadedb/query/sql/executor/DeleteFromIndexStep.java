@@ -173,7 +173,7 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
 
       final ResultInternal res = new ResultInternal(context.getDatabase());
       res.setProperty("rid", result.getSecond());
-      if (ridCondition.evaluate(res, commandContext))
+      if (Boolean.TRUE.equals(ridCondition.evaluate(res, commandContext)))
         return result;
 
     }

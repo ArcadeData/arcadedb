@@ -19,10 +19,12 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 
@@ -83,5 +85,10 @@ class Issue8977NestedNumberKeysTest extends TestHelper {
   void allFormsAgreeWithOpenCypher() {
     assertThat(scalar("opencypher", "MATCH (n:T) RETURN count(DISTINCT n.x) AS c")).isEqualTo(4);
     assertThat(scalar("sql", "SELECT count(*) AS c FROM (SELECT DISTINCT x FROM T)")).isEqualTo(4);
+  }
+
+  @Test
+  void setsKeyByContentNotIterationOrder() {
+    assertThat(Type.normalizeForKey(new LinkedHashSet<>(List.of(1, 2, 3)))).isEqualTo(Type.normalizeForKey(new LinkedHashSet<>(List.of(3L, 2L, 1L))));
   }
 }
