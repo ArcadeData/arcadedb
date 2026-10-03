@@ -21,10 +21,10 @@ package com.arcadedb.mongo;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.parser.Identifier;
 import de.bwaldvogel.mongo.backend.Utils;
+import de.bwaldvogel.mongo.bson.BsonRegularExpression;
 import de.bwaldvogel.mongo.bson.Document;
 import de.bwaldvogel.mongo.bson.ObjectId;
 
-import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -36,6 +36,8 @@ import java.util.Date;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 
 public class MongoDBToSqlTranslator {
 
@@ -46,11 +48,10 @@ public class MongoDBToSqlTranslator {
         buffer.append(" AND ");
 
       final Object key = entry.getKey();
-      // a filter on _id matches the stored hex string; any other field matches the tagged ObjectId (see toBound)
-      final Object value = "_id".equals(key) ? MongoBsonValues.idFilter(entry.getValue()) : entry.getValue();
+      final Object value = entry.getValue();
 
       if (key instanceof String string && string.startsWith("$"))
-        buildExpression(buffer, params, string, value);
+        buildExpression(buffer, params, null, string, value);
       else if (value instanceof Document) {
         buildAnd(buffer, params, key, value);
       } else if (value instanceof List list) {
@@ -58,119 +59,173 @@ public class MongoDBToSqlTranslator {
           buildOr(buffer, params, list);
         } else
           throw new IllegalArgumentException("Invalid operator " + key);
-      } else if (value instanceof ObjectId objectId && !"_id".equals(key)) {
-        appendObjectIdEquality(buffer, params, quoteFieldPath(entry.getKey()), objectId, true);
-      } else {
-        buffer.append(quoteFieldPath(entry.getKey()));
-        buildEquality(buffer, params, true, value);
-      }
+      } else if (value instanceof BsonRegularExpression regex) {
+        buildRegex(buffer, params, quoteFieldPath(entry.getKey()), regex.getPattern(), regex.getOptions());
+      } else
+        buildEquality(buffer, params, quoteFieldPath(entry.getKey()), true, value);
     }
   }
 
-  /**
-   * Compares a non-{@code _id} field with an ObjectId. Data stored before ObjectIds were tagged holds the bare hex string, so both
-   * forms are matched (or, when negated, both excluded).
-   */
-  private static void appendObjectIdEquality(final StringBuilder buffer, final Map<String, Object> params, final String field,
-      final ObjectId objectId, final boolean positive) {
-    buffer.append('(').append(field).append(positive ? " = " : " <> ");
-    buildValue(buffer, params, objectId);
-    buffer.append(positive ? " OR " : " AND ").append(field).append(positive ? " = " : " <> ");
-    bindStored(buffer, params, objectId.getHexData());
-    buffer.append(')');
-  }
-
   protected static void buildAnd(final StringBuilder sql, final Map<String, Object> params, final Object key, final Object value) {
-    int expressionCount = 0;
-
     sql.append("(");
 
     if (value instanceof List) {
+      int expressionCount = 0;
       for (final Document o : (List<Document>) value) {
         if (expressionCount++ > 0)
           sql.append(" AND ");
 
         buildExpression(sql, params, o);
       }
-    } else if (value instanceof Document document) {
-      for (final Map.Entry<String, Object> subEntry : document.entrySet()) {
-        final String subKey = subEntry.getKey();
-        final Object subValue = subEntry.getValue();
-
-        if (expressionCount++ > 0)
-          sql.append(" AND ");
-
-        if ("$not".equals(subKey)) {
-          // buildExpression(sql,params,key,value) has no field parameter, so the negation is built here instead,
-          // where the field is still known: recursing into the operand without re-emitting the field would leave
-          // an operator with no left-hand side (e.g. "field NOT > :p0"), which the SQL parser rejects. A
-          // multi-operator operand (e.g. a range, {$not: {$gt: 1, $lt: 5}}) needs the field re-emitted for EACH
-          // operator and joined with AND, the same way the outer loop does across sibling fields.
-          final Document notOperand = (Document) subValue;
-          if (notOperand.isEmpty())
-            throw new IllegalArgumentException("$not requires a non-empty operator expression");
-
-          sql.append("NOT (");
-          int notExpressionCount = 0;
-          for (final Map.Entry<String, Object> notEntry : notOperand.entrySet()) {
-            // real MongoDB does not accept $not nested inside $not; rejecting it here avoids silently falling
-            // through to the top-level $not branch with no field in scope, which produces invalid SQL
-            if ("$not".equals(notEntry.getKey()))
-              throw new IllegalArgumentException("Nested $not is not supported");
-            if (notExpressionCount++ > 0)
-              sql.append(" AND ");
-            if (key != null)
-              sql.append(quoteFieldPath(key.toString()));
-            buildExpression(sql, params, notEntry.getKey(), notEntry.getValue());
-          }
-          sql.append(")");
-        } else if (key != null && !"_id".equals(key) && subValue instanceof ObjectId objectId && ("$eq".equals(subKey) || "$ne".equals(subKey))) {
-          appendObjectIdEquality(sql, params, quoteFieldPath(key.toString()), objectId, "$eq".equals(subKey));
-        } else {
-          if (key != null)
-            sql.append(quoteFieldPath(key.toString()));
-
-          buildExpression(sql, params, subKey, subValue);
-        }
-      }
-    }
+    } else if (value instanceof Document document)
+      appendOperators(sql, params, key != null ? quoteFieldPath(key.toString()) : null, document, true);
 
     sql.append(")");
   }
 
-  protected static void buildExpression(final StringBuilder sql, final Map<String, Object> params, final String key,
-      final Object value) {
+  /**
+   * Appends the operators applied to one field, e.g. {@code {$gt: 1, $lt: 5}}, joined with AND. {@code $regex} and its sibling
+   * {@code $options} form ONE condition, so {@code $options} is consumed together with {@code $regex}.
+   * <p>
+   * A field-scoped {@code $not} is built here, where the field is still known: MongoDB's {@code $not} also matches a document
+   * whose field is null or missing, whereas SQL's {@code NOT (field > :p)} is unknown (so the row is dropped) when the field is
+   * null. The negation is therefore {@code (field IS NULL OR NOT (...))} for every operator that can be unknown on a null.
+   * A multi-operator operand needs the field re-emitted for EACH operator, joined with AND.
+   */
+  private static void appendOperators(final StringBuilder sql, final Map<String, Object> params, final String field,
+      final Document operators, final boolean allowNot) {
+    if (field == null)
+      throw new IllegalArgumentException("The operators " + operators.keySet() + " need a field to apply to");
+
+    int expressionCount = 0;
+    for (final Map.Entry<String, Object> subEntry : operators.entrySet()) {
+      final String subKey = subEntry.getKey();
+      final Object subValue = subEntry.getValue();
+
+      if ("$options".equals(subKey)) {
+        if (!operators.containsKey("$regex"))
+          throw new IllegalArgumentException("$options needs a $regex");
+        continue;
+      }
+
+      if (expressionCount++ > 0)
+        sql.append(" AND ");
+
+      if ("$not".equals(subKey)) {
+        // real MongoDB does not accept $not nested inside $not; rejecting it here avoids silently falling
+        // through to the top-level $not branch with no field in scope, which produces invalid SQL
+        if (!allowNot)
+          throw new IllegalArgumentException("Nested $not is not supported");
+
+        final Document notOperand = subValue instanceof BsonRegularExpression regex ? regex.toDocument() :
+            subValue instanceof Document document ? document : null;
+        if (notOperand == null)
+          throw new IllegalArgumentException("$not needs a regex or a document");
+        if (notOperand.isEmpty())
+          throw new IllegalArgumentException("$not requires a non-empty operator expression");
+
+        boolean nullSensitive = false;
+        for (final Map.Entry<String, Object> operator : notOperand.entrySet())
+          if (!isTwoValued(operator.getKey(), operator.getValue()))
+            nullSensitive = true;
+
+        if (nullSensitive)
+          sql.append("(").append(field).append(" IS NULL OR ");
+        sql.append("NOT (");
+        appendOperators(sql, params, field, notOperand, false);
+        sql.append(")");
+        if (nullSensitive)
+          sql.append(")");
+      } else if ("$regex".equals(subKey)) {
+        if (subValue instanceof BsonRegularExpression regex)
+          buildRegex(sql, params, field, regex.getPattern(), regex.getOptions());
+        else
+          buildRegex(sql, params, field, String.valueOf(subValue),
+              operators.get("$options") != null ? operators.get("$options").toString() : null);
+      } else
+        buildExpression(sql, params, field, subKey, subValue);
+    }
+  }
+
+  /**
+   * @param field the already quoted field reference the operator applies to, or {@code null} for a top-level operator
+   *              ({@code $or}, {@code $and}, {@code $not}) which has none
+   */
+  protected static void buildExpression(final StringBuilder sql, final Map<String, Object> params, final String field,
+      final String key, final Object value) {
     if ("$in".equals(key)) {
-      if (value instanceof Collection collection) {
-        sql.append(" IN ");
-        buildCollection(sql, params, collection);
+      if (value instanceof Collection<?> collection) {
+        // MongoDB's {$in: [.., null]} matches a null or missing field too, which SQL's IN never does (unknown)
+        if (containsNull(collection)) {
+          final Collection<?> withoutNull = withoutNull(collection);
+          sql.append('(');
+          appendField(sql, field);
+          sql.append(" IS NULL");
+          if (!withoutNull.isEmpty()) {
+            sql.append(" OR ");
+            appendField(sql, field);
+            sql.append(" IN ");
+            buildCollection(sql, params, withoutNull);
+          }
+          sql.append(')');
+        } else {
+          appendField(sql, field);
+          sql.append(" IN ");
+          buildCollection(sql, params, collection);
+        }
       } else
         throw new IllegalArgumentException("Operator $in was expecting a collection");
     } else if ("$nin".equals(key)) {
-      if (value instanceof Collection collection) {
-        sql.append(" NOT IN ");
-        buildCollection(sql, params, collection);
+      if (value instanceof Collection<?> collection) {
+        // the exact complement of $in: a null or missing field is NOT in the list unless the list holds null itself
+        if (containsNull(collection)) {
+          final Collection<?> withoutNull = withoutNull(collection);
+          sql.append('(');
+          appendField(sql, field);
+          sql.append(" IS NOT NULL");
+          if (!withoutNull.isEmpty()) {
+            sql.append(" AND ");
+            appendField(sql, field);
+            sql.append(" NOT IN ");
+            buildCollection(sql, params, withoutNull);
+          }
+          sql.append(')');
+        } else {
+          sql.append('(');
+          appendField(sql, field);
+          sql.append(" IS NULL OR ");
+          appendField(sql, field);
+          sql.append(" NOT IN ");
+          buildCollection(sql, params, collection);
+          sql.append(')');
+        }
       } else
         throw new IllegalArgumentException("Operator $nin was expecting a collection");
     } else if ("$eq".equals(key)) {
-      buildEquality(sql, params, true, value);
+      buildEquality(sql, params, field, true, value);
     } else if ("$ne".equals(key)) {
-      buildEquality(sql, params, false, value);
+      buildEquality(sql, params, field, false, value);
     } else if ("$lt".equals(key)) {
+      appendField(sql, field);
       sql.append(" < ");
       buildValue(sql, params, value);
     } else if ("$lte".equals(key)) {
+      appendField(sql, field);
       sql.append(" <= ");
       buildValue(sql, params, value);
     } else if ("$gt".equals(key)) {
+      appendField(sql, field);
       sql.append(" > ");
       buildValue(sql, params, value);
     } else if ("$gte".equals(key)) {
+      appendField(sql, field);
       sql.append(" >= ");
       buildValue(sql, params, value);
     } else if ("$exists".equals(key)) {
+      appendField(sql, field);
       sql.append(Utils.isTrue(value) ? " IS DEFINED " : " IS NOT DEFINED ");
     } else if ("$size".equals(key)) {
+      appendField(sql, field);
       sql.append(".size() = ");
       buildValue(sql, params, value);
     } else if ("$or".equals(key)) {
@@ -182,15 +237,92 @@ public class MongoDBToSqlTranslator {
         throw new IllegalArgumentException("Operator $and requires a non-empty array");
       buildAnd(sql, params, key, list);
     } else if ("$not".equals(key)) {
-      // Reached only for a top-level "$not" (no preceding field in the buffer), whose operand is a nested
-      // {field: {...}} query fragment - buildExpression(Document) below re-enters buildAnd for it and emits its own
-      // field name, so this recursion is self-contained. The field-scoped "$not" (a raw {$op: value} operand
-      // applied to one field, e.g. {field: {$not: {$gt: 5}}}) is intercepted earlier, in buildAnd, because only
-      // that call site still has the field name in scope.
+      // Reached only for a top-level "$not" (no preceding field), whose operand is a nested {field: {...}} query
+      // fragment - buildExpression(Document) below re-enters buildAnd for it and emits its own field name, so this
+      // recursion is self-contained. The field-scoped "$not" is handled by appendOperators, where the field is known.
       sql.append(" NOT ");
       buildExpression(sql, params, (Document) value);
     } else
       throw new IllegalArgumentException("Unknown operator " + key);
+  }
+
+  /**
+   * Whether the SQL emitted for an operator is never "unknown", so negating it with NOT needs no extra care for a null field:
+   * {@code $exists}, the null-aware {@code $ne}/{@code $nin}, an equality with null and an {@code $in} that lists null.
+   */
+  private static boolean isTwoValued(final String operator, final Object operand) {
+    return switch (operator) {
+      case "$exists", "$ne", "$nin" -> true;
+      case "$eq" -> operand == null;
+      case "$in" -> operand instanceof Collection<?> collection && containsNull(collection);
+      default -> false;
+    };
+  }
+
+  private static void appendField(final StringBuilder sql, final String field) {
+    if (field != null)
+      sql.append(field);
+  }
+
+  private static boolean containsNull(final Collection<?> collection) {
+    for (final Object element : collection)
+      if (element == null)
+        return true;
+    return false;
+  }
+
+  private static Collection<?> withoutNull(final Collection<?> collection) {
+    final List<Object> result = new ArrayList<>(collection.size());
+    for (final Object element : collection)
+      if (element != null)
+        result.add(element);
+    return result;
+  }
+
+  /**
+   * Emits a regular-expression match. MongoDB's regex FINDS the pattern anywhere in the string, whereas SQL {@code MATCHES}
+   * must match the whole string, so the pattern is surrounded by {@code (?s:.*)} and the options become an inline flag group
+   * of their own, which applies to the user's pattern only. The engine's {@code MATCHES} caches the compiled pattern per
+   * command and bounds the evaluation time, so a hostile expression cannot pin a thread.
+   */
+  protected static void buildRegex(final StringBuilder sql, final Map<String, Object> params, final String field,
+      final String pattern, final String options) {
+    final StringBuilder flags = new StringBuilder("u");
+    if (options != null)
+      for (int i = 0; i < options.length(); i++) {
+        final char flag = options.charAt(i);
+        switch (flag) {
+        case 'i', 'm', 's', 'x' -> {
+          if (flags.indexOf(String.valueOf(flag)) < 0)
+            flags.append(flag);
+        }
+        case 'u' -> {
+          // already always on
+        }
+        default -> throw new IllegalArgumentException("Unknown regular expression option '" + flag + "'");
+        }
+      }
+
+    // the user's pattern alone must be valid: validating only the wrapped text would accept a pattern that closes the wrapper
+    // itself (e.g. "a)|(b") and silently change its meaning
+    try {
+      Pattern.compile("(?" + flags + ")" + pattern);
+    } catch (final PatternSyntaxException e) {
+      throw new IllegalArgumentException("Invalid regular expression '" + pattern + "': " + e.getDescription(), e);
+    }
+
+    // in comments mode (x, set by the options or inline by the pattern) a trailing "# comment" would swallow the wrapper's
+    // closing parenthesis, hence the line break; a pattern that still breaks the wrapper fails to compile here, as a clean error
+    // instead of at query time
+    final String wrapped = "(?s:.*)(?" + flags + ":" + pattern + (flags.indexOf("x") >= 0 ? "\n" : "") + ")(?s:.*)";
+    try {
+      Pattern.compile(wrapped);
+    } catch (final PatternSyntaxException e) {
+      throw new IllegalArgumentException("Invalid regular expression '" + pattern + "': " + e.getDescription(), e);
+    }
+    appendField(sql, field);
+    sql.append(" MATCHES ");
+    buildValue(sql, params, wrapped);
   }
 
   protected static void buildOr(final StringBuilder buffer, final Map<String, Object> params, final List list) {
@@ -219,27 +351,23 @@ public class MongoDBToSqlTranslator {
    */
   protected static void buildCollection(final StringBuilder buffer, final Map<String, Object> params, final Collection coll) {
     // avoid the copy on the common case where nothing needs normalizing
-    boolean needsConversion = false;
+    boolean hasObjectId = false;
     for (final Object element : coll)
-      if (MongoBsonValues.needsConversion(element)) {
-        needsConversion = true;
+      if (element instanceof ObjectId) {
+        hasObjectId = true;
         break;
       }
 
     Collection<?> normalized = coll;
-    if (needsConversion) {
+    if (hasObjectId) {
       final List<Object> converted = new ArrayList<>(coll.size());
-      for (final Object element : coll) {
-        converted.add(MongoBsonValues.toBound(element));
-        // a non-_id ObjectId also matches the bare hex string stored before ObjectIds were tagged
-        if (element instanceof ObjectId objectId)
-          converted.add(objectId.getHexData());
-      }
+      for (final Object element : coll)
+        converted.add(element instanceof ObjectId objectId ? objectId.getHexData() : element);
       normalized = converted;
     }
 
     buffer.append('(');
-    bindStored(buffer, params, normalized);
+    buildValue(buffer, params, normalized);
     buffer.append(')');
   }
 
@@ -254,13 +382,21 @@ public class MongoDBToSqlTranslator {
    * {@code {field: null}} might suggest). {@code IS NOT NULL} matches that: ArcadeDB also evaluates a missing
    * property as {@code null}, so it is excluded here exactly as MongoDB excludes it.
    */
-  protected static void buildEquality(final StringBuilder buffer, final Map<String, Object> params, final boolean positive,
-      final Object value) {
+  protected static void buildEquality(final StringBuilder buffer, final Map<String, Object> params, final String field,
+      final boolean positive, final Object value) {
+    if (field == null)
+      throw new IllegalArgumentException("The operator " + (positive ? "$eq" : "$ne") + " needs a field to apply to");
+
     if (value == null)
-      buffer.append(positive ? " IS NULL" : " IS NOT NULL");
-    else {
-      buffer.append(positive ? " = " : " <> ");
+      buffer.append(field).append(positive ? " IS NULL" : " IS NOT NULL");
+    else if (positive) {
+      buffer.append(field).append(" = ");
       buildValue(buffer, params, value);
+    } else {
+      // MongoDB's $ne matches a document whose field is null or missing; SQL's "<>" is unknown for it, so the row would be lost
+      buffer.append('(').append(field).append(" IS NULL OR ").append(field).append(" <> ");
+      buildValue(buffer, params, value);
+      buffer.append(')');
     }
   }
 
@@ -280,17 +416,7 @@ public class MongoDBToSqlTranslator {
    */
   protected static void buildValue(final StringBuilder buffer, final Map<String, Object> params, final Object value) {
     final String name = "p" + params.size();
-    params.put(name, MongoBsonValues.toBound(value));
-    buffer.append(':').append(name);
-  }
-
-  /**
-   * Binds a payload that is already in its stored form (see {@link MongoBsonValues#toStored}) as a named parameter, converting
-   * nothing: converting it again would take its type tags for a client-supplied reserved field.
-   */
-  protected static void bindStored(final StringBuilder buffer, final Map<String, Object> params, final Object value) {
-    final String name = "p" + params.size();
-    params.put(name, value);
+    params.put(name, value instanceof ObjectId objectId ? objectId.getHexData() : value);
     buffer.append(':').append(name);
   }
 
@@ -347,10 +473,17 @@ public class MongoDBToSqlTranslator {
     final Document result = new Document();
     for (final Map.Entry<String, Object> entry : map.entrySet()) {
       final String p = entry.getKey();
+      // the record's own metadata is not part of a MongoDB document: a client would see fields it never wrote
+      if (isRecordMetadata(p))
+        continue;
       final Object value = entry.getValue();
       result.put(p, "_id".equals(p) ? convertIdToMongoDB(value) : toBsonValue(value));
     }
     return result;
+  }
+
+  static boolean isRecordMetadata(final String property) {
+    return "@rid".equals(property) || "@type".equals(property) || "@cat".equals(property);
   }
 
   /**
@@ -391,17 +524,6 @@ public class MongoDBToSqlTranslator {
   private static Object toBsonValue(final Object value) {
     if (value instanceof Instant)
       return value;
-    else if (value instanceof BigDecimal)
-      return MongoBsonValues.toBson(value);
-    else if (value instanceof String string && MongoBsonValues.isEncodedString(string))
-      return MongoBsonValues.toBson(value);
-    else if (MongoBsonValues.isTagged(value)) {
-      final Object bson = MongoBsonValues.toBson(value);
-      // a malformed tag stays a plain map and is converted like any other embedded document
-      if (bson != value)
-        return bson;
-      return convertMapToMongoDB((Map<String, Object>) value);
-    }
     else if (value instanceof LocalDateTime dateTime)
       return dateTime.toInstant(ZoneOffset.UTC);
     else if (value instanceof LocalDate date)
@@ -433,73 +555,82 @@ public class MongoDBToSqlTranslator {
     return new ObjectId(buffer);
   }
 
-  protected static Document projectDocument(final Document document, final Document fields, final String idField) {
-    if (document == null) {
-      return null;
-    } else {
-      final Document newDocument = new Document();
-      final Iterator var4;
-      String key;
-      if (onlyExclusions(fields)) {
-        newDocument.putAll(document);
-        var4 = fields.keySet().iterator();
-
-        while (var4.hasNext()) {
-          key = (String) var4.next();
-          newDocument.remove(key);
-        }
-      } else {
-        var4 = fields.keySet().iterator();
-
-        while (var4.hasNext()) {
-          key = (String) var4.next();
-          if (Utils.isTrue(fields.get(key))) {
-            projectField(document, newDocument, key);
-          }
-        }
-      }
-
-      if (!fields.containsKey(idField)) {
-        newDocument.put(idField, document.get(idField));
-      }
-
-      return newDocument;
+  /**
+   * Validates a {@code find} projection, which is either an inclusion ({@code {a: 1}}) or an exclusion ({@code {a: 0}}) - the
+   * two cannot be mixed, except that {@code _id} can always be excluded from an inclusion.
+   *
+   * @return {@code true} for an inclusion projection, {@code false} for an exclusion one
+   */
+  protected static boolean isInclusionProjection(final Document fields, final String idField) {
+    boolean inclusion = false;
+    boolean exclusion = false;
+    for (final Map.Entry<String, Object> entry : fields.entrySet()) {
+      final Object flag = entry.getValue();
+      if (flag instanceof Document || flag instanceof List)
+        throw new IllegalArgumentException("Projection operator on '" + entry.getKey() + "' is not supported");
+      if (Utils.isTrue(flag))
+        inclusion = true;
+      else if (!idField.equals(entry.getKey()))
+        exclusion = true;
     }
+    if (inclusion && exclusion)
+      throw new IllegalArgumentException("Cannot do exclusion on a field in an inclusion projection");
+    return inclusion;
   }
 
-  protected static boolean onlyExclusions(final Document fields) {
-    final Iterator var1 = fields.keySet().iterator();
+  protected static Document projectDocument(final Document document, final Document fields, final String idField) {
+    if (document == null)
+      return null;
 
-    String key;
-    do {
-      if (!var1.hasNext()) {
-        return true;
-      }
+    final Document newDocument = new Document();
+    if (isInclusionProjection(fields, idField)) {
+      // the _id is part of the answer unless the projection excludes it
+      if (!fields.containsKey(idField) || Utils.isTrue(fields.get(idField)))
+        if (document.containsKey(idField))
+          newDocument.put(idField, document.get(idField));
 
-      key = (String) var1.next();
-    } while (!Utils.isTrue(fields.get(key)));
+      for (final Map.Entry<String, Object> entry : fields.entrySet())
+        if (Utils.isTrue(entry.getValue()))
+          projectField(document, newDocument, entry.getKey());
+    } else {
+      newDocument.putAll(document);
+      for (final String key : fields.keySet())
+        removeField(newDocument, key);
+    }
+    return newDocument;
+  }
 
-    return false;
+  /**
+   * Removes a possibly dotted field from a copy-on-write view of the document: an embedded document on the path is copied
+   * first, so the source document is never modified.
+   */
+  private static void removeField(final Document document, final String key) {
+    final int dotPos = key.indexOf('.');
+    if (dotPos <= 0) {
+      document.remove(key);
+      return;
+    }
+    final String mainKey = key.substring(0, dotPos);
+    if (document.get(mainKey) instanceof Document embedded) {
+      final Document copy = new Document();
+      copy.putAll(embedded);
+      removeField(copy, key.substring(dotPos + 1));
+      document.put(mainKey, copy);
+    }
   }
 
   protected static void projectField(final Document document, final Document newDocument, final String key) {
-    if (document != null) {
-      final int dotPos = key.indexOf(46);
-      if (dotPos > 0) {
-        final String mainKey = key.substring(0, dotPos);
-        final String subKey = key.substring(dotPos + 1);
-        final Object object = document.get(mainKey);
-        if (object instanceof Document document1) {
-          if (!newDocument.containsKey(mainKey)) {
-            newDocument.put(mainKey, new Document());
-          }
-
-          projectField(document1, (Document) newDocument.get(mainKey), subKey);
-        }
-      } else {
-        newDocument.put(key, document.get(key));
+    final int dotPos = key.indexOf('.');
+    if (dotPos > 0) {
+      final String mainKey = key.substring(0, dotPos);
+      final String subKey = key.substring(dotPos + 1);
+      final Object object = document.get(mainKey);
+      if (object instanceof Document embedded) {
+        if (!(newDocument.get(mainKey) instanceof Document))
+          newDocument.put(mainKey, new Document());
+        projectField(embedded, (Document) newDocument.get(mainKey), subKey);
       }
-
-    }
+    } else if (document.containsKey(key))
+      newDocument.put(key, document.get(key));
   }
 }

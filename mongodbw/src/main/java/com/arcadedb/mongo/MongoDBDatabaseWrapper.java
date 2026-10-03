@@ -626,14 +626,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
     if (updates != null) {
       // a schema change cannot happen inside the transaction: an upsert creates the collection with its _id index up front
-      for (final Document upd : updates)
-        if (Utils.isTrue(upd.get("upsert"))) {
-          database.getSchema().getOrCreateDocumentType(collectionName);
-          // an upsert without _id in its filter stores a generated ObjectId, a string kind
-          MongoDBCollectionWrapper.ensureIdIndex(database, collectionName,
-              upd.get("q") instanceof Document q && q.get("_id") != null ? q.get("_id") : new ObjectId());
-          break;
-        }
+      prepareUpsertIdIndex(collectionName, updates);
 
       database.begin();
       try {
@@ -670,6 +663,47 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       response.put("upserted", upserted);
     markOkay(response);
     return response;
+  }
+
+  /**
+   * A schema change cannot happen inside the transaction, so an upsert creates the collection and makes the {@code _id} index
+   * able to hold the key the upsert is about to store, up front: the filter's scalar {@code _id}, or the generated ObjectId (a
+   * string kind) of an upsert without one. Only an upsert that matches nothing inserts, so the others leave the index alone
+   * (a rebuild is a full copy of it).
+   */
+  private void prepareUpsertIdIndex(final String collectionName, final List<Document> updates) {
+    List<Object> samples = null;
+    for (final Document upd : updates) {
+      if (!Utils.isTrue(upd.get("upsert")))
+        continue;
+
+      final Document q = upd.get("q") instanceof Document filter ? filter : new Document();
+      final Object id = q.get("_id");
+      // an operator document ({$in: ..}, {$gt: ..}) says nothing about the key of the document that would be inserted
+      if (id instanceof Document)
+        continue;
+
+      database.getSchema().getOrCreateDocumentType(collectionName);
+      if (matchesAny(collectionName, q))
+        continue;
+
+      if (samples == null)
+        samples = new ArrayList<>();
+      samples.add(id != null ? id : new ObjectId());
+    }
+
+    if (samples != null)
+      MongoDBCollectionWrapper.ensureIdIndexLocked(database, collectionName, samples);
+  }
+
+  private boolean matchesAny(final String collectionName, final Document q) {
+    final Map<String, Object> params = new HashMap<>();
+    final StringBuilder sql = new StringBuilder("SELECT @rid FROM ").append(Identifier.quote(collectionName));
+    appendWhere(sql, params, q);
+    sql.append(" LIMIT 1");
+    try (final ResultSet rs = database.query("sql", sql.toString(), params)) {
+      return rs.hasNext();
+    }
   }
 
   private int executeUpdate(final String collectionName, final Document q, final Document u, final boolean multi) {

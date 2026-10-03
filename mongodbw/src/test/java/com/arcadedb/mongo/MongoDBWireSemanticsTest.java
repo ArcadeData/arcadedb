@@ -406,4 +406,44 @@ public class MongoDBWireSemanticsTest extends BaseMongoServerTest {
     assertThat(collection.countDocuments()).isEqualTo(2);
     assertThatThrownBy(() -> collection.insertOne(new Document("_id", 7))).isInstanceOf(MongoWriteException.class);
   }
+
+  @Test
+  void upsertsKeepTheNumericIdIndexNumeric() {
+    collection.insertMany(List.of(new Document("_id", 2), new Document("_id", 9), new Document("_id", 10)));
+
+    // matches an existing document, has an operator _id, or inserts with a generated id: none may break numeric ordering
+    collection.updateOne(new Document("_id", 9), Document.parse("{$set: {a: 1}}"), new UpdateOptions().upsert(true));
+    collection.updateOne(Document.parse("{_id: {$gt: 100}}"), Document.parse("{$set: {a: 1}}"), new UpdateOptions().upsert(false));
+    assertThat(ids("{_id: {$gt: 5}}")).containsExactly(9, 10);
+  }
+
+  @Test
+  void mixedIntegralAndFloatingIdsStayNumeric() {
+    collection.insertOne(new Document("_id", 10));
+    collection.insertOne(new Document("_id", 2.5));
+    collection.insertOne(new Document("_id", 9));
+    assertThat(ids("{_id: {$gt: 5}}")).containsExactly(9, 10);
+    assertThatThrownBy(() -> collection.insertOne(new Document("_id", 10.0))).isInstanceOf(MongoWriteException.class);
+  }
+
+  @Test
+  void concurrentFirstInsertsWithMixedIdKinds() throws Exception {
+    final MongoCollection<Document> fresh = client.getDatabase(getDatabaseName()).getCollection("racing");
+    final java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(4);
+    try {
+      final List<java.util.concurrent.Future<?>> futures = new ArrayList<>();
+      for (int t = 0; t < 4; t++) {
+        final int thread = t;
+        futures.add(pool.submit(() -> {
+          for (int i = 0; i < 25; i++)
+            fresh.insertOne(thread % 2 == 0 ? new Document("_id", thread * 1000 + i) : new Document("_id", "s" + thread + "-" + i));
+        }));
+      }
+      for (final java.util.concurrent.Future<?> f : futures)
+        f.get();
+    } finally {
+      pool.shutdownNow();
+    }
+    assertThat(fresh.countDocuments()).isEqualTo(100);
+  }
 }
