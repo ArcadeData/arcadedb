@@ -235,8 +235,13 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
       }
 
       database.commit();
-    } catch (final RuntimeException e) {
-      database.rollback();
+    } catch (final RuntimeException | Error e) {
+      try {
+        database.rollback();
+      } catch (final RuntimeException rollbackFailure) {
+        // keep the original failure
+        e.addSuppressed(rollbackFailure);
+      }
       throw e;
     }
   }
