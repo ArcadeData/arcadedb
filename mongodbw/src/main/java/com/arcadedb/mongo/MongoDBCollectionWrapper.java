@@ -358,6 +358,9 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
     final Type keyType = requiredKeyType(ids);
     final TypeIndex existing = findUniqueIdIndex(database.getSchema().getType(collectionName));
     if (existing == null) {
+      if (database.countType(collectionName, false) > 0)
+        LogManager.instance().log(MongoDBCollectionWrapper.class, Level.INFO,
+            "Building the unique index on _id of the existing collection '%s': writes to it wait until it is done", null, collectionName);
       createIdIndex(database, collectionName, keyType, true);
       return;
     }
