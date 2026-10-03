@@ -13,6 +13,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
+// SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+// SPDX-License-Identifier: Apache-2.0
+//
 
 // Package e2e_go implements the Bolt protocol conformance suite for issue
 // #4887 (epic #4882) against the official neo4j-go-driver. Each test function

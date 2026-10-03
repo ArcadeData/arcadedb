@@ -56,11 +56,6 @@ SPDX-FileCopyrightText = "Copyright © 2021-present Arcade Data Ltd (info@arcade
 SPDX-License-Identifier = "Apache-2.0"
 
 [[annotations]]
-path = [".github/scripts/**","bolt/conformance/**","e2e-csharp/**","e2e-go/**","**/.gitignore"]
-SPDX-FileCopyrightText = "Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)"
-SPDX-License-Identifier = "Apache-2.0"
-
-[[annotations]]
-path = ["bindings/python/scripts/Dockerfile.build","bindings/python/scripts/jar_exclusions.txt","examples/logging/*.xml","ha-raft/config/*.json*","studio/test/*.json"]
+path = [".github/scripts/package.json",".github/scripts/tests/fixtures/**","bolt/conformance/badge.json","bolt/conformance/tools/testdata/**","e2e-go/go.sum","ha-raft/config/*.json*","studio/test/*.json"]
 SPDX-FileCopyrightText = "Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)"
 SPDX-License-Identifier = "Apache-2.0"

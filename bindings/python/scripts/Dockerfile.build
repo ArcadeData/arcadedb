@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+# SPDX-License-Identifier: Apache-2.0
+#
 # Docker build for ArcadeDB Python package
 # Builds arcadedb-embedded package with bundled JRE (no external Java required)
 # Excludes JARs listed in scripts/jar_exclusions.txt to optimize size

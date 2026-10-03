@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+// SPDX-License-Identifier: Apache-2.0
+
 module arcadedb.com/e2e-go
 
 go 1.26.0
