@@ -146,15 +146,22 @@ public class ShortestPathExpression implements Expression {
     final HopBounds bounds = HopBounds.from(relationship);
 
     final EdgeConstraint constraint = EdgeConstraint.from(relationship, result, context);
+    final String[] typesArray = edgeTypes == null || edgeTypes.isEmpty() ? null : edgeTypes.toArray(new String[0]);
+
+    // allShortestPaths() in expression position answers with every co-shortest path, exactly as the MATCH form
+    // returns one row per path: the same two evaluators, so a parallel relationship or a second middle vertex
+    // yields a path of its own here too (issue #8995).
+    if (allPaths)
+      return new ArrayList<>(constraint != null ?
+          ShortestPathStep.computeFilteredAllShortestPaths(startVertex, endVertex, traversalDirection, typesArray, constraint,
+              bounds, context.getDatabase(), context) :
+          ShortestPathStep.computeAllShortestPaths(startVertex, endVertex, traversalDirection, typesArray, bounds,
+              context));
+
     if (constraint != null) {
-      final String[] typesArray = edgeTypes == null || edgeTypes.isEmpty() ? null : edgeTypes.toArray(new String[0]);
       final List<Object> filtered = ShortestPathStep.computeFilteredShortestPath(startVertex, endVertex,
           traversalDirection, typesArray, constraint, bounds, context);
-      if (filtered == null || filtered.isEmpty())
-        return allPaths ? new ArrayList<>() : null;
-      // allShortestPaths() in expression position still yields the single shortest path found, matching the
-      // unconstrained branch below; enumerating every co-shortest path here is a separate concern.
-      return allPaths ? singlePathList(filtered) : filtered;
+      return filtered == null || filtered.isEmpty() ? null : filtered;
     }
 
     // Use SQLFunctionShortestPath to compute the path (returns vertex RIDs only).
@@ -177,36 +184,17 @@ public class ShortestPathExpression implements Expression {
         () -> shortestPathFunction.execute(null, null, null, params, context));
 
     if (pathRids == null || pathRids.isEmpty())
-      return allPaths ? new ArrayList<>() : null;
+      return null;
 
     // Endpoints resolving to the same vertex yield the zero-length path, whose admissibility is
     // HopBounds.acceptsSelfPath()'s call rather than accepts(0)'s (issue #7017); every longer answer is
     // checked against both declared bounds.
     final int hops = pathRids.size() - 1;
     if (hops == 0 ? !bounds.acceptsSelfPath() : !bounds.accepts(hops))
-      return allPaths ? new ArrayList<>() : null;
+      return null;
 
     // Resolve vertex RIDs and find connecting edges to build a proper path
-    final List<Object> resolved = ShortestPathStep.resolvePathWithEdges(pathRids, traversalDirection, edgeTypes,
-        context.getDatabase());
-
-    if (allPaths) {
-      // For allShortestPaths, we return a list containing the single shortest path
-      // (In a complete implementation, this would find ALL paths of the same length)
-      return singlePathList(resolved);
-    } else {
-      // For shortestPath, return the single path
-      return resolved;
-    }
-  }
-
-  /**
-   * Wraps a single path into the list shape allShortestPaths() returns in expression position.
-   */
-  private static List<Object> singlePathList(final List<Object> path) {
-    final List<Object> allPathsList = new ArrayList<>(1);
-    allPathsList.add(path);
-    return allPathsList;
+    return ShortestPathStep.resolvePathWithEdges(pathRids, traversalDirection, edgeTypes, context.getDatabase());
   }
 
   /**
