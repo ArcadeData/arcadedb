@@ -2005,6 +2005,8 @@ public enum Type {
   /**
    * A primitive array as a hash key: two arrays of the same type with the same content are equal, which the array itself does
    * not do (it compares by identity).
+   * Floating point content compares by bits (as {@link Arrays#equals(float[], float[])}): NaN equals NaN, which is what grouping
+   * wants, while 0.0 and -0.0 are different keys, unlike the numeric canonicalization of a scalar.
    */
   private record PrimitiveArrayKey(Object array) {
     @Override

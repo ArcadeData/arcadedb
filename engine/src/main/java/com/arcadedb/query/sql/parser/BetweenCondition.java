@@ -86,13 +86,10 @@ public class BetweenCondition extends BooleanExpression {
    * Compares through {@link BinaryComparator#compareTo(Object, Object)}, the comparison {@code <=} and {@code >=} use:
    * for strings it is the unsigned UTF-8 byte order the LSM indexes keep (issue #6997), which {@code
    * String.compareTo()}'s UTF-16 order contradicts for a non-BMP character against a BMP one above U+E000. So
-   * {@code k BETWEEN a AND b} now agrees with {@code k >= a AND k <= b} and with the index serving either, which a scan
-   * of the type relies on when it stands in for that index (issue #8333).
-   */
-  /**
-   * Compares through {@link BinaryComparator#compareTo(Object, Object)}; {@code sign} is 1 for "at least" (the lower bound) and
-   * -1 for "at most" (the upper bound). A value with no defined ordering against the bound is not between, as LeOperator and
-   * GeOperator report it (#5900).
+   * {@code k BETWEEN a AND b} agrees with {@code k >= a AND k <= b} and with the index serving either, which a scan
+   * of the type relies on when it stands in for that index (issue #8333). {@code sign} is 1 for "at least" (the lower bound)
+   * and -1 for "at most" (the upper bound). A value with no defined ordering against the bound is not between, as LeOperator
+   * and GeOperator report it (#5900).
    */
   private static boolean isOnTheRightSide(final Object value, final Object bound, final int sign) {
     try {
