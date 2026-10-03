@@ -1395,20 +1395,34 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       final Throwable cause) {
     final RID rid = record.getIdentity();
     try {
+      // The body write also externalised the EXTERNAL properties into the paired bucket: take those back first, while the
+      // record still holds its pointers (issue #8922). Isolated, so a failure here never skips the retraction of the body
+      if (record instanceof Document document)
+        cascadeDeleteExternalValues(document, true);
+    } catch (final Exception e) {
+      takeBackFailed(cause, transaction, rid, "its external values", e);
+    }
+
+    try {
       bucket.retractRecord(rid);
     } catch (final Exception e) {
-      cause.addSuppressed(e);
-      transaction.setRollbackOnly(
-          "record " + rid + " could not be taken back after its indexing refused it (" + e.getMessage() + ")");
-      LogManager.instance().log(this, Level.SEVERE,
-          "Cannot take back record %s after its indexing refused it: the transaction is marked rollback-only, "
-              + "because committing it would publish a record no index entry points at. %s", rid, e.getMessage());
+      takeBackFailed(cause, transaction, rid, "the record body", e);
     }
 
     transaction.updateBucketRecordDelta(bucket.getFileId(), -1);
     transaction.removeRecordFromCache(rid);
     transaction.unregisterNewRecord(record);
     ((RecordInternal) record).setIdentity(null);
+  }
+
+  private void takeBackFailed(final Throwable cause, final TransactionContext transaction, final RID rid, final String what,
+      final Exception e) {
+    cause.addSuppressed(e);
+    transaction.setRollbackOnly(
+        "record " + rid + " could not be taken back after its indexing refused it (" + e.getMessage() + "), failed to take back " + what);
+    LogManager.instance().log(this, Level.SEVERE,
+        "Cannot take back %s of record %s after its indexing refused it: the transaction is marked rollback-only, "
+            + "because committing it would publish what the index never accepted. %s", what, rid, e.getMessage());
   }
 
   @Override
@@ -1914,19 +1928,44 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * a buffer.
    */
   private void cascadeDeleteExternalValues(final Document document) {
+    cascadeDeleteExternalValues(document, false);
+  }
+
+  /**
+   * @param retract true when the engine undoes its own write (a refused create): the external records are retracted
+   *                without the user-delete permission check, like the primary body (issue #8922)
+   */
+  private void cascadeDeleteExternalValues(final Document document, final boolean retract) {
     if (!(document.getType() instanceof LocalDocumentType localType))
       return;
     if (!localType.hasExternalProperties())
       return;
     final Map<String, RID> externalRids = serializer.findExistingExternalRids(this, document);
+    RuntimeException failure = null;
     for (final RID extRid : externalRids.values()) {
       final LocalBucket externalBucket = schema.getBucketById(extRid.getBucketId(), false);
       if (externalBucket != null) {
-        externalBucket.deleteRecord(extRid);
+        try {
+          if (retract)
+            externalBucket.retractRecord(extRid);
+          else
+            externalBucket.deleteRecord(extRid);
+        } catch (final RuntimeException e) {
+          // A retraction takes back as many external records as it can, so one failure does not strand the others
+          if (!retract)
+            throw e;
+          if (failure == null)
+            failure = e;
+          else
+            failure.addSuppressed(e);
+          continue;
+        }
         // Keep the external bucket's count consistent (mirrors the +1 in BinarySerializer.writeExternalPropertyValue).
         getTransaction().updateBucketRecordDelta(externalBucket.getFileId(), -1);
       }
     }
+    if (failure != null)
+      throw failure;
   }
 
   @Override
