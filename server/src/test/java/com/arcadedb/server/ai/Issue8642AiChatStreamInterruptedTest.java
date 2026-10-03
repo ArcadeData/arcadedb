@@ -27,6 +27,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
@@ -42,6 +43,8 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -68,6 +71,14 @@ class Issue8642AiChatStreamInterruptedTest extends BaseGraphServerTest {
   private final long            savedStreamSilence = AiChatHandler.streamSilenceMs;
   private final List<Throwable> loggedThrowables   = new CopyOnWriteArrayList<>();
   private final List<String>    loggedWarnings     = new CopyOnWriteArrayList<>();
+  /**
+   * Opened by the client once this server has relayed its first frame. A gateway script that drops the connection
+   * waits on it first: the JDK client this server reads the gateway with discards bytes it has received but not yet
+   * handed to the reader as soon as it learns the connection broke, so a drop racing the relay could swallow the very
+   * event the test expects to see relayed (seen on CI: the tool_call frame vanished, and neither tool_start nor tool_end
+   * was ever written).
+   */
+  private final CountDownLatch  firstFrameRelayed  = new CountDownLatch(1);
   private       ServerSocket    gateway;
 
   @BeforeEach
@@ -128,6 +139,7 @@ class Issue8642AiChatStreamInterruptedTest extends BaseGraphServerTest {
       write(out, SSE_HEADERS);
       writeEvent(out, new JSONObject().put("type", "session").put("sessionId", "s-1"));
       writeEvent(out, new JSONObject().put("type", "text").put("n", 1));
+      awaitFirstRelayedFrame();
       // No terminating chunk: the connection is dropped under the relay.
     });
 
@@ -175,6 +187,9 @@ class Issue8642AiChatStreamInterruptedTest extends BaseGraphServerTest {
       writeEvent(out, new JSONObject().put("type", "session").put("sessionId", "s-1"));
       writeEvent(out, new JSONObject().put("type", "tool_call").put("id", "tc-1").put("name", "get_schema")
           .put("arguments", new JSONObject().put("database", getDatabaseName())));
+      // tool_start is relayed once the tool_call line has been read, so the tool runs and tool_end follows whatever
+      // the drop does to the bytes after it.
+      awaitFirstRelayedFrame();
     });
 
     final List<JSONObject> events = streamedChat();
@@ -214,6 +229,7 @@ class Issue8642AiChatStreamInterruptedTest extends BaseGraphServerTest {
       write(out, SSE_HEADERS);
       writeEvent(out, new JSONObject().put("type", "session").put("sessionId", "s-1"));
       writeEvent(out, new JSONObject().put("type", "done").put("response", "all good"));
+      awaitFirstRelayedFrame();
       // No terminating chunk: the connection is dropped right after the answer.
     });
 
@@ -370,11 +386,27 @@ class Issue8642AiChatStreamInterruptedTest extends BaseGraphServerTest {
       }
       assertThat(conn.getResponseCode()).isEqualTo(200);
       try (final InputStream in = conn.getInputStream()) {
-        return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        final ByteArrayOutputStream body = new ByteArrayOutputStream();
+        final byte[] buffer = new byte[8192];
+        int read;
+        while ((read = in.read(buffer)) >= 0) {
+          body.write(buffer, 0, read);
+          if (firstFrameRelayed.getCount() > 0 && body.toString(StandardCharsets.UTF_8).contains("data: "))
+            firstFrameRelayed.countDown();
+        }
+        return body.toString(StandardCharsets.UTF_8);
       }
     } finally {
       conn.disconnect();
     }
+  }
+
+  /**
+   * Holds a drop back until the client has the first relayed frame. Bounded by the hang detector, so a relay that
+   * never writes still ends: the drop happens and the assertions say what was missing.
+   */
+  private void awaitFirstRelayedFrame() throws InterruptedException {
+    firstFrameRelayed.await(HANG_DETECT_MS, TimeUnit.MILLISECONDS);
   }
 
   private static void write(final OutputStream out, final String text) throws IOException {
