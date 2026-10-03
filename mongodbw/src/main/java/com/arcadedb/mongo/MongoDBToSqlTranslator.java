@@ -568,14 +568,18 @@ public class MongoDBToSqlTranslator {
       final Object flag = entry.getValue();
       if (flag instanceof Document || flag instanceof List)
         throw new IllegalArgumentException("Projection operator on '" + entry.getKey() + "' is not supported");
+      // the _id never conflicts: it can be excluded from an inclusion and included in an exclusion
+      if (idField.equals(entry.getKey()))
+        continue;
       if (Utils.isTrue(flag))
         inclusion = true;
-      else if (!idField.equals(entry.getKey()))
+      else
         exclusion = true;
     }
     if (inclusion && exclusion)
       throw new IllegalArgumentException("Cannot do exclusion on a field in an inclusion projection");
-    return inclusion;
+    // only the _id given: {_id: 1} answers the _id alone, {_id: 0} everything else
+    return inclusion || (!exclusion && fields.containsKey(idField) && Utils.isTrue(fields.get(idField)));
   }
 
   protected static Document projectDocument(final Document document, final Document fields, final String idField) {
@@ -594,8 +598,9 @@ public class MongoDBToSqlTranslator {
           projectField(document, newDocument, entry.getKey());
     } else {
       newDocument.putAll(document);
-      for (final String key : fields.keySet())
-        removeField(newDocument, key);
+      for (final Map.Entry<String, Object> entry : fields.entrySet())
+        if (!Utils.isTrue(entry.getValue()))
+          removeField(newDocument, entry.getKey());
     }
     return newDocument;
   }

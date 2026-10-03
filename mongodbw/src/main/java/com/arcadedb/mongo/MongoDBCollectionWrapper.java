@@ -47,6 +47,7 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.logging.Level;
 import java.util.stream.Stream;
@@ -264,11 +265,31 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
   private static final Map<String, ReadWriteLock> ID_INDEX_LOCKS = new ConcurrentHashMap<>();
 
   /**
+   * The collections whose {@code _id} index could not be built (they hold duplicates): they stay on the by-hand check, instead
+   * of retrying a failing full build, under the exclusive lock, on every insert.
+   */
+  private static final Set<String> ID_INDEX_GAVE_UP = ConcurrentHashMap.newKeySet();
+
+  private static String idIndexKey(final Database database, final String collectionName) {
+    return database.getDatabasePath() + "/" + collectionName;
+  }
+
+  /**
+   * Forgets what is kept per collection (the lock, the failed build): called when the collection is dropped, so the maps do not
+   * grow with every collection ever touched and a recreated collection starts afresh.
+   */
+  static void forgetIdIndex(final Database database, final String collectionName) {
+    final String key = idIndexKey(database, collectionName);
+    ID_INDEX_LOCKS.remove(key);
+    ID_INDEX_GAVE_UP.remove(key);
+  }
+
+  /**
    * The lock guarding the {@code _id} index of one collection of one database: shared by the writes that rely on the index,
    * exclusive for whoever creates or rebuilds it.
    */
   static ReadWriteLock idIndexLock(final Database database, final String collectionName) {
-    return ID_INDEX_LOCKS.computeIfAbsent(database.getDatabasePath() + "/" + collectionName, k -> new ReentrantReadWriteLock());
+    return ID_INDEX_LOCKS.computeIfAbsent(idIndexKey(database, collectionName), k -> new ReentrantReadWriteLock());
   }
 
   /**
@@ -289,7 +310,7 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
    * Whether the {@code _id} index already holds every kind of key in {@code ids}: the cheap check of the insert path.
    */
   static boolean idIndexSatisfies(final Database database, final String collectionName, final Collection<?> ids) {
-    if (ids.isEmpty())
+    if (ids.isEmpty() || ID_INDEX_GAVE_UP.contains(idIndexKey(database, collectionName)))
       return true;
     final TypeIndex existing = findUniqueIdIndex(database.getSchema().getType(collectionName));
     return existing != null && holds(existing.getKeyTypes()[0], requiredKeyType(ids));
@@ -303,12 +324,13 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
    * integral and floating ones a double key (which loses the precision of a long above 2^53), any other mix, or any other kind
    * of {@code _id}, a string key: it accepts everything, but orders as text and makes {@code 1} and {@code "1"} the same key.
    * A collection that already holds duplicated {@code _id} values cannot get the index: it is left alone and
-   * {@link #insertDocuments} checks by hand instead. The caller must hold the exclusive lock.
+   * {@link #insertDocuments} checks by hand instead. The caller must hold the exclusive lock. Readers do not take the lock: the
+   * engine resolves the indexes of a type when it plans a query, so a query planned during a rebuild uses the old or the new one.
    *
    * @param ids the {@code _id} values about to be stored
    */
   static void ensureIdIndex(final Database database, final String collectionName, final Collection<?> ids) {
-    if (ids.isEmpty())
+    if (ids.isEmpty() || ID_INDEX_GAVE_UP.contains(idIndexKey(database, collectionName)))
       return;
 
     final Type keyType = requiredKeyType(ids);
@@ -368,6 +390,11 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
       builder.withDefaultKeyTypesForUndeclaredProperties(new Type[] { keyType });
       builder.create();
     } catch (final RuntimeException e) {
+      ID_INDEX_GAVE_UP.add(idIndexKey(database, collectionName));
+      // never leave a half built index behind
+      final TypeIndex partial = findUniqueIdIndex(database.getSchema().getType(collectionName));
+      if (partial != null)
+        database.getSchema().dropIndex(partial.getName());
       LogManager.instance().log(MongoDBCollectionWrapper.class, Level.WARNING,
           "Cannot create the unique index on _id of collection '%s': duplicates of _id will be checked on insert (%s)", null,
           collectionName, e.getMessage());
@@ -510,6 +537,7 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
   @Override
   public void drop() {
     database.getSchema().dropType(collectionName);
+    forgetIdIndex(database, collectionName);
   }
 
   private Iterable<Document> queryDocuments(final Document query, final Document orderBy, final int numberToSkip, final int numberToReturn) {
