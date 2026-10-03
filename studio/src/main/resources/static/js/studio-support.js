@@ -256,6 +256,7 @@ function showSupportView(view) {
   if (view !== "ai") view = "issues";
 
   supportCurrentView = view;
+  if (typeof studioRouteSupportView === "function") studioRouteSupportView(view);
   $("#supportNav .nav-link").removeClass("active");
   $('#supportNav .nav-link[data-support-view="' + view + '"]').addClass("active");
 

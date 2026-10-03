@@ -298,6 +298,7 @@ function login() {
       updateDatabases(function () {
         console.log("Login complete, initializing query editor");
         initQuery();
+        if (typeof studioRouteReady === "function") studioRouteReady();
       });
     })
     .fail(function (jqXHR, textStatus, errorThrown) {
@@ -377,6 +378,7 @@ function logout() {
 }
 
 function showLoginPopup() {
+  if (typeof studioRouteLoggedOut === "function") studioRouteLoggedOut();
   $("#studioPanel").hide();
   $("#loginPage").show();
   if (typeof loginNetworkInit === 'function') loginNetworkInit();
