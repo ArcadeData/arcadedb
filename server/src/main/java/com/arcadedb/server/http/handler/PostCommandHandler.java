@@ -530,9 +530,10 @@ public class PostCommandHandler extends AbstractQueryHandler {
       database.async().command(language, command, callback, (Map<String, Object>) params);
   }
 
-  /** A primitive numeric array parsed from a JSON array parameter becomes the list of its elements, as the embedded API receives it. */
-  // Elements are narrowed like a scalar parameter the JSON parser reads (a long that fits an int is an int), which is what the embedded
-  // caller passing List.of(1, 2, 3) gives
+  /** A primitive numeric array parsed from a JSON array parameter becomes the list of its elements, as the embedded API receives it.
+   * Elements are narrowed like a scalar parameter the JSON parser reads (a long that fits an int is an int), which is what the embedded
+   * caller passing {@code List.of(1, 2, 3)} gives.
+   */
   private static Object numericArrayToList(final Object value) {
     if (value instanceof long[] longs) {
       final List<Object> list = new ArrayList<>(longs.length);

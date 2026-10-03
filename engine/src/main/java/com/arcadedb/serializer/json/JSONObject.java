@@ -632,7 +632,7 @@ public class JSONObject implements Map<String, Object> {
         if (strValue.contains(".") || strValue.contains("e") || strValue.contains("E")) {
           // Contains decimal point or scientific notation: a double, unless it carries more digits than a double holds
           final double doubleVal = primitive.getAsDouble();
-          if ((strValue.length() > 15 || Math.abs(doubleVal) < Double.MIN_NORMAL || !Double.isFinite(doubleVal)) && !isExactDouble(strValue, doubleVal))
+          if (mayLoseDigits(strValue, doubleVal) && !isExactDouble(strValue, doubleVal))
             return new BigDecimal(strValue);
           return doubleVal;
         } else {
@@ -669,6 +669,11 @@ public class JSONObject implements Map<String, Object> {
    * Compared in place, so the common long token of an embedding (a double written with 17 digits) costs no extra object
    * besides that string, and no {@link BigDecimal}.
    */
+  /** A token a double may not hold exactly: more digits than a double keeps, or a value that overflowed or underflowed. */
+  static boolean mayLoseDigits(final String token, final double value) {
+    return token.length() > 15 || Math.abs(value) < Double.MIN_NORMAL || !Double.isFinite(value);
+  }
+
   static boolean isExactDouble(final String token, final double value) {
     if (!Double.isFinite(value))
       return false;
