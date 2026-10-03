@@ -1938,9 +1938,10 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     // address was resolved for - or none, when leadership changed in between (issue #7603).
     final String leaderIdBeforeDial = ha.getLeaderPeerId();
     final LeaderDial dial = LeaderDial.resolve(ha, httpClient);
-    final String intendedLeaderId = LeaderForwardContext.stableLeaderId(leaderIdBeforeDial, ha.getLeaderPeerId());
+    final String leaderIdAfterDial = ha.getLeaderPeerId();
+    final String intendedLeaderId = LeaderForwardContext.stableLeaderId(leaderIdBeforeDial, leaderIdAfterDial);
     // The refusal hold is keyed on the node dialled, even when leadership moved during the resolution (issue #8709).
-    final String holdLeaderId = LeaderForwardContext.holdLeaderId(intendedLeaderId, leaderIdBeforeDial);
+    final String holdLeaderId = LeaderForwardContext.holdLeaderId(intendedLeaderId, leaderIdBeforeDial, leaderIdAfterDial);
     if (dial == null)
       return new ExecutionResponse(503,
           "{ \"error\" : \"Cannot forward batch to leader: leader address is not available\"}");

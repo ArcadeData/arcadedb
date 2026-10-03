@@ -246,12 +246,16 @@ class Issue8486ForwardersHoldUnnamedLeaderRefusalTest {
 
   @Test
   void theHoldKeyFallsBackToTheIdReadBeforeTheDial() {
-    assertThat(LeaderForwardContext.holdLeaderId("stable", "before")).isEqualTo("stable");
-    assertThat(LeaderForwardContext.holdLeaderId(null, "before")).isEqualTo("before");
-    assertThat(LeaderForwardContext.holdLeaderId(null, null)).isNull();
-    assertThat(LeaderForwardContext.holdLeaderId(null, " ")).isNull();
+    assertThat(LeaderForwardContext.holdLeaderId("stable", "before", "after")).isEqualTo("stable");
+    assertThat(LeaderForwardContext.holdLeaderId(null, "before", "after")).isEqualTo("before");
+    // Issue #8925: no leader named before the dial, one named after it - the after id is the only one the forward has.
+    assertThat(LeaderForwardContext.holdLeaderId(LeaderForwardContext.stableLeaderId(null, "n2"), null, "n2")).isEqualTo("n2");
+    assertThat(LeaderForwardContext.holdLeaderId(null, " ", "n2")).isEqualTo("n2");
+    assertThat(LeaderForwardContext.holdLeaderId(null, null, " ")).isNull();
+    assertThat(LeaderForwardContext.holdLeaderId(null, null, null)).isNull();
+    assertThat(LeaderForwardContext.holdLeaderId(null, " ", null)).isNull();
     // A to B during the dial: keyed on A, so a view that already names B is not waited on
-    assertThat(LeaderForwardContext.awaitLeaderViewMovedFrom(() -> NEW_LEADER, LeaderForwardContext.holdLeaderId(null, EX_LEADER),
+    assertThat(LeaderForwardContext.awaitLeaderViewMovedFrom(() -> NEW_LEADER, LeaderForwardContext.holdLeaderId(null, EX_LEADER, NEW_LEADER),
         20_000L, 1L)).isTrue();
   }
 

@@ -3636,6 +3636,15 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     return localPeerId;
   }
 
+  /**
+   * Whether this node is the only voter of the live Raft configuration: there is no peer to hand the leadership to and
+   * none to install a database from (issue #8940).
+   */
+  public boolean isSoleVoter() {
+    final Collection<RaftPeer> voters = getLivePeers();
+    return voters.size() == 1 && voters.iterator().next().getId().equals(localPeerId);
+  }
+
   public Collection<RaftPeer> getLivePeers() {
     final Collection<RaftPeer> live = getCommittedPeersOrNull();
     return live != null ? live : raftGroup.getPeers();

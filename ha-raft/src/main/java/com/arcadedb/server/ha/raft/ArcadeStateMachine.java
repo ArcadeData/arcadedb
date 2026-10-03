@@ -4386,7 +4386,17 @@ public class ArcadeStateMachine extends BaseStateMachine {
       if (raftHA != null && raftHA.isLeader()) {
         if (!isDatabasePresentLocally(databaseName)) {
           final long appliedBefore = readPersistedAppliedIndex(databaseName);
-          if (appliedBefore >= entryIndex)
+          if (appliedBefore >= entryIndex && raftHA.isSoleVoter()) {
+            // A quarantine is lifted by the leadership hand-off and the targeted resync from the next leader. A sole voter
+            // has neither, so the quarantine would be permanent, and a permanent quarantine takes the whole node out of the
+            // ready set and stops the Raft log from being checkpointed for a database only the operator can restore
+            // (issue #8940). Alert in the log instead and keep serving.
+            LogManager.instance().log(this, Level.SEVERE,
+                "Database '%s' was reinstalled by the forceSnapshot entry at index %d in a previous session but has no copy "
+                    + "on this node now, and this node is the only voter, so there is no peer to reinstall it from. It is "
+                    + "NOT quarantined (that could never be lifted here and would keep the node out of service): restore "
+                    + "the database directory from a backup, or drop the database", databaseName, entryIndex);
+          } else if (appliedBefore >= entryIndex)
             throw new IllegalStateException("Database '" + databaseName + "' was reinstalled by the forceSnapshot entry "
                 + "at index " + entryIndex + " in a previous session (persistedAppliedIndex=" + appliedBefore
                 + ") but has no copy on this node now, and this node is the Raft leader, so there is nowhere to "

@@ -4013,7 +4013,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         leaderIdAfterDial != null ? leaderIdAfterDial.toString() : null);
     // The refusal hold is keyed on the node dialled, even when leadership moved during the resolution (issue #8709).
     final String holdLeaderId = LeaderForwardContext.holdLeaderId(intendedLeaderId,
-        leaderIdBeforeDial != null ? leaderIdBeforeDial.toString() : null);
+        leaderIdBeforeDial != null ? leaderIdBeforeDial.toString() : null,
+        leaderIdAfterDial != null ? leaderIdAfterDial.toString() : null);
 
     // The cluster named an HTTPS endpoint for the leader and this node cannot reach it. Posting the write to the
     // plain listener instead would put it, and the cluster token below, on the wire in clear; refuse with the

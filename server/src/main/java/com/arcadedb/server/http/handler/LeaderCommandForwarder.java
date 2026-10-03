@@ -282,7 +282,8 @@ public final class LeaderCommandForwarder {
     // the address was resolved for - or, when leadership changed in between, no id at all (issue #7603).
     final String leaderIdBeforeDial = ha.getLeaderPeerId();
     final LeaderDial dial = LeaderDial.resolve(ha, transport.client());
-    final String intendedLeaderId = LeaderForwardContext.stableLeaderId(leaderIdBeforeDial, ha.getLeaderPeerId());
+    final String leaderIdAfterDial = ha.getLeaderPeerId();
+    final String intendedLeaderId = LeaderForwardContext.stableLeaderId(leaderIdBeforeDial, leaderIdAfterDial);
     if (dial == null)
       throw new ServerIsNotTheLeaderException("Leader address is unknown", ha.getLeaderName());
 
@@ -392,7 +393,7 @@ public final class LeaderCommandForwarder {
     final ExecutionResponse response = relayEventStream && isEventStreamRequested(exchange) ?
         transport.stream(dial.client(), request, dial.address(), longRunningCommand, streamTargetFactory.apply(exchange)) :
         transport.send(dial.client(), request, dial.address(), longRunningCommand);
-    return holdUnnamedNotTheLeaderRefusal(response, ha, LeaderForwardContext.holdLeaderId(intendedLeaderId, leaderIdBeforeDial),
+    return holdUnnamedNotTheLeaderRefusal(response, ha, LeaderForwardContext.holdLeaderId(intendedLeaderId, leaderIdBeforeDial, leaderIdAfterDial),
         httpServer.getServer().getConfiguration());
   }
 
