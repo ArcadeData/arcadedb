@@ -738,7 +738,7 @@ public enum Type {
         else if (value instanceof String string)
           return string.isEmpty() && property == null ? 0f : Float.parseFloat(string);
         else
-          return asNumber(value, "FLOAT", property).floatValue();
+          return narrowToFloat(asNumber(value, "FLOAT", property), property);
 
       } else if (targetClass.equals(BigDecimal.class)) {
         if (value instanceof String string)
@@ -758,7 +758,7 @@ public enum Type {
           // decimal instead, and skips the round-trip where it provably cannot matter (issue #7609).
           return widenFloat(float1);
         else
-          return asNumber(value, "DOUBLE", property).doubleValue();
+          return narrowToDouble(asNumber(value, "DOUBLE", property), property);
 
       } else if (targetClass.equals(Boolean.TYPE) || targetClass.equals(Boolean.class)) {
         if (value instanceof Boolean)
@@ -891,7 +891,7 @@ public enum Type {
           return DateUtils.dateTime(database, calendar.getTimeInMillis(), ChronoUnit.MILLIS, LocalDateTime.class,
               property != null ? DateUtils.getPrecisionFromType(property.getType()) : ChronoUnit.MILLIS);
         else if (value instanceof String valueAsString) {
-          if (isEpochString(valueAsString))
+          if (property != null && isEpochString(valueAsString))
             return convert(database, Long.parseLong(valueAsString), targetClass, property);
           if (!FileUtils.isLong(valueAsString))
             // DateUtils.parseDateTime(), not a private copy of its fallback chain: this branch used to carry its own
@@ -933,7 +933,7 @@ public enum Type {
           return DateUtils.dateTime(database, calendar.getTimeInMillis(), ChronoUnit.MILLIS, ZonedDateTime.class,
               property != null ? DateUtils.getPrecisionFromType(property.getType()) : ChronoUnit.MILLIS);
         if (value instanceof String valueAsString) {
-          if (isEpochString(valueAsString))
+          if (property != null && isEpochString(valueAsString))
             return convert(database, Long.parseLong(valueAsString), targetClass, property);
           if (!FileUtils.isLong(valueAsString))
             // parseZonedDateTime keeps an offset the input carries rather than dropping it, so the same moment
@@ -977,12 +977,8 @@ public enum Type {
           // datetime literal in the record as the raw String it arrived as. It now goes through the same shared
           // chain as every other datetime target (issue #8090).
           //
-          // isLong: an all-digits string falls through to the original value, as it already does in the
-          // LocalDateTime and ZonedDateTime branches above. Only the LocalDate branch reads such a string as an
-          // epoch count, so the three disagree about what a numeric string means for a datetime target. That
-          // predates this issue and is left alone here rather than settled in passing - it is a question about
-          // epoch semantics, not about which spellings parse, which is what #8090 is.
-          if (isEpochString(valueAsString))
+          // An all-digits string is an epoch count for a declared property, as in every other date branch (#9110).
+          if (property != null && isEpochString(valueAsString))
             return convert(database, Long.parseLong(valueAsString), targetClass, property);
           if (!FileUtils.isLong(valueAsString)) {
             // parseZonedDateTime, not parseDateTime().atZone(): an Instant IS an instant, so an offset the value
@@ -1104,7 +1100,8 @@ public enum Type {
   private static InconvertibleValueException inconvertible(final Object value, final String targetType, final Property property,
       final Throwable cause) {
     // only the class of an array, a collection or a map: its text can be as large as the value, or just an identity hash
-    final String shown = value.getClass().isArray() || value instanceof Collection || value instanceof Map ? "" : "'" + value + "' ";
+    final String text = value.getClass().isArray() || value instanceof Collection || value instanceof Map ? null : value.toString();
+    final String shown = text == null ? "" : "'" + (text.length() > 100 ? text.substring(0, 100) + "..." : text) + "' ";
     return new InconvertibleValueException(
         "Value " + shown + "of type " + value.getClass().getSimpleName() + " cannot be converted to type " + targetType //
             + forProperty(property), cause);
@@ -1129,10 +1126,33 @@ public enum Type {
     return !text.isEmpty() && FileUtils.isLong(text);
   }
 
+  /** A finite number that overflows to an infinity is refused for a declared FLOAT (issue #9110, as #9024 for LONG). */
+  private static float narrowToFloat(final Number value, final Property property) {
+    final float result = value.floatValue();
+    if (property != null && Float.isInfinite(result) && !(value instanceof Float) && !isInfinite(value))
+      throw new IllegalArgumentException("Value '" + value + "' is out of range for type FLOAT" + forProperty(property));
+    return result;
+  }
+
+  private static double narrowToDouble(final Number value, final Property property) {
+    final double result = value.doubleValue();
+    if (property != null && Double.isInfinite(result) && !isInfinite(value))
+      throw new IllegalArgumentException("Value '" + value + "' is out of range for type DOUBLE" + forProperty(property));
+    return result;
+  }
+
+  private static boolean isInfinite(final Number value) {
+    return value instanceof Double d && d.isInfinite() || value instanceof Float f && f.isInfinite();
+  }
+
   private static boolean isZero(final Number number, final Property property) {
-    if (isNaN(number))
+    if (isNaN(number)) {
+      if (property == null)
+        // the plain conversion always answered false for it (NaN.intValue() is 0)
+        return true;
       throw new IllegalArgumentException(
           "Value '" + number + "' is NaN and cannot be converted to type BOOLEAN" + forProperty(property));
+    }
     return switch (number) {
       case BigDecimal bigDecimal -> bigDecimal.signum() == 0;
       case BigInteger bigInteger -> bigInteger.signum() == 0;
