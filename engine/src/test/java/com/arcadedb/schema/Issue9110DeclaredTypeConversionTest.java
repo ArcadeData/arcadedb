@@ -289,6 +289,23 @@ class Issue9110DeclaredTypeConversionTest extends TestHelper {
   }
 
   @Test
+  void tooLongDigitStringIsKeptByTheRemoteReadAndRefusedByAWrite() {
+    final DocumentType type = database.getSchema().createDocumentType("LongDigits9110");
+    type.createProperty("dt", Type.DATETIME);
+    final String digits = "123456789012345678901234567890";
+    assertRefused("LongDigits9110", "dt", digits);
+    assertThat(Type.convertOrKeep(database, digits, LocalDateTime.class, type.getProperty("dt"))).isEqualTo(digits);
+  }
+
+  @Test
+  void singleElementListStillUnwrapsForALinkProperty() {
+    database.getSchema().createDocumentType("LinkOne9110").createProperty("link", Type.LINK);
+    final RID[] target = new RID[1];
+    database.transaction(() -> target[0] = database.newDocument("LinkOne9110").save().getIdentity());
+    assertThat(roundTrip("LinkOne9110", "link", new ArrayList<>(List.of(target[0])))).isEqualTo(target[0]);
+  }
+
+  @Test
   void emptyCollectionIsRefusedByALinkProperty() {
     database.getSchema().createDocumentType("LinkEmpty9110").createProperty("link", Type.LINK);
     assertRefused("LinkEmpty9110", "link", new ArrayList<>());
