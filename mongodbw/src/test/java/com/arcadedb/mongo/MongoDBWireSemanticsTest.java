@@ -438,8 +438,18 @@ public class MongoDBWireSemanticsTest extends BaseMongoServerTest {
       for (int t = 0; t < 4; t++) {
         final int thread = t;
         futures.add(pool.submit(() -> {
-          for (int i = 0; i < 25; i++)
-            fresh.insertOne(thread % 2 == 0 ? new Document("_id", thread * 1000 + i) : new Document("_id", "s" + thread + "-" + i));
+          for (int i = 0; i < 25; i++) {
+            final Document doc = thread % 2 == 0 ? new Document("_id", thread * 1000 + i) : new Document("_id", "s" + thread + "-" + i);
+            // a WriteConflict (112) is the retryable answer to two transactions on the same page: a client retries it
+            for (int attempt = 0; ; attempt++)
+              try {
+                fresh.insertOne(doc);
+                break;
+              } catch (final MongoCommandException e) {
+                if (e.getErrorCode() != 112 || attempt > 20)
+                  throw e;
+              }
+          }
         }));
       }
       for (final Future<?> f : futures)
@@ -471,5 +481,27 @@ public class MongoDBWireSemanticsTest extends BaseMongoServerTest {
       gaveUp.insertOne(new Document("_id", i));
     assertThatThrownBy(() -> gaveUp.insertOne(new Document("_id", 15))).isInstanceOf(MongoWriteException.class);
     assertThat(db.getSchema().getType("gaveup").getAllIndexes(false)).isEmpty();
+  }
+
+  @Test
+  void idIsImmutableUnderSetAndUnset() {
+    collection.insertOne(Document.parse("{_id: 1, a: 1}"));
+
+    assertThatThrownBy(() -> collection.updateOne(new Document("_id", 1), Document.parse("{$set: {_id: 99}}")))
+        .isInstanceOf(MongoCommandException.class);
+    assertThatThrownBy(() -> collection.updateOne(new Document("_id", 1), Document.parse("{$unset: {_id: ''}}")))
+        .isInstanceOf(MongoCommandException.class);
+    // the same value is allowed
+    collection.updateOne(new Document("_id", 1), Document.parse("{$set: {_id: 1, a: 2}}"));
+
+    assertThat(collection.countDocuments(new Document("_id", 1))).isEqualTo(1);
+    assertThat(collection.find(new Document("_id", 1)).first().getInteger("a")).isEqualTo(2);
+  }
+
+  @Test
+  void upsertWithTheIdInTheUpdateKeepsTheNumericIndex() {
+    collection.insertMany(List.of(new Document("_id", 2), new Document("_id", 9), new Document("_id", 10)));
+    collection.updateOne(new Document("name", "x"), Document.parse("{$set: {_id: 50, name: 'x'}}"), new UpdateOptions().upsert(true));
+    assertThat(ids("{_id: {$gt: 5}}")).containsExactly(9, 10, 50);
   }
 }
