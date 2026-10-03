@@ -89,6 +89,12 @@ public class QueryOperatorEquals {
     }
   }
 
+  // The first property of a sub-query row against the other side: the comparison "=" makes (numbers by value, the other side converted to
+  // the class of this one), not Object.equals(), which tells an Integer 7 from a Long 7 and a BigDecimal 1.50 from 1.5 (#9031)
+  private static boolean valueEquals(final Object fieldValue, final Object other) {
+    return fieldValue.equals(other) || equals(fieldValue, other);
+  }
+
   protected static boolean comparesValues(Object value, final Identifiable record, final boolean iConsiderIn) {
     // ORID && RECORD
     final RID other = record.getIdentity();
@@ -101,12 +107,12 @@ public class QueryOperatorEquals {
         if (fieldValue != null) {
           if (iConsiderIn && MultiValue.isMultiValue(fieldValue)) {
             for (final Object o : MultiValue.getMultiValueIterable(fieldValue, false)) {
-              if (o != null && o.equals(value))
+              if (o != null && valueEquals(o, value))
                 return true;
             }
           }
 
-          return fieldValue.equals(value);
+          return valueEquals(fieldValue, value);
         }
       }
       return false;
@@ -133,12 +139,12 @@ public class QueryOperatorEquals {
       if (fieldValue != null) {
         if (iConsiderIn && MultiValue.isMultiValue(fieldValue)) {
           for (final Object o : MultiValue.getMultiValueIterable(fieldValue, false)) {
-            if (o != null && o.equals(iValue))
+            if (o != null && valueEquals(o, iValue))
               return true;
           }
         }
 
-        return fieldValue.equals(iValue);
+        return valueEquals(fieldValue, iValue);
       }
     }
     return false;

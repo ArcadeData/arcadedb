@@ -106,7 +106,7 @@ public class JSONObject implements Map<String, Object> {
   }
 
   public JSONObject put(final String name, Number value) {
-    if (value != null && (Double.isNaN(value.doubleValue()) || Double.isInfinite(value.doubleValue())))
+    if (isNonFinite(value))
       value = null;
     object.addProperty(name, value);
     return this;
@@ -144,12 +144,8 @@ public class JSONObject implements Map<String, Object> {
       for (int i = 0; i < 10; i++) {
         final JSONArray array = new JSONArray();
         try {
-          for (Object o : iterable) {
-            if (o instanceof Number num)
-              array.put(num); // THIS SOLVES A BUG WITH JDK THAT DOESN'T USE THE RIGHT METHOD WITH NaN
-            else
-              array.put(o);
-          }
+          for (Object o : iterable)
+            array.put(o);
           object.add(name, array.getInternal());
           break;
         } catch (ConcurrentModificationException e) {
@@ -191,21 +187,7 @@ public class JSONObject implements Map<String, Object> {
     case Identifiable identifiable -> object.addProperty(name, identifiable.getIdentity().toString());
     case Map map -> object.add(name, new JSONObject(map).getInternal());
     case Class<?> clazz -> object.addProperty(name, clazz.getName());
-    case Object o when o.getClass().isArray() -> {
-      // PRIMITIVE ARRAYS (float[], double[], int[], long[], short[], byte[], ...): the typed
-      // String[]/Object[] cases above don't match them, so serialize element-by-element via reflection
-      // instead of falling through to the generic toString() (which would emit "[F@...").
-      final JSONArray array = new JSONArray();
-      final int length = Array.getLength(o);
-      for (int i = 0; i < length; i++) {
-        final Object element = Array.get(o, i);
-        if (element instanceof Number num)
-          array.put(num); // ROUTE THROUGH put(Number) FOR CONSISTENT NaN/INF HANDLING
-        else
-          array.put(element);
-      }
-      object.add(name, array.getInternal());
-    }
+    case Object o when o.getClass().isArray() -> object.add(name, primitiveArrayToElement(o));
     default ->
       // GENERIC CASE: TRANSFORM IT TO STRING
         object.addProperty(name, value.toString());
@@ -678,12 +660,30 @@ public class JSONObject implements Map<String, Object> {
     throw new IllegalArgumentException("Element " + element + " not supported");
   }
 
+  /**
+   * JSON has no literal for NaN and the infinities: every writer in this class turns them into {@code null}, never into a number
+   * (a {@code 0} would be indistinguishable from a measurement). Only a {@link Double} or {@link Float} can be non-finite.
+   */
+  static boolean isNonFinite(final Number number) {
+    return number instanceof Double d && !Double.isFinite(d) || number instanceof Float f && !Float.isFinite(f);
+  }
+
+  // PRIMITIVE ARRAYS (float[], double[], int[], long[], short[], byte[], ...): serialized element-by-element via reflection instead of
+  // falling through to the generic toString() (which would emit "[F@..."), wherever the array sits: a property, a map value or a list element.
+  private static JsonElement primitiveArrayToElement(final Object array) {
+    final int length = Array.getLength(array);
+    final JSONArray result = new JSONArray(length);
+    for (int i = 0; i < length; i++)
+      result.put(Array.get(array, i));
+    return result.getInternal();
+  }
+
   protected static JsonElement objectToElement(final Object object) {
     return switch (object) {
       case null -> JsonNull.INSTANCE;
       case JsonElement jsonElement -> jsonElement;
       case String string -> new JsonPrimitive(string);
-      case Number number -> new JsonPrimitive(number);
+      case Number number -> isNonFinite(number) ? JsonNull.INSTANCE : new JsonPrimitive(number);
       case Boolean boolean1 -> new JsonPrimitive(boolean1);
       case Character character -> new JsonPrimitive(character);
       case JSONObject nObject -> nObject.getInternal();
@@ -694,6 +694,7 @@ public class JSONObject implements Map<String, Object> {
       case Document document -> document.toJSON(false).getInternal();
       case Identifiable identifiable -> new JsonPrimitive(identifiable.getIdentity().toString());
       case Enum<?> enumValue -> new JsonPrimitive(enumValue.name());
+      case Object o when o.getClass().isArray() -> primitiveArrayToElement(o);
       case Date date -> new JsonPrimitive(date.getTime());
       case LocalDate localDate -> new JsonPrimitive(localDate.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli());
       case TemporalAccessor temporalAccessor -> {

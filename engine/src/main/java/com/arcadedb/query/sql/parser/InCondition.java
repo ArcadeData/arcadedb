@@ -28,7 +28,6 @@ import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.QueryOperatorEquals;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.utility.CodeUtils;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -345,10 +344,11 @@ public class InCondition extends BooleanExpression {
       return sawNull ? null : Boolean.FALSE;
     }
 
-    // Scalar right-hand side: degrade to an equality test (e.g. IN with a single non-collection value).
+    // Scalar right-hand side: degrade to the same equality test as "=" and the list forms (e.g. IN with a single non-collection
+    // value), so a Long matches an Integer, two BigDecimals of different scale match, and a Date matches the stored DATETIME (#9030)
     if (iLeft == null)
       return null;
-    return CodeUtils.compare(iLeft, iRight) ? Boolean.TRUE : Boolean.FALSE;
+    return QueryOperatorEquals.equals(iLeft, iRight) ? Boolean.TRUE : Boolean.FALSE;
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
