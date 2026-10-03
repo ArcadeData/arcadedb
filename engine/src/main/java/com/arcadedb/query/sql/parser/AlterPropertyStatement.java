@@ -162,7 +162,7 @@ public class AlterPropertyStatement extends DDLStatement {
       return;
     DocumentValidator.requireReadableBound(db, type, property, min, "MIN");
     DocumentValidator.requireReadableBound(db, type, property, max, "MAX");
-    ExistingRecordsCheck.requireValues(db, type, property, StoredValueConstraints.of(false, min, max, regexp), what);
+    ExistingRecordsCheck.requireValues(db, type, property, StoredValueConstraints.of(db, false, min, max, regexp), what);
   }
 
   @Override
