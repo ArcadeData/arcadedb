@@ -122,8 +122,8 @@ public class MongoDBToSqlTranslator {
           throw new IllegalArgumentException("$not requires a non-empty operator expression");
 
         boolean nullSensitive = false;
-        for (final String operator : notOperand.keySet())
-          if (!"$exists".equals(operator))
+        for (final Map.Entry<String, Object> operator : notOperand.entrySet())
+          if (!isTwoValued(operator.getKey(), operator.getValue()))
             nullSensitive = true;
 
         if (nullSensitive && field != null)
@@ -155,9 +155,13 @@ public class MongoDBToSqlTranslator {
         // MongoDB's {$in: [.., null]} matches a null or missing field too, which SQL's IN never does (unknown)
         if (containsNull(collection)) {
           final Collection<?> withoutNull = withoutNull(collection);
-          sql.append('(').append(field).append(" IS NULL");
+          sql.append('(');
+          appendField(sql, field);
+          sql.append(" IS NULL");
           if (!withoutNull.isEmpty()) {
-            sql.append(" OR ").append(field).append(" IN ");
+            sql.append(" OR ");
+            appendField(sql, field);
+            sql.append(" IN ");
             buildCollection(sql, params, withoutNull);
           }
           sql.append(')');
@@ -173,14 +177,22 @@ public class MongoDBToSqlTranslator {
         // the exact complement of $in: a null or missing field is NOT in the list unless the list holds null itself
         if (containsNull(collection)) {
           final Collection<?> withoutNull = withoutNull(collection);
-          sql.append('(').append(field).append(" IS NOT NULL");
+          sql.append('(');
+          appendField(sql, field);
+          sql.append(" IS NOT NULL");
           if (!withoutNull.isEmpty()) {
-            sql.append(" AND ").append(field).append(" NOT IN ");
+            sql.append(" AND ");
+            appendField(sql, field);
+            sql.append(" NOT IN ");
             buildCollection(sql, params, withoutNull);
           }
           sql.append(')');
         } else {
-          sql.append('(').append(field).append(" IS NULL OR ").append(field).append(" NOT IN ");
+          sql.append('(');
+          appendField(sql, field);
+          sql.append(" IS NULL OR ");
+          appendField(sql, field);
+          sql.append(" NOT IN ");
           buildCollection(sql, params, collection);
           sql.append(')');
         }
@@ -231,6 +243,19 @@ public class MongoDBToSqlTranslator {
       throw new IllegalArgumentException("Unknown operator " + key);
   }
 
+  /**
+   * Whether the SQL emitted for an operator is never "unknown", so negating it with NOT needs no extra care for a null field:
+   * {@code $exists}, the null-aware {@code $ne}/{@code $nin}, an equality with null and an {@code $in} that lists null.
+   */
+  private static boolean isTwoValued(final String operator, final Object operand) {
+    return switch (operator) {
+      case "$exists", "$ne", "$nin" -> true;
+      case "$eq" -> operand == null;
+      case "$in" -> operand instanceof Collection<?> collection && containsNull(collection);
+      default -> false;
+    };
+  }
+
   private static void appendField(final StringBuilder sql, final String field) {
     if (field != null)
       sql.append(field);
@@ -276,13 +301,15 @@ public class MongoDBToSqlTranslator {
       }
 
     // in comments mode (x) a trailing "# comment" would swallow the closing parenthesis, hence the line break
-    final String wrapped = "(?s:.*)(?" + flags + ":" + pattern + (flags.indexOf("x") >= 0 ? "\n" : "") + ")(?s:.*)";
+    // the user's pattern alone must be valid: validating only the wrapped text would accept a pattern that closes the wrapper
+    // itself (e.g. "a)|(b") and silently change its meaning
     try {
-      Pattern.compile(wrapped);
+      Pattern.compile(pattern);
     } catch (final PatternSyntaxException e) {
       throw new IllegalArgumentException("Invalid regular expression '" + pattern + "': " + e.getDescription(), e);
     }
 
+    final String wrapped = "(?s:.*)(?" + flags + ":" + pattern + (flags.indexOf("x") >= 0 ? "\n" : "") + ")(?s:.*)";
     appendField(sql, field);
     sql.append(" MATCHES ");
     buildValue(sql, params, wrapped);

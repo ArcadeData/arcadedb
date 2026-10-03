@@ -240,7 +240,8 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
       return;
 
     try {
-      // the property is undeclared (collections are schemaless): the index serializes its keys as STRING
+      // the property is undeclared (collections are schemaless): the index serializes its keys as STRING, so _id 1 and "1" are
+      // the same key here (MongoDB keeps them apart), and so are an ObjectId and a String equal to its hex (see #6955)
       final TypeIndexBuilder builder = database.getSchema().buildTypeIndex(collectionName, new String[] { "_id" });
       builder.withType(Schema.INDEX_TYPE.LSM_TREE);
       builder.withUnique(true);
