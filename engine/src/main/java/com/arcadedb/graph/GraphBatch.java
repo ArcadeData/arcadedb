@@ -766,7 +766,7 @@ public class GraphBatch implements AutoCloseable {
           + "needs to carry data");
 
     edgeHasProperties[idx] = hasProps;
-    this.edgeProperties[idx] = hasProps ? edgeProperties : null;
+    this.edgeProperties[idx] = hasProps ? propertyPairs(edgeProperties) : null;
     // A LIGHTWEIGHT type is stored lightweight whatever the builder was told: the storage shape belongs to the
     // schema, and withLightEdges() is only the legacy per-batch override for types that do not declare one.
     edgeIsLightweight[idx] = typeIsLightweight || (lightEdges && !hasProps);
@@ -776,6 +776,26 @@ public class GraphBatch implements AutoCloseable {
 
     if (edgeCount >= batchSize)
       flush();
+  }
+
+  /**
+   * The properties as the flat {@code [name, value, name, value, ...]} array the bulk writer reads. A single {@link Map}
+   * is how a caller hands over a property map, as on {@code Vertex.newEdge()}: it is flattened here, because read as
+   * name/value pairs it would hold none and its properties would be dropped without a word (issue #9020).
+   */
+  private static Object[] propertyPairs(final Object[] properties) {
+    if (properties.length == 1 && properties[0] instanceof Map<?, ?> map) {
+      final Object[] pairs = new Object[map.size() * 2];
+      int i = 0;
+      for (final Map.Entry<?, ?> entry : map.entrySet()) {
+        pairs[i++] = String.valueOf(entry.getKey());
+        pairs[i++] = entry.getValue();
+      }
+      return pairs;
+    }
+    if (properties.length % 2 != 0)
+      throw new IllegalArgumentException("Properties must be an even number as pairs of name, value");
+    return properties;
   }
 
   /** The edge type {@code name}, or a clear refusal for a name that is missing or not an edge type. */
@@ -1103,7 +1123,7 @@ public class GraphBatch implements AutoCloseable {
   private EdgeSerializationTemplate getOrCreateTemplate(final Object[] props, final int edgeTypeBucketId) {
     // Build signature from property names
     final int propCount = props.length / 2;
-    final StringBuilder sig = new StringBuilder(edgeTypeBucketId);
+    final StringBuilder sig = new StringBuilder().append(edgeTypeBucketId).append(':');
     for (int p = 0; p < propCount; p++) {
       if (p > 0)
         sig.append(',');
@@ -1257,7 +1277,7 @@ public class GraphBatch implements AutoCloseable {
       buffer.putNumber(Double.doubleToLongBits(((Number) value).doubleValue()));
       break;
     case BinaryTypes.TYPE_BYTE:
-      buffer.putByte((Byte) value);
+      buffer.putByte(((Number) value).byteValue());
       break;
     case BinaryTypes.TYPE_BOOLEAN:
       buffer.putByte((byte) ((Boolean) value ? 1 : 0));
@@ -1293,6 +1313,18 @@ public class GraphBatch implements AutoCloseable {
     for (int i = 0; i < edgeCount; i++)
       if (edgeRIDs[i] == null)
         nonLightIndices[nlIdx++] = i;
+
+    // An edge type with declared properties gets what every other write path gives it: the value converted to the declared
+    // type, the defaults, and the constraints (issue #9019). The bulk writer casts raw values to the declared binary type,
+    // which wraps a SHORT, throws on a BYTE and never runs a validation.
+    final Map<Integer, Boolean> declaresProperties = new HashMap<>();
+    for (int k = 0; k < nonLightCount; k++) {
+      final int i = nonLightIndices[k];
+      final Boolean declared = declaresProperties.computeIfAbsent(edgeTypeBucketIds[i],
+          bucketId -> !database.getSchema().getTypeByBucketId(bucketId).getPolymorphicProperties().isEmpty());
+      if (declared)
+        applySchema(i);
+    }
 
     // Serialize all edge records using templates
     final Binary[] serializedBuffers = new Binary[nonLightCount];
@@ -1364,6 +1396,31 @@ public class GraphBatch implements AutoCloseable {
         edgeRIDs[i] = edge.getIdentity();
       }
     }
+  }
+
+  /**
+   * Replaces the buffered properties of edge {@code i} with what {@code Vertex.newEdge()} would store: converted to the
+   * declared types, completed with the defaults and validated against the constraints (issue #9019). The edge is built
+   * only to run that logic and is never saved.
+   */
+  private void applySchema(final int i) {
+    final EdgeType edgeType = (EdgeType) database.getSchema().getTypeByBucketId(edgeTypeBucketIds[i]);
+    final MutableEdge edge = new MutableEdge(database, edgeType, new RID(edgeSrcBucketIds[i], edgeSrcPositions[i]),
+        new RID(edgeDstBucketIds[i], edgeDstPositions[i]));
+    if (edgeProperties[i] != null)
+      GraphEngine.setProperties(edge, edgeProperties[i]);
+    edgeType.applyDefaultValues(edge);
+    edge.validate();
+
+    final Set<String> names = edge.getPropertyNames();
+    final Object[] pairs = new Object[names.size() * 2];
+    int p = 0;
+    for (final String name : names) {
+      pairs[p++] = name;
+      pairs[p++] = edge.get(name);
+    }
+    edgeProperties[i] = pairs.length > 0 ? pairs : null;
+    edgeHasProperties[i] = pairs.length > 0;
   }
 
   /**
