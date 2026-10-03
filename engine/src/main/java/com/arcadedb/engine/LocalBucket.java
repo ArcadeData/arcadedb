@@ -4874,6 +4874,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     cachedRecordCount.set(-1);
   }
 
+  private Binary loadMultiPageRecord(final RID originalRID, final BasePage firstPage, final int recordPositionInPage,
+                                     final long[] recordSize) throws IOException {
+    return loadMultiPageRecord(originalRID, firstPage, recordPositionInPage, recordSize, false);
+  }
+
   /**
    * Loads a multi-page record, validating that what it assembled is one committed state of the record and not a mix
    * of two.
@@ -4904,17 +4909,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * the same walk, is paid only on a page that actually moved, and unlike a hash it cannot be wrong. The commit side
    * has to compare two points in TIME and can only carry a number across them; a read holds both images at once.
    *
-   * @author Luca Garulli (l.garulli@arcadedata.com)
-   */
-  private Binary loadMultiPageRecord(final RID originalRID, final BasePage firstPage, final int recordPositionInPage,
-                                     final long[] recordSize) throws IOException {
-    return loadMultiPageRecord(originalRID, firstPage, recordPositionInPage, recordSize, false);
-  }
-
-  /**
+   *
    * @param headPrePinned whether the transaction already held the head page before the read fetched it (#8987): a chain
    *                      is a snapshot older than this read only if its head was pinned before it too, otherwise a newer
    *                      head can sit on tails pinned earlier by a neighbour record's read.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   private Binary loadMultiPageRecord(final RID originalRID, BasePage firstPage, int recordPositionInPage,
                                      long[] recordSize, final boolean headPrePinned) throws IOException {

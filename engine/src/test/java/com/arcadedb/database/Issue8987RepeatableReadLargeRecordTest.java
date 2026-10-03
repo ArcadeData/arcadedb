@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -119,11 +120,16 @@ class Issue8987RepeatableReadLargeRecordTest extends BucketPageLayoutTestSupport
         () -> rid[0] = database.newDocument("Doc").set("v", 0).set("s", "0".repeat(150_000)).save().getIdentity());
 
     final AtomicBoolean stop = new AtomicBoolean();
+    final AtomicReference<Throwable> writerFailure = new AtomicReference<>();
     final Thread writer = new Thread(() -> {
-      for (int v = 1; !stop.get(); v++) {
-        final int version = v;
-        database.transaction(() -> database.lookupByRID(rid[0], true).asDocument().modify().set("v", version)
-            .set("s", String.valueOf(version % 10).repeat(150_000 + version % 3 * 20_000)).save(), false, 100);
+      try {
+        for (int v = 1; !stop.get(); v++) {
+          final int version = v;
+          database.transaction(() -> database.lookupByRID(rid[0], true).asDocument().modify().set("v", version)
+              .set("s", String.valueOf(version % 10).repeat(150_000 + version % 3 * 20_000)).save(), false, 100);
+        }
+      } catch (final Throwable e) {
+        writerFailure.set(e);
       }
     });
     writer.start();
@@ -146,5 +152,6 @@ class Issue8987RepeatableReadLargeRecordTest extends BucketPageLayoutTestSupport
       stop.set(true);
       writer.join();
     }
+    assertThat(writerFailure.get()).as("the writer thread must not have failed").isNull();
   }
 }

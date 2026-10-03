@@ -130,7 +130,8 @@ public class TransactionManager {
    */
   public void unidirectionalEdgesCommitted(final IntHashSet targetBuckets) {
     final long sequence = unidirectionalEdgeSequence.incrementAndGet();
-    targetBuckets.forEach(bucketId -> unidirectionalEdgeLastCommit.put(bucketId, sequence));
+    // merge(max): with an explicit lock list two commits can reach here out of order
+    targetBuckets.forEach(bucketId -> unidirectionalEdgeLastCommit.merge(bucketId, sequence, Math::max));
   }
 
   public TransactionManager(final DatabaseInternal database) {

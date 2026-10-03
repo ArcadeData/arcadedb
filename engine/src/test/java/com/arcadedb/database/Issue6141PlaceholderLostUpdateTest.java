@@ -19,10 +19,12 @@
 package com.arcadedb.database;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -151,6 +153,43 @@ class Issue6141PlaceholderLostUpdateTest extends BucketPageLayoutTestSupport {
    * content on another page. Since #6149 that takes a page with a free tail of exactly zero - the only shape left
    * where a spilling record cannot find the 14 bytes a chunk header needs.
    */
+  /**
+   * #8985: the guard that compares a read image with the record taken for update must also answer for a placeholder
+   * pointer, whose body is on another page: false while the content is what was read, true once another transaction
+   * rewrote it.
+   */
+  @Test
+  void theRecordImageGuardAnswersForAPlaceholderBackedRecord() throws Exception {
+    final RID placeholder = placeholderBackedRecord("Guarded");
+    final Binary image = database.isTransactionActive() ? null : readImage(placeholder);
+
+    assertThat(guard(placeholder, image)).as("the content is the one that was read").isFalse();
+
+    commitInAnotherThread(placeholder, "c".repeat(CONTENT_SIZE));
+
+    assertThat(guard(placeholder, image)).as("the content was rewritten after the read").isTrue();
+  }
+
+  private Binary readImage(final RID rid) {
+    final Binary[] image = new Binary[1];
+    database.transaction(
+        () -> image[0] = ((RecordInternal) database.lookupByRID(rid, true).asDocument().modify()).getBuffer().copyOfContent());
+    return image[0];
+  }
+
+  private boolean guard(final RID rid, final Binary image) {
+    final boolean[] changed = new boolean[1];
+    database.transaction(() -> {
+      final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(rid.getBucketId());
+      try {
+        changed[0] = bucket.hasRecordChangedSinceRead(rid, bucket.fetchPageInTransaction(rid), image);
+      } catch (final IOException e) {
+        throw new IllegalStateException(e);
+      }
+    });
+    return changed[0];
+  }
+
   private RID placeholderBackedRecord(final String typeName) {
     final RID[] tiny = new RID[1];
 

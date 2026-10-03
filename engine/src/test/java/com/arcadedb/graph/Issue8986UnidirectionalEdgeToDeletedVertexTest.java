@@ -20,7 +20,6 @@ package com.arcadedb.graph;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
-import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -165,10 +164,11 @@ class Issue8986UnidirectionalEdgeToDeletedVertexTest extends TestHelper {
       assertThat(rs.next().<Long>getProperty("totalCorruptedRecords")).isZero();
     }
     // every edge left points at a vertex that exists: expanding it must not hit a deleted record
-    try (final ResultSet rs = database.query("sql", "SELECT expand(out('U')) FROM V WHERE name = 'a'")) {
-      while (rs.hasNext())
-        assertThat(rs.next().getIdentity()).isNotNull();
-    }
+    database.transaction(() -> {
+      final Vertex a = database.lookupByRID(source, true).asVertex();
+      for (final Edge edge : a.getEdges(Vertex.DIRECTION.OUT, "U"))
+        assertThat(database.existsRecord(edge.getIn())).as("the target of " + edge.getIdentity() + " must exist").isTrue();
+    });
   }
 
   /** Vertices and unidirectional edges created in one transaction: the targets are not committed yet, and must not conflict. */
