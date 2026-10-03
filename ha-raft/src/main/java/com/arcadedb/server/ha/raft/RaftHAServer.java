@@ -573,6 +573,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         this::resetPeerReplicationChannel, peerChannelResetEscalation ? this::escalateWedgedPeerChannel : null);
     // Issue #8900: a follower whose capability advertisement is fresh answers over HTTP, so a Raft RPC path that fails
     // all the same is refused by a live node, and its channel is reset without waiting out the unreachable interval.
+    // observedAtMs is compared with ClusterMonitor's clock: both are System.currentTimeMillis outside tests, and a test
+    // that fakes one must fake the other or the comparison means nothing.
     this.clusterMonitor.setPeerLastAnsweredAt(peerId -> {
       final PeerCapabilityRegistry.Advertisement advertisement = peerCapabilities.freshAdvertisementOf(peerId);
       return advertisement != null ? advertisement.observedAtMs() : -1L;
@@ -2325,6 +2327,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       } catch (final Throwable t) {
         LogManager.instance().log(this, Level.FINE, "Error closing old client: %s", t, t.getMessage());
       }
+      // Issue #8900: the waits below end early on a shutdown (stop() does not take recoveryLock) or an interrupt (the
+      // health monitor being stopped), and such an ending is not a failed restart.
+      final BooleanSupplier abandoned = () -> shutdownRequested || Thread.currentThread().isInterrupted();
       // Issue #8900: read before the close, which empties the server's group map.
       RaftServer.Division oldDivision = null;
       if (oldServer != null)
@@ -2339,7 +2344,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
           // its own thread. close() below would then be a no-op that still INTERRUPTS that thread (pauseMonitor.stop()),
           // cutting its gRPC shutdown short, so let that close finish first.
           final LifeCycle.State beforeClose = OldRatisServerTermination.awaitCloseInProgress(oldServer::getLifeCycleState,
-              OldRatisServerTermination.CLOSE_IN_PROGRESS_WAIT_MS);
+              OldRatisServerTermination.CLOSE_IN_PROGRESS_WAIT_MS, abandoned);
+          if (abandoned.getAsBoolean()) {
+            // stop() closes this server itself; closing it here too would only interrupt that close.
+            HALog.log(this, HALog.BASIC, "Recovery abandoned: shutdown requested while the old Ratis server was closing");
+            return;
+          }
           if (beforeClose == LifeCycle.State.CLOSING)
             LogManager.instance().log(this, Level.WARNING,
                 "Old Ratis server is still CLOSING after %dms; closing it from the restart, which interrupts that close "
@@ -2360,9 +2370,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
       try {
         if (oldServer != null)
-          verifyOldServerTerminated(oldServer, oldDivision);
+          verifyOldServerTerminated(oldServer, oldDivision, abandoned);
         // The waits above can take seconds, and stop() does not take recoveryLock: do not start a server it will not stop.
-        if (shutdownRequested) {
+        if (abandoned.getAsBoolean()) {
           HALog.log(this, HALog.BASIC, "Recovery abandoned: shutdown requested while the old Ratis server was closing");
           return;
         }
@@ -2403,6 +2413,13 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
             .setOption(startupOption)
             .build();
         this.raftServer.start();
+        if (shutdownRequested) {
+          // stop() may have read the old server before this one was published: close the new one here, a second close
+          // from stop() is a no-op.
+          this.raftServer.close();
+          HALog.log(this, HALog.BASIC, "Recovery abandoned: shutdown requested while the new Ratis server was starting");
+          return;
+        }
         this.raftProperties = properties;
         this.raftClient = buildRaftClient(raftGroup, properties, recoveryParameters);
 
@@ -2420,6 +2437,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         (formatStorage ? formatRestartCount : recoverRestartCount).incrementAndGet();
         LogManager.instance().log(this, Level.INFO, "Ratis restarted in place (%s storage)", formatStorage ? "reformatted" : "recovered");
       } catch (final Throwable t) {
+        if (abandoned.getAsBoolean()) {
+          // A shutdown or an interrupt cut the verification short (issue #8900): not a failure of the restart, and not
+          // one that may count toward stopping the node.
+          HALog.log(this, HALog.BASIC, "Recovery abandoned during shutdown: %s", t.getMessage());
+          return;
+        }
         restartFailureCount++;
         LogManager.instance().log(this, Level.SEVERE,
             "HealthMonitor recovery failed (attempt %d/%d): %s",
@@ -2441,7 +2464,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * close returns. That is only logged: the division does not own the gRPC listener, and refusing the restart for it
    * would also refuse the recovery of a division whose close never finishes (issue #8651).
    */
-  private void verifyOldServerTerminated(final RaftServer oldServer, final RaftServer.Division oldDivision) throws IOException {
+  private void verifyOldServerTerminated(final RaftServer oldServer, final RaftServer.Division oldDivision,
+      final BooleanSupplier abandoned) throws IOException {
     final List<String> running = OldRatisServerTermination.terminateGrpcServers(
         OldRatisServerTermination.grpcServersOf(oldServer.getServerRpc()), OldRatisServerTermination.GRPC_TERMINATION_WAIT_MS);
     if (!running.isEmpty())
@@ -2451,8 +2475,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
     if (oldDivision != null) {
       final LifeCycle.State divisionState = OldRatisServerTermination.awaitClosed(
-          () -> oldDivision.getInfo().getLifeCycleState(), OldRatisServerTermination.DIVISION_CLOSE_WAIT_MS);
-      if (divisionState != LifeCycle.State.CLOSED)
+          () -> oldDivision.getInfo().getLifeCycleState(), OldRatisServerTermination.DIVISION_CLOSE_WAIT_MS, abandoned);
+      if (divisionState != LifeCycle.State.CLOSED && !abandoned.getAsBoolean())
         LogManager.instance().log(this, Level.WARNING,
             "Old Ratis division is %s after its server closed; starting the new server anyway (issue #8900)", divisionState);
     }

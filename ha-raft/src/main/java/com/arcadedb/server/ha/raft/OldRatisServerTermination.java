@@ -24,11 +24,13 @@ import org.apache.ratis.thirdparty.io.grpc.Server;
 import org.apache.ratis.util.LifeCycle;
 
 import java.lang.reflect.Field;
+import java.lang.reflect.InaccessibleObjectException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.logging.Level;
@@ -71,12 +73,14 @@ final class OldRatisServerTermination {
 
   /**
    * Waits up to {@code timeoutMs} while {@code state} reports {@link LifeCycle.State#CLOSING}: a close is already
-   * running on another thread, and calling {@code close()} now would interrupt it.
+   * running on another thread, and calling {@code close()} now would interrupt it. Ends early once {@code cancelled}
+   * answers true (a shutdown was requested).
    *
    * @return the last state read, which is still CLOSING if the wait timed out or was interrupted
    */
-  static LifeCycle.State awaitCloseInProgress(final Supplier<LifeCycle.State> state, final long timeoutMs) {
-    return awaitWhile(state, s -> s == LifeCycle.State.CLOSING, timeoutMs);
+  static LifeCycle.State awaitCloseInProgress(final Supplier<LifeCycle.State> state, final long timeoutMs,
+      final BooleanSupplier cancelled) {
+    return awaitWhile(state, s -> s == LifeCycle.State.CLOSING, timeoutMs, cancelled);
   }
 
   /**
@@ -85,15 +89,16 @@ final class OldRatisServerTermination {
    *
    * @return the last state read, which is not CLOSED if the wait timed out or was interrupted
    */
-  static LifeCycle.State awaitClosed(final Supplier<LifeCycle.State> state, final long timeoutMs) {
-    return awaitWhile(state, s -> s != LifeCycle.State.CLOSED, timeoutMs);
+  static LifeCycle.State awaitClosed(final Supplier<LifeCycle.State> state, final long timeoutMs,
+      final BooleanSupplier cancelled) {
+    return awaitWhile(state, s -> s != LifeCycle.State.CLOSED, timeoutMs, cancelled);
   }
 
   private static LifeCycle.State awaitWhile(final Supplier<LifeCycle.State> state, final Predicate<LifeCycle.State> keepWaiting,
-      final long timeoutMs) {
+      final long timeoutMs, final BooleanSupplier cancelled) {
     final long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
     LifeCycle.State current = state.get();
-    while (keepWaiting.test(current) && System.nanoTime() < deadline) {
+    while (keepWaiting.test(current) && System.nanoTime() < deadline && !cancelled.getAsBoolean()) {
       try {
         Thread.sleep(POLL_MS);
       } catch (final InterruptedException e) {
@@ -116,6 +121,8 @@ final class OldRatisServerTermination {
     if (servers.isEmpty())
       return running;
 
+    // A server whose close is still running on another thread (the bounded wait for it ran out) is shut down again
+    // too: shutdownNow() is idempotent, and the point is that nothing of the old instance outlives this method.
     for (final Server server : servers.values())
       if (!server.isTerminated())
         server.shutdownNow();
@@ -164,13 +171,26 @@ final class OldRatisServerTermination {
         if (entry.getValue() instanceof Server server)
           servers.put(String.valueOf(entry.getKey()), server);
       return servers;
-    } catch (final ReflectiveOperationException | RuntimeException e) {
-      serversFieldUnavailable = true;
-      LogManager.instance().log(OldRatisServerTermination.class, Level.WARNING,
-          "Cannot read the gRPC servers of the Ratis RPC layer (%s); an in-place Ratis restart will not verify that the "
-              + "old server's gRPC services terminated (issue #8900)", e.toString());
-      return Map.of();
+    } catch (final RuntimeException e) {
+      if (!(e instanceof InaccessibleObjectException)) {
+        // Not a resolution failure: skip the check this once, keep it for the next restart.
+        LogManager.instance().log(OldRatisServerTermination.class, Level.FINE,
+            "Cannot read the gRPC servers of the Ratis RPC layer this time: %s", e.toString());
+        return Map.of();
+      }
+      return disableCheck(e);
+    } catch (final ReflectiveOperationException e) {
+      return disableCheck(e);
     }
+  }
+
+  /** Latches the check off for good: the field cannot be resolved or opened on this Ratis build. */
+  private static Map<String, Server> disableCheck(final Exception e) {
+    serversFieldUnavailable = true;
+    LogManager.instance().log(OldRatisServerTermination.class, Level.WARNING,
+        "Cannot read the gRPC servers of the Ratis RPC layer (%s); an in-place Ratis restart will not verify that the "
+            + "old server's gRPC services terminated (issue #8900)", e.toString());
+    return Map.of();
   }
 
   private static Field findField(final Class<?> type, final String name) {

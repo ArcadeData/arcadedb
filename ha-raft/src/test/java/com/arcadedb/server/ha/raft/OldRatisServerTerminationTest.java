@@ -42,7 +42,7 @@ class OldRatisServerTerminationTest {
     final AtomicInteger reads = new AtomicInteger();
     // CLOSING for the first three reads, then CLOSED: the close running on another thread finished.
     final LifeCycle.State state = OldRatisServerTermination.awaitCloseInProgress(
-        () -> reads.incrementAndGet() <= 3 ? LifeCycle.State.CLOSING : LifeCycle.State.CLOSED, 10_000L);
+        () -> reads.incrementAndGet() <= 3 ? LifeCycle.State.CLOSING : LifeCycle.State.CLOSED, 10_000L, () -> false);
 
     assertThat(state).isEqualTo(LifeCycle.State.CLOSED);
     assertThat(reads.get()).isEqualTo(4);
@@ -54,7 +54,7 @@ class OldRatisServerTerminationTest {
     final LifeCycle.State state = OldRatisServerTermination.awaitCloseInProgress(() -> {
       reads.incrementAndGet();
       return LifeCycle.State.RUNNING;
-    }, 10_000L);
+    }, 10_000L, () -> false);
 
     assertThat(state).isEqualTo(LifeCycle.State.RUNNING);
     assertThat(reads.get()).isEqualTo(1);
@@ -63,8 +63,19 @@ class OldRatisServerTerminationTest {
   @Test
   void aCloseThatNeverFinishesIsGivenUpOnAtTheBound() {
     // A short wait expected to time out: the assertion is on the answer, not on the elapsed time.
-    final LifeCycle.State state = OldRatisServerTermination.awaitCloseInProgress(() -> LifeCycle.State.CLOSING, 200L);
+    final LifeCycle.State state = OldRatisServerTermination.awaitCloseInProgress(() -> LifeCycle.State.CLOSING, 200L, () -> false);
     assertThat(state).isEqualTo(LifeCycle.State.CLOSING);
+  }
+
+  @Test
+  void aShutdownEndsTheWaitAtOnce() {
+    final AtomicInteger checks = new AtomicInteger();
+    // A close that never finishes, and a shutdown requested on the second check: the 60s wait must not run out.
+    final LifeCycle.State state = OldRatisServerTermination.awaitCloseInProgress(() -> LifeCycle.State.CLOSING, 60_000L,
+        () -> checks.incrementAndGet() >= 2);
+
+    assertThat(state).isEqualTo(LifeCycle.State.CLOSING);
+    assertThat(checks.get()).isEqualTo(2);
   }
 
   @Test
@@ -75,7 +86,7 @@ class OldRatisServerTerminationTest {
       case 1 -> LifeCycle.State.RUNNING;
       case 2 -> LifeCycle.State.CLOSING;
       default -> LifeCycle.State.CLOSED;
-    }, 10_000L);
+    }, 10_000L, () -> false);
 
     assertThat(state).isEqualTo(LifeCycle.State.CLOSED);
     assertThat(reads.get()).isEqualTo(3);
