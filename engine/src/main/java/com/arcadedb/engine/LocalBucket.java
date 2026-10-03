@@ -1114,7 +1114,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       return true;
     } catch (final Exception e) {
       // FAIL CLOSED: A RECORD THAT CANNOT BE RE-READ IS NOT ONE THE UPDATE MAY BE LAID OVER
-      LogManager.instance().log(this, Level.FINE, "Unable to re-read the off-page record %s while taking it for update", e, rid);
+      LogManager.instance().log(this, Level.WARNING, "Unable to re-read the off-page record %s while taking it for update", e, rid);
       return true;
     }
   }
@@ -2410,7 +2410,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     }
 
     try {
-      final BasePage page = database.getTransaction().getPage(new PageId(database, file.getFileId(), pageId), pageSize);
+      final TransactionContext readTransaction = database.getTransaction();
+      final PageId headPageId = new PageId(database, file.getFileId(), pageId);
+      // #8987: BEFORE the read pins it - a head pinned by this very read is not a snapshot older than the chain's tails
+      final boolean headPrePinned = readTransaction.getPinnedPage(headPageId) != null;
+      final BasePage page = readTransaction.getPage(headPageId, pageSize);
 
       final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
       if (positionInPage >= recordCountInPage)
@@ -2445,7 +2449,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         return getRecordInternal(placeHolderPointer, true, false);
       } else if (isChunkHead(recordSize[0])) {
         // FOUND 1ST CHUNK, LOAD THE ENTIRE MULTI-PAGE RECORD
-        return loadMultiPageRecord(rid, page, recordPositionInPage, recordSize);
+        return loadMultiPageRecord(rid, page, recordPositionInPage, recordSize, headPrePinned);
       } else if (recordSize[0] == NEXT_CHUNK)
         // CANNOT LOAD PARTIAL CHUNK
         return null;
@@ -4902,8 +4906,18 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    *
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
+  private Binary loadMultiPageRecord(final RID originalRID, final BasePage firstPage, final int recordPositionInPage,
+                                     final long[] recordSize) throws IOException {
+    return loadMultiPageRecord(originalRID, firstPage, recordPositionInPage, recordSize, false);
+  }
+
+  /**
+   * @param headPrePinned whether the transaction already held the head page before the read fetched it (#8987): a chain
+   *                      is a snapshot older than this read only if its head was pinned before it too, otherwise a newer
+   *                      head can sit on tails pinned earlier by a neighbour record's read.
+   */
   private Binary loadMultiPageRecord(final RID originalRID, BasePage firstPage, int recordPositionInPage,
-                                     long[] recordSize) throws IOException {
+                                     long[] recordSize, final boolean headPrePinned) throws IOException {
     final int maxRetries = database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRIES);
     final PageId firstPageId = firstPage.pageId;
     final int firstChunkSlot = (int) (originalRID.getPosition() % maxRecordsInPage);
@@ -4933,10 +4947,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // for the chain that doubles back on its very first hop, long before this threshold (code review on #6258).
       LongHashSet visitedChunks = null;
 
-      // #8987: whether every continuation page was ALREADY pinned by the transaction when this walk began, so that the chain
+      // #8987: whether the head and every continuation page were ALREADY pinned by the transaction when this walk began, so that the chain
       // is a snapshot taken before it. Only the first attempt can say so: a later one finds the pages its predecessor pinned.
       final TransactionContext walkTransaction = database.getTransactionIfExists();
-      boolean tailsPrePinned = retry == 0 && walkTransaction != null;
+      boolean tailsPrePinned = retry == 0 && headPrePinned && walkTransaction != null;
 
       boolean chainInconsistent = false;
       final Binary record = new Binary();

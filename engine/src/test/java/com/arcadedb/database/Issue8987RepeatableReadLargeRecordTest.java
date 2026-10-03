@@ -35,6 +35,35 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue8987RepeatableReadLargeRecordTest extends BucketPageLayoutTestSupport {
+  /**
+   * Two records whose chunk chains share continuation pages: the read of the neighbour pins those pages, then the other
+   * record is rewritten and read for the first time, so its head is pinned fresh on top of older tails. The read must
+   * never answer with a mix of the two versions.
+   */
+  @Test
+  void headPinnedFreshOnOlderTailsIsNeverTorn() {
+    final RID[] rids = createChunkedRecords("SharedTails");
+    final String before = payload(0, 'x');
+    final String after = payload(0, 'y');
+
+    database.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+    try {
+      database.lookupByRID(rids[1], true).asDocument().getString("payload");
+
+      inAnotherThread(() -> database.transaction(
+          () -> rids[0].asDocument(true).modify().set("payload", after).save()));
+
+      try {
+        final String read = database.lookupByRID(rids[0], true).asDocument().getString("payload");
+        assertThat(read).as("neither the old nor the new version: a mix").isIn(before, after);
+      } catch (final ConcurrentModificationException e) {
+        // a refused read is consistent too
+      }
+    } finally {
+      database.rollback();
+    }
+  }
+
   @Test
   void largeRecordHeadChangedByAnotherTransaction() {
     assertRepeatable(70_000, false);
