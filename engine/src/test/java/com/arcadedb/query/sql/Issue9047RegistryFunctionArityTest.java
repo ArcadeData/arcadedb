@@ -108,6 +108,33 @@ class Issue9047RegistryFunctionArityTest extends TestHelper {
     assertThat(tried).isGreaterThan(50);
   }
 
+  /** The contract is not narrower than what the functions accept: a call at the declared minimum and maximum is never an arity error. */
+  @Test
+  void callsAtTheDeclaredBoundsAreNeverArityErrors() {
+    final List<String> offenders = new ArrayList<>();
+    for (final String name : new TreeSet<>(FunctionRegistry.getFunctionNames())) {
+      final Function function = FunctionRegistry.get(name);
+      final String lower = name.toLowerCase();
+      if (function == null || name.indexOf('.') != name.lastIndexOf('.') || lower.contains("sleep") || lower.contains("load") || lower.contains("cypher.run"))
+        continue;
+      final int min = function.getMinArgs();
+      final int max = function.getMaxArgs();
+      for (final int count : max > min && max < 8 && max > 0 ? new int[] { min, max } : new int[] { min }) {
+        final String args = IntStream.range(0, count).mapToObj(i -> "1").collect(Collectors.joining(", "));
+        try {
+          drain("sql", "SELECT " + name + "(" + args + ") AS r");
+        } catch (final CommandSemanticException e) {
+          // a type mismatch on the junk argument is the function's own business; an arity message is the contract being too narrow
+          if (!String.valueOf(e.getMessage()).startsWith("Type mismatch") && String.valueOf(e.getMessage()).contains("expects"))
+            offenders.add(name + "(" + count + "): " + e.getMessage());
+        } catch (final Throwable t) {
+          // junk arguments: any other failure is the function's own business
+        }
+      }
+    }
+    assertThat(offenders).isEmpty();
+  }
+
   private void drain(final String language, final String query) {
     try (final ResultSet rs = database.query(language, query)) {
       while (rs.hasNext())
