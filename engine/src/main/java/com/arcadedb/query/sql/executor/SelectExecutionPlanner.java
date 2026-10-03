@@ -1210,8 +1210,8 @@ public class SelectExecutionPlanner {
           break;
         }
 
-    // AN AGGREGATE ONLY IN ORDER BY (SELECT k ... GROUP BY k ORDER BY count(*)) ALSO NEEDS THE SPLIT, addOrderByProjections() ADDS ITS PARTS (#8973)
-    if (!isSplitted && canAddOrderByProjections(info))
+    // AN AGGREGATE ONLY IN ORDER BY (SELECT k ... GROUP BY k ORDER BY count(*)) ALSO NEEDS THE SPLIT (WITHOUT A GROUP BY THE QUERY KEEPS ITS PER-RECORD SHAPE), addOrderByProjections() ADDS ITS PARTS (#8973)
+    if (!isSplitted && info.groupBy != null && canAddOrderByProjections(info))
       for (final OrderByItem orderItem : info.orderBy.getItems())
         if (orderItem.expression != null && orderItem.expression.isAggregate(context)) {
           isSplitted = true;

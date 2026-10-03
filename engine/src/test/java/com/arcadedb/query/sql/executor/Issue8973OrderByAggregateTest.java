@@ -139,4 +139,33 @@ class Issue8973OrderByAggregateTest extends TestHelper {
     }
     assertThat(withAggregate).containsExactlyInAnyOrder("1:a", "1:b", "2:a");
   }
+
+  @Test
+  void aggregateOrderByWithoutGroupByKeepsEveryRecord() {
+    // no GROUP BY: a non-aggregate projection keeps its per-record shape, the ORDER BY aggregate does not collapse the rows
+    assertThat(keysOnly("SELECT k FROM G ORDER BY count(*)")).hasSize(6);
+  }
+
+  @Test
+  void aggregateOrderByWithGroupByOnAnExpression() {
+    // GROUP BY k % 10 already forces the split: the two triggers must compose
+    final List<Integer> ks = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", "SELECT k % 10 AS m, count(*) AS c FROM G GROUP BY k % 10 ORDER BY count(*) DESC")) {
+      while (rs.hasNext()) {
+        final Result row = rs.next();
+        assertThat(row.getPropertyNames()).hasSize(2);
+        ks.add(row.<Number>getProperty("m").intValue());
+      }
+    }
+    assertThat(ks).containsExactly(3, 1, 2);
+  }
+
+  private List<Integer> keysOnly(final String sql) {
+    final List<Integer> ks = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", sql)) {
+      while (rs.hasNext())
+        ks.add(rs.next().<Number>getProperty("k").intValue());
+    }
+    return ks;
+  }
 }
