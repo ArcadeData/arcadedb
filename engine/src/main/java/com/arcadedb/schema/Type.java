@@ -122,13 +122,13 @@ public enum Type {
    * a constant here will not widen what the engine accepts.
    */
   public static final  String              DATE_FORMAT_DAYS    = "yyyy-MM-dd";
+
+  public static final  String              DATE_FORMAT_SECONDS = "yyyy-MM-dd HH:mm:ss";
+  public static final  String              DATE_FORMAT_MILLIS  = "yyyy-MM-dd HH:mm:ss.SSS";
   private static final BigDecimal LONG_MAX_DECIMAL = BigDecimal.valueOf(Long.MAX_VALUE);
   private static final BigDecimal LONG_MIN_DECIMAL = BigDecimal.valueOf(Long.MIN_VALUE);
   private static final BigInteger LONG_MAX_INTEGER = BigInteger.valueOf(Long.MAX_VALUE);
   private static final BigInteger LONG_MIN_INTEGER = BigInteger.valueOf(Long.MIN_VALUE);
-
-  public static final  String              DATE_FORMAT_SECONDS = "yyyy-MM-dd HH:mm:ss";
-  public static final  String              DATE_FORMAT_MILLIS  = "yyyy-MM-dd HH:mm:ss.SSS";
   // Don't change the order, the type discover get broken if you change the order.
   private static final Type[]              TYPES               = new Type[] { LIST, MAP, LINK, STRING, DATETIME };
   private static final Type[]              TYPES_BY_ID         = new Type[24];
@@ -375,7 +375,7 @@ public enum Type {
       // this method cannot see.
       return converted == null && value != null ? value : converted;
     } catch (final InconvertibleValueException e) {
-      // a value of a shape the target cannot take, read by a caller that has no schema to blame: keep what arrived
+      // a value the declared type cannot take, read by a caller that has no schema to blame: keep what arrived
       LogManager.instance().log(Type.class, Level.FINE, "Error in conversion of value '%s' to type '%s'", e, value, targetClass);
       return value;
     } catch (final IllegalArgumentException e) {
@@ -418,11 +418,6 @@ public enum Type {
 
     try {
       return convert(database, value, targetClass);
-    } catch (final InconvertibleValueException e) {
-      // a value of a shape the key type cannot take indexed under a null key before it was refused, and a
-      // heterogeneous schemaless row must not fail CREATE INDEX (see above)
-      LogManager.instance().log(Type.class, Level.FINE, "Error in conversion of value '%s' to type '%s'", e, value, targetClass);
-      return null;
     } catch (final IllegalArgumentException e) {
       if (!isUnreadableDate(e))
         throw e;
@@ -1120,10 +1115,11 @@ public enum Type {
   }
 
   /**
-   * A refusal of a value whose SHAPE the target cannot take at all (a list for an INTEGER, a boolean for a DECIMAL),
-   * as opposed to a malformed value of an acceptable shape. The distinction is what lets
-   * {@link #convertOrKeep(Database, Object, Class, Property)} and {@link #convertIndexKeyOrNull} keep the lenient
-   * behavior they always had for such a value, while a WRITE through {@code convert()} fails (issue #9110).
+   * A refusal, for a declared property, of a value the target cannot take: a shape it has no case for (a list for an
+   * INTEGER, a boolean for a DECIMAL) or a content it cannot hold (an empty string, a number out of range, NaN). Only
+   * a refusal of this kind is kept by {@link #convertOrKeep(Database, Object, Class, Property)}, which reads records it
+   * did not write, while a WRITE through {@code convert()} fails with it (issue #9110). It is raised only when a
+   * property is declared, so {@link #convertIndexKeyOrNull} never sees it.
    */
   private static final class InconvertibleValueException extends IllegalArgumentException {
     InconvertibleValueException(final String message, final Throwable cause) {
@@ -1218,9 +1214,14 @@ public enum Type {
     if (value instanceof Integer || value instanceof Short || value instanceof Byte)
       return value.longValue();
 
-    if (isNaN(value))
-      throw new InconvertibleValueException(
-          "Value '" + value + "' is NaN and cannot be converted to type LONG" + forProperty(property), null);
+    if (isNaN(value)) {
+      final String message = "Value '" + value + "' is NaN and cannot be converted to type LONG" + forProperty(property);
+      throw property != null ? new InconvertibleValueException(message, null) : new IllegalArgumentException(message);
+    }
+
+    if (property == null)
+      // the range is only enforced for a declared property: the plain conversion keeps clamping
+      return value.longValue();
 
     final boolean outOfRange = switch (value) {
       case BigDecimal bigDecimal -> bigDecimal.compareTo(LONG_MAX_DECIMAL) > 0 || bigDecimal.compareTo(LONG_MIN_DECIMAL) < 0;
@@ -1230,7 +1231,7 @@ public enum Type {
       case Float floatValue -> floatValue >= 0x1p63f || floatValue < -0x1p63f;
       default -> false;
     };
-    if (outOfRange && property != null)
+    if (outOfRange)
       throw new InconvertibleValueException(
           "Value '" + value + "' is out of range for type LONG (" + Long.MIN_VALUE + " to " + Long.MAX_VALUE + ")" //
               + forProperty(property), null);
