@@ -304,18 +304,10 @@ public class ShortestPathStep extends AbstractExecutionStep {
   }
 
   /**
-   * Enumerates every path between {@code source} and {@code target} sharing the minimum length, with no
-   * per-edge constraint.
-   * <p>
-   * Implementation: layered BFS over vertices that records, for each visited vertex, the distinct
-   * predecessors that reached it on the same BFS layer. Once {@code target} is discovered, BFS halts at the
-   * end of that layer (any further expansion would only find longer paths) and the paths are reconstructed
-   * by back-tracking through the predecessor multimap, branching on EVERY relationship that joins two
-   * consecutive vertices: parallel relationships are distinct paths (issue #8995).
-   * <p>
-   * For issue #4239: {@code allShortestPaths()} must return every path of the minimal length, not just
-   * one. Shared by the {@code MATCH p = allShortestPaths(...)} form and the {@code RETURN allShortestPaths(...)}
-   * expression form.
+   * Enumerates every path between {@code source} and {@code target} sharing the minimum length, with no per-edge
+   * constraint: a layered BFS over vertices that stops after the layer reaching {@code target}, then back-tracks
+   * through the co-shortest parents. Parallel relationships are distinct paths (issue #8995). Shared by the MATCH and
+   * the RETURN-expression forms of {@code allShortestPaths()}.
    *
    * @param edgeTypes restrict edges to these types, or null/empty to allow any type
    * @param bounds    the {@code *min..max} hop bounds declared on the pattern relationship (issue #7009)
@@ -339,10 +331,7 @@ public class ShortestPathStep extends AbstractExecutionStep {
 
     // distance from source. Acts as visited-set too.
     final Map<RID, Integer> distance = new HashMap<>();
-    // For each vertex, the distinct parents that reached it at the same BFS depth (= co-shortest predecessors).
-    // A parent appears once however many parallel relationships join it to the vertex: the relationships are
-    // enumerated at reconstruction time, so recording the parent once per relationship would multiply every
-    // path through it by the same factor a second time.
+    // For each vertex, its distinct co-shortest parents; parallel relationships are enumerated at back-tracking time.
     final Map<RID, List<RID>> predecessors = new HashMap<>();
     distance.put(sourceRid, 0);
 
@@ -389,8 +378,7 @@ public class ShortestPathStep extends AbstractExecutionStep {
             else if (nextLayerSeen.add(neighborRid))
               nextLayer.add(neighbor);
           } else if (existing == currentDepth + 1) {
-            // Another co-shortest predecessor at the same BFS depth. Every relationship of v is walked before the
-            // next vertex of the layer, so a parallel relationship from v finds v as the last parent recorded.
+            // All of v's relationships are walked before the next vertex, so a parallel one finds v as the last parent.
             final List<RID> parents = predecessors.get(neighborRid);
             if (!parents.get(parents.size() - 1).equals(vRid))
               parents.add(vRid);
@@ -406,11 +394,10 @@ public class ShortestPathStep extends AbstractExecutionStep {
     if (foundDepth < 0 || !bounds.accepts(foundDepth))
       return Collections.emptyList();
 
-    // Backtrack from target through every predecessor chain and every relationship joining each hop.
-    final Database database = context.getDatabase();
     final List<List<Object>> result = new ArrayList<>();
     final Deque<Object> stack = new ArrayDeque<>();
-    buildAllPaths(target, sourceRid, predecessors, direction, typesArray, database, stack, result);
+    buildAllPaths(target, sourceRid, predecessors, direction, typesArray, context.getDatabase(), new HashMap<>(), guard,
+        stack, result);
     return result;
   }
 
@@ -749,13 +736,18 @@ public class ShortestPathStep extends AbstractExecutionStep {
 
     final List<List<Object>> result = new ArrayList<>();
     final Deque<Object> stack = new ArrayDeque<>();
-    buildAllFilteredPaths(targetRid, sourceRid, predecessors, database, stack, result);
+    buildAllFilteredPaths(targetRid, sourceRid, predecessors, database, guard, stack, result);
     return result;
   }
 
   private static void buildAllFilteredPaths(final RID current, final RID sourceRid,
-      final Map<RID, List<PredecessorLink>> predecessors, final Database database,
+      final Map<RID, List<PredecessorLink>> predecessors, final Database database, final WorkGuard guard,
       final Deque<Object> stack, final List<List<Object>> out) {
+    // The number of paths is the product of the parallel relationships per hop, so the walk itself can be long.
+    if (Thread.interrupted())
+      throw new CommandExecutionException("The allShortestPaths() function has been interrupted");
+    guard.check();
+
     final Vertex currentVertex = (Vertex) database.lookupByRID(current, true);
     stack.push(currentVertex);
     if (current.equals(sourceRid)) {
@@ -768,7 +760,7 @@ public class ShortestPathStep extends AbstractExecutionStep {
     if (parents != null) {
       for (final PredecessorLink link : parents) {
         stack.push(link.edge);
-        buildAllFilteredPaths(link.parent, sourceRid, predecessors, database, stack, out);
+        buildAllFilteredPaths(link.parent, sourceRid, predecessors, database, guard, stack, out);
         stack.pop();
       }
     }
@@ -919,13 +911,17 @@ public class ShortestPathStep extends AbstractExecutionStep {
   }
 
   /**
-   * Back-tracks from {@code current} to the source, pushing vertices and relationships so the stack reads
-   * source-to-target. Each hop branches on every relationship joining the parent to the current vertex, so
-   * parallel relationships yield distinct paths (issue #8995).
+   * Back-tracks from {@code current} to the source, branching on every relationship of every hop. The hops into a
+   * vertex are resolved once ({@code hopCache}), so the work is proportional to the hops, not the paths through them.
    */
   private static void buildAllPaths(final Vertex current, final RID sourceRid, final Map<RID, List<RID>> predecessors,
-      final Vertex.DIRECTION direction, final String[] edgeTypes, final Database database, final Deque<Object> stack,
-      final List<List<Object>> out) {
+      final Vertex.DIRECTION direction, final String[] edgeTypes, final Database database,
+      final Map<RID, HopLink[]> hopCache, final WorkGuard guard, final Deque<Object> stack, final List<List<Object>> out) {
+    // The number of paths is the product of the parallel relationships per hop, so the walk itself can be long.
+    if (Thread.interrupted())
+      throw new CommandExecutionException("The allShortestPaths() function has been interrupted");
+    guard.check();
+
     stack.push(current);
     final RID currentRid = current.getIdentity();
     if (currentRid.equals(sourceRid)) {
@@ -934,22 +930,46 @@ public class ShortestPathStep extends AbstractExecutionStep {
       stack.pop();
       return;
     }
-    final List<RID> parents = predecessors.get(currentRid);
-    if (parents != null) {
-      final List<Edge> connecting = new ArrayList<>(1);
-      for (final RID parentRid : parents) {
-        final Vertex parent = (Vertex) database.lookupByRID(parentRid, true);
-        connecting.clear();
-        collectConnectingEdges(parent, current, direction, edgeTypes, false, connecting);
-        // The recursion below allocates its own list per frame, so iterating this one while it runs is safe.
-        for (final Edge edge : connecting) {
-          stack.push(edge);
-          buildAllPaths(parent, sourceRid, predecessors, direction, edgeTypes, database, stack, out);
-          stack.pop();
-        }
-      }
+    HopLink[] hops = hopCache.get(currentRid);
+    if (hops == null) {
+      hops = resolveHops(current, predecessors.get(currentRid), direction, edgeTypes, database);
+      hopCache.put(currentRid, hops);
     }
+    for (final HopLink hop : hops)
+      for (final Edge edge : hop.edges) {
+        stack.push(edge);
+        buildAllPaths(hop.parent, sourceRid, predecessors, direction, edgeTypes, database, hopCache, guard, stack, out);
+        stack.pop();
+      }
     stack.pop();
+  }
+
+  private static HopLink[] resolveHops(final Vertex current, final List<RID> parents, final Vertex.DIRECTION direction,
+      final String[] edgeTypes, final Database database) {
+    if (parents == null)
+      return new HopLink[0];
+    final HopLink[] hops = new HopLink[parents.size()];
+    final List<Edge> connecting = new ArrayList<>(1);
+    for (int i = 0; i < hops.length; i++) {
+      final Vertex parent = (Vertex) database.lookupByRID(parents.get(i), true);
+      connecting.clear();
+      collectConnectingEdges(parent, current, direction, edgeTypes, false, connecting);
+      hops[i] = new HopLink(parent, connecting.toArray(new Edge[0]));
+    }
+    return hops;
+  }
+
+  /**
+   * A co-shortest parent of a vertex with every relationship joining the two in the walked direction.
+   */
+  private static final class HopLink {
+    final Vertex parent;
+    final Edge[] edges;
+
+    HopLink(final Vertex parent, final Edge[] edges) {
+      this.parent = parent;
+      this.edges = edges;
+    }
   }
 
   /**

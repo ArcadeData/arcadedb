@@ -188,6 +188,30 @@ class CypherAllShortestPathsParallelEdgesIssue8995Test extends TestHelper {
         .containsExactlyInAnyOrder(List.of(10, 20), List.of(11, 21));
   }
 
+  @Test
+  void hopBoundsStillApplyOverParallelRelationships() {
+    createIssueGraph();
+    assertThat(eidLists("MATCH p = allShortestPaths((a:N {id: 1})-[*2..3]->(c:N {id: 3})) "
+        + "RETURN [r IN relationships(p) | r.eid] AS rels"))
+        .containsExactlyInAnyOrder(List.of(10, 20), List.of(11, 20));
+    assertThat(eidLists("MATCH p = allShortestPaths((a:N {id: 1})-[*..1]->(c:N {id: 3})) "
+        + "RETURN [r IN relationships(p) | r.eid] AS rels"))
+        .as("the shortest paths are 2 hops, so a 1-hop bound yields nothing")
+        .isEmpty();
+    assertThat(expressionEidLists("MATCH (a:N {id: 1}), (c:N {id: 3}) RETURN allShortestPaths((a)-[*..1]->(c)) AS ps"))
+        .isEmpty();
+  }
+
+  @Test
+  void expressionFormAnswersTheSelfPairWithTheZeroLengthPath() {
+    createIssueGraph();
+    try (final ResultSet rs = database.query("opencypher", "MATCH (a:N {id: 1}) RETURN allShortestPaths((a)-[*]-(a)) AS ps")) {
+      final List<?> paths = rs.next().getProperty("ps");
+      assertThat(paths).hasSize(1);
+      assertThat((List<?>) paths.get(0)).hasSize(1);
+    }
+  }
+
   private List<List<Object>> eidLists(final String query) {
     final List<List<Object>> out = new ArrayList<>();
     try (final ResultSet rs = database.query("opencypher", query)) {
