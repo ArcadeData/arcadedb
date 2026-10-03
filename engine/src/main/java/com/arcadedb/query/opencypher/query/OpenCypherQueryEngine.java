@@ -235,28 +235,30 @@ public class OpenCypherQueryEngine implements QueryEngine {
    */
   static String stripLeadingComments(final String query) {
     int i = 0;
-    // fast path: no leading comment, nothing to strip beyond the trim
-    while (i < query.length() && Character.isWhitespace(query.charAt(i)))
-      i++;
-    if (i == query.length() || query.charAt(i) != '/')
-      return query.trim();
-    i = 0;
     final int len = query.length();
+    boolean stripped = false;
     while (i < len) {
       final char c = query.charAt(i);
       if (Character.isWhitespace(c))
         i++;
       else if (c == '/' && i + 1 < len && query.charAt(i + 1) == '/') {
-        final int eol = query.indexOf('\n', i + 2);
-        i = eol < 0 ? len : eol + 1;
+        stripped = true;
+        // a line comment ends at \n or at a bare \r
+        i += 2;
+        while (i < len && query.charAt(i) != '\n' && query.charAt(i) != '\r')
+          i++;
       } else if (c == '/' && i + 1 < len && query.charAt(i + 1) == '*') {
         final int end = query.indexOf("*/", i + 2);
         if (end < 0)
           break;
+        stripped = true;
         i = end + 2;
       } else
         break;
     }
+    // no leading comment: nothing to strip beyond the trim
+    if (!stripped)
+      return query.trim();
     return query.substring(i).trim();
   }
 

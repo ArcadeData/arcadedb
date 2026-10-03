@@ -43,7 +43,7 @@ class Issue9045And9052SqlLexerTest extends TestHelper {
         database.command("sql", "INSERT INTO T9045 SET id = " + i + ", g = " + (i % 2)).close();
     });
 
-    for (final String order : new String[] { "ORDER BY", "ORDER /* c */ BY", "ORDER/**/BY", "ORDER -- c\nBY", "order \n\t BY" }) {
+    for (final String order : new String[] { "ORDER BY", "ORDER /* c */ BY", "ORDER/**/BY", "ORDER -- c\nBY", "ORDER -- c\r\nBY", "order \n\t BY" }) {
       final List<Integer> ids = new ArrayList<>();
       try (final ResultSet rs = database.query("sql", "SELECT id FROM T9045 " + order + " id")) {
         while (rs.hasNext())
@@ -80,6 +80,27 @@ class Issue9045And9052SqlLexerTest extends TestHelper {
   @Test
   void hexadecimalOverflowIsAParseError() {
     assertThatThrownBy(() -> database.query("sql", "SELECT 0xFFFFFFFFFFFFFFFFL AS r").close()).isInstanceOf(CommandSQLParsingException.class);
+  }
+
+  @Test
+  void hexadecimalVariantsAndPositions() {
+    assertThat(scalar("SELECT 0xffl AS r")).isEqualTo(255L);
+    assertThat(scalar("SELECT -0x10 AS r")).isEqualTo(-16);
+    database.getSchema().createDocumentType("T9052");
+    database.transaction(() -> {
+      for (int i = 0; i < 20; i++)
+        database.command("sql", "INSERT INTO T9052 SET id = " + i).close();
+    });
+    try (final ResultSet rs = database.query("sql", "SELECT FROM T9052 ORDER BY id LIMIT 0x10 SKIP 0xA")) {
+      int n = 0;
+      while (rs.hasNext()) {
+        rs.next();
+        n++;
+      }
+      assertThat(n).isEqualTo(10);
+    }
+    for (final String bad : new String[] { "SELECT 0x AS r", "SELECT 0xG AS r" })
+      assertThatThrownBy(() -> database.query("sql", bad).close()).as(bad).isInstanceOf(CommandSQLParsingException.class);
   }
 
   @Test

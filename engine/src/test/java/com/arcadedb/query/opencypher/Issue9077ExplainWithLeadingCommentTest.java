@@ -19,10 +19,12 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for issue #9077: {@code EXPLAIN} and {@code PROFILE} were not recognised after a leading comment.
@@ -35,7 +37,7 @@ class Issue9077ExplainWithLeadingCommentTest extends TestHelper {
     database.getSchema().createVertexType("Person");
     database.transaction(() -> database.command("opencypher", "CREATE (:Person {name: 'a'})").close());
 
-    for (final String prefix : new String[] { "// c\n", "/* c */ ", "/* a */\n// b\n  ", "" }) {
+    for (final String prefix : new String[] { "// c\n", "/* c */ ", "/* a */\n// b\n  ", "// c\r", "" }) {
       try (final ResultSet rs = database.command("opencypher", prefix + "EXPLAIN MATCH (p:Person) RETURN p.name")) {
         final Object plan = rs.next().getProperty("executionPlan");
         assertThat(plan).as(prefix).isNotNull();
@@ -49,5 +51,11 @@ class Issue9077ExplainWithLeadingCommentTest extends TestHelper {
         assertThat(plan).as(prefix).isNotNull();
       }
     }
+  }
+
+  @Test
+  void unterminatedAndCommentOnlyQueriesFailAsParseErrors() {
+    for (final String query : new String[] { "/* never closed EXPLAIN MATCH (n) RETURN n", "// only a comment", "/* only a comment */" })
+      assertThatThrownBy(() -> database.command("opencypher", query).close()).as(query).isInstanceOf(CommandParsingException.class);
   }
 }
