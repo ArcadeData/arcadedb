@@ -257,7 +257,7 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
           else
             response.set(execute(exchange, user, database, payload));
           return null;
-        }, participatesInSessionTransaction());
+        }, participatesInSessionTransaction(), endsSession());
       } else {
         if (finalAtomicTransaction)
           executeInTransaction(exchange, user, database, payload, response, retries);
@@ -629,5 +629,19 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
       return session;
     }
     return null;
+  }
+
+  /**
+   * True for the routes that end the session ({@code /commit}, {@code /rollback}): they are answered even when a failed command
+   * already rolled the session's transaction back, where every other route is refused (issue #9006).
+   */
+  protected boolean endsSession() {
+    return false;
+  }
+
+  /** The session the request names that the principal owns, or null when it names none or it is no longer resolvable. */
+  protected HttpSession findSession(final HttpServerExchange exchange, final ServerSecurityUser user) {
+    final HeaderValues sessionId = exchange.getRequestHeaders().get(HttpSessionManager.ARCADEDB_SESSION_ID);
+    return sessionId != null && !sessionId.isEmpty() ? httpServer.getSessionManager().getSessionById(user, sessionId.getFirst()) : null;
   }
 }

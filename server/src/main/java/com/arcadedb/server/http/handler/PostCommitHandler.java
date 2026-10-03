@@ -21,6 +21,8 @@ package com.arcadedb.server.http.handler;
 import com.arcadedb.database.Database;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.http.HttpSession;
+import com.arcadedb.server.http.HttpSessionException;
 import com.arcadedb.server.http.HttpSessionManager;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.micrometer.core.instrument.Metrics;
@@ -47,6 +49,12 @@ public class PostCommitHandler extends DatabaseAbstractHandler {
   public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database,
       final JSONObject payload) throws IOException {
     try {
+      // A failed command rolled the session's transaction back and what the client wrote before it is gone: say so, instead of
+      // answering 204 as for a commit (issue #9006). The finally below still ends the session.
+      final HttpSession session = findSession(exchange, user);
+      if (session != null && session.isRolledBackByFailure())
+        throw new HttpSessionException("Remote transaction '" + session.id + "' was rolled back after a failed command: its changes were not committed");
+
       // Guard with isTransactionActive() so a retried /commit whose session was already removed by the first
       // call is an idempotent no-op (204) instead of committing a non-existent transaction (which would 500).
       if (database.isTransactionActive())
@@ -81,5 +89,10 @@ public class PostCommitHandler extends DatabaseAbstractHandler {
   @Override
   protected boolean reportsSessionPartialCommit() {
     return false;
+  }
+
+  @Override
+  protected boolean endsSession() {
+    return true;
   }
 }

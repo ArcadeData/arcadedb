@@ -784,6 +784,8 @@ public enum Type {
         if (value instanceof Collection<?> collection) {
           final Set<Object> set = new HashSet<Object>(collection);
           return set;
+        } else if (isNumericPrimitiveArray(value)) {
+          return new HashSet<Object>(primitiveArrayToList(value));
         } else {
           final Set<Object> set = new HashSet<>(2);
           set.add(value);
@@ -799,6 +801,9 @@ public enum Type {
         if (value instanceof Collection<?> collection) {
           final List<Object> list = new ArrayList<Object>(collection);
           return list;
+        } else if (isNumericPrimitiveArray(value)) {
+          // A primitive array (e.g. a JSON array parameter parsed to long[]/double[]) is the elements of the list, not one element (issue #9002)
+          return primitiveArrayToList(value);
         } else {
           final List<Object> list = new ArrayList<>(1);
           list.add(value);
@@ -812,6 +817,8 @@ public enum Type {
         if (value instanceof Collection<?> collection) {
           final List<Object> set = new ArrayList<Object>(collection);
           return set;
+        } else if (isNumericPrimitiveArray(value)) {
+          return primitiveArrayToList(value);
         } else {
           final Set<Object> set = new HashSet<>(2);
           set.add(value);
@@ -2489,5 +2496,19 @@ public enum Type {
 
   private static Instant truncateToPropertyPrecision(final Instant value, final Property property) {
     return property == null ? value : value.truncatedTo(DateUtils.getPrecisionFromType(property.getType()));
+  }
+
+  /** A primitive array that stands for a list of numbers: not {@code byte[]}, which is binary content, not a collection. */
+  private static boolean isNumericPrimitiveArray(final Object value) {
+    return value != null && !(value instanceof byte[]) && value.getClass().isArray() && value.getClass().getComponentType().isPrimitive();
+  }
+
+  /** Boxes the elements of a primitive array into a mutable list (the shape a collection target expects). */
+  private static List<Object> primitiveArrayToList(final Object array) {
+    final int length = Array.getLength(array);
+    final List<Object> list = new ArrayList<>(length);
+    for (int i = 0; i < length; i++)
+      list.add(Array.get(array, i));
+    return list;
   }
 }

@@ -127,6 +127,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   private static final String AUTHORIZATION_BEARER = "Bearer";
   // Cached once: tryFromString scans/validates the header name, wasteful to repeat on every request.
   private static final HttpString REQUEST_ID_HEADER = HttpString.tryFromString(IdempotencyCache.HEADER_REQUEST_ID);
+  private static final HttpString REPLAY_PROTECTION_HEADER = HttpString.tryFromString(IdempotencyCache.HEADER_REPLAY_PROTECTION);
   protected static final String   EVENT_STREAM_CONTENT_TYPE = "text/event-stream";
   private static final HttpString X_ACCEL_BUFFERING_HEADER  = HttpString.tryFromString("X-Accel-Buffering");
   // Response header set by session-establishing routes (e.g. /begin). Its presence means the response
@@ -488,6 +489,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       if (correlationRequestId == null)
         correlationRequestId = generateCorrelationId();
       exchange.getResponseHeaders().put(REQUEST_ID_HEADER, correlationRequestId);
+      exchange.getResponseHeaders().put(REPLAY_PROTECTION_HEADER, "true");
       // The supplier is an SPI: tolerate an array shorter than 2 (or null) instead of indexing blindly.
       final String[] traceContext = LogManager.instance().currentTraceContext();
       final String traceId = traceContext != null && traceContext.length > 0 ? traceContext[0] : null;
