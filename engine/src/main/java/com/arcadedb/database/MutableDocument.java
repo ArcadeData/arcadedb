@@ -688,10 +688,13 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
       return list;
 
     List<Object> result = list;
+    boolean copied = false;
     for (int i = 0; i < list.size(); i++)
       if (list.get(i) instanceof Map<?, ?> element) {
-        if (result == list)
+        if (!copied) {
           result = new ArrayList<>(list);
+          copied = true;
+        }
         result.set(i, mapToEmbedded((Map<String, Object>) element, propertyName, ofType));
       }
     return result;
@@ -706,10 +709,13 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
       return map;
 
     Map<String, Object> result = map;
+    boolean copied = false;
     for (final Map.Entry<String, Object> entry : map.entrySet())
       if (entry.getValue() instanceof Map<?, ?> element) {
-        if (result == map)
+        if (!copied) {
           result = new LinkedHashMap<>(map);
+          copied = true;
+        }
         result.put(entry.getKey(), mapToEmbedded((Map<String, Object>) element, propertyName, ofType));
       }
     return result;
