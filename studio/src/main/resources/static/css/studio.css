@@ -4144,6 +4144,11 @@ body.col-resizing * {
   color: var(--text-muted);
 }
 
+/* A little air on the right of the Support page: the content column now reaches the window edge */
+#tab-support {
+  padding-right: 14px;
+}
+
 /* The two tabs under the status card of the Support page: the AI Assistant and the Issues */
 .support-tabs {
   margin-top: 1rem;
