@@ -24,6 +24,7 @@ import de.bwaldvogel.mongo.backend.Utils;
 import de.bwaldvogel.mongo.bson.Document;
 import de.bwaldvogel.mongo.bson.ObjectId;
 
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -358,6 +359,8 @@ public class MongoDBToSqlTranslator {
   private static Object toBsonValue(final Object value) {
     if (value instanceof Instant)
       return value;
+    else if (MongoBsonValues.isTagged(value) || value instanceof BigDecimal)
+      return MongoBsonValues.toBson(value);
     else if (value instanceof LocalDateTime dateTime)
       return dateTime.toInstant(ZoneOffset.UTC);
     else if (value instanceof LocalDate date)
