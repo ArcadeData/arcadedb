@@ -23,10 +23,8 @@ import com.arcadedb.function.sql.SQLAggregatedFunction;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.schema.Type;
 
-import java.lang.reflect.Array;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -126,26 +124,6 @@ public class FunctionAggregationContext implements AggregationContext, HeapBuffe
   }
 
   private static Object normalizeForKey(final Object value) {
-    if (value == null)
-      return NULL_KEY;
-    if (value instanceof Collection<?> collection) {
-      final List<Object> items = new ArrayList<>(collection.size());
-      for (final Object item : collection)
-        items.add(item == null ? null : normalizeForKey(item));
-      return items;
-    }
-    return value.getClass().isArray() ? normalizeForKey(arrayItems(value)) : Type.normalizeNumberForKey(value);
-  }
-
-  /** A Java array compares by identity: its content is what makes two values the same */
-  private static List<Object> arrayItems(final Object array) {
-    if (array instanceof Object[] objects)
-      return Arrays.asList(objects);
-
-    final int length = Array.getLength(array);
-    final List<Object> items = new ArrayList<>(length);
-    for (int i = 0; i < length; i++)
-      items.add(Array.get(array, i));
-    return items;
+    return value == null ? NULL_KEY : Type.normalizeForKey(value);
   }
 }

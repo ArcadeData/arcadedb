@@ -60,6 +60,11 @@ public class EqualsCompareOperator extends SimpleNode implements BinaryCompareOp
   }
 
   @Override
+  public boolean isUnknownOnNull() {
+    return true;
+  }
+
+  @Override
   public boolean isLess() {
     return false;
   }

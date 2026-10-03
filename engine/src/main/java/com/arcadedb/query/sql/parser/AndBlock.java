@@ -66,14 +66,16 @@ public class AndBlock extends BooleanExpression {
     if (getSubBlocks() == null)
       return true;
 
+    // UNKNOWN AND FALSE is FALSE: a later false operand still decides the result (SQL three-valued logic)
+    boolean hasNull = false;
     for (final BooleanExpression block : subBlocks) {
       final Boolean result = block.evaluate(currentRecord, context);
       if (result == null)
-        return null;
+        hasNull = true;
       else if (!result)
         return false;
     }
-    return true;
+    return hasNull ? null : true;
   }
 
   public List<BooleanExpression> getSubBlocks() {

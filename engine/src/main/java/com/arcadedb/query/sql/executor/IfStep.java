@@ -57,7 +57,8 @@ public class IfStep extends AbstractExecutionStep {
 
   protected boolean evaluate(final CommandContext context) {
     if (conditionMet == null)
-      conditionMet = condition.evaluate((Result) null, context);
+      // UNKNOWN (a comparison with a null operand) is not met
+      conditionMet = Boolean.TRUE.equals(condition.evaluate((Result) null, context));
     return conditionMet;
   }
 

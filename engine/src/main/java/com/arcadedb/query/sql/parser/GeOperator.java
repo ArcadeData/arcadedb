@@ -97,6 +97,11 @@ public class GeOperator extends SimpleNode implements BinaryCompareOperator {
   }
 
   @Override
+  public boolean isUnknownOnNull() {
+    return true;
+  }
+
+  @Override
   public boolean isLess() {
     return false;
   }

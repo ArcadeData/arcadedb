@@ -36,6 +36,7 @@ import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.MultiIterator;
 
+import java.lang.reflect.Array;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.text.ParsePosition;
@@ -1901,6 +1902,110 @@ public enum Type {
       return BigDecimal.valueOf(((Number) value).longValue()).stripTrailingZeros();
     }
     return value;
+  }
+
+  /**
+   * Deep variant of {@link #normalizeNumberForKey}: canonicalizes the numbers held inside a list, a set, a map or a Java
+   * array too, so {@code [1]}, {@code [1L]} and {@code [1.0]}, or {@code {a: 1}} and {@code {a: 1L}}, key the same way the
+   * scalars do (issue #8977). The keys of a map are kept as they are, they are rarely numbers. A list and an object array
+   * key as lists, a set as a set (it compares without order), a map as a map. A primitive array (a vector, a byte buffer)
+   * is wrapped by content without boxing its elements, and a list, set or map that holds no number, collection, map or
+   * array is returned as it is, so the common case copies nothing, and the returned collection is then the caller's own instance, which
+   * the key must not outlive a mutation of. A String returns at once; a list of numbers (an embedding) is copied and boxed, so
+   * DISTINCT or GROUP BY over such a column allocates per row.
+   *
+   * @param value the value to normalise (may be {@code null})
+   *
+   * @return the canonical key for the value
+   */
+  public static Object normalizeForKey(final Object value) {
+    if (value instanceof String)
+      return value;
+    if (value == null || value instanceof Number)
+      return normalizeNumberForKey(value);
+    if (value instanceof Set<?> set) {
+      if (holdsOnlyPlainValues(set))
+        return set;
+      final Set<Object> items = new HashSet<>((int) (set.size() / 0.75f) + 1);
+      for (final Object item : set)
+        items.add(normalizeForKey(item));
+      return items;
+    }
+    if (value instanceof Collection<?> collection) {
+      if (collection instanceof List<?> && holdsOnlyPlainValues(collection))
+        return collection;
+      final List<Object> items = new ArrayList<>(collection.size());
+      for (final Object item : collection)
+        items.add(normalizeForKey(item));
+      return items;
+    }
+    if (value instanceof Map<?, ?> map) {
+      if (holdsOnlyPlainValues(map.values()))
+        return map;
+      final Map<Object, Object> entries = new HashMap<>((int) (map.size() / 0.75f) + 1);
+      for (final Map.Entry<?, ?> entry : map.entrySet())
+        entries.put(entry.getKey(), normalizeForKey(entry.getValue()));
+      return entries;
+    }
+    if (value.getClass().isArray()) {
+      if (value instanceof Object[] objects) {
+        final List<Object> items = new ArrayList<>(objects.length);
+        for (final Object item : objects)
+          items.add(normalizeForKey(item));
+        return items;
+      }
+      return new PrimitiveArrayKey(value);
+    }
+    return value;
+  }
+
+  private static boolean holdsOnlyPlainValues(final Collection<?> values) {
+    for (final Object item : values)
+      if (item instanceof Number || item instanceof Collection || item instanceof Map || (item != null && item.getClass().isArray()))
+        return false;
+    return true;
+  }
+
+  /**
+   * A primitive array as a hash key: two arrays of the same type with the same content are equal, which the array itself does
+   * not do (it compares by identity).
+   * Floating point content compares by bits (as {@link Arrays#equals(float[], float[])}): NaN equals NaN, which is what grouping
+   * wants, while 0.0 and -0.0 are different keys, unlike the numeric canonicalization of a scalar.
+   */
+  private record PrimitiveArrayKey(Object array) {
+    @Override
+    public boolean equals(final Object other) {
+      if (this == other)
+        return true;
+      if (!(other instanceof PrimitiveArrayKey that) || !array.getClass().equals(that.array.getClass()))
+        return false;
+      return switch (array) {
+        case byte[] a -> Arrays.equals(a, (byte[]) that.array);
+        case short[] a -> Arrays.equals(a, (short[]) that.array);
+        case int[] a -> Arrays.equals(a, (int[]) that.array);
+        case long[] a -> Arrays.equals(a, (long[]) that.array);
+        case float[] a -> Arrays.equals(a, (float[]) that.array);
+        case double[] a -> Arrays.equals(a, (double[]) that.array);
+        case char[] a -> Arrays.equals(a, (char[]) that.array);
+        case boolean[] a -> Arrays.equals(a, (boolean[]) that.array);
+        default -> false;
+      };
+    }
+
+    @Override
+    public int hashCode() {
+      return switch (array) {
+        case byte[] a -> Arrays.hashCode(a);
+        case short[] a -> Arrays.hashCode(a);
+        case int[] a -> Arrays.hashCode(a);
+        case long[] a -> Arrays.hashCode(a);
+        case float[] a -> Arrays.hashCode(a);
+        case double[] a -> Arrays.hashCode(a);
+        case char[] a -> Arrays.hashCode(a);
+        case boolean[] a -> Arrays.hashCode(a);
+        default -> 0;
+      };
+    }
   }
 
   /**
