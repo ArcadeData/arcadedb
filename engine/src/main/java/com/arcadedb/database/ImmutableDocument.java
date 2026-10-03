@@ -240,6 +240,14 @@ public class ImmutableDocument extends BaseDocument {
   }
 
   /**
+   * Whether this record's content was read from its bucket by the transaction that began with {@code transactionBeginSequence}
+   * (issue #8984). A record that was only referenced (not yet loaded) proves nothing about the bucket, so it does not count.
+   */
+  boolean wasLoadedInTransaction(final long transactionBeginSequence) {
+    return buffer != null && readInTransaction >= 0 && readInTransaction == readTransactionId(transactionBeginSequence);
+  }
+
+  /**
    * Records the transaction this record was read in (issue #8610), so {@link #modify()} can tell a read made in the
    * current transaction, which a property write may be computed from, from a record held across transactions, which it
    * keeps refreshing silently. Set by the load paths that hold the transaction anyway; left unset (-1) elsewhere, where
