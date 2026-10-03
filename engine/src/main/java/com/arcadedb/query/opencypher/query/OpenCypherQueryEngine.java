@@ -960,6 +960,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
     //      original Java type and downstream Cypher comparisons work correctly.
     final DocumentType type = schema.getType(typeName);
     final Type[] defaultKeyTypes = new Type[propertyNames.length];
+    final List<String> declaredHere = new ArrayList<>();
     boolean anyUndeclared = false;
     for (int i = 0; i < propertyNames.length; i++) {
       final String propName = propertyNames[i];
@@ -968,6 +969,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
       final Type inferred = inferPropertyTypeFromExistingData(typeName, propName);
       if (inferred != null) {
         type.createProperty(propName, inferred);
+        declaredHere.add(propName);
       } else {
         defaultKeyTypes[i] = Type.STRING;
         anyUndeclared = true;
@@ -981,95 +983,147 @@ public class OpenCypherQueryEngine implements QueryEngine {
     builder.withIgnoreIfExists(ddl.isIfNotExists());
     if (anyUndeclared)
       builder.withDefaultKeyTypesForUndeclaredProperties(defaultKeyTypes);
-    builder.create();
+    try {
+      builder.create();
+    } catch (final RuntimeException e) {
+      // The declarations above are part of this statement: a build that fails must not leave the type with properties
+      // nobody asked for, which coerce every later write (issue #8999)
+      for (final String declared : declaredHere)
+        try {
+          if (type.existsProperty(declared))
+            type.dropProperty(declared);
+        } catch (final RuntimeException dropFailure) {
+          e.addSuppressed(dropFailure);
+        }
+      throw e;
+    }
     if (!existedBefore)
       stats.incIndexesAdded();
   }
 
   /**
-   * Walks the type's records (polymorphic, capped) until it finds a non-null value for
-   * {@code propertyName} and returns the {@link Type} that matches its Java class. Returns
-   * {@code null} if no record sets the property. Used by Cypher DDL to preserve numeric
-   * properties across {@code CREATE INDEX} on an already-populated type (issue #4222).
+   * Walks the type's records (polymorphic) and returns the {@link Type} that matches the Java class of every non-null value
+   * of {@code propertyName}. Returns {@code null} if no record sets the property, or when the values do not share one type
+   * (in which case the property stays undeclared and the index falls back to the canonical STRING keys). Used by Cypher DDL to
+   * preserve numeric properties across {@code CREATE INDEX} on an already-populated type (issue #4222).
+   * <p>
+   * The whole type is read, not a prefix of it: the first value alone used to decide, so {@code 3} followed by {@code 2.5}
+   * declared the property {@code INTEGER}, narrowed the float to {@code 2} in every index key, and made range predicates lose
+   * the record (issue #8999). Integers of different widths settle on the widest, a {@code FLOAT} and a {@code DOUBLE} on
+   * {@code DOUBLE}; integers mixed with floating point numbers, a {@code DECIMAL} with anything else, or a number with a string
+   * have no single type that holds every value, so there is none. The scan stops at the first value that disagrees.
    * <p>
    * Temporal values are the one case where the Java class alone is not enough:
    * {@link Type#getTypeByClass} maps every temporal class onto the millisecond {@link Type#DATETIME},
    * while an <em>undeclared</em> temporal property is serialized at the precision of each value
    * (see {@code BinaryTypes.getTypeFromValue}). Declaring {@code DATETIME} would therefore silently
    * truncate to milliseconds every write made after the index was created, on a property whose
-   * existing rows carry microseconds or nanoseconds (issue #7164). So the first non-null value still
-   * decides the property's <em>kind</em>, but when that kind is temporal the scan keeps going and
-   * declares the widest precision the data actually holds. Milliseconds stay the floor - a value that
+   * existing rows carry microseconds or nanoseconds (issue #7164). So when the kind is temporal the scan declares the widest
+   * precision the data actually holds. Milliseconds stay the floor - a value that
    * happens to land on a whole second must not declare the property {@code DATETIME_SECOND} and
-   * truncate the millisecond writes ArcadeDB has always accepted by default.
+   * truncate the millisecond writes ArcadeDB has always accepted by default. The sweep stops as soon as it sees
+   * nanoseconds (nothing can widen it further).
    * <p>
-   * The 256-record cap that bounds the kind lookup is deliberately not applied to that precision
-   * sweep: a capped sweep would silently truncate a type whose first 256 rows happen to sit on a
-   * millisecond boundary, which is the very failure being fixed. The sweep stops as soon as it sees
-   * nanoseconds (nothing can widen it further), and the caller is about to walk every record anyway
-   * to build the index, so it costs one extra sequential scan on a DDL statement that is already
-   * linear in the type's size.
-   * <p>
-   * That scan is unconditional once the property is seen to be temporal, including the common case
-   * where every value is plain millisecond-precision and the answer is the {@code DATETIME} the
-   * capped scan would have given. So indexing a temporal column on a very large type costs a
-   * measurable amount of extra wall clock on top of the index build - deliberately, because the
-   * alternative is silently truncating precision that is already persisted. If a slow
-   * {@code CREATE INDEX} on a huge temporal column ever needs to be cut down, this is the place, and
-   * anything that reintroduces a bound reintroduces the truncation of issue #7164 with it.
+   * The scan is unconditional, so indexing a column on a very large type costs one extra sequential scan on top of the index
+   * build - deliberately, because the alternative is silently narrowing or truncating values that are already persisted. If a
+   * slow {@code CREATE INDEX} on a huge type ever needs to be cut down, this is the place, and anything that reintroduces a
+   * bound reintroduces the narrowing of issues #7164 and #8999 with it.
    */
   private Type inferPropertyTypeFromExistingData(final String typeName, final String propertyName) {
     try {
       final Iterator<Record> it = database.iterateType(typeName, true);
-      int scanned = 0;
       ChronoUnit temporalPrecision = null;
-      // 256 is enough to spot the dominant value type without doing a full table scan; users
-      // hitting heterogeneous-typed properties can declare the property explicitly via SQL.
-      while (it.hasNext() && (temporalPrecision != null || scanned < 256)) {
+      Type settled = null;
+      while (it.hasNext()) {
         final Record record = it.next();
-        scanned++;
         if (!(record instanceof Document doc))
           continue;
         // NO has() GUARD: get() ALREADY ANSWERS null FOR AN ABSENT PROPERTY, AND EACH OF THE TWO MAKES ITS OWN PASS
-        // OVER THE RECORD BUFFER - ASKING TWICE DOUBLED THE COST OF EVERY RECORD IN THE UNCAPPED SWEEP ABOVE
+        // OVER THE RECORD BUFFER - ASKING TWICE DOUBLED THE COST OF EVERY RECORD IN THE UNCAPPED SWEEP
         final Object value = doc.get(propertyName);
         if (value == null)
           continue;
 
         final ChronoUnit precision = DateUtils.getPrecisionFromValue(value);
 
-        if (temporalPrecision != null) {
-          // THE KIND IS ALREADY SETTLED AS TEMPORAL: LATER VALUES ONLY WIDEN THE PRECISION
-          if (precision != null && precision.compareTo(temporalPrecision) < 0)
-            temporalPrecision = precision;
-          if (temporalPrecision == ChronoUnit.NANOS)
-            break;
-          continue;
-        }
-
         if (precision != null) {
+          if (settled != null)
+            // a temporal value next to a value of another kind
+            return null;
           // MILLIS IS THE FLOOR: NEVER NARROW BELOW THE DEFAULT DATETIME PRECISION
-          temporalPrecision = precision.compareTo(ChronoUnit.MILLIS) < 0 ? precision : ChronoUnit.MILLIS;
+          final ChronoUnit valuePrecision = precision.compareTo(ChronoUnit.MILLIS) < 0 ? precision : ChronoUnit.MILLIS;
+          if (temporalPrecision == null || valuePrecision.compareTo(temporalPrecision) < 0)
+            temporalPrecision = valuePrecision;
           if (temporalPrecision == ChronoUnit.NANOS)
             break;
           continue;
         }
 
+        if (temporalPrecision != null)
+          // a value that is no temporal next to temporal ones reads as an unreadable date, which an index keys under null
+          // (issue #8090): it neither resets the kind nor narrows the precision. A temporal value that comes AFTER a value of
+          // another kind is not skipped the same way: the first kind settled the type, so there is no DATETIME to fall back to
+          continue;
+
+        final Type valueType;
         try {
-          return Type.getTypeByClass(value.getClass());
+          valueType = Type.getTypeByClass(value.getClass());
         } catch (final IllegalArgumentException ignored) {
           // Unknown Java class for the value; leave the property undeclared and let the index
           // fall back to STRING serialisation.
           return null;
         }
+
+        if (valueType == null)
+          // a class no type is registered for (a LocalDate, say): the values that follow must not settle the declaration
+          return null;
+
+        if (settled == null) {
+          settled = valueType;
+          continue;
+        }
+        if (settled == valueType)
+          continue;
+
+        if (isIntegral(settled) && isIntegral(valueType))
+          settled = widerIntegral(settled, valueType);
+        else if (isBinaryFloatingPoint(settled) && isBinaryFloatingPoint(valueType))
+          settled = Type.DOUBLE;
+        else
+          // integers next to floating point numbers, or any other pair of kinds: no single type holds both, and picking
+          // one narrows or rejects the other (issue #8999)
+          return null;
       }
 
       if (temporalPrecision != null)
         return Type.getByBinaryType(DateUtils.getBestBinaryTypeForPrecision(temporalPrecision));
+      return settled;
     } catch (final Exception ignored) {
       // If iteration fails for any reason (e.g. schema in transient state) just skip inference.
     }
     return null;
+  }
+
+  private static boolean isIntegral(final Type type) {
+    return type == Type.BYTE || type == Type.SHORT || type == Type.INTEGER || type == Type.LONG;
+  }
+
+  private static boolean isBinaryFloatingPoint(final Type type) {
+    return type == Type.FLOAT || type == Type.DOUBLE;
+  }
+
+  private static Type widerIntegral(final Type a, final Type b) {
+    return integralRank(a) >= integralRank(b) ? a : b;
+  }
+
+  private static int integralRank(final Type type) {
+    return switch (type) {
+      case BYTE -> 0;
+      case SHORT -> 1;
+      case INTEGER -> 2;
+      case LONG -> 3;
+      default -> throw new IllegalArgumentException("Not an integral type: " + type);
+    };
   }
 
   private void executeDropIndex(final CypherDDLStatement ddl, final Schema schema, final QueryStatistics stats) {

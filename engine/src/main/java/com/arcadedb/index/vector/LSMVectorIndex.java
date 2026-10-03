@@ -350,6 +350,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
   // that a build has passed the point after which further mutations are preserved rather than folded into the
   // build's own snapshot (issue #3683).
   private volatile long    rebuildSnapshotGeneration = 0;
+  /**
+   * The data file this compaction holds the commit lock of, or -1. Only touched under {@code graphBuildLock}. The commits of the
+   * index are held off for the page read, the document scan fallback when pages miss vectors, and the rewrite.
+   */
+  private          int     compactionFileLock = -1;
 
   // Dedicated ForkJoinPool for graph building, so we can shut it down on close() to cancel
   // long-running build operations that would otherwise block server shutdown.
@@ -783,6 +788,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // which the index answers offsets into a file that no longer exists - a search landing there reads another
         // entry's bytes, or the dropped compacted component through a null reference.
         publishLocationIndex(liveEntries);
+
+        // Every pending entry of the delta buffer carries an id the renumbering just reissued, and its vector is in the rewritten
+        // file and therefore in the graph this build is about to make: kept, it would be scored under an id that now names
+        // another vector (issue #9071)
+        // (same critical section as the swap above: the write lock is held)
+        deltaVectors = new ArrayList<>();
+        recountDeltaResidentPayloads();
 
         // The rename and the schema re-keying are ONE step and must stay adjacent: `indexName` is volatile and read
         // without this lock (getName(), which is what TransactionIndexContext keys a lane by), so between these two
@@ -3010,7 +3022,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // The persist keeps opening a transaction of its own (issue #7058) - it now opens it on the suspended
       // thread's fresh context, so it cannot reach the caller's at all rather than merely promising not to.
       try (final CommittedReadScope ignored = CommittedReadScope.open(database)) {
-        buildGraphFromScratchExclusively(graphCallback, compactDataFile, releaseResidentGraphFirst);
+        // A compaction reads the live set off the pages and then replaces the data file with a rewrite of it: whatever a
+        // commit adds to the old file in between is in neither, and the old file is then dropped (issue #9071). The commits
+        // of this index are kept out from before the pages are read until the new file is in, which is the only span where
+        // the live set has to equal the file. Released by the build as soon as the rewrite is done, so the graph build that
+        // follows does not hold writers up.
+        compactionFileLock = compactDataFile ? lockDataFileForCompaction() : -1;
+        try {
+          buildGraphFromScratchExclusively(graphCallback, compactDataFile, releaseResidentGraphFirst);
+        } finally {
+          releaseCompactionFileLock();
+        }
       }
     } finally {
       // The scan work this build was meant to make unnecessary has been paid for; start the amortization window
@@ -3026,6 +3048,42 @@ public class LSMVectorIndex implements Index, IndexInternal {
       deltaScanWorkSinceRebuild.set(0L);
       graphBuildLock.unlock();
     }
+  }
+
+  /**
+   * Takes the lock commits take on this index's data file, waiting as long as a commit waits for it, so that no commit can add to
+   * the file while a compaction reads its live set and swaps the rewrite in (issue #9071). Commits lock their files before they take
+   * the index lock and so does this, in the same order. When the lock is already held by this thread (the rewrite itself asks for
+   * it too) nothing is taken and nothing is released here.
+   *
+   * Lock order: this runs under {@code graphBuildLock}, and no commit path takes the file lock and then {@code graphBuildLock}
+   * (commits take the file lock, then the index lock; only searches and rebuild threads take {@code graphBuildLock}, holding no file
+   * lock), so the two cannot invert. A {@link TimeoutException} is what {@link #compact()} treats as "retry later".
+   * <p>
+   * Only the mutable data file is locked, not every file of the index: it is the one the rewrite replaces and the only one commits
+   * append to (the compacted sub-index is read-only).
+   *
+   * @return the file id to release, or -1 when this call did not take the lock
+   *
+   * @throws TimeoutException when the commits of the index did not leave the file free: the compaction is retried later
+   */
+  private int lockDataFileForCompaction() {
+    final DatabaseInternal database = getDatabase();
+    final int fileId = getFileId();
+    final LockManager.LOCK_STATUS locked = database.getTransactionManager().tryLockFile(fileId,
+        database.getConfiguration().getValueAsLong(GlobalConfiguration.COMMIT_LOCK_TIMEOUT), Thread.currentThread());
+    if (locked == LockManager.LOCK_STATUS.NO)
+      throw new TimeoutException("Cannot compact vector index '" + indexName + "': timeout locking file " + fileId);
+    return locked == LockManager.LOCK_STATUS.YES ? fileId : -1;
+  }
+
+  /** Lets the commits of this index in again. Idempotent: the build releases it after the rewrite and the caller on every exit. */
+  private void releaseCompactionFileLock() {
+    final int fileId = compactionFileLock;
+    if (fileId < 0)
+      return;
+    compactionFileLock = -1;
+    getDatabase().getTransactionManager().unlockFile(fileId, Thread.currentThread());
   }
 
   private void buildGraphFromScratchExclusively(final GraphBuildCallback graphCallback, final boolean compactDataFile,
@@ -3069,7 +3127,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     //
     // The read lock is all it takes: writers mutate both under the write lock, and holding it for two volatile
     // reads costs a rebuild nothing next to the build it is about to run.
-    final int deltaSnapshotId;
+    int deltaSnapshotId;
     final int mutationsAtBuildStart;
     lock.readLock().lock();
     try {
@@ -3259,6 +3317,22 @@ public class LSMVectorIndex implements Index, IndexInternal {
           indexName);
     final boolean locationIndexAlreadyPublished = compactDataFile && !leftRecordsOut && rewriteDataFileWithLiveEntries(
         ridToLatestVector.values());
+    if (locationIndexAlreadyPublished) {
+      // (The file lock is held here: it was taken by this build, or by a caller that holds it for the whole build.)
+      // The rewrite renumbered every vector and reset the id sequence to the dense count, so the snapshot taken above is a
+      // high-water mark of ids that no longer exist: kept, it would trim as "already in the graph" the ids the next commits
+      // hand out below it (issue #9071). Nothing has been committed since the pages were read, so the current sequence is the
+      // first id this build does not cover.
+      lock.readLock().lock();
+      try {
+        deltaSnapshotId = nextId.get();
+      } finally {
+        lock.readLock().unlock();
+      }
+    }
+    // The file is final now, and the commits held off since the pages were read can go on: the ids they hand out continue
+    // the dense sequence the rewrite just set
+    releaseCompactionFileLock();
 
     // Rebuild ordinal mapping (may have changed after document scan fallback)
     final int[] finalActiveVectorIdsFromPages = ridToLatestVector.values().stream()
