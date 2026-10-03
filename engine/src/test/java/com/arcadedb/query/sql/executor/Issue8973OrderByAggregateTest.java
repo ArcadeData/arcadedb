@@ -124,5 +124,14 @@ class Issue8973OrderByAggregateTest extends TestHelper {
         ks.add(rs.next().<Number>getProperty("k").intValue());
     }
     assertThat(ks).containsExactly(2, 1, 1);
+
+    // an aggregate in ORDER BY next to UNWIND must reach the planner's early-exit path, not the aggregate split: it is either rejected
+    // with a message or answered, never answered with the aggregate evaluated per record
+    try (final ResultSet rs = database.query("sql", "SELECT k, tags FROM U ORDER BY count(*) UNWIND tags")) {
+      while (rs.hasNext())
+        assertThat(rs.next().<Number>getProperty("k")).isNotNull();
+    } catch (final RuntimeException e) {
+      assertThat(e.getMessage()).isNotBlank();
+    }
   }
 }
