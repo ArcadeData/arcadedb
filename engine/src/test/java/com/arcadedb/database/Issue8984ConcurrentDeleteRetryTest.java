@@ -24,6 +24,7 @@ import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -42,6 +43,8 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
+// hang detector only, not a latency bound
+@Timeout(120)
 class Issue8984ConcurrentDeleteRetryTest extends TestHelper {
 
   private void runRace(final String type, final boolean vertex, final String sql, final int retries) throws Exception {
