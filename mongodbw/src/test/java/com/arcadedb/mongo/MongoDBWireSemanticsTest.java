@@ -288,4 +288,40 @@ public class MongoDBWireSemanticsTest extends BaseMongoServerTest {
     assertThat(projected.keySet()).containsExactly("_id", "addr");
     assertThat(projected.get("addr", Document.class).keySet()).containsExactly("city");
   }
+
+  @Test
+  void standaloneIncAndUnsetOnDottedPaths() {
+    collection.insertMany(List.of(Document.parse("{_id: 1, addr: {n: 1, zip: '1'}}"), Document.parse("{_id: 2}")));
+
+    collection.updateOne(new Document("_id", 1), Document.parse("{$inc: {'addr.n': 2}}"));
+    collection.updateOne(new Document("_id", 1), Document.parse("{$unset: {'addr.zip': ''}}"));
+    collection.updateOne(new Document("_id", 2), Document.parse("{$inc: {'a.b': 1}}"));
+
+    final Document first = collection.find(new Document("_id", 1)).first();
+    assertThat(first.get("addr", Document.class)).containsEntry("n", 3).doesNotContainKey("zip");
+    assertThat(collection.find(new Document("_id", 2)).first().get("a", Document.class)).containsEntry("b", 1);
+  }
+
+  @Test
+  void setOnAHugeArrayIndexIsRefused() {
+    collection.insertOne(Document.parse("{_id: 1, tags: ['a']}"));
+    assertThatThrownBy(() -> collection.updateOne(new Document("_id", 1), Document.parse("{$set: {'tags.999999999': 1}}")))
+        .isInstanceOf(MongoCommandException.class);
+    assertThat(collection.find(new Document("_id", 1)).first().getList("tags", String.class)).containsExactly("a");
+  }
+
+  @Test
+  void duplicateOnAUserDefinedUniqueIndexIsNotReportedAsId() {
+    collection.createIndex(new Document("email", 1), new com.mongodb.client.model.IndexOptions().unique(true));
+    collection.insertOne(Document.parse("{_id: 1, email: 'a@x'}"));
+
+    assertThatThrownBy(() -> collection.insertOne(Document.parse("{_id: 2, email: 'a@x'}"))).isInstanceOf(MongoWriteException.class)
+        .hasMessageContaining("E11000").hasMessageContaining("a@x");
+  }
+
+  @Test
+  void inlineCommentsModeRegexIsACleanError() {
+    collection.insertOne(Document.parse("{_id: 1, name: 'a'}"));
+    assertThatThrownBy(() -> ids("{name: {$regex: '(?x) a # note'}}")).isInstanceOf(MongoQueryException.class);
+  }
 }

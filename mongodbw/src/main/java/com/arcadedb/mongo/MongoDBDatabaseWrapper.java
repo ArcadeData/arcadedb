@@ -21,6 +21,7 @@ package com.arcadedb.mongo;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.ProtocolContext;
+import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
@@ -29,6 +30,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.TypeIndexBuilder;
 import com.arcadedb.schema.Type;
@@ -506,9 +508,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
                 error.put("index", i);
                 error.put("code", ErrorCode.DuplicateKey.getValue());
                 error.put("codeName", ErrorCode.DuplicateKey.getName());
-                error.put("errmsg",
-                    "E11000 duplicate key error collection: " + getFullCollectionNamespace(collectionName) + " index: _id_ dup key: { _id: "
-                        + doc.get("_id") + " }");
+                error.put("errmsg", duplicateKeyMessage(collectionName, duplicate));
                 writeErrors.add(error);
                 if (isOrdered)
                   break;
@@ -540,6 +540,18 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
     markOkay(result);
     return result;
+  }
+
+  /**
+   * Built from the index and key the engine reports, so a violation of a user-defined unique index is not presented as an
+   * {@code _id} one.
+   */
+  private String duplicateKeyMessage(final String collectionName, final Throwable error) {
+    for (Throwable t = error; t != null; t = t.getCause())
+      if (t instanceof DuplicatedKeyException duplicated)
+        return "E11000 duplicate key error collection: " + getFullCollectionNamespace(collectionName) + " index: " + duplicated.getIndexName()
+            + " dup key: " + (plugin != null && plugin.isProductionMode() ? ArcadeDBServer.CONCEALED_DUPLICATED_KEYS : duplicated.getKeys());
+    return "E11000 duplicate key error collection: " + getFullCollectionNamespace(collectionName);
   }
 
   private MongoCollection<Long> getOrCreateCollection(final String collectionName) {
@@ -673,8 +685,17 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     return executeCount(sql.toString(), params);
   }
 
+  /**
+   * Whether any operator targets a dotted path. All of them go through the record path together, so {@code $set}, {@code $unset}
+   * and {@code $inc} behave the same (nested paths created, integral {@code $inc} kept integral) however they are combined.
+   */
   private static boolean setsDottedPath(final Document u) {
-    return u.get("$set") instanceof Document operand && operand.keySet().stream().anyMatch(field -> field.indexOf('.') >= 0);
+    for (final Object operand : u.values())
+      if (operand instanceof Document fields)
+        for (final String field : fields.keySet())
+          if (field.indexOf('.') >= 0)
+            return true;
+    return false;
   }
 
   private int executeUpdateOnRecords(final String collectionName, final Document q, final Document u, final boolean multi) {
@@ -893,6 +914,9 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
     if (container instanceof List<?> list && isArrayIndex(head)) {
       final int index = Integer.parseInt(head);
+      if (index > MAX_ARRAY_PADDING)
+        throw new MongoServerError(ErrorCode.BadValue.getValue(), ErrorCode.BadValue.getName(),
+            "Cannot create field '" + head + "' in an array: the index is too large");
       final List<Object> copy = new ArrayList<>(list);
       while (copy.size() <= index)
         copy.add(null);
@@ -984,6 +1008,12 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     if (container != null && !(container instanceof Map) && !(container instanceof com.arcadedb.database.Document))
       throw new MongoServerError(28, "PathNotViable", "Cannot create field '" + field + "' in element {" + container + "}");
   }
+
+  /**
+   * The largest array index {@code $set} may reach: the gap is padded with nulls in memory, so an unbounded index is a way to
+   * exhaust the heap with one request.
+   */
+  private static final int MAX_ARRAY_PADDING = 100_000;
 
   private static boolean isArrayIndex(final String segment) {
     if (segment.isEmpty() || segment.length() > 9)
