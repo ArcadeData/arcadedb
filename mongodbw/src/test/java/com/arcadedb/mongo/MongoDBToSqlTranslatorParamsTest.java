@@ -238,7 +238,7 @@ class MongoDBToSqlTranslatorParamsTest {
     final List<String> names = List.of("v1", "v2");
     MongoDBToSqlTranslator.buildExpression(sql, params, new Document("name", new Document("$nin", names)));
 
-    assertThat(sql.toString()).isEqualTo("(`name` NOT IN (:p0))");
+    assertThat(sql.toString()).isEqualTo("((`name` IS NULL OR `name` NOT IN (:p0)))");
     assertThat(params.get("p0")).isEqualTo(names);
   }
 
@@ -339,7 +339,7 @@ class MongoDBToSqlTranslatorParamsTest {
 
     MongoDBToSqlTranslator.buildExpression(sql, params, new Document("age", new Document("$not", new Document("$gt", 18))));
 
-    assertThat(sql.toString()).isEqualTo("(NOT (`age` > :p0))");
+    assertThat(sql.toString()).isEqualTo("((`age` IS NULL OR NOT (`age` > :p0)))");
     assertThat(params.get("p0")).isEqualTo(18);
   }
 
@@ -404,7 +404,7 @@ class MongoDBToSqlTranslatorParamsTest {
     final ObjectId id = new ObjectId("507f1f77bcf86cd799439011");
     MongoDBToSqlTranslator.buildExpression(sql, params, new Document("_id", new Document("$nin", List.of(id))));
 
-    assertThat(sql.toString()).isEqualTo("(`_id` NOT IN (:p0))");
+    assertThat(sql.toString()).isEqualTo("((`_id` IS NULL OR `_id` NOT IN (:p0)))");
     assertThat(params.get("p0")).isEqualTo(List.of("507f1f77bcf86cd799439011"));
   }
 
@@ -423,7 +423,7 @@ class MongoDBToSqlTranslatorParamsTest {
     range.put("$lt", 5);
     MongoDBToSqlTranslator.buildExpression(sql, params, new Document("price", new Document("$not", range)));
 
-    assertThat(sql.toString()).isEqualTo("(NOT (`price` > :p0 AND `price` < :p1))");
+    assertThat(sql.toString()).isEqualTo("((`price` IS NULL OR NOT (`price` > :p0 AND `price` < :p1)))");
     assertThat(params.get("p0")).isEqualTo(1);
     assertThat(params.get("p1")).isEqualTo(5);
   }
