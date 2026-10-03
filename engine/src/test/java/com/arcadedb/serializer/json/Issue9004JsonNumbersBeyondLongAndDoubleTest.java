@@ -121,6 +121,24 @@ class Issue9004JsonNumbersBeyondLongAndDoubleTest extends TestHelper {
   }
 
   @Test
+  void hostileExponentAndLengthStayDoubles() {
+    final Map<String, Object> map = new JSONObject("{\"e\":1e999999999,\"n\":-1e999999999,\"u\":1e-999999999,\"long\":" + "9".repeat(1001) + "}").toMap();
+    assertThat(map.get("e")).isEqualTo(Double.POSITIVE_INFINITY);
+    assertThat(map.get("n")).isEqualTo(Double.NEGATIVE_INFINITY);
+    assertThat(map.get("u")).isEqualTo(0.0);
+    assertThat(map.get("long")).isEqualTo(Double.POSITIVE_INFINITY);
+    // within the limits the number is still kept exact
+    assertThat(new JSONObject("{\"x\":1e900}").toMap().get("x")).isEqualTo(new BigDecimal("1e900"));
+    assertThat(new JSONObject("{\"z\":0.000000000000000000000}").toMap().get("z")).isEqualTo(0.0);
+  }
+
+  @Test
+  void binaryAndNonNumericArraysAreNotNumberArrays() {
+    assertThat(Type.isPrimitiveNumberArray(new byte[] { 1, 2 })).isFalse();
+    assertThat(Type.isPrimitiveNumberArray(new char[] { 'a' })).isFalse();
+  }
+
+  @Test
   void numericArraysAreExact() {
     final Map<String, Object> map = new JSONObject(
         "{\"d\":[0.1,3.141592653589793],\"big\":[1,18446744073709551617],\"mixed\":[2,3.5],\"wide\":[1.5,1.23456789012345678901234567890]}").toMap(true);

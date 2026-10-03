@@ -632,7 +632,7 @@ public class JSONObject implements Map<String, Object> {
         if (strValue.contains(".") || strValue.contains("e") || strValue.contains("E")) {
           // Contains decimal point or scientific notation: a double, unless it carries more digits than a double holds
           final double doubleVal = primitive.getAsDouble();
-          if (mayLoseDigits(strValue, doubleVal) && !isExactDouble(strValue, doubleVal))
+          if (mayLoseDigits(strValue, doubleVal) && !isExactDouble(strValue, doubleVal) && isSafeBigNumber(strValue))
             return new BigDecimal(strValue);
           return doubleVal;
         } else {
@@ -645,8 +645,8 @@ public class JSONObject implements Map<String, Object> {
             return longVal;
 
           } catch (NumberFormatException e) {
-            // beyond the long range: keep every digit
-            return new BigDecimal(strValue);
+            // beyond the long range: keep every digit, unless the token is one only a hostile payload writes
+            return isSafeBigNumber(strValue) ? new BigDecimal(strValue) : (Object) primitive.getAsDouble();
           }
         }
       } else if (primitive.isString())
@@ -662,22 +662,54 @@ public class JSONObject implements Map<String, Object> {
     throw new IllegalArgumentException("Element " + element + " not supported");
   }
 
+  private static final int MAX_BIG_NUMBER_TOKEN_LENGTH = 1000;
+  private static final int MAX_BIG_NUMBER_EXPONENT     = 1000;
+
+  /**
+   * Whether a token that no long or double holds may become a {@link BigDecimal}. A {@code 1e999999999} token is a few bytes that
+   * a later {@code toBigInteger()}, {@code toPlainString()} or integer conversion would expand into gigabytes, and a token of
+   * thousands of digits costs superlinear time to parse: beyond these limits the number stays what it always was, a double.
+   */
+  static boolean isSafeBigNumber(final String token) {
+    if (token.length() > MAX_BIG_NUMBER_TOKEN_LENGTH)
+      return false;
+    for (int i = 0; i < token.length(); i++) {
+      final char c = token.charAt(i);
+      if (c == 'e' || c == 'E') {
+        long exponent = 0;
+        for (int j = i + 1; j < token.length(); j++) {
+          final char d = token.charAt(j);
+          if (d >= '0' && d <= '9')
+            exponent = exponent * 10 + (d - '0');
+        }
+        return exponent <= MAX_BIG_NUMBER_EXPONENT;
+      }
+    }
+    return true;
+  }
+
   /** A token a double may not hold exactly: more digits than a double keeps, or a value that overflowed or underflowed. */
   static boolean mayLoseDigits(final String token, final double value) {
-    if (Math.abs(value) < Double.MIN_NORMAL || !Double.isFinite(value))
+    if (!Double.isFinite(value))
       return true;
-    if (token.length() <= 15)
+    final boolean tiny = Math.abs(value) < Double.MIN_NORMAL;
+    if (!tiny && token.length() <= 15)
       return false;
     // THE SIGN, THE POINT AND THE EXPONENT MAKE A TOKEN LONG WITHOUT MAKING IT HOLD MORE THAN 15 DIGITS, WHICH A double ALWAYS HOLDS
     int digits = 0;
+    boolean nonZero = false;
     for (int i = 0, n = token.length(); i < n; i++) {
       final char c = token.charAt(i);
       if (c == 'e' || c == 'E')
         break;
-      if (c >= '0' && c <= '9')
+      if (c >= '0' && c <= '9') {
         digits++;
+        if (c != '0')
+          nonZero = true;
+      }
     }
-    return digits > 15;
+    // A DIGIT-LESS ZERO IS EXACT; A NON-ZERO MANTISSA THAT BECAME (SUB)NORMAL-LESS HAS UNDERFLOWED
+    return tiny ? nonZero : digits > 15;
   }
 
   /**
