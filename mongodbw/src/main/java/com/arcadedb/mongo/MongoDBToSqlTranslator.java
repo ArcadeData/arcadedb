@@ -131,12 +131,12 @@ public class MongoDBToSqlTranslator {
           if (!isTwoValued(operator.getKey(), operator.getValue()))
             nullSensitive = true;
 
-        if (nullSensitive && field != null)
+        if (nullSensitive)
           sql.append("(").append(field).append(" IS NULL OR ");
         sql.append("NOT (");
         appendOperators(sql, params, field, notOperand, false);
         sql.append(")");
-        if (nullSensitive && field != null)
+        if (nullSensitive)
           sql.append(")");
       } else if ("$regex".equals(subKey)) {
         if (subValue instanceof BsonRegularExpression regex)

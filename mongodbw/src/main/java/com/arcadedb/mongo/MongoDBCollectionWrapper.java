@@ -20,6 +20,13 @@ package com.arcadedb.mongo;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.index.TypeIndex;
+import com.arcadedb.log.LogManager;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
+import com.arcadedb.schema.TypeIndexBuilder;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.Identifier;
 import de.bwaldvogel.mongo.MongoCollection;
@@ -29,13 +36,16 @@ import de.bwaldvogel.mongo.backend.Index;
 import de.bwaldvogel.mongo.backend.QueryParameters;
 import de.bwaldvogel.mongo.backend.QueryResult;
 import de.bwaldvogel.mongo.bson.Document;
+import de.bwaldvogel.mongo.bson.ObjectId;
 import de.bwaldvogel.mongo.oplog.Oplog;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.logging.Level;
 import java.util.stream.Stream;
 
 public class MongoDBCollectionWrapper implements MongoCollection<Long> {
@@ -43,47 +53,6 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
   //  private final int      collectionId;
   private final String   collectionName;
   private final UUID     uuid = UUID.randomUUID();
-
-//  private static class ProjectingIterable implements Iterable<Document> {
-//    private final Iterable<Document> iterable;
-//    private final Document           fieldSelector;
-//    private final String             idField;
-//
-//    ProjectingIterable(Iterable<Document> iterable, Document fieldSelector, String idField) {
-//      this.iterable = iterable;
-//      this.fieldSelector = fieldSelector;
-//      this.idField = idField;
-//    }
-//
-//    public Iterator<Document> iterator() {
-//      return new ProjectingIterator(this.iterable.iterator(), this.fieldSelector, this.idField);
-//    }
-//  }
-//
-//  private static class ProjectingIterator implements Iterator<Document> {
-//    private final Iterator<Document> iterator;
-//    private final Document           fieldSelector;
-//    private final String             idField;
-//
-//    ProjectingIterator(Iterator<Document> iterator, Document fieldSelector, String idField) {
-//      this.iterator = iterator;
-//      this.fieldSelector = fieldSelector;
-//      this.idField = idField;
-//    }
-//
-//    public boolean hasNext() {
-//      return this.iterator.hasNext();
-//    }
-//
-//    public Document next() {
-//      Document document = this.iterator.next();
-//      return MongoDBToSqlTranslator.projectDocument(document, this.fieldSelector, this.idField);
-//    }
-//
-//    public void remove() {
-//      this.iterator.remove();
-//    }
-//  }
 
   protected MongoDBCollectionWrapper(final Database database, final String collectionName) {
     this.database = database;
@@ -222,28 +191,136 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
 
   @Override
   public void insertDocuments(final List<Document> list) {
+    // a type without the unique index (made through SQL or Studio, or already holding duplicates) is checked by hand
+    final List<Object> ids = new ArrayList<>(list.size());
+    for (final Document d : list)
+      if (d.containsKey("_id"))
+        ids.add(d.get("_id"));
+    ensureIdIndex(database, collectionName, ids);
+    final boolean checkByHand = !hasUniqueIdIndex(database.getSchema().getType(collectionName));
+
     database.begin();
     try {
       for (final Document d : list) {
+        if (checkByHand && d.containsKey("_id"))
+          checkIdIsFree(d.get("_id"));
+
         final MutableDocument record = database.newDocument(collectionName);
 
         for (final Map.Entry<String, Object> p : d.entrySet()) {
-          record.set(p.getKey(), MongoBsonValues.toStored(p.getKey(), p.getValue()));
+          final Object value = p.getValue();
+          if (value instanceof ObjectId id)
+            record.set(p.getKey(), id.getHexData());
+          else
+            record.set(p.getKey(), value);
         }
 
         record.save();
       }
 
       database.commit();
-    } catch (final RuntimeException | Error e) {
-      try {
+    } finally {
+      // a failed insert (a duplicated _id, a constraint) must not leave the transaction open on this thread
+      if (database.isTransactionActive())
         database.rollback();
-      } catch (final RuntimeException rollbackFailure) {
-        // keep the original failure
-        e.addSuppressed(rollbackFailure);
-      }
-      throw e;
     }
+  }
+
+  private void checkIdIsFree(final Object id) {
+    final Object bound = id instanceof ObjectId objectId ? objectId.getHexData() : id;
+    try (final ResultSet rs = database.query("SQL", "select @rid from " + Identifier.quote(collectionName) + " where _id = :id limit 1",
+        Map.of("id", bound))) {
+      if (rs.hasNext())
+        throw new DuplicatedKeyException(collectionName + "[_id]", String.valueOf(bound), rs.next().getIdentity().orElse(null));
+    }
+  }
+
+  /**
+   * MongoDB guarantees the {@code _id} of a collection is unique through an index every collection has. ArcadeDB has no implicit
+   * one, so the plugin creates a unique index on {@code _id} when the first document arrives, because only then the type of the
+   * key is known: the index orders its keys by their type, so a numeric {@code _id} needs a numeric key (a string key would
+   * answer {@code {_id: {$gt: 5}}} and a sort lexicographically, "10" before "5"). A collection whose {@code _id} is of another
+   * kind, or that already holds duplicated values, gets no index and {@link #insertDocuments} checks by hand instead.
+   */
+  static void ensureIdIndex(final Database database, final String collectionName, final Object sampleId) {
+    ensureIdIndex(database, collectionName, sampleId == null ? List.of() : List.of(sampleId));
+  }
+
+  /**
+   * @param ids the {@code _id} values about to be stored. When they (or an earlier insert) mix kinds, a numeric key cannot hold
+   *            them all: the index is rebuilt with string keys, which accept anything and keep the uniqueness check fast, at
+   *            the price of the ordering of a collection whose {@code _id} has no single order anyway.
+   */
+  static void ensureIdIndex(final Database database, final String collectionName, final Collection<?> ids) {
+    Type needed = null;
+    boolean mixed = false;
+    for (final Object id : ids) {
+      final Type type = idKeyType(id);
+      if (needed == null)
+        needed = type;
+      else if (needed != type)
+        mixed = true;
+      if (type == null)
+        mixed = true;
+    }
+    if (ids.isEmpty())
+      return;
+    final Type keyType = mixed ? Type.STRING : needed;
+
+    final DocumentType type = database.getSchema().getType(collectionName);
+    final TypeIndex existing = findUniqueIdIndex(type);
+    if (existing != null) {
+      final Type current = existing.getKeyTypes()[0];
+      if (current == Type.STRING || keyType == current)
+        return;
+      // the existing index cannot hold this key: rebuild it with string keys
+      database.getSchema().dropIndex(existing.getName());
+      createIdIndex(database, collectionName, Type.STRING);
+      return;
+    }
+
+    if (keyType != null)
+      createIdIndex(database, collectionName, keyType);
+  }
+
+  private static void createIdIndex(final Database database, final String collectionName, final Type keyType) {
+    try {
+      final TypeIndexBuilder builder = database.getSchema().buildTypeIndex(collectionName, new String[] { "_id" });
+      builder.withType(Schema.INDEX_TYPE.LSM_TREE);
+      builder.withUnique(true);
+      builder.withIgnoreIfExists(true);
+      builder.withDefaultKeyTypesForUndeclaredProperties(new Type[] { keyType });
+      builder.create();
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(MongoDBCollectionWrapper.class, Level.WARNING,
+          "Cannot create the unique index on _id of collection '%s': duplicates of _id will be checked on insert (%s)", null,
+          collectionName, e.getMessage());
+    }
+  }
+
+  private static TypeIndex findUniqueIdIndex(final DocumentType type) {
+    for (final TypeIndex index : type.getAllIndexes(false))
+      if (index.isUnique() && index.getPropertyNames().size() == 1 && "_id".equals(index.getPropertyNames().getFirst()))
+        return index;
+    return null;
+  }
+
+  /**
+   * The index key type for an {@code _id}: an ObjectId is stored as its hex string. {@code null} for anything else, which
+   * cannot be ordered by a single key type.
+   */
+  private static Type idKeyType(final Object id) {
+    if (id instanceof String || id instanceof ObjectId)
+      return Type.STRING;
+    if (id instanceof Integer || id instanceof Long || id instanceof Short || id instanceof Byte)
+      return Type.LONG;
+    if (id instanceof Double || id instanceof Float)
+      return Type.DOUBLE;
+    return null;
+  }
+
+  static boolean hasUniqueIdIndex(final DocumentType type) {
+    return findUniqueIdIndex(type) != null;
   }
 
   @Override

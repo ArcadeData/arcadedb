@@ -361,4 +361,33 @@ public class MongoDBWireSemanticsTest extends BaseMongoServerTest {
     assertThat(ids("{$or: [{age: {$ne: 30}}, {age: 30}]}")).containsExactly(1, 2, 3, 4);
     assertThat(ids("{$and: [{age: {$ne: 30}}, {age: {$nin: [25]}}]}")).containsExactly(3, 4);
   }
+
+  @Test
+  void rangeAndSortOnNumericIdsWithTheIdIndex() {
+    collection.insertMany(List.of(new Document("_id", 100), new Document("_id", 9), new Document("_id", 2), new Document("_id", 10)));
+
+    assertThat(ids("{_id: {$gt: 5}}")).containsExactly(9, 10, 100);
+    assertThat(ids("{_id: {$lt: 10}}")).containsExactly(2, 9);
+    assertThat(ids("{_id: {$gte: 9, $lte: 10}}")).containsExactly(9, 10);
+
+    final List<Object> sorted = new ArrayList<>();
+    for (final Document d : collection.find().sort(new Document("_id", 1)))
+      sorted.add(d.get("_id"));
+    assertThat(sorted).containsExactly(2, 9, 10, 100);
+  }
+
+  @Test
+  void updateManyWithDottedSetAndDuplicateInUnorderedBatch() {
+    collection.insertMany(List.of(Document.parse("{_id: 1, a: {n: 1}}"), Document.parse("{_id: 2, a: {n: 2}}")));
+    assertThat(collection.updateMany(new Document(), Document.parse("{$set: {'a.m': 5}}")).getModifiedCount()).isEqualTo(2);
+    assertThat(ids("{'a.m': 5}")).containsExactly(1, 2);
+
+    try {
+      collection.insertMany(List.of(new Document("_id", 3), new Document("_id", 1), new Document("_id", 4), new Document("_id", 2)),
+          new InsertManyOptions().ordered(false));
+    } catch (final MongoBulkWriteException e) {
+      assertThat(e.getWriteErrors()).extracting(w -> w.getIndex()).containsExactly(1, 3);
+    }
+    assertThat(collection.countDocuments()).isEqualTo(4);
+  }
 }
