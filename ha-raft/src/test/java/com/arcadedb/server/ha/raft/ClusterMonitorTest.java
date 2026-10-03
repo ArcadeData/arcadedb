@@ -574,6 +574,68 @@ class ClusterMonitorTest {
   }
 
   /**
+   * Issue #8900: a follower that answers over HTTP after its Raft RPC streak began is up and refusing - in #8898 the
+   * leader's appends kept reaching a CLOSED division through a replaced server's connection - so its first channel
+   * reset fires on the next tick instead of after the whole reset duration. Later attempts keep the usual cadence.
+   */
+  @Test
+  void resetsTheChannelOfARefusingFollowerWithoutWaitingTheResetDuration() {
+    final AtomicLong now = new AtomicLong(100_000L);
+    final AtomicLong answeredAt = new AtomicLong(-1L);
+    final List<String> resets = new ArrayList<>();
+    final ClusterMonitor monitor = new ClusterMonitor(10L, 0L, null, false, 10_000L, 30_000L, resets::add);
+    monitor.setClock(now::get);
+    monitor.setPeerLastAnsweredAt(peer -> "replica-2".equals(peer) ? answeredAt.get() : -1L);
+    monitor.updateLeaderCommitIndex(1000L);
+
+    // Its last HTTP answer predates the streak: nothing tells the leader it is up, so the streak only starts.
+    answeredAt.set(99_000L);
+    monitor.updateReplicaMatchIndex("replica-2", 1000L, 12_000L);
+    assertThat(resets).isEmpty();
+
+    // It answers over HTTP after the streak began: the first reset fires at once, well before the 30s duration.
+    now.addAndGet(5_000L);
+    answeredAt.set(now.get() - 1_000L);
+    monitor.updateReplicaMatchIndex("replica-2", 1000L, 17_000L);
+    assertThat(resets).containsExactly("replica-2");
+    assertThat(captured.linesContaining("issue #8900")).hasSize(1);
+
+    // Still refusing, but the second attempt waits for the usual interval.
+    now.addAndGet(5_000L);
+    answeredAt.set(now.get());
+    monitor.updateReplicaMatchIndex("replica-2", 1000L, 22_000L);
+    assertThat(resets).containsExactly("replica-2");
+    now.addAndGet(26_000L);
+    monitor.updateReplicaMatchIndex("replica-2", 1000L, 48_000L);
+    assertThat(resets).containsExactly("replica-2", "replica-2");
+  }
+
+  /**
+   * Issue #8900: without a fresh answer outside Raft the follower may simply be down, and the reset keeps waiting for
+   * the whole duration exactly as before.
+   */
+  @Test
+  void aSilentFollowerStillWaitsTheResetDuration() {
+    final AtomicLong now = new AtomicLong(100_000L);
+    final List<String> resets = new ArrayList<>();
+    final ClusterMonitor monitor = new ClusterMonitor(10L, 0L, null, false, 10_000L, 30_000L, resets::add);
+    monitor.setClock(now::get);
+    monitor.setPeerLastAnsweredAt(peer -> -1L);
+    monitor.updateLeaderCommitIndex(1000L);
+
+    monitor.updateReplicaMatchIndex("replica-2", 1000L, 12_000L);
+    now.addAndGet(5_000L);
+    monitor.updateReplicaMatchIndex("replica-2", 1000L, 17_000L);
+    now.addAndGet(20_000L);
+    monitor.updateReplicaMatchIndex("replica-2", 1000L, 37_000L);
+    assertThat(resets).isEmpty();
+
+    now.addAndGet(6_000L);
+    monitor.updateReplicaMatchIndex("replica-2", 1000L, 43_000L);
+    assertThat(resets).containsExactly("replica-2");
+  }
+
+  /**
    * The periodic retry is bounded: after {@link ClusterMonitor#CHANNEL_RESET_MAX_ATTEMPTS} resets that
    * do not restore the follower, the monitor gives up (SEVERE, once) instead of resetting forever.
    */
