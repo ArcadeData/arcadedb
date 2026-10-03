@@ -20,6 +20,7 @@ package com.arcadedb.graph;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
+import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -167,6 +168,53 @@ class Issue8986UnidirectionalEdgeToDeletedVertexTest extends TestHelper {
     try (final ResultSet rs = database.query("sql", "SELECT expand(out('U')) FROM V WHERE name = 'a'")) {
       while (rs.hasNext())
         assertThat(rs.next().getIdentity()).isNotNull();
+    }
+  }
+
+  /** Vertices and unidirectional edges created in one transaction: the targets are not committed yet, and must not conflict. */
+  @Test
+  void targetsCreatedInTheSameTransactionCommit() {
+    database.transaction(() -> {
+      final MutableVertex hub = database.newVertex("V").set("name", "hub").save();
+      for (int i = 0; i < 2_000; i++) {
+        final MutableVertex v = database.newVertex("V").set("name", "n" + i).save();
+        hub.newEdge("U", v);
+      }
+    });
+    assertThat(database.countType("U", false)).isEqualTo(2_000L);
+  }
+
+  /** A delete of a vertex in a bucket no unidirectional edge ended in meanwhile is not refused. */
+  @Test
+  void aDeleteInAnotherBucketIsNotRefusedByAnUnrelatedEdgeCommit() throws Exception {
+    database.getSchema().createVertexType("W");
+    createVertices();
+    final RID[] other = new RID[1];
+    database.transaction(() -> other[0] = database.newVertex("W").set("name", "w").save().getIdentity());
+    final ExecutorService otherThread = Executors.newSingleThreadExecutor();
+    final CountDownLatch deleted = new CountDownLatch(1);
+    final CountDownLatch edgeCommitted = new CountDownLatch(1);
+    try {
+      final Future<Object> deleter = otherThread.submit(() -> {
+        database.begin();
+        try {
+          database.lookupByRID(other[0], true).asVertex().delete();
+          deleted.countDown();
+          assertThat(edgeCommitted.await(30, TimeUnit.SECONDS)).isTrue();
+          database.commit();
+          return "committed";
+        } finally {
+          if (database.isTransactionActive())
+            database.rollback();
+        }
+      });
+      assertThat(deleted.await(30, TimeUnit.SECONDS)).isTrue();
+      database.transaction(() -> database.lookupByRID(source, true).asVertex()
+          .newEdge("U", database.lookupByRID(target, true).asVertex()));
+      edgeCommitted.countDown();
+      assertThat(deleter.get(60, TimeUnit.SECONDS)).isEqualTo("committed");
+    } finally {
+      otherThread.shutdown();
     }
   }
 }
