@@ -1697,7 +1697,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * <p>
    * <b>Indexes are not maintained while the transaction is in {@code COMMIT_1ST_PHASE} (#8983).</b> The only caller there
    * is the flush of deferred updates, whose index changes {@code updateRecord()} queued at save time; indexing again would
-   * write them twice. A new caller running in that phase must queue its own index changes.
+   * write them twice. A new caller running in that phase must queue its own index changes. For the same reason the index
+   * follows the last {@code save()}: a property changed after it and before commit is not re-indexed.
    */
   @Override
   public void updateRecordNoLock(final Record record, final boolean discardRecordAfter) {
