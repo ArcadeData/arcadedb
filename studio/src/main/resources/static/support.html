@@ -20,10 +20,24 @@
   </div>
 
   <!-- Two tabs below the status: the AI Assistant (first) and the issues of the workspace -->
-  <ul class="nav nav-tabs mb-3 support-tabs" id="supportNav">
-    <li class="nav-item"><a href="#" class="nav-link active" data-support-view="ai"><i class="fa fa-robot"></i> AI Assistant</a></li>
-    <li class="nav-item"><a href="#" class="nav-link" data-support-view="issues"><i class="fa fa-life-ring"></i> Issues</a></li>
-  </ul>
+  <div class="support-tabs-bar">
+    <ul class="nav nav-tabs support-tabs" id="supportNav">
+      <li class="nav-item"><a href="#" class="nav-link active" data-support-view="ai"><i class="fa fa-robot"></i> AI Assistant</a></li>
+      <li class="nav-item"><a href="#" class="nav-link" data-support-view="issues"><i class="fa fa-life-ring"></i> Issues</a></li>
+    </ul>
+    <div id="aiToolbar" class="support-ai-toolbar" style="display: none;">
+      <div id="aiDbSelectContainer" class="searchable-db-select"></div>
+      <span id="aiUsage" style="display: none; color: var(--text-muted); font-size: 0.8rem;"></span>
+      <div class="btn-group btn-group-sm" id="aiModeToggle">
+        <button type="button" class="btn btn-sm" data-mode="auto" onclick="aiSetMode('auto')"
+          title="AI runs read-only queries and gives you answers directly">
+          <i class="fa fa-bolt me-1"></i>Auto Run Read Only Queries</button>
+        <button type="button" class="btn btn-sm" data-mode="review" onclick="aiSetMode('review')"
+          title="AI suggests queries for you to review and execute">
+          <i class="fa fa-eye me-1"></i>Review First</button>
+      </div>
+    </div>
+  </div>
 
   <!-- AI Assistant view -->
   <div id="supportViewAi">
@@ -93,26 +107,6 @@
 
       <!-- Main chat area -->
       <div style="flex: 1; display: flex; flex-direction: column; min-width: 0;">
-
-        <!-- Header -->
-        <div class="d-flex align-items-center px-3 py-2" style="border-bottom: 1px solid var(--border-main); background: var(--bg-nav);">
-          <i class="fa fa-robot me-2" style="color: var(--color-brand); font-size: 1.2rem;"></i>
-          <strong style="color: var(--text-primary);">AI Assistant</strong>
-          <div class="ms-3">
-            <div id="aiDbSelectContainer" class="searchable-db-select"></div>
-          </div>
-          <div class="ms-auto d-flex align-items-center gap-2">
-            <span id="aiUsage" style="display: none; color: var(--text-muted); font-size: 0.8rem;"></span>
-            <div class="btn-group btn-group-sm" id="aiModeToggle">
-              <button type="button" class="btn btn-sm" data-mode="auto" onclick="aiSetMode('auto')"
-                title="AI runs read-only queries and gives you answers directly">
-                <i class="fa fa-bolt me-1"></i>Auto Run Read Only Queries</button>
-              <button type="button" class="btn btn-sm" data-mode="review" onclick="aiSetMode('review')"
-                title="AI suggests queries for you to review and execute">
-                <i class="fa fa-eye me-1"></i>Review First</button>
-            </div>
-          </div>
-        </div>
 
         <!-- Messages area -->
         <div id="aiMessages" style="flex: 1; overflow-y: auto; padding: 16px 24px;">
