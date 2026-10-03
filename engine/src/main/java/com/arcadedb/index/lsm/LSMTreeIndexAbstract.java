@@ -85,6 +85,8 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
    * {@link #storageKeyTypes} for anything that touches the bytes on a page.
    */
   protected       byte[]           binaryKeyTypes;
+  // 0 = NOT COMPUTED YET, 1 = NO DECIMAL KEY PART, 2 = AT LEAST ONE DECIMAL KEY PART
+  private         byte             decimalKeyState = 0;
   /**
    * Binary type actually WRITTEN on the page for each key column. It differs from {@link #binaryKeyTypes} only for
    * LINK columns - see {@link BinaryTypes#getIndexStorageType(byte)} - and is persisted in the page-0 header, so each
@@ -544,16 +546,22 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   /**
    * Returns, for the run of entries [firstKeyPos, lastKeyPos] that compare equal to the searched key, the page position of each entry's
    * value. Keys that compare equal can serialize to different sizes only when a key part is a DECIMAL (5.00 and 5), so the size is
-   * measured per entry only then and once for the whole run otherwise (#8972).
+   * measured per entry only then and once for the whole run otherwise (#8972). Side effect: the buffer is left positioned after the last
+   * measured key.
    */
   protected int[] getValuePositionsOfRun(final Binary currentPageBuffer, final int startIndexArray, final int keyLength,
       final int firstKeyPos, final int lastKeyPos) {
-    boolean variableSizeWhenEqual = false;
-    for (int k = 0; k < keyLength; ++k)
-      if (storageKeyTypes[k] == BinaryTypes.TYPE_DECIMAL) {
-        variableSizeWhenEqual = true;
-        break;
-      }
+    if (decimalKeyState == 0) {
+      // THE KEY TYPES NEVER CHANGE FOR THE LIFE OF THE INDEX: SCAN ONCE (A RACE JUST REPEATS THE SAME SCAN)
+      byte state = 1;
+      for (final byte type : storageKeyTypes)
+        if (type == BinaryTypes.TYPE_DECIMAL) {
+          state = 2;
+          break;
+        }
+      decimalKeyState = state;
+    }
+    final boolean variableSizeWhenEqual = decimalKeyState == 2;
 
     final int[] positions = new int[lastKeyPos - firstKeyPos + 1];
     int keySerializedSize = 0;
