@@ -89,10 +89,9 @@ public class QueryOperatorEquals {
     }
   }
 
-  // The first property of a sub-query row against the other side: the comparison "=" makes (numbers by value, the other side converted to
-  // the class of this one), not Object.equals(), which tells an Integer 7 from a Long 7 and a BigDecimal 1.50 from 1.5 (#9031)
+  // "=" semantics (numbers by value, other side converted), not Object.equals(); links keep plain equals() so a link never recurses (#9031)
   private static boolean valueEquals(final Object fieldValue, final Object other) {
-    return fieldValue.equals(other) || equals(fieldValue, other);
+    return fieldValue.equals(other) || !(fieldValue instanceof Identifiable || fieldValue instanceof Result) && equals(fieldValue, other);
   }
 
   protected static boolean comparesValues(Object value, final Identifiable record, final boolean iConsiderIn) {
