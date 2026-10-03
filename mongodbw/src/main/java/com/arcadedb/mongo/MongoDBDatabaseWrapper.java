@@ -730,7 +730,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   private static void replaceContent(final MutableDocument record, final Document replacement) {
     final Object storedId = record.get("_id");
     final Object newId = replacement.containsKey("_id") ? normalizeIdValue(replacement.get("_id")) : storedId;
-    if (storedId != null && !Objects.equals(storedId, newId))
+    if (storedId != null && !sameId(storedId, newId))
       throw new MongoServerError(66, "ImmutableField", "After applying the update, the (immutable) field '_id' was found to have been altered");
 
     for (final String name : new ArrayList<>(record.getPropertyNames()))
@@ -839,7 +839,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       }
       case "$inc" -> {
         for (final Map.Entry<String, Object> f : operand.entrySet())
-          setPath(record, f.getKey(), add((Number) getPath(record, f.getKey()), (Number) f.getValue()));
+          setPath(record, f.getKey(), add(numberOf(getPath(record, f.getKey())), numberOf(f.getValue())));
       }
       default -> throw new UnsupportedOperationException("Unsupported update operator '" + op + "'");
       }
@@ -1014,6 +1014,21 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * exhaust the heap with one request.
    */
   private static final int MAX_ARRAY_PADDING = 100_000;
+
+  /**
+   * MongoDB compares numbers by value, so an {@code _id} of 2 and one of 2L or 2.0 are the same.
+   */
+  private static boolean sameId(final Object stored, final Object replacement) {
+    if (stored instanceof Number a && replacement instanceof Number b)
+      return a.doubleValue() == b.doubleValue();
+    return Objects.equals(stored, replacement);
+  }
+
+  private static Number numberOf(final Object value) {
+    if (value == null || value instanceof Number)
+      return (Number) value;
+    throw new MongoServerError(14, "TypeMismatch", "Cannot apply $inc to a value of non-numeric type");
+  }
 
   private static boolean isArrayIndex(final String segment) {
     if (segment.isEmpty() || segment.length() > 9)

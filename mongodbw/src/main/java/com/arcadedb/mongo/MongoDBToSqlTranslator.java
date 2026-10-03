@@ -383,6 +383,9 @@ public class MongoDBToSqlTranslator {
    */
   protected static void buildEquality(final StringBuilder buffer, final Map<String, Object> params, final String field,
       final boolean positive, final Object value) {
+    if (field == null)
+      throw new IllegalArgumentException("The operator " + (positive ? "$eq" : "$ne") + " needs a field to apply to");
+
     if (value == null)
       buffer.append(field).append(positive ? " IS NULL" : " IS NOT NULL");
     else if (positive) {
