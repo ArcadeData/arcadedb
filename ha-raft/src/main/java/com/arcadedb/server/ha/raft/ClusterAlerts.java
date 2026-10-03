@@ -304,6 +304,9 @@ public class ClusterAlerts {
             + "self-heals: once the condition has persisted for arcadedb.ha.divergedFollowerRecoveryDurationMs "
             + "(default 20s, with no applied-index progress) the node reformats its local Raft storage and rejoins "
             + "via a fresh snapshot install. "
+            + "It does not reformat a node whose Raft layer was restarted in place and has taken no entry since, "
+            + "under the same term: the leader's appends are then not reaching it, which a reformat cannot fix, and "
+            + "its log says so at WARNING (issue #8901); restart that node by hand. "
             + "It gives up after arcadedb.ha.divergedFollowerMaxReformats attempts (logged at SEVERE); if that "
             + "happened, if recovery is disabled, or if this recurs, restart this node by hand.")
         .put("details", new JSONObject().put("stuckAtStaleTerm", true)));
