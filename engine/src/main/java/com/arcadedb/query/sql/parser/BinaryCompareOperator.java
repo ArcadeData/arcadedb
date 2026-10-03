@@ -34,6 +34,14 @@ public interface BinaryCompareOperator {
     return false;
   }
 
+  /**
+   * SQL three-valued logic: true when a comparison with a null operand is unknown (not false), so a NOT around it stays unknown
+   * and a WHERE leaves the record out (issue #8979). False for the operators that test the null itself, such as {@code <=>}.
+   */
+  default boolean isUnknownOnNull() {
+    return false;
+  }
+
   boolean isLess();
 
   boolean isGreater();

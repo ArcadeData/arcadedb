@@ -599,6 +599,10 @@ public class SelectExecutionPlanner {
         || info.projection.getItems().size() != 1) {
       return false;
     }
+    // THE PROJECTION MUST BE THE AGGREGATE ITSELF: count(*) + 1 SPLITS INTO count(*) PLUS A "+ 1" PROJECTED AFTER IT (ISSUE #8976)
+    final MathExpression projectionMath = info.projection.getItems().getFirst().getExpression().getMathExpression();
+    if (!(projectionMath instanceof BaseExpression projectionBase) || projectionBase.getModifier() != null)
+      return false;
     final ProjectionItem item = info.aggregateProjection.getItems().getFirst();
     return "count(*)".equalsIgnoreCase(item.getExpression().toString());
   }
@@ -855,7 +859,8 @@ public class SelectExecutionPlanner {
     if (preAggExp.getMathExpression() == null || !(preAggExp.getMathExpression() instanceof BaseExpression preAggBase))
       return null;
 
-    if (preAggBase.getIdentifier() == null)
+    // A MODIFIER (s.length(), s.toUpperCase()) MEANS THE INDEXED VALUE IS NOT WHAT IS AGGREGATED (ISSUE #8976)
+    if (preAggBase.getIdentifier() == null || preAggBase.getModifier() != null)
       return null;
 
     // For simple properties like "value", the identifier is in suffix, not levelZero
@@ -4011,13 +4016,17 @@ public class SelectExecutionPlanner {
           final SelectExecutionPlan nullPlan = new SelectExecutionPlan(context, 0);
           nullPlan.chain(new FetchFromTypeExecutionStep(queryTarget.getStringValue(), filterClusters, context, true));
 
-          // Create IS NULL filter for the first indexed property
-          final String propertyName = indexFields.getFirst();
-          final IsNullCondition isNullCondition = new IsNullCondition();
-          final Expression expr = new Expression(new Identifier(propertyName));
-          isNullCondition.setExpression(expr);
+          // A SKIP index drops a key only when EVERY indexed property is null, so a composite one holds the records whose
+          // first property is null and a later one is not: the null scan is limited to the records the index does not hold,
+          // or those would come back twice (#8978). For a single-property index that is just IS NULL on the property
+          final AndBlock allNull = new AndBlock();
+          for (final String propertyName : indexFields) {
+            final IsNullCondition isNullCondition = new IsNullCondition();
+            isNullCondition.setExpression(new Expression(new Identifier(propertyName)));
+            allNull.getSubBlocks().add(isNullCondition);
+          }
           final WhereClause nullWhereClause = new WhereClause();
-          nullWhereClause.setBaseExpression(isNullCondition);
+          nullWhereClause.setBaseExpression(allNull);
           nullPlan.chain(new FilterStep(nullWhereClause, context));
 
           // Combine: for ASC, NULL records come first; for DESC, NULL records come last
@@ -4106,9 +4115,8 @@ public class SelectExecutionPlanner {
 
     if (conjunct instanceof BinaryCondition binary) {
       final BinaryCompareOperator operator = binary.getOperator();
-      // >= and <= are left out: they answer true for two nulls (WHERE x >= x), so a null row can satisfy them
-      return (operator instanceof EqualsCompareOperator || operator instanceof GtOperator || operator instanceof LtOperator)
-          && isPropertyReference(binary.getLeft(), propertyName);
+      // A comparison with a null operand is unknown, so a null row can never satisfy it (#8979)
+      return operator.isUnknownOnNull() && isPropertyReference(binary.getLeft(), propertyName);
     }
     return false;
   }

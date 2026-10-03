@@ -36,6 +36,7 @@ import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.MultiIterator;
 
+import java.lang.reflect.Array;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.text.ParsePosition;
@@ -1899,6 +1900,41 @@ public enum Type {
       // (unscaled 100 at scale 0 vs unscaled 1 at scale -2) and splitting one GROUP BY/DISTINCT group in two
       // (issue #7623).
       return BigDecimal.valueOf(((Number) value).longValue()).stripTrailingZeros();
+    }
+    return value;
+  }
+
+  /**
+   * Deep variant of {@link #normalizeNumberForKey}: canonicalizes the numbers held inside a list, a set, a map (its values) or
+   * a Java array too, so {@code [1]}, {@code [1L]} and {@code [1.0]}, or {@code {a: 1}} and {@code {a: 1L}}, key the same
+   * way the scalars do (issue #8977). Arrays are keyed as lists, since an array compares by identity. A scalar costs one
+   * extra type check over {@link #normalizeNumberForKey}.
+   *
+   * @param value the value to normalise (may be {@code null})
+   *
+   * @return the canonical key for the value
+   */
+  public static Object normalizeForKey(final Object value) {
+    if (value == null || value instanceof Number)
+      return normalizeNumberForKey(value);
+    if (value instanceof Collection<?> collection) {
+      final List<Object> items = new ArrayList<>(collection.size());
+      for (final Object item : collection)
+        items.add(normalizeForKey(item));
+      return items;
+    }
+    if (value instanceof Map<?, ?> map) {
+      final Map<Object, Object> entries = new HashMap<>((int) (map.size() / 0.75f) + 1);
+      for (final Map.Entry<?, ?> entry : map.entrySet())
+        entries.put(entry.getKey(), normalizeForKey(entry.getValue()));
+      return entries;
+    }
+    if (value.getClass().isArray()) {
+      final int length = Array.getLength(value);
+      final List<Object> items = new ArrayList<>(length);
+      for (int i = 0; i < length; i++)
+        items.add(normalizeForKey(Array.get(value, i)));
+      return items;
     }
     return value;
   }
