@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.function.sql.math.SQLFunctionAverage;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -127,5 +128,27 @@ class Issue8974LongSumOverflowTest extends TestHelper {
     try (final ResultSet rs = database.query("sql", "SELECT sum(n) AS s FROM L")) {
       assertThat(new BigDecimal(rs.next().<Number>getProperty("s").toString())).isEqualByComparingTo("24000000000000000000");
     }
+  }
+
+  @Test
+  void averageMergesAnOverflowedPartialWithANormalOne() {
+    final SQLFunctionAverage overflowed = new SQLFunctionAverage();
+    overflowed.config(new Object[] { "n" });
+    for (int i = 0; i < 3; i++)
+      overflowed.execute(null, null, null, new Object[] { 4_000_000_000_000_000_000L }, null);
+
+    final SQLFunctionAverage normal = new SQLFunctionAverage();
+    normal.config(new Object[] { "n" });
+    normal.execute(null, null, null, new Object[] { 4_000_000_000_000_000_000L }, null);
+
+    overflowed.mergePartial(normal);
+    assertThat(((Number) overflowed.getResult()).doubleValue()).isEqualTo(4.0E18);
+
+    // a real decimal input in the other partial flips the result back to a BigDecimal
+    final SQLFunctionAverage decimal = new SQLFunctionAverage();
+    decimal.config(new Object[] { "n" });
+    decimal.execute(null, null, null, new Object[] { new BigDecimal("1.5") }, null);
+    overflowed.mergePartial(decimal);
+    assertThat(overflowed.getResult()).isInstanceOf(BigDecimal.class);
   }
 }

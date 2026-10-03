@@ -2123,11 +2123,10 @@ public class PostgresNetworkExecutor extends Thread {
     return switch (argType) {
       case SMALLINT, INTEGER -> PostgresType.LONG;
       // LIKE POSTGRESQL (sum(bigint) IS numeric): A LONG SUM THAT OVERFLOWS IS WIDENED TO A BigDecimal BY Type#increment (#8974), WHICH AN int8
-      // COLUMN WOULD ENCODE THROUGH longValue() AND WRAP SILENTLY
+      // COLUMN WOULD ENCODE THROUGH longValue() AND WRAP SILENTLY. A NUMERIC (BigDecimal) ACCUMULATOR STAYS BigDecimal: DESCRIBING IT AS float8
+      // WOULD LOSE DECIMAL PRECISION IN BINARY ENCODING (issue #8285 review)
       case LONG, NUMERIC -> PostgresType.NUMERIC;
       case REAL, DOUBLE -> PostgresType.DOUBLE;
-      // SQLFunctionSum/Type#increment keep a NUMERIC (BigDecimal) accumulator as BigDecimal: describing it as
-      // float8 would make binary encoding call doubleValue() and lose decimal precision (issue #8285 review).
       default -> null;
     };
   }
