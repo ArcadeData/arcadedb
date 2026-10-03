@@ -84,13 +84,8 @@ public final class HealthMonitor {
     }
 
     /**
-     * Whether this node's Ratis division was restarted in place in this process and has taken no replicated entry
-     * since, under the term it restarted at (issue #8901). While that holds, the stuck-at-stale-term signature of
-     * {@link #isFollowerStuckDiverged()} does not prove a divergence: the leader's appends may never have reached the
-     * restarted division at all - the dead replication path of #8898, where the leader's log stream stayed bound to the
-     * closed server instance while its heartbeats reached the new one - and a reformat would only turn a node that was
-     * paused into a voter with an empty log. {@code false} when the division was never restarted in place, which keeps
-     * the #4741 reformat for a divergence a node carries across a process restart.
+     * Whether this division was restarted in place and the leader's appends have not been seen reaching it since (no new
+     * entry, no newer term with a known leader). The stale-term signature then proves no divergence (issue #8901).
      */
     default boolean isReplicationPathUnprovenSinceRestart() {
       return false;
@@ -305,6 +300,9 @@ public final class HealthMonitor {
    */
   static final long CRASH_LOOP_RECORD_RESET_MS = 10L * 60_000L;
 
+  /** How often a held stale-term reformat repeats its dead-path WARNING while the hold lasts (issue #8901). */
+  static final long DEAD_PATH_REPORT_INTERVAL_MS = 5L * 60_000L;
+
   /** Consecutive ticks a division must stay CLOSING before it is recovered like a CLOSED one (issue #8651). */
   static final int CLOSING_TICKS_BEFORE_RECOVERY = 2;
 
@@ -352,9 +350,10 @@ public final class HealthMonitor {
   // volatile - see crashLoopEscalated above. A flag rather than "the streak is older than intervalMs": that would
   // answer true for a streak whose condition cleared after its first tick, until the next tick got round to it.
   private volatile boolean                  stuckConfirmed              = false;
-  // Whether the current stuck streak already logged the suspected dead replication path (issue #8901), so the warning
-  // is written once per episode rather than on every tick. Tick executor only.
-  private          boolean                  deadPathReported            = false;
+  // When the suspected dead replication path was last logged in the current streak (-1 = not yet), and how many times
+  // it was, for tests (issue #8901). Tick executor only.
+  private          long                     deadPathReportedAtMs        = -1;
+  private          int                      deadPathReports             = 0;
   // Bounded reformat budget (#4741 review): reformats fired in the current divergence episode, the
   // time the follower started looking healthy again, and whether the budget is exhausted (logged once).
   private          int                      divergenceReformatCount     = 0;
@@ -823,7 +822,7 @@ public final class HealthMonitor {
     lagObservedSinceMs = -1;
     stuckObservedSinceMs = -1;
     stuckConfirmed = false;
-    deadPathReported = false;
+    deadPathReportedAtMs = -1;
   }
 
   /**
@@ -892,7 +891,7 @@ public final class HealthMonitor {
       stuckObservedSinceMs = -1;
       stuckLastAppliedIndex = -1;
       stuckConfirmed = false;
-      deadPathReported = false;
+      deadPathReportedAtMs = -1;
       // Forget a prior reformat episode once the follower has looked healthy long enough that the
       // divergence is considered resolved, re-arming the bounded reformat budget for any genuinely
       // new divergence later.
@@ -928,14 +927,13 @@ public final class HealthMonitor {
 
     stuckConfirmed = true; // seen again on a later tick with no progress: no longer a single-tick blip
 
-    // Issue #8901: after an in-place restart, the signature also matches a division the leader's appends never reach
-    // (#8898). That is a dead replication path, not a divergence, and a reformat would leave the node with an empty
-    // log. The window restarts on every such tick, so it only measures time spent stuck with the path proven: a leader
-    // whose first append after a reconnect is rejected and corrected is not reformatted on the tick the path returns.
+    // Issue #8901: a dead replication path after an in-place restart, not a divergence. The window restarts on every
+    // such tick, so it only counts time spent stuck once the leader's appends are seen reaching this node.
     if (target.isReplicationPathUnprovenSinceRestart()) {
       stuckObservedSinceMs = now;
-      if (!deadPathReported) {
-        deadPathReported = true;
+      if (deadPathReportedAtMs < 0 || now - deadPathReportedAtMs >= DEAD_PATH_REPORT_INTERVAL_MS) {
+        deadPathReportedAtMs = now;
+        deadPathReports++;
         LogManager.instance().log(this, Level.WARNING,
             "Follower is stuck at a stale term but has taken no replicated entry since its in-place Ratis restart, "
                 + "under the same term: the leader's appends are not reaching this node. Not reformatting the Raft "
@@ -943,7 +941,7 @@ public final class HealthMonitor {
       }
       return;
     }
-    deadPathReported = false;
+    deadPathReportedAtMs = -1;
 
     if (!divergedFollowerRecoveryEnabled)
       return; // observed and reported (see isFollowerStuckDivergedConfirmed), but auto-recovery is off
@@ -991,6 +989,11 @@ public final class HealthMonitor {
    * <p>
    * Independent of {@link #divergedFollowerRecoveryEnabled}: see {@link #checkStuckFollower()}.
    */
+  /** Package-private for tests: how many dead-path WARNINGs were logged (issue #8901). */
+  int getDeadPathReports() {
+    return deadPathReports;
+  }
+
   boolean isFollowerStuckDivergedConfirmed() {
     return stuckConfirmed;
   }

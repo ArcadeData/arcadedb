@@ -156,27 +156,30 @@ class Issue8901DeadReplicationPathNoReformatTest {
   @Test
   void pathUnprovenOnlyAfterAnInPlaceRestartWithNoEntryAndTheSameTerm() {
     final TermIndex last = TermIndex.valueOf(27, 1_564_566);
-    final RaftHAServer.InPlaceRestartBaseline baseline = new RaftHAServer.InPlaceRestartBaseline(last, 28);
+    final RaftHAServer.InPlaceRestartBaseline baseline = new RaftHAServer.InPlaceRestartBaseline(last, 28, true);
 
-    assertThat(RaftHAServer.replicationPathUnproven(null, last, 28))
+    assertThat(RaftHAServer.replicationPathUnproven(null, last, 28, true))
         .as("no in-place restart in this process: no old server instance can hold the leader's stream")
         .isFalse();
-    assertThat(RaftHAServer.replicationPathUnproven(baseline, last, 28))
+    assertThat(RaftHAServer.replicationPathUnproven(baseline, last, 28, true))
         .as("the #8898 shape: same last entry, same term as right after the restart")
         .isTrue();
-    assertThat(RaftHAServer.replicationPathUnproven(baseline, TermIndex.valueOf(28, 1_564_567), 28))
+    assertThat(RaftHAServer.replicationPathUnproven(baseline, TermIndex.valueOf(28, 1_564_567), 28, true))
         .as("an entry was appended since the restart: the leader's appends reach this division")
         .isFalse();
-    assertThat(RaftHAServer.replicationPathUnproven(baseline, TermIndex.valueOf(26, 1_564_566), 28))
+    assertThat(RaftHAServer.replicationPathUnproven(baseline, TermIndex.valueOf(26, 1_564_566), 28, true))
         .as("a truncate-and-append back to the same index is still an append that reached the division")
         .isFalse();
-    assertThat(RaftHAServer.replicationPathUnproven(baseline, last, 29))
+    assertThat(RaftHAServer.replicationPathUnproven(baseline, last, 29, true))
         .as("a newer term means a new leader, whose appenders dial the running server")
         .isFalse();
-    assertThat(RaftHAServer.replicationPathUnproven(new RaftHAServer.InPlaceRestartBaseline(null, 28), null, 28))
+    assertThat(RaftHAServer.replicationPathUnproven(new RaftHAServer.InPlaceRestartBaseline(null, 28, true), null, 28, true))
         .as("a reformatted, still empty log that took nothing is unproven too")
         .isTrue();
-    assertThat(RaftHAServer.replicationPathUnproven(baseline, last, -1))
+    assertThat(RaftHAServer.replicationPathUnproven(baseline, last, 29, false))
+        .as("a term bumped by a candidate's vote request, with no leader at it, proves nothing")
+        .isTrue();
+    assertThat(RaftHAServer.replicationPathUnproven(baseline, last, -1, true))
         .as("an unreadable term is no proof: hold the destructive action")
         .isTrue();
   }
@@ -190,14 +193,14 @@ class Issue8901DeadReplicationPathNoReformatTest {
         .as("still unreadable: nothing to compare against, hold").isTrue();
     assertThat(ref.get()).isSameAs(RaftHAServer.PENDING_BASELINE);
 
-    position.set(new RaftHAServer.InPlaceRestartBaseline(TermIndex.valueOf(27, 10), 28));
+    position.set(new RaftHAServer.InPlaceRestartBaseline(TermIndex.valueOf(27, 10), 28, true));
     assertThat(RaftHAServer.replicationPathUnproven(ref, position::get))
         .as("the first readable position becomes the baseline, it cannot prove anything itself").isTrue();
     assertThat(ref.get()).isEqualTo(position.get());
 
     assertThat(RaftHAServer.replicationPathUnproven(ref, position::get)).isTrue();
 
-    position.set(new RaftHAServer.InPlaceRestartBaseline(TermIndex.valueOf(28, 11), 28));
+    position.set(new RaftHAServer.InPlaceRestartBaseline(TermIndex.valueOf(28, 11), 28, true));
     assertThat(RaftHAServer.replicationPathUnproven(ref, position::get)).isFalse();
     assertThat(ref.get()).as("a proven path drops the baseline: the answer stays false until the next restart").isNull();
 
@@ -208,7 +211,7 @@ class Issue8901DeadReplicationPathNoReformatTest {
 
   @Test
   void anUnreadableDivisionHoldsWithoutTouchingTheBaseline() {
-    final RaftHAServer.InPlaceRestartBaseline baseline = new RaftHAServer.InPlaceRestartBaseline(TermIndex.valueOf(27, 10), 28);
+    final RaftHAServer.InPlaceRestartBaseline baseline = new RaftHAServer.InPlaceRestartBaseline(TermIndex.valueOf(27, 10), 28, true);
     final AtomicReference<RaftHAServer.InPlaceRestartBaseline> ref = new AtomicReference<>(baseline);
 
     assertThat(RaftHAServer.replicationPathUnproven(ref, () -> null)).isTrue();
@@ -217,18 +220,38 @@ class Issue8901DeadReplicationPathNoReformatTest {
 
   @Test
   void aNewerRestartBaselineIsNeverOverwrittenByAStaleEvaluation() {
-    final RaftHAServer.InPlaceRestartBaseline first = new RaftHAServer.InPlaceRestartBaseline(TermIndex.valueOf(27, 10), 28);
-    final RaftHAServer.InPlaceRestartBaseline second = new RaftHAServer.InPlaceRestartBaseline(TermIndex.valueOf(28, 20), 28);
+    final RaftHAServer.InPlaceRestartBaseline first = new RaftHAServer.InPlaceRestartBaseline(TermIndex.valueOf(27, 10), 28, true);
+    final RaftHAServer.InPlaceRestartBaseline second = new RaftHAServer.InPlaceRestartBaseline(TermIndex.valueOf(28, 20), 28, true);
     final AtomicReference<RaftHAServer.InPlaceRestartBaseline> ref = new AtomicReference<>(first);
 
     // The evaluation read the first baseline, then a second in-place restart published its own before the evaluation
     // got round to dropping the first: the drop must not erase the second.
     final boolean unproven = RaftHAServer.replicationPathUnproven(ref, () -> {
       ref.set(second);
-      return new RaftHAServer.InPlaceRestartBaseline(TermIndex.valueOf(28, 11), 28);
+      return new RaftHAServer.InPlaceRestartBaseline(TermIndex.valueOf(28, 11), 28, true);
     });
 
     assertThat(unproven).isFalse();
     assertThat(ref.get()).isSameAs(second);
+  }
+
+  @Test
+  void theDeadPathWarningRepeatsWhileTheHoldLasts() {
+    final FakeTarget target = new FakeTarget();
+    final AtomicLong clock = new AtomicLong(0L);
+    final HealthMonitor monitor = monitor(target, clock, true);
+
+    tickFor(monitor, clock, DURATION_MS * 3);
+    assertThat(monitor.getDeadPathReports()).as("logged once, not on every tick").isEqualTo(1);
+
+    tickFor(monitor, clock, HealthMonitor.DEAD_PATH_REPORT_INTERVAL_MS);
+    assertThat(monitor.getDeadPathReports()).as("repeated while the hold lasts, for an operator who missed it").isEqualTo(2);
+
+    target.pathUnproven = false;
+    monitor.tick();
+    target.pathUnproven = true;
+    clock.addAndGet(INTERVAL_MS);
+    monitor.tick();
+    assertThat(monitor.getDeadPathReports()).as("a new hold after the path was proven logs at once").isEqualTo(3);
   }
 }
