@@ -3358,14 +3358,19 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final PInteger number = new PInteger();
     final String text = ctx.INTEGER_LITERAL().getText();
     try {
-      if (text.endsWith("L") || text.endsWith("l")) {
-        number.setValue(Long.parseLong(text.substring(0, text.length() - 1)));
-      } else {
+      final boolean isLong = text.endsWith("L") || text.endsWith("l");
+      final String digits = isLong ? text.substring(0, text.length() - 1) : text;
+      final boolean isHex = digits.length() > 2 && digits.charAt(0) == '0' && (digits.charAt(1) == 'x' || digits.charAt(1) == 'X');
+      final String body = isHex ? digits.substring(2) : digits;
+      final int radix = isHex ? 16 : 10;
+      if (isLong)
+        number.setValue(Long.parseLong(body, radix));
+      else {
         try {
-          number.setValue(Integer.parseInt(text));
+          number.setValue(Integer.parseInt(body, radix));
         } catch (final NumberFormatException e) {
           // If it's too large for int, try long
-          number.setValue(Long.parseLong(text));
+          number.setValue(Long.parseLong(body, radix));
         }
       }
     } catch (final NumberFormatException e) {

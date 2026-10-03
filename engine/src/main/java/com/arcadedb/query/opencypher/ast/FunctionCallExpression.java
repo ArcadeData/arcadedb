@@ -99,6 +99,7 @@ public class FunctionCallExpression implements Expression {
    */
   public static Object invoke(final StatelessFunction function, final Object[] args, final Result result,
       final CommandContext context) {
+    function.checkArity(args);
     LoadCSVRowContext.bind(result, context);
     return function.execute(args, context);
   }
