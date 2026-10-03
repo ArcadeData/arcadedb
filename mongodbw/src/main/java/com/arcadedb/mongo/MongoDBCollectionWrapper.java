@@ -41,6 +41,9 @@ import de.bwaldvogel.mongo.oplog.Oplog;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReadWriteLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -191,12 +194,35 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
 
   @Override
   public void insertDocuments(final List<Document> list) {
-    // a type without the unique index (made through SQL or Studio, or already holding duplicates) is checked by hand
     final List<Object> ids = new ArrayList<>(list.size());
     for (final Document d : list)
       if (d.containsKey("_id"))
         ids.add(d.get("_id"));
-    ensureIdIndex(database, collectionName, ids);
+
+    // Inserts share the read lock; only a change of the _id index (the first insert, or a new kind of _id) takes the write
+    // lock, so no transaction ever runs against an index that is being dropped and rebuilt
+    final ReadWriteLock lock = idIndexLock(database, collectionName);
+    lock.readLock().lock();
+    try {
+      if (!idIndexSatisfies(database, collectionName, ids)) {
+        lock.readLock().unlock();
+        lock.writeLock().lock();
+        try {
+          ensureIdIndex(database, collectionName, ids);
+        } finally {
+          // downgrade: take the read lock before releasing the write one
+          lock.readLock().lock();
+          lock.writeLock().unlock();
+        }
+      }
+      insertInTransaction(list);
+    } finally {
+      lock.readLock().unlock();
+    }
+  }
+
+  private void insertInTransaction(final List<Document> list) {
+    // a type without the unique index (made through SQL or Studio, or already holding duplicates) is checked by hand
     final boolean checkByHand = !hasUniqueIdIndex(database.getSchema().getType(collectionName));
 
     database.begin();
@@ -235,56 +261,102 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
     }
   }
 
+  private static final Map<String, ReadWriteLock> ID_INDEX_LOCKS = new ConcurrentHashMap<>();
+
+  /**
+   * The lock guarding the {@code _id} index of one collection of one database: shared by the writes that rely on the index,
+   * exclusive for whoever creates or rebuilds it.
+   */
+  static ReadWriteLock idIndexLock(final Database database, final String collectionName) {
+    return ID_INDEX_LOCKS.computeIfAbsent(database.getDatabasePath() + "/" + collectionName, k -> new ReentrantReadWriteLock());
+  }
+
+  /**
+   * Creates or rebuilds the {@code _id} index under the exclusive lock, for a caller outside {@link #insertDocuments} (an
+   * upsert, which runs its own transaction afterwards).
+   */
+  static void ensureIdIndexLocked(final Database database, final String collectionName, final Collection<?> ids) {
+    final ReadWriteLock lock = idIndexLock(database, collectionName);
+    lock.writeLock().lock();
+    try {
+      ensureIdIndex(database, collectionName, ids);
+    } finally {
+      lock.writeLock().unlock();
+    }
+  }
+
+  /**
+   * Whether the {@code _id} index already holds every kind of key in {@code ids}: the cheap check of the insert path.
+   */
+  static boolean idIndexSatisfies(final Database database, final String collectionName, final Collection<?> ids) {
+    if (ids.isEmpty())
+      return true;
+    final TypeIndex existing = findUniqueIdIndex(database.getSchema().getType(collectionName));
+    return existing != null && holds(existing.getKeyTypes()[0], requiredKeyType(ids));
+  }
+
   /**
    * MongoDB guarantees the {@code _id} of a collection is unique through an index every collection has. ArcadeDB has no implicit
    * one, so the plugin creates a unique index on {@code _id} when the first document arrives, because only then the type of the
    * key is known: the index orders its keys by their type, so a numeric {@code _id} needs a numeric key (a string key would
-   * answer {@code {_id: {$gt: 5}}} and a sort lexicographically, "10" before "5"). A collection whose {@code _id} is of another
-   * kind, or that already holds duplicated values, gets no index and {@link #insertDocuments} checks by hand instead.
+   * answer {@code {_id: {$gt: 5}}} and a sort lexicographically, "10" before "5"). Integral ids get a long key, a mix of
+   * integral and floating ones a double key (which loses the precision of a long above 2^53), any other mix, or any other kind
+   * of {@code _id}, a string key: it accepts everything, but orders as text and makes {@code 1} and {@code "1"} the same key.
+   * A collection that already holds duplicated {@code _id} values cannot get the index: it is left alone and
+   * {@link #insertDocuments} checks by hand instead. The caller must hold the exclusive lock.
+   *
+   * @param ids the {@code _id} values about to be stored
    */
-  static void ensureIdIndex(final Database database, final String collectionName, final Object sampleId) {
-    ensureIdIndex(database, collectionName, sampleId == null ? List.of() : List.of(sampleId));
-  }
-
-  /**
-   * @param ids the {@code _id} values about to be stored. When they (or an earlier insert) mix kinds, a numeric key cannot hold
-   *            them all: the index is rebuilt with string keys, which accept anything and keep the uniqueness check fast, at
-   *            the price of the ordering of a collection whose {@code _id} has no single order anyway, and of numeric equality:
-   *            {@code 2} and {@code 2.0} are then different keys.
-   */
-  static synchronized void ensureIdIndex(final Database database, final String collectionName, final Collection<?> ids) {
-    // synchronized: a rebuild drops and recreates the index, which another connection must never observe half done (the check
-    // is a few lookups, taken once per insert)
+  static void ensureIdIndex(final Database database, final String collectionName, final Collection<?> ids) {
     if (ids.isEmpty())
       return;
 
-    Type needed = null;
-    boolean mixed = false;
-    for (final Object id : ids) {
-      final Type type = idKeyType(id);
-      if (needed == null)
-        needed = type;
-      else if (needed != type)
-        mixed = true;
-      if (type == null)
-        mixed = true;
-    }
-    final Type keyType = mixed ? Type.STRING : needed;
-
-    final DocumentType type = database.getSchema().getType(collectionName);
-    final TypeIndex existing = findUniqueIdIndex(type);
-    if (existing != null) {
-      final Type current = existing.getKeyTypes()[0];
-      if (current == Type.STRING || keyType == current)
-        return;
-      // the existing index cannot hold this key: rebuild it with string keys
-      database.getSchema().dropIndex(existing.getName());
-      createIdIndex(database, collectionName, Type.STRING);
+    final Type keyType = requiredKeyType(ids);
+    final TypeIndex existing = findUniqueIdIndex(database.getSchema().getType(collectionName));
+    if (existing == null) {
+      createIdIndex(database, collectionName, keyType);
       return;
     }
 
-    if (keyType != null)
-      createIdIndex(database, collectionName, keyType);
+    final Type current = existing.getKeyTypes()[0];
+    if (holds(current, keyType))
+      return;
+
+    // the existing index cannot hold this key: rebuild it with the narrowest key type that holds both kinds
+    final boolean numeric = isNumeric(current) && isNumeric(keyType);
+    database.getSchema().dropIndex(existing.getName());
+    createIdIndex(database, collectionName, numeric ? Type.DOUBLE : Type.STRING);
+  }
+
+  private static boolean isNumeric(final Type type) {
+    return type == Type.LONG || type == Type.DOUBLE;
+  }
+
+  /**
+   * Whether an index with keys of type {@code current} holds a key of type {@code needed}.
+   */
+  private static boolean holds(final Type current, final Type needed) {
+    return current == Type.STRING || current == needed || (current == Type.DOUBLE && needed == Type.LONG);
+  }
+
+  /**
+   * The key type that holds all of {@code ids}: the type of the kind they share, DOUBLE for a mix of numeric kinds, STRING
+   * otherwise.
+   */
+  private static Type requiredKeyType(final Collection<?> ids) {
+    Type result = null;
+    for (final Object id : ids) {
+      final Type type = idKeyType(id);
+      if (type == null)
+        return Type.STRING;
+      if (result == null || result == type)
+        result = type;
+      else if (isNumeric(result) && isNumeric(type))
+        result = Type.DOUBLE;
+      else
+        return Type.STRING;
+    }
+    return result;
   }
 
   private static void createIdIndex(final Database database, final String collectionName, final Type keyType) {

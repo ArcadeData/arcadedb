@@ -303,17 +303,17 @@ public class MongoDBToSqlTranslator {
         }
       }
 
-    // in comments mode (x) a trailing "# comment" would swallow the closing parenthesis, hence the line break
     // the user's pattern alone must be valid: validating only the wrapped text would accept a pattern that closes the wrapper
     // itself (e.g. "a)|(b") and silently change its meaning
     try {
-      Pattern.compile(pattern);
+      Pattern.compile("(?" + flags + ")" + pattern);
     } catch (final PatternSyntaxException e) {
       throw new IllegalArgumentException("Invalid regular expression '" + pattern + "': " + e.getDescription(), e);
     }
 
-    // in comments mode (x), also set inline by the pattern itself, a trailing "# comment" would swallow the wrapper's closing
-    // parenthesis: that fails to compile here, as a clean error instead of at query time
+    // in comments mode (x, set by the options or inline by the pattern) a trailing "# comment" would swallow the wrapper's
+    // closing parenthesis, hence the line break; a pattern that still breaks the wrapper fails to compile here, as a clean error
+    // instead of at query time
     final String wrapped = "(?s:.*)(?" + flags + ":" + pattern + (flags.indexOf("x") >= 0 ? "\n" : "") + ")(?s:.*)";
     try {
       Pattern.compile(wrapped);
