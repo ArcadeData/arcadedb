@@ -133,6 +133,9 @@ public class JSONArray implements Iterable<Object> {
    * a decimal with more digits than a double holds returns {@code null}, so the list keeps each element as written (an int
    * stays an int, a big number stays a {@link BigDecimal}). {@code Type.convert} turns {@code double[]} into the {@code float[]}
    * of an {@code ARRAY_OF_FLOATS} property, and a primitive array written to a {@code LIST} property becomes its elements.
+   * <p>
+   * Trade-offs: a {@code double[]} takes twice the memory of the {@code float[]} it replaces; a token with more digits than the double
+   * parsed from it keeps (a producer printing {@code %.20f}) makes the whole array a list of {@link BigDecimal}.
    */
   public Object toPrimitiveNumericArrayOrNull() {
     final List<JsonElement> list = array.asList();
@@ -188,7 +191,7 @@ public class JSONArray implements Iterable<Object> {
       final String token = ((JsonPrimitive) list.get(i)).getAsString();
       final double value = Double.parseDouble(token);
       // MORE DIGITS THAN A double HOLDS: THE LIST KEEPS THEM (BigDecimal)
-      if ((token.length() > 15 || !Double.isFinite(value)) && !JSONObject.isExactDouble(token, value))
+      if ((token.length() > 15 || Math.abs(value) < Double.MIN_NORMAL || !Double.isFinite(value)) && !JSONObject.isExactDouble(token, value))
         return null;
       result[i] = value;
     }

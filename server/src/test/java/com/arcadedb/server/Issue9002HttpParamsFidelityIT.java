@@ -167,6 +167,8 @@ class Issue9002HttpParamsFidelityIT extends BaseGraphServerTest {
     final String session = begin.headers().firstValue("arcadedb-session-id").orElseThrow();
     assertThat(post("command", session, "INSERT INTO S9006 SET name = 'http-1' WHERE", null).statusCode()).isEqualTo(400);
     assertThat(post("rollback", session, null, null).statusCode()).isEqualTo(204);
+    // ending it twice is harmless
+    assertThat(post("rollback", session, null, null).statusCode()).isEqualTo(204);
     assertThat(post("command", session, "INSERT INTO S9006 SET name = 'http-2'", null).statusCode()).isEqualTo(404);
   }
 

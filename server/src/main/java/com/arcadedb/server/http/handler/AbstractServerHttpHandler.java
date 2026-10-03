@@ -1616,6 +1616,9 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * {@code grep -rn 'bodyReachesIdempotencyKey' server/src/main}: it is the only handler that overrides
    * {@link #parseRequestPayload} to return {@code null} without overriding {@link #idempotencyBodyBytes}
    * ({@code AbstractBinaryHttpHandler} does both, {@code PostTimeSeriesWriteHandler} returns the text).
+   * <p>
+   * Invariant (issue #8526): the remote driver resends a {@code command} whose response was lost and relies on this cache to answer the
+   * repeat instead of running it twice, so the route that serves {@code command} must keep answering true here.
    */
   protected boolean bodyReachesIdempotencyKey() {
     return true;

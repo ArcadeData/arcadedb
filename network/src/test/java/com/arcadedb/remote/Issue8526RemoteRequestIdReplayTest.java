@@ -20,10 +20,12 @@ package com.arcadedb.remote;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.utility.Pair;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.lang.reflect.Field;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
@@ -99,6 +101,43 @@ class Issue8526RemoteRequestIdReplayTest {
             .isInstanceOf(RemoteException.class)
             .hasMessageContaining("may already have applied it");
         assertThat(server.received()).isEqualTo(2);
+      } finally {
+        c.close();
+      }
+    }
+  }
+
+  @Test
+  void failoverAfterAConnectFailureDoesNotCarryTheOtherServersInstance() throws Exception {
+    final int closedPort;
+    try (final ServerSocket probe = new ServerSocket(0)) {
+      closedPort = probe.getLocalPort();
+    }
+    try (final ScriptedServer second = new ScriptedServer(true, "answer")) {
+      final ContextConfiguration cfg = new ContextConfiguration();
+      cfg.setValue(GlobalConfiguration.HA_ERROR_RETRIES, 3);
+      final RemoteHttpComponentTest.TestableRemoteHttpComponent c = new RemoteHttpComponentTest.TestableRemoteHttpComponent("127.0.0.1",
+          closedPort, "root", "test", cfg) {
+        @Override
+        boolean reloadClusterConfiguration() {
+          try {
+            final Field f = RemoteHttpComponent.class.getDeclaredField("replicaServerList");
+            f.setAccessible(true);
+            @SuppressWarnings("unchecked") final List<Pair<String, Integer>> replicas = (List<Pair<String, Integer>>) f.get(this);
+            if (replicas.isEmpty())
+              replicas.add(new Pair<>("127.0.0.1", second.port()));
+          } catch (final Exception e) {
+            throw new RuntimeException(e);
+          }
+          return true;
+        }
+      };
+      try {
+        // the first server was seen once, with its own instance, then refuses connections
+        c.serverReplayInstances.put("127.0.0.1:" + closedPort, "proc-closed");
+        final Object result = c.httpCommand("POST", "db", "command", "sql", INSERT, null, false, true, (response, json) -> json.getString("result"));
+        assertThat(result).isEqualTo("ok");
+        assertThat(second.instances().get(0)).isNull();
       } finally {
         c.close();
       }

@@ -532,12 +532,13 @@ public class PostCommandHandler extends AbstractQueryHandler {
 
   /** A primitive numeric array parsed from a JSON array parameter becomes the list of its elements, as the embedded API receives it. */
   private static Object numericArrayToList(final Object value) {
-    if (!Type.isPrimitiveNumberArray(value))
-      return value;
-    final List<Object> list = Type.primitiveArrayToList(value);
-    for (int i = 0; i < list.size(); i++)
-      list.set(i, boxedNumber(list.get(i)));
-    return list;
+    if (value instanceof long[] longs) {
+      final List<Object> list = new ArrayList<>(longs.length);
+      for (final long v : longs)
+        list.add(v >= Integer.MIN_VALUE && v <= Integer.MAX_VALUE ? (Object) (int) v : (Object) v);
+      return list;
+    }
+    return Type.isPrimitiveNumberArray(value) ? Type.primitiveArrayToList(value) : value;
   }
 
   /** A long that fits an int is an int, as the JSON parser answers a scalar number. */

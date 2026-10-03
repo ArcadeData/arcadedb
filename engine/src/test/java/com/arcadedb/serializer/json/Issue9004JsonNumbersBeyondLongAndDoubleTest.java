@@ -25,8 +25,10 @@ import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -90,6 +92,26 @@ class Issue9004JsonNumbersBeyondLongAndDoubleTest extends TestHelper {
     assertThat(map.get("c")).isEqualTo(new BigDecimal("0.1234567890123456789"));
     assertThat(map.get("d")).isEqualTo(new BigDecimal("1e400"));
     assertThat(new JSONObject("{\"v\":[1e400,1.5e0]}").toMap(true).get("v")).isEqualTo(List.of(new BigDecimal("1e400"), 1.5));
+  }
+
+  @Test
+  void underflowingTokenIsKeptExact() {
+    final Map<String, Object> map = new JSONObject("{\"u\":1e-400,\"z\":0.0,\"s\":1.5e-3}").toMap();
+    assertThat(map.get("u")).isEqualTo(new BigDecimal("1e-400"));
+    assertThat(map.get("z")).isEqualTo(0.0);
+    assertThat(map.get("s")).isEqualTo(0.0015);
+  }
+
+  @Test
+  void primitiveArraysConvertToEveryCollectionTarget() {
+    assertThat(Type.convert(database, new long[] { 1, 2 }, Set.class)).isEqualTo(Set.of(1L, 2L));
+    assertThat(Type.convert(database, new int[] { 1, 2 }, Collection.class)).isEqualTo(List.of(1, 2));
+    assertThat(Type.convert(database, new float[] { 1.5f }, List.class)).isEqualTo(List.of(1.5f));
+    assertThat(Type.convert(database, new short[] { 3 }, List.class)).isEqualTo(List.of((short) 3));
+    assertThat(Type.isPrimitiveNumberArray(new int[0])).isTrue();
+    assertThat(Type.isPrimitiveNumberArray(new byte[0])).isFalse();
+    assertThat(Type.isPrimitiveNumberArray(new boolean[0])).isFalse();
+    assertThat(Type.isPrimitiveNumberArray(new char[0])).isFalse();
   }
 
   @Test
