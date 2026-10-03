@@ -289,6 +289,12 @@ class Issue9110DeclaredTypeConversionTest extends TestHelper {
   }
 
   @Test
+  void emptyCollectionIsRefusedByALinkProperty() {
+    database.getSchema().createDocumentType("LinkEmpty9110").createProperty("link", Type.LINK);
+    assertRefused("LinkEmpty9110", "link", new ArrayList<>());
+  }
+
+  @Test
   void indexKeyConversionAnswersNullForAnInconvertibleShape() {
     assertThat(Type.convertIndexKeyOrNull(database, new ArrayList<>(List.of(1, 2)), Integer.class)).isNull();
   }

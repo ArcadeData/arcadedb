@@ -1017,6 +1017,9 @@ public enum Type {
           if (property != null && property.getType() == LINK && result.size() == 1) {
             return result.get(0);
           }
+          // an empty or multi-valued collection cannot be the single link a LINK property holds (issue #9015)
+          if (property != null && property.getType() == LINK)
+            throw inconvertible(value, "LINK", property);
           return result;
         } else if (value instanceof String string) {
           try {
@@ -1063,6 +1066,9 @@ public enum Type {
           "Error in conversion of value '" + value + "' to type '" + targetClass.getSimpleName() + "': " + e.getMessage(), e);
     } catch (final Exception e) {
       LogManager.instance().log(Type.class, Level.FINE, "Error in conversion of value '%s' to type '%s'", e, value, targetClass);
+      // a write to a declared property never stores NULL for a value it could not convert (issue #9014)
+      if (property != null)
+        throw inconvertible(value, targetClass.getSimpleName(), property, e);
       return null;
     }
 
