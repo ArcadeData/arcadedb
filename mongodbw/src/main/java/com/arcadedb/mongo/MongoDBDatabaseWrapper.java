@@ -314,6 +314,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   @Override
   public void dropCollection(final String collectionName, final Oplog opLog) {
     database.getSchema().dropType(collectionName);
+    MongoDBCollectionWrapper.forgetIdIndex(database, collectionName);
   }
 
   @Override

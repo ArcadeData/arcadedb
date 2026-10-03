@@ -38,6 +38,9 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -429,9 +432,9 @@ public class MongoDBWireSemanticsTest extends BaseMongoServerTest {
   @Test
   void concurrentFirstInsertsWithMixedIdKinds() throws Exception {
     final MongoCollection<Document> fresh = client.getDatabase(getDatabaseName()).getCollection("racing");
-    final java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(4);
+    final ExecutorService pool = Executors.newFixedThreadPool(4);
     try {
-      final List<java.util.concurrent.Future<?>> futures = new ArrayList<>();
+      final List<Future<?>> futures = new ArrayList<>();
       for (int t = 0; t < 4; t++) {
         final int thread = t;
         futures.add(pool.submit(() -> {
@@ -439,11 +442,34 @@ public class MongoDBWireSemanticsTest extends BaseMongoServerTest {
             fresh.insertOne(thread % 2 == 0 ? new Document("_id", thread * 1000 + i) : new Document("_id", "s" + thread + "-" + i));
         }));
       }
-      for (final java.util.concurrent.Future<?> f : futures)
+      for (final Future<?> f : futures)
         f.get();
     } finally {
       pool.shutdownNow();
     }
     assertThat(fresh.countDocuments()).isEqualTo(100);
+  }
+
+  @Test
+  void exclusionProjectionMayIncludeTheId() {
+    collection.insertOne(Document.parse("{_id: 1, a: 1, b: 2}"));
+    assertThat(collection.find().projection(Document.parse("{a: 0, _id: 1}")).first().keySet()).containsExactlyInAnyOrder("_id", "b");
+    assertThat(collection.find().projection(Document.parse("{_id: 1}")).first().keySet()).containsExactly("_id");
+  }
+
+  @Test
+  void aFailedIdIndexBuildIsNotRetriedOnEveryInsert() {
+    final var db = getServerDatabase(0, getDatabaseName());
+    db.getSchema().createDocumentType("gaveup");
+    db.transaction(() -> {
+      db.command("sql", "insert into gaveup set _id = 1");
+      db.command("sql", "insert into gaveup set _id = 1");
+    });
+    final MongoCollection<Document> gaveUp = client.getDatabase(getDatabaseName()).getCollection("gaveup");
+
+    for (int i = 10; i < 30; i++)
+      gaveUp.insertOne(new Document("_id", i));
+    assertThatThrownBy(() -> gaveUp.insertOne(new Document("_id", 15))).isInstanceOf(MongoWriteException.class);
+    assertThat(db.getSchema().getType("gaveup").getAllIndexes(false)).isEmpty();
   }
 }
