@@ -2387,7 +2387,11 @@ public class LocalDocumentType implements DocumentType {
       type.put("externalBuckets", new JSONObject(extBucketNames));
     }
 
-    type.put("aliases", aliases);
+    // Sorted: the set is a Set.copyOf() whose iteration order is salted per JVM, so writing it as is would make schema.json
+    // differ byte-wise between nodes holding the same aliases (issue #8924).
+    final String[] aliasNames = aliases.toArray(new String[0]);
+    Arrays.sort(aliasNames);
+    type.put("aliases", aliasNames);
 
     final JSONObject propertiesJSON = new JSONObject();
     type.put("properties", propertiesJSON);

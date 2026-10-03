@@ -23,7 +23,9 @@ import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -111,6 +113,23 @@ class Issue8206SchemaSerializationOrderTest extends TestHelper {
     assertSameSchemaAfterReopen();
     assertThat(keysOf(schemaJson().getJSONObject("triggers"))).isSorted();
     assertThat(keysOf(schemaJson().getJSONObject("functions"))).isSorted();
+  }
+
+  // Issue #8924: a type's alias set is an immutable Set.copyOf() whose iteration order is salted per JVM, so the array
+  // must be written sorted or two nodes holding the same aliases render different schema.json bytes.
+  @Test
+  void aliasesSerializeSorted() {
+    final DocumentType type = database.getSchema().createDocumentType("Aliased");
+    final Set<String> aliases = new HashSet<>();
+    for (int i = 0; i < CREATED; i++)
+      aliases.add("Alias" + (CREATED - i));
+    type.setAliases(aliases);
+
+    final List<String> written = schemaJson().getJSONObject("types").getJSONObject("Aliased").getJSONArray("aliases")
+        .toListOfStrings();
+    assertThat(written).containsExactlyInAnyOrderElementsOf(aliases);
+    assertThat(written).isSorted();
+    assertSameSchemaAfterReopen();
   }
 
   private void assertSameSchemaAfterReopen() {
