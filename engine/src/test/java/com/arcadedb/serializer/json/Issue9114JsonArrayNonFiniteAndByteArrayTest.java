@@ -18,6 +18,7 @@
  */
 package com.arcadedb.serializer.json;
 
+import com.google.gson.internal.LazilyParsedNumber;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -99,5 +100,13 @@ class Issue9114JsonArrayNonFiniteAndByteArrayTest {
     assertThat(new JSONObject().put("v", new long[] { 1L, Long.MAX_VALUE }).getJSONArray("v").toString()).isEqualTo("[1," + Long.MAX_VALUE + "]");
     assertThat(new JSONArray(List.of(1F, Float.NaN)).toString()).isEqualTo("[1.0,null]");
     assertThat(new JSONArray(new Object[] { Float.NaN, 2 }).toString()).isEqualTo("[null,2]");
+  }
+
+  @Test
+  void lazilyParsedNonFiniteTokenIsNullToo() {
+    final Number parsed = new LazilyParsedNumber("NaN");
+    assertThat(new JSONObject().put("v", parsed).isNull("v")).isTrue();
+    assertThat(new JSONArray().put(parsed).toString()).isEqualTo("[null]");
+    assertThat(new JSONArray().put(new LazilyParsedNumber("12")).toString()).isEqualTo("[12]");
   }
 }

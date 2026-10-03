@@ -36,6 +36,7 @@ import java.io.IOException;
 import java.io.StringReader;
 import java.lang.reflect.Array;
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -661,10 +662,15 @@ public class JSONObject implements Map<String, Object> {
 
   /**
    * JSON has no literal for NaN and the infinities: every writer in this class turns them into {@code null}, never into a number
-   * (a {@code 0} would be indistinguishable from a measurement). Only a {@link Double} or {@link Float} can be non-finite.
+   * (a {@code 0} would be indistinguishable from a measurement). The integral types and the big numbers are finite by construction, so
+   * a huge {@link java.math.BigDecimal} is not mistaken for an infinity.
    */
   static boolean isNonFinite(final Number number) {
-    return number instanceof Double d && !Double.isFinite(d) || number instanceof Float f && !Float.isFinite(f);
+    if (number == null || number instanceof Integer || number instanceof Long || number instanceof BigDecimal || number instanceof BigInteger
+        || number instanceof Short || number instanceof Byte)
+      return false;
+    // Double, Float and any other Number (e.g. a lazily parsed "NaN" token): ask for its double value
+    return !Double.isFinite(number.doubleValue());
   }
 
   // PRIMITIVE ARRAYS (float[], double[], int[], long[], short[], byte[], ...): serialized element-by-element via reflection instead of
