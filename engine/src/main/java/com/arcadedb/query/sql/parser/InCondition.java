@@ -348,7 +348,7 @@ public class InCondition extends BooleanExpression {
     // value), so a Long matches an Integer, two BigDecimals of different scale match, and a Date matches the stored DATETIME (#9030)
     if (iLeft == null)
       return null;
-    return QueryOperatorEquals.equals(iLeft, iRight) ? Boolean.TRUE : Boolean.FALSE;
+    return equalsEitherWay(iLeft, iRight, convertOperand) ? Boolean.TRUE : Boolean.FALSE;
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
