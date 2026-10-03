@@ -263,11 +263,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // threads - the health monitor and, since #5345, the log compaction scheduler - read it. Every reader
   // still copies it to a local before use so a concurrent reassignment cannot null it mid-method.
   private volatile RaftServer                raftServer;
-  // Issue #8901: the last log entry and the term of the division right after the latest in-place restartRatis();
-  // PENDING_BASELINE when they could not be read then; null when the division was never restarted in place in this
-  // process, or the leader's appends have been seen reaching it since. One reference rather than a value and a flag,
-  // so a reader racing a second restart (restartRatis runs on whichever thread asked for it) never pairs a fresh
-  // division with the previous restart's baseline, and every transition is a compare-and-set against what was read.
+  // Issue #8901: the division's position right after the latest in-place restartRatis(), PENDING_BASELINE when it
+  // could not be read then, null when never restarted in place or once the path was proven. restartRatis() overwrites
+  // it unconditionally after start(), so a tick that read the new division against the previous baseline in between
+  // is corrected by that write; evaluations only ever compare-and-set.
   private final    AtomicReference<InPlaceRestartBaseline> inPlaceRestartBaseline = new AtomicReference<>();
   private          RaftClient                raftClient;
   private volatile RaftProperties            raftProperties;
@@ -1979,38 +1978,35 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
-   * Where the division stood right after an in-place restart (issue #8901): its last log entry ({@code null} for an
-   * empty log, e.g. right after the divergence reformat) and its current term.
+   * Where the division stood right after an in-place restart (issue #8901): last log entry ({@code null} for an empty
+   * log), current term, and whether a leader was known.
    */
-  record InPlaceRestartBaseline(TermIndex lastEntry, long term) {
+  record InPlaceRestartBaseline(TermIndex lastEntry, long term, boolean leaderKnown) {
   }
 
   /** Baseline whose values could not be read right after the restart; resolved by the next health tick. */
-  static final InPlaceRestartBaseline PENDING_BASELINE = new InPlaceRestartBaseline(null, Long.MIN_VALUE);
+  static final InPlaceRestartBaseline PENDING_BASELINE = new InPlaceRestartBaseline(null, Long.MIN_VALUE, false);
 
   /**
-   * Records the baseline {@link #isReplicationPathUnprovenSinceRestart()} compares against, right after
-   * {@link #restartRatis(boolean)} started the new server. An unreadable division leaves it pending, to be read on the
-   * next health tick, rather than failing a restart that has already succeeded.
-   * <p>
-   * Both ways of taking the baseline late err on the safe side: an entry or a term change that lands between
-   * {@code start()} and this read, or before the pending read, is already in the baseline and does not count as proof,
-   * so the hold lasts until the next entry or term change. Nothing is destroyed meanwhile; on an idle cluster that can
-   * be a long hold, which the WARNING and the stuck-at-stale-term alert keep visible.
+   * Records the baseline right after {@link #restartRatis(boolean)} started the new server, or leaves it pending when
+   * the division cannot be read yet. A late read errs on the safe side: an entry that landed before it does not count
+   * as proof, so the hold lasts until the next entry or leader change.
    */
   private void captureInPlaceRestartBaseline() {
     final InPlaceRestartBaseline baseline = readReplicationPosition();
     inPlaceRestartBaseline.set(baseline != null ? baseline : PENDING_BASELINE);
   }
 
-  /** The division's last log entry and current term, or {@code null} when they cannot be read. */
+  /** The division's last log entry, current term and leader presence, or {@code null} when they cannot be read. */
   private InPlaceRestartBaseline readReplicationPosition() {
     final RaftServer server = raftServer;
     if (server == null)
       return null;
     try {
-      final var division = server.getDivision(raftGroup.getGroupId());
-      return new InPlaceRestartBaseline(division.getRaftLog().getLastEntryTermIndex(), division.getInfo().getCurrentTerm());
+      final RaftServer.Division division = server.getDivision(raftGroup.getGroupId());
+      final DivisionInfo info = division.getInfo();
+      return new InPlaceRestartBaseline(division.getRaftLog().getLastEntryTermIndex(), info.getCurrentTerm(),
+          info.getLeaderId() != null);
     } catch (final Exception e) {
       // Same Ratis IllegalStateException window as isReadyForTraffic() (issue #5271).
       LogManager.instance().log(this, Level.FINE, "Cannot read the Raft log position of the restarted division", e);
@@ -2021,11 +2017,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   /**
    * {@inheritDoc}
    * <p>
-   * Compares the division's last log entry and current term with the ones it had right after the latest in-place
-   * {@link #restartRatis(boolean)}. A changed last entry means an entry-carrying append reached the running server
-   * and was accepted; a changed term means a new leader, whose appenders open their streams to the running server.
-   * Neither proves the path while the division is unreadable, so that answers {@code true} and holds the reformat.
-   * Once proven the baseline is dropped, so the answer stays {@code false} until the next in-place restart.
+   * Proof is a new last log entry (an append reached the running server and was accepted) or a newer term with a known
+   * leader (that leader's appenders dialled the running server). An unreadable division holds. Once proven the baseline
+   * is dropped until the next in-place restart.
    */
   @Override
   public boolean isReplicationPathUnprovenSinceRestart() {
@@ -2033,10 +2027,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
-   * One evaluation of {@link #isReplicationPathUnprovenSinceRestart()} over the baseline reference, package-private for
-   * testing: resolves a {@link #PENDING_BASELINE} (answering {@code true}, there is nothing to compare against yet),
-   * and drops the baseline once the path is proven. Every write is a compare-and-set against the value read, so a
-   * restart that publishes a new baseline meanwhile is never overwritten.
+   * One evaluation over the baseline reference, package-private for testing: resolves {@link #PENDING_BASELINE}
+   * (holding, nothing to compare yet) and drops the baseline once proven, both by compare-and-set.
    */
   static boolean replicationPathUnproven(final AtomicReference<InPlaceRestartBaseline> baselineRef,
       final Supplier<InPlaceRestartBaseline> positionReader) {
@@ -2051,24 +2043,26 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     }
     if (current == null)
       return true;
-    if (replicationPathUnproven(baseline, current.lastEntry(), current.term()))
+    if (replicationPathUnproven(baseline, current.lastEntry(), current.term(), current.leaderKnown()))
       return true;
     baselineRef.compareAndSet(baseline, null);
     return false;
   }
 
   /**
-   * Pure comparison behind {@link #isReplicationPathUnprovenSinceRestart()}, package-private for testing. {@code true}
-   * when the division was restarted in place ({@code baseline != null}) and neither its last log entry nor its term has
-   * moved since, or the current term cannot be read ({@code currentTerm < 0}).
+   * Pure comparison, package-private for testing: {@code true} while a baseline exists and neither a new last entry
+   * nor a newer term with a known leader has been seen, or the current term cannot be read.
    */
   static boolean replicationPathUnproven(final InPlaceRestartBaseline baseline, final TermIndex currentLastEntry,
-      final long currentTerm) {
+      final long currentTerm, final boolean leaderKnown) {
     if (baseline == null)
       return false;
     if (currentTerm < 0)
       return true;
-    return currentTerm == baseline.term() && Objects.equals(currentLastEntry, baseline.lastEntry());
+    if (!Objects.equals(currentLastEntry, baseline.lastEntry()))
+      return false;
+    // A term bumped by a candidate's vote request alone proves nothing: only a leader at the new term has dialled us.
+    return currentTerm == baseline.term() || !leaderKnown;
   }
 
   @Override
