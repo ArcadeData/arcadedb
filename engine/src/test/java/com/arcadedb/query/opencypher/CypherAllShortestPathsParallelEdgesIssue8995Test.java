@@ -18,17 +18,20 @@
  */
 package com.arcadedb.query.opencypher;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for https://github.com/ArcadeData/arcadedb/issues/8995
@@ -210,6 +213,70 @@ class CypherAllShortestPathsParallelEdgesIssue8995Test extends TestHelper {
       assertThat(paths).hasSize(1);
       assertThat((List<?>) paths.get(0)).hasSize(1);
     }
+  }
+
+  @Test
+  void coShortestPathsThroughDistinctVerticesAndParallelRelationshipsCombine() {
+    // A diamond with a parallel pair on one side: 2 + 1 = 3 paths, the target having two parents.
+    database.transaction(() -> database.command("opencypher", """
+        CREATE (a:N {id: 1}), (b1:N {id: 2}), (b2:N {id: 4}), (c:N {id: 3}),
+               (a)-[:R {eid: 10}]->(b1), (a)-[:R {eid: 11}]->(b1), (b1)-[:R {eid: 20}]->(c),
+               (a)-[:R {eid: 12}]->(b2), (b2)-[:R {eid: 21}]->(c)"""));
+    final List<List<Object>> expected = List.of(List.of(10, 20), List.of(11, 20), List.of(12, 21));
+    assertThat(eidLists("MATCH p = allShortestPaths((a:N {id: 1})-[*]->(c:N {id: 3})) "
+        + "RETURN [r IN relationships(p) | r.eid] AS rels"))
+        .containsExactlyInAnyOrderElementsOf(expected);
+    assertThat(eidLists("MATCH p = allShortestPaths((a:N {id: 1})-[*]-(c:N {id: 3})) "
+        + "RETURN [r IN relationships(p) | r.eid] AS rels"))
+        .containsExactlyInAnyOrderElementsOf(expected);
+    assertThat(expressionEidLists("MATCH (a:N {id: 1}), (c:N {id: 3}) RETURN allShortestPaths((a)-[*]->(c)) AS ps"))
+        .containsExactlyInAnyOrderElementsOf(expected);
+  }
+
+  @Test
+  @Timeout(120)
+  void theCommandTimeoutStopsThePathEnumerationNotOnlyTheSearch() {
+    // 12 hops of 4 parallel relationships: the BFS touches 13 vertices, the enumeration 4^12 = 16.7M paths. Only a
+    // check inside the back-tracking walk can stop it; without one the query runs out of memory or never returns.
+    final int hops = 12;
+    database.getSchema().createVertexType("Chain");
+    database.getSchema().createEdgeType("P");
+    database.transaction(() -> {
+      MutableVertex previous = database.newVertex("Chain").set("id", 0).save();
+      for (int i = 1; i <= hops; i++) {
+        final MutableVertex next = database.newVertex("Chain").set("id", i).save();
+        for (int k = 0; k < 4; k++)
+          previous.newEdge("P", next, "w", 1);
+        previous = next;
+      }
+    });
+
+    database.getConfiguration().setValue(GlobalConfiguration.COMMAND_TIMEOUT, 20L);
+    try {
+      final String target = "MATCH (a:Chain {id: 0}), (b:Chain {id: " + hops + "}) ";
+      assertThatThrownBy(() -> countRows(target + "MATCH p = allShortestPaths((a)-[:P*]->(b)) RETURN p"))
+          .hasStackTraceContaining(GlobalConfiguration.COMMAND_TIMEOUT.getKey())
+          .hasStackTraceContaining("buildAllPaths");
+      assertThatThrownBy(() -> countRows(target + "MATCH p = allShortestPaths((a)-[r:P* WHERE r.w > 0]->(b)) RETURN p"))
+          .hasStackTraceContaining(GlobalConfiguration.COMMAND_TIMEOUT.getKey())
+          .hasStackTraceContaining("buildAllFilteredPaths");
+      assertThatThrownBy(() -> countRows(target + "RETURN size(allShortestPaths((a)-[:P*]->(b))) AS n"))
+          .hasStackTraceContaining(GlobalConfiguration.COMMAND_TIMEOUT.getKey())
+          .hasStackTraceContaining("buildAllPaths");
+    } finally {
+      database.getConfiguration().setValue(GlobalConfiguration.COMMAND_TIMEOUT, 0L);
+    }
+  }
+
+  private long countRows(final String query) {
+    long n = 0;
+    try (final ResultSet rs = database.query("opencypher", query)) {
+      while (rs.hasNext()) {
+        rs.next();
+        ++n;
+      }
+    }
+    return n;
   }
 
   private List<List<Object>> eidLists(final String query) {

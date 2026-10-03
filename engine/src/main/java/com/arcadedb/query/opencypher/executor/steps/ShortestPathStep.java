@@ -743,14 +743,10 @@ public class ShortestPathStep extends AbstractExecutionStep {
   private static void buildAllFilteredPaths(final RID current, final RID sourceRid,
       final Map<RID, List<PredecessorLink>> predecessors, final Database database, final WorkGuard guard,
       final Deque<Object> stack, final List<List<Object>> out) {
-    // The number of paths is the product of the parallel relationships per hop, so the walk itself can be long.
-    if (Thread.interrupted())
-      throw new CommandExecutionException("The allShortestPaths() function has been interrupted");
-    guard.check();
-
     final Vertex currentVertex = (Vertex) database.lookupByRID(current, true);
     stack.push(currentVertex);
     if (current.equals(sourceRid)) {
+      checkPathEnumeration(guard, out.size());
       // stack head-to-tail already reads source-to-target because we push from target down to source.
       out.add(new ArrayList<>(stack));
       stack.pop();
@@ -917,14 +913,10 @@ public class ShortestPathStep extends AbstractExecutionStep {
   private static void buildAllPaths(final Vertex current, final RID sourceRid, final Map<RID, List<RID>> predecessors,
       final Vertex.DIRECTION direction, final String[] edgeTypes, final Database database,
       final Map<RID, HopLink[]> hopCache, final WorkGuard guard, final Deque<Object> stack, final List<List<Object>> out) {
-    // The number of paths is the product of the parallel relationships per hop, so the walk itself can be long.
-    if (Thread.interrupted())
-      throw new CommandExecutionException("The allShortestPaths() function has been interrupted");
-    guard.check();
-
     stack.push(current);
     final RID currentRid = current.getIdentity();
     if (currentRid.equals(sourceRid)) {
+      checkPathEnumeration(guard, out.size());
       // stack pushes from target down to source, so iterating head-to-tail yields source-to-target.
       out.add(new ArrayList<>(stack));
       stack.pop();
@@ -942,6 +934,18 @@ public class ShortestPathStep extends AbstractExecutionStep {
         stack.pop();
       }
     stack.pop();
+  }
+
+  /**
+   * The path count is the product of the parallel relationships per hop, so the back-tracking can outlast the BFS:
+   * checked once every 1024 completed paths, since every branch of the walk ends in one.
+   */
+  private static void checkPathEnumeration(final WorkGuard guard, final int pathsSoFar) {
+    if ((pathsSoFar & 1023) != 0)
+      return;
+    if (Thread.interrupted())
+      throw new CommandExecutionException("The allShortestPaths() function has been interrupted");
+    guard.check();
   }
 
   private static HopLink[] resolveHops(final Vertex current, final List<RID> parents, final Vertex.DIRECTION direction,
