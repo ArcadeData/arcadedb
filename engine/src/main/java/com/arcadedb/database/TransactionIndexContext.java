@@ -808,7 +808,9 @@ public class TransactionIndexContext {
             // keeps one entry per key, so storing the REMOVE would displace the ADD and the new holder of the key would
             // never be indexed. Keep the ADD as a REPLACE that also removes the committed holder A.
             v = new IndexKey(true, IndexKey.IndexKeyOperation.REPLACE, entry.keyValues, entry.rid, v.sequence);
+            // A unique key has one committed holder, so an existing REPLACE's oldRid and this REMOVE's rid are the same record
             v.oldRid = entry.oldRid != null ? entry.oldRid : rid;
+            // the unique check below already ran when the ADD was queued
             addKeptByRemove = true;
           }
         }
