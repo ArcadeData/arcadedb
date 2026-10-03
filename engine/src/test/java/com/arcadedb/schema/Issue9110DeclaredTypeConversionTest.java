@@ -203,7 +203,8 @@ class Issue9110DeclaredTypeConversionTest extends TestHelper {
     assertThat(roundTrip("Epoch9110", "dts", "1791000000")).isEqualTo(roundTrip("Epoch9110", "dts", 1791000000L));
     assertThat(roundTrip("Epoch9110", "dtm", "1791000000000000")).isEqualTo(roundTrip("Epoch9110", "dtm", 1791000000000000L));
     // a compact yyyyMMdd date is read as an epoch count too, as the DATE branch already did
-    assertThat(Type.convert(database, "20261003", LocalDateTime.class)).isEqualTo(Type.convert(database, 20261003L, LocalDateTime.class));
+    database.getSchema().getType("Epoch9110").createProperty("dtc", Type.DATETIME);
+    assertThat(roundTrip("Epoch9110", "dtc", "20261003")).isEqualTo(roundTrip("Epoch9110", "dtc", 20261003L));
   }
 
   @Test
@@ -240,6 +241,34 @@ class Issue9110DeclaredTypeConversionTest extends TestHelper {
     assertThat(Type.convertIndexKeyOrNull(database, 1e30d, Long.class)).isEqualTo(Long.MAX_VALUE);
     database.getSchema().createDocumentType("LongProp9110").createProperty("l", Type.LONG);
     assertRefused("LongProp9110", "l", 1e30d);
+  }
+
+  @Test
+  void floatAndDoubleRefuseAFiniteValueThatOverflows() {
+    final DocumentType type = database.getSchema().createDocumentType("Ovf9110");
+    type.createProperty("f", Type.FLOAT);
+    type.createProperty("d", Type.DOUBLE);
+    assertRefused("Ovf9110", "f", 1e40d);
+    assertRefused("Ovf9110", "f", new BigDecimal("1E+400"));
+    assertRefused("Ovf9110", "d", new BigDecimal("1E+400"));
+    assertThat(roundTrip("Ovf9110", "f", Float.POSITIVE_INFINITY)).isEqualTo(Float.POSITIVE_INFINITY);
+    assertThat(roundTrip("Ovf9110", "d", Double.POSITIVE_INFINITY)).isEqualTo(Double.POSITIVE_INFINITY);
+    assertThat(roundTrip("Ovf9110", "f", 1.5d)).isEqualTo(1.5f);
+  }
+
+  @Test
+  void nanAndEpochStringsStayLenientWithoutAProperty() {
+    assertThat(Type.convert(database, Double.NaN, Boolean.class)).isEqualTo(false);
+    assertThat(Type.convert(database, "20261003", LocalDateTime.class)).isEqualTo("20261003");
+  }
+
+  @Test
+  void linkListOfInvalidRidStringsIsRefusedAndLenientWrappersKeepTheOriginal() {
+    database.getSchema().createDocumentType("Link9110").createProperty("link", Type.LINK);
+    assertRefused("Link9110", "link", new ArrayList<>(List.of("not-a-rid", "#1:2")));
+    final List<Object> list = new ArrayList<>(List.of(1, 2));
+    assertThat(Type.convertOrKeep(database, true, java.math.BigDecimal.class)).isEqualTo(true);
+    assertThat(Type.convertIndexKeyOrNull(database, list, Integer.class)).isNull();
   }
 
   @Test
