@@ -131,6 +131,11 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
       throw new CommandSQLParsingException(
           "Index '" + indexSpec + "' is not a sparse vector index");
 
+    // Checked after the index is resolved, so a bad index spec stays loud. A filter that matched nothing is not "no filter":
+    // no record can satisfy it (issue #8959)
+    if (allowedRIDs != null && allowedRIDs.isEmpty())
+      return new ArrayList<>(0);
+
     return executeWithIndexes(sparseIndexes, queryIndices, queryValues, k, allowedRIDs, groupBy, groupSize, minScore, context);
   }
 

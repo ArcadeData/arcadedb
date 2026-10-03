@@ -908,6 +908,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // so on that path the two operands are equal and the max is a no-op - the dense count IS the carried sequence.
     rebuilt.setNextId(Math.max(rebuilt.getNextId(), nextId.get()));
     residentLocations = rebuilt;
+    // The search vector cache is keyed by vector id, and a renumbering compaction (issue #5870) hands every id to a
+    // different record: a surviving entry would score graph nodes against the vector of whichever record held that
+    // id before (issue #8957). Cleared in the same critical section that publishes the new ids. Every publish clears, not only the
+    // renumbering one: rebuilds are rare and heavy, and a single rule is easier to keep correct than a per-caller flag.
+    final VectorCache staleCache = searchVectorCache;
+    if (staleCache != null)
+      staleCache.clear();
     // The replacement is the complete live set, read from the pages by the caller that built it, so it satisfies
     // the deferred load of issue #6722 outright - materialising afterwards would parse the same pages a second
     // time and then overwrite this instance with the result. Ordered after the swap: a reader that sees the flag
