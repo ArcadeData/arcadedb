@@ -50,7 +50,7 @@ class JSONNumericArrayOptimizationTest {
     final Map<String, Object> map = obj.toMap(true);
 
     // Issue #4148: integer-only arrays are returned as long[] to preserve int64 precision;
-    // downstream Type.convert handles long[] -> int[]/short[]/double[]/double[] when the
+    // downstream Type.convert handles long[] -> int[]/short[]/float[]/double[] when the
     // property type requires it.
     assertThat(map.get("ids")).isInstanceOf(long[].class);
     assertThat((long[]) map.get("ids")).containsExactly(1L, 2L, 3L, 4L);

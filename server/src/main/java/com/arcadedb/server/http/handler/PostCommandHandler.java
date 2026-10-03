@@ -33,6 +33,7 @@ import com.arcadedb.query.sql.parser.ExplainResultSet;
 import com.arcadedb.query.sql.parser.MatchStatement;
 import com.arcadedb.query.sql.parser.SelectStatement;
 import com.arcadedb.query.sql.parser.Statement;
+import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ForwardedRequestIdContext;
 import com.arcadedb.server.http.HttpServer;
@@ -260,7 +261,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
       // would be stored as one element of a LIST property, or as an ARRAY_OF_* instead of a LIST (issue #9002). Only arrays nested
       // deeper in the parameters (batches of vectors) keep the primitive form.
       for (final Map.Entry<?, ?> entry : m.entrySet())
-        paramMap.put((String) entry.getKey(), numericArrayToList(entry.getValue()));
+        paramMap.put(String.valueOf(entry.getKey()), numericArrayToList(entry.getValue()));
     } else if (rawParams instanceof List<?> list) {
       // Positional params forwarded as a JSON array [v0, v1, ...] — convert to ordinal map
       paramMap = new HashMap<>((int) (list.size() / 0.75f) + 1);
@@ -531,12 +532,11 @@ public class PostCommandHandler extends AbstractQueryHandler {
 
   /** A primitive numeric array parsed from a JSON array parameter becomes the list of its elements, as the embedded API receives it. */
   private static Object numericArrayToList(final Object value) {
-    if (value == null || value instanceof byte[] || !value.getClass().isArray() || !value.getClass().getComponentType().isPrimitive())
+    if (!Type.isPrimitiveNumberArray(value))
       return value;
-    final int length = Array.getLength(value);
-    final List<Object> list = new ArrayList<>(length);
-    for (int i = 0; i < length; i++)
-      list.add(boxedNumber(Array.get(value, i)));
+    final List<Object> list = Type.primitiveArrayToList(value);
+    for (int i = 0; i < list.size(); i++)
+      list.set(i, boxedNumber(list.get(i)));
     return list;
   }
 

@@ -489,7 +489,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       if (correlationRequestId == null)
         correlationRequestId = generateCorrelationId();
       exchange.getResponseHeaders().put(REQUEST_ID_HEADER, correlationRequestId);
-      exchange.getResponseHeaders().put(REPLAY_PROTECTION_HEADER, "true");
+      exchange.getResponseHeaders().put(REPLAY_PROTECTION_HEADER, IdempotencyCache.PROCESS_ID);
+      // A retry that was told about another server process: the entry of the write it repeats died with that process, and running it
+      // again could apply it twice. Refused before anything runs (issue #8526).
+      final String replayInstance = exchange.getRequestHeaders().getFirst(IdempotencyCache.HEADER_REPLAY_INSTANCE);
+      if (replayInstance != null && !replayInstance.equals(IdempotencyCache.PROCESS_ID)) {
+        new ExecutionResponse(412, error2json("The server restarted since the request was first sent",
+            "The write may already have been applied and its answer is no longer available: it is not run again", null, null, null))
+            .send(exchange);
+        return;
+      }
       // The supplier is an SPI: tolerate an array shorter than 2 (or null) instead of indexing blindly.
       final String[] traceContext = LogManager.instance().currentTraceContext();
       final String traceId = traceContext != null && traceContext.length > 0 ? traceContext[0] : null;
