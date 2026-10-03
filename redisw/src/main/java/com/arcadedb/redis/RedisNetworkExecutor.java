@@ -269,7 +269,10 @@ public class RedisNetworkExecutor extends Thread {
       // than a gap worth a recursive check for.
       // Only SET, ECHO and PING carry opaque bytes (issue #9057). Every other command parses its arguments as text, where
       // an escaped byte would be a lone surrogate, so it gets the replacement character instead.
+      // A new command that handles opaque bytes must be added here. The KEY of SET is text like the key of every lookup
+      // command (GET, EXISTS, DEL...), so it is sanitized the same way and stays findable.
       final boolean binarySafe = "SET".equals(cmdString) || "ECHO".equals(cmdString) || "PING".equals(cmdString);
+      final boolean keyIsText = "SET".equals(cmdString);
       for (int i = 1; i < list.size(); i++) {
         final Object arg = list.get(i);
         if (arg == null) {
@@ -277,7 +280,7 @@ public class RedisNetworkExecutor extends Thread {
           appendCrLf();
           return;
         }
-        if (!binarySafe && arg instanceof String str)
+        if ((!binarySafe || (keyIsText && i == 1)) && arg instanceof String str)
           list.set(i, RedisBinaryCodec.sanitize(str));
       }
 

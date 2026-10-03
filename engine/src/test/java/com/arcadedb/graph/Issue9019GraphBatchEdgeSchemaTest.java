@@ -173,4 +173,26 @@ class Issue9019GraphBatchEdgeSchemaTest extends TestHelper {
       assertThatThrownBy(() -> b.newEdge(v[0], "E9020", v[1], nullKey)).isInstanceOf(IllegalArgumentException.class);
     }
   }
+
+  @Test
+  void complexDeclaredPropertiesAreStoredLikeVertexNewEdge() {
+    database.command("sql", "CREATE EDGE TYPE E_CPLX9019");
+    database.command("sql", "CREATE PROPERTY E_CPLX9019.l LIST");
+    database.command("sql", "CREATE PROPERTY E_CPLX9019.m MAP");
+    database.command("sql", "CREATE PROPERTY E_CPLX9019.d DATE");
+
+    final java.util.List<Object> list = java.util.List.of(1, "two");
+    final Map<String, Object> map = Map.of("a", 1);
+    final java.util.Date date = new java.util.Date(1791000000000L);
+    final RID[] api = vertices();
+    database.transaction(() -> api[0].asVertex().modify().newEdge("E_CPLX9019", api[1], "l", list, "m", map, "d", date));
+    final RID[] v = vertices();
+    batchEdge(v, "E_CPLX9019", false, "l", list, "m", map, "d", date);
+
+    final Edge expected = edgeOf(api[0], "E_CPLX9019");
+    final Edge actual = edgeOf(v[0], "E_CPLX9019");
+    assertThat(actual.get("l")).isEqualTo(expected.get("l"));
+    assertThat(actual.get("m")).isEqualTo(expected.get("m"));
+    assertThat(actual.get("d")).isEqualTo(expected.get("d"));
+  }
 }
