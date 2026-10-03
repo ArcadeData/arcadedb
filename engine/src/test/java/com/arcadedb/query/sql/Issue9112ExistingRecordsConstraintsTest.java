@@ -237,4 +237,39 @@ class Issue9112ExistingRecordsConstraintsTest extends TestHelper {
     assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY P.v MIN 10")).isInstanceOf(CommandExecutionException.class);
     assertThat(database.getSchema().getType("P").getProperty("v").getMin()).isNull();
   }
+
+  @Test
+  void createPropertyRefusesALossyNarrowing() {
+    database.command("sql", "CREATE DOCUMENT TYPE T");
+    insert("T", "v = 3000000000");
+    assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY T.v INTEGER")).isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("3000000000");
+    assertThat(hasProperty("T", "v")).isFalse();
+    database.command("sql", "CREATE PROPERTY T.v LONG");
+  }
+
+  @Test
+  void malformedBoundIsRefusedOverAnEmptyType() {
+    database.command("sql", "CREATE DOCUMENT TYPE T");
+    database.command("sql", "CREATE PROPERTY T.a INTEGER");
+    assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY T.a MAX 'abc'")).isInstanceOf(CommandExecutionException.class);
+    assertThat(database.getSchema().getType("T").getProperty("a").getMax()).isNull();
+  }
+
+  @Test
+  void cypherCompositeNodeKeyIsRefusedWhenOnlyTheSecondPropertyIsMissing() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:K {a: 1, b: 2}), (:K {a: 3})"));
+    assertThatThrownBy(
+        () -> database.command("opencypher", "CREATE CONSTRAINT FOR (n:K) REQUIRE (n.a, n.b) IS NODE KEY")).isInstanceOf(
+        Exception.class).hasMessageContaining("b");
+  }
+
+  @Test
+  void aFailingAttributeLeavesNoPropertyBehind() {
+    database.command("sql", "CREATE DOCUMENT TYPE T");
+    insert("T", "v = 5");
+    assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY T.v INTEGER (mandatory true, min 10)")).isInstanceOf(
+        CommandExecutionException.class);
+    assertThat(hasProperty("T", "v")).isFalse();
+  }
 }

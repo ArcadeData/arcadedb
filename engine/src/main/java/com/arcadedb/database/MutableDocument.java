@@ -682,6 +682,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
    *
    * @return the list itself when nothing had to change, otherwise a copy (the caller's list may be immutable)
    */
+  @SuppressWarnings("unchecked")
   private List<Object> materialiseListElements(final List<Object> list, final String propertyName) {
     final String ofType = list.isEmpty() ? null : documentTypeOfCollectionElements(propertyName);
     if (ofType == null)
@@ -703,6 +704,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   /**
    * Same as {@link #materialiseListElements} for the values of a {@code MAP OF <document type>}.
    */
+  @SuppressWarnings("unchecked")
   private Map<String, Object> materialiseMapValues(final Map<String, Object> map, final String propertyName) {
     final String ofType = map.isEmpty() ? null : documentTypeOfCollectionElements(propertyName);
     if (ofType == null)
