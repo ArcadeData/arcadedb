@@ -310,15 +310,31 @@ final class MongoBsonValues {
 
   private static Object decode(final String kind, final Map<?, ?> map) {
     return switch (kind) {
-      case BIN_DATA -> new BinData(Base64.getDecoder().decode((String) map.get("data")));
-      case REGEX -> new BsonRegularExpression((String) map.get("pattern"), (String) map.get("options"));
-      case TIMESTAMP -> new BsonTimestamp(((Number) map.get("value")).longValue());
+      case BIN_DATA -> new BinData(Base64.getDecoder().decode((String) required(map, "data")));
+      case REGEX -> new BsonRegularExpression((String) required(map, "pattern"), options(map));
+      case TIMESTAMP -> new BsonTimestamp(((Number) required(map, "value")).longValue());
       case MIN_KEY -> MinKey.getInstance();
       case MAX_KEY -> MaxKey.getInstance();
-      case JAVASCRIPT -> new BsonJavaScript((String) map.get("code"));
-      case LEGACY_UUID -> new LegacyUUID(UUID.fromString((String) map.get("uuid")));
+      case JAVASCRIPT -> new BsonJavaScript((String) required(map, "code"));
+      case LEGACY_UUID -> new LegacyUUID(UUID.fromString((String) required(map, "uuid")));
       default -> map;
     };
+  }
+
+  /**
+   * A required field of a tagged map; a missing one makes the map malformed, so the caller falls back to the plain map instead of
+   * handing a null to the BSON library, where the failure would only show up when the response is encoded.
+   */
+  private static Object required(final Map<?, ?> map, final String field) {
+    final Object value = map.get(field);
+    if (value == null)
+      throw new IllegalArgumentException("Missing field " + field);
+    return value;
+  }
+
+  private static String options(final Map<?, ?> map) {
+    final Object options = map.get("options");
+    return options != null ? (String) options : "";
   }
 
   private static Map<String, Object> tagged(final String kind, final Object... keyValues) {

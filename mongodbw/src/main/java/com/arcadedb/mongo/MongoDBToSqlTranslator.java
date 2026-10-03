@@ -406,8 +406,7 @@ public class MongoDBToSqlTranslator {
       if (bson != value)
         return bson;
       return convertMapToMongoDB((Map<String, Object>) value);
-    }
-    else if (value instanceof LocalDateTime dateTime)
+    } else if (value instanceof LocalDateTime dateTime)
       return dateTime.toInstant(ZoneOffset.UTC);
     else if (value instanceof LocalDate date)
       return date.atStartOfDay().toInstant(ZoneOffset.UTC);
