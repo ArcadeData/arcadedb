@@ -98,8 +98,7 @@ public class Issue6950RecordImageGuardTest extends TestHelper {
   }
 
   @Test
-  void aMultiPageRecordIsComparedAsAWhole() {
-    // #8982: the head chunk holds only the start of the record, so the guard assembles the chain and compares all of it
+  void aMultiPageRecordIsReportedAsChangedWhenItWas() {
     final RID rid = createRecord("x".repeat(200_000));
     final Binary image = imageOf(rid);
 
@@ -108,8 +107,16 @@ public class Issue6950RecordImageGuardTest extends TestHelper {
     replaceValueWith(rid, "y".repeat(200_000));
 
     database.transaction(() -> assertThat(guard(rid, image))
-        .as("a change past the head chunk is a change to the record")
+        .as("a head chunk keeps its body off this page, so the record is assembled and compared whole (#8985)")
         .isTrue());
+  }
+
+  @Test
+  void aMultiPageRecordIsNotReportedAsChangedWhenItWasNot() {
+    final RID rid = createRecord("x".repeat(200_000));
+    final Binary image = imageOf(rid);
+
+    database.transaction(() -> assertThat(guard(rid, image)).isFalse());
   }
 
   private boolean guard(final RID rid, final Binary image) {

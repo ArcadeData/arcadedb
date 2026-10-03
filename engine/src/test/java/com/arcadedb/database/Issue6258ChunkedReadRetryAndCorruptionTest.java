@@ -90,19 +90,17 @@ class Issue6258ChunkedReadRetryAndCorruptionTest extends BucketPageLayoutTestSup
       database.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
       try {
         // Pins the whole chain - head and every continuation page - in this transaction's snapshot.
-        bucket.getRecordInternal(rids[0], false);
+        final byte[] read = bucket.getRecordInternal(rids[0], false).toByteArray();
 
         // The record itself is rewritten, in every chunk, so the read that follows is a genuine conflict rather than
         // the false one #6217 removed.
         inAnotherThread(() -> database.transaction(
             () -> rids[0].asDocument(true).modify().set("payload", payload(0, 'y')).save()));
 
-        assertThatThrownBy(() -> bucket.getRecordInternal(rids[0], false))
-            .as("a record rewritten under a read must still fail the read")
-            .isInstanceOf(ConcurrentModificationException.class)
-            .hasMessageContaining("was modified during read")
-            .as("and must say why retrying it here cannot help, rather than advertise retries it already spent")
-            .hasMessageContaining("no retry can assemble a different one");
+        // #8987: the pinned chain IS the snapshot, so the read is answered from it without a single retry.
+        assertThat(bucket.getRecordInternal(rids[0], false).toByteArray())
+            .as("a record rewritten after a REPEATABLE_READ transaction read it must read back as it was")
+            .isEqualTo(read);
       } finally {
         database.rollback();
       }
@@ -111,9 +109,8 @@ class Issue6258ChunkedReadRetryAndCorruptionTest extends BucketPageLayoutTestSup
     }
 
     assertThat(pageManager.getStats().chunkChainReadRetries - retriesBefore)
-        .as("the read must stop as soon as a retry cannot read anything else: the first attempt, plus the one retry "
-            + "that had a fresh head page to try - and NOT one per unit of a budget it can do nothing with")
-        .isEqualTo(2);
+        .as("a read answered from the pinned snapshot must not retry at all")
+        .isZero();
   }
 
   /**
@@ -213,15 +210,14 @@ class Issue6258ChunkedReadRetryAndCorruptionTest extends BucketPageLayoutTestSup
 
     database.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
     try {
-      bucket.getRecordInternal(rids[0], false);
+      final byte[] read = bucket.getRecordInternal(rids[0], false).toByteArray();
 
       inAnotherThread(() -> database.transaction(
           () -> rids[0].asDocument(true).modify().set("payload", payload(0, 'y')).save()));
 
-      assertThatThrownBy(() -> bucket.getRecordInternal(rids[0], false))
-          .as("a busy record must not be condemned as a corrupted one")
-          .isInstanceOf(ConcurrentModificationException.class)
-          .isNotInstanceOf(BrokenChunkChainException.class);
+      assertThat(bucket.getRecordInternal(rids[0], false).toByteArray())
+          .as("a busy record must not be condemned as a corrupted one, nor torn: #8987 answers it from the snapshot")
+          .isEqualTo(read);
     } finally {
       database.rollback();
     }

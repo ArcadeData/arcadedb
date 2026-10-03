@@ -32,6 +32,7 @@ import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.index.vector.LSMVectorIndexCompacted;
 import com.arcadedb.index.vector.LSMVectorIndexMutable;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.LockException;
 import com.arcadedb.utility.LockManager;
 
@@ -41,6 +42,7 @@ import java.nio.channels.ClosedChannelException;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
@@ -65,6 +67,9 @@ public class TransactionManager {
   private final String                       logContext;
   private final Timer                        task;
   private final AtomicLong                   transactionIds      = new AtomicLong();
+  // Sequence of the transactions that published unidirectional edges, and the last one that did for each target bucket (#8986)
+  private final AtomicLong                   unidirectionalEdgeSequence = new AtomicLong();
+  private final Map<Integer, Long>           unidirectionalEdgeLastCommit = new ConcurrentHashMap<>();
   private final AtomicLong                   logFileCounter      = new AtomicLong();
   private final LockManager<Integer, Object> fileIdsLockManager  = new LockManager<>();
   private final AtomicLong                   statsPagesWritten   = new AtomicLong();
@@ -108,6 +113,26 @@ public class TransactionManager {
    * the local commit path - so it is nowhere near a hot path.
    */
   private final ReentrantReadWriteLock       applyLock           = new ReentrantReadWriteLock();
+
+  /** The sequence a delete takes before it scans for the unidirectional edges ending in its vertices (#8986). */
+  public long getUnidirectionalEdgeSequence() {
+    return unidirectionalEdgeSequence.get();
+  }
+
+  /** Whether a transaction published unidirectional edges ending in {@code bucketId} after {@code sequence} was taken. */
+  public boolean hasUnidirectionalEdgesCommittedSince(final int bucketId, final long sequence) {
+    return unidirectionalEdgeLastCommit.getOrDefault(bucketId, 0L) > sequence;
+  }
+
+  /**
+   * Called after a transaction published unidirectional edges ending in {@code targetBuckets}, and while the files of
+   * those buckets are still locked by it, so a delete holding their lock sees the sequence moved or the edges.
+   */
+  public void unidirectionalEdgesCommitted(final IntHashSet targetBuckets) {
+    final long sequence = unidirectionalEdgeSequence.incrementAndGet();
+    // merge(max): with an explicit lock list two commits can reach here out of order
+    targetBuckets.forEach(bucketId -> unidirectionalEdgeLastCommit.merge(bucketId, sequence, Math::max));
+  }
 
   public TransactionManager(final DatabaseInternal database) {
     this.database = database;
