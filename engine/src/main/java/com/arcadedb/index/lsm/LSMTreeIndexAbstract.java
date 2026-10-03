@@ -542,6 +542,33 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   }
 
   /**
+   * Returns, for the run of entries [firstKeyPos, lastKeyPos] that compare equal to the searched key, the page position of each entry's
+   * value. Keys that compare equal can serialize to different sizes only when a key part is a DECIMAL (5.00 and 5), so the size is
+   * measured per entry only then and once for the whole run otherwise (#8972).
+   */
+  protected int[] getValuePositionsOfRun(final Binary currentPageBuffer, final int startIndexArray, final int keyLength,
+      final int firstKeyPos, final int lastKeyPos) {
+    boolean variableSizeWhenEqual = false;
+    for (int k = 0; k < keyLength; ++k)
+      if (storageKeyTypes[k] == BinaryTypes.TYPE_DECIMAL) {
+        variableSizeWhenEqual = true;
+        break;
+      }
+
+    final int[] positions = new int[lastKeyPos - firstKeyPos + 1];
+    int keySerializedSize = 0;
+    for (int i = firstKeyPos; i <= lastKeyPos; ++i) {
+      final int entryPos = currentPageBuffer.getInt(startIndexArray + (i * INT_SERIALIZED_SIZE));
+      if (variableSizeWhenEqual || i == firstKeyPos) {
+        currentPageBuffer.position(entryPos);
+        keySerializedSize = getSerializedKeySize(currentPageBuffer, keyLength);
+      }
+      positions[i - firstKeyPos] = entryPos + keySerializedSize;
+    }
+    return positions;
+  }
+
+  /**
    * Reads the keys and returns the serialized size.
    */
   protected int getSerializedKeySize(final Binary buffer, final int keyLength) {

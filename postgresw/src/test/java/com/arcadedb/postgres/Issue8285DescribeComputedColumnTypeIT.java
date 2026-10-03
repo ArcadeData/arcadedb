@@ -278,6 +278,22 @@ class Issue8285DescribeComputedColumnTypeIT extends PostgresWireProtocolTestBase
   }
 
   @Test
+  void sumOfALongPropertyWithoutOverflowDescribesAsNumericAndEncodesTheLong() throws Exception {
+    try (final Connection connection = openJdbcConnection()) {
+      createAndPopulateTestType(connection);
+
+      try (final PreparedStatement statement = connection.prepareStatement("SELECT sum(n) AS s FROM Items8285")) {
+        assertThat(statement.getMetaData().getColumnTypeName(1)).isEqualTo("numeric");
+
+        try (final ResultSet resultSet = statement.executeQuery()) {
+          assertThat(resultSet.next()).isTrue();
+          assertThat(resultSet.getBigDecimal(1)).isEqualByComparingTo("3");
+        }
+      }
+    }
+  }
+
+  @Test
   void sumOfADecimalPropertyDescribesAsNumericNotFloat8BeforeExecution() throws Exception {
     // SQLFunctionSum/Type#increment keep a DECIMAL accumulator as BigDecimal: describing it as float8 would make
     // binary encoding call doubleValue() and lose precision (review of #8285).
