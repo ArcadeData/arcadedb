@@ -22,8 +22,8 @@ package com.arcadedb.serializer.json;
  * THE encoding of the three doubles JSON cannot represent - {@code NaN}, {@code +Infinity} and {@code -Infinity} -
  * as the marker strings ArcadeDB's own formats read back.
  * <p>
- * JSON has no literal for any of them, and {@link JSONArray#put(Number)} resolves that by rewriting them to
- * {@code 0} - which is a measurement of zero, indistinguishable from data. Every writer that must preserve the
+ * JSON has no literal for any of them, and {@link JSONArray#put(Number)} and {@link JSONObject#put(String, Number)}
+ * resolve that by writing {@code null}, which loses which of the three it was. Every writer that must preserve the
  * distinction therefore substitutes a string, and every reader of that writer's output must substitute back with
  * the SAME three tokens: this class is where they live, so a change on one side cannot silently diverge from the
  * other (record properties through {@code JsonGraphSerializer}, TIMESERIES samples through the JSONL

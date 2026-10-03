@@ -116,13 +116,13 @@ class Issue7584AbsentSumAvgSampleEncodingTest {
 
   /**
    * The failure mode the encoder exists to prevent, pinned so nobody "simplifies" {@code putSampleValue} back into
-   * a bare {@code put}: the raw overload turns the absent marker into a measurement of zero.
+   * a bare {@code put}: the raw overload writes a JSON null (#9114; it used to write a measurement of zero), which is not the
+   * {@code "NaN"} marker the PromQL clients read, and cannot tell NaN from the infinities.
    */
   @Test
-  void theRawJsonArrayOverloadIsWhatWouldTurnTheGapIntoAZero() {
+  void theRawJsonArrayOverloadLosesTheAbsentMarker() {
     final JSONArray raw = new JSONArray();
     raw.put((Number) Double.NaN);
-    assertThat(raw.isNull(0)).isFalse();
-    assertThat(((Number) raw.get(0)).doubleValue()).isEqualTo(0.0);
+    assertThat(raw.isNull(0)).isTrue();
   }
 }

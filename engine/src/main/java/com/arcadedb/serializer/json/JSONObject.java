@@ -21,6 +21,7 @@ package com.arcadedb.serializer.json;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.utility.DateUtils;
+import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
@@ -35,6 +36,7 @@ import java.io.IOException;
 import java.io.StringReader;
 import java.lang.reflect.Array;
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -105,10 +107,8 @@ public class JSONObject implements Map<String, Object> {
     return this;
   }
 
-  public JSONObject put(final String name, Number value) {
-    if (value != null && (Double.isNaN(value.doubleValue()) || Double.isInfinite(value.doubleValue())))
-      value = null;
-    object.addProperty(name, value);
+  public JSONObject put(final String name, final Number value) {
+    object.addProperty(name, isNonFinite(value) ? null : value);
     return this;
   }
 
@@ -144,12 +144,8 @@ public class JSONObject implements Map<String, Object> {
       for (int i = 0; i < 10; i++) {
         final JSONArray array = new JSONArray();
         try {
-          for (Object o : iterable) {
-            if (o instanceof Number num)
-              array.put(num); // THIS SOLVES A BUG WITH JDK THAT DOESN'T USE THE RIGHT METHOD WITH NaN
-            else
-              array.put(o);
-          }
+          for (Object o : iterable)
+            array.put(o);
           object.add(name, array.getInternal());
           break;
         } catch (ConcurrentModificationException e) {
@@ -191,21 +187,7 @@ public class JSONObject implements Map<String, Object> {
     case Identifiable identifiable -> object.addProperty(name, identifiable.getIdentity().toString());
     case Map map -> object.add(name, new JSONObject(map).getInternal());
     case Class<?> clazz -> object.addProperty(name, clazz.getName());
-    case Object o when o.getClass().isArray() -> {
-      // PRIMITIVE ARRAYS (float[], double[], int[], long[], short[], byte[], ...): the typed
-      // String[]/Object[] cases above don't match them, so serialize element-by-element via reflection
-      // instead of falling through to the generic toString() (which would emit "[F@...").
-      final JSONArray array = new JSONArray();
-      final int length = Array.getLength(o);
-      for (int i = 0; i < length; i++) {
-        final Object element = Array.get(o, i);
-        if (element instanceof Number num)
-          array.put(num); // ROUTE THROUGH put(Number) FOR CONSISTENT NaN/INF HANDLING
-        else
-          array.put(element);
-      }
-      object.add(name, array.getInternal());
-    }
+    case Object o when o.getClass().isArray() -> object.add(name, primitiveArrayToElement(o));
     default ->
       // GENERIC CASE: TRANSFORM IT TO STRING
         object.addProperty(name, value.toString());
@@ -678,12 +660,69 @@ public class JSONObject implements Map<String, Object> {
     throw new IllegalArgumentException("Element " + element + " not supported");
   }
 
+  /**
+   * JSON has no literal for NaN and the infinities: every writer in this class turns them into {@code null}, never into a number
+   * (a {@code 0} would be indistinguishable from a measurement). The integral types and the big numbers are finite by construction, so
+   * a huge {@link BigDecimal} is not mistaken for an infinity. Any other {@link Number} is asked for its double value, so a
+   * lazily parsed token outside the double range is treated as non-finite as well.
+   */
+  static boolean isNonFinite(final Number number) {
+    if (number instanceof Double || number instanceof Float)
+      return !Double.isFinite(number.doubleValue());
+    if (number == null || number instanceof Integer || number instanceof Long || number instanceof BigDecimal || number instanceof BigInteger
+        || number instanceof Short || number instanceof Byte)
+      return false;
+    // any other Number (e.g. a lazily parsed "NaN" token): ask for its double value
+    return !Double.isFinite(number.doubleValue());
+  }
+
+  // PRIMITIVE ARRAYS (float[], double[], int[], long[], short[], byte[], ...): serialized element-by-element via reflection instead of
+  // falling through to the generic toString() (which would emit "[F@..."), wherever the array sits: a property, a map value or a list element.
+  private static JsonElement primitiveArrayToElement(final Object array) {
+    // TYPED LOOPS FOR THE COMMON CASES (EMBEDDINGS, BINARY): NO REFLECTION AND NO TYPE SWITCH PER ELEMENT
+    final JsonArray result;
+    switch (array) {
+    case float[] floats -> {
+      result = new JsonArray(floats.length);
+      for (final float f : floats)
+        result.add(Float.isFinite(f) ? new JsonPrimitive(f) : JsonNull.INSTANCE);
+    }
+    case double[] doubles -> {
+      result = new JsonArray(doubles.length);
+      for (final double d : doubles)
+        result.add(Double.isFinite(d) ? new JsonPrimitive(d) : JsonNull.INSTANCE);
+    }
+    case int[] ints -> {
+      result = new JsonArray(ints.length);
+      for (final int i : ints)
+        result.add(i);
+    }
+    case long[] longs -> {
+      result = new JsonArray(longs.length);
+      for (final long l : longs)
+        result.add(l);
+    }
+    case byte[] bytes -> {
+      result = new JsonArray(bytes.length);
+      for (final byte b : bytes)
+        result.add(b);
+    }
+    default -> {
+      final int length = Array.getLength(array);
+      result = new JsonArray(length);
+      for (int i = 0; i < length; i++)
+        result.add(objectToElement(Array.get(array, i)));
+    }
+    }
+    return result;
+  }
+
   protected static JsonElement objectToElement(final Object object) {
     return switch (object) {
       case null -> JsonNull.INSTANCE;
       case JsonElement jsonElement -> jsonElement;
       case String string -> new JsonPrimitive(string);
-      case Number number -> new JsonPrimitive(number);
+      case Number number -> isNonFinite(number) ? JsonNull.INSTANCE : new JsonPrimitive(number);
       case Boolean boolean1 -> new JsonPrimitive(boolean1);
       case Character character -> new JsonPrimitive(character);
       case JSONObject nObject -> nObject.getInternal();
@@ -694,6 +733,7 @@ public class JSONObject implements Map<String, Object> {
       case Document document -> document.toJSON(false).getInternal();
       case Identifiable identifiable -> new JsonPrimitive(identifiable.getIdentity().toString());
       case Enum<?> enumValue -> new JsonPrimitive(enumValue.name());
+      case Object o when o.getClass().isArray() -> primitiveArrayToElement(o);
       case Date date -> new JsonPrimitive(date.getTime());
       case LocalDate localDate -> new JsonPrimitive(localDate.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli());
       case TemporalAccessor temporalAccessor -> {
@@ -767,13 +807,13 @@ public class JSONObject implements Map<String, Object> {
   }
 
   /**
-   * Checks recursively and replace NaN values with zero.
+   * Checks recursively and replaces NaN and infinite values with null.
    */
   public void validate() {
     for (String key : keySet()) {
       Object value = get(key);
       if (value instanceof Number number) {
-        if (Double.isNaN(number.doubleValue()) || Double.isInfinite(number.doubleValue()))
+        if (isNonFinite(number))
           // FIX NAN NUMBERS
           put(key, (Number) null);
       } else if (value instanceof JSONObject nObject) {
@@ -782,7 +822,7 @@ public class JSONObject implements Map<String, Object> {
         for (int i = 0; i < array.length(); i++) {
           final Object arrayValue = array.get(i);
           if (arrayValue instanceof Number number) {
-            if (Double.isNaN(number.doubleValue()) || Double.isInfinite(number.doubleValue()))
+            if (isNonFinite(number))
               // FIX NAN NUMBERS
               array.put(i, null);
           } else if (arrayValue instanceof JSONObject nObject) {
