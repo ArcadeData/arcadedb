@@ -21,6 +21,7 @@ package com.arcadedb.server.ai;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
+import java.util.Locale;
 import java.util.Set;
 import java.util.regex.Pattern;
 
@@ -62,7 +63,7 @@ final class AiCharts {
     final String type = chart.getString("type", "");
     if (!TYPES.contains(type))
       return null;
-    final String language = chart.getString("language", "sql").toLowerCase();
+    final String language = chart.getString("language", "sql").toLowerCase(Locale.ROOT);
     if (!LANGUAGES.contains(language))
       return null;
     final String query = chart.getString("query", "").trim();

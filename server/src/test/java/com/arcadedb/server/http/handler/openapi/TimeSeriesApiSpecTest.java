@@ -98,8 +98,9 @@ class TimeSeriesApiSpecTest {
         .containsExactlyInAnyOrder("type", "from", "to", "tags", "fields", "aggregation", "limit");
 
     final Schema<?> aggregation = schema.getProperties().get("aggregation");
+    // bucketOrigin: the optional grid offset TimeSeriesHandlerUtils reads (issue #8798)
     assertThat(aggregation.getProperties().keySet())
-        .containsExactlyInAnyOrder("bucketInterval", "requests");
+        .containsExactlyInAnyOrder("bucketInterval", "bucketOrigin", "requests");
     assertThat(aggregation.getProperties().get("requests").getItems().getProperties().keySet())
         .containsExactlyInAnyOrder("field", "type", "alias");
   }
