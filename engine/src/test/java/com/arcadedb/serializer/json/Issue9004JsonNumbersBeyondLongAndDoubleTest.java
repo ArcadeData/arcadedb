@@ -31,6 +31,7 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for issues #9004 (an integer beyond the long range wrapped around to its low 64 bits, a decimal with more digits
@@ -121,16 +122,13 @@ class Issue9004JsonNumbersBeyondLongAndDoubleTest extends TestHelper {
   }
 
   @Test
-  void hostileExponentAndLengthStayDoubles() {
-    final Map<String, Object> map = new JSONObject("{\"e\":1e999999999,\"n\":-1e999999999,\"u\":1e-999999999,\"long\":" + "9".repeat(1001) + "}").toMap();
-    assertThat(map.get("e")).isEqualTo(Double.POSITIVE_INFINITY);
-    assertThat(map.get("n")).isEqualTo(Double.NEGATIVE_INFINITY);
-    assertThat(map.get("u")).isEqualTo(0.0);
-    assertThat(map.get("long")).isEqualTo(Double.POSITIVE_INFINITY);
-    // an exponent that would wrap around a long is refused too, not handed to BigDecimal
-    assertThat(new JSONObject("{\"w\":1e18446744073709551617,\"v\":1e-18446744073709551617}").toMap().get("w")).isEqualTo(Double.POSITIVE_INFINITY);
-    assertThat(new JSONObject("{\"w\":1e18446744073709551617,\"v\":1e-18446744073709551617}").toMap().get("v")).isEqualTo(0.0);
-    assertThat(new JSONObject("{\"a\":[1.5,1e18446744073709551617]}").toMap(true).get("a")).isEqualTo(List.of(1.5, Double.POSITIVE_INFINITY));
+  void hostileExponentAndLengthAreRefused() {
+    for (final String token : new String[] { "1e999999999", "-1e999999999", "1e-999999999", "1e18446744073709551617", "1e-18446744073709551617",
+        "9".repeat(1001) }) {
+      assertThatThrownBy(() -> new JSONObject("{\"x\":" + token + "}").toMap()).as(token.length() > 30 ? "long token" : token)
+          .isInstanceOf(JSONException.class);
+      assertThatThrownBy(() -> new JSONObject("{\"a\":[1.5," + token + "]}").toMap(true)).isInstanceOf(JSONException.class);
+    }
     // within the limits the number is still kept exact
     assertThat(new JSONObject("{\"x\":1e900}").toMap().get("x")).isEqualTo(new BigDecimal("1e900"));
     assertThat(new JSONObject("{\"z\":0.000000000000000000000}").toMap().get("z")).isEqualTo(0.0);

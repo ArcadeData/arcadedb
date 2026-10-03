@@ -129,6 +129,13 @@ class Issue9002HttpParamsFidelityIT extends BaseGraphServerTest {
   }
 
   @Test
+  void hostileNumberTokenIsAClientError() throws Exception {
+    final HttpResponse<String> response = post("command", null, "INSERT INTO T9002 SET id = 9, v = :v", "{\"v\":1e18446744073709551617}");
+    assertThat(response.statusCode()).isEqualTo(400);
+    assertThat(post("command", null, "INSERT INTO T9002 SET id = 9, v = :v", "{\"v\":" + "9".repeat(1001) + "}").statusCode()).isEqualTo(400);
+  }
+
+  @Test
   void commitAfterAFailedCommandIsRefusedAndNothingRunsInAutocommit() throws Exception {
     final HttpResponse<String> begin = post("begin", null, null, null);
     final String session = begin.headers().firstValue("arcadedb-session-id").orElseThrow();

@@ -632,8 +632,11 @@ public class JSONObject implements Map<String, Object> {
         if (strValue.contains(".") || strValue.contains("e") || strValue.contains("E")) {
           // Contains decimal point or scientific notation: a double, unless it carries more digits than a double holds
           final double doubleVal = primitive.getAsDouble();
-          if (mayLoseDigits(strValue, doubleVal) && !isExactDouble(strValue, doubleVal) && isSafeBigNumber(strValue))
+          if (mayLoseDigits(strValue, doubleVal) && !isExactDouble(strValue, doubleVal)) {
+            if (!isSafeBigNumber(strValue))
+              throw new JSONException("Number token too large: " + strValue.length() + " characters or an exponent beyond " + MAX_BIG_NUMBER_EXPONENT);
             return new BigDecimal(strValue);
+          }
           return doubleVal;
         } else {
           // Check if it fits in an Integer or a Long. LazilyParsedNumber.longValue() would silently keep the low 64 bits of a
@@ -646,7 +649,9 @@ public class JSONObject implements Map<String, Object> {
 
           } catch (NumberFormatException e) {
             // beyond the long range: keep every digit, unless the token is one only a hostile payload writes
-            return isSafeBigNumber(strValue) ? new BigDecimal(strValue) : (Object) primitive.getAsDouble();
+            if (!isSafeBigNumber(strValue))
+              throw new JSONException("Number token too large: " + strValue.length() + " characters");
+            return new BigDecimal(strValue);
           }
         }
       } else if (primitive.isString())
@@ -668,7 +673,8 @@ public class JSONObject implements Map<String, Object> {
   /**
    * Whether a token that no long or double holds may become a {@link BigDecimal}. A {@code 1e999999999} token is a few bytes that
    * a later {@code toBigInteger()}, {@code toPlainString()} or integer conversion would expand into gigabytes, and a token of
-   * thousands of digits costs superlinear time to parse: beyond these limits the number stays what it always was, a double.
+   * thousands of digits costs superlinear time to parse: beyond these limits the token is refused (a {@link JSONException}, HTTP 400)
+   * rather than stored as an {@code Infinity} that the writers turn into {@code null}.
    */
   static boolean isSafeBigNumber(final String token) {
     if (token.length() > MAX_BIG_NUMBER_TOKEN_LENGTH)
