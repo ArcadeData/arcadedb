@@ -183,4 +183,39 @@ class Issue9112ExistingRecordsConstraintsTest extends TestHelper {
     database.command("opencypher", "CREATE CONSTRAINT FOR (n:R) REQUIRE n.name IS NOT NULL");
     assertThat(database.getSchema().getType("R").getProperty("name").isMandatory()).isTrue();
   }
+
+  @Test
+  void refusedCreatePropertyCanBeRetriedAfterFixingTheData() {
+    database.command("sql", "CREATE DOCUMENT TYPE T");
+    insert("T", "v = 'abc'");
+    assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY T.v INTEGER")).isInstanceOf(CommandExecutionException.class);
+    assertThat(hasProperty("T", "v")).isFalse();
+    database.transaction(() -> database.command("sql", "UPDATE T SET v = 5").close());
+    database.command("sql", "CREATE PROPERTY T.v INTEGER");
+    assertThat(hasProperty("T", "v")).isTrue();
+  }
+
+  @Test
+  void clearingABoundNeedsNoScan() {
+    database.command("sql", "CREATE DOCUMENT TYPE T");
+    database.command("sql", "CREATE PROPERTY T.a INTEGER (min 1)");
+    insert("T", "a = 5");
+    assertThat(database.command("sql", "ALTER PROPERTY T.a MIN null").hasNext()).isTrue();
+  }
+
+  @Test
+  void invalidRegexpIsRefusedEvenOverAnEmptyType() {
+    database.command("sql", "CREATE DOCUMENT TYPE T");
+    database.command("sql", "CREATE PROPERTY T.s STRING");
+    assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY T.s REGEXP '[a-'")).isInstanceOf(
+        CommandExecutionException.class).hasMessageContaining("Invalid regular expression");
+  }
+
+  @Test
+  void createPlainStringPropertyOverExistingRecords() {
+    database.command("sql", "CREATE DOCUMENT TYPE T");
+    insert("T", "s = 5");
+    database.command("sql", "CREATE PROPERTY T.s STRING");
+    assertThat(hasProperty("T", "s")).isTrue();
+  }
 }

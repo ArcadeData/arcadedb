@@ -568,10 +568,16 @@ public class OpenCypherQueryEngine implements QueryEngine {
     // in the database unable to take any update, and out of any index on the property. Checked first, so a refusal leaves
     // no property or index behind.
     final CypherDDLStatement.ConstraintKind kind = ddl.getConstraintKind();
-    if (kind == CypherDDLStatement.ConstraintKind.NOT_NULL || kind == CypherDDLStatement.ConstraintKind.KEY)
-      for (final String propName : propertyNames)
-        ExistingRecordsCheck.requireExistence(schema.getEmbedded().getDatabase(), schema.getType(typeName), propName, true,
-            false);
+    if (kind == CypherDDLStatement.ConstraintKind.NOT_NULL || kind == CypherDDLStatement.ConstraintKind.KEY) {
+      final Database database = schema.getEmbedded().getDatabase();
+      final DocumentType constrainedType = schema.getType(typeName);
+      for (final String propName : propertyNames) {
+        final Property declared = constrainedType.getPropertyIfExists(propName);
+        // already MANDATORY (an IF NOT EXISTS that will be a no-op): nothing new to check
+        if (declared == null || !declared.isMandatory())
+          ExistingRecordsCheck.requireExistence(database, constrainedType, propName, true, false);
+      }
+    }
 
     // For TYPED constraints, resolve the target type first so properties are created with the correct type
     final boolean isTyped = ddl.getConstraintKind() == CypherDDLStatement.ConstraintKind.TYPED;

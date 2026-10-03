@@ -114,7 +114,11 @@ public class CreatePropertyStatement extends DDLStatement {
       ExistingRecordsCheck.requireDeclaration(db, typez, internalProp);
     } catch (final RuntimeException e) {
       // LEAVE THE SCHEMA AS IT WAS BEFORE THE STATEMENT
-      typez.dropProperty(propertyName.getStringValue());
+      try {
+        typez.dropProperty(propertyName.getStringValue());
+      } catch (final RuntimeException dropFailure) {
+        e.addSuppressed(dropFailure);
+      }
       typeName = prevType;
       throw e;
     }

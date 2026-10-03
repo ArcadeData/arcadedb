@@ -184,4 +184,13 @@ class Issue9111ListOfDateAndDocumentTypesTest extends TestHelper {
         () -> database.newDocument("Person").set("byName", new LinkedHashMap<>(Map.of("home", 1))).save())).isInstanceOf(
         ValidationException.class);
   }
+
+  @Test
+  void listOfDocumentTypeAcceptsNullElement() {
+    declareAddress();
+    final List<Object> withNull = new ArrayList<>();
+    withNull.add(null);
+    database.transaction(() -> database.newDocument("Person").set("addresses", withNull).save());
+    assertThat(database.countType("Person", true)).isEqualTo(1);
+  }
 }

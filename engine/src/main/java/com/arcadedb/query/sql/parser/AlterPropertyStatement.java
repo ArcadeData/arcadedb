@@ -119,11 +119,11 @@ public class AlterPropertyStatement extends DDLStatement {
         property.setCompression(String.valueOf(finalValue));
       } else if ("max".equalsIgnoreCase(setting)) {
         oldValue = property.getMax();
-        requireStoredValuesWithin(db, typez, property, null, "" + finalValue, null, "MAX " + finalValue);
+        requireStoredValuesWithin(db, typez, property, finalValue, null, "" + finalValue, null, "MAX " + finalValue);
         property.setMax("" + finalValue);
       } else if ("min".equalsIgnoreCase(setting)) {
         oldValue = property.getMin();
-        requireStoredValuesWithin(db, typez, property, "" + finalValue, null, null, "MIN " + finalValue);
+        requireStoredValuesWithin(db, typez, property, finalValue, "" + finalValue, null, null, "MIN " + finalValue);
         property.setMin("" + finalValue);
       } else if ("default".equalsIgnoreCase(setting)) {
         // Issue #6134: report the definition rather than evaluating the outgoing default. Evaluating it would make
@@ -133,7 +133,7 @@ public class AlterPropertyStatement extends DDLStatement {
         property.setDefaultValue("" + finalValue);
       } else if ("regexp".equalsIgnoreCase(setting)) {
         oldValue = property.getRegexp();
-        requireStoredValuesWithin(db, typez, property, null, null, "" + finalValue, "REGEXP " + finalValue);
+        requireStoredValuesWithin(db, typez, property, finalValue, null, null, "" + finalValue, "REGEXP " + finalValue);
         property.setRegexp("" + finalValue);
       } else {
         throw new CommandExecutionException("Setting '" + setting + "' not supported");
@@ -156,10 +156,10 @@ public class AlterPropertyStatement extends DDLStatement {
    * ({@code null}) needs no scan.
    */
   private static void requireStoredValuesWithin(final Database db, final DocumentType type, final Property property,
-      final String min, final String max, final String regexp, final String what) {
-    if ("null".equals(min) || "null".equals(max) || "null".equals(regexp))
+      final Object newValue, final String min, final String max, final String regexp, final String what) {
+    if (newValue == null)
       return;
-    ExistingRecordsCheck.requireValues(db, type, property, new StoredValueConstraints(false, min, max, regexp), what);
+    ExistingRecordsCheck.requireValues(db, type, property, StoredValueConstraints.of(false, min, max, regexp), what);
   }
 
   @Override

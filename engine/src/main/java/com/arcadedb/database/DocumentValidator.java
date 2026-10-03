@@ -19,6 +19,7 @@
 package com.arcadedb.database;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
@@ -32,6 +33,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 
 /**
  * Validates documents against constraints defined in the schema.
@@ -140,9 +142,31 @@ public class DocumentValidator {
    * @param max       upper bound, or null
    * @param regexp    pattern the value has to match, or null
    */
-  public record StoredValueConstraints(boolean checkType, String min, String max, String regexp) {
+  public record StoredValueConstraints(boolean checkType, String min, String max, String regexp, Pattern pattern) {
+    /**
+     * Compiles the pattern once, so the scan over a whole type does not compile it per record, and refuses an invalid one
+     * up front rather than only when the first record is read.
+     */
+    public static StoredValueConstraints of(final boolean checkType, final String min, final String max, final String regexp) {
+      final Pattern pattern;
+      try {
+        pattern = regexp != null ? Pattern.compile(regexp) : null;
+      } catch (final PatternSyntaxException e) {
+        throw new CommandExecutionException("Invalid regular expression '" + regexp + "': " + e.getMessage(), e);
+      }
+      return new StoredValueConstraints(checkType, min, max, regexp, pattern);
+    }
+
     public static StoredValueConstraints of(final Property p) {
-      return new StoredValueConstraints(true, p.getMin(), p.getMax(), p.getRegexp());
+      return of(true, p.getMin(), p.getMax(), p.getRegexp());
+    }
+
+    /**
+     * @return false when no stored value can violate these constraints on a property of this type, so a scan would read
+     * every record for nothing
+     */
+    public boolean canBeViolatedOn(final Type type) {
+      return checkType && isScalarType(type) || min != null || max != null || regexp != null;
     }
   }
 
@@ -183,7 +207,7 @@ public class DocumentValidator {
       value = converted;
     }
 
-    if (constraints.regexp() != null && !TimeBoundRegex.matchesUntil(Pattern.compile(constraints.regexp()), value.toString(),
+    if (constraints.pattern() != null && !TimeBoundRegex.matchesUntil(constraints.pattern(), value.toString(),
         TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(document.getDatabase()))))
       throwValidationException(document.getType(), p,
           "does not match the regular expression '" + constraints.regexp() + "'. Field value is: " + stored);
