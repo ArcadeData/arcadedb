@@ -317,17 +317,11 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
       return new LookupResult(true, false, mid,
           new int[] { currentPageBuffer.getInt(startIndexArray + (mid * INT_SERIALIZED_SIZE)) + keySerializedSize });
     } else if (purpose == 1) {
-      // RETRIEVE
-      currentPageBuffer.position(currentPageBuffer.getInt(startIndexArray + (mid * INT_SERIALIZED_SIZE)));
-      final int keySerializedSize = getSerializedKeySize(currentPageBuffer, convertedKeys.length);
-
       // RETRIEVE ALL THE RESULTS
       final int firstKeyPos = findFirstEntryOfSameKey(currentPageBuffer, convertedKeys, startIndexArray, mid);
       final int lastKeyPos = findLastEntryOfSameKey(count, currentPageBuffer, convertedKeys, startIndexArray, mid);
 
-      final int[] positionsArray = new int[lastKeyPos - firstKeyPos + 1];
-      for (int i = firstKeyPos; i <= lastKeyPos; ++i)
-        positionsArray[i - firstKeyPos] = currentPageBuffer.getInt(startIndexArray + (i * INT_SERIALIZED_SIZE)) + keySerializedSize;
+      final int[] positionsArray = getValuePositionsOfRun(currentPageBuffer, startIndexArray, convertedKeys.length, firstKeyPos, lastKeyPos);
 
       return new LookupResult(true, false, lastKeyPos, positionsArray);
     }
