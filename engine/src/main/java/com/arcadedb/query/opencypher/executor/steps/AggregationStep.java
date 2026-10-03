@@ -122,6 +122,7 @@ public class AggregationStep extends AbstractExecutionStep {
         // Pass the DISTINCT flag to create the appropriate function instance
         final StatelessFunction function = HeapBufferingFunction.adopt(functionFactory.getFunctionExecutor(
             funcExpr.getFunctionName(), funcExpr.isDistinct()), heapLimit);
+        funcExpr.validateArity(function);
         aggregators.put(item.getOutputName(), function);
         aggregationExpressions.put(item.getOutputName(), expr);
       } else if (expr.containsAggregation()) {
@@ -175,7 +176,6 @@ public class AggregationStep extends AbstractExecutionStep {
             }
 
             // Feed this row's data to the aggregator
-            function.checkArity(args);
             function.execute(args, context);
           }
         }
@@ -188,7 +188,6 @@ public class AggregationStep extends AbstractExecutionStep {
             final Object[] args = new Object[innerAgg.getArguments().size()];
             for (int i = 0; i < args.length; i++)
               args[i] = evaluator.evaluate(innerAgg.getArguments().get(i), inputRow, context);
-            function.checkArity(args);
             function.execute(args, context);
           }
         }
@@ -315,8 +314,10 @@ public class AggregationStep extends AbstractExecutionStep {
         final String key = funcExpr.getText();
         if (!innerAggs.containsKey(key)) {
           innerAggs.put(key, funcExpr);
-          innerFunctions.put(key, HeapBufferingFunction.adopt(functionFactory.getFunctionExecutor(
-              funcExpr.getFunctionName(), funcExpr.isDistinct()), heapLimit));
+          final StatelessFunction innerFunction = HeapBufferingFunction.adopt(functionFactory.getFunctionExecutor(
+              funcExpr.getFunctionName(), funcExpr.isDistinct()), heapLimit);
+          funcExpr.validateArity(innerFunction);
+          innerFunctions.put(key, innerFunction);
         }
         return; // Don't recurse into aggregation arguments
       }
