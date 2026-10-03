@@ -126,27 +126,32 @@ public class PromQLParser {
   }
 
   private PromQLExpr parseMulDiv() {
-    PromQLExpr left = parsePow();
+    PromQLExpr left = parseUnary();
     while (true) {
       if (lexer.match("*"))
-        left = new BinaryExpr(left, BinaryOp.MUL, parsePow());
+        left = new BinaryExpr(left, BinaryOp.MUL, parseUnary());
       else if (lexer.match("/"))
-        left = new BinaryExpr(left, BinaryOp.DIV, parsePow());
+        left = new BinaryExpr(left, BinaryOp.DIV, parseUnary());
       else if (lexer.match("%"))
-        left = new BinaryExpr(left, BinaryOp.MOD, parsePow());
+        left = new BinaryExpr(left, BinaryOp.MOD, parseUnary());
       else
         break;
     }
     return left;
   }
 
+  /**
+   * Prometheus gives a unary operator the precedence of {@code *}, below {@code ^} (issue #8929): {@code -2^2} is
+   * {@code -(2^2)}. So the chain is {@code parseMulDiv -> parseUnary -> parsePow -> parsePrimary}, and the right
+   * operand of {@code ^} re-enters at {@code parseUnary} so that {@code 2^-2} still parses.
+   */
   private PromQLExpr parsePow() {
-    PromQLExpr left = parseUnary();
+    PromQLExpr left = parsePrimary();
     if (lexer.match("^")) {
       if (++parseDepth > MAX_PARSE_DEPTH)
         throw new IllegalArgumentException("PromQL expression exceeds maximum nesting depth of " + MAX_PARSE_DEPTH);
       try {
-        left = new BinaryExpr(left, BinaryOp.POW, parsePow()); // right-associative
+        left = new BinaryExpr(left, BinaryOp.POW, parseUnary()); // right-associative
       } finally {
         parseDepth--;
       }
@@ -173,7 +178,7 @@ public class PromQLParser {
         parseDepth--;
       }
     }
-    return parsePrimary();
+    return parsePow();
   }
 
   private PromQLExpr parsePrimary() {

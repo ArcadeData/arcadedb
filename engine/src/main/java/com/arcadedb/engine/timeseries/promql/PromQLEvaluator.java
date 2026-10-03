@@ -379,6 +379,9 @@ public class PromQLEvaluator {
   private PromQLResult evaluateAggregation(final AggregationExpr agg, final long evalTimeMs, final long queryStartMs,
       final long queryEndMs, final long stepMs, final int depth) {
     final PromQLResult inner = evaluate(agg.expr(), evalTimeMs, queryStartMs, queryEndMs, stepMs, depth);
+    // k does not depend on the group, and an invalid one is refused even when the vector is empty, like Prometheus
+    final boolean ranking = agg.op() == PromQLExpr.AggOp.TOPK || agg.op() == PromQLExpr.AggOp.BOTTOMK;
+    final int rankLimit = ranking ? rankingLimit(agg, evalTimeMs, queryStartMs, queryEndMs, stepMs, depth) : 0;
     if (!(inner instanceof InstantVector iv))
       return new InstantVector(List.of());
 
@@ -421,27 +424,46 @@ public class PromQLEvaluator {
           yield max;
         }
         case COUNT -> (double) group.size();
-        case TOPK -> {
-          final int k = agg.param() != null ? (int) ((NumberLiteral) agg.param()).value() : 1;
-          group.sort(Comparator.comparingDouble(VectorSample::value).reversed());
+        case TOPK, BOTTOMK -> {
+          // Prometheus ranks the absent marker below every real sample for BOTH (issue #8927): it only fills a slot
+          // when there are not enough real samples. Double.compare would order NaN above +Infinity.
+          final int k = rankLimit;
+          final boolean descending = agg.op() == PromQLExpr.AggOp.TOPK;
+          group.sort((a, b) -> {
+            final boolean aAbsent = TimeSeriesNaN.isAbsent(a.value());
+            final boolean bAbsent = TimeSeriesNaN.isAbsent(b.value());
+            if (aAbsent || bAbsent)
+              return aAbsent == bAbsent ? 0 : aAbsent ? 1 : -1;
+            return descending ? Double.compare(b.value(), a.value()) : Double.compare(a.value(), b.value());
+          });
           for (int i = 0; i < Math.min(k, group.size()); i++)
             result.add(group.get(i));
-          yield Double.NaN; // topk adds samples directly
-        }
-        case BOTTOMK -> {
-          final int k = agg.param() != null ? (int) ((NumberLiteral) agg.param()).value() : 1;
-          group.sort(Comparator.comparingDouble(VectorSample::value));
-          for (int i = 0; i < Math.min(k, group.size()); i++)
-            result.add(group.get(i));
-          yield Double.NaN; // bottomk adds samples directly
+          yield Double.NaN; // topk/bottomk add samples directly
         }
       };
 
-      if (agg.op() != PromQLExpr.AggOp.TOPK && agg.op() != PromQLExpr.AggOp.BOTTOMK)
+      if (!ranking)
         result.add(new VectorSample(groupLabels, value, ts));
     }
 
     return new InstantVector(result);
+  }
+
+  /**
+   * Evaluates the {@code k} parameter of topk/bottomk as any scalar expression. Like Prometheus, a NaN is refused and
+   * a value below 1 selects nothing; a value above the vector size selects everything.
+   */
+  private int rankingLimit(final AggregationExpr agg, final long evalTimeMs, final long queryStartMs, final long queryEndMs,
+      final long stepMs, final int depth) {
+    if (agg.param() == null)
+      return 1;
+    final PromQLResult param = evaluate(agg.param(), evalTimeMs, queryStartMs, queryEndMs, stepMs, depth);
+    if (!(param instanceof ScalarResult sr))
+      throw new IllegalArgumentException("Parameter of " + agg.op().name().toLowerCase(Locale.ROOT) + " must be a scalar");
+    final double k = sr.value();
+    if (Double.isNaN(k))
+      throw new IllegalArgumentException("Parameter value of " + agg.op().name().toLowerCase(Locale.ROOT) + " is NaN");
+    return k < 1 ? 0 : k >= Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) k;
   }
 
   private PromQLResult evaluateFunction(final FunctionCallExpr fn, final long evalTimeMs, final long queryStartMs,
@@ -688,7 +710,7 @@ public class PromQLEvaluator {
    */
   private Map<String, String> extractLabels(final Object[] row, final List<ColumnDefinition> columns, final String metricName) {
     final Map<String, String> labels = new LinkedHashMap<>();
-    labels.put("__name__", metricName);
+    labels.put(METRIC_NAME_LABEL, metricName);
     int nonTsIdx = 0;
     for (final ColumnDefinition col : columns) {
       if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
@@ -781,7 +803,9 @@ public class PromQLEvaluator {
       return Map.of();
     final Map<String, String> result = new LinkedHashMap<>();
     if (without) {
+      // Prometheus' `without` always deletes the metric name too (issue #8926)
       final Set<String> exclude = new HashSet<>(groupLabels);
+      exclude.add(METRIC_NAME_LABEL);
       for (final Map.Entry<String, String> entry : labels.entrySet())
         if (!exclude.contains(entry.getKey()))
           result.put(entry.getKey(), entry.getValue());
@@ -794,18 +818,44 @@ public class PromQLEvaluator {
   }
 
   private String labelKey(final Map<String, String> labels) {
+    return labelKey(labels, null);
+  }
+
+  /** Same as {@link #labelKey(Map)} but skipping the label named {@code excluded} without copying the map. */
+  private String labelKey(final Map<String, String> labels, final String excluded) {
     if (labels.isEmpty())
       return "{}";
     final List<String> sorted = new ArrayList<>(labels.keySet());
+    if (excluded != null)
+      sorted.remove(excluded);
     Collections.sort(sorted);
     final StringBuilder sb = new StringBuilder("{");
     for (int i = 0; i < sorted.size(); i++) {
       if (i > 0)
         sb.append(',');
-      sb.append(sorted.get(i)).append('=').append(labels.get(sorted.get(i)));
+      // length-prefixed value: a value holding ',' or '=' cannot make two distinct label sets share a key
+      final String value = labels.get(sorted.get(i));
+      sb.append(sorted.get(i)).append('=').append(value.length()).append(':').append(value);
     }
     sb.append('}');
     return sb.toString();
+  }
+
+  /**
+   * Signature used to match two instant vectors: the label set with the metric name EXCLUDED, as Prometheus'
+   * {@code signatureFunc} does for every operator without {@code on(...)} (issue #8926).
+   */
+  private String matchKey(final Map<String, String> labels) {
+    return labelKey(labels, METRIC_NAME_LABEL);
+  }
+
+  /** The result labels of an arithmetic operator: Prometheus drops the metric name. */
+  private Map<String, String> resultLabels(final Map<String, String> labels, final BinaryOp op) {
+    if (isComparisonOp(op) || !labels.containsKey(METRIC_NAME_LABEL))
+      return labels;
+    final Map<String, String> withoutName = new LinkedHashMap<>(labels);
+    withoutName.remove(METRIC_NAME_LABEL);
+    return withoutName;
   }
 
   private InstantVector applyVectorScalar(final InstantVector iv, final double scalar, final BinaryOp op,
@@ -814,7 +864,7 @@ public class PromQLEvaluator {
     for (final VectorSample s : iv.samples()) {
       final double value = scalarOnLeft ? applyBinaryOp(op, scalar, s.value()) : applyBinaryOp(op, s.value(), scalar);
       if (!isComparisonOp(op) || value != 0)
-        result.add(new VectorSample(s.labels(), isComparisonOp(op) ? s.value() : value, s.timestampMs()));
+        result.add(new VectorSample(resultLabels(s.labels(), op), isComparisonOp(op) ? s.value() : value, s.timestampMs()));
     }
     return new InstantVector(result);
   }
@@ -823,11 +873,11 @@ public class PromQLEvaluator {
     // Simple vector-vector matching by label identity
     final Map<String, VectorSample> rightMap = new HashMap<>();
     for (final VectorSample s : right.samples())
-      rightMap.put(labelKey(s.labels()), s);
+      rightMap.put(matchKey(s.labels()), s);
 
     final List<VectorSample> result = new ArrayList<>();
     for (final VectorSample ls : left.samples()) {
-      final VectorSample rs = rightMap.get(labelKey(ls.labels()));
+      final VectorSample rs = rightMap.get(matchKey(ls.labels()));
       if (rs != null) {
         if (op == BinaryOp.AND || op == BinaryOp.OR) {
           // For a matched label set both AND and OR are the left-hand sample by definition. OR used to fall
@@ -840,7 +890,7 @@ public class PromQLEvaluator {
         } else {
           final double value = applyBinaryOp(op, ls.value(), rs.value());
           if (!isComparisonOp(op) || value != 0)
-            result.add(new VectorSample(ls.labels(), isComparisonOp(op) ? ls.value() : value, ls.timestampMs()));
+            result.add(new VectorSample(resultLabels(ls.labels(), op), isComparisonOp(op) ? ls.value() : value, ls.timestampMs()));
         }
       } else if (op == BinaryOp.OR || op == BinaryOp.UNLESS) {
         result.add(ls);
@@ -850,9 +900,9 @@ public class PromQLEvaluator {
     if (op == BinaryOp.OR) {
       final Set<String> leftKeys = new HashSet<>();
       for (final VectorSample s : left.samples())
-        leftKeys.add(labelKey(s.labels()));
+        leftKeys.add(matchKey(s.labels()));
       for (final VectorSample rs : right.samples())
-        if (!leftKeys.contains(labelKey(rs.labels())))
+        if (!leftKeys.contains(matchKey(rs.labels())))
           result.add(rs);
     }
     return new InstantVector(result);
@@ -863,8 +913,8 @@ public class PromQLEvaluator {
       case ADD -> left + right;
       case SUB -> left - right;
       case MUL -> left * right;
-      case DIV -> right == 0 ? Double.NaN : left / right;
-      case MOD -> right == 0 ? Double.NaN : left % right;
+      case DIV -> left / right; // IEEE-754 like Prometheus: 1/0 = +Inf, only 0/0 is NaN (issue #8929)
+      case MOD -> left % right; // Java and Go both answer NaN for a zero divisor
       case POW -> Math.pow(left, right);
       case EQ -> left == right ? 1.0 : 0.0;
       case NEQ -> left != right ? 1.0 : 0.0;
@@ -889,6 +939,7 @@ public class PromQLEvaluator {
     };
   }
 
+  private static final String METRIC_NAME_LABEL = "__name__";
   private static final int    MAX_TYPE_NAME_LENGTH   = 256;
   private static final Pattern VALID_TYPE_NAME_PATTERN = Pattern.compile("[a-zA-Z_][a-zA-Z0-9_]*");
 
