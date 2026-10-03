@@ -297,4 +297,39 @@ class Issue9112ExistingRecordsConstraintsTest extends TestHelper {
     assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY T.v INTEGER")).isInstanceOf(CommandExecutionException.class);
     assertThat(hasProperty("T", "v")).isFalse();
   }
+
+  @Test
+  void createListOfIntegerIsRefusedOverANestedListElement() {
+    database.command("sql", "CREATE DOCUMENT TYPE T");
+    database.transaction(() -> database.command("sql", "INSERT INTO T SET l = [[1, 2], 3]").close());
+    assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY T.l LIST OF INTEGER")).isInstanceOf(
+        CommandExecutionException.class);
+    assertThat(hasProperty("T", "l")).isFalse();
+  }
+
+  @Test
+  void createListOfLongAcceptsStoredIntegers() {
+    database.command("sql", "CREATE DOCUMENT TYPE T");
+    database.transaction(() -> database.command("sql", "INSERT INTO T SET l = [1, 2, 3]").close());
+    database.command("sql", "CREATE PROPERTY T.l LIST OF LONG");
+    assertThat(hasProperty("T", "l")).isTrue();
+  }
+
+  @Test
+  void nonNumericLengthBoundOnAStringIsRefusedOverAnEmptyType() {
+    database.command("sql", "CREATE DOCUMENT TYPE T");
+    database.command("sql", "CREATE PROPERTY T.s STRING");
+    assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY T.s MAX 'abc'")).isInstanceOf(
+        CommandExecutionException.class);
+    assertThat(database.getSchema().getType("T").getProperty("s").getMax()).isNull();
+  }
+
+  @Test
+  void preparedCreatePropertyKeepsItsTypeNameAfterARefusal() {
+    database.command("sql", "CREATE DOCUMENT TYPE T");
+    insert("T", "v = 'abc'");
+    for (int i = 0; i < 2; i++)
+      assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY T.v INTEGER")).isInstanceOf(
+          CommandExecutionException.class).hasMessageContaining("T.v");
+  }
 }

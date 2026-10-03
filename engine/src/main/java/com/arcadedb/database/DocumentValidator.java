@@ -169,8 +169,9 @@ public class DocumentValidator {
      * @return false when no stored value can violate these constraints on a property of this type, so a scan would read
      * every record for nothing
      */
-    public boolean canBeViolatedOn(final Type type) {
-      return checkType && isScalarType(type) || min != null || max != null || regexp != null;
+    public boolean canBeViolatedOn(final Property p) {
+      final Type type = p.getType();
+      return checkType && (isScalarType(type) || (type == Type.LIST || type == Type.MAP) && p.getOfType() != null) || min != null || max != null || regexp != null;
     }
   }
 
@@ -219,6 +220,23 @@ public class DocumentValidator {
       value = converted;
     }
 
+    if (constraints.checkType() && (type == Type.LIST || type == Type.MAP) && p.getOfType() != null) {
+      // the elements are read the way the write path reads them (a LIST OF LONG holds the Integer 5 as a Long), then held
+      // to the declared element type
+      final Database database = document.getDatabase();
+      Object coerced;
+      try {
+        coerced = Type.convert(database, stored, type.getJavaImplementation(database), p);
+      } catch (final RuntimeException e) {
+        coerced = null;
+      }
+      if (coerced == null)
+        throwValidationException(document.getType(), p, "is declared as " + type + " but a stored value cannot be read as such: "
+            + stored);
+      validateEmbeddedValues(document, p, type, coerced);
+      value = coerced;
+    }
+
     if (constraints.pattern() != null && !TimeBoundRegex.matchesUntil(constraints.pattern(), value.toString(),
         TimeBoundRegex.newDeadline(constraints.regexTimeoutMs())))
       throwValidationException(document.getType(), p,
@@ -254,7 +272,19 @@ public class DocumentValidator {
    */
   public static void requireReadableBound(final Database database, final DocumentType owner, final Property p, final String bound, final String side) {
     final Type type = p.getType();
-    if (bound == null || !isScalarType(type))
+    if (bound == null)
+      return;
+    if (type == Type.STRING || type == Type.BINARY || type == Type.LIST || type == Type.MAP) {
+      // a length, a size: parsed as an int by the write path
+      try {
+        Integer.parseInt(bound);
+      } catch (final NumberFormatException e) {
+        throw new CommandExecutionException("The " + side + " '" + bound + "' of property '" + owner.getName() + "." + p.getName()
+            + "' cannot be read as a number of " + (type == Type.STRING ? "characters" : type == Type.BINARY ? "bytes" : "items"), e);
+      }
+      return;
+    }
+    if (!isScalarType(type))
       return;
     Object converted;
     Throwable cause = null;

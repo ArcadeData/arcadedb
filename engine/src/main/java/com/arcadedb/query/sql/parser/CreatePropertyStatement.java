@@ -76,8 +76,17 @@ public class CreatePropertyStatement extends DDLStatement {
   }
 
   private void executeInternal(final CommandContext context, final ResultInternal result) {
+    // A prepared statement is reused, so the type name resolved from a variable is put back on every exit, a refusal included
+    final Identifier prevType = typeName;
+    try {
+      executeResolved(context, result);
+    } finally {
+      typeName = prevType;
+    }
+  }
+
+  private void executeResolved(final CommandContext context, final ResultInternal result) {
     final Database db = context.getDatabase();
-    Identifier prevType= typeName;
     if (typeName.getStringValue().startsWith("$")) {
       String variable = (String) context.getVariable(typeName.getStringValue());
       typeName = new Identifier(variable);
@@ -91,7 +100,6 @@ public class CreatePropertyStatement extends DDLStatement {
       if (typez.existsPolymorphicProperty(propertyName.getStringValue())) {
         // Same row as the creating path, with created=false telling the two apart (issue #7143).
         result.setProperty("created", false);
-        typeName = prevType;
         return;
       }
     } else if (typez.existsProperty(propertyName.getStringValue()))
@@ -119,7 +127,6 @@ public class CreatePropertyStatement extends DDLStatement {
       } catch (final RuntimeException dropFailure) {
         e.addSuppressed(dropFailure);
       }
-      typeName = prevType;
       throw e;
     }
 
@@ -133,8 +140,6 @@ public class CreatePropertyStatement extends DDLStatement {
       }
       result.setProperty("custom", applied);
     }
-
-    typeName = prevType;
   }
 
   @Override
