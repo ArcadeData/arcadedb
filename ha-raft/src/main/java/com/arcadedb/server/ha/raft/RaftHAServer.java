@@ -107,11 +107,13 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.BiConsumer;
 import java.util.function.LongSupplier;
+import java.util.function.ToLongFunction;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -429,6 +431,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private          long                      lastLagCheckAppliedIndex = -1;
   private          ClusterTokenProvider      tokenProvider;
   private volatile int                       restartFailureCount   = 0;
+  // Completed in-place restarts, by kind (issue #8900): a RECOVER restart keeps the Raft log, a FORMAT restart (the
+  // divergence reformat) throws it away. Read by tests that must tell a recovery from a reformat.
+  private final    AtomicInteger             recoverRestartCount   = new AtomicInteger();
+  private final    AtomicInteger             formatRestartCount    = new AtomicInteger();
   private volatile BootstrapElection         bootstrapElection;
   private final    UnverifiedClosedCopyCheck unverifiedClosedCopyCheck;
   /**
@@ -566,6 +572,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     this.clusterMonitor = new ClusterMonitor(lagWarningThreshold, stalledResyncDurationMs,
         this::forceResyncStalledReplica, resyncNarrative, peerUnreachableThresholdMs, peerChannelResetDurationMs,
         this::resetPeerReplicationChannel, peerChannelResetEscalation ? this::escalateWedgedPeerChannel : null);
+    // Issue #8900: a follower whose capability advertisement is fresh answers over HTTP, so a Raft RPC path that fails
+    // all the same is refused by a live node, and its channel is reset without waiting out the unreachable interval.
+    // observedAtMs is compared with ClusterMonitor's clock: both are System.currentTimeMillis outside tests, and a test
+    // that fakes one must fake the other or the comparison means nothing.
+    this.clusterMonitor.setPeerLastAnsweredAt(peerLastAnsweredAt(peerCapabilities));
     this.handoffContactWindowMs = handoffContactWindowMs(
         configuration.getValueAsInteger(GlobalConfiguration.HA_ELECTION_TIMEOUT_MIN), peerUnreachableThresholdMs);
     this.quorum = Quorum.parse(configuration.getValueAsString(GlobalConfiguration.HA_QUORUM));
@@ -789,6 +800,17 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         }
       }
     });
+  }
+
+  /**
+   * When each peer last answered over HTTP, as {@link ClusterMonitor#setPeerLastAnsweredAt} reads it (issue #8900): the
+   * time of its fresh capability advertisement, or -1 when it has none. Package-private for the wiring test.
+   */
+  static ToLongFunction<String> peerLastAnsweredAt(final PeerCapabilityRegistry registry) {
+    return peerId -> {
+      final PeerCapabilityRegistry.Advertisement advertisement = registry.freshAdvertisementOf(peerId);
+      return advertisement != null ? advertisement.observedAtMs() : -1L;
+    };
   }
 
   /**
@@ -1627,6 +1649,37 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
+   * How long ago this follower's division last heard from its leader (an append or a heartbeat), in milliseconds, or
+   * -1 on the leader, with no known leader, or when the division cannot be read (issue #8900).
+   * <p>
+   * {@link #getRaftLifeCycleState()} reads this node's own division, which reports RUNNING even when the leader's
+   * appends never reach it - in #8898 they kept landing on the CLOSED division of the server an in-place restart had
+   * replaced. This figure is what that division's RUNNING hides: the time since the leader last reached it.
+   */
+  public long getLeaderContactElapsedMs() {
+    final RaftServer server = raftServer;
+    if (server == null)
+      return -1L;
+    try {
+      final RaftProtos.RoleInfoProto roleInfo = server.getDivision(raftGroup.getGroupId()).getInfo().getRoleInfoProto();
+      return leaderContactElapsedMs(roleInfo);
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.FINE, "Cannot read the leader contact of the Raft division: %s", e.getMessage());
+      return -1L;
+    }
+  }
+
+  /** The follower's time since its leader's last contact in {@code roleInfo}, or -1 when it carries none. */
+  static long leaderContactElapsedMs(final RaftProtos.RoleInfoProto roleInfo) {
+    if (roleInfo == null || roleInfo.getRole() != RaftProtos.RaftPeerRole.FOLLOWER || !roleInfo.hasFollowerInfo())
+      return -1L;
+    final RaftProtos.FollowerInfoProto followerInfo = roleInfo.getFollowerInfo();
+    if (!followerInfo.hasLeaderInfo() || !followerInfo.getLeaderInfo().hasId())
+      return -1L;
+    return followerInfo.getLeaderInfo().getLastRpcElapsedTimeMs();
+  }
+
+  /**
    * Whether a division state overrides the RUNNING proxy state in {@link #getRaftLifeCycleState()}: the terminal ones,
    * and CLOSING too (issue #8651) - Ratis closes the division from the dying StateMachineUpdater thread, and that close
    * can stay in CLOSING while the proxy reports RUNNING, a zombie that answered raftState=RUNNING.
@@ -2250,6 +2303,14 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         HALog.log(this, HALog.BASIC, "Recovery skipped: shutdown requested");
         return;
       }
+      // Issue #8900: the waits below give up at once on an interrupted thread. Leave before closing anything, so the
+      // client, broker and server stay as they are and the next health tick retries the whole restart.
+      if (Thread.currentThread().isInterrupted()) {
+        LogManager.instance().log(this, Level.WARNING,
+            "In-place Ratis restart called on an interrupted thread without a shutdown; skipped, the next health tick "
+                + "retries it");
+        return;
+      }
 
       final int maxRetries = configuration.getValueAsInteger(GlobalConfiguration.HA_RATIS_RESTART_MAX_RETRIES);
       if (restartFailureCount >= maxRetries) {
@@ -2271,6 +2332,38 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       final RaftServer oldServer = this.raftServer;
       final RaftTransactionBroker oldBroker = this.transactionBroker;
 
+      // Issue #8900: the waits below end early on a shutdown (stop() does not take recoveryLock) or an interrupt (the
+      // health monitor being stopped), and such an ending is not a failed restart.
+      final BooleanSupplier abandoned = () -> shutdownRequested || Thread.currentThread().isInterrupted();
+      // Issue #8900: read before the close, which empties the server's group map.
+      RaftServer.Division oldDivision = null;
+      if (oldServer != null)
+        try {
+          oldDivision = oldServer.getDivision(raftGroup.getGroupId());
+        } catch (final Throwable t) {
+          // No readable division (never started, or already removed): nothing to wait for below.
+        }
+
+      // Issue #8900: Ratis may already be closing this server on another thread - the JVM-pause monitor does it on its
+      // own thread. close() below would then be a no-op that still INTERRUPTS that thread (pauseMonitor.stop()), cutting
+      // its gRPC shutdown short, so let that close finish first. This reads the PROXY state: an #8651 zombie (proxy
+      // RUNNING, division stuck CLOSING) does not wait here. The wait runs before anything is closed, so a restart
+      // abandoned here leaves the client and broker usable for the next tick.
+      LifeCycle.State beforeClose = null;
+      if (oldServer != null) {
+        try {
+          beforeClose = OldRatisServerTermination.awaitCloseInProgress(oldServer::getLifeCycleState,
+              OldRatisServerTermination.CLOSE_IN_PROGRESS_WAIT_MS, abandoned);
+        } catch (final Throwable t) {
+          LogManager.instance().log(this, Level.FINE, "Cannot read the old Ratis server state: %s", t, t.getMessage());
+        }
+        if (abandoned.getAsBoolean()) {
+          // stop() closes this server itself; closing it here too would only interrupt that close.
+          HALog.log(this, HALog.BASIC, "Recovery abandoned: shutdown or interrupt while the old Ratis server was closing");
+          return;
+        }
+      }
+
       try {
         if (oldBroker != null)
           oldBroker.stop();
@@ -2285,10 +2378,14 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       }
       try {
         if (oldServer != null) {
+          if (beforeClose == LifeCycle.State.CLOSING)
+            LogManager.instance().log(this, Level.WARNING,
+                "Old Ratis server is still CLOSING after %dms; closing it from the restart, which interrupts that close",
+                OldRatisServerTermination.CLOSE_IN_PROGRESS_WAIT_MS);
           oldServer.close();
           // Issue #8898: a close that returns with the server not CLOSED means a second server is about to start
-          // beside one that may still answer the leader. This does not see a close that Ratis already performed
-          // itself (close() is then a no-op that reports CLOSED), nor a gRPC shutdown that close() swallowed.
+          // beside one that may still answer the leader. A close Ratis already performed itself, or a gRPC shutdown
+          // close() swallowed, reports CLOSED here: the gRPC check in the try block below covers those.
           final LifeCycle.State afterClose = oldServer.getLifeCycleState();
           if (afterClose != LifeCycle.State.CLOSED)
             LogManager.instance().log(this, Level.WARNING,
@@ -2300,6 +2397,14 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       }
 
       try {
+        if (oldServer != null)
+          verifyOldServerTerminated(oldServer, oldDivision, abandoned);
+        // The waits above can take seconds, and stop() does not take recoveryLock: do not start a server it will not stop.
+        if (abandoned.getAsBoolean()) {
+          HALog.log(this, HALog.BASIC, "Recovery abandoned: shutdown requested while the old Ratis server was closing");
+          return;
+        }
+
         this.stateMachine = createStateMachine();
 
         final RaftProperties properties = RaftPropertiesBuilder.build(configuration);
@@ -2336,6 +2441,13 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
             .setOption(startupOption)
             .build();
         this.raftServer.start();
+        if (shutdownRequested) {
+          // stop() may have read the old server before this one was published: close the new one here, a second close
+          // from stop() is a no-op.
+          this.raftServer.close();
+          HALog.log(this, HALog.BASIC, "Recovery abandoned: shutdown requested while the new Ratis server was starting");
+          return;
+        }
         this.raftProperties = properties;
         this.raftClient = buildRaftClient(raftGroup, properties, recoveryParameters);
 
@@ -2350,8 +2462,15 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
             offerTimeout, grpcMessageSizeMax, maxQueuedBytes, this::refreshRaftClient);
 
         restartFailureCount = 0;
+        (formatStorage ? formatRestartCount : recoverRestartCount).incrementAndGet();
         LogManager.instance().log(this, Level.INFO, "Ratis restarted in place (%s storage)", formatStorage ? "reformatted" : "recovered");
       } catch (final Throwable t) {
+        if (abandoned.getAsBoolean()) {
+          // A shutdown or an interrupt cut the verification short (issue #8900): not a failure of the restart, and not
+          // one that may count toward stopping the node.
+          HALog.log(this, HALog.BASIC, "Recovery abandoned during shutdown: %s", t.getMessage());
+          return;
+        }
         restartFailureCount++;
         LogManager.instance().log(this, Level.SEVERE,
             "HealthMonitor recovery failed (attempt %d/%d): %s",
@@ -2360,6 +2479,50 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
             t.getMessage());
       }
     }
+  }
+
+  /**
+   * Refuses to start a new Ratis server while the old one can still answer the leader (issue #8900). A gRPC server of
+   * the old instance that is still running after a bounded second shutdown fails the restart: the throw is counted
+   * like any other failed restart, the health monitor retries on its next tick, and the existing retry budget stops
+   * the node once it is spent. Starting anyway is what #8898 suspected: the leader keeps appending through the old
+   * server's connection to a division that is CLOSED, while the new server reports RUNNING.
+   * <p>
+   * The old division's close runs asynchronously inside the proxy close and can still be running when an interrupted
+   * close returns. That is only logged: the division does not own the gRPC listener, and refusing the restart for it
+   * would also refuse the recovery of a division whose close never finishes (issue #8651).
+   */
+  private void verifyOldServerTerminated(final RaftServer oldServer, final RaftServer.Division oldDivision,
+      final BooleanSupplier abandoned) throws IOException {
+    final List<String> running = OldRatisServerTermination.terminateGrpcServers(
+        OldRatisServerTermination.serversOf(oldServer.getServerRpc()), OldRatisServerTermination.GRPC_TERMINATION_WAIT_MS);
+    if (!running.isEmpty())
+      throw new IOException("The old Ratis server's gRPC services " + running + " did not terminate within "
+          + OldRatisServerTermination.GRPC_TERMINATION_WAIT_MS + "ms; not starting a new server beside one that can still "
+          + "answer the leader");
+
+    if (oldDivision != null) {
+      final LifeCycle.State divisionState = OldRatisServerTermination.awaitClosed(
+          () -> oldDivision.getInfo().getLifeCycleState(), OldRatisServerTermination.DIVISION_CLOSE_WAIT_MS, abandoned);
+      if (divisionState != LifeCycle.State.CLOSED && !abandoned.getAsBoolean())
+        LogManager.instance().log(this, Level.WARNING,
+            "Old Ratis division is %s after its server closed; starting the new server anyway", divisionState);
+    }
+  }
+
+  /** Completed in-place restarts that kept the Raft log ({@code RECOVER}). Package-private: tests (issue #8900). */
+  int getRecoverRestartCount() {
+    return recoverRestartCount.get();
+  }
+
+  /** Completed in-place restarts that reformatted the Raft storage. Package-private: tests (issue #8900). */
+  int getFormatRestartCount() {
+    return formatRestartCount.get();
+  }
+
+  /** The current Ratis server. Package-private: tests that fault-inject the server itself (issue #8900). */
+  RaftServer getRaftServerForTesting() {
+    return raftServer;
   }
 
   /**

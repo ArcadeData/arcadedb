@@ -128,9 +128,11 @@ class PluginApiSpecTest {
     // 'leaderCommitIndex' and 'localStalledBehindLeader' joined with issue #8342: the same blind spot at the
     // current term, where only the leader's commit index shows that this follower stopped receiving entries.
     // 'bootstrapInstalls' joined with issue #8044: the #7519 bootstrap install window pins '/api/v1/ready' at 503
-    // and points the reader here, and nothing here reflected it.
+    // and points the reader here, and nothing here reflected it. 'leaderContactElapsedMs' joined with issue #8900:
+    // 'raftState' reads RUNNING while the leader's appends never reach this division, and only this figure shows it.
     assertThat(schema.getProperties().keySet()).containsExactlyInAnyOrder(
-        "implementation", "clusterName", "localPeerId", "capabilities", "raftState", "isLeader", "leaderReady",
+        "implementation", "clusterName", "localPeerId", "capabilities", "raftState", "leaderContactElapsedMs",
+        "isLeader", "leaderReady",
         "leaderId", "leaderHttpAddress", "electionCount", "lastElectionTime", "uptime",
         "localAppliedIndex", "localCommitIndex", "localReplicationLag", "localStuckAtStaleTerm",
         "leaderCommitIndex", "localStalledBehindLeader",

@@ -560,6 +560,10 @@ public class PluginApiSpec implements OpenApiContributor {
     schema.addProperty("capabilities", SpecBuilders.arrayOf(SpecBuilders.string("Capability token"),
         "Optional wire-format sections THIS node can decode, sorted (issue #7219)"));
     schema.addProperty("raftState", SpecBuilders.string("Raft lifecycle state"));
+    schema.addProperty("leaderContactElapsedMs", SpecBuilders.integer(
+        "Milliseconds since this follower's Raft division last heard from its leader (an append or a heartbeat). "
+            + "'raftState' can read RUNNING while the leader's appends never reach this division; this figure then "
+            + "keeps growing. -1 on the leader, with no leader known, or when the division cannot be read"));
     schema.addProperty("isLeader", SpecBuilders.bool("True when this server is the leader"));
     schema.addProperty("leaderReady", SpecBuilders.bool(
         "True when the leader has finished the work that makes it safe to serve writes"));
@@ -645,7 +649,7 @@ public class PluginApiSpec implements OpenApiContributor {
     // every answer, with 'leaderId', 'leaderHttpAddress', 'criticalHalt' and 'raftLogFailure' carrying an
     // explicit null rather than going absent (issues #7578, #7872).
     schema.setRequired(List.of("implementation", "clusterName", "localPeerId", "capabilities", "raftState",
-        "isLeader", "leaderReady", "leaderId", "leaderHttpAddress", "electionCount", "lastElectionTime",
+        "leaderContactElapsedMs", "isLeader", "leaderReady", "leaderId", "leaderHttpAddress", "electionCount", "lastElectionTime",
         "uptime", "localAppliedIndex", "localCommitIndex", "localReplicationLag", "localStuckAtStaleTerm",
         "leaderCommitIndex", "localStalledBehindLeader", "peers",
         "databases", "localResync", "criticalHalt", "raftLogFailure", "crashLoopEscalated", "bootstrapInstalls",
