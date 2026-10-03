@@ -98,7 +98,7 @@ public final class ExistingRecordsCheck {
    * the type.
    */
   public static void requireDeclaration(final Database db, final DocumentType type, final Property property) {
-    final DocumentValidator.StoredValueConstraints constraints = DocumentValidator.StoredValueConstraints.of(property);
+    final DocumentValidator.StoredValueConstraints constraints = DocumentValidator.StoredValueConstraints.of(db, property);
     // Nothing a stored record holds can violate this declaration (e.g. a plain STRING with no flags): skip the full read
     if (!property.isMandatory() && !property.isNotNull() && !constraints.canBeViolatedOn(property.getType()))
       return;

@@ -142,23 +142,27 @@ public class DocumentValidator {
    * @param max       upper bound, or null
    * @param regexp    pattern the value has to match, or null
    */
-  public record StoredValueConstraints(boolean checkType, String min, String max, String regexp, Pattern pattern) {
+  public record StoredValueConstraints(boolean checkType, String min, String max, String regexp, Pattern pattern,
+                                       long regexTimeoutMs) {
     /**
      * Compiles the pattern once, so the scan over a whole type does not compile it per record, and refuses an invalid one
      * up front rather than only when the first record is read.
      */
-    public static StoredValueConstraints of(final boolean checkType, final String min, final String max, final String regexp) {
+    public static StoredValueConstraints of(final Database database, final boolean checkType, final String min,
+        final String max, final String regexp) {
       final Pattern pattern;
       try {
         pattern = regexp != null ? Pattern.compile(regexp) : null;
       } catch (final PatternSyntaxException e) {
         throw new CommandExecutionException("Invalid regular expression '" + regexp + "': " + e.getMessage(), e);
       }
-      return new StoredValueConstraints(checkType, min, max, regexp, pattern);
+      // read once per scan, not per record
+      return new StoredValueConstraints(checkType, min, max, regexp, pattern,
+          regexp != null ? GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(database) : 0L);
     }
 
-    public static StoredValueConstraints of(final Property p) {
-      return of(true, p.getMin(), p.getMax(), p.getRegexp());
+    public static StoredValueConstraints of(final Database database, final Property p) {
+      return of(database, true, p.getMin(), p.getMax(), p.getRegexp());
     }
 
     /**
@@ -216,7 +220,7 @@ public class DocumentValidator {
     }
 
     if (constraints.pattern() != null && !TimeBoundRegex.matchesUntil(constraints.pattern(), value.toString(),
-        TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(document.getDatabase()))))
+        TimeBoundRegex.newDeadline(constraints.regexTimeoutMs())))
       throwValidationException(document.getType(), p,
           "does not match the regular expression '" + constraints.regexp() + "'. Field value is: " + stored);
 

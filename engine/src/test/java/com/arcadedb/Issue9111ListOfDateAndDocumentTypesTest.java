@@ -23,9 +23,11 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.ValidationException;
 import org.junit.jupiter.api.Test;
 
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.LinkedHashMap;
@@ -211,8 +213,8 @@ class Issue9111ListOfDateAndDocumentTypesTest extends TestHelper {
     database.command("sql", "CREATE PROPERTY LZ.p LIST OF DATE");
     database.command("sql", "CREATE PROPERTY LZ.q LIST OF DATETIME_MICROS");
     database.transaction(() -> database.newDocument("LZ")
-        .set("p", new ArrayList<>(List.of(java.time.Instant.now(), java.time.ZonedDateTime.now())))
-        .set("q", new ArrayList<>(List.of(java.time.Instant.now(), java.time.ZonedDateTime.now()))).save());
+        .set("p", new ArrayList<>(List.of(Instant.now(), ZonedDateTime.now())))
+        .set("q", new ArrayList<>(List.of(Instant.now(), ZonedDateTime.now()))).save());
     assertThat(database.countType("LZ", true)).isEqualTo(1);
   }
 
@@ -230,7 +232,19 @@ class Issue9111ListOfDateAndDocumentTypesTest extends TestHelper {
     declareAddress();
     database.transaction(() -> database.command("sql", "INSERT INTO Person CONTENT {\"addresses\": [{\"city\": \"Rome\"}]}").close());
     final Object first = ((List<?>) database.query("sql", "SELECT FROM Person").next().getProperty("addresses")).get(0);
-    assertThat(first).isNotNull();
+    assertThat(first).isInstanceOf(EmbeddedDocument.class);
+    assertThat(((EmbeddedDocument) first).getTypeName()).isEqualTo("Address");
+    assertThat(database.countType("Person", true)).isEqualTo(1);
+  }
+
+  @Test
+  void mapOfDocumentTypeAcceptsNullValue() {
+    database.command("sql", "CREATE DOCUMENT TYPE Address");
+    database.command("sql", "CREATE DOCUMENT TYPE Person");
+    database.command("sql", "CREATE PROPERTY Person.byName MAP OF Address");
+    final Map<String, Object> withNull = new LinkedHashMap<>();
+    withNull.put("home", null);
+    database.transaction(() -> database.newDocument("Person").set("byName", withNull).save());
     assertThat(database.countType("Person", true)).isEqualTo(1);
   }
 }

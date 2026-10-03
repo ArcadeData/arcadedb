@@ -161,7 +161,7 @@ class Issue9112ExistingRecordsConstraintsTest extends TestHelper {
     database.transaction(() -> database.command("opencypher", "CREATE (:P {id: 1, name: 'a'}), (:P {id: 2})"));
     assertThatThrownBy(
         () -> database.command("opencypher", "CREATE CONSTRAINT FOR (n:P) REQUIRE n.name IS NOT NULL")).isInstanceOf(
-        Exception.class).hasMessageContaining("name");
+        CommandExecutionException.class).hasMessageContaining("name");
     assertThat(database.getSchema().getType("P").existsProperty("name") && database.getSchema().getType("P").getProperty("name")
         .isMandatory()).isFalse();
     // the node can still be updated
@@ -172,7 +172,7 @@ class Issue9112ExistingRecordsConstraintsTest extends TestHelper {
   void cypherNodeKeyConstraintIsRefusedOverNodeWithoutProperty() {
     database.transaction(() -> database.command("opencypher", "CREATE (:Q {id: 1, name: 'a'}), (:Q {id: 2})"));
     assertThatThrownBy(() -> database.command("opencypher", "CREATE CONSTRAINT FOR (n:Q) REQUIRE n.name IS NODE KEY")).isInstanceOf(
-        Exception.class).hasMessageContaining("name");
+        CommandExecutionException.class).hasMessageContaining("name");
     assertThat(database.getSchema().getType("Q").getIndexesByProperties("name")).isNullOrEmpty();
     database.transaction(() -> database.command("opencypher", "MATCH (n:Q {id: 2}) SET n.note = 'x'"));
   }
@@ -261,7 +261,7 @@ class Issue9112ExistingRecordsConstraintsTest extends TestHelper {
     database.transaction(() -> database.command("opencypher", "CREATE (:K {a: 1, b: 2}), (:K {a: 3})"));
     assertThatThrownBy(
         () -> database.command("opencypher", "CREATE CONSTRAINT FOR (n:K) REQUIRE (n.a, n.b) IS NODE KEY")).isInstanceOf(
-        Exception.class).hasMessageContaining("b");
+        CommandExecutionException.class).hasMessageContaining("b");
   }
 
   @Test
@@ -288,5 +288,13 @@ class Issue9112ExistingRecordsConstraintsTest extends TestHelper {
     insert("T", "v = 1");
     database.command("sql", "CREATE PROPERTY T.v BOOLEAN");
     assertThat(hasProperty("T", "v")).isTrue();
+  }
+
+  @Test
+  void createPropertyRefusesAnOverflowingStringOverInteger() {
+    database.command("sql", "CREATE DOCUMENT TYPE T");
+    insert("T", "v = '3000000000'");
+    assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY T.v INTEGER")).isInstanceOf(CommandExecutionException.class);
+    assertThat(hasProperty("T", "v")).isFalse();
   }
 }
