@@ -108,6 +108,10 @@ public class GraphEngine {
    */
   private void recordCreated(final DocumentType type, final Edge edge, final RID source, final RID target) {
     if (type instanceof EdgeType edgeType && !edgeType.isBidirectional()) {
+      final TransactionContext current = database.getTransactionIfExists();
+      // THE TARGET HOLDS NO TRACE OF THE EDGE, SO THE COMMIT HAS TO CHECK IT STILL EXISTS (ISSUE #8986)
+      if (current != null)
+        current.addUnidirectionalEdgeTarget(target);
       // ONLY WHILE A QUERY OF THE TRANSACTION HOLDS A SCAN: A BULK LOAD THAT NEVER READS THE INCOMING SIDE KEEPS NOTHING
       final TransactionContext tx = database.getTransactionIfExists();
       final UnidirectionalEdgeChanges changes = tx != null ? tx.getUnidirectionalEdgeChangesIfAny() : null;

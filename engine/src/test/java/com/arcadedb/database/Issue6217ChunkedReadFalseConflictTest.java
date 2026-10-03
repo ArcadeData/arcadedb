@@ -67,8 +67,6 @@ class Issue6217ChunkedReadFalseConflictTest extends BucketPageLayoutTestSupport 
     final LocalBucket bucket = bucketOf("ChunkedRead");
     final PageManager pageManager = ((DatabaseInternal) database).getPageManager();
 
-    final long revalidationsBefore = pageManager.getStats().chunkChainReadRevalidations;
-
     database.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
     try {
       final byte[] read = bucket.getRecordInternal(rids[0], false).toByteArray();
@@ -85,10 +83,9 @@ class Issue6217ChunkedReadFalseConflictTest extends BucketPageLayoutTestSupport 
       database.rollback();
     }
 
-    assertThat(pageManager.getStats().chunkChainReadRevalidations - revalidationsBefore)
-        .as("the neighbour's write must have moved a page the read walked, or this test proves nothing")
-        .isPositive();
-
+    // #8987: the pages are pinned by the REPEATABLE_READ transaction, so the read is answered from the snapshot and the
+    // chain is never revalidated against the newest committed pages. The revalidation path is exercised by the
+    // READ_COMMITTED race below.
     checkDatabase();
   }
 
@@ -100,21 +97,21 @@ class Issue6217ChunkedReadFalseConflictTest extends BucketPageLayoutTestSupport 
    * therefore allowed to stand.
    */
   @Test
-  void aChunkedReadStillFailsWhenTheRecordItselfMovedUnderIt() {
+  void aChunkedReadKeepsReturningTheSnapshotWhenTheRecordItselfMovedUnderIt() {
     final RID[] rids = createChunkedRecords("ChunkedReadConflict");
     final LocalBucket bucket = bucketOf("ChunkedReadConflict");
 
     database.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
     try {
-      bucket.getRecordInternal(rids[0], false);
+      final byte[] read = bucket.getRecordInternal(rids[0], false).toByteArray();
 
       inAnotherThread(() -> database.transaction(
           () -> rids[0].asDocument(true).modify().set("payload", payload(0, 'y')).save()));
 
-      assertThatThrownBy(() -> bucket.getRecordInternal(rids[0], false))
-          .as("a chunked record rewritten under a read must not be assembled out of two commits")
-          .isInstanceOf(ConcurrentModificationException.class)
-          .hasMessageContaining("was modified during read");
+      // #8987: the chain is the transaction's own pinned snapshot, so it is neither torn nor a conflict.
+      assertThat(bucket.getRecordInternal(rids[0], false).toByteArray())
+          .as("a chunked record rewritten after a REPEATABLE_READ transaction read it must read back as it was")
+          .isEqualTo(read);
     } finally {
       database.rollback();
     }
