@@ -18,6 +18,7 @@
  */
 package com.arcadedb.mongo;
 
+import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.BinaryTypes;
 import de.bwaldvogel.mongo.bson.BinData;
 import de.bwaldvogel.mongo.bson.BsonJavaScript;
@@ -39,6 +40,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.logging.Level;
 
 /**
  * Lossless mapping between the BSON values the MongoDB wire library hands over and what the engine can store.
@@ -174,6 +176,7 @@ final class MongoBsonValues {
         return new Decimal128(decimal);
       } catch (final ArithmeticException | IllegalArgumentException e) {
         // more than 34 significant digits or an exponent out of range: keep the response readable
+        LogManager.instance().log(MongoBsonValues.class, Level.FINE, "DECIMAL %s exceeds Decimal128 and is returned as a double", decimal);
         return decimal.doubleValue();
       }
     }
