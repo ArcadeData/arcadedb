@@ -35,7 +35,8 @@ import com.arcadedb.server.security.ServerSecurityUser;
  * network. Each tool is a thin wrapper over an existing in-process facility:
  * <ul>
  *   <li>{@code query_database} - read-only SQL/Cypher/Gremlin via {@code database.query()}</li>
- *   <li>{@code get_schema} - delegates to {@link SchemaInfo}</li>
+ *   <li>{@code get_schema} - delegates to {@link SchemaInfo} (the legacy gateway only; the portal offers {@code get_type})</li>
+ *   <li>{@code get_type} - everything about ONE type, see {@link AiSchemaDigest#typeDetail}</li>
  *   <li>{@code get_server_info} - delegates to {@link ServerInfo}</li>
  * </ul>
  * The returned String is the JSON the LLM sees; the wire shape mirrors what the
@@ -64,6 +65,7 @@ public class ToolDispatcher {
       return switch (toolName) {
         case "query_database" -> executeQuery(args);
         case "get_schema" -> executeGetSchema(args);
+        case "get_type" -> executeGetType(args);
         case "get_server_info", "server_status" -> executeServerInfo();
         default -> errorJson("Unknown tool: " + toolName);
       };
@@ -133,6 +135,23 @@ public class ToolDispatcher {
       return errorJson("get_schema requires a 'database' argument");
 
     return SchemaInfo.forUser(server, user, databaseName).toString();
+  }
+
+  private String executeGetType(final JSONObject args) {
+    final String databaseName = args.getString("database", defaultDatabase);
+    if (databaseName == null || databaseName.isEmpty())
+      return errorJson("get_type requires a 'database' argument");
+    final String name = args.getString("name", null);
+    if (name == null || name.isBlank())
+      return errorJson("get_type requires a 'name' argument");
+    if (!server.existsDatabase(databaseName))
+      return errorJson("Database '" + databaseName + "' does not exist");
+    if (!user.canAccessToDatabase(databaseName))
+      return errorJson("User '" + user.getName() + "' is not authorized to access database '" + databaseName + "'");
+
+    // The principal is bound while the type is read, so a type the user may not read is refused like an unknown one
+    final DatabaseInternal database = server.getDatabase(databaseName);
+    return DatabaseUserContext.runAs(database, user, () -> AiSchemaDigest.typeDetail(database, name).toString());
   }
 
   private String executeServerInfo() {

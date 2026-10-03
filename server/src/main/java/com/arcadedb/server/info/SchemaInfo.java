@@ -54,70 +54,74 @@ public class SchemaInfo {
     final Schema schema = database.getSchema();
     final JSONArray types = new JSONArray();
 
-    for (final DocumentType type : schema.getTypes()) {
-      final JSONObject typeJson = new JSONObject();
-      typeJson.put("name", type.getName());
-
-      if (type instanceof VertexType)
-        typeJson.put("category", "vertex");
-      else if (type instanceof EdgeType)
-        typeJson.put("category", "edge");
-      else
-        typeJson.put("category", "document");
-
-      // Parent types
-      final JSONArray parents = new JSONArray();
-      for (final DocumentType superType : type.getSuperTypes())
-        parents.put(superType.getName());
-      if (parents.length() > 0)
-        typeJson.put("parentTypes", parents);
-
-      // Properties
-      final JSONArray properties = new JSONArray();
-      for (final Property prop : type.getProperties()) {
-        final JSONObject propJson = new JSONObject();
-        propJson.put("name", prop.getName());
-        propJson.put("type", prop.getType().name());
-        if (prop.isMandatory())
-          propJson.put("mandatory", true);
-        if (prop.isReadonly())
-          propJson.put("readonly", true);
-        if (prop.isNotNull())
-          propJson.put("notNull", true);
-        // Issue #6134: the definition, not the evaluated value - this is schema metadata, not a record being written.
-        if (prop.getDefaultValueDefinition() != null)
-          propJson.put("default", prop.getDefaultValueDefinition());
-        if (prop.getMin() != null)
-          propJson.put("min", prop.getMin());
-        if (prop.getMax() != null)
-          propJson.put("max", prop.getMax());
-        if (prop.getOfType() != null)
-          propJson.put("ofType", prop.getOfType());
-        properties.put(propJson);
-      }
-      if (properties.length() > 0)
-        typeJson.put("properties", properties);
-
-      // Indexes
-      final JSONArray indexes = new JSONArray();
-      for (final TypeIndex index : type.getAllIndexes(false)) {
-        final JSONObject indexJson = new JSONObject();
-        indexJson.put("name", index.getName());
-        indexJson.put("type", index.getType().name());
-        indexJson.put("properties", new JSONArray(index.getPropertyNames()));
-        indexJson.put("unique", index.isUnique());
-        indexes.put(indexJson);
-      }
-      if (indexes.length() > 0)
-        typeJson.put("indexes", indexes);
-
-      types.put(typeJson);
-    }
+    for (final DocumentType type : schema.getTypes())
+      types.put(typeToJSON(type));
 
     final JSONObject result = new JSONObject();
     result.put("database", databaseName);
     result.put("types", types);
     return result;
+  }
+
+  /** The JSON of one type: category, parents, properties and indexes. Performs no permission check; the caller does. */
+  public static JSONObject typeToJSON(final DocumentType type) {
+    final JSONObject typeJson = new JSONObject();
+    typeJson.put("name", type.getName());
+
+    if (type instanceof VertexType)
+      typeJson.put("category", "vertex");
+    else if (type instanceof EdgeType)
+      typeJson.put("category", "edge");
+    else
+      typeJson.put("category", "document");
+
+    // Parent types
+    final JSONArray parents = new JSONArray();
+    for (final DocumentType superType : type.getSuperTypes())
+      parents.put(superType.getName());
+    if (parents.length() > 0)
+      typeJson.put("parentTypes", parents);
+
+    // Properties
+    final JSONArray properties = new JSONArray();
+    for (final Property prop : type.getProperties()) {
+      final JSONObject propJson = new JSONObject();
+      propJson.put("name", prop.getName());
+      propJson.put("type", prop.getType().name());
+      if (prop.isMandatory())
+        propJson.put("mandatory", true);
+      if (prop.isReadonly())
+        propJson.put("readonly", true);
+      if (prop.isNotNull())
+        propJson.put("notNull", true);
+      // Issue #6134: the definition, not the evaluated value - this is schema metadata, not a record being written.
+      if (prop.getDefaultValueDefinition() != null)
+        propJson.put("default", prop.getDefaultValueDefinition());
+      if (prop.getMin() != null)
+        propJson.put("min", prop.getMin());
+      if (prop.getMax() != null)
+        propJson.put("max", prop.getMax());
+      if (prop.getOfType() != null)
+        propJson.put("ofType", prop.getOfType());
+      properties.put(propJson);
+    }
+    if (properties.length() > 0)
+      typeJson.put("properties", properties);
+
+    // Indexes
+    final JSONArray indexes = new JSONArray();
+    for (final TypeIndex index : type.getAllIndexes(false)) {
+      final JSONObject indexJson = new JSONObject();
+      indexJson.put("name", index.getName());
+      indexJson.put("type", index.getType().name());
+      indexJson.put("properties", new JSONArray(index.getPropertyNames()));
+      indexJson.put("unique", index.isUnique());
+      indexes.put(indexJson);
+    }
+    if (indexes.length() > 0)
+      typeJson.put("indexes", indexes);
+
+    return typeJson;
   }
 
   /**
