@@ -425,14 +425,40 @@ class PostgresTypeTest {
 
   /**
    * The declared-schema path and the value path must agree, otherwise a column's OID would depend on whether
-   * its list happens to be empty. A list of BigDecimal is typed ARRAY_TEXT by getArrayTypeForElementType (there
-   * is no ARRAY_NUMERIC), so LIST OF DECIMAL must resolve to ARRAY_TEXT too, despite the scalar DECIMAL mapping
-   * to NUMERIC.
+   * its list happens to be empty. A list of BigDecimal is typed ARRAY_NUMERIC by getArrayTypeForElementType (issue
+   * #9008), so LIST OF DECIMAL must resolve to ARRAY_NUMERIC too.
    */
   @Test
   void getTypeFromArcadeListOfDecimalMatchesValuePath() {
-    assertThat(PostgresType.getTypeFromArcade(Type.LIST, "DECIMAL")).isEqualTo(PostgresType.ARRAY_TEXT);
-    assertThat(PostgresType.getTypeForValue(List.of(new BigDecimal("1.23")))).isEqualTo(PostgresType.ARRAY_TEXT);
+    assertThat(PostgresType.getTypeFromArcade(Type.LIST, "DECIMAL")).isEqualTo(PostgresType.ARRAY_NUMERIC);
+    assertThat(PostgresType.getTypeForValue(List.of(new BigDecimal("1.23")))).isEqualTo(PostgresType.ARRAY_NUMERIC);
+  }
+
+  /** Issue #9008: a list is typed from ALL its elements, not from the first one. */
+  @Test
+  void aMixedListIsTypedFromEveryElement() {
+    assertThat(PostgresType.getTypeForValue(List.of(1, 2.5))).isEqualTo(PostgresType.ARRAY_DOUBLE);
+    assertThat(PostgresType.getTypeForValue(List.of(1, 3000000000L))).isEqualTo(PostgresType.ARRAY_LONG);
+    assertThat(PostgresType.getTypeForValue(List.of(1, 2))).isEqualTo(PostgresType.ARRAY_INT);
+    assertThat(PostgresType.getTypeForValue(List.of(1, "a"))).isEqualTo(PostgresType.ARRAY_TEXT);
+    assertThat(PostgresType.getTypeForValue(List.of(3000000000L, 1.5))).isEqualTo(PostgresType.ARRAY_NUMERIC);
+    assertThat(PostgresType.getTypeForValue(List.of(1, new BigDecimal("2.5")))).isEqualTo(PostgresType.ARRAY_NUMERIC);
+    assertThat(PostgresType.getTypeForValue(List.of(true, 1))).isEqualTo(PostgresType.ARRAY_TEXT);
+    assertThat(PostgresType.getTypeForValue(Arrays.asList(null, 1, 2.5))).isEqualTo(PostgresType.ARRAY_DOUBLE);
+  }
+
+  /** Issue #9009: the type of a column over several rows holds every row's value. */
+  @Test
+  void mergeTypesWidensToHoldBothValues() {
+    assertThat(PostgresType.mergeTypes(PostgresType.INTEGER, PostgresType.LONG, false)).isEqualTo(PostgresType.LONG);
+    assertThat(PostgresType.mergeTypes(PostgresType.INTEGER, PostgresType.DOUBLE, false)).isEqualTo(PostgresType.DOUBLE);
+    assertThat(PostgresType.mergeTypes(PostgresType.LONG, PostgresType.DOUBLE, false)).isEqualTo(PostgresType.NUMERIC);
+    assertThat(PostgresType.mergeTypes(PostgresType.INTEGER, PostgresType.VARCHAR, false)).isEqualTo(PostgresType.VARCHAR);
+    assertThat(PostgresType.mergeTypes(PostgresType.ARRAY_INT, PostgresType.ARRAY_DOUBLE, false)).isEqualTo(PostgresType.ARRAY_DOUBLE);
+    assertThat(PostgresType.mergeTypes(PostgresType.ARRAY_INT, PostgresType.INTEGER, false)).isEqualTo(PostgresType.VARCHAR);
+    assertThat(PostgresType.stableTypeForUndeclared(PostgresType.INTEGER)).isEqualTo(PostgresType.VARCHAR);
+    assertThat(PostgresType.stableTypeForUndeclared(PostgresType.ARRAY_INT)).isEqualTo(PostgresType.ARRAY_TEXT);
+    assertThat(PostgresType.stableTypeForUndeclared(PostgresType.JSON)).isEqualTo(PostgresType.JSON);
   }
 
   @Test

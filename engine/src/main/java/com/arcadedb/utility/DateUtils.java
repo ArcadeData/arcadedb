@@ -142,7 +142,7 @@ public class DateUtils {
       else if (destinationPrecision.equals(ChronoUnit.MILLIS))
         value = LocalDateTime.ofInstant(Instant.ofEpochMilli(convertedTimestamp), UTC_ZONE_ID);
       else if (destinationPrecision.equals(ChronoUnit.MICROS))
-        value = LocalDateTime.ofInstant(Instant.ofEpochSecond(TimeUnit.MICROSECONDS.toSeconds(convertedTimestamp),
+        value = LocalDateTime.ofInstant(Instant.ofEpochSecond(Math.floorDiv(convertedTimestamp, TimeUnit.SECONDS.toMicros(1)),
             TimeUnit.MICROSECONDS.toNanos(Math.floorMod(convertedTimestamp, TimeUnit.SECONDS.toMicros(1)))), UTC_ZONE_ID);
       else if (destinationPrecision.equals(ChronoUnit.NANOS))
         value = LocalDateTime.ofInstant(Instant.ofEpochSecond(0L, convertedTimestamp), UTC_ZONE_ID);
@@ -154,7 +154,7 @@ public class DateUtils {
       else if (destinationPrecision.equals(ChronoUnit.MILLIS))
         value = ZonedDateTime.ofInstant(Instant.ofEpochMilli(convertedTimestamp), UTC_ZONE_ID);
       else if (destinationPrecision.equals(ChronoUnit.MICROS))
-        value = ZonedDateTime.ofInstant(Instant.ofEpochSecond(TimeUnit.MICROSECONDS.toSeconds(convertedTimestamp),
+        value = ZonedDateTime.ofInstant(Instant.ofEpochSecond(Math.floorDiv(convertedTimestamp, TimeUnit.SECONDS.toMicros(1)),
             TimeUnit.MICROSECONDS.toNanos(Math.floorMod(convertedTimestamp, TimeUnit.SECONDS.toMicros(1)))), UTC_ZONE_ID);
       else if (destinationPrecision.equals(ChronoUnit.NANOS))
         value = ZonedDateTime.ofInstant(Instant.ofEpochSecond(0L, convertedTimestamp), UTC_ZONE_ID);
@@ -166,7 +166,7 @@ public class DateUtils {
       else if (destinationPrecision.equals(ChronoUnit.MILLIS))
         value = Instant.ofEpochMilli(convertedTimestamp);
       else if (destinationPrecision.equals(ChronoUnit.MICROS))
-        value = Instant.ofEpochSecond(TimeUnit.MICROSECONDS.toSeconds(convertedTimestamp),
+        value = Instant.ofEpochSecond(Math.floorDiv(convertedTimestamp, TimeUnit.SECONDS.toMicros(1)),
             TimeUnit.MICROSECONDS.toNanos(Math.floorMod(convertedTimestamp, TimeUnit.SECONDS.toMicros(1))));
       else if (destinationPrecision.equals(ChronoUnit.NANOS))
         value = Instant.ofEpochSecond(0L, convertedTimestamp);

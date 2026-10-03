@@ -20,6 +20,8 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.DatabaseFactory;
 
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -39,6 +41,20 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * skips normal rollback, modelling process interruption rather than an IOException; it does not model power loss.
  */
 class Issue7769SnapshotSwapRecoveryTest {
+
+  /**
+   * The fixtures stand in for a snapshot with placeholder files no engine can open, so recovery is told every snapshot
+   * opens: what it does with one that does not is the subject of {@link Issue8950RollForwardProvesTheSnapshotOpensTest}.
+   */
+  @BeforeEach
+  void snapshotsOpenForIssue8950() {
+    SnapshotInstaller.snapshotOpensForTesting = path -> true;
+  }
+
+  @AfterEach
+  void restoreSnapshotOpenProofForIssue8950() {
+    SnapshotInstaller.snapshotOpensForTesting = null;
+  }
   /**
    * A crash or I/O failure between the durable {@code .snapshot-complete} marker and the first published phase
    * leaves the originals untouched and no backup, whatever the temporary state file holds (a torn first write

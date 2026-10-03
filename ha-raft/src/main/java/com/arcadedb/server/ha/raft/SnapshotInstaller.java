@@ -27,6 +27,7 @@ import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.exception.DatabaseNotAvailableException;
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.backup.BackupCoordinator;
@@ -64,6 +65,7 @@ import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.zip.CRC32;
@@ -328,6 +330,14 @@ public final class SnapshotInstaller {
    * refused while its files are being moved.
    */
   static volatile Runnable recoveryBarrierForTesting = null;
+
+  /**
+   * Test-only replacement for {@link #snapshotOpens}, the proof recovery asks for before it deletes the retained backup
+   * of a swap it rolls forward (issue #8950). {@code null} in production. The recovery fixtures stand in for a snapshot
+   * with placeholder files that no engine can open, so the tests about what recovery does with a snapshot that does
+   * open set it to {@code path -> true}, and the ones about a snapshot that does not set it to {@code path -> false}.
+   */
+  static volatile Predicate<Path> snapshotOpensForTesting = null;
 
   /**
    * Test-only barrier invoked inside {@link #acquireNewDatabase}, right after the early
@@ -1617,6 +1627,8 @@ public final class SnapshotInstaller {
         }
         default -> throw new IOException("Unhandled snapshot swap phase " + phase + " in " + dbDir);
         }
+        if (phase == SwapPhase.BACKING_UP || phase == SwapPhase.INSTALLING || phase == SwapPhase.INSTALLED)
+          rollBackUnlessSnapshotOpens(dbDir, snapshotNew, snapshotBackup);
         requireRecoveredDatabase(dbDir);
         completeSwapRecovery(dbDir);
         return;
@@ -1631,6 +1643,7 @@ public final class SnapshotInstaller {
         if (!hasStagedSnapshotFiles(snapshotNew)) {
           LogManager.instance().log(SnapshotInstaller.class, Level.INFO,
               "Cleaning up completed legacy snapshot swap for: %s", null, dbDir);
+          rollBackUnlessSnapshotOpens(dbDir, snapshotNew, snapshotBackup);
           requireRecoveredDatabase(dbDir);
           completeSwapRecovery(dbDir);
           return;
@@ -1646,6 +1659,7 @@ public final class SnapshotInstaller {
                 null, dbDir);
             writeSwapPhase(dbDir, SwapPhase.INSTALLING);
             atomicSwap(dbDir, snapshotNew, snapshotBackup);
+            rollBackUnlessSnapshotOpens(dbDir, snapshotNew, snapshotBackup);
           } else {
             // Disjoint names: almost surely a phase-1 crash, so the backup restored over the live directory is the
             // original database. A phase-2 crash that moved only snapshot-only names lands here too; the snapshot
@@ -1673,6 +1687,7 @@ public final class SnapshotInstaller {
         LogManager.instance().log(SnapshotInstaller.class, Level.INFO,
             "Completing interrupted snapshot swap for: %s", null, dbDir);
         atomicSwap(dbDir, snapshotNew, snapshotBackup);
+        rollBackUnlessSnapshotOpens(dbDir, snapshotNew, snapshotBackup);
         requireRecoveredDatabase(dbDir);
         completeSwapRecovery(dbDir);
         return;
@@ -1730,6 +1745,53 @@ public final class SnapshotInstaller {
     } catch (final IOException e) {
       LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
           "Error recovering snapshot swap for %s: %s", e, dbDir, e.getMessage());
+    }
+  }
+
+  /**
+   * Called on every path that rolls a swap FORWARD, just before {@link #completeSwapRecovery} deletes the retained backup
+   * (issue #8950). Rolling forward only proved that a schema file is present, so a snapshot that does not open - a crash
+   * during the validating reopen, a rollback that never published its phase, a verdict whose rename failed - was kept
+   * and the only copy that opens was deleted. The snapshot is opened once here, without a server; if it does not open
+   * and the backup is there, the verdict is the one a failed validating reopen records, and the backup is restored.
+   * With no backup there is nothing to fall back to, and the snapshot is kept as before.
+   */
+  private static void rollBackUnlessSnapshotOpens(final Path dbDir, final Path snapshotNew, final Path snapshotBackup)
+      throws IOException {
+    if (!Files.isDirectory(snapshotBackup) || snapshotOpens(dbDir))
+      return;
+
+    LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
+        "The snapshot rolled forward in %s does not open: restoring the retained backup instead of deleting it", null, dbDir);
+    writeSwapPhase(dbDir, SwapPhase.ROLLING_BACK);
+    resumeRollback(dbDir, snapshotBackup);
+    deleteDirectoryIfExists(snapshotNew);
+  }
+
+  /**
+   * Opens the database in {@code dbDir} and closes it again, the way the server's own reopen would: a read-only open
+   * does not register every component file, so it accepts a snapshot the server then refuses. A directory that another instance of this JVM
+   * already holds open proves nothing either way, so it is accepted: the check exists to stop a deletion, and it must
+   * not start one on a failure it did not cause.
+   */
+  private static boolean snapshotOpens(final Path dbDir) {
+    final Predicate<Path> override = snapshotOpensForTesting;
+    if (override != null)
+      return override.test(dbDir);
+
+    try (final DatabaseFactory factory = new DatabaseFactory(dbDir.toString())) {
+      factory.open().close();
+      return true;
+    } catch (final DatabaseOperationException e) {
+      if (e.getMessage() != null && e.getMessage().contains("active instance"))
+        return true;
+      LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE, "The snapshot in %s failed to open: %s", e, dbDir,
+          e.getMessage());
+      return false;
+    } catch (final Exception e) {
+      LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE, "The snapshot in %s failed to open: %s", e, dbDir,
+          e.getMessage());
+      return false;
     }
   }
 
