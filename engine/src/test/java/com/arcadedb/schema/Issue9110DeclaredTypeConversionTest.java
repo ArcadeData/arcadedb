@@ -193,18 +193,17 @@ class Issue9110DeclaredTypeConversionTest extends TestHelper {
   }
 
   @Test
-  void digitOnlyStringIsAnEpochCountForDateTimeTargets() {
+  void digitOnlyStringIsRefusedForEveryDateTarget() {
     final DocumentType type = database.getSchema().createDocumentType("Epoch9110");
     type.createProperty("dt", Type.DATETIME);
     type.createProperty("dts", Type.DATETIME_SECOND);
     type.createProperty("dtm", Type.DATETIME_MICROS);
-    assertThat(roundTrip("Epoch9110", "dt", "1791000000000")).isEqualTo(roundTrip("Epoch9110", "dt", 1791000000000L));
-    assertThat(roundTrip("Epoch9110", "dt", "1791000000000")).isEqualTo(LocalDateTime.of(2026, 10, 3, 4, 0));
-    assertThat(roundTrip("Epoch9110", "dts", "1791000000")).isEqualTo(roundTrip("Epoch9110", "dts", 1791000000L));
-    assertThat(roundTrip("Epoch9110", "dtm", "1791000000000000")).isEqualTo(roundTrip("Epoch9110", "dtm", 1791000000000000L));
-    // a compact yyyyMMdd date is read as an epoch count too, as the DATE branch already did
-    database.getSchema().getType("Epoch9110").createProperty("dtc", Type.DATETIME);
-    assertThat(roundTrip("Epoch9110", "dtc", "20261003")).isEqualTo(roundTrip("Epoch9110", "dtc", 20261003L));
+    // as likely a compact date (yyyyMMdd, a year) as an epoch count: guessing would store a wrong instant
+    for (final String p : new String[] { "dt", "dts", "dtm" })
+      for (final String v : new String[] { "1791000000000", "20261003", "2026", "" })
+        assertRefused("Epoch9110", p, v);
+    // a number is still an epoch count
+    assertThat(roundTrip("Epoch9110", "dt", 1791000000000L)).isEqualTo(LocalDateTime.of(2026, 10, 3, 4, 0));
   }
 
   @Test
@@ -257,7 +256,7 @@ class Issue9110DeclaredTypeConversionTest extends TestHelper {
   }
 
   @Test
-  void nanAndEpochStringsStayLenientWithoutAProperty() {
+  void nanAndDigitStringsStayLenientWithoutAProperty() {
     assertThat(Type.convert(database, Double.NaN, Boolean.class)).isEqualTo(false);
     assertThat(Type.convert(database, "20261003", LocalDateTime.class)).isEqualTo("20261003");
   }
@@ -289,7 +288,7 @@ class Issue9110DeclaredTypeConversionTest extends TestHelper {
   }
 
   @Test
-  void tooLongDigitStringIsKeptByTheRemoteReadAndRefusedByAWrite() {
+  void digitStringIsKeptByTheRemoteReadAndRefusedByAWrite() {
     final DocumentType type = database.getSchema().createDocumentType("LongDigits9110");
     type.createProperty("dt", Type.DATETIME);
     final String digits = "123456789012345678901234567890";
