@@ -31,6 +31,7 @@ import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
 
@@ -41,6 +42,7 @@ import com.arcadedb.utility.RidHashSet;
 
 import java.io.File;
 import java.io.IOException;
+import java.math.BigDecimal;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
@@ -539,13 +541,6 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   }
 
   /**
-   * The position of the value area of every entry in {@code [firstKeyPos, lastKeyPos]}, a run of entries that compare equal to
-   * the search key. Entries of one run compare EQUAL, which is not the same as being serialized with the same number of bytes: a
-   * numeric key is stored as a variable-length number, so 0f and -0f (one key to the comparator) take 1 and 5 bytes (issue #9033).
-   * The key size of {@code mid}, which the caller already measured, is reused for that entry and every other one is measured on
-   * its own, so applying one entry's key size to the whole run no longer lands a value position in the middle of an entry.
-   */
-  /**
    * Only floating point and decimal keys can compare equal and still take a different number of bytes (0f and -0f, 1.5 and 1.50);
    * every other type serializes equal values to equal bytes, so a run of them needs no per-entry measuring.
    */
@@ -556,6 +551,13 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     return false;
   }
 
+  /**
+   * The position of the value area of every entry in {@code [firstKeyPos, lastKeyPos]}, a run of entries that compare equal to
+   * the search key. Entries of one run compare EQUAL, which is not the same as being serialized with the same number of bytes: a
+   * numeric key is stored as a variable-length number, so 0f and -0f (one key to the comparator) take 1 and 5 bytes (issue #9033).
+   * The key size of {@code mid}, which the caller already measured, is reused for that entry and every other one is measured on
+   * its own, so applying one entry's key size to the whole run no longer lands a value position in the middle of an entry.
+   */
   protected int[] valuePositionsOfRun(final Binary currentPageBuffer, final int startIndexArray, final int keyLength,
       final int firstKeyPos, final int lastKeyPos, final int mid, final int midKeySerializedSize) {
     final int[] positions = new int[lastKeyPos - firstKeyPos + 1];
@@ -653,13 +655,27 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
       // record fail CREATE INDEX outright (issue #8090, which made convert() itself strict). NOT convertOrNull():
       // that would extend the same mercy to every other mismatch, silently indexing a non-numeric string under a
       // null LONG key where it has always failed the build.
-      convertedKeys[i] = Type.convertIndexKeyOrNull(database, keys[i], BinaryTypes.getClassFromType(keyTypes[i]));
+      if (keyTypes[i] == BinaryTypes.TYPE_STRING && (keys[i] instanceof Double || keys[i] instanceof Float || keys[i] instanceof BigDecimal)
+          && isUndeclaredProperty(i))
+        // one number is one key whatever type it was written with, on a property whose values keep their own types (issue #8993)
+        convertedKeys[i] = Type.canonicalNumberKey(keys[i]);
+      else
+        convertedKeys[i] = Type.convertIndexKeyOrNull(database, keys[i], BinaryTypes.getClassFromType(keyTypes[i]));
 
       if (convertedKeys[i] instanceof String string && caseInsensitiveKeys != null && i < caseInsensitiveKeys.length
           && caseInsensitiveKeys[i])
         convertedKeys[i] = string.toLowerCase(Locale.ROOT);
     }
     return convertedKeys;
+  }
+
+  /** True when the schema declares no property for the i-th key: the Cypher fallback of an index created before any value existed. */
+  private boolean isUndeclaredProperty(final int keyIndex) {
+    final LSMTreeIndex main = mainIndex;
+    if (main == null || main.getTypeName() == null || main.getPropertyNames() == null || keyIndex >= main.getPropertyNames().size())
+      return false;
+    final DocumentType type = database.getSchema().getTypeOrNull(main.getTypeName());
+    return type != null && type.getPolymorphicPropertyIfExists(main.getPropertyNames().get(keyIndex)) == null;
   }
 
   protected Object[] getPageKeyRange(final BasePage currentPage) {

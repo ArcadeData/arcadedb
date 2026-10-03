@@ -989,8 +989,12 @@ public class OpenCypherQueryEngine implements QueryEngine {
       // The declarations above are part of this statement: a build that fails must not leave the type with properties
       // nobody asked for, which coerce every later write (issue #8999)
       for (final String declared : declaredHere)
-        if (type.existsProperty(declared))
-          type.dropProperty(declared);
+        try {
+          if (type.existsProperty(declared))
+            type.dropProperty(declared);
+        } catch (final RuntimeException dropFailure) {
+          e.addSuppressed(dropFailure);
+        }
       throw e;
     }
     if (!existedBefore)
