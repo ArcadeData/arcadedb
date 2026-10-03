@@ -1093,6 +1093,7 @@ public class SelectExecutionPlanner {
           }
           info.preAggregateProjection.getItems().addAll(split.getPreAggregate());
           info.aggregateProjection.getItems().addAll(split.getAggregate());
+          info.orderByAggregateAdded = true;
           info.projection.getItems().add(post);
         } else if (info.preAggregateProjection != null) {
           info.preAggregateProjection.getItems().add(item);
@@ -3498,6 +3499,10 @@ public class SelectExecutionPlanner {
       final long fromTs, final long toTs, final QueryPlanningInfo info, final CommandContext context) {
     // Must have aggregate projection (set by splitProjectionsForGroupBy)
     if (info.aggregateProjection == null)
+      return false;
+
+    // The engine builds its requests from the SELECT projection only: an aggregate that only the ORDER BY needs would never be computed
+    if (info.orderByAggregateAdded)
       return false;
 
     // No DISTINCT
