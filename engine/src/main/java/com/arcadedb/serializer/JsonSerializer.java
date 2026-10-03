@@ -161,9 +161,8 @@ public class JsonSerializer {
           // Issue #4149: keep precision-aware formatting on the projection branch too.
           Object projValue = serializeObject(database, entry.getValue());
           // Undeclared properties go through it too (null type = the value's own precision), as in serializeDocument (#9005).
-          projValue = formatTemporalForPrecision(projValue,
-              type != null && type.existsProperty(entry.getKey()) ? type.getProperty(entry.getKey()).getType() : null,
-              schemaDateTimeFormat, schemaDateFormat);
+          final Type propertyType = type != null && type.existsProperty(entry.getKey()) ? type.getProperty(entry.getKey()).getType() : null;
+          projValue = formatTemporalForPrecision(projValue, propertyType, schemaDateTimeFormat, schemaDateFormat);
           object.put(entry.getKey(), projValue);
         }
         return object;
