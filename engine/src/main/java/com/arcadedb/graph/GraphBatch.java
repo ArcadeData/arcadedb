@@ -1315,7 +1315,8 @@ public class GraphBatch implements AutoCloseable {
    * Bulk-creates edge records using template-based serialization and sequential page writes.
    * For each unique set of property names, a template is created once that pre-resolves
    * dictionary IDs and type tags. Edges are then serialized directly into Binary buffers
-   * without MutableEdge allocation or HashMap operations.
+   * without MutableEdge allocation or HashMap operations, except for an edge of a type with declared properties, which goes
+   * through {@link #applySchema} once for the conversion, defaults and constraints (issue #9019).
    */
   private void createEdgeRecordsBulk(final RID[] edgeRIDs, final int nonLightCount) {
     // Collect indices of non-light edges

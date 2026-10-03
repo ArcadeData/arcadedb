@@ -84,6 +84,20 @@ public class Issue9057BinarySafeAndHmgetMissingRidTest extends BaseRedisServerTe
   }
 
   @Test
+  void nonUtf8KeyStillFindsItsValue() {
+    final byte[] key = { 'k', (byte) 0xff, (byte) 0x80 };
+    final byte[] value = { (byte) 0xfe, 1, 2 };
+    try (final Jedis jedis = new Jedis("localhost", getServerRedisPort())) {
+      jedis.auth(USER, PASSWORD);
+      jedis.set(key, value);
+      assertThat(jedis.get(key)).isEqualTo(value);
+      assertThat(jedis.exists(key)).isTrue();
+      assertThat(jedis.getDel(key)).isEqualTo(value);
+      assertThat(jedis.exists(key)).isFalse();
+    }
+  }
+
+  @Test
   void hmgetOfAMissingRidKeepsItsPlaceAsNull() throws Exception {
     final Database database = getServerDatabase(0, getDatabaseName());
     database.getSchema().getOrCreateDocumentType("Issue9055Item");
