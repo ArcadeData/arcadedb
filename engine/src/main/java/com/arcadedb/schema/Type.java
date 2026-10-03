@@ -2153,10 +2153,18 @@ public enum Type {
    * Returns the Java class a value of this type is materialised as once the schema has coerced it, i.e. the target
    * {@link #convert(Database, Object, Class, Property)} uses when a property declares this type.
    * <p>
-   * This is {@link #getDefaultJavaType()} for every type except {@code DATE} and {@code DATETIME}, whose runtime
-   * representation is configurable per database. Callers that need to reproduce the stored form of a value - the
+   * This is {@link #getDefaultJavaType()} for every type except {@code DATE} and the {@code DATETIME} family, whose
+   * runtime representation is configurable per database. Callers that need to reproduce the stored form of a value - the
    * write path in {@code MutableDocument}, and the partitioned bucket strategy that has to hash a lookup key the way
    * placement hashed the stored one (issue #5595) - must agree on this mapping, so it lives in one place.
+   * <p>
+   * The precision subtypes ({@code DATETIME_SECOND}, {@code DATETIME_MICROS}, {@code DATETIME_NANOS}) answer the class
+   * the deserializer reads them back as: the configured datetime implementation, except that a sub-millisecond column
+   * stays a {@code LocalDateTime} under an implementation that stops at the millisecond (issue #8158). Answering their
+   * static default ({@code LocalDateTime}) instead used to be inert only while {@code convert} handed an
+   * {@code Instant} or a zoned value back untouched; since it reads them into a {@code LocalDateTime} (issue #8886) the
+   * write path would keep in memory a class the record never reads back as, and a partitioned type placed the record by
+   * hashing one class and looked it up by hashing the other.
    *
    * @param database database whose {@code DATE}/{@code DATETIME} settings apply, or {@code null} to fall back to the
    *                 default Java type
@@ -2165,8 +2173,10 @@ public enum Type {
     if (database instanceof DatabaseInternal internal) {
       if (this == DATE)
         return internal.getSerializer().getDateImplementation();
-      if (this == DATETIME)
+      if (this == DATETIME || this == DATETIME_SECOND)
         return internal.getSerializer().getDateTimeImplementation();
+      if (this == DATETIME_MICROS || this == DATETIME_NANOS)
+        return internal.getSerializer().getSubMillisDateTimeImplementation();
     }
     return javaDefaultType;
   }
