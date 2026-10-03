@@ -42,6 +42,18 @@ class Issue9047RegistryFunctionArityTest extends TestHelper {
     }
   }
 
+  @Test
+  void tooManyArgumentsIsASemanticError() {
+    assertThatThrownBy(() -> drain("sql", "SELECT text.replace('a', 'b', 'c', 'd') AS r")).isInstanceOf(CommandSemanticException.class);
+    assertThatThrownBy(() -> drain("opencypher", "RETURN text.replace('a', 'b', 'c', 'd') AS r")).isInstanceOf(CommandSemanticException.class);
+  }
+
+  @Test
+  void aggregatorsWithWrongArityAreRejected() {
+    assertThatThrownBy(() -> drain("opencypher", "UNWIND [1,2] AS x RETURN agg.first() AS r")).isInstanceOf(CommandSemanticException.class);
+    assertThatThrownBy(() -> drain("opencypher", "UNWIND [1,2] AS x RETURN x, agg.first() AS r")).isInstanceOf(CommandSemanticException.class);
+  }
+
   private void drain(final String language, final String query) {
     try (final ResultSet rs = database.query(language, query)) {
       while (rs.hasNext())

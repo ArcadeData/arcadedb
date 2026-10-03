@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
@@ -26,6 +27,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression tests for issue #9045 (comment between ORDER and BY / GROUP and BY) and #9052 (hexadecimal integer literals).
@@ -60,6 +62,24 @@ class Issue9045And9052SqlLexerTest extends TestHelper {
         assertThat(n).as(group).isEqualTo(2);
       }
     }
+  }
+
+  @Test
+  void commentContainingTokensBetweenOrderAndByDoesNotSwallowTheQuery() {
+    database.getSchema().createDocumentType("T9045b");
+    database.transaction(() -> database.command("sql", "INSERT INTO T9045b SET id = 1").close());
+
+    try (final ResultSet rs = database.query("sql", "SELECT id FROM T9045b ORDER /* a */ /* b */ BY id")) {
+      assertThat(rs.next().<Integer>getProperty("id")).isEqualTo(1);
+    }
+    // a token between two comments is not part of the keyword
+    assertThatThrownBy(() -> database.query("sql", "SELECT id FROM T9045b ORDER /* a */ x /* b */ BY id").close())
+        .isInstanceOf(CommandSQLParsingException.class);
+  }
+
+  @Test
+  void hexadecimalOverflowIsAParseError() {
+    assertThatThrownBy(() -> database.query("sql", "SELECT 0xFFFFFFFFFFFFFFFFL AS r").close()).isInstanceOf(CommandSQLParsingException.class);
   }
 
   @Test
