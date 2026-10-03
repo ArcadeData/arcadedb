@@ -1095,7 +1095,7 @@ function renderSupportIssueDetail() {
   if (link) html += ' - <a href="' + supportEsc(link) + '" target="_blank" rel="noopener noreferrer">Open in the portal</a>';
   html += "</div>";
   if (issue.body || issue.description)
-    html += '<div class="support-timeline-entry client"><div class="support-meta">Description</div><div class="support-body">' + supportEsc(issue.body || issue.description) + "</div></div>";
+    html += '<div class="support-timeline-entry client"><div class="support-meta">Description</div><div class="support-body support-md">' + supportMarkdownHtml(issue.body || issue.description) + "</div></div>";
 
   var timeline = supportTimeline(issue);
   if (!timeline.length) html += '<div class="support-hint mb-2">No reply yet.</div>';
@@ -1114,8 +1114,8 @@ function renderSupportIssueDetail() {
       (kind ? "<span>" + supportEsc(kind) + "</span>" : "") +
       "<span>" +
       supportEsc(supportFormatDate(entry.createdOn || entry.createdAt || entry.at || entry.date)) +
-      '</span></div><div class="support-body">' +
-      supportEsc(text) +
+      '</span></div><div class="support-body support-md">' +
+      supportMarkdownHtml(text) +
       "</div>" +
       supportRequestsHtml(entry) +
       "</div>";
