@@ -94,6 +94,9 @@ public class MongoDBToSqlTranslator {
    */
   private static void appendOperators(final StringBuilder sql, final Map<String, Object> params, final String field,
       final Document operators, final boolean allowNot) {
+    if (field == null)
+      throw new IllegalArgumentException("The operators " + operators.keySet() + " need a field to apply to");
+
     int expressionCount = 0;
     for (final Map.Entry<String, Object> subEntry : operators.entrySet()) {
       final String subKey = subEntry.getKey();
@@ -310,6 +313,12 @@ public class MongoDBToSqlTranslator {
     }
 
     final String wrapped = "(?s:.*)(?" + flags + ":" + pattern + (flags.indexOf("x") >= 0 ? "\n" : "") + ")(?s:.*)";
+    try {
+      // an inline (?x) in the pattern itself would swallow the closing parenthesis of the wrapper
+      Pattern.compile(wrapped);
+    } catch (final PatternSyntaxException e) {
+      throw new IllegalArgumentException("Invalid regular expression '" + pattern + "': " + e.getDescription(), e);
+    }
     appendField(sql, field);
     sql.append(" MATCHES ");
     buildValue(sql, params, wrapped);
