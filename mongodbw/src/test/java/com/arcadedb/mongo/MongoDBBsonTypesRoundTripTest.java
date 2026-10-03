@@ -366,4 +366,16 @@ public class MongoDBBsonTypesRoundTripTest extends BaseMongoServerTest {
     assertThat(collection.find(in("_id", List.of("$str:x"))).first().get("n")).isEqualTo(2);
     assertThat(collection.find(eq("_id", "$str:x")).first().get("_id")).isEqualTo("$str:x");
   }
+
+  @Test
+  void notEqOnAnObjectIdExcludesBothStoredForms() {
+    final ObjectId oid = new ObjectId("507f1f77bcf86cd799439017");
+    final Database db = getServer(0).getDatabase(getDatabaseName());
+    db.transaction(() -> db.newDocument("bson").set("_id", 70).set("ref", oid.toHexString()).save());
+    collection.insertOne(new Document("_id", 71).append("ref", oid));
+    collection.insertOne(new Document("_id", 72).append("ref", new ObjectId("507f1f77bcf86cd799439018")));
+    final List<Document> found = collection.find(new Document("ref", new Document("$not", new Document("$eq", oid)))).into(new ArrayList<>());
+    assertThat(found).hasSize(1);
+    assertThat(found.getFirst().get("_id")).isEqualTo(72);
+  }
 }

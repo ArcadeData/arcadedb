@@ -119,9 +119,14 @@ public class MongoDBToSqlTranslator {
               throw new IllegalArgumentException("Nested $not is not supported");
             if (notExpressionCount++ > 0)
               sql.append(" AND ");
+            final String notKey = notEntry.getKey();
+            if (key != null && !"_id".equals(key) && notEntry.getValue() instanceof ObjectId objectId && ("$eq".equals(notKey) || "$ne".equals(notKey))) {
+              appendObjectIdEquality(sql, params, quoteFieldPath(key.toString()), objectId, "$eq".equals(notKey));
+              continue;
+            }
             if (key != null)
               sql.append(quoteFieldPath(key.toString()));
-            buildExpression(sql, params, notEntry.getKey(), notEntry.getValue());
+            buildExpression(sql, params, notKey, notEntry.getValue());
           }
           sql.append(")");
         } else if (key != null && !"_id".equals(key) && subValue instanceof ObjectId objectId && ("$eq".equals(subKey) || "$ne".equals(subKey))) {
