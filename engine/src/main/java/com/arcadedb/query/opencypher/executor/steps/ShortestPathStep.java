@@ -73,6 +73,11 @@ import java.util.Set;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class ShortestPathStep extends AbstractExecutionStep {
+  // Direction arrays shared by every expansion, never written: callers only iterate them
+  private static final Vertex.DIRECTION[] OUT_ONLY = { Vertex.DIRECTION.OUT };
+  private static final Vertex.DIRECTION[] IN_ONLY  = { Vertex.DIRECTION.IN };
+  private static final Vertex.DIRECTION[] OUT_IN   = { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN };
+
   private final String sourceVariable;
   private final String targetVariable;
   private final String pathVariable;
@@ -886,11 +891,7 @@ public class ShortestPathStep extends AbstractExecutionStep {
     }
   }
 
-  private static final Vertex.DIRECTION[] OUT_ONLY = { Vertex.DIRECTION.OUT };
-  private static final Vertex.DIRECTION[] IN_ONLY  = { Vertex.DIRECTION.IN };
-  private static final Vertex.DIRECTION[] OUT_IN   = { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN };
-
-  /** Shared arrays, never written: callers only iterate them. */
+  /** One of the shared direction arrays above. */
   private static Vertex.DIRECTION[] expandDirections(final Vertex.DIRECTION direction) {
     return switch (direction) {
       case OUT -> OUT_ONLY;
