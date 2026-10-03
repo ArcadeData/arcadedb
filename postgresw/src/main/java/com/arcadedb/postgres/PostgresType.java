@@ -1083,9 +1083,6 @@ public enum PostgresType {
   }
 
   /**
-   * Determines the appropriate array type based on the element type.
-   */
-  /**
    * The array type that can hold EVERY non-null element, not just the first one (issue #9008): a list loaded from
    * JSON can mix integers and doubles, or numbers and text, and an {@code int4[]} announced from the first element
    * made a client read {@code [1, 2.5]} as {@code [1, 2]} or fail on the rest.
@@ -1119,7 +1116,8 @@ public enum PostgresType {
   /**
    * The narrowest type that holds every value of both {@code a} and {@code b}, used to type a column over all the rows
    * of a result and a list over all its elements (issue #9008, #9009). Integers widen to long, integers and floats to
-   * double, a long meeting a float (beyond 2^53 a double is not exact) or a BigDecimal to numeric. Anything else that
+   * double (a long beyond 2^53 is then rounded, which numeric could avoid only by failing on NaN and infinity), and
+   * anything meeting a BigDecimal to numeric. Anything else that
    * differs falls back to the one type every value can be written under: varchar for a column, text[] for a list.
    *
    * @param listElements true when merging the element types of ONE list (so json, which stands for a list of
@@ -1140,7 +1138,7 @@ public enum PostgresType {
       else if (high <= 2 || low >= 3)
         rank = high;
       else
-        rank = low == 2 ? 5 : 4; // an integer or smallint with a float is a double, a long with a float is numeric
+        rank = 4; // an integer, smallint or long with a float is a double: numeric could not carry a NaN or an infinity
       final boolean array = a.isArrayType();
       return switch (rank) {
         case 0, 1 -> array ? ARRAY_INT : INTEGER;
@@ -1171,6 +1169,9 @@ public enum PostgresType {
     return type.isNativeScalarType() ? VARCHAR : type;
   }
 
+  /**
+   * Determines the appropriate array type based on the element type.
+   */
   public static PostgresType getArrayTypeForElementType(Object element) {
     if (element instanceof Integer ||
         element instanceof Short ||

@@ -27,7 +27,6 @@ import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.exception.DatabaseNotAvailableException;
-import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.backup.BackupCoordinator;
@@ -1770,25 +1769,32 @@ public final class SnapshotInstaller {
 
   /**
    * Opens the database in {@code dbDir} and closes it again, the way the server's own reopen would: a read-only open
-   * does not register every component file, so it accepts a snapshot the server then refuses. A directory that another instance of this JVM
-   * already holds open proves nothing either way, so it is accepted: the check exists to stop a deletion, and it must
-   * not start one on a failure it did not cause.
+   * does not register every component file, so it accepts a snapshot the server then refuses.
+   * <p>
+   * The answer is only trusted when it is certain. A directory that another instance of this JVM already holds open
+   * proves nothing, so it is accepted, and a failure that points at the environment rather than at the files (an I/O
+   * error, a lock held elsewhere) is refused as inconclusive with an {@link IOException}: recovery then keeps the marker
+   * and BOTH copies for the next attempt instead of deleting either on a guess.
    */
-  private static boolean snapshotOpens(final Path dbDir) {
+  private static boolean snapshotOpens(final Path dbDir) throws IOException {
     final Predicate<Path> override = snapshotOpensForTesting;
     if (override != null)
       return override.test(dbDir);
 
+    final Path normalized = dbDir.toAbsolutePath().normalize();
+    for (final Database active : DatabaseFactory.getActiveDatabaseInstances())
+      if (Path.of(((DatabaseInternal) active).getDatabasePath()).toAbsolutePath().normalize().equals(normalized))
+        return true;
+
     try (final DatabaseFactory factory = new DatabaseFactory(dbDir.toString())) {
       factory.open().close();
       return true;
-    } catch (final DatabaseOperationException e) {
-      if (e.getMessage() != null && e.getMessage().contains("active instance"))
-        return true;
-      LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE, "The snapshot in %s failed to open: %s", e, dbDir,
-          e.getMessage());
-      return false;
     } catch (final Exception e) {
+      for (Throwable cause = e; cause != null; cause = cause.getCause())
+        if (cause instanceof IOException || cause instanceof java.io.UncheckedIOException
+            || cause.getMessage() != null && cause.getMessage().toLowerCase().contains("lock"))
+          throw new IOException("Cannot tell whether the snapshot in " + dbDir + " opens (" + e.getMessage()
+              + "); retaining the pending marker and both copies", e);
       LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE, "The snapshot in %s failed to open: %s", e, dbDir,
           e.getMessage());
       return false;
