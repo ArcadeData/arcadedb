@@ -4929,6 +4929,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // for the chain that doubles back on its very first hop, long before this threshold (code review on #6258).
       LongHashSet visitedChunks = null;
 
+      // #8987: whether every continuation page was ALREADY pinned by the transaction when this walk began, so that the chain
+      // is a snapshot taken before it. Only the first attempt can say so: a later one finds the pages its predecessor pinned.
+      final TransactionContext walkTransaction = database.getTransactionIfExists();
+      boolean tailsPrePinned = retry == 0 && walkTransaction != null;
+
       boolean chainInconsistent = false;
       final Binary record = new Binary();
       try {
@@ -4969,8 +4974,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             break;
           }
 
-          final BasePage nextPage = database.getTransaction()
-                  .getPage(new PageId(database, file.getFileId(), chunkPageId), pageSize);
+          final PageId nextPageId = new PageId(database, file.getFileId(), chunkPageId);
+          if (tailsPrePinned && walkTransaction.getPinnedPage(nextPageId) == null)
+            tailsPrePinned = false;
+
+          final BasePage nextPage = database.getTransaction().getPage(nextPageId, pageSize);
 
           final int nextRecordPositionInPage = getRecordPositionInPage(nextPage, chunkPositionInPage);
           if (nextRecordPositionInPage == 0) {
@@ -5036,7 +5044,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // chunk it cannot make sense of as a chunk that changed. What is left to come out of here is the failure to
         // LOAD a page at all, which is an I/O error and not a conflict - absorbing it would spend the retry budget
         // on a broken disk and then report it as "the record was modified during read".
-        final int verdict = validateChainRead(chainTrace, chunks, record, lastNextChunkPointer, headMarker);
+        final int verdict = validateChainRead(chainTrace, chunks, record, lastNextChunkPointer, headMarker, tailsPrePinned);
         if (verdict == CHAIN_READ_REVALIDATED)
           database.getPageManager().incrementChunkChainReadRevalidations();
         chainInconsistent = verdict == CHAIN_READ_CHANGED;
@@ -5096,20 +5104,25 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    *                             it is part of what the comparison checks: a head whose marker changed under the read
    *                             is a slot that stopped being what it was, exactly like one whose size or pointer did.
    *
+   * @param tailsPrePinned       whether the transaction already held every continuation page when the walk began: the
+   *                             pages the walk pins itself can come from different commits, so only a chain pinned
+   *                             before it is a snapshot (#8987).
+   *
    * @return {@link #CHAIN_READ_UNCHANGED}, {@link #CHAIN_READ_REVALIDATED} or {@link #CHAIN_READ_CHANGED}.
    *
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   private int validateChainRead(final long[] chainTrace, final int chunks, final Binary record,
-                                final long lastNextChunkPointer, final long headMarker) throws IOException {
+                                final long lastNextChunkPointer, final long headMarker, final boolean tailsPrePinned)
+          throws IOException {
     int verdict = CHAIN_READ_UNCHANGED;
     int contentOffset = 0;
 
-    // A chain the transaction holds WHOLE IS its snapshot (#8987): under REPEATABLE_READ a later commit on it is not a
+    // A chain whose continuation pages the transaction held BEFORE this walk, and still holds whole, IS its snapshot (#8987): under REPEATABLE_READ a later commit on it is not a
     // change made during the read, the chain is exactly what the transaction pinned and what every read of the record
     // must keep returning. A chain only partly held (its head pinned by a read of a neighbour on the same page) is
     // validated as before: its other chunks came from the page manager and a commit can have torn the read.
-    if (isChainPinnedWhole(chainTrace, chunks))
+    if (tailsPrePinned && isChainPinnedWhole(chainTrace, chunks))
       return CHAIN_READ_UNCHANGED;
 
     for (int chunk = 0; chunk < chunks; ++chunk) {
@@ -5232,7 +5245,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // THE COMMITTED CHAIN WALKS CLEANLY: what this read met was a chain in motion, which is what the retry is for.
         return null;
 
-      return validateChainRead(chainTrace, chunks, record, lastNextChunkPointer, headMarker) == CHAIN_READ_CHANGED ?
+      return validateChainRead(chainTrace, chunks, record, lastNextChunkPointer, headMarker, false) == CHAIN_READ_CHANGED ?
               null :
               reason;
     } catch (final Exception e) {
