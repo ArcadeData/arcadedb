@@ -22,6 +22,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.ExistingRecordsCheck;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -102,9 +103,20 @@ public class CreatePropertyStatement extends DDLStatement {
     final String ofTypeAsString = ofType != null ? ofType.getStringValue() : null;
     final Property internalProp = typez.createProperty(propertyName.getStringValue(), type, ofTypeAsString);
     result.setProperty("created", true);
-    for (final CreatePropertyAttributeStatement attr : attributes) {
-      final Object val = attr.setOnProperty(internalProp, context);
-      result.setProperty(attr.settingName.getStringValue(), val);
+    try {
+      for (final CreatePropertyAttributeStatement attr : attributes) {
+        final Object val = attr.setOnProperty(internalProp, context);
+        result.setProperty(attr.settingName.getStringValue(), val);
+      }
+
+      // The documentation promises that the creation fails over incompatible stored data (#9112), and the planners trust
+      // MANDATORY + NOTNULL to mean that an index on the property holds every record (#8943)
+      ExistingRecordsCheck.requireDeclaration(db, typez, internalProp);
+    } catch (final RuntimeException e) {
+      // LEAVE THE SCHEMA AS IT WAS BEFORE THE STATEMENT
+      typez.dropProperty(propertyName.getStringValue());
+      typeName = prevType;
+      throw e;
     }
 
     if (!customProperties.isEmpty()) {
