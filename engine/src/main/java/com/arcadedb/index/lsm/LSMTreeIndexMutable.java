@@ -317,7 +317,6 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
       return new LookupResult(true, false, mid,
           new int[] { currentPageBuffer.getInt(startIndexArray + (mid * INT_SERIALIZED_SIZE)) + keySerializedSize });
     } else if (purpose == 1) {
-      // RETRIEVE
       // RETRIEVE ALL THE RESULTS
       final int firstKeyPos = findFirstEntryOfSameKey(currentPageBuffer, convertedKeys, startIndexArray, mid);
       final int lastKeyPos = findLastEntryOfSameKey(count, currentPageBuffer, convertedKeys, startIndexArray, mid);
