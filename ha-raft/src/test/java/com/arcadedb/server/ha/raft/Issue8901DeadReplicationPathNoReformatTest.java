@@ -24,6 +24,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -178,5 +179,56 @@ class Issue8901DeadReplicationPathNoReformatTest {
     assertThat(RaftHAServer.replicationPathUnproven(baseline, last, -1))
         .as("an unreadable term is no proof: hold the destructive action")
         .isTrue();
+  }
+
+  @Test
+  void aPendingBaselineIsResolvedFirstAndOnlyALaterMoveProvesThePath() {
+    final AtomicReference<RaftHAServer.InPlaceRestartBaseline> ref = new AtomicReference<>(RaftHAServer.PENDING_BASELINE);
+    final AtomicReference<RaftHAServer.InPlaceRestartBaseline> position = new AtomicReference<>();
+
+    assertThat(RaftHAServer.replicationPathUnproven(ref, position::get))
+        .as("still unreadable: nothing to compare against, hold").isTrue();
+    assertThat(ref.get()).isSameAs(RaftHAServer.PENDING_BASELINE);
+
+    position.set(new RaftHAServer.InPlaceRestartBaseline(TermIndex.valueOf(27, 10), 28));
+    assertThat(RaftHAServer.replicationPathUnproven(ref, position::get))
+        .as("the first readable position becomes the baseline, it cannot prove anything itself").isTrue();
+    assertThat(ref.get()).isEqualTo(position.get());
+
+    assertThat(RaftHAServer.replicationPathUnproven(ref, position::get)).isTrue();
+
+    position.set(new RaftHAServer.InPlaceRestartBaseline(TermIndex.valueOf(28, 11), 28));
+    assertThat(RaftHAServer.replicationPathUnproven(ref, position::get)).isFalse();
+    assertThat(ref.get()).as("a proven path drops the baseline: the answer stays false until the next restart").isNull();
+
+    position.set(null);
+    assertThat(RaftHAServer.replicationPathUnproven(ref, position::get))
+        .as("with no baseline an unreadable division is no reason to hold anything").isFalse();
+  }
+
+  @Test
+  void anUnreadableDivisionHoldsWithoutTouchingTheBaseline() {
+    final RaftHAServer.InPlaceRestartBaseline baseline = new RaftHAServer.InPlaceRestartBaseline(TermIndex.valueOf(27, 10), 28);
+    final AtomicReference<RaftHAServer.InPlaceRestartBaseline> ref = new AtomicReference<>(baseline);
+
+    assertThat(RaftHAServer.replicationPathUnproven(ref, () -> null)).isTrue();
+    assertThat(ref.get()).isSameAs(baseline);
+  }
+
+  @Test
+  void aNewerRestartBaselineIsNeverOverwrittenByAStaleEvaluation() {
+    final RaftHAServer.InPlaceRestartBaseline first = new RaftHAServer.InPlaceRestartBaseline(TermIndex.valueOf(27, 10), 28);
+    final RaftHAServer.InPlaceRestartBaseline second = new RaftHAServer.InPlaceRestartBaseline(TermIndex.valueOf(28, 20), 28);
+    final AtomicReference<RaftHAServer.InPlaceRestartBaseline> ref = new AtomicReference<>(first);
+
+    // The evaluation read the first baseline, then a second in-place restart published its own before the evaluation
+    // got round to dropping the first: the drop must not erase the second.
+    final boolean unproven = RaftHAServer.replicationPathUnproven(ref, () -> {
+      ref.set(second);
+      return new RaftHAServer.InPlaceRestartBaseline(TermIndex.valueOf(28, 11), 28);
+    });
+
+    assertThat(unproven).isFalse();
+    assertThat(ref.get()).isSameAs(second);
   }
 }

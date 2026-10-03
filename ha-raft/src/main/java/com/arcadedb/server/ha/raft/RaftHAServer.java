@@ -113,6 +113,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.BiConsumer;
 import java.util.function.LongSupplier;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -262,12 +263,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // threads - the health monitor and, since #5345, the log compaction scheduler - read it. Every reader
   // still copies it to a local before use so a concurrent reassignment cannot null it mid-method.
   private volatile RaftServer                raftServer;
-  // Issue #8901: the last log entry and the term of the division right after the latest in-place restartRatis(), or
-  // null when it was never restarted in place in this process. Written under recoveryLock, read by the health monitor.
-  private volatile InPlaceRestartBaseline    inPlaceRestartBaseline;
-  // Set when the baseline above could not be read right after the restart; the health monitor then reads it once the
-  // division answers, before trusting any comparison against it.
-  private volatile boolean                   inPlaceRestartBaselinePending;
+  // Issue #8901: the last log entry and the term of the division right after the latest in-place restartRatis();
+  // PENDING_BASELINE when they could not be read then; null when the division was never restarted in place in this
+  // process, or the leader's appends have been seen reaching it since. One reference rather than a value and a flag,
+  // so a reader racing a second restart (restartRatis runs on whichever thread asked for it) never pairs a fresh
+  // division with the previous restart's baseline, and every transition is a compare-and-set against what was read.
+  private final    AtomicReference<InPlaceRestartBaseline> inPlaceRestartBaseline = new AtomicReference<>();
   private          RaftClient                raftClient;
   private volatile RaftProperties            raftProperties;
   private volatile RaftTransactionBroker     transactionBroker;
@@ -1984,15 +1985,22 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   record InPlaceRestartBaseline(TermIndex lastEntry, long term) {
   }
 
+  /** Baseline whose values could not be read right after the restart; resolved by the next health tick. */
+  static final InPlaceRestartBaseline PENDING_BASELINE = new InPlaceRestartBaseline(null, Long.MIN_VALUE);
+
   /**
    * Records the baseline {@link #isReplicationPathUnprovenSinceRestart()} compares against, right after
    * {@link #restartRatis(boolean)} started the new server. An unreadable division leaves it pending, to be read on the
    * next health tick, rather than failing a restart that has already succeeded.
+   * <p>
+   * Both ways of taking the baseline late err on the safe side: an entry or a term change that lands between
+   * {@code start()} and this read, or before the pending read, is already in the baseline and does not count as proof,
+   * so the hold lasts until the next entry or term change. Nothing is destroyed meanwhile; on an idle cluster that can
+   * be a long hold, which the WARNING and the stuck-at-stale-term alert keep visible.
    */
   private void captureInPlaceRestartBaseline() {
     final InPlaceRestartBaseline baseline = readReplicationPosition();
-    inPlaceRestartBaseline = baseline;
-    inPlaceRestartBaselinePending = baseline == null;
+    inPlaceRestartBaseline.set(baseline != null ? baseline : PENDING_BASELINE);
   }
 
   /** The division's last log entry and current term, or {@code null} when they cannot be read. */
@@ -2017,28 +2025,40 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * {@link #restartRatis(boolean)}. A changed last entry means an entry-carrying append reached the running server
    * and was accepted; a changed term means a new leader, whose appenders open their streams to the running server.
    * Neither proves the path while the division is unreadable, so that answers {@code true} and holds the reformat.
+   * Once proven the baseline is dropped, so the answer stays {@code false} until the next in-place restart.
    */
   @Override
   public boolean isReplicationPathUnprovenSinceRestart() {
-    if (inPlaceRestartBaselinePending) {
-      final InPlaceRestartBaseline baseline = readReplicationPosition();
-      if (baseline == null)
-        return true;
-      inPlaceRestartBaseline = baseline;
-      inPlaceRestartBaselinePending = false;
-      return true; // read only now: nothing to compare against yet
-    }
-    final InPlaceRestartBaseline baseline = inPlaceRestartBaseline;
-    if (baseline == null)
-      return false;
-    final InPlaceRestartBaseline current = readReplicationPosition();
-    if (current == null)
-      return true;
-    return replicationPathUnproven(baseline, current.lastEntry(), current.term());
+    return replicationPathUnproven(inPlaceRestartBaseline, this::readReplicationPosition);
   }
 
   /**
-   * Pure decision behind {@link #isReplicationPathUnprovenSinceRestart()}, package-private for testing. {@code true}
+   * One evaluation of {@link #isReplicationPathUnprovenSinceRestart()} over the baseline reference, package-private for
+   * testing: resolves a {@link #PENDING_BASELINE} (answering {@code true}, there is nothing to compare against yet),
+   * and drops the baseline once the path is proven. Every write is a compare-and-set against the value read, so a
+   * restart that publishes a new baseline meanwhile is never overwritten.
+   */
+  static boolean replicationPathUnproven(final AtomicReference<InPlaceRestartBaseline> baselineRef,
+      final Supplier<InPlaceRestartBaseline> positionReader) {
+    final InPlaceRestartBaseline baseline = baselineRef.get();
+    if (baseline == null)
+      return false;
+    final InPlaceRestartBaseline current = positionReader.get();
+    if (baseline == PENDING_BASELINE) {
+      if (current != null)
+        baselineRef.compareAndSet(PENDING_BASELINE, current);
+      return true;
+    }
+    if (current == null)
+      return true;
+    if (replicationPathUnproven(baseline, current.lastEntry(), current.term()))
+      return true;
+    baselineRef.compareAndSet(baseline, null);
+    return false;
+  }
+
+  /**
+   * Pure comparison behind {@link #isReplicationPathUnprovenSinceRestart()}, package-private for testing. {@code true}
    * when the division was restarted in place ({@code baseline != null}) and neither its last log entry nor its term has
    * moved since, or the current term cannot be read ({@code currentTerm < 0}).
    */

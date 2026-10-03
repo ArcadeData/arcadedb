@@ -20,6 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Database;
 import com.arcadedb.graph.MutableVertex;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Tag;
@@ -71,7 +72,7 @@ class Issue8901ReplicationPathAfterInPlaceRestartIT extends BaseRaftHATest {
         .as("right after the in-place restart no entry has reached the new division yet")
         .isTrue();
 
-    final var leaderDb = getServerDatabase(leaderIndex, getDatabaseName());
+    final Database leaderDb = getServerDatabase(leaderIndex, getDatabaseName());
     leaderDb.transaction(() -> {
       if (!leaderDb.getSchema().existsType("Issue8901"))
         leaderDb.getSchema().createVertexType("Issue8901");
