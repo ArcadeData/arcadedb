@@ -6516,11 +6516,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
       return losers;
     }
 
-    /** The first few losers as {@code #bucket:position}, for a log line or a finding. */
-    static String describeFirst(final List<VectorEntryForGraphBuild> losers) {
+    /** The first few losers with the record that took their id, so a later run has the pairing directly. */
+    String describeFirst(final List<VectorEntryForGraphBuild> losers) {
       final StringBuilder detail = new StringBuilder();
-      for (int i = 0; i < Math.min(5, losers.size()); i++)
-        detail.append(i > 0 ? ", " : "").append(losers.get(i).rid).append(losers.get(i).isCompacted ? " (compacted)" : " (mutable)");
+      for (int i = 0; i < Math.min(5, losers.size()); i++) {
+        final VectorEntryForGraphBuild loser = losers.get(i);
+        final int owner = owners.bucket(loser.vectorId);
+        detail.append(i > 0 ? ", " : "").append(loser.rid).append(loser.isCompacted ? " (compacted" : " (mutable")
+            .append(", id ").append(loser.vectorId).append(owner == IdOwners.DELETED ? ", tombstoned)" :
+                " lost to #" + (owner - 1) + ":" + owners.position(loser.vectorId) + ")");
+      }
       return detail.toString();
     }
   }
@@ -6550,7 +6555,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         "Graph build for index %s left out %d records whose vector id a load of the same pages gives to another record or "
             + "deletes: they are not in the graph until the index is rebuilt (CHECK DATABASE FIX or REBUILD INDEX), and the "
             + "data file is not compacted in this pass. First: %s",
-        indexName, losers.size(), LiveSetReplay.describeFirst(losers));
+        indexName, losers.size(), replay.describeFirst(losers));
     return true;
   }
 
@@ -6581,7 +6586,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     return List.of(("%d records have a vector id that a load gives to another record or deletes, so a persisted graph "
         + "is rejected on every load and these records are missing from search (first: %s). "
-        + "Rebuild the index (CHECK DATABASE FIX)").formatted(losers.size(), LiveSetReplay.describeFirst(losers)));
+        + "Rebuild the index (CHECK DATABASE FIX)").formatted(losers.size(), replay.describeFirst(losers)));
   }
 
   private void replayPages(final DatabaseInternal database, final LiveSetReplay replay) {
