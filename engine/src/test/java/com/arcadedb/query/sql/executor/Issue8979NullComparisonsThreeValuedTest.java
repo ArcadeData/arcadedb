@@ -19,6 +19,19 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.query.sql.parser.ContainsKeyOperator;
+import com.arcadedb.query.sql.parser.ContainsValueOperator;
+import com.arcadedb.query.sql.parser.EqualsCompareOperator;
+import com.arcadedb.query.sql.parser.GeOperator;
+import com.arcadedb.query.sql.parser.GtOperator;
+import com.arcadedb.query.sql.parser.ILikeOperator;
+import com.arcadedb.query.sql.parser.InOperator;
+import com.arcadedb.query.sql.parser.LeOperator;
+import com.arcadedb.query.sql.parser.LikeOperator;
+import com.arcadedb.query.sql.parser.LtOperator;
+import com.arcadedb.query.sql.parser.NeOperator;
+import com.arcadedb.query.sql.parser.NeqOperator;
+import com.arcadedb.query.sql.parser.NullSafeEqualsCompareOperator;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -126,6 +139,30 @@ class Issue8979NullComparisonsThreeValuedTest extends TestHelper {
     try (final ResultSet rs = database.command("sqlscript",
         "LET $v = null;\nLET $n = 0;\nWHILE ($v < 10) {\n  LET $n = $n + 1;\n}\nRETURN $n;")) {
       assertThat(rs.next().<Number>getProperty("value").intValue()).isZero();
+    }
+  }
+
+  @Test
+  void onlyTheValueComparisonsAreUnknownOnNull() {
+    assertThat(new EqualsCompareOperator().isUnknownOnNull()).isTrue();
+    assertThat(new NeOperator().isUnknownOnNull()).isTrue();
+    assertThat(new NeqOperator().isUnknownOnNull()).isTrue();
+    assertThat(new LtOperator().isUnknownOnNull()).isTrue();
+    assertThat(new LeOperator().isUnknownOnNull()).isTrue();
+    assertThat(new GtOperator().isUnknownOnNull()).isTrue();
+    assertThat(new GeOperator().isUnknownOnNull()).isTrue();
+    assertThat(new NullSafeEqualsCompareOperator().isUnknownOnNull()).isFalse();
+    assertThat(new LikeOperator().isUnknownOnNull()).isFalse();
+    assertThat(new ILikeOperator().isUnknownOnNull()).isFalse();
+    assertThat(new InOperator().isUnknownOnNull()).isFalse();
+    assertThat(new ContainsKeyOperator().isUnknownOnNull()).isFalse();
+    assertThat(new ContainsValueOperator().isUnknownOnNull()).isFalse();
+  }
+
+  @Test
+  void multiValueFilterEvaluatesEachItem() {
+    try (final ResultSet rs = database.query("sql", "SELECT [{x: 1}, {x: 9}, {x: 12}][x > 5].size() AS n")) {
+      assertThat(rs.next().<Number>getProperty("n").intValue()).isEqualTo(2);
     }
   }
 }
