@@ -30,12 +30,12 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.TypeIndexBuilder;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.ArcadeDBServer;
 import de.bwaldvogel.mongo.MongoBackend;
 import de.bwaldvogel.mongo.MongoCollection;
 import de.bwaldvogel.mongo.MongoDatabase;
@@ -62,6 +62,12 @@ import java.util.logging.Level;
 import static de.bwaldvogel.mongo.backend.Utils.markOkay;
 
 public class MongoDBDatabaseWrapper implements MongoDatabase {
+  /**
+   * The largest array index {@code $set} may reach: the gap is padded with nulls in memory, so an unbounded index is a way to
+   * exhaust the heap with one request.
+   */
+  private static final int MAX_ARRAY_PADDING = 100_000;
+
   protected final Database                           database;
   protected final MongoDBProtocolPlugin              plugin;
   protected final MongoBackend                       backend;
@@ -332,8 +338,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   }
 
   private Document createCollection(final Document document) {
-    final String collectionName = (String) document.get("create");
-    database.getSchema().buildDocumentType().withName(collectionName).withTotalBuckets(1).create();
+    database.getSchema().buildDocumentType().withName((String) document.get("create")).withTotalBuckets(1).create();
     return responseOk();
   }
 
@@ -624,7 +629,9 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       for (final Document upd : updates)
         if (Utils.isTrue(upd.get("upsert"))) {
           database.getSchema().getOrCreateDocumentType(collectionName);
-          MongoDBCollectionWrapper.ensureIdIndex(database, collectionName, upd.get("q") instanceof Document q ? q.get("_id") : null);
+          // an upsert without _id in its filter stores a generated ObjectId, a string kind
+          MongoDBCollectionWrapper.ensureIdIndex(database, collectionName,
+              upd.get("q") instanceof Document q && q.get("_id") != null ? q.get("_id") : new ObjectId());
           break;
         }
 
@@ -957,7 +964,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     }
 
     // MongoDB leaves a scalar alone on $unset of a path below it
-    if (!(container instanceof Map) && !(container instanceof com.arcadedb.database.Document))
+    if (!isEmbedded(container))
       return container;
 
     final Map<String, Object> copy = copyOfEmbedded(container);
@@ -1004,15 +1011,9 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * here would silently destroy the stored value.
    */
   private static void requireEmbedded(final Object container, final String field) {
-    if (container != null && !(container instanceof Map) && !(container instanceof com.arcadedb.database.Document))
+    if (container != null && !isEmbedded(container))
       throw new MongoServerError(28, "PathNotViable", "Cannot create field '" + field + "' in element {" + container + "}");
   }
-
-  /**
-   * The largest array index {@code $set} may reach: the gap is padded with nulls in memory, so an unbounded index is a way to
-   * exhaust the heap with one request.
-   */
-  private static final int MAX_ARRAY_PADDING = 100_000;
 
   /**
    * MongoDB compares numbers by value, so an {@code _id} of 2 and one of 2L or 2.0 are the same.
@@ -1027,6 +1028,10 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     if (value == null || value instanceof Number)
       return (Number) value;
     throw new MongoServerError(14, "TypeMismatch", "Cannot apply $inc to a value of non-numeric type");
+  }
+
+  private static boolean isEmbedded(final Object value) {
+    return value instanceof Map || value instanceof com.arcadedb.database.Document;
   }
 
   private static boolean isArrayIndex(final String segment) {
