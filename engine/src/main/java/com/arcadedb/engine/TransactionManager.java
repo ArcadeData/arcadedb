@@ -1519,7 +1519,6 @@ public class TransactionManager {
    *                        before it gets here.
    */
   private boolean cleanWALFiles(final boolean dropFiles, final boolean force, final boolean syncDataOnDrop) {
-    boolean dataSynced = false;
     boolean droppedAny = false;
     // #8356: inactiveWALFilePool is a Collections.synchronizedList, which only makes each INDIVIDUAL call
     // (add/remove/size) atomic - its own Javadoc requires the caller to synchronize on the list for manual
@@ -1527,37 +1526,47 @@ public class TransactionManager {
     // (checkWALFiles, run every second on its own Timer thread) or from a second, racing close() could land
     // between this iterator's hasNext()/next() and throw ConcurrentModificationException out of it.remove().
     synchronized (inactiveWALFilePool) {
-      for (final Iterator<WALFile> it = inactiveWALFilePool.iterator(); it.hasNext(); ) {
-        final WALFile file = it.next();
+      if (inactiveWALFilePool.isEmpty())
+        return true;
 
-        if (force || !dropFiles || file.getPendingPagesToFlush() == 0) {
-          // ALL PAGES FLUSHED, REMOVE THE FILE
-          try {
-            final Map<String, Object> fileStats = file.getStats();
-            statsPagesWritten.addAndGet((Long) fileStats.get("pagesWritten"));
-            statsBytesWritten.addAndGet((Long) fileStats.get("bytesWritten"));
+      // #8923: decide EVERY removable file before the fsync below, never after it. The flush thread decrements a
+      // file's pending counter (WALFile.notifyPageFlushed) right after a write() that only reaches the OS page
+      // cache and without taking any lock this pass holds, so a counter read AFTER the fsync can be zero because
+      // of a page the fsync did not cover. A file selected here had zero pending pages before the fsync, so every
+      // one of its pages is covered by it; a file that reaches zero later waits for the next pass and its fsync.
+      final List<WALFile> removable = new ArrayList<>(inactiveWALFilePool.size());
+      for (final WALFile file : inactiveWALFilePool)
+        if (force || !dropFiles || file.getPendingPagesToFlush() == 0)
+          removable.add(file);
 
-            if (dropFiles) {
-              // Make the data pages durable before the WAL that protects them is deleted. fsync once, lazily,
-              // right before the first WAL file is actually dropped in this pass (issue #4509).
-              if (syncDataOnDrop && !dataSynced) {
-                if (!database.getFileManager().syncFiles()) {
-                  // #4934: the fsync failed - the data this WAL protects may never reach the disk. Dropping
-                  // the WAL now would make it unrecoverable; abort this pass, the rotation retries later.
-                  return false;
-                }
-                dataSynced = true;
-              }
-              file.drop();
-              droppedAny = true;
-            } else
-              file.close();
+      if (removable.isEmpty())
+        return false;
 
-          } catch (final IOException e) {
-            LogManager.instance().log(this, Level.SEVERE, "Error on %s WAL file '%s'", e, dropFiles ? "dropping" : "closing", file);
-          }
-          it.remove();
+      // Make the data pages durable before the WALs that protect them are deleted: one fsync per pass, not per file
+      // (issues #4509, #8626).
+      if (dropFiles && syncDataOnDrop && !database.getFileManager().syncFiles())
+        // #4934: the fsync failed - the data these WALs protect may never reach the disk. Dropping them now would
+        // make it unrecoverable; abort this pass, the rotation retries later.
+        return false;
+
+      for (final WALFile file : removable) {
+        try {
+          final Map<String, Object> fileStats = file.getStats();
+          statsPagesWritten.addAndGet((Long) fileStats.get("pagesWritten"));
+          statsBytesWritten.addAndGet((Long) fileStats.get("bytesWritten"));
+
+          if (dropFiles) {
+            file.drop();
+            droppedAny = true;
+          } else
+            file.close();
+
+        } catch (final IOException e) {
+          LogManager.instance().log(this, Level.SEVERE, "Error on %s WAL file '%s'", e, dropFiles ? "dropping" : "closing", file);
         }
+        // Out of the pool as soon as it is handled, so an unchecked exception from a later file cannot leave an
+        // already-dropped file behind for the next pass to drop again.
+        inactiveWALFilePool.remove(file);
       }
     }
 
