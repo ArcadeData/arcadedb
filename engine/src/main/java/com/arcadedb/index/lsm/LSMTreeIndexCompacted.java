@@ -372,16 +372,17 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
     } else if (purpose == 1) {
       // RETRIEVE
 
-      currentPageBuffer.position(currentPageBuffer.getInt(startIndexArray + (mid * INT_SERIALIZED_SIZE)));
-      final int keySerializedSize = getSerializedKeySize(currentPageBuffer, convertedKeys.length);
-
       // RETRIEVE ALL THE RESULTS
       final int firstKeyPos = findFirstEntryOfSameKey(currentPageBuffer, convertedKeys, startIndexArray, mid);
       final int lastKeyPos = findLastEntryOfSameKey(count, currentPageBuffer, convertedKeys, startIndexArray, mid);
 
       final int[] positionsArray = new int[lastKeyPos - firstKeyPos + 1];
-      for (int i = firstKeyPos; i <= lastKeyPos; ++i)
-        positionsArray[i - firstKeyPos] = currentPageBuffer.getInt(startIndexArray + (i * INT_SERIALIZED_SIZE)) + keySerializedSize;
+      for (int i = firstKeyPos; i <= lastKeyPos; ++i) {
+        final int entryPos = currentPageBuffer.getInt(startIndexArray + (i * INT_SERIALIZED_SIZE));
+        // KEYS THAT COMPARE EQUAL CAN SERIALIZE TO DIFFERENT SIZES (E.G. DECIMAL 5.00 vs 5), SO EACH ENTRY HAS ITS OWN KEY SIZE (#8972)
+        currentPageBuffer.position(entryPos);
+        positionsArray[i - firstKeyPos] = entryPos + getSerializedKeySize(currentPageBuffer, convertedKeys.length);
+      }
 
       return new LookupResult(true, false, lastKeyPos, positionsArray);
     }

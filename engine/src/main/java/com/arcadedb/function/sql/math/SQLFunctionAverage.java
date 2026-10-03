@@ -24,6 +24,7 @@ import com.arcadedb.function.sql.SQLAggregatedFunction;
 import com.arcadedb.schema.Type;
 
 import java.math.BigDecimal;
+import java.math.MathContext;
 import java.math.RoundingMode;
 
 /**
@@ -41,8 +42,10 @@ public class SQLFunctionAverage extends SQLAggregatedFunction {
    */
   private static final int BIG_DECIMAL_SCALE = 10;
 
-  private Number sum;
-  private int    total = 0;
+  private Number  sum;
+  private int     total        = 0;
+  // TRUE WHEN AN INPUT WAS A BigDecimal, FALSE WHEN A BigDecimal SUM IS ONLY THE WIDENED RESULT OF A long OVERFLOW (#8974)
+  private boolean decimalInput = false;
 
   public SQLFunctionAverage() {
     super(NAME);
@@ -66,12 +69,14 @@ public class SQLFunctionAverage extends SQLAggregatedFunction {
         rowSum = rowSum == null ? value : Type.increment(rowSum, value);
       }
     }
-    return computeAverage(rowSum, rowTotal);
+    return computeAverage(rowSum, rowTotal, rowSum instanceof BigDecimal && anyDecimal(params));
   }
 
   protected void sum(final Number value) {
     if (value != null) {
       total++;
+      if (value instanceof BigDecimal)
+        decimalInput = true;
       if (sum == null)
         // FIRST TIME
         sum = value;
@@ -86,7 +91,7 @@ public class SQLFunctionAverage extends SQLAggregatedFunction {
 
   @Override
   public Object getResult() {
-    return computeAverage(sum, total);
+    return computeAverage(sum, total, decimalInput);
   }
 
   @Override
@@ -106,17 +111,29 @@ public class SQLFunctionAverage extends SQLAggregatedFunction {
       return;
     sum = sum == null ? partial.sum : Type.increment(sum, partial.sum);
     total += partial.total;
+    decimalInput |= partial.decimalInput;
   }
 
-  private Object computeAverage(final Number iSum, final int iTotal) {
+  private static boolean anyDecimal(final Object[] params) {
+    for (final Object p : params)
+      if (p instanceof BigDecimal)
+        return true;
+    return false;
+  }
+
+  private Object computeAverage(final Number iSum, final int iTotal, final boolean iDecimalInput) {
     // EMPTY GROUP: NO VALUES TO AVERAGE (ALSO AVOIDS A DIVISION BY ZERO)
     if (iSum == null || iTotal == 0)
       return null;
 
     // BIGDECIMAL KEEPS FULL PRECISION: USE AN EXPLICIT SCALE, OTHERWISE divide() INHERITS THE DIVIDEND SCALE AND TRUNCATES
     // (e.g. new BigDecimal("10").divide(BigDecimal(3)) -> 3 instead of 3.3333333333).
-    if (iSum instanceof BigDecimal decimal)
+    if (iSum instanceof BigDecimal decimal) {
+      // A long SUM THAT OVERFLOWED WAS WIDENED TO BigDecimal: THE INPUTS WERE NOT DECIMALS, SO THE MEAN IS A DOUBLE LIKE FOR ANY OTHER INTEGRAL INPUT
+      if (!iDecimalInput)
+        return decimal.divide(new BigDecimal(iTotal), MathContext.DECIMAL128).doubleValue();
       return decimal.divide(new BigDecimal(iTotal), BIG_DECIMAL_SCALE, RoundingMode.HALF_UP);
+    }
 
     // ALL OTHER NUMERIC TYPES AVERAGE AS A DOUBLE SO INTEGER/LONG SUMS ARE NOT TRUNCATED (e.g. avg(1, 2) -> 1.5).
     return iSum.doubleValue() / iTotal;
