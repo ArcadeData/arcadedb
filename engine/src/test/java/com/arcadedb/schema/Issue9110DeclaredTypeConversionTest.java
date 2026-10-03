@@ -25,7 +25,12 @@ import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -188,30 +193,65 @@ class Issue9110DeclaredTypeConversionTest extends TestHelper {
   }
 
   @Test
-  void digitOnlyStringIsAnEpochCountForEveryDateTarget() {
+  void digitOnlyStringIsAnEpochCountForDateTimeTargets() {
     final DocumentType type = database.getSchema().createDocumentType("Epoch9110");
     type.createProperty("dt", Type.DATETIME);
-    type.createProperty("d", Type.DATE);
+    type.createProperty("dts", Type.DATETIME_SECOND);
+    type.createProperty("dtm", Type.DATETIME_MICROS);
     assertThat(roundTrip("Epoch9110", "dt", "1791000000000")).isEqualTo(roundTrip("Epoch9110", "dt", 1791000000000L));
     assertThat(roundTrip("Epoch9110", "dt", "1791000000000")).isNotNull();
+    assertThat(roundTrip("Epoch9110", "dts", "1791000000")).isEqualTo(roundTrip("Epoch9110", "dts", 1791000000L));
+    assertThat(roundTrip("Epoch9110", "dtm", "1791000000000000")).isEqualTo(roundTrip("Epoch9110", "dtm", 1791000000000000L));
+    // a compact yyyyMMdd date is read as an epoch count too, as the DATE branch already did
+    assertThat(Type.convert(database, "20261003", LocalDateTime.class)).isEqualTo(Type.convert(database, 20261003L, LocalDateTime.class));
   }
 
   @Test
-  void crossJavaTimeShapesConvert() {
+  void crossJavaTimeShapesConvertToTheRightMoment() {
+    final OffsetDateTime offset = OffsetDateTime.parse("2026-10-03T10:15:30+02:00");
+    final Instant moment = Instant.parse("2026-10-03T08:15:30Z");
+    assertThat(Type.convert(database, offset, Instant.class)).isEqualTo(moment);
+    assertThat(Type.convert(database, offset, ZonedDateTime.class)).isEqualTo(offset.toZonedDateTime());
+    assertThat(Type.convert(database, offset, LocalDate.class)).isEqualTo(LocalDate.of(2026, 10, 3));
+    assertThat(Type.convert(database, ZonedDateTime.parse("2026-10-03T23:30:00-05:00"), LocalDate.class))
+        .isEqualTo(LocalDate.of(2026, 10, 4));
+    assertThat(Type.convert(database, LocalDateTime.of(2026, 10, 3, 10, 0), Instant.class))
+        .isEqualTo(Instant.parse("2026-10-03T10:00:00Z"));
+    assertThat(Type.convert(database, LocalDateTime.of(2026, 10, 3, 10, 0), ZonedDateTime.class))
+        .isEqualTo(ZonedDateTime.of(2026, 10, 3, 10, 0, 0, 0, ZoneOffset.UTC));
+    assertThat(Type.convert(database, LocalDate.of(2026, 10, 3), Instant.class)).isEqualTo(Instant.parse("2026-10-03T00:00:00Z"));
+    assertThat(Type.convert(database, LocalDate.of(2026, 10, 3), LocalDateTime.class))
+        .isEqualTo(LocalDateTime.of(2026, 10, 3, 0, 0));
+    assertThat(Type.convert(database, LocalDate.of(2026, 10, 3), ZonedDateTime.class))
+        .isEqualTo(ZonedDateTime.of(2026, 10, 3, 0, 0, 0, 0, ZoneOffset.UTC));
+
     final DocumentType type = database.getSchema().createDocumentType("Time9110");
     type.createProperty("dt", Type.DATETIME);
     type.createProperty("d", Type.DATE);
-    final java.time.OffsetDateTime offset = java.time.OffsetDateTime.parse("2026-10-03T10:15:30+02:00");
-    assertThat(roundTrip("Time9110", "dt", offset)).isNotNull();
-    assertThat(roundTrip("Time9110", "dt", java.time.ZonedDateTime.parse("2026-10-03T10:15:30Z"))).isNotNull();
-    assertThat(roundTrip("Time9110", "dt", java.time.Instant.parse("2026-10-03T10:15:30Z"))).isNotNull();
-    assertThat(roundTrip("Time9110", "dt", LocalDate.of(2026, 10, 3))).isNotNull();
-    assertThat(roundTrip("Time9110", "d", offset)).isNotNull();
-    assertThat(roundTrip("Time9110", "d", java.time.ZonedDateTime.parse("2026-10-03T10:15:30Z"))).isNotNull();
-    assertThat(Type.convert(database, offset, java.time.Instant.class)).isEqualTo(offset.toInstant());
-    assertThat(Type.convert(database, java.time.LocalDateTime.of(2026, 10, 3, 10, 0), java.time.ZonedDateTime.class))
-        .isNotNull();
-    assertThat(Type.convert(database, java.time.LocalDateTime.of(2026, 10, 3, 10, 0), java.time.Instant.class)).isNotNull();
+    assertThat(roundTrip("Time9110", "dt", offset)).isEqualTo(LocalDateTime.of(2026, 10, 3, 8, 15, 30));
+    assertThat(roundTrip("Time9110", "d", offset)).isEqualTo(LocalDate.of(2026, 10, 3));
+  }
+
+  @Test
+  void outOfRangeLongIsOnlyRefusedForADeclaredProperty() {
+    // no property: the plain conversion, a getter or an index lookup by a literal, keeps clamping
+    assertThat(Type.convert(database, 1e30d, Long.class)).isEqualTo(Long.MAX_VALUE);
+    assertThat(Type.convertOrKeep(database, 1e30d, Long.class)).isEqualTo(Long.MAX_VALUE);
+    assertThat(Type.convertIndexKeyOrNull(database, 1e30d, Long.class)).isEqualTo(Long.MAX_VALUE);
+    database.getSchema().createDocumentType("LongProp9110").createProperty("l", Type.LONG);
+    assertRefused("LongProp9110", "l", 1e30d);
+  }
+
+  @Test
+  void indexKeyConversionAnswersNullForAnInconvertibleShape() {
+    assertThat(Type.convertIndexKeyOrNull(database, new ArrayList<>(List.of(1, 2)), Integer.class)).isNull();
+  }
+
+  @Test
+  void byteArrayIsRefusedByAListProperty() {
+    database.getSchema().createDocumentType("BytesList9110").createProperty("l", Type.LIST);
+    assertRefused("BytesList9110", "l", new byte[] { 1, 2 });
+    assertThat(roundTrip("BytesList9110", "l", new ArrayList<>(List.of(1, 2)))).isEqualTo(List.of(1, 2));
   }
 
   @Test
