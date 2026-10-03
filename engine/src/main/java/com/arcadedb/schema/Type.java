@@ -142,6 +142,11 @@ public enum Type {
    * double. See {@link #isExactAsDouble}.
    */
   private static final long                EXACT_INTEGRAL_DOUBLE = 1L << 53;
+  /**
+   * Significant digits a double carries: a decimal with no more than this is the double it narrows to, one with more
+   * says something no double can (issue #8872, the same bound the SQL parser applies to a suffix-less literal).
+   */
+  private static final int                 MAX_DOUBLE_DIGITS     = 17;
 
   static {
     for (final Type type : values()) {
@@ -1586,7 +1591,8 @@ public enum Type {
    * Ordering is untouched: it keeps the decimal reading of {@link #widenFloat}.
    * <p>
    * The relation is not transitive (0.1f equals both 0.1 and 0.10000000149011612, which differ) and the Double/BigDecimal
-   * rule is as loose as the double's ulp, as the index's is: never use it for hashing or grouping. NaN equals NaN here, as
+   * rule is as loose as the double's ulp, as the index's is, for a decimal of at most 17 significant digits; a longer one
+   * is compared exactly (issue #8872, see {@link #doubleEqualsDecimal}): never use it for hashing or grouping. NaN equals NaN here, as
    * {@code Double.equals} says; a caller needing the IEEE answer (Cypher) guards for it.
    *
    * @param left  the first operand
@@ -1617,10 +1623,26 @@ public enum Type {
     if (right instanceof Float f)
       return narrowsTo(f, left);
     if (left instanceof Double d && right instanceof BigDecimal bd)
-      return Double.isFinite(d) && BinaryComparator.compareDoubles(d, bd.doubleValue()) == 0;
+      return doubleEqualsDecimal(d, bd);
     if (left instanceof BigDecimal bd && right instanceof Double d)
-      return Double.isFinite(d) && BinaryComparator.compareDoubles(d, bd.doubleValue()) == 0;
+      return doubleEqualsDecimal(d, bd);
     return false;
+  }
+
+  /**
+   * A DOUBLE against a BigDecimal. A decimal of at most {@link #MAX_DOUBLE_DIGITS} significant digits is what a double
+   * carries (the {@code printf("%.17g")} round-trip form), so it equals the double it narrows to, as an index key
+   * converted to DOUBLE does (issue #8882). A longer decimal says more than any double can: it is compared exactly, as
+   * the ordering operators compare it, so a value is never equal to such a bound and below it at once, and a DOUBLE
+   * column against an 18+ digit SQL literal answers the exact comparison (issue #8872). The exact binary expansion of
+   * the stored double ({@code new BigDecimal(d)}) still equals it.
+   */
+  private static boolean doubleEqualsDecimal(final double d, final BigDecimal bd) {
+    if (!Double.isFinite(d))
+      return false;
+    if (bd.precision() <= MAX_DOUBLE_DIGITS)
+      return BinaryComparator.compareDoubles(d, bd.doubleValue()) == 0;
+    return new BigDecimal(d).compareTo(bd) == 0;
   }
 
   // Deliberately as loose as the index key: Type.convert narrows the operand, so 1e-50 reads as 0.0f and finds it (#8882)
