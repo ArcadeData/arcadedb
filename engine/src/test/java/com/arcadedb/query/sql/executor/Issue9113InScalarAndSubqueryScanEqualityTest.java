@@ -153,4 +153,11 @@ class Issue9113InScalarAndSubqueryScanEqualityTest extends TestHelper {
     assertThat(ids("S", "(k + 0) IN (?)", 7.0d)).containsExactly(1);
     assertThat(ids("S", "(k + 0) IN (?)", 8L)).isEmpty();
   }
+
+  @Test
+  void mixedListAndPrimitiveArrayParameters() {
+    load();
+    assertIndexAndScanFind("k IN ?", List.of(3L, 7, 9));
+    assertIndexAndScanFind("k IN ?", new int[] { 3, 7 });
+  }
 }
