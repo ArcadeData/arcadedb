@@ -41,6 +41,7 @@ import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -453,7 +454,7 @@ public class MongoDBWireSemanticsTest extends BaseMongoServerTest {
         }));
       }
       for (final Future<?> f : futures)
-        f.get();
+        f.get(60, TimeUnit.SECONDS);
     } finally {
       pool.shutdownNow();
     }
@@ -503,5 +504,24 @@ public class MongoDBWireSemanticsTest extends BaseMongoServerTest {
     collection.insertMany(List.of(new Document("_id", 2), new Document("_id", 9), new Document("_id", 10)));
     collection.updateOne(new Document("name", "x"), Document.parse("{$set: {_id: 50, name: 'x'}}"), new UpdateOptions().upsert(true));
     assertThat(ids("{_id: {$gt: 5}}")).containsExactly(9, 10, 50);
+  }
+
+  @Test
+  void notRegexLiteralMatchesMissingAndNonMatching() {
+    collection.insertMany(List.of(Document.parse("{_id: 1, name: 'alice'}"), Document.parse("{_id: 2, name: 'bob'}"), Document.parse("{_id: 3}")));
+    assertThat(ids("{name: {$not: {$regex: '^a'}}}")).containsExactly(2, 3);
+
+    final List<Object> found = new ArrayList<>();
+    for (final Document d : collection.find(new Document("name", new Document("$not", Pattern.compile("^a")))).sort(new Document("_id", 1)))
+      found.add(d.get("_id"));
+    assertThat(found).containsExactly(2, 3);
+  }
+
+  @Test
+  void aFailedInsertLeavesTheConnectionUsable() {
+    collection.insertOne(new Document("_id", 1));
+    assertThatThrownBy(() -> collection.insertOne(new Document("_id", 1))).isInstanceOf(MongoWriteException.class);
+    collection.insertOne(new Document("_id", 2));
+    assertThat(collection.countDocuments()).isEqualTo(2);
   }
 }
