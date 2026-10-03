@@ -3031,6 +3031,7 @@ public class TransactionContext implements Transaction {
       return;
 
     final LocalSchema schema = database.getSchema().getEmbedded();
+    RidHashSet createdHere = null;
     for (final long packed : unidirectionalEdgeTargets.toArray()) {
       final int bucketId = (int) (packed >>> UNIDIRECTIONAL_TARGET_BUCKET_SHIFT);
       final RID target = new RID(bucketId, packed & ((1L << UNIDIRECTIONAL_TARGET_BUCKET_SHIFT) - 1));
@@ -3039,19 +3040,21 @@ public class TransactionContext implements Transaction {
         continue;
 
       final LocalBucket bucket = schema.getBucketById(bucketId, false);
-      if (bucket == null || bucket.existsRecordInCommittedPage(target) || isCreatedInThisTransaction(target))
+      if (bucket == null || bucket.existsRecordInCommittedPage(target))
+        continue;
+
+      // ONLY A TARGET THE COMMITTED PAGES DO NOT HOLD GETS HERE: HASHED ONCE, SO A BULK LOAD OF VERTICES AND EDGES STAYS LINEAR
+      if (createdHere == null) {
+        createdHere = new RidHashSet(Math.max(DELETED_SET_CAPACITY, newRecords.size()));
+        for (int i = 0; i < newRecords.size(); i++)
+          createdHere.add(newRecords.get(i).getIdentity());
+      }
+      if (createdHere.contains(target))
         continue;
 
       throw new ConcurrentModificationException("Vertex " + target + ", the target of a unidirectional edge created by this "
           + "transaction, was deleted by a concurrent transaction. Please retry the operation");
     }
-  }
-
-  private boolean isCreatedInThisTransaction(final RID rid) {
-    for (int i = 0; i < newRecords.size(); i++)
-      if (rid.equals(newRecords.get(i).getIdentity()))
-        return true;
-    return false;
   }
 
   private IntHashSet lockFilesFromChanges() {

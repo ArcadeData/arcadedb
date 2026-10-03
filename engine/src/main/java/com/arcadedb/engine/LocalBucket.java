@@ -1106,14 +1106,16 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         current = getRecordInternal(new RID(fileId, page.readLong((int) (recordPositionInPage + recordSize[1]))), true, false);
 
       if (current == null)
-        return false;
+        // CANNOT BE RECONSTRUCTED: IT CANNOT BE VOUCHED FOR EITHER
+        return true;
       final int size = current.size();
       return size != readImage.size() || !readImage.isSameRegionAs(0, current, 0, size);
     } catch (final ConcurrentModificationException e) {
       return true;
     } catch (final Exception e) {
+      // FAIL CLOSED: A RECORD THAT CANNOT BE RE-READ IS NOT ONE THE UPDATE MAY BE LAID OVER
       LogManager.instance().log(this, Level.FINE, "Unable to re-read the off-page record %s while taking it for update", e, rid);
-      return false;
+      return true;
     }
   }
 
@@ -5102,23 +5104,17 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                                 final long lastNextChunkPointer, final long headMarker) throws IOException {
     int verdict = CHAIN_READ_UNCHANGED;
     int contentOffset = 0;
-    final TransactionContext transaction = database.getTransactionIfExists();
+
+    // A chain the transaction holds WHOLE IS its snapshot (#8987): under REPEATABLE_READ a later commit on it is not a
+    // change made during the read, the chain is exactly what the transaction pinned and what every read of the record
+    // must keep returning. A chain only partly held (its head pinned by a read of a neighbour on the same page) is
+    // validated as before: its other chunks came from the page manager and a commit can have torn the read.
+    if (isChainPinnedWhole(chainTrace, chunks))
+      return CHAIN_READ_UNCHANGED;
 
     for (int chunk = 0; chunk < chunks; ++chunk) {
       final int trace = chunk * CHAIN_TRACE_STRIDE;
       final int chunkSize = (int) chainTrace[trace + CHAIN_TRACE_CHUNK_SIZE];
-
-      if (transaction != null) {
-        // A page this transaction holds IS its snapshot (#8987): under REPEATABLE_READ a later commit on it is not a
-        // change made during the read, the chunk is exactly what the transaction pinned and what every read of the
-        // record must keep returning. Only a page the read fetched from the page manager can be torn by a commit.
-        final BasePage pinned = transaction.getPinnedPage(
-                new PageId(database, file.getFileId(), (int) chainTrace[trace + CHAIN_TRACE_PAGE_NUMBER]));
-        if (pinned != null && pinned.getVersion() == chainTrace[trace + CHAIN_TRACE_PAGE_VERSION]) {
-          contentOffset += chunkSize;
-          continue;
-        }
-      }
 
       final BasePage currentPage = database.getPageManager()
               .getImmutablePage(new PageId(database, file.getFileId(), (int) chainTrace[trace + CHAIN_TRACE_PAGE_NUMBER]),
@@ -5145,6 +5141,21 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     }
 
     return verdict;
+  }
+
+  /** Whether every chunk of the traced chain was read from a page this transaction holds, at the version it read. */
+  private boolean isChainPinnedWhole(final long[] chainTrace, final int chunks) {
+    final TransactionContext transaction = database.getTransactionIfExists();
+    if (transaction == null)
+      return false;
+    for (int chunk = 0; chunk < chunks; ++chunk) {
+      final int trace = chunk * CHAIN_TRACE_STRIDE;
+      final BasePage pinned = transaction.getPinnedPage(
+              new PageId(database, file.getFileId(), (int) chainTrace[trace + CHAIN_TRACE_PAGE_NUMBER]));
+      if (pinned == null || pinned.getVersion() != chainTrace[trace + CHAIN_TRACE_PAGE_VERSION])
+        return false;
+    }
+    return true;
   }
 
   /**
