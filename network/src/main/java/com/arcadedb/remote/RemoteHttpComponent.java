@@ -626,7 +626,7 @@ public class RemoteHttpComponent extends RWLockContext {
 
         if (connectionStrategy == CONNECTION_STRATEGY.FIXED || stickyPinned) {
           // The same server, which holds the entry of a write it applied: with the id on the request the replay is answered, not run again
-          refuseToReplayAPossiblyAppliedRequest(e, replayable || requestId != null && instancesAtStart.containsKey(server), messageLabel,
+          refuseToReplayAPossiblyAppliedRequest(e, replayable || (requestId != null && instancesAtStart.containsKey(server)), messageLabel,
               connectToServer);
           LogManager.instance()
               .log(this, Level.WARNING, "Remote server (%s:%d) seems unreachable, retrying...",
@@ -725,6 +725,11 @@ public class RemoteHttpComponent extends RWLockContext {
     return "GET".equalsIgnoreCase(method) || "query".equals(operation);
   }
 
+  /** Whether the failure leaves open that the server read the request: an I/O failure that is not a failure to connect. */
+  private static boolean mayHaveReachedTheServer(final Exception e) {
+    return e instanceof IOException ioe && !provablyNeverSent(ioe);
+  }
+
   /**
    * Whether a transport failure proves the request never reached the server (issue #8136). Only a failure to
    * establish the connection does: a refused connection ({@link ConnectException}) or a connect timeout
@@ -732,11 +737,6 @@ public class RemoteHttpComponent extends RWLockContext {
    * of {@link #sendWithWatchdog} - can be raised after the server read the request and applied it, with only the
    * response lost on the way back.
    */
-  /** Whether the failure leaves open that the server read the request: an I/O failure that is not a failure to connect. */
-  private static boolean mayHaveReachedTheServer(final Exception e) {
-    return e instanceof IOException ioe && !provablyNeverSent(ioe);
-  }
-
   static boolean provablyNeverSent(final IOException e) {
     for (Throwable t = e; t != null; t = t.getCause() == t ? null : t.getCause())
       if (t instanceof ConnectException || t instanceof HttpConnectTimeoutException)
