@@ -545,10 +545,12 @@ WS
     : [ \t\r\n\f]+ -> channel(HIDDEN)
     ;
 
-// Whitespace or a comment: the two-word keywords ORDER BY / GROUP BY are single tokens, so comments between the words must be part of the token
+// Whitespace or a comment (keep in sync with LINE_COMMENT / BLOCK_COMMENT below). A line comment must be closed by its line terminator
+// inside the token, otherwise a 'by' in the comment text could end ORDER/GROUP BY early (FROM Order -- by customer).
+// The two-word keywords ORDER BY / GROUP BY are single tokens, so comments between the words must be part of the token
 fragment GAP
     : [ \t\r\n\f]
-    | '--' ' ' ~[\r\n]*
+    | '--' ' ' ~[\r\n]* '\r'? '\n'
     | '/*' (~'*' | '*'+ ~[*/])* '*'+ '/'
     ;
 
