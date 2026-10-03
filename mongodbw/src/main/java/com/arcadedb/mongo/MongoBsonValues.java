@@ -52,6 +52,10 @@ import java.util.logging.Level;
  * {@link BigDecimal} (a DECIMAL) and read back as a Decimal128. A value the engine cannot hold at all is refused with an
  * error instead of being silently dropped.
  * <p>
+ * A tagged value is a map to the engine: equality and {@code $in} work, but a range operator or a sort on a timestamp, binary,
+ * MinKey, MaxKey, regular expression or JavaScript field compares maps and does not follow BSON ordering. A DECIMAL beyond
+ * Decimal128 (more than 34 digits) is read back as a double rather than failing the read.
+ * <p>
  * The field name {@code $bson} is reserved for the tag: a map with a string {@code $bson} key written through SQL or another
  * protocol is read back by the MongoDB plugin as the BSON value it names (a malformed or unknown tag stays a plain map).
  *
@@ -63,6 +67,7 @@ final class MongoBsonValues {
   private static final AtomicBoolean WIDE_DECIMAL_WARNED = new AtomicBoolean();
 
   private static final String OBJECT_ID = "objectId";
+  // binary is held as Base64 text, not byte[]: a byte[] inside a map compares by identity, which would break eq and $in filters
   private static final String BIN_DATA = "binData";
   private static final String REGEX = "regex";
   private static final String TIMESTAMP = "timestamp";
