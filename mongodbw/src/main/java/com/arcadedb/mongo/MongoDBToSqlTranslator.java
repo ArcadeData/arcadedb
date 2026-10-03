@@ -203,7 +203,7 @@ public class MongoDBToSqlTranslator {
     // avoid the copy on the common case where nothing needs normalizing
     boolean hasObjectId = false;
     for (final Object element : coll)
-      if (element instanceof ObjectId) {
+      if (MongoBsonValues.needsConversion(element)) {
         hasObjectId = true;
         break;
       }
@@ -212,7 +212,7 @@ public class MongoDBToSqlTranslator {
     if (hasObjectId) {
       final List<Object> converted = new ArrayList<>(coll.size());
       for (final Object element : coll)
-        converted.add(element instanceof ObjectId objectId ? objectId.getHexData() : element);
+        converted.add(MongoBsonValues.toBound(element));
       normalized = converted;
     }
 
@@ -258,7 +258,7 @@ public class MongoDBToSqlTranslator {
    */
   protected static void buildValue(final StringBuilder buffer, final Map<String, Object> params, final Object value) {
     final String name = "p" + params.size();
-    params.put(name, value instanceof ObjectId objectId ? objectId.getHexData() : value);
+    params.put(name, MongoBsonValues.toBound(value));
     buffer.append(':').append(name);
   }
 

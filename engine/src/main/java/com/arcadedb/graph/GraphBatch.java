@@ -1209,7 +1209,7 @@ public class GraphBatch implements AutoCloseable {
 
       // Resolve type
       final Object value = props[p * 2 + 1];
-      // A NULL VALUE MUST CARRY THE NULL TAG EVEN WHEN THE SCHEMA DECLARES THE PROPERTY: THE TAG WOULD OTHERWISE PROMISE BYTES THAT FOLLOW
+      // NULL CARRIES THE NULL TAG, NOT THE DECLARED ONE: THAT TAG WOULD PROMISE BYTES THAT NEVER FOLLOW
       byte type = value == null ? BinaryTypes.TYPE_NULL : template.typeFlags[p];
       if (type == -1)
         type = BinaryTypes.getTypeFromValue(value, null);

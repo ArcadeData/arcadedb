@@ -24,6 +24,7 @@ import com.mongodb.MongoClientOptions;
 import com.mongodb.MongoCredential;
 import com.mongodb.ServerAddress;
 import com.mongodb.client.MongoCollection;
+import com.mongodb.client.model.UpdateOptions;
 import org.bson.BsonRegularExpression;
 import org.bson.BsonTimestamp;
 import org.bson.Document;
@@ -40,8 +41,10 @@ import java.math.BigDecimal;
 import java.util.List;
 
 import static com.mongodb.client.model.Filters.eq;
+import static com.mongodb.client.model.Filters.in;
 import static com.mongodb.client.model.Updates.set;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression for issue #9062: a BSON binary (subtype 0), regular expression, timestamp, MinKey, MaxKey and JavaScript code were
@@ -140,5 +143,37 @@ public class MongoDBBsonTypesRoundTripTest extends BaseMongoServerTest {
     collection.insertOne(new Document("_id", 9).append("x", 1));
     collection.updateOne(eq("_id", 9), set("v", new BsonRegularExpression("b+", "m")));
     assertThat(collection.find(eq("_id", 9)).first().get("v")).isEqualTo(new BsonRegularExpression("b+", "m"));
+  }
+
+  @Test
+  void typesWrittenByReplaceAndUpsert() {
+    collection.insertOne(new Document("_id", 10).append("x", 1));
+    collection.replaceOne(eq("_id", 10), new Document("_id", 10).append("v", new MinKey()));
+    assertThat(collection.find(eq("_id", 10)).first().get("v")).isInstanceOf(MinKey.class);
+
+    collection.updateOne(eq("_id", 11), set("v", new BsonTimestamp(5, 6)), new UpdateOptions().upsert(true));
+    assertThat(collection.find(eq("_id", 11)).first().get("v")).isEqualTo(new BsonTimestamp(5, 6));
+  }
+
+  @Test
+  void filterOnStoredTypes() {
+    collection.insertOne(new Document("_id", 12).append("v", new BsonTimestamp(7, 8)));
+    collection.insertOne(new Document("_id", 13).append("v", new Decimal128(new BigDecimal("1.5"))));
+    assertThat(collection.find(eq("v", new BsonTimestamp(7, 8))).first().get("_id")).isEqualTo(12);
+    assertThat(collection.find(eq("v", new Decimal128(new BigDecimal("1.5")))).first().get("_id")).isEqualTo(13);
+    assertThat(collection.find(in("v", List.of(new BsonTimestamp(7, 8)))).first().get("_id")).isEqualTo(12);
+  }
+
+  @Test
+  void nanDecimalIsRefusedNotDropped() {
+    assertThatThrownBy(() -> collection.insertOne(new Document("_id", 14).append("v", Decimal128.NaN))).isInstanceOf(Exception.class);
+    assertThat(collection.find(eq("_id", 14)).first()).isNull();
+  }
+
+  @Test
+  void clientCannotUseTheReservedTag() {
+    assertThatThrownBy(() -> collection.insertOne(new Document("_id", 15).append("v", new Document("$bson", "timestamp"))))
+        .isInstanceOf(Exception.class);
+    assertThat(collection.find(eq("_id", 15)).first()).isNull();
   }
 }
