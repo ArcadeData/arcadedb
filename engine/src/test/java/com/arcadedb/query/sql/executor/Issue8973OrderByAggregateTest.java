@@ -87,4 +87,31 @@ class Issue8973OrderByAggregateTest extends TestHelper {
     }
     assertThat(keys).containsExactly(3, 1, 2);
   }
+
+  @Test
+  void aggregateOrderByWithOtherShapes() {
+    // each of these must not break the planner: lone *, no GROUP BY, mixed ORDER BY items, expression around the aggregate
+    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM G ORDER BY count(*)")) {
+      assertThat(rs.next().<Number>getProperty("c").intValue()).isEqualTo(6);
+    }
+    assertThat(keys("SELECT k, sum(v) AS s FROM G GROUP BY k ORDER BY sum(v) + 1 DESC")).containsExactly(1, 2, 3);
+    assertThat(keys("SELECT k, sum(v) AS s FROM G GROUP BY k ORDER BY count(*) DESC, k DESC")).containsExactly(3, 1, 2);
+  }
+
+  @Test
+  void aggregateOrderByWhereTheExtraProjectionIsSkipped() {
+    // the early-exit shapes of addOrderByProjections must not be switched into the aggregate split path
+    try (final ResultSet rs = database.query("sql", "SELECT * FROM G GROUP BY k ORDER BY count(*)")) {
+      while (rs.hasNext())
+        rs.next();
+    } catch (final RuntimeException ignored) {
+      // a rejection is acceptable, a wrong plan or a hang is not
+    }
+    try (final ResultSet rs = database.query("sql", "SELECT k, count(*) AS c FROM G GROUP BY k ORDER BY count(*) DESC UNWIND k")) {
+      while (rs.hasNext())
+        rs.next();
+    } catch (final RuntimeException ignored) {
+      // same
+    }
+  }
 }

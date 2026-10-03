@@ -88,4 +88,28 @@ class Issue8972DecimalNotUniqueIndexTest extends TestHelper {
     assertThat(names("B")).containsExactlyInAnyOrder("kiwi", "nut");
     assertThat(database.countType("B", false)).isEqualTo(2);
   }
+
+  @Test
+  void manyWidthsAcrossTransactionsThenCompacted() throws Exception {
+    create("C");
+    final String[] widths = { "5", "5.00", "5.0", "5.000", "5.0000000000" };
+    for (int i = 0; i < 12; i++) {
+      final String amount = widths[i % widths.length];
+      final int n = i;
+      database.transaction(() -> database.newDocument("C").set("name", "n" + n, "amount", new BigDecimal(amount)).save());
+    }
+    assertThat(names("C")).hasSize(12);
+
+    final Index index = database.getSchema().getIndexByName("C[amount]");
+    ((IndexInternal) index).compact();
+    assertThat(names("C")).hasSize(12);
+
+    final IndexCursor cursor = index.get(new Object[] { new BigDecimal("5") });
+    int found = 0;
+    while (cursor.hasNext()) {
+      assertThat(database.lookupByRID(cursor.next().getIdentity(), true)).isNotNull();
+      found++;
+    }
+    assertThat(found).isEqualTo(12);
+  }
 }

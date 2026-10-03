@@ -59,6 +59,14 @@ public class AggregateProjectionSplit {
     return result;
   }
 
+  public int getNextAliasId() {
+    return nextAliasId;
+  }
+
+  public void setNextAliasId(final int nextAliasId) {
+    this.nextAliasId = nextAliasId;
+  }
+
   public List<ProjectionItem> getPreAggregate() {
     return preAggregate;
   }

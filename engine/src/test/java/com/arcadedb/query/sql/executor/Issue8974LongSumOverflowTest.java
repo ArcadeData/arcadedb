@@ -84,4 +84,20 @@ class Issue8974LongSumOverflowTest extends TestHelper {
       assertThat(rs.next().<Object>getProperty("a")).isInstanceOf(BigDecimal.class);
     }
   }
+
+  @Test
+  void avgMixOfDecimalAndOverflowingLongsStaysDecimal() {
+    assertThat(Type.increment(Type.increment(Long.MAX_VALUE, 1L), new BigDecimal("1.5"))).isEqualTo(new BigDecimal("9223372036854775809.5"));
+  }
+
+  @Test
+  void parallelSumMergesPartials() {
+    database.transaction(() -> {
+      for (int i = 0; i < 3000; i++)
+        database.newVertex("L").set("n", 4_000_000_000_000_000L).save();
+    });
+    try (final ResultSet rs = database.query("sql", "SELECT sum(n) AS s FROM L")) {
+      assertThat(new BigDecimal(rs.next().<Number>getProperty("s").toString())).isEqualByComparingTo("24000000000000000000");
+    }
+  }
 }
