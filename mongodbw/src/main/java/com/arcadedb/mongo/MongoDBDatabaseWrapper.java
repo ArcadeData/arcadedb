@@ -44,8 +44,6 @@ import de.bwaldvogel.mongo.backend.DatabaseResolver;
 import de.bwaldvogel.mongo.backend.QueryResult;
 import de.bwaldvogel.mongo.backend.Utils;
 import de.bwaldvogel.mongo.backend.aggregation.Aggregation;
-import de.bwaldvogel.mongo.bson.BsonRegularExpression;
-import de.bwaldvogel.mongo.bson.Decimal128;
 import de.bwaldvogel.mongo.bson.Document;
 import de.bwaldvogel.mongo.bson.ObjectId;
 import de.bwaldvogel.mongo.exception.ErrorCode;
@@ -55,7 +53,6 @@ import de.bwaldvogel.mongo.oplog.Oplog;
 import de.bwaldvogel.mongo.wire.message.MongoQuery;
 import io.netty.channel.Channel;
 
-import java.math.BigDecimal;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
@@ -255,7 +252,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     final Object pipelineObject = Aggregation.parse(document.get("pipeline"));
     final List<Document> pipeline = Aggregation.parse(pipelineObject);
     if (!pipeline.isEmpty()) {
-      final Document changeStream = (Document) pipeline.get(0).get("$changeStream");
+      final Document changeStream = (Document) pipeline.getFirst().get("$changeStream");
       if (changeStream != null) {
         final Aggregation aggregation = Aggregation.fromPipeline(pipeline.subList(1, pipeline.size()), plugin, this, collection,
             oplog);
@@ -333,7 +330,9 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   }
 
   private Document createCollection(final Document document) {
-    database.getSchema().buildDocumentType().withName((String) document.get("create")).withTotalBuckets(1).create();
+    final String collectionName = (String) document.get("create");
+    database.getSchema().buildDocumentType().withName(collectionName).withTotalBuckets(1).create();
+    MongoDBCollectionWrapper.ensureIdIndex(database, collectionName);
     return responseOk();
   }
 
@@ -351,26 +350,33 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     final boolean createdCollectionAutomatically;
     if (!database.getSchema().existsType(collectionName)) {
       database.getSchema().buildDocumentType().withName(collectionName).withTotalBuckets(1).create();
+      MongoDBCollectionWrapper.ensureIdIndex(database, collectionName);
       createdCollectionAutomatically = true;
     } else
       createdCollectionAutomatically = false;
 
-    // ArcadeDB has no implicit _id index: MongoDB always reports one, so offset both counts by 1 to
-    // keep numIndexesAfter == numIndexesBefore + <new indexes> consistent for clients that check it.
-    final int numIndexesBefore = database.getSchema().getType(collectionName).getAllIndexes(false).size() + 1;
+    // MongoDB always reports the _id index. The collections this plugin creates carry a real one, but a type made
+    // through SQL or Studio may not: offset the count by 1 in that case so numIndexesAfter == numIndexesBefore +
+    // <new indexes> stays consistent for clients that check it.
+    final int numIndexesBefore = countIndexes(collectionName);
 
     final List<Document> indexes = (List<Document>) document.get("indexes");
     if (indexes != null)
       for (final Document index : indexes)
         createSingleIndex(collectionName, index);
 
-    final int numIndexesAfter = database.getSchema().getType(collectionName).getAllIndexes(false).size() + 1;
+    final int numIndexesAfter = countIndexes(collectionName);
 
     final Document response = responseOk();
     response.put("createdCollectionAutomatically", createdCollectionAutomatically);
     response.put("numIndexesBefore", numIndexesBefore);
     response.put("numIndexesAfter", numIndexesAfter);
     return response;
+  }
+
+  private int countIndexes(final String collectionName) {
+    final DocumentType type = database.getSchema().getType(collectionName);
+    return type.getAllIndexes(false).size() + (MongoDBCollectionWrapper.hasUniqueIdIndex(type) ? 0 : 1);
   }
 
   private void createSingleIndex(final String collectionName, final Document index) {
@@ -443,20 +449,28 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     } else
       queryPayload = filter;
 
+    final Document projection = document.get("projection") instanceof Document p && !p.isEmpty() ? p : null;
+    if (projection != null)
+      // reject an invalid projection up front, even when no document would be projected
+      MongoDBToSqlTranslator.isInclusionProjection(projection, "_id");
+
     final MongoQuery mongoQuery = new MongoQuery(null, null, collectionName, skip, limit, queryPayload, null);
 
     final QueryResult result = handleQuery(mongoQuery);
 
     final List<Document> documents = new ArrayList<>();
-    for (Iterator<Document> it = result.iterator(); it.hasNext(); )
-      documents.add(it.next());
+    for (Iterator<Document> it = result.iterator(); it.hasNext(); ) {
+      final Document next = it.next();
+      documents.add(projection != null ? MongoDBToSqlTranslator.projectDocument(next, projection, "_id") : next);
+    }
 
     return firstBatchCursorResponse(collectionName, "firstBatch", documents, 0);
   }
 
   private Document insertDocument(final Channel channel, final Document query) throws MongoServerException {
     final String collectionName = query.get("insert").toString();
-    final boolean isOrdered = Utils.isTrue(query.get("ordered"));
+    // MongoDB's default is an ordered insert: it stops at the first failing document
+    final boolean isOrdered = query.get("ordered") == null || Utils.isTrue(query.get("ordered"));
     final List<Document> documents = (List) query.get("documents");
     final List<Document> writeErrors = new ArrayList();
 
@@ -469,8 +483,38 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
           throw new MongoServerError(16459, "attempt to insert in system namespace");
         } else {
           final MongoCollection<Long> collection = getOrCreateCollection(collectionName);
-          collection.insertDocuments(documents);
-          n = documents.size();
+          try {
+            // FAST PATH: the whole batch in one transaction
+            collection.insertDocuments(documents);
+            n = documents.size();
+          } catch (final RuntimeException e) {
+            if (ErrorCategory.of(e) != ErrorCategory.DUPLICATED_KEY)
+              throw e;
+
+            // The batch was rolled back. MongoDB is not atomic across a batch, so insert the documents one by one to
+            // report each duplicate by index and keep the others (ordered: only the ones before the first failure)
+            for (int i = 0; i < documents.size(); i++) {
+              final Document doc = documents.get(i);
+              try {
+                collection.insertDocuments(List.of(doc));
+                ++n;
+              } catch (final RuntimeException duplicate) {
+                if (ErrorCategory.of(duplicate) != ErrorCategory.DUPLICATED_KEY)
+                  throw duplicate;
+
+                final Document error = new Document();
+                error.put("index", i);
+                error.put("code", ErrorCode.DuplicateKey.getValue());
+                error.put("codeName", ErrorCode.DuplicateKey.getName());
+                error.put("errmsg",
+                    "E11000 duplicate key error collection: " + getFullCollectionNamespace(collectionName) + " index: _id_ dup key: { _id: "
+                        + doc.get("_id") + " }");
+                writeErrors.add(error);
+                if (isOrdered)
+                  break;
+              }
+            }
+          }
 
           final Document result = new Document("n", n);
           this.putLastResult(channel, result);
@@ -500,7 +544,11 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
   private MongoCollection<Long> getOrCreateCollection(final String collectionName) {
     MongoCollection<Long> collection = collections.get(collectionName);
-    if (collection == null) {
+    if (collection == null || !database.getSchema().existsType(collectionName)) {
+      // like MongoDB, the first insert creates the collection, with the unique index on _id every collection has
+      if (!database.getSchema().existsType(collectionName))
+        database.getSchema().buildDocumentType().withName(collectionName).withTotalBuckets(1).withIgnoreIfExists(true).create();
+      MongoDBCollectionWrapper.ensureIdIndex(database, collectionName);
       collection = new MongoDBCollectionWrapper(database, collectionName);
       collections.put(collectionName, collection);
     }
@@ -604,6 +652,11 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     if (!database.getSchema().existsType(collectionName) || u == null)
       return 0;
 
+    // A replacement must keep the stored _id and $set on a dotted path must reach into the embedded document: neither can be
+    // expressed as a single SQL UPDATE, so those are applied to each matching record. Everything else stays one SQL UPDATE.
+    if (isReplacement(u) || setsDottedPath(u))
+      return executeUpdateOnRecords(collectionName, q, u, multi);
+
     final Map<String, Object> params = new HashMap<>();
     final StringBuilder sql = new StringBuilder("UPDATE ").append(Identifier.quote(collectionName));
     appendUpdateOperations(sql, params, u);
@@ -612,6 +665,56 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       sql.append(" LIMIT 1");
 
     return executeCount(sql.toString(), params);
+  }
+
+  private static boolean setsDottedPath(final Document u) {
+    return u.get("$set") instanceof Document operand && operand.keySet().stream().anyMatch(field -> field.indexOf('.') >= 0);
+  }
+
+  private int executeUpdateOnRecords(final String collectionName, final Document q, final Document u, final boolean multi) {
+    final Map<String, Object> params = new HashMap<>();
+    final StringBuilder sql = new StringBuilder("SELECT FROM ").append(Identifier.quote(collectionName));
+    appendWhere(sql, params, q);
+    if (!multi)
+      sql.append(" LIMIT 1");
+
+    // collect first: the records are modified while the result set would still be open on them
+    final List<MutableDocument> records = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", sql.toString(), params)) {
+      while (rs.hasNext())
+        rs.next().getElement().ifPresent(element -> records.add(element.modify()));
+    }
+
+    final boolean replacement = isReplacement(u);
+    for (final MutableDocument record : records) {
+      if (replacement)
+        replaceContent(record, u);
+      else
+        applyOperatorsToDocument(record, u);
+      record.save();
+    }
+    return records.size();
+  }
+
+  /**
+   * Replaces every property of the record with the replacement's, but the {@code _id}: MongoDB's {@code _id} is immutable, so a
+   * replacement without one keeps the stored value and a replacement with a different one is refused (error 66).
+   */
+  private static void replaceContent(final MutableDocument record, final Document replacement) {
+    final Object storedId = record.get("_id");
+    final Object newId = replacement.containsKey("_id") ? normalizeIdValue(replacement.get("_id")) : storedId;
+    if (storedId != null && !Objects.equals(storedId, newId))
+      throw new MongoServerError(66, "ImmutableField", "After applying the update, the (immutable) field '_id' was found to have been altered");
+
+    for (final String name : new ArrayList<>(record.getPropertyNames()))
+      if (!"_id".equals(name))
+        record.remove(name);
+
+    if (newId != null)
+      record.set("_id", newId);
+    for (final Map.Entry<String, Object> entry : replacement.entrySet())
+      if (!"_id".equals(entry.getKey()))
+        record.set(entry.getKey(), toMapValue(entry.getValue()));
   }
 
   private Object executeUpsert(final String collectionName, final Document q, final Document u) {
@@ -632,19 +735,14 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         if (value instanceof Document opDoc) {
           if (opDoc.containsKey("$eq")) {
             final Object eqValue = opDoc.get("$eq");
-            // a regex in the filter is a pattern to match, not a value to insert
-            if (eqValue instanceof BsonRegularExpression)
-              continue;
             if ("_id".equals(field) && eqValue instanceof ObjectId)
               idIsObjectId = true;
-            record.set(field, MongoBsonValues.toStored(eqValue));
+            record.set(field, normalizeIdValue(eqValue));
           }
         } else {
-          if (value instanceof BsonRegularExpression)
-            continue;
           if ("_id".equals(field) && value instanceof ObjectId)
             idIsObjectId = true;
-          record.set(field, MongoBsonValues.toStored(value));
+          record.set(field, normalizeIdValue(value));
         }
       }
 
@@ -656,7 +754,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         // replacement's own _id is some other type.
         if ("_id".equals(entry.getKey()))
           idIsObjectId = value instanceof ObjectId;
-        record.set(entry.getKey(), MongoBsonValues.toStored(value));
+        record.set(entry.getKey(), normalizeIdValue(value));
       }
     } else {
       final Boolean setIdIsObjectId = applyOperatorsToDocument(record, u);
@@ -675,6 +773,14 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
     final Object id = record.get("_id");
     return idIsObjectId && id instanceof String hex ? new ObjectId(hex) : id;
+  }
+
+  /**
+   * The filter seeding loop copies values verbatim; an {@code ObjectId}-typed filter value (e.g. {@code eq("_id", objectId)})
+   * must be normalized to its hex string, matching how {@code insertDocuments} and {@code buildValue} store an ObjectId.
+   */
+  private static Object normalizeIdValue(final Object value) {
+    return value instanceof ObjectId oid ? oid.getHexData() : value;
   }
 
   /**
@@ -697,27 +803,16 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
           final Object value = f.getValue();
           if ("_id".equals(f.getKey()))
             idIsObjectId = value instanceof ObjectId;
-          record.set(f.getKey(), MongoBsonValues.toStored(value));
+          setPath(record, f.getKey(), toMapValue(value));
         }
       }
       case "$unset" -> {
         for (final String f : operand.keySet())
-          record.set(f, null);
+          unsetPath(record, f);
       }
       case "$inc" -> {
-        for (final Map.Entry<String, Object> f : operand.entrySet()) {
-          final Object currentValue = record.get(f.getKey());
-          if (currentValue != null && !(currentValue instanceof Number))
-            throw new MongoServerError(ErrorCode.TypeMismatch, "Cannot apply $inc to a value of non-numeric type");
-          final Number current = (Number) currentValue;
-          final Number delta = (Number) f.getValue();
-          if (current == null)
-            record.set(f.getKey(), MongoBsonValues.toStored(delta));
-          else if (current instanceof BigDecimal || delta instanceof Decimal128)
-            record.set(f.getKey(), MongoBsonValues.toBigDecimal(current).add(MongoBsonValues.toBigDecimal(delta)));
-          else
-            record.set(f.getKey(), current.doubleValue() + delta.doubleValue());
-        }
+        for (final Map.Entry<String, Object> f : operand.entrySet())
+          setPath(record, f.getKey(), add((Number) getPath(record, f.getKey()), (Number) f.getValue()));
       }
       default -> throw new UnsupportedOperationException("Unsupported update operator '" + op + "'");
       }
@@ -739,7 +834,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
     if (isReplacement(u)) {
       sql.append(" CONTENT ");
-      MongoDBToSqlTranslator.bindStored(sql, params, documentToMap(u));
+      MongoDBToSqlTranslator.buildValue(sql, params, documentToMap(u));
       return;
     }
 
@@ -749,7 +844,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       switch (op) {
       case "$set" -> {
         sql.append(" MERGE ");
-        MongoDBToSqlTranslator.bindStored(sql, params, documentToMap(operand));
+        MongoDBToSqlTranslator.buildValue(sql, params, documentToMap(operand));
       }
       case "$unset" -> {
         sql.append(" REMOVE ");
@@ -769,6 +864,131 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       default -> throw new UnsupportedOperationException("Unsupported update operator '" + op + "'");
       }
     }
+  }
+
+  /**
+   * Sets a value on a possibly dotted path, creating the embedded documents on the way like MongoDB's {@code $set}. An embedded
+   * map of the record is never modified in place: it is copied, so the record sees a changed property.
+   */
+  private static void setPath(final MutableDocument record, final String path, final Object value) {
+    final int dot = path.indexOf('.');
+    if (dot < 0)
+      record.set(path, value);
+    else {
+      final String head = path.substring(0, dot);
+      record.set(head, setNested(record.get(head), path.substring(dot + 1), value));
+    }
+  }
+
+  @SuppressWarnings("unchecked")
+  private static Object setNested(final Object container, final String path, final Object value) {
+    final int dot = path.indexOf('.');
+    final String head = dot < 0 ? path : path.substring(0, dot);
+
+    if (container instanceof List<?> list && isArrayIndex(head)) {
+      final int index = Integer.parseInt(head);
+      final List<Object> copy = new ArrayList<>(list);
+      while (copy.size() <= index)
+        copy.add(null);
+      copy.set(index, dot < 0 ? value : setNested(copy.get(index), path.substring(dot + 1), value));
+      return copy;
+    }
+
+    final Map<String, Object> copy = copyOfEmbedded(container);
+    copy.put(head, dot < 0 ? value : setNested(copy.get(head), path.substring(dot + 1), value));
+    return copy;
+  }
+
+  private static void unsetPath(final MutableDocument record, final String path) {
+    final int dot = path.indexOf('.');
+    if (dot < 0)
+      record.remove(path);
+    else {
+      final String head = path.substring(0, dot);
+      final Object container = record.get(head);
+      if (container != null)
+        record.set(head, unsetNested(container, path.substring(dot + 1)));
+    }
+  }
+
+  @SuppressWarnings("unchecked")
+  private static Object unsetNested(final Object container, final String path) {
+    final int dot = path.indexOf('.');
+    final String head = dot < 0 ? path : path.substring(0, dot);
+
+    if (container instanceof List<?> list) {
+      if (!isArrayIndex(head) || Integer.parseInt(head) >= list.size())
+        return container;
+      // MongoDB sets an unset array element to null instead of shifting the others
+      final List<Object> copy = new ArrayList<>(list);
+      final int index = Integer.parseInt(head);
+      copy.set(index, dot < 0 ? null : unsetNested(copy.get(index), path.substring(dot + 1)));
+      return copy;
+    }
+
+    final Map<String, Object> copy = copyOfEmbedded(container);
+    if (dot < 0)
+      copy.remove(head);
+    else if (copy.get(head) != null)
+      copy.put(head, unsetNested(copy.get(head), path.substring(dot + 1)));
+    return copy;
+  }
+
+  private static Object getPath(final MutableDocument record, final String path) {
+    final int dot = path.indexOf('.');
+    if (dot < 0)
+      return record.get(path);
+
+    Object current = record.get(path.substring(0, dot));
+    for (final String segment : path.substring(dot + 1).split("\\.")) {
+      if (current instanceof Map<?, ?> map)
+        current = map.get(segment);
+      else if (current instanceof List<?> list && isArrayIndex(segment) && Integer.parseInt(segment) < list.size())
+        current = list.get(Integer.parseInt(segment));
+      else if (current instanceof com.arcadedb.database.Document embedded)
+        current = embedded.get(segment);
+      else
+        return null;
+    }
+    return current;
+  }
+
+  @SuppressWarnings("unchecked")
+  private static Map<String, Object> copyOfEmbedded(final Object container) {
+    if (container instanceof Map<?, ?> map)
+      return new LinkedHashMap<>((Map<String, Object>) map);
+    if (container instanceof com.arcadedb.database.Document embedded) {
+      final Map<String, Object> copy = new LinkedHashMap<>(embedded.toMap());
+      copy.keySet().removeIf(MongoDBToSqlTranslator::isRecordMetadata);
+      return copy;
+    }
+    return new LinkedHashMap<>();
+  }
+
+  private static boolean isArrayIndex(final String segment) {
+    if (segment.isEmpty() || segment.length() > 9)
+      return false;
+    for (int i = 0; i < segment.length(); i++)
+      if (!Character.isDigit(segment.charAt(i)))
+        return false;
+    return true;
+  }
+
+  /**
+   * {@code $inc}: integral operands stay integral (an int that overflows becomes a long), anything else is a double.
+   */
+  private static Number add(final Number current, final Number delta) {
+    if (current == null)
+      return delta;
+    if (isIntegral(current) && isIntegral(delta)) {
+      final long sum = Math.addExact(current.longValue(), delta.longValue());
+      return current instanceof Long || delta instanceof Long || sum > Integer.MAX_VALUE || sum < Integer.MIN_VALUE ? (Number) sum : (Number) (int) sum;
+    }
+    return current.doubleValue() + delta.doubleValue();
+  }
+
+  private static boolean isIntegral(final Number number) {
+    return number instanceof Integer || number instanceof Long || number instanceof Short || number instanceof Byte;
   }
 
   private static boolean isReplacement(final Document u) {
@@ -801,25 +1021,23 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * order is preserved so a replacement document reaches the record in wire order.
    */
   private static Map<String, Object> documentToMap(final Document doc) {
-    // LinkedHashMap.newLinkedHashMap(int) is JDK 19+; JDK 17 has no such factory, so size the constructor
-    // directly against the default 0.75 load factor instead.
-    final Map<String, Object> map = new LinkedHashMap<>(doc.size() * 4 / 3 + 1);
+    final Map<String, Object> map = LinkedHashMap.newLinkedHashMap(doc.size());
     for (final Map.Entry<String, Object> entry : doc.entrySet())
       map.put(entry.getKey(), toMapValue(entry.getValue()));
     return map;
   }
 
   private static Object toMapValue(final Object value) {
-    if (value instanceof Document document) {
-      MongoBsonValues.checkNotReserved(document);
+    if (value instanceof Document document)
       return documentToMap(document);
-    } else if (value instanceof List<?> list) {
+    else if (value instanceof List<?> list) {
       final List<Object> converted = new ArrayList<>(list.size());
       for (final Object item : list)
         converted.add(toMapValue(item));
       return converted;
-    }
-    return MongoBsonValues.toStored(value);
+    } else if (value instanceof ObjectId id)
+      return id.getHexData();
+    return value;
   }
 
   private Document responseOk() {
@@ -844,7 +1062,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
   private synchronized void putLastResult(final Channel channel, final Document result) {
     final List<Document> results = this.lastResults.get(channel);
-    final Document last = results.get(results.size() - 1);
+    final Document last = results.getLast();
     if (last != null)
       throw new IllegalStateException("last result already set: " + last);
     results.set(results.size() - 1, result);
