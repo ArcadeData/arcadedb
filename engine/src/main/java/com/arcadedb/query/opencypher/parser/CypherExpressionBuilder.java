@@ -2140,6 +2140,11 @@ class CypherExpressionBuilder {
     final Cypher25Parser.LabelComparisonContext labelCtx = (Cypher25Parser.LabelComparisonContext) ctx.comparisonExpression6();
     final Cypher25Parser.LabelExpressionContext labelExprCtx = labelCtx.labelExpression();
 
+    // A negation, the wildcard or a mix of '&' and '|' is evaluated as the tree it is (issue #8992).
+    final LabelPredicate predicate = ParserUtils.buildLabelPredicate(labelExprCtx);
+    if (predicate != null)
+      return new BooleanWrapperExpression(new LabelCheckExpression(leftExpr, predicate, ctx.getText()));
+
     // See parseLabelCheckExpression in CypherASTBuilder: extract through the grammar so backticks
     // are stripped and a quoted label is never split on a character of its own name. This also
     // drops the ':'/'IS' prefix at the token level, so both spellings land on the same label.
@@ -2523,7 +2528,17 @@ class CypherExpressionBuilder {
       variable = ParserUtils.stripBackticks(ctx.variable().getText());
     }
 
-    if (ctx.labelExpression() != null) {
+    // A negation, the wildcard or a mix of '&' and '|' is checked as a predicate on the node, the way the MATCH-side
+    // builder does it (issue #8992).
+    BooleanExpression labelCheck = null;
+    final LabelPredicate labelPredicate = ParserUtils.buildLabelPredicate(ctx.labelExpression());
+    if (labelPredicate != null) {
+      labels = labelPredicate.requiredLabels();
+      if (variable == null)
+        variable = ParserUtils.newLabelExpressionVariable();
+      labelCheck = new LabelCheckExpression(new VariableExpression(variable), labelPredicate,
+          variable + ctx.labelExpression().getText());
+    } else if (ctx.labelExpression() != null) {
       labels = extractLabels(ctx.labelExpression());
       labelDisjunction = ParserUtils.isLabelDisjunction(ctx.labelExpression());
     }
@@ -2542,6 +2557,7 @@ class CypherExpressionBuilder {
     BooleanExpression whereExpression = null;
     if (ctx.expression() != null)
       whereExpression = new BooleanCoercionExpression(parseExpression(ctx.expression()));
+    whereExpression = andLabelCheck(labelCheck, whereExpression);
 
     return new NodePattern(variable, labels, null, properties, propertiesParameterName, labelDisjunction, whereExpression);
   }
@@ -2560,7 +2576,19 @@ class CypherExpressionBuilder {
       variable = ParserUtils.stripBackticks(ctx.variable().getText());
     }
 
-    if (ctx.labelExpression() != null) {
+    BooleanExpression labelCheck = null;
+    final LabelPredicate labelPredicate = ParserUtils.buildRelationshipTypePredicate(ctx.labelExpression());
+    if (labelPredicate != null) {
+      if (ctx.pathLength() != null)
+        throw new CommandParsingException("UnexpectedSyntax: the label expression '" + ctx.labelExpression().getText()
+            + "' is not supported on a variable-length relationship yet: only a type or a '|' of types is");
+      final List<String> required = labelPredicate.requiredLabels();
+      types = required.isEmpty() ? null : required;
+      if (variable == null)
+        variable = ParserUtils.newLabelExpressionVariable();
+      labelCheck = new LabelCheckExpression(new VariableExpression(variable), labelPredicate,
+          variable + ctx.labelExpression().getText());
+    } else if (ctx.labelExpression() != null) {
       types = extractLabels(ctx.labelExpression());
     }
 
@@ -2599,6 +2627,7 @@ class CypherExpressionBuilder {
     BooleanExpression whereExpression = null;
     if (ctx.expression() != null)
       whereExpression = new BooleanCoercionExpression(parseExpression(ctx.expression()));
+    whereExpression = andLabelCheck(labelCheck, whereExpression);
 
     return new RelationshipPattern(variable, types, direction, properties, propertiesParameterName, minHops, maxHops,
         whereExpression);
@@ -2616,6 +2645,14 @@ class CypherExpressionBuilder {
    */
   private List<String> extractLabels(final Cypher25Parser.LabelExpressionContext ctx) {
     return ParserUtils.extractLabels(ctx);
+  }
+
+  private static BooleanExpression andLabelCheck(final BooleanExpression labelCheck, final BooleanExpression where) {
+    if (labelCheck == null)
+      return where;
+    if (where == null)
+      return labelCheck;
+    return new LogicalExpression(LogicalExpression.Operator.AND, labelCheck, where);
   }
 
   /**
