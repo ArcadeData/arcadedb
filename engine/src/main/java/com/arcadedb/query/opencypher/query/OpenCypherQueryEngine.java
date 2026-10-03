@@ -230,7 +230,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
   }
 
   /**
-   * Trims the query and removes the comments ({@code //} and {@code /* *}{@code /}) that precede the first token, so a
+   * Trims the query and removes the line and block comments that precede the first token, so a
    * commented EXPLAIN or PROFILE statement is still recognised by its prefix.
    */
   static String stripLeadingComments(final String query) {

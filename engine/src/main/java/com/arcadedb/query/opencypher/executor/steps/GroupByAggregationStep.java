@@ -257,6 +257,7 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
           final Object[] args = new Object[funcArgs.size()];
           for (int j = 0; j < args.length; j++)
             args[j] = evaluator.evaluate(funcArgs.get(j), inputRow, context);
+          group.aggregators[i].checkArity(args);
           group.aggregators[i].execute(args, context);
         }
       } finally {
@@ -339,6 +340,7 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
           final Object[] args = new Object[funcArgs.size()];
           for (int j = 0; j < args.length; j++)
             args[j] = evaluator.evaluate(funcArgs.get(j), inputRow, context);
+          groupAgg.aggregatorArray[i].checkArity(args);
           groupAgg.aggregatorArray[i].execute(args, context);
         }
 
@@ -351,6 +353,7 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
             final Object[] args = new Object[innerAgg.getArguments().size()];
             for (int i = 0; i < args.length; i++)
               args[i] = evaluator.evaluate(innerAgg.getArguments().get(i), inputRow, context);
+            function.checkArity(args);
             function.execute(args, context);
           }
         }

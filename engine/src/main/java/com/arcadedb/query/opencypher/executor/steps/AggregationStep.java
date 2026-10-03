@@ -175,6 +175,7 @@ public class AggregationStep extends AbstractExecutionStep {
             }
 
             // Feed this row's data to the aggregator
+            function.checkArity(args);
             function.execute(args, context);
           }
         }
@@ -187,6 +188,7 @@ public class AggregationStep extends AbstractExecutionStep {
             final Object[] args = new Object[innerAgg.getArguments().size()];
             for (int i = 0; i < args.length; i++)
               args[i] = evaluator.evaluate(innerAgg.getArguments().get(i), inputRow, context);
+            function.checkArity(args);
             function.execute(args, context);
           }
         }
