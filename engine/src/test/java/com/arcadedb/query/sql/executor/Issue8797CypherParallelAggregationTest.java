@@ -104,7 +104,7 @@ class Issue8797CypherParallelAggregationTest extends TestHelper {
   /** Issue #9047: a wrong argument count on a parallel aggregate is a semantic error, not a raw exception from the worker. */
   @Test
   void wrongAggregateArityOnTheParallelPathIsASemanticError() {
-    for (final String query : new String[] { "MATCH (n:FourBuckets) RETURN sum() AS s", "MATCH (n:FourBuckets) RETURN n.grp AS grp, count(n.x, n.n) AS c" })
+    for (final String query : new String[] { "MATCH (n:FourBuckets) RETURN sum() AS s", "MATCH (n:FourBuckets) WHERE n.x > 5000 RETURN sum() AS s", "MATCH (n:FourBuckets) RETURN n.grp AS grp, count(n.x, n.n) AS c" })
       assertThatThrownBy(() -> rows(query)).as(query).isInstanceOf(CommandSemanticException.class);
   }
 
