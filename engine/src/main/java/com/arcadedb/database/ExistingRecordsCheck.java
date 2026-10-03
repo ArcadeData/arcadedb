@@ -31,7 +31,8 @@ import java.util.Iterator;
  * index on the property holds every record", so such a record silently vanishes from an index-ordered read.
  * <p>
  * Each check reads the whole type, polymorphically, and stops at the first offender, naming its RID. Best effort: not
- * atomic with the schema change, so a writer racing the DDL can still slip a record in, and the Java schema API
+ * atomic with the schema change (CREATE PROPERTY creates the property first and drops it again if the scan refuses it, so for that
+ * window concurrent writers already see the new constraints), so a writer racing the DDL can still slip a record in, and the Java schema API
  * ({@code Property.setMandatory()}) is not guarded at all.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -46,17 +47,30 @@ public final class ExistingRecordsCheck {
    */
   public static void requireExistence(final Database db, final DocumentType type, final String propertyName,
       final boolean mandatory, final boolean notNull) {
+    requireExistence(db, type, new String[] { propertyName }, mandatory, notNull);
+  }
+
+  /**
+   * The same check for several properties in ONE pass over the type (a composite NODE KEY).
+   */
+  public static void requireExistence(final Database db, final DocumentType type, final String[] propertyNames,
+      final boolean mandatory, final boolean notNull) {
+    if (propertyNames.length == 0)
+      return;
     final Iterator<Record> records = db.iterateType(type.getName(), true);
     while (records.hasNext()) {
       if (!(records.next() instanceof Document document))
         continue;
-      final DocumentValidator.ExistenceConstraint unmet = DocumentValidator.unmetExistenceConstraint(document, propertyName,
-          mandatory, notNull);
-      if (unmet != null)
-        throw new CommandExecutionException("Cannot set " + (unmet == DocumentValidator.ExistenceConstraint.MANDATORY ?
-            "MANDATORY" :
-            "NOTNULL") + ": record " + document.getIdentity() + " violates it, " + DocumentValidator.describeUnmetExistenceConstraint(
-            document, propertyName, unmet) + ". Fix or delete the non-conforming records first");
+      for (final String propertyName : propertyNames) {
+        final DocumentValidator.ExistenceConstraint unmet = DocumentValidator.unmetExistenceConstraint(document, propertyName,
+            mandatory, notNull);
+        if (unmet != null)
+          throw new CommandExecutionException("Cannot set " + (unmet == DocumentValidator.ExistenceConstraint.MANDATORY ?
+              "MANDATORY" :
+              "NOTNULL") + ": record " + document.getIdentity() + " violates it, "
+              + DocumentValidator.describeUnmetExistenceConstraint(document, propertyName, unmet)
+              + ". Fix or delete the non-conforming records first");
+      }
     }
   }
 

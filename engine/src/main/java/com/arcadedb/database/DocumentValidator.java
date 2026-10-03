@@ -204,6 +204,14 @@ public class DocumentValidator {
               "is declared as " + type + " but a stored value cannot be read as such: " + stored);
         return;
       }
+      if (converted instanceof Number narrowed && stored instanceof Number original && isIntegralType(type)
+          && new BigDecimal(original.toString()).compareTo(new BigDecimal(narrowed.toString())) != 0) {
+        // a LONG over an INTEGER declaration, or 3.7 over a SHORT, would be silently truncated: not the same value
+        if (constraints.checkType())
+          throwValidationException(document.getType(), p,
+              "is declared as " + type + " but a stored value does not fit it without loss: " + stored);
+        return;
+      }
       value = converted;
     }
 
@@ -217,6 +225,27 @@ public class DocumentValidator {
 
     if (constraints.max() != null)
       validateMaxValue(document, p, value, constraints.max());
+  }
+
+  private static boolean isIntegralType(final Type type) {
+    return type == Type.BYTE || type == Type.SHORT || type == Type.INTEGER || type == Type.LONG;
+  }
+
+  /**
+   * Refuses a MIN or MAX bound that cannot be read as the property's type, up front, so it is refused over an empty type
+   * too instead of failing every later write.
+   */
+  public static void requireReadableBound(final Database database, final DocumentType owner, final Property p, final String bound, final String side) {
+    final Type type = p.getType();
+    if (bound == null || !isScalarType(type))
+      return;
+    try {
+      if (Type.convert(database, bound, type.getJavaImplementation(database), p) == null)
+        throw new IllegalArgumentException("null");
+    } catch (final RuntimeException e) {
+      throw new CommandExecutionException("The " + side + " '" + bound + "' of property '" + owner.getName() + "."
+          + p.getName() + "' cannot be read as " + type, e);
+    }
   }
 
   private static boolean isScalarType(final Type type) {
@@ -544,7 +573,7 @@ public class DocumentValidator {
       final Type embType = ofType != null ? Type.getTypeByName(ofType) : null;
 
       for (final Object item : ((List<?>) fieldValue)) {
-        validateCollectionElement(document, p, ofType, embType, item, "LIST of '" + ofType + "'", fieldValue);
+        validateCollectionElement(document, p, ofType, embType, item, false, fieldValue);
 
         if (item instanceof MutableEmbeddedDocument embeddedDocument)
           embeddedDocument.validate();
@@ -560,7 +589,7 @@ public class DocumentValidator {
       final Type embType = ofType != null ? Type.getTypeByName(ofType) : null;
 
       for (final Object item : ((Map<?, ?>) fieldValue).values()) {
-        validateCollectionElement(document, p, ofType, embType, item, "a MAP of <String,'" + ofType + "'>", fieldValue);
+        validateCollectionElement(document, p, ofType, embType, item, true, fieldValue);
 
         if (item instanceof MutableEmbeddedDocument embeddedDocument)
           embeddedDocument.validate();
@@ -579,32 +608,36 @@ public class DocumentValidator {
    * refuses everything else: a map has already been turned into an embedded document by the write path, so a value that
    * is still a plain scalar or map here is not one (#9111).
    */
+  private static String declaredAs(final boolean isMap, final String ofType) {
+    return isMap ? "a MAP of <String,'" + ofType + "'>" : "LIST of '" + ofType + "'";
+  }
+
   private static void validateCollectionElement(final Document document, final Property p, final String ofType,
-      final Type embType, final Object item, final String declaredAs, final Object fieldValue) {
+      final Type embType, final Object item, final boolean isMap, final Object fieldValue) {
     if (ofType == null || (item == null && embType == null))
       return;
 
     if (embType != null) {
       if (Type.getTypeByValue(item) != embType && !(embType.isDateOrDateTime() && Type.isDateValue(item)))
         throwValidationException(document.getType(), p,
-            "has been declared as " + declaredAs + " but a value of type '" + Type.getTypeByValue(item) + "' is used. Value: "
+            "has been declared as " + declaredAs(isMap, ofType) + " but a value of type '" + Type.getTypeByValue(item) + "' is used. Value: "
                 + fieldValue);
     } else if (item instanceof EmbeddedDocument embeddedDocument) {
       if (!embeddedDocument.getType().instanceOf(ofType))
         throwValidationException(document.getType(), p,
-            "has been declared as " + declaredAs + " but an embedded document of type '" + embeddedDocument.getType().getName()
+            "has been declared as " + declaredAs(isMap, ofType) + " but an embedded document of type '" + embeddedDocument.getType().getName()
                 + "' is used. Value: " + fieldValue);
     } else if (item instanceof Identifiable identifiable) {
       final RID rid = identifiable.getIdentity();
       final DocumentType embSchemaType = document.getDatabase().getSchema().getTypeByBucketId(rid.getBucketId());
       if (!embSchemaType.instanceOf(ofType))
         throwValidationException(document.getType(), p,
-            "has been declared as " + declaredAs + " but a link to type '" + embSchemaType.getName() + "' is used. Value: "
+            "has been declared as " + declaredAs(isMap, ofType) + " but a link to type '" + embSchemaType.getName() + "' is used. Value: "
                 + fieldValue);
     } else if (!(item instanceof String link && RID.is(link)))
       // a link written as a "#bucket:position" string is what JSON and HTTP clients send, and has always been accepted
       throwValidationException(document.getType(), p,
-          "has been declared as " + declaredAs + " but a value that is not a document of that type is used (" + item.getClass()
+          "has been declared as " + declaredAs(isMap, ofType) + " but a value that is not a document of that type is used (" + item.getClass()
               .getSimpleName() + "). Value: " + fieldValue);
   }
 

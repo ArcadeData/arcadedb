@@ -224,4 +224,13 @@ class Issue9111ListOfDateAndDocumentTypesTest extends TestHelper {
     database.transaction(() -> database.newDocument("Person").set("addresses", new ArrayList<>(List.of(rid[0].toString()))).save());
     assertThat(database.countType("Person", true)).isEqualTo(1);
   }
+
+  @Test
+  void jsonContentWithAPlainMapInAListOfDocumentType() {
+    declareAddress();
+    database.transaction(() -> database.command("sql", "INSERT INTO Person CONTENT {\"addresses\": [{\"city\": \"Rome\"}]}").close());
+    final Object first = ((List<?>) database.query("sql", "SELECT FROM Person").next().getProperty("addresses")).get(0);
+    assertThat(first).isNotNull();
+    assertThat(database.countType("Person", true)).isEqualTo(1);
+  }
 }

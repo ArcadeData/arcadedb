@@ -22,6 +22,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.DocumentValidator;
 import com.arcadedb.database.DocumentValidator.StoredValueConstraints;
 import com.arcadedb.database.ExistingRecordsCheck;
 import com.arcadedb.database.Identifiable;
@@ -159,6 +160,8 @@ public class AlterPropertyStatement extends DDLStatement {
       final Object newValue, final String min, final String max, final String regexp, final String what) {
     if (newValue == null)
       return;
+    DocumentValidator.requireReadableBound(db, type, property, min, "MIN");
+    DocumentValidator.requireReadableBound(db, type, property, max, "MAX");
     ExistingRecordsCheck.requireValues(db, type, property, StoredValueConstraints.of(false, min, max, regexp), what);
   }
 
