@@ -24,6 +24,7 @@ import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.ErrorCategory;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
@@ -807,8 +808,16 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     }
 
     final boolean replacement = isReplacement(u);
+    int skipped = 0;
     for (final RID rid : rids) {
-      final MutableDocument record = rid.asDocument().modify();
+      final MutableDocument record;
+      try {
+        record = rid.asDocument().modify();
+      } catch (final RecordNotFoundException e) {
+        // deleted since the select: it no longer matches, like a single statement would not have touched it
+        --skipped;
+        continue;
+      }
       if (replacement)
         replaceContent(record, u);
       else {
@@ -817,7 +826,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       }
       record.save();
     }
-    return rids.size();
+    return rids.size() + skipped;
   }
 
   /**
@@ -1126,10 +1135,11 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   }
 
   private static boolean isArrayIndex(final String segment) {
-    if (segment.isEmpty() || segment.length() > 9)
+    // like MongoDB, "01" is a field name and not the index 1
+    if (segment.isEmpty() || segment.length() > 9 || (segment.length() > 1 && segment.charAt(0) == '0'))
       return false;
     for (int i = 0; i < segment.length(); i++)
-      if (!Character.isDigit(segment.charAt(i)))
+      if (segment.charAt(i) < '0' || segment.charAt(i) > '9')
         return false;
     return true;
   }
