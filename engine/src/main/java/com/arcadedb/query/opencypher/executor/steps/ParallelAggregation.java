@@ -272,6 +272,7 @@ final class ParallelAggregation {
         final Object[] args = new Object[arguments.size()];
         for (int j = 0; j < args.length; j++)
           args[j] = evaluator.evaluate(arguments.get(j), row, context);
+        group.aggregators[i].checkArity(args);
         group.aggregators[i].execute(args, context);
       }
     }
