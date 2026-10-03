@@ -122,6 +122,11 @@ public enum Type {
    * a constant here will not widen what the engine accepts.
    */
   public static final  String              DATE_FORMAT_DAYS    = "yyyy-MM-dd";
+  private static final BigDecimal LONG_MAX_DECIMAL = BigDecimal.valueOf(Long.MAX_VALUE);
+  private static final BigDecimal LONG_MIN_DECIMAL = BigDecimal.valueOf(Long.MIN_VALUE);
+  private static final BigInteger LONG_MAX_INTEGER = BigInteger.valueOf(Long.MAX_VALUE);
+  private static final BigInteger LONG_MIN_INTEGER = BigInteger.valueOf(Long.MIN_VALUE);
+
   public static final  String              DATE_FORMAT_SECONDS = "yyyy-MM-dd HH:mm:ss";
   public static final  String              DATE_FORMAT_MILLIS  = "yyyy-MM-dd HH:mm:ss.SSS";
   // Don't change the order, the type discover get broken if you change the order.
@@ -870,8 +875,6 @@ public enum Type {
           return DateUtils.dateTime(database, calendar.getTimeInMillis(), ChronoUnit.MILLIS, LocalDateTime.class,
               property != null ? DateUtils.getPrecisionFromType(property.getType()) : ChronoUnit.MILLIS);
         else if (value instanceof String valueAsString) {
-          if (property != null && isEpochString(valueAsString))
-            return convert(database, parseEpoch(valueAsString, targetClass, property), targetClass, property);
           if (!FileUtils.isLong(valueAsString))
             // DateUtils.parseDateTime(), not a private copy of its fallback chain: this branch used to carry its own
             // and the two drifted apart, so a literal the bulk GraphBatch path accepted was rejected here (and vice
@@ -912,8 +915,6 @@ public enum Type {
           return DateUtils.dateTime(database, calendar.getTimeInMillis(), ChronoUnit.MILLIS, ZonedDateTime.class,
               property != null ? DateUtils.getPrecisionFromType(property.getType()) : ChronoUnit.MILLIS);
         if (value instanceof String valueAsString) {
-          if (property != null && isEpochString(valueAsString))
-            return convert(database, parseEpoch(valueAsString, targetClass, property), targetClass, property);
           if (!FileUtils.isLong(valueAsString))
             // parseZonedDateTime keeps an offset the input carries rather than dropping it, so the same moment
             // denotes the same instant whether it arrives ISO- or space-separated, and anchors an offset-free input
@@ -956,9 +957,8 @@ public enum Type {
           // datetime literal in the record as the raw String it arrived as. It now goes through the same shared
           // chain as every other datetime target (issue #8090).
           //
-          // An all-digits string is an epoch count for a declared property, as in every other date branch (#9110).
-          if (property != null && isEpochString(valueAsString))
-            return convert(database, parseEpoch(valueAsString, targetClass, property), targetClass, property);
+          // An all-digits string is left to the end of the method, which refuses it for a declared property: it is as likely
+          // a compact date (yyyyMMdd, a year) as an epoch count, and guessing turns a loud failure into a wrong instant (#9110).
           if (!FileUtils.isLong(valueAsString)) {
             // parseZonedDateTime, not parseDateTime().atZone(): an Instant IS an instant, so an offset the value
             // carries has to survive. The wall-clock chain drops it - deliberately, for LocalDateTime (issue #4125) -
@@ -1113,20 +1113,6 @@ public enum Type {
         || targetClass.equals(ZonedDateTime.class) || targetClass.equals(Instant.class) || targetClass.equals(byte[].class);
   }
 
-  private static long parseEpoch(final String text, final Class<?> targetClass, final Property property) {
-    try {
-      return Long.parseLong(text);
-    } catch (final NumberFormatException e) {
-      // more digits than a long holds: a shape no date target can take
-      throw inconvertible(text, targetClass.getSimpleName(), property, e);
-    }
-  }
-
-  /** A non-empty string of digits only: read as an epoch count, as the DATE branch does and as a number would be. */
-  private static boolean isEpochString(final String text) {
-    return !text.isEmpty() && FileUtils.isLong(text);
-  }
-
   /** A finite number that overflows to an infinity is refused for a declared FLOAT (issue #9110, as #9024 for LONG). */
   private static float narrowToFloat(final Number value, final Property property) {
     final float result = value.floatValue();
@@ -1162,11 +1148,6 @@ public enum Type {
       default -> number.longValue() == 0L;
     };
   }
-
-  private static final BigDecimal LONG_MAX_DECIMAL = BigDecimal.valueOf(Long.MAX_VALUE);
-  private static final BigDecimal LONG_MIN_DECIMAL = BigDecimal.valueOf(Long.MIN_VALUE);
-  private static final BigInteger LONG_MAX_INTEGER = BigInteger.valueOf(Long.MAX_VALUE);
-  private static final BigInteger LONG_MIN_INTEGER = BigInteger.valueOf(Long.MIN_VALUE);
 
   /**
    * The LONG counterpart of {@link #narrowToIntegral(Number, long, long, String, Property)}: LONG has no narrower range,
