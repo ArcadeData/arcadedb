@@ -106,10 +106,8 @@ public class JSONObject implements Map<String, Object> {
     return this;
   }
 
-  public JSONObject put(final String name, Number value) {
-    if (isNonFinite(value))
-      value = null;
-    object.addProperty(name, value);
+  public JSONObject put(final String name, final Number value) {
+    object.addProperty(name, isNonFinite(value) ? null : value);
     return this;
   }
 
@@ -672,7 +670,7 @@ public class JSONObject implements Map<String, Object> {
   // PRIMITIVE ARRAYS (float[], double[], int[], long[], short[], byte[], ...): serialized element-by-element via reflection instead of
   // falling through to the generic toString() (which would emit "[F@..."), wherever the array sits: a property, a map value or a list element.
   private static JsonElement primitiveArrayToElement(final Object array) {
-    // TYPED LOOPS FOR THE COMMON CASES (EMBEDDINGS, BINARY): NO BOXING, NO TYPE SWITCH PER ELEMENT
+    // TYPED LOOPS FOR THE COMMON CASES (EMBEDDINGS, BINARY): NO REFLECTION AND NO TYPE SWITCH PER ELEMENT
     final JsonArray result;
     switch (array) {
     case float[] floats -> {
