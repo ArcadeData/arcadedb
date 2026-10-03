@@ -42,6 +42,7 @@ import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -337,5 +338,23 @@ public class MongoDBBsonTypesRoundTripTest extends BaseMongoServerTest {
     collection.insertOne(new Document("_id", 64).append("ref", new ObjectId("507f1f77bcf86cd799439015")));
     assertThat(collection.find(eq("ref", oid)).first().get("_id")).isEqualTo(63);
     assertThat(collection.find(in("ref", List.of(oid))).first().get("_id")).isEqualTo(63);
+  }
+
+  @Test
+  void aStringThatLooksLikeAnEncodedObjectIdStaysAString() {
+    assertThat(roundTrip(65, "$oid:507f1f77bcf86cd799439011")).isEqualTo("$oid:507f1f77bcf86cd799439011");
+    assertThat(roundTrip(66, "$str:abc")).isEqualTo("$str:abc");
+    assertThat(roundTrip(67, "$other")).isEqualTo("$other");
+    assertThat(collection.find(eq("v", "$oid:507f1f77bcf86cd799439011")).first().get("_id")).isEqualTo(65);
+  }
+
+  @Test
+  void explicitEqAndNeOnAnObjectIdMatchBothStoredForms() {
+    final ObjectId oid = new ObjectId("507f1f77bcf86cd799439016");
+    final Database db = getServer(0).getDatabase(getDatabaseName());
+    db.transaction(() -> db.newDocument("bson").set("_id", 68).set("ref", oid.toHexString()).save());
+    collection.insertOne(new Document("_id", 69).append("ref", oid));
+    assertThat(collection.find(new Document("ref", new Document("$eq", oid))).into(new ArrayList<>())).hasSize(2);
+    assertThat(collection.find(new Document("ref", new Document("$ne", oid))).into(new ArrayList<>())).isEmpty();
   }
 }

@@ -68,6 +68,7 @@ final class MongoBsonValues {
 
   // an ObjectId outside _id is kept as a prefixed string, not a map, so that it stays comparable and usable as an index key
   static final String OBJECT_ID_PREFIX = "$oid:";
+  private static final String ESCAPED_PREFIX = "$str:";
 
   // binary is held as Base64 text, not byte[]: a byte[] inside a map compares by identity, which would break eq and $in filters
   private static final String BIN_DATA = "binData";
@@ -85,7 +86,9 @@ final class MongoBsonValues {
    * Whether {@link #toStored} may change this value, that is whether it is anything but a plain string, number or boolean.
    */
   static boolean needsConversion(final Object value) {
-    return !(value == null || value instanceof String || value instanceof Boolean || value instanceof Number && !(value instanceof Decimal128));
+    if (value instanceof String string)
+      return !string.isEmpty() && string.charAt(0) == '$';
+    return !(value == null || value instanceof Boolean || value instanceof Number && !(value instanceof Decimal128));
   }
 
   /**
@@ -106,6 +109,9 @@ final class MongoBsonValues {
   static Object toStored(final Object value) {
     if (!needsConversion(value))
       return value;
+    if (value instanceof String string)
+      // a client string that looks like an encoded ObjectId is escaped so that it reads back as the same string
+      return string.startsWith(OBJECT_ID_PREFIX) || string.startsWith(ESCAPED_PREFIX) ? ESCAPED_PREFIX + string : string;
     if (value instanceof ObjectId id)
       return OBJECT_ID_PREFIX + id.getHexData();
     if (value instanceof Decimal128 decimal)
@@ -165,6 +171,9 @@ final class MongoBsonValues {
   }
 
   private static Object idToStored(final Object value) {
+    // an _id keeps a string as it is: the escape only exists for the ObjectId form used outside _id
+    if (value instanceof String)
+      return value;
     return value instanceof ObjectId id ? id.getHexData() : toStored(value);
   }
 
@@ -231,6 +240,8 @@ final class MongoBsonValues {
         return decimal.doubleValue();
       }
     }
+    if (value instanceof String string && string.startsWith(ESCAPED_PREFIX))
+      return string.substring(ESCAPED_PREFIX.length());
     if (value instanceof String string && isStoredObjectId(string)) {
       try {
         return MongoDBToSqlTranslator.getObjectId(string.substring(OBJECT_ID_PREFIX.length()));
@@ -245,6 +256,13 @@ final class MongoBsonValues {
 
   static boolean isStoredObjectId(final String string) {
     return string.startsWith(OBJECT_ID_PREFIX);
+  }
+
+  /**
+   * Whether a stored string is one of the encoded forms {@link #toBson} decodes (an ObjectId or an escaped string).
+   */
+  static boolean isEncodedString(final String string) {
+    return string.startsWith(OBJECT_ID_PREFIX) || string.startsWith(ESCAPED_PREFIX);
   }
 
   static boolean isTagged(final Object value) {
