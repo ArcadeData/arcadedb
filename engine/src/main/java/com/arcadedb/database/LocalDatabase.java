@@ -1783,6 +1783,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * conflict {@code UPDATE} and REPEATABLE_READ already report. Retrying re-reads the data and no longer sees the record.
    * Anything else keeps the not-found: a reference that was never read from the bucket (a lazy handle, a stale edge entry, a RID
    * held past a delete) names a record that is gone for good, and no retry can change that (#6572, #6586).
+   * <p>
+   * Limit: only an {@link ImmutableDocument} carries the read marker. A record turned into a {@code MutableDocument} by
+   * {@code modify()} and then deleted keeps the not-found, since the mutable copy does not remember where it was read.
    */
   private RuntimeException asConcurrentDeleteIfReadHere(final Record record, final RecordNotFoundException e) {
     final RID rid = record.getIdentity();
