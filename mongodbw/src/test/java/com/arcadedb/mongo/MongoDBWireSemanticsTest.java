@@ -28,6 +28,7 @@ import com.mongodb.MongoCredential;
 import com.mongodb.MongoWriteException;
 import com.mongodb.ServerAddress;
 import com.mongodb.client.MongoCollection;
+import com.mongodb.client.model.IndexOptions;
 import com.mongodb.client.model.InsertManyOptions;
 import org.bson.Document;
 import org.junit.jupiter.api.AfterEach;
@@ -312,7 +313,7 @@ public class MongoDBWireSemanticsTest extends BaseMongoServerTest {
 
   @Test
   void duplicateOnAUserDefinedUniqueIndexIsNotReportedAsId() {
-    collection.createIndex(new Document("email", 1), new com.mongodb.client.model.IndexOptions().unique(true));
+    collection.createIndex(new Document("email", 1), new IndexOptions().unique(true));
     collection.insertOne(Document.parse("{_id: 1, email: 'a@x'}"));
 
     assertThatThrownBy(() -> collection.insertOne(Document.parse("{_id: 2, email: 'a@x'}"))).isInstanceOf(MongoWriteException.class)
@@ -323,5 +324,41 @@ public class MongoDBWireSemanticsTest extends BaseMongoServerTest {
   void inlineCommentsModeRegexIsACleanError() {
     collection.insertOne(Document.parse("{_id: 1, name: 'a'}"));
     assertThatThrownBy(() -> ids("{name: {$regex: '(?x) a # note'}}")).isInstanceOf(MongoQueryException.class);
+  }
+
+  @Test
+  void duplicatedIdOnATypeThatCannotGetTheIndex() {
+    // the type already holds duplicated _id values, so the unique index cannot be built: the insert checks by hand
+    final var db = getServerDatabase(0, getDatabaseName());
+    db.getSchema().createDocumentType("dups");
+    db.transaction(() -> {
+      db.command("sql", "insert into dups set _id = 1");
+      db.command("sql", "insert into dups set _id = 1");
+    });
+    final MongoCollection<Document> dups = client.getDatabase(getDatabaseName()).getCollection("dups");
+
+    assertThatThrownBy(() -> dups.insertOne(new Document("_id", 1))).isInstanceOf(MongoWriteException.class);
+    assertThatThrownBy(() -> dups.insertMany(List.of(new Document("_id", 7), new Document("_id", 1)))).isInstanceOf(MongoBulkWriteException.class);
+    assertThat(dups.countDocuments(new Document("_id", 7))).isEqualTo(1);
+  }
+
+  @Test
+  void replaceOneAcceptsANumericallyEqualId() {
+    collection.insertOne(Document.parse("{_id: 2, name: 'bob'}"));
+    assertThat(collection.replaceOne(new Document("_id", 2), new Document("_id", 2L).append("name", "x")).getMatchedCount()).isEqualTo(1);
+  }
+
+  @Test
+  void incOnANonNumericValueIsATypeError() {
+    collection.insertOne(Document.parse("{_id: 1, s: 'text'}"));
+    assertThatThrownBy(() -> collection.updateOne(new Document("_id", 1), Document.parse("{$inc: {'s.x': 1}}")))
+        .isInstanceOf(MongoCommandException.class);
+  }
+
+  @Test
+  void notEqualInsideOrAndNestedAnd() {
+    seedAges();
+    assertThat(ids("{$or: [{age: {$ne: 30}}, {age: 30}]}")).containsExactly(1, 2, 3, 4);
+    assertThat(ids("{$and: [{age: {$ne: 30}}, {age: {$nin: [25]}}]}")).containsExactly(3, 4);
   }
 }
