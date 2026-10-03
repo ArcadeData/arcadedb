@@ -1094,13 +1094,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * update started from against the slot the pin just loaded is what tells the two apart, and it does so at RECORD
    * granularity, so a concurrent write to another slot of the same page stays the false conflict it is.
    * <p>
-   * Answers only for a plain record stored inside this very slot. A placeholder pointer, a multi-page record's head
-   * chunk and a placeholder's content keep their body elsewhere, so this page cannot see whether it changed: they
-   * return {@code false} here and stay covered by the off-page fingerprint
-   * ({@link #offPageContentFingerprint(RID, BasePage, boolean)}) exactly as before. A freed or deleted slot also
+   * Answers for a plain record stored inside this very slot, and for the head chunk of a multi-page record (#8982),
+   * whose whole chain is assembled and compared. A placeholder pointer and a placeholder's content keep their body
+   * elsewhere, so this page cannot see whether it changed: they return {@code false} here and stay covered by the
+   * off-page fingerprint ({@link #offPageContentFingerprint(RID, BasePage, boolean)}) exactly as before. A freed or deleted slot also
    * returns {@code false}: the commit's own vanished-record check (#4959) is what reports that one.
    * <p>
-   * Never throws. A page that cannot be read where a record was is not a reason to fail a write that would otherwise
+   * Throws only the retryable {@link ConcurrentModificationException} of a multi-page record found moving while it was
+   * assembled. A page that cannot be read where a record was is not a reason to fail a write that would otherwise
    * succeed, and the commit-time version check is still behind it.
    *
    * @param readImage the image the update is diffed against - the record's own buffer, the same one
@@ -1118,6 +1119,15 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         return false;
 
       final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
+      if (recordSize[0] == FIRST_CHUNK) {
+        // #8982: the head chunk holds only the start of the record, so this page alone cannot say whether the record
+        // changed. The off-page fingerprint cannot either: it is taken from THIS page, which already holds the newer
+        // version, so it only sees changes that land after the pin. Compare the record as it reads now - the whole chain,
+        // assembled - with the image the update was computed from.
+        final Binary current = loadMultiPageRecord(rid, page, recordPositionInPage, recordSize);
+        return current.size() != readImage.size() || !current.isSameRegionAs(0, readImage, 0, readImage.size());
+      }
+
       if (recordSize[0] <= 0)
         // DELETED, OR A SHAPE WHOSE BODY IS NOT (ENTIRELY) IN THIS SLOT: SEE THE JAVADOC
         return false;
@@ -1130,6 +1140,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // byte loop through the page accessors: this runs on the write path, once per record taken for update.
       return !page.isSameContentAs((int) (recordPositionInPage + recordSize[1]), readImage, 0, size);
 
+    } catch (final ConcurrentModificationException e) {
+      // #8982: assembling a multi-page record found it moving under the read - the conflict this check exists to report
+      throw e;
     } catch (final Exception e) {
       LogManager.instance()
           .log(this, Level.FINE, "Unable to re-read record %s on page %s while taking it for update", e, rid,
