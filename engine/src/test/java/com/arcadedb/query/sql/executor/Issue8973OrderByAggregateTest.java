@@ -182,4 +182,29 @@ class Issue8973OrderByAggregateTest extends TestHelper {
     }
     assertThat(counts).extracting(Number::intValue).containsExactly(2, 1, 3);
   }
+
+  @Test
+  void aggregateOrderByOnATimeSeriesBucketQuery() {
+    database.command("sql", "CREATE TIMESERIES TYPE Reading8973 TIMESTAMP ts FIELDS (temperature DOUBLE)");
+    database.transaction(() -> {
+      // hour 0 holds 1 row summing to 100, hour 1 holds 3 rows summing to 3: the bucket with the most rows comes second and has the smaller sum
+      database.command("sql", "INSERT INTO Reading8973 SET ts = 1000, temperature = 100.0");
+      database.command("sql", "INSERT INTO Reading8973 SET ts = 3600000, temperature = 1.0");
+      database.command("sql", "INSERT INTO Reading8973 SET ts = 3601000, temperature = 1.0");
+      database.command("sql", "INSERT INTO Reading8973 SET ts = 3602000, temperature = 1.0");
+    });
+
+    try (final ResultSet rs = database.query("sql",
+        "SELECT ts.timeBucket('1h', ts) AS hour, sum(temperature) AS s FROM Reading8973 GROUP BY hour ORDER BY count(*) DESC LIMIT 1")) {
+      final Result row = rs.next();
+      assertThat(row.<Number>getProperty("s").doubleValue()).isEqualTo(3.0);
+      assertThat(rs.hasNext()).isFalse();
+    }
+
+    // the opposite direction must pick the other bucket: with the aggregate never computed both directions would answer the same row
+    try (final ResultSet rs = database.query("sql",
+        "SELECT ts.timeBucket('1h', ts) AS hour, sum(temperature) AS s FROM Reading8973 GROUP BY hour ORDER BY count(*) ASC LIMIT 1")) {
+      assertThat(rs.next().<Number>getProperty("s").doubleValue()).isEqualTo(100.0);
+    }
+  }
 }
