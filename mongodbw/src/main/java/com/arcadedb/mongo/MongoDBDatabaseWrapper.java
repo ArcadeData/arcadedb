@@ -334,7 +334,6 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   private Document createCollection(final Document document) {
     final String collectionName = (String) document.get("create");
     database.getSchema().buildDocumentType().withName(collectionName).withTotalBuckets(1).create();
-    MongoDBCollectionWrapper.ensureIdIndex(database, collectionName);
     return responseOk();
   }
 
@@ -352,13 +351,12 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     final boolean createdCollectionAutomatically;
     if (!database.getSchema().existsType(collectionName)) {
       database.getSchema().buildDocumentType().withName(collectionName).withTotalBuckets(1).create();
-      MongoDBCollectionWrapper.ensureIdIndex(database, collectionName);
       createdCollectionAutomatically = true;
     } else
       createdCollectionAutomatically = false;
 
-    // MongoDB always reports the _id index. The collections this plugin creates carry a real one, but a type made
-    // through SQL or Studio may not: offset the count by 1 in that case so numIndexesAfter == numIndexesBefore +
+    // MongoDB always reports the _id index. The collections this plugin creates carry a real one once a document is
+    // inserted, but a type made through SQL or Studio may not: offset the count by 1 in that case so numIndexesAfter == numIndexesBefore +
     // <new indexes> stays consistent for clients that check it.
     final int numIndexesBefore = countIndexes(collectionName);
 
@@ -560,7 +558,6 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       // like MongoDB, the first insert creates the collection, with the unique index on _id every collection has
       if (!database.getSchema().existsType(collectionName))
         database.getSchema().buildDocumentType().withName(collectionName).withTotalBuckets(1).withIgnoreIfExists(true).create();
-      MongoDBCollectionWrapper.ensureIdIndex(database, collectionName);
       collection = new MongoDBCollectionWrapper(database, collectionName);
       collections.put(collectionName, collection);
     }
@@ -624,10 +621,12 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
     if (updates != null) {
       // a schema change cannot happen inside the transaction: an upsert creates the collection with its _id index up front
-      if (updates.stream().anyMatch(upd -> Utils.isTrue(upd.get("upsert")))) {
-        database.getSchema().getOrCreateDocumentType(collectionName);
-        MongoDBCollectionWrapper.ensureIdIndex(database, collectionName);
-      }
+      for (final Document upd : updates)
+        if (Utils.isTrue(upd.get("upsert"))) {
+          database.getSchema().getOrCreateDocumentType(collectionName);
+          MongoDBCollectionWrapper.ensureIdIndex(database, collectionName, upd.get("q") instanceof Document q ? q.get("_id") : null);
+          break;
+        }
 
       database.begin();
       try {

@@ -40,6 +40,7 @@ import de.bwaldvogel.mongo.bson.ObjectId;
 import de.bwaldvogel.mongo.oplog.Oplog;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -190,9 +191,13 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
 
   @Override
   public void insertDocuments(final List<Document> list) {
-    final DocumentType type = database.getSchema().getType(collectionName);
     // a type without the unique index (made through SQL or Studio, or already holding duplicates) is checked by hand
-    final boolean checkByHand = !hasUniqueIdIndex(type);
+    final List<Object> ids = new ArrayList<>(list.size());
+    for (final Document d : list)
+      if (d.containsKey("_id"))
+        ids.add(d.get("_id"));
+    ensureIdIndex(database, collectionName, ids);
+    final boolean checkByHand = !hasUniqueIdIndex(database.getSchema().getType(collectionName));
 
     database.begin();
     try {
@@ -232,21 +237,59 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
 
   /**
    * MongoDB guarantees the {@code _id} of a collection is unique through an index every collection has. ArcadeDB has no implicit
-   * one, so the plugin creates a unique index on {@code _id} with the collection. A type that already holds duplicated {@code
-   * _id} values cannot get one: it is left alone, and {@link #insertDocuments} checks by hand instead.
+   * one, so the plugin creates a unique index on {@code _id} when the first document arrives, because only then the type of the
+   * key is known: the index orders its keys by their type, so a numeric {@code _id} needs a numeric key (a string key would
+   * answer {@code {_id: {$gt: 5}}} and a sort lexicographically, "10" before "5"). A collection whose {@code _id} is of another
+   * kind, or that already holds duplicated values, gets no index and {@link #insertDocuments} checks by hand instead.
    */
-  static void ensureIdIndex(final Database database, final String collectionName) {
-    if (hasUniqueIdIndex(database.getSchema().getType(collectionName)))
-      return;
+  static void ensureIdIndex(final Database database, final String collectionName, final Object sampleId) {
+    ensureIdIndex(database, collectionName, sampleId == null ? List.of() : List.of(sampleId));
+  }
 
+  /**
+   * @param ids the {@code _id} values about to be stored. When they (or an earlier insert) mix kinds, a numeric key cannot hold
+   *            them all: the index is rebuilt with string keys, which accept anything and keep the uniqueness check fast, at
+   *            the price of the ordering of a collection whose {@code _id} has no single order anyway.
+   */
+  static void ensureIdIndex(final Database database, final String collectionName, final Collection<?> ids) {
+    Type needed = null;
+    boolean mixed = false;
+    for (final Object id : ids) {
+      final Type type = idKeyType(id);
+      if (needed == null)
+        needed = type;
+      else if (needed != type)
+        mixed = true;
+      if (type == null)
+        mixed = true;
+    }
+    if (ids.isEmpty())
+      return;
+    final Type keyType = mixed ? Type.STRING : needed;
+
+    final DocumentType type = database.getSchema().getType(collectionName);
+    final TypeIndex existing = findUniqueIdIndex(type);
+    if (existing != null) {
+      final Type current = existing.getKeyTypes()[0];
+      if (current == Type.STRING || keyType == current)
+        return;
+      // the existing index cannot hold this key: rebuild it with string keys
+      database.getSchema().dropIndex(existing.getName());
+      createIdIndex(database, collectionName, Type.STRING);
+      return;
+    }
+
+    if (keyType != null)
+      createIdIndex(database, collectionName, keyType);
+  }
+
+  private static void createIdIndex(final Database database, final String collectionName, final Type keyType) {
     try {
-      // the property is undeclared (collections are schemaless): the index serializes its keys as STRING, so _id 1 and "1" are
-      // the same key here (MongoDB keeps them apart), and so are an ObjectId and a String equal to its hex (see #6955)
       final TypeIndexBuilder builder = database.getSchema().buildTypeIndex(collectionName, new String[] { "_id" });
       builder.withType(Schema.INDEX_TYPE.LSM_TREE);
       builder.withUnique(true);
       builder.withIgnoreIfExists(true);
-      builder.withDefaultKeyTypesForUndeclaredProperties(new Type[] { Type.STRING });
+      builder.withDefaultKeyTypesForUndeclaredProperties(new Type[] { keyType });
       builder.create();
     } catch (final RuntimeException e) {
       LogManager.instance().log(MongoDBCollectionWrapper.class, Level.WARNING,
@@ -255,11 +298,29 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
     }
   }
 
-  static boolean hasUniqueIdIndex(final DocumentType type) {
+  private static TypeIndex findUniqueIdIndex(final DocumentType type) {
     for (final TypeIndex index : type.getAllIndexes(false))
       if (index.isUnique() && index.getPropertyNames().size() == 1 && "_id".equals(index.getPropertyNames().getFirst()))
-        return true;
-    return false;
+        return index;
+    return null;
+  }
+
+  /**
+   * The index key type for an {@code _id}: an ObjectId is stored as its hex string. {@code null} for anything else, which
+   * cannot be ordered by a single key type.
+   */
+  private static Type idKeyType(final Object id) {
+    if (id instanceof String || id instanceof ObjectId)
+      return Type.STRING;
+    if (id instanceof Integer || id instanceof Long || id instanceof Short || id instanceof Byte)
+      return Type.LONG;
+    if (id instanceof Double || id instanceof Float)
+      return Type.DOUBLE;
+    return null;
+  }
+
+  static boolean hasUniqueIdIndex(final DocumentType type) {
+    return findUniqueIdIndex(type) != null;
   }
 
   @Override
