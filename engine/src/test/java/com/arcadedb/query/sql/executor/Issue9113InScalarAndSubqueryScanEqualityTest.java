@@ -145,4 +145,12 @@ class Issue9113InScalarAndSubqueryScanEqualityTest extends TestHelper {
           .isEqualTo(ids("S", col + " IN [" + literal + "]"));
     }
   }
+
+  @Test
+  void scalarInOnAComputedLeftSide() {
+    load();
+    assertThat(ids("S", "(k + 0) IN (?)", 7L)).containsExactly(1);
+    assertThat(ids("S", "(k + 0) IN (?)", 7.0d)).containsExactly(1);
+    assertThat(ids("S", "(k + 0) IN (?)", 8L)).isEmpty();
+  }
 }
