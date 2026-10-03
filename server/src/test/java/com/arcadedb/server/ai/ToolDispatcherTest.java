@@ -50,6 +50,65 @@ class ToolDispatcherTest extends BaseGraphServerTest {
   }
 
   @Test
+  void getTypeReturnsEverythingAboutOneType() {
+    final ToolDispatcher dispatcher = new ToolDispatcher(getServer(0), rootUser(), getDatabaseName());
+
+    final JSONObject result = new JSONObject(dispatcher.execute("get_type", new JSONObject().put("name", VERTEX1_TYPE_NAME)));
+
+    assertThat(result.has("error")).isFalse();
+    assertThat(result.getString("name")).isEqualTo(VERTEX1_TYPE_NAME);
+    assertThat(result.getString("category")).isEqualTo("vertex");
+    assertThat(result.getJSONArray("buckets").length()).isGreaterThan(0);
+    assertThat(result.getJSONArray("buckets").getJSONObject(0).getString("name")).isNotEmpty();
+    assertThat(result.getLong("rows")).isGreaterThan(0L);
+    assertThat(result.has("properties")).isTrue();
+  }
+
+  @Test
+  void getTypeRefusesAnUnknownTypeAndAMissingName() {
+    final ToolDispatcher dispatcher = new ToolDispatcher(getServer(0), rootUser(), getDatabaseName());
+
+    final JSONObject unknown = new JSONObject(dispatcher.execute("get_type", new JSONObject().put("name", "NoSuchType")));
+    assertThat(unknown.getString("error")).contains("does not exist");
+    final JSONObject near = new JSONObject(dispatcher.execute("get_type", new JSONObject().put("name", VERTEX1_TYPE_NAME.toLowerCase())));
+    assertThat(near.getString("error")).contains("Did you mean").contains(VERTEX1_TYPE_NAME);
+    assertThat(new JSONObject(dispatcher.execute("get_type", new JSONObject())).getString("error")).contains("'name'");
+    assertThat(new JSONObject(dispatcher.execute("get_type", new JSONObject().put("name", VERTEX1_TYPE_NAME).put("database", "nope")))
+        .getString("error")).contains("does not exist");
+  }
+
+  @Test
+  void theSchemaSummaryListsTheTypesOfTheDatabaseAndIsReusedBriefly() {
+    final ServerSecurityUser root = rootUser();
+    AiSchemaDigest.clearCache();
+
+    final String first = AiSchemaDigest.forUser(getServer(0), root, getDatabaseName());
+    assertThat(first).startsWith("Database " + getDatabaseName() + ": ").contains("vertex " + VERTEX1_TYPE_NAME + " ~");
+    assertThat(first.length()).isLessThanOrEqualTo(AiSchemaDigest.MAX_CHARS);
+
+    // A type created now is not in the summary until the cache expires (nothing invalidates it, by design) ...
+    getServer(0).getDatabase(getDatabaseName()).getSchema().createDocumentType("AddedLater");
+    assertThat(AiSchemaDigest.forUser(getServer(0), root, getDatabaseName())).isEqualTo(first).doesNotContain("AddedLater");
+    // ... and is, once it does
+    final long saved = AiSchemaDigest.cacheTtlMs;
+    AiSchemaDigest.cacheTtlMs = 0L;
+    try {
+      assertThat(AiSchemaDigest.forUser(getServer(0), root, getDatabaseName())).contains("doc AddedLater ~0 rows");
+    } finally {
+      AiSchemaDigest.cacheTtlMs = saved;
+      AiSchemaDigest.clearCache();
+    }
+  }
+
+  @Test
+  void theSchemaSummaryRefusesAnUnknownDatabase() {
+    final ServerSecurityUser root = rootUser();
+
+    org.assertj.core.api.Assertions.assertThatThrownBy(() -> AiSchemaDigest.forUser(getServer(0), root, "NoSuchDatabase"))
+        .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("does not exist");
+  }
+
+  @Test
   void queryDatabaseReturnsRecords() {
     final ToolDispatcher dispatcher = new ToolDispatcher(getServer(0), rootUser(), getDatabaseName());
 

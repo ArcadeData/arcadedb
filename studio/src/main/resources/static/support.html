@@ -1,4 +1,4 @@
-<!-- Support Tab: the AI Assistant and the Support page (status, my issues; the new issue and the public GitHub issue are popups) -->
+<!-- Support Tab: one page. The status of the registration on top, then two tabs: the AI Assistant and the Issues (the new issue and the public GitHub issue are popups) -->
 <style>
   .ai-message-content h1 { font-size: 1.3rem; }
   .ai-message-content h2 { font-size: 1.15rem; }
@@ -6,9 +6,23 @@
   .ai-message-content h4, .ai-message-content h5, .ai-message-content h6 { font-size: 0.95rem; }
 </style>
 <div class="tab-pane fade" id="tab-support" role="tabpanel">
-  <ul class="nav nav-pills mb-3 support-nav" id="supportNav">
+
+  <!-- The status of the registration: always on top, whatever tab is open -->
+  <div id="supportSection">
+    <div id="supportAlert"></div>
+    <div id="supportLoading" class="text-center py-4" style="display: none;">
+      <div class="spinner-border text-primary" role="status" style="width: 2rem; height: 2rem;"></div>
+      <div class="text-muted small mt-2">Loading the support status...</div>
+    </div>
+    <div id="supportContent" style="display: none;">
+      <div id="supportViewOverview"></div>
+    </div>
+  </div>
+
+  <!-- Two tabs below the status: the AI Assistant (first) and the issues of the workspace -->
+  <ul class="nav nav-tabs mb-3 support-tabs" id="supportNav">
     <li class="nav-item"><a href="#" class="nav-link active" data-support-view="ai"><i class="fa fa-robot"></i> AI Assistant</a></li>
-    <li class="nav-item"><a href="#" class="nav-link" data-support-view="overview">Support</a></li>
+    <li class="nav-item"><a href="#" class="nav-link" data-support-view="issues"><i class="fa fa-life-ring"></i> Issues</a></li>
   </ul>
 
   <!-- AI Assistant view -->
@@ -33,35 +47,37 @@
           <li>And more...</li>
         </ul>
 
-        <!-- Activation Form -->
-        <div style="margin-top: 1.5rem; padding: 1.5rem; border: 1px solid var(--border-main); border-radius: 10px; background: var(--bg-card);">
-          <h6 style="color: var(--text-primary); margin-bottom: 0.75rem;">Activate your subscription</h6>
-          <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 1rem;">
-            Enter your subscription key to enable the AI assistant.
-          </p>
-          <div class="d-flex gap-2">
-            <input type="text" id="aiSubscriptionKey" class="form-control"
-              placeholder="Enter your subscription key"
-              style="background: var(--bg-input); color: var(--text-primary); border-color: var(--border-main);"
-              onkeydown="if(event.key==='Enter') aiActivate()">
-            <button id="aiActivateBtn" class="btn" style="background: var(--color-brand); color: white; border: none; min-width: 100px;" onclick="aiActivate()">
-              Activate
-            </button>
-          </div>
-          <div id="aiActivateError" style="display: none; margin-top: 0.5rem; color: #dc3545; font-size: 0.85rem;"></div>
-          <div id="aiActivateSuccess" style="display: none; margin-top: 0.5rem; color: #28a745; font-size: 0.85rem;"></div>
-        </div>
+        <!-- The portal connection: connect, or the plan that does not include the assistant (filled by initAi) -->
+        <div id="aiPortalState" style="margin-top: 1.5rem;"></div>
 
-        <p style="color: var(--text-muted); margin-top: 1rem; font-size: 0.85rem;">
-          Don't have a key? <a href="https://arcadedb.com/pricing.html#studio-ai" target="_blank" style="color: var(--color-brand-link);">Get one here</a>.
-        </p>
+        <!-- Legacy activation form: a subscription key of the former AI gateway -->
+        <details id="aiLegacyKey" style="margin-top: 1rem; text-align: left;">
+          <summary style="cursor: pointer; color: var(--text-muted); font-size: 0.85rem;">I have a subscription key</summary>
+          <div style="margin-top: 0.75rem; padding: 1.5rem; border: 1px solid var(--border-main); border-radius: 10px; background: var(--bg-card);">
+            <h6 style="color: var(--text-primary); margin-bottom: 0.75rem;">Activate your subscription</h6>
+            <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 1rem;">
+              Enter your subscription key to enable the AI assistant.
+            </p>
+            <div class="d-flex gap-2">
+              <input type="text" id="aiSubscriptionKey" class="form-control"
+                placeholder="Enter your subscription key"
+                style="background: var(--bg-input); color: var(--text-primary); border-color: var(--border-main);"
+                onkeydown="if(event.key==='Enter') aiActivate()">
+              <button id="aiActivateBtn" class="btn" style="background: var(--color-brand); color: white; border: none; min-width: 100px;" onclick="aiActivate()">
+                Activate
+              </button>
+            </div>
+            <div id="aiActivateError" style="display: none; margin-top: 0.5rem; color: #dc3545; font-size: 0.85rem;"></div>
+            <div id="aiActivateSuccess" style="display: none; margin-top: 0.5rem; color: #28a745; font-size: 0.85rem;"></div>
+          </div>
+        </details>
       </div>
     </div>
   </div>
 
   <!-- Active state (with subscription) -->
   <div id="aiActivePanel" style="display: none;">
-    <div class="d-flex" style="height: calc(100vh - 20px);">
+    <div class="d-flex" id="aiLayout" style="height: calc(100vh - 240px); min-height: 360px;">
 
       <!-- Left sidebar: Chat History -->
       <div id="aiSidebar" style="width: 260px; min-width: 260px; border-right: 1px solid var(--border-main); background: var(--bg-sidebar); display: flex; flex-direction: column;">
@@ -86,6 +102,7 @@
             <div id="aiDbSelectContainer" class="searchable-db-select"></div>
           </div>
           <div class="ms-auto d-flex align-items-center gap-2">
+            <span id="aiUsage" style="display: none; color: var(--text-muted); font-size: 0.8rem;"></span>
             <div class="btn-group btn-group-sm" id="aiModeToggle">
               <button type="button" class="btn btn-sm" data-mode="auto" onclick="aiSetMode('auto')"
                 title="AI runs read-only queries and gives you answers directly">
@@ -109,6 +126,9 @@
           </div>
         </div>
 
+        <!-- A refusal worth reading (the plan, the monthly allowance), with the way to fix it -->
+        <div id="aiNotice" class="alert alert-warning mb-0 py-2 px-3" style="display: none; margin: 0 24px 8px 24px; font-size: 0.85rem;" role="alert"></div>
+
         <!-- Input area -->
         <div style="border-top: 1px solid var(--border-main); padding: 8px 24px; background: var(--bg-nav);">
           <div class="d-flex gap-2">
@@ -127,18 +147,7 @@
   </div>
   </div>
 
-  <!-- Support page: the status of the registration, then the issues of the workspace -->
-  <div id="supportSection" style="display: none;">
-    <div id="supportAlert"></div>
-    <div id="supportLoading" class="text-center py-4" style="display: none;">
-      <div class="spinner-border text-primary" role="status" style="width: 2rem; height: 2rem;"></div>
-      <div class="text-muted small mt-2">Loading the support status...</div>
-    </div>
-    <div id="supportContent" style="display: none;">
-      <div id="supportViewOverview" class="support-view"></div>
-      <div id="supportViewIssues" class="support-view"></div>
-    </div>
-  </div>
+  <div id="supportViewIssues" class="support-view" style="display: none;"></div>
 </div>
 
 <!-- Popups (moved to the body when first shown, so that no ancestor of the tab can clip or stack them) -->

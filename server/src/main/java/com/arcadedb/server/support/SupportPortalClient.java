@@ -64,13 +64,19 @@ public class SupportPortalClient {
       .followRedirects(HttpClient.Redirect.NEVER).build();
 
   private static final java.util.regex.Pattern PROCESS_REFUSAL = java.util.regex.Pattern.compile(
-      "failed: (?:Error: )?([a-z_]+(?:\\.[a-z_]+)?): (.*)$", java.util.regex.Pattern.DOTALL);
+      "(?:^|failed: (?:Error: )?)([a-z_]+(?:\\.[a-z_]+)?): (.*)$", java.util.regex.Pattern.DOTALL);
 
   static final String API = "/api/v1/support";
   /** A key runs a tenant process through the platform's ordinary process endpoint; it may run only one that declares it. */
   static final String PROCESS_PATH = "/api/v1/process-execute";
   /** The portal process that creates or completes the Installation of a server (access: {key: 'support:create'}). */
   static final String REGISTER_PROCESS = "studio-register-instance";
+
+  /** The refusals of the AI Assistant processes (docs/AI-ASSISTANT.md, section 12 of the portal). */
+  public static final String AI_NOT_ENTITLED       = "ai.not_entitled";
+  public static final String AI_ALLOWANCE_EXHAUSTED = "ai.allowance_exhausted";
+  public static final String AI_BUSY               = "ai.busy";
+  public static final String AI_INVALID            = "ai.invalid";
 
   public static final long CALL_TIMEOUT_MS   = 30_000L;
   public static final long UPLOAD_TIMEOUT_MS = 20 * 60_000L;
@@ -124,10 +130,20 @@ public class SupportPortalClient {
    * {@code {diagnostics}}, and returns what the process answered ({@code output.data}).
    */
   public String registerInstallation(final String jsonBody) {
+    return runProcess(PROCESS_PATH, REGISTER_PROCESS, jsonBody, CALL_TIMEOUT_MS);
+  }
+
+  /**
+   * Runs a tenant process through a key route ({@code path}) with {@code jsonBody} and returns what it answered
+   * ({@code output.data}). The AI Assistant client uses it for {@code ai-send}, {@code ai-stop} and {@code ai-usage}; the
+   * path and the process names are the caller's, so a change of contract stays in that one class.
+   *
+   * @throws SupportPortalException when the portal refuses (its code is {@code process.code} for a process refusal)
+   */
+  public String runProcess(final String path, final String process, final String jsonBody, final long timeoutMs) {
     final String answer;
     try {
-      answer = execute("POST", PROCESS_PATH, REGISTER_PROCESS, "application/json", () -> HttpRequest.BodyPublishers.ofString(jsonBody),
-          CALL_TIMEOUT_MS);
+      answer = execute("POST", path, process, "application/json", () -> HttpRequest.BodyPublishers.ofString(jsonBody), timeoutMs);
     } catch (final IOException e) {
       throw new SupportPortalException("portal_error", 0, scrub(e.getMessage()), 0);
     }
@@ -137,6 +153,42 @@ public class SupportPortalClient {
     } catch (final RuntimeException e) {
       throw new SupportPortalException("portal_error", 0, "The portal answered in a form this server does not understand", 0);
     }
+  }
+
+  /**
+   * Opens a streamed GET on the portal (NDJSON) with the Client key. The caller reads and closes the body, wrapping it with
+   * {@link BoundedHttpExchange#silenceBounded}. A refusal is thrown as {@link SupportPortalException} with the body read
+   * (at most 64 KB) and the key scrubbed.
+   *
+   * @param silenceMs how long the portal may take to start answering
+   */
+  public HttpResponse<InputStream> openStream(final String path, final long silenceMs) {
+    final HttpRequest.Builder builder = HttpRequest.newBuilder().uri(URI.create(baseUrl + path)).header("Authorization",
+        "Bearer " + registration.getKey()).header("X-Client-Id", registration.getClientId()).header("User-Agent", userAgent())
+        .header("Accept", "application/x-ndjson").GET();
+    if (instanceId != null && !instanceId.isBlank())
+      builder.header("X-Instance-Id", instanceId);
+
+    final HttpResponse<InputStream> response;
+    try {
+      response = BoundedHttpExchange.send(HTTP_CLIENT, builder.build(), HttpResponse.BodyHandlers.ofInputStream(), silenceMs);
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new SupportPortalException("portal_unreachable", 0, "The request to the portal was interrupted", 0);
+    } catch (final IOException e) {
+      throw unreachable(e);
+    }
+    final int status = response.statusCode();
+    if (status >= 200 && status < 300)
+      return response;
+
+    String body = "";
+    try (final InputStream in = response.body()) {
+      body = new String(in.readNBytes(64 * 1024), StandardCharsets.UTF_8);
+    } catch (final IOException ignored) {
+      // the status alone is enough to answer
+    }
+    throw toException(status, body, response.headers().firstValue("Retry-After").orElse("0"));
   }
 
   public String listIssues(final String status) {
@@ -325,10 +377,14 @@ public class SupportPortalClient {
   }
 
   SupportPortalException toException(final int status, final HttpResponse<String> response) {
+    return toException(status, response.body(), response.headers().firstValue("Retry-After").orElse("0"));
+  }
+
+  SupportPortalException toException(final int status, final String body, final String retryAfterHeader) {
     String code = null;
     String message = null;
     try {
-      final JSONObject json = new JSONObject(response.body());
+      final JSONObject json = new JSONObject(body);
       code = json.getString("error", null);
       message = json.getString("message", null);
     } catch (final RuntimeException ignored) {
@@ -356,13 +412,13 @@ public class SupportPortalClient {
     // A code we do not know of is kept as "portal_error": Studio switches on the known ones
     if (!List.of("invalid_key", "client_mismatch", "scope_denied", "support_not_active", "not_found", "too_large", "rate_limited",
         "bad_request", "not_supported", "no_workspace", "forbidden", "key_has_no_owner", "instance_id.taken", "invalid_instance_id",
-        "invalid_version", "already_answered").contains(code))
+        "invalid_version", "already_answered", AI_NOT_ENTITLED, AI_ALLOWANCE_EXHAUSTED, AI_BUSY, AI_INVALID).contains(code))
       code = "portal_error";
 
     long retryAfter = 0L;
     if (code.equals("rate_limited"))
       try {
-        retryAfter = Long.parseLong(response.headers().firstValue("Retry-After").orElse("0").trim());
+        retryAfter = Long.parseLong(retryAfterHeader.trim());
       } catch (final NumberFormatException e) {
         retryAfter = 0L;
       }
@@ -375,8 +431,9 @@ public class SupportPortalClient {
     return switch (code) {
       case "invalid_key" -> "The portal rejected the Client key. Check it, or create a new key in the customer portal.";
       case "client_mismatch" -> "The Client ID does not belong to the workspace of this key. Copy both from the customer portal.";
-      case "scope_denied" -> "This key is not allowed to do that: create a key with both the support:create and support:read "
-          + "scopes in the customer portal.";
+      case "scope_denied" -> "This key is not allowed to do that. It was probably created before the AI Assistant existed and lacks "
+          + "the scope for it: click Connect to ArcadeDB Portal again (a new key gets every scope) and revoke the old key in the "
+          + "customer portal; or create a key with the support:create, support:read and ai:chat scopes.";
       case "support_not_active" -> "Your ArcadeDB support plan is not active (it expired or there is none). Renew or buy a plan at "
           + "https://arcadedb.com/pricing.html; you can still report a public GitHub issue.";
       case "not_found" -> "The issue (or the request) was not found in your workspace.";
@@ -386,6 +443,12 @@ public class SupportPortalClient {
           + ".";
       case "bad_request" -> "The portal refused the request" + detail + ".";
       case "not_supported" -> "This portal cannot register servers from Studio yet.";
+      case AI_NOT_ENTITLED -> "Your ArcadeDB plan does not include the AI Assistant, or it is not active. Review your plan in the customer "
+          + "portal.";
+      case AI_ALLOWANCE_EXHAUSTED -> "You have used the AI Assistant allowance of your plan for this month. It resets at the start of "
+          + "next month; upgrade your plan in the customer portal for more.";
+      case AI_BUSY -> "The AI Assistant is busy with another answer for your workspace. Try again in a moment.";
+      case AI_INVALID -> "The AI Assistant refused the request" + detail + ".";
       case "no_workspace", "forbidden", "key_has_no_owner" -> "The person who created this key can no longer register servers in the "
           + "workspace (they left it, or are only a viewer). Create a new key in the customer portal with an owner or admin account.";
       case "instance_id.taken" -> "The instance id of this server is already registered in the portal. If it is yours, contact "

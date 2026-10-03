@@ -84,6 +84,7 @@ import com.arcadedb.server.ai.AiAnalyzeProfilerHandler;
 import com.arcadedb.server.ai.AiChatHandler;
 import com.arcadedb.server.ai.AiChatsHandler;
 import com.arcadedb.server.ai.AiConfigHandler;
+import com.arcadedb.server.ai.AiPortal;
 import com.arcadedb.server.ai.ChatStorage;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.support.SupportHandler;
@@ -361,15 +362,17 @@ public class HttpServer implements ServerPlugin {
 
     // AI routes are always registered; the chat handler checks isConfigured() at request time
     final var aiConfig = server.getAiConfiguration();
+    // One portal status for all the AI routes, so the plan is asked of the portal once a minute and not once per route
+    final var aiPortal = new AiPortal(server, aiConfig);
     final var chatStorage = new ChatStorage(server.getRootPath(), () -> server.getSecurity().getUsers());
     final var aiChatsHandler = new AiChatsHandler(this, chatStorage);
     final RouteRecordingRoutingHandler aiRoutes = new RouteRecordingRoutingHandler();
     routes.addPrefixPath("/api/v1/ai", aiRoutes//
-        .get("/config", new AiConfigHandler(this, aiConfig))//
+        .get("/config", new AiConfigHandler(this, aiConfig, aiPortal))//
         .post("/activate", new AiActivateHandler(this, aiConfig))//
-        .post("/chat", new AiChatHandler(this, server, aiConfig, chatStorage, false))//
-        .post("/chat/stream", new AiChatHandler(this, server, aiConfig, chatStorage, true))//
-        .post("/analyze-profiler", new AiAnalyzeProfilerHandler(this, server, aiConfig))//
+        .post("/chat", new AiChatHandler(this, server, aiConfig, chatStorage, false, aiPortal))//
+        .post("/chat/stream", new AiChatHandler(this, server, aiConfig, chatStorage, true, aiPortal))//
+        .post("/analyze-profiler", new AiAnalyzeProfilerHandler(this, server, aiConfig, aiPortal))//
         .get("/chats", aiChatsHandler)//
         .get("/chats/{id}", aiChatsHandler)//
         .put("/chats/{id}", aiChatsHandler)//

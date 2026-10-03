@@ -175,6 +175,12 @@ table,
   display: flex;
   flex-direction: column;
   min-height: 0;
+  /* The sidebar column is a fixed 70px, so this one must take what is left. Left at Bootstrap's 11/12 of the row it stopped
+     short of the right edge, and the gap grew with the window (about 100px on a wide screen) on every page. */
+  flex: 1 1 0;
+  width: auto;
+  max-width: none;
+  min-width: 0;
 }
 
 #studioPanel > .card-header > .row > .col-11 > .tab-content {
@@ -4138,20 +4144,23 @@ body.col-resizing * {
   color: var(--text-muted);
 }
 
-.support-nav {
+/* The two tabs under the status card of the Support page: the AI Assistant and the Issues */
+.support-tabs {
   margin-top: 1rem;
+  border-bottom: 1px solid var(--border-color, #dee2e6);
 }
 
-.support-nav .nav-link {
+.support-tabs .nav-link {
   color: var(--text-secondary);
-  font-size: 0.86rem;
-  padding: 5px 14px;
+  font-size: 0.9rem;
+  padding: 6px 16px;
 }
 
-.support-nav .nav-link.active {
-  background-color: var(--color-brand-light);
+.support-tabs .nav-link.active {
   color: var(--color-brand);
   font-weight: 600;
+  background-color: transparent;
+  border-color: var(--border-color, #dee2e6) var(--border-color, #dee2e6) var(--bg-main, #fff);
 }
 
 .support-card .form-control,

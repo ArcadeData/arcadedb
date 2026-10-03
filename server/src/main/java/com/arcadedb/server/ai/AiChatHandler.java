@@ -31,6 +31,8 @@ import com.arcadedb.server.http.handler.ExecutionResponse;
 import com.arcadedb.server.info.SchemaInfo;
 import com.arcadedb.server.info.ServerInfo;
 import com.arcadedb.server.security.ServerSecurityUser;
+import com.arcadedb.server.support.SupportPortalClient;
+import com.arcadedb.server.support.SupportPortalException;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HttpString;
 
@@ -103,6 +105,7 @@ public class AiChatHandler extends AbstractServerHttpHandler {
   private final AiConfiguration config;
   private final ChatStorage     chatStorage;
   private final boolean         streaming;
+  private final AiPortal        portal;
 
   /**
    * @param streaming {@code true} to back {@code POST /api/v1/ai/chat/stream} (always SSE),
@@ -110,11 +113,18 @@ public class AiChatHandler extends AbstractServerHttpHandler {
    */
   public AiChatHandler(final HttpServer httpServer, final ArcadeDBServer server, final AiConfiguration config,
       final ChatStorage chatStorage, final boolean streaming) {
+    this(httpServer, server, config, chatStorage, streaming, new AiPortal(server, config));
+  }
+
+  /** @param portal where the answers come from when the server is connected to the customer portal */
+  public AiChatHandler(final HttpServer httpServer, final ArcadeDBServer server, final AiConfiguration config,
+      final ChatStorage chatStorage, final boolean streaming, final AiPortal portal) {
     super(httpServer);
     this.server = server;
     this.config = config;
     this.chatStorage = chatStorage;
     this.streaming = streaming;
+    this.portal = portal;
   }
 
   @Override
@@ -124,7 +134,8 @@ public class AiChatHandler extends AbstractServerHttpHandler {
 
   @Override
   protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final JSONObject payload) {
-    if (!config.isConfigured())
+    final AiPortal.Source source = portal.source();
+    if (source == AiPortal.Source.NONE)
       return new ExecutionResponse(400,
           new JSONObject().put("error", "AI assistant is not configured. Please configure config/ai.json.").toString());
 
@@ -185,6 +196,9 @@ public class AiChatHandler extends AbstractServerHttpHandler {
       for (int i = start; i < messages.length() - 1; i++)
         history.put(messages.getJSONObject(i));
 
+      if (source == AiPortal.Source.PORTAL)
+        return handlePortalRequest(exchange, user, payload, database, message, chat, messages, history, username);
+
       // Forward to gateway
       final JSONObject gatewayRequest = new JSONObject();
       gatewayRequest.put("message", message);
@@ -219,6 +233,8 @@ public class AiChatHandler extends AbstractServerHttpHandler {
       throw e; // Let AbstractServerHttpHandler handle security exceptions
     } catch (final AiTokenException e) {
       return new ExecutionResponse(e.getHttpStatus(), e.getJsonResponse());
+    } catch (final SupportPortalException e) {
+      return portalError(e);
     } catch (final ConnectException | HttpConnectTimeoutException e) {
       LogManager.instance().log(this, Level.WARNING, "AI gateway unreachable: %s", e.getMessage());
       return new ExecutionResponse(503, new JSONObject()//
@@ -436,6 +452,168 @@ public class AiChatHandler extends AbstractServerHttpHandler {
     }
 
     return null; // response already sent
+  }
+
+  /**
+   * The answer through the customer portal (stateless turns, see {@link AiPortalChat}). The first round is sent before anything
+   * is written, so a refusal (plan without the AI Assistant, allowance used) is an ordinary HTTP answer; what fails after the
+   * stream has started is reported in band, as for the gateway.
+   */
+  private ExecutionResponse handlePortalRequest(final HttpServerExchange exchange, final ServerSecurityUser user,
+      final JSONObject payload, final String database, final String message, final JSONObject chat, final JSONArray messages,
+      final JSONArray history, final String username) throws Exception {
+    final AiPortalClient client = portal.client();
+    if (client == null)
+      return new ExecutionResponse(400, new JSONObject().put("error", "AI assistant is not configured.").toString());
+
+    final JSONObject request = new JSONObject().put("message", message).put("database", database)
+        .put("history", portalHistory(history)).put("mode", "chat");
+    // The compact schema summary goes with EVERY round (most questions need it; the model asks get_type for the rest). Built once per
+    // answer here, reused across questions for a short while. A failure to build it must not stop the assistant from answering.
+    try {
+      request.put("schemaDigest", AiSchemaDigest.forUser(server, user, database));
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(this, Level.WARNING, "AI Assistant: could not build the schema summary of '%s': %s", database,
+          e.getMessage());
+    }
+
+    // Auto: the tools run here, as the user. Review first: the model may read the schema and the server, but a query is
+    // refused with the sentence that makes it hand the command back to the user to review and run (the portal's tools are
+    // the same in both modes, so the difference is made here, where the tools run)
+    final ToolDispatcher dispatcher = streaming ? new ToolDispatcher(server, user, database)
+        : new ToolDispatcher(server, user, database) {
+          @Override
+          public String execute(final String toolName, final JSONObject args) {
+            if (toolName.equals("query_database"))
+              return new JSONObject().put("error", "Review-first mode: queries are not run for the user. Return the command as a "
+                  + "fenced code block for the user to review and run.").toString();
+            return super.execute(toolName, args);
+          }
+        };
+
+    final AiPortalChat turns = new AiPortalChat(client, streamSilenceMs);
+    if (!streaming) {
+      final AiPortalChat.Answer answer = turns.run(request, dispatcher, new AiPortalChat.Sink() {
+        @Override
+        public void open() {
+        }
+
+        @Override
+        public void event(final JSONObject event) {
+        }
+
+        @Override
+        public void heartbeat() {
+        }
+      });
+      final JSONObject gatewayLike = new JSONObject().put("response", answer.response());
+      if (answer.commands().length() > 0)
+        gatewayLike.put("commands", answer.commands());
+      return buildResponse(gatewayLike, chat, messages, username);
+    }
+
+    final OutputStream[] output = new OutputStream[1];
+    final String chatId = chat.getString("id", null);
+    try {
+      final AiPortalChat.Answer answer = turns.run(request, dispatcher, new AiPortalChat.Sink() {
+        @Override
+        public void open() {
+          exchange.getResponseHeaders().put(new HttpString("Content-Type"), "text/event-stream");
+          exchange.getResponseHeaders().put(new HttpString("Cache-Control"), "no-cache");
+          exchange.getResponseHeaders().put(new HttpString("X-Accel-Buffering"), "no");
+          exchange.setStatusCode(200);
+          output[0] = streamedResponseOutput(exchange, () -> "the streamed AI chat answer");
+        }
+
+        @Override
+        public void event(final JSONObject event) throws IOException {
+          forwardEvent(output[0], event);
+        }
+
+        @Override
+        public void heartbeat() throws IOException {
+          output[0].write(HEARTBEAT_FRAME);
+          output[0].flush();
+        }
+      });
+
+      final JSONObject done = new JSONObject().put("type", "done").put("response", answer.response()).put("chatId", chatId);
+      if (answer.commands().length() > 0)
+        done.put("commands", answer.commands());
+      if (answer.usage().length() > 0)
+        done.put("usage", answer.usage());
+
+      // Saved BEFORE the stream ends: the client may read the chat list the moment it sees 'done'
+      final JSONObject assistantMsg = new JSONObject().put("role", "assistant").put("content", answer.response())
+          .put("timestamp", Instant.now().toString());
+      if (answer.commands().length() > 0)
+        assistantMsg.put("commands", answer.commands());
+      messages.put(assistantMsg);
+      chat.put("messages", messages);
+      chat.put("updated", Instant.now().toString());
+      try {
+        chatStorage.saveChat(username, chat);
+      } catch (final RuntimeException e) {
+        LogManager.instance().log(this, Level.WARNING, "Failed to persist chat history after the AI answer (chatId=%s): %s", chatId,
+            e.getMessage());
+      }
+      forwardEvent(output[0], done);
+    } catch (final SupportPortalException e) {
+      if (output[0] == null)
+        return portalError(e);
+      endPortalStream(output[0], e, chatId);
+    } catch (final Exception e) {
+      if (output[0] == null)
+        throw e;
+      endStreamWithError(output[0], e, chatId);
+    } finally {
+      if (output[0] != null)
+        try {
+          output[0].close();
+        } catch (final Exception ignored) {
+        }
+    }
+    return null; // response already sent
+  }
+
+  /** The conversation as the portal takes it: role and content only, never a timestamp or a command list. */
+  private static JSONArray portalHistory(final JSONArray history) {
+    final JSONArray out = new JSONArray();
+    for (int i = 0; i < history.length(); i++) {
+      final JSONObject m = history.getJSONObject(i);
+      final String role = m.getString("role", "");
+      if (role.equals("user") || role.equals("assistant"))
+        out.put(new JSONObject().put("role", role).put("content", m.getString("content", "")));
+    }
+    return out;
+  }
+
+  /**
+   * A refusal or failure of the portal as an HTTP answer. Never 401 or 403, whatever the portal said: those are reserved for the
+   * user's own session and would log Studio out (the rule of {@link AiTokenException}); {@code code} tells Studio what happened.
+   */
+  static ExecutionResponse portalError(final SupportPortalException e) {
+    final int status = switch (e.getCode()) {
+      case SupportPortalClient.AI_NOT_ENTITLED -> 402;
+      case SupportPortalClient.AI_ALLOWANCE_EXHAUSTED, SupportPortalClient.AI_BUSY, "rate_limited" -> 429;
+      case "portal_unreachable" -> 503;
+      case SupportPortalClient.AI_INVALID, "bad_request", "too_large" -> 400;
+      default -> 502;
+    };
+    final JSONObject json = new JSONObject().put("error", e.getMessage()).put("code", e.getCode());
+    if (e.getCode().startsWith("ai."))
+      json.put("upgrade", true);
+    return new ExecutionResponse(status, json.toString());
+  }
+
+  private void endPortalStream(final OutputStream output, final SupportPortalException e, final String chatId) {
+    LogManager.instance().log(this, Level.WARNING, "AI answer through the portal failed (chatId=%s, %s): %s", chatId, e.getCode(), e.getMessage());
+    try {
+      forwardEvent(output, new JSONObject().put("type", "error").put("code", e.getCode()).put("error", e.getMessage())
+          .put("upgrade", e.getCode().startsWith("ai.")));
+    } catch (final Exception ignored) {
+      // The client is gone as well
+    }
   }
 
   /**

@@ -30,14 +30,29 @@ import io.undertow.server.HttpServerExchange;
  */
 public class AiConfigHandler extends AbstractServerHttpHandler {
   private final AiConfiguration config;
+  private final AiPortal        portal;
 
   public AiConfigHandler(final HttpServer httpServer, final AiConfiguration config) {
+    this(httpServer, config, null);
+  }
+
+  /** @param portal the customer portal this server may be connected to, or null for a gateway-only configuration */
+  public AiConfigHandler(final HttpServer httpServer, final AiConfiguration config, final AiPortal portal) {
     super(httpServer);
     this.config = config;
+    this.portal = portal;
   }
 
   @Override
   protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final JSONObject payload) {
-    return new ExecutionResponse(200, config.toJSON().toString());
+    final JSONObject json = config.toJSON();
+    if (portal != null) {
+      // "configured" means "the assistant can answer": a connected portal whose plan includes it, or a legacy gateway key
+      final JSONObject portalStatus = portal.toJSON();
+      json.put("portal", portalStatus);
+      json.put("source", portalStatus.getBoolean("enabled", false) ? "portal" : config.isConfigured() ? "gateway" : "none");
+      json.put("configured", portalStatus.getBoolean("enabled", false) || config.isConfigured());
+    }
+    return new ExecutionResponse(200, json.toString());
   }
 }
