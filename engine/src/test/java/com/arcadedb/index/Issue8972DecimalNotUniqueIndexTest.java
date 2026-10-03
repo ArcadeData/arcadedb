@@ -116,4 +116,26 @@ class Issue8972DecimalNotUniqueIndexTest extends TestHelper {
     // a wrong value offset could return the same record twice
     assertThat(found).hasSize(12);
   }
+
+  @Test
+  void compositeIndexWithADecimalPart() {
+    database.command("sql", "CREATE DOCUMENT TYPE Comp");
+    database.command("sql", "CREATE PROPERTY Comp.name STRING");
+    database.command("sql", "CREATE PROPERTY Comp.amount DECIMAL");
+    database.command("sql", "CREATE PROPERTY Comp.tag STRING");
+    database.command("sql", "CREATE INDEX ON Comp (name, amount) NOTUNIQUE");
+    final String[] widths = { "5", "5.00", "5.0", "5.000" };
+    for (int i = 0; i < 8; i++) {
+      final String amount = widths[i % widths.length];
+      final int n = i;
+      database.transaction(() -> database.newDocument("Comp").set("name", "x", "tag", "t" + n, "amount", new BigDecimal(amount)).save());
+    }
+
+    final List<String> tags = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", "SELECT tag FROM Comp WHERE name = 'x' AND amount = 5")) {
+      while (rs.hasNext())
+        tags.add(rs.next().getProperty("tag"));
+    }
+    assertThat(tags).containsExactlyInAnyOrder("t0", "t1", "t2", "t3", "t4", "t5", "t6", "t7");
+  }
 }
