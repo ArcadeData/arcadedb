@@ -62,6 +62,13 @@ class Issue9114JsonArrayNonFiniteAndByteArrayTest {
   }
 
   @Test
+  void nonFiniteThroughIndexedPut() {
+    final JSONArray array = new JSONArray().put(1).put(2);
+    array.put(1, Double.NaN);
+    assertThat(array.toString()).isEqualTo("[1,null]");
+  }
+
+  @Test
   void finiteNumbersKeepTheirValue() {
     assertThat(new JSONArray(List.of(1, 2L, 3.5d, new BigDecimal("1e400"))).toString()).isEqualTo("[1,2,3.5,1E+400]");
   }

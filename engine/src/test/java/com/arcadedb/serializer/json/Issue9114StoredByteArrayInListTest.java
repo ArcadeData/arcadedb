@@ -50,6 +50,7 @@ class Issue9114StoredByteArrayInListTest extends TestHelper {
       final JSONObject json = row.toJSON();
       assertThat(json.getJSONArray("in_list").toString()).doesNotContain("[B@");
       assertThat(json.getJSONArray("in_list").getJSONArray(0).toString()).isEqualTo("[1,2]");
+      assertThat(json.getJSONObject("in_map").getJSONArray("k").toString()).isEqualTo("[1,2]");
     }
   }
 }

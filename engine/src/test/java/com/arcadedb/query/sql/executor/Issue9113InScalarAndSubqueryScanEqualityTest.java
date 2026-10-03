@@ -126,4 +126,11 @@ class Issue9113InScalarAndSubqueryScanEqualityTest extends TestHelper {
     assertThat(ids("S", "k IN (SELECT s FROM Src WHERE s IS NOT NULL)")).isEqualTo(ids("S", "k IN ['7']"));
     assertThat(ids("S", "k IN (SELECT s FROM Src WHERE s IS NOT NULL)")).isEqualTo(ids("S", "k = '7'"));
   }
+
+  @Test
+  void nullParameterIsUnknown() {
+    load();
+    assertThat(ids("S", "k IN (?)", (Object) null)).isEmpty();
+    assertThat(ids("S", "k NOT IN (?)", (Object) null)).isEmpty();
+  }
 }
