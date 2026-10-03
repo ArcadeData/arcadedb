@@ -218,4 +218,23 @@ class Issue9112ExistingRecordsConstraintsTest extends TestHelper {
     database.command("sql", "CREATE PROPERTY T.s STRING");
     assertThat(hasProperty("T", "s")).isTrue();
   }
+
+  @Test
+  void createPropertyIfNotExistsOverExistingDataIsANoOp() {
+    database.command("sql", "CREATE DOCUMENT TYPE T");
+    database.command("sql", "CREATE PROPERTY T.v INTEGER");
+    insert("T", "v = 1");
+    database.command("sql", "CREATE PROPERTY T.v IF NOT EXISTS STRING");
+    assertThat(database.getSchema().getType("T").getProperty("v").getType().name()).isEqualTo("INTEGER");
+  }
+
+  @Test
+  void alterPropertyOnAParentTypeSeesViolatingSubtypeRecords() {
+    database.command("sql", "CREATE DOCUMENT TYPE P");
+    database.command("sql", "CREATE PROPERTY P.v INTEGER");
+    database.command("sql", "CREATE DOCUMENT TYPE C EXTENDS P");
+    insert("C", "v = 5");
+    assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY P.v MIN 10")).isInstanceOf(CommandExecutionException.class);
+    assertThat(database.getSchema().getType("P").getProperty("v").getMin()).isNull();
+  }
 }

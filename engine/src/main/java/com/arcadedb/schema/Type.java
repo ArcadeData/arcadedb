@@ -475,12 +475,12 @@ public enum Type {
     if (value instanceof Map<?, ?> sourceMap && Map.class.isAssignableFrom(targetClass)) {
       final Map<Object, Object> result = new LinkedHashMap<>(sourceMap.size());
       for (final Map.Entry<?, ?> entry : sourceMap.entrySet())
-        result.put(entry.getKey(), coerceScalarItem(database, entry.getValue(), ofClass));
+        result.put(entry.getKey(), coerceScalarItem(database, entry.getValue(), ofClass, ofType));
       return result;
     } else if (value instanceof Collection<?> sourceCollection && List.class.isAssignableFrom(targetClass)) {
       final List<Object> result = new ArrayList<>(sourceCollection.size());
       for (final Object item : sourceCollection)
-        result.add(coerceScalarItem(database, item, ofClass));
+        result.add(coerceScalarItem(database, item, ofClass, ofType));
       return result;
     }
 
@@ -503,13 +503,16 @@ public enum Type {
     return this == DATE || this == DATETIME || this == DATETIME_SECOND || this == DATETIME_MICROS || this == DATETIME_NANOS;
   }
 
-  private static Object coerceScalarItem(final Database database, final Object item, final Class<?> ofClass) {
+  private static Object coerceScalarItem(final Database database, final Object item, final Class<?> ofClass,
+      final Type ofType) {
     if (item == null)
       return null;
 
     // Only coerce plain scalar values; leave nested documents/collections/links to the validation layer.
     if (item instanceof Number || item instanceof Boolean || item instanceof CharSequence || item instanceof Character
-        || isDateValue(item))
+        // a date value is only coerced towards a date type: in a LIST OF STRING / INTEGER it stays what it is, for the
+        // validator to refuse (#9111)
+        || ofType.isDateOrDateTime() && isDateValue(item))
       return convert(database, item, ofClass, null);
 
     return item;
