@@ -181,4 +181,38 @@ class Issue8979NullComparisonsThreeValuedTest extends TestHelper {
       assertThat(rs.next().<Number>getProperty("n").intValue()).isEqualTo(2);
     }
   }
+
+  @Test
+  void nullOperandsAgreeWithTheScanOnEveryIndexStrategy() {
+    final String[] wheres = { "k = null", "k <> null", "k >= nothing", "k <= nothing", "k > nothing", "k < nothing", "k <> 5",
+        "NOT (k = 5)", "k < 5", "k <= 5", "k >= 1" };
+    database.command("sql", "CREATE VERTEX TYPE Scan");
+    database.command("sql", "CREATE PROPERTY Scan.k INTEGER");
+    database.command("sql", "CREATE VERTEX TYPE IdxSkip");
+    database.command("sql", "CREATE PROPERTY IdxSkip.k INTEGER");
+    database.command("sql", "CREATE INDEX ON IdxSkip (k) NOTUNIQUE");
+    database.command("sql", "CREATE VERTEX TYPE IdxNull");
+    database.command("sql", "CREATE PROPERTY IdxNull.k INTEGER");
+    database.command("sql", "CREATE INDEX ON IdxNull (k) NOTUNIQUE NULL_STRATEGY INDEX");
+    database.transaction(() -> {
+      for (final String type : new String[] { "Scan", "IdxSkip", "IdxNull" }) {
+        database.newVertex(type).set("name", "one", "k", 1).save();
+        database.newVertex(type).set("name", "five", "k", 5).save();
+        database.newVertex(type).set("name", "null", "k", null).save();
+        database.newVertex(type).set("name", "missing").save();
+      }
+    });
+    for (final String where : wheres)
+      for (final String type : new String[] { "IdxSkip", "IdxNull" })
+        assertThat(namesOf(type, where)).as(type + " WHERE " + where).isEqualTo(namesOf("Scan", where));
+  }
+
+  private List<String> namesOf(final String type, final String where) {
+    final List<String> got = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", "SELECT name FROM " + type + " WHERE " + where + " ORDER BY name")) {
+      while (rs.hasNext())
+        got.add(rs.next().getProperty("name"));
+    }
+    return got;
+  }
 }

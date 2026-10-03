@@ -1946,14 +1946,17 @@ public enum Type {
    * scalars do (issue #8977). The keys of a map are kept as they are, they are rarely numbers. A list and an object array
    * key as lists, a set as a set (it compares without order), a map as a map. A primitive array (a vector, a byte buffer)
    * is wrapped by content without boxing its elements, and a list, set or map that holds no number, collection, map or
-   * array is returned as it is, so the common case copies nothing. A scalar costs one extra type check over
-   * {@link #normalizeNumberForKey}.
+   * array is returned as it is, so the common case copies nothing, and the returned collection is then the caller's own instance, which
+   * the key must not outlive a mutation of. A String returns at once; a list of numbers (an embedding) is copied and boxed, so
+   * DISTINCT or GROUP BY over such a column allocates per row.
    *
    * @param value the value to normalise (may be {@code null})
    *
    * @return the canonical key for the value
    */
   public static Object normalizeForKey(final Object value) {
+    if (value instanceof String)
+      return value;
     if (value == null || value instanceof Number)
       return normalizeNumberForKey(value);
     if (value instanceof Set<?> set) {
