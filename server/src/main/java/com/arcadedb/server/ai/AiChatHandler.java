@@ -509,6 +509,8 @@ public class AiChatHandler extends AbstractServerHttpHandler {
       final JSONObject gatewayLike = new JSONObject().put("response", answer.response());
       if (answer.commands().length() > 0)
         gatewayLike.put("commands", answer.commands());
+      if (answer.charts().length() > 0)
+        gatewayLike.put("charts", answer.charts());
       return buildResponse(gatewayLike, chat, messages, username);
     }
 
@@ -540,6 +542,8 @@ public class AiChatHandler extends AbstractServerHttpHandler {
       final JSONObject done = new JSONObject().put("type", "done").put("response", answer.response()).put("chatId", chatId);
       if (answer.commands().length() > 0)
         done.put("commands", answer.commands());
+      if (answer.charts().length() > 0)
+        done.put("charts", answer.charts());
       if (answer.usage().length() > 0)
         done.put("usage", answer.usage());
 
@@ -548,6 +552,8 @@ public class AiChatHandler extends AbstractServerHttpHandler {
           .put("timestamp", Instant.now().toString());
       if (answer.commands().length() > 0)
         assistantMsg.put("commands", answer.commands());
+      if (answer.charts().length() > 0)
+        assistantMsg.put("charts", answer.charts());
       messages.put(assistantMsg);
       chat.put("messages", messages);
       chat.put("updated", Instant.now().toString());
@@ -701,6 +707,9 @@ public class AiChatHandler extends AbstractServerHttpHandler {
     final JSONArray commands = gatewayResponse.getJSONArray("commands", null);
     if (commands != null && commands.length() > 0)
       assistantMsg.put("commands", commands);
+    final JSONArray charts = AiCharts.clean(gatewayResponse.getJSONArray("charts", null));
+    if (charts.length() > 0)
+      assistantMsg.put("charts", charts);
 
     messages.put(assistantMsg);
 
@@ -715,6 +724,8 @@ public class AiChatHandler extends AbstractServerHttpHandler {
     result.put("response", gatewayResponse.getString("response", ""));
     if (commands != null && commands.length() > 0)
       result.put("commands", commands);
+    if (charts.length() > 0)
+      result.put("charts", charts);
 
     final JSONArray toolCalls = gatewayResponse.getJSONArray("toolCalls", null);
     if (toolCalls != null && toolCalls.length() > 0)

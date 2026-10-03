@@ -62,7 +62,7 @@ public class AiPortalChat {
   }
 
   /** The final answer. */
-  public record Answer(String response, JSONArray commands, JSONObject usage) {
+  public record Answer(String response, JSONArray commands, JSONArray charts, JSONObject usage) {
   }
 
   private final AiPortalClient client;
@@ -112,7 +112,7 @@ public class AiPortalChat {
 
       final JSONArray toolCalls = result.getJSONArray("toolCalls", new JSONArray());
       last = new Answer(result.getString("response", ""), result.getJSONArray("commands", new JSONArray()),
-          result.getJSONObject("usage", new JSONObject()));
+          AiCharts.clean(result.getJSONArray("charts", null)), result.getJSONObject("usage", new JSONObject()));
       // Out of rounds, or the next turn would carry more results than the portal takes: the answer so far is the answer
       if (toolCalls.length() == 0 || dispatcher == null || round == MAX_ROUNDS
           || toolResults.length() + toolCalls.length() > MAX_TOOL_RESULT_ENTRIES)
@@ -146,7 +146,7 @@ public class AiPortalChat {
     return last;
   }
 
-  /** Reads one turn to its end. @return the {@code result} event of the portal: {response, commands, toolCalls, usage} */
+  /** Reads one turn to its end. @return the {@code result} event of the portal: {response, commands, charts, toolCalls, usage} */
   private JSONObject readTurn(final String turnId, final Sink sink) throws IOException {
     JSONObject result = null;
     String refusedCode = null;
