@@ -19,10 +19,12 @@
 package com.arcadedb.mongo;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Database;
 import com.mongodb.MongoClient;
 import com.mongodb.MongoClientOptions;
 import com.mongodb.MongoCredential;
 import com.mongodb.ServerAddress;
+import com.mongodb.MongoCommandException;
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.model.UpdateOptions;
 import org.bson.BsonRegularExpression;
@@ -41,7 +43,11 @@ import java.math.BigDecimal;
 import java.util.List;
 
 import static com.mongodb.client.model.Filters.eq;
+import static com.mongodb.client.model.Filters.gt;
 import static com.mongodb.client.model.Filters.in;
+import static com.mongodb.client.model.Filters.lt;
+import static com.mongodb.client.model.Filters.or;
+import static com.mongodb.client.model.Updates.inc;
 import static com.mongodb.client.model.Updates.set;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -166,21 +172,22 @@ public class MongoDBBsonTypesRoundTripTest extends BaseMongoServerTest {
 
   @Test
   void nanDecimalIsRefusedNotDropped() {
-    assertThatThrownBy(() -> collection.insertOne(new Document("_id", 14).append("v", Decimal128.NaN))).isInstanceOf(Exception.class);
+    assertThatThrownBy(() -> collection.insertOne(new Document("_id", 14).append("v", Decimal128.NaN))).isInstanceOf(MongoCommandException.class);
     assertThat(collection.find(eq("_id", 14)).first()).isNull();
   }
 
+  // the Java driver refuses a $-prefixed field name itself; the server-side check is covered by MongoBsonValuesTest
   @Test
   void clientCannotUseTheReservedTag() {
     assertThatThrownBy(() -> collection.insertOne(new Document("_id", 15).append("v", new Document("$bson", "timestamp"))))
-        .isInstanceOf(Exception.class);
+        .isInstanceOf(IllegalArgumentException.class);
     assertThat(collection.find(eq("_id", 15)).first()).isNull();
   }
 
   @Test
   void refusalLeavesNoOpenTransaction() {
     assertThatThrownBy(() -> collection.insertOne(new Document("_id", 16).append("v", Decimal128.POSITIVE_INFINITY)))
-        .isInstanceOf(Exception.class);
+        .isInstanceOf(MongoCommandException.class);
     collection.insertOne(new Document("_id", 17).append("v", 1));
     assertThat(collection.find(eq("_id", 17)).first()).isNotNull();
     assertThat(collection.find(eq("_id", 16)).first()).isNull();
@@ -190,7 +197,7 @@ public class MongoDBBsonTypesRoundTripTest extends BaseMongoServerTest {
   void reservedTagIsRefusedByUpdateToo() {
     collection.insertOne(new Document("_id", 18).append("x", 1));
     assertThatThrownBy(() -> collection.updateOne(eq("_id", 18), set("v", new Document("$bson", "timestamp").append("value", 5L))))
-        .isInstanceOf(Exception.class);
+        .isInstanceOf(MongoCommandException.class);
     assertThat(collection.find(eq("_id", 18)).first().containsKey("v")).isFalse();
   }
 
@@ -209,7 +216,7 @@ public class MongoDBBsonTypesRoundTripTest extends BaseMongoServerTest {
 
   @Test
   void decimalWiderThanDecimal128DoesNotFailTheRead() {
-    final com.arcadedb.database.Database db = getServer(0).getDatabase(getDatabaseName());
+    final Database db = getServer(0).getDatabase(getDatabaseName());
     db.transaction(() -> db.newDocument("bson").set("_id", 30).set("v", new BigDecimal("1234567890123456789012345678901234567890.5")).save());
     final Document back = collection.find(eq("_id", 30)).first();
     assertThat(back).isNotNull();
@@ -226,12 +233,45 @@ public class MongoDBBsonTypesRoundTripTest extends BaseMongoServerTest {
   @Test
   void incOnDecimalFieldKeepsPrecision() {
     collection.insertOne(new Document("_id", 34).append("v", new Decimal128(new BigDecimal("0.1"))));
-    collection.updateOne(eq("_id", 34), com.mongodb.client.model.Updates.inc("v", new Decimal128(new BigDecimal("0.2"))));
+    collection.updateOne(eq("_id", 34), inc("v", new Decimal128(new BigDecimal("0.2"))));
     assertThat(collection.find(eq("_id", 34)).first().get("v")).isEqualTo(new Decimal128(new BigDecimal("0.3")));
   }
 
   @Test
   void reservedTagIsRefusedWhateverItsValueType() {
-    assertThatThrownBy(() -> collection.insertOne(new Document("_id", 35).append("v", new Document("$bson", 1)))).isInstanceOf(Exception.class);
+    assertThatThrownBy(() -> collection.insertOne(new Document("_id", 35).append("v", new Document("$bson", 1)))).isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  void upsertIncOnMissingFieldStoresDecimal() {
+    collection.updateOne(eq("_id", 40), inc("v", new Decimal128(new BigDecimal("2.5"))), new UpdateOptions().upsert(true));
+    assertThat(collection.find(eq("_id", 40)).first().get("v")).isEqualTo(new Decimal128(new BigDecimal("2.5")));
+  }
+
+  @Test
+  void upsertIncOnExistingDecimalKeepsPrecision() {
+    collection.insertOne(new Document("_id", 41).append("v", new Decimal128(new BigDecimal("0.1"))));
+    collection.updateOne(eq("_id", 41), inc("v", new Decimal128(new BigDecimal("0.2"))), new UpdateOptions().upsert(true));
+    assertThat(collection.find(eq("_id", 41)).first().get("v")).isEqualTo(new Decimal128(new BigDecimal("0.3")));
+  }
+
+  @Test
+  void rangeFilterOnDecimalField() {
+    collection.insertOne(new Document("_id", 42).append("v", new Decimal128(new BigDecimal("1.5"))));
+    collection.insertOne(new Document("_id", 43).append("v", new Decimal128(new BigDecimal("9.5"))));
+    assertThat(collection.find(gt("v", new Decimal128(new BigDecimal("5")))).first().get("_id")).isEqualTo(43);
+    assertThat(collection.find(lt("v", 5)).first().get("_id")).isEqualTo(42);
+  }
+
+  @Test
+  void orFilterContainingTaggedValues() {
+    collection.insertOne(new Document("_id", 44).append("v", new BsonTimestamp(1, 1)));
+    collection.insertOne(new Document("_id", 45).append("v", new MaxKey()));
+    assertThat(collection.find(or(eq("v", new BsonTimestamp(1, 1)), eq("v", new MinKey()))).first().get("_id")).isEqualTo(44);
+  }
+
+  @Test
+  void regexWithoutOptionsRoundTrips() {
+    assertThat(roundTrip(46, new BsonRegularExpression("abc"))).isEqualTo(new BsonRegularExpression("abc"));
   }
 }

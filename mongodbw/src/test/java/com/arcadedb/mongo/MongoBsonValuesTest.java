@@ -20,6 +20,7 @@ package com.arcadedb.mongo;
 
 import de.bwaldvogel.mongo.bson.BsonTimestamp;
 import de.bwaldvogel.mongo.bson.LegacyUUID;
+import de.bwaldvogel.mongo.exception.ErrorCode;
 import de.bwaldvogel.mongo.exception.MongoServerError;
 import org.junit.jupiter.api.Test;
 
@@ -70,6 +71,21 @@ class MongoBsonValuesTest {
 
   @Test
   void unsupportedTypeIsRefused() {
-    assertThatThrownBy(() -> MongoBsonValues.toStored(new Object())).isInstanceOf(MongoServerError.class);
+    assertThatThrownBy(() -> MongoBsonValues.toStored(new Object())).isInstanceOf(MongoServerError.class)
+        .extracting(e -> ((MongoServerError) e).getCode()).isEqualTo(ErrorCode.BadValue.getValue());
+  }
+
+  @Test
+  void reservedTagIsRefusedWhateverItsValueType() {
+    final Map<String, Object> stringTag = new LinkedHashMap<>();
+    stringTag.put(MongoBsonValues.TAG, "timestamp");
+    final Map<String, Object> numberTag = new LinkedHashMap<>();
+    numberTag.put(MongoBsonValues.TAG, 1);
+    final Map<String, Object> nested = new LinkedHashMap<>();
+    nested.put("a", stringTag);
+
+    assertThatThrownBy(() -> MongoBsonValues.toStored(stringTag)).isInstanceOf(MongoServerError.class);
+    assertThatThrownBy(() -> MongoBsonValues.toStored(numberTag)).isInstanceOf(MongoServerError.class);
+    assertThatThrownBy(() -> MongoBsonValues.toStored(nested)).isInstanceOf(MongoServerError.class);
   }
 }

@@ -44,8 +44,8 @@ import de.bwaldvogel.mongo.backend.DatabaseResolver;
 import de.bwaldvogel.mongo.backend.QueryResult;
 import de.bwaldvogel.mongo.backend.Utils;
 import de.bwaldvogel.mongo.backend.aggregation.Aggregation;
-import de.bwaldvogel.mongo.bson.Document;
 import de.bwaldvogel.mongo.bson.Decimal128;
+import de.bwaldvogel.mongo.bson.Document;
 import de.bwaldvogel.mongo.bson.ObjectId;
 import de.bwaldvogel.mongo.exception.ErrorCode;
 import de.bwaldvogel.mongo.exception.MongoServerError;
@@ -633,12 +633,12 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
             final Object eqValue = opDoc.get("$eq");
             if ("_id".equals(field) && eqValue instanceof ObjectId)
               idIsObjectId = true;
-            record.set(field, normalizeIdValue(eqValue));
+            record.set(field, MongoBsonValues.toStored(eqValue));
           }
         } else {
           if ("_id".equals(field) && value instanceof ObjectId)
             idIsObjectId = true;
-          record.set(field, normalizeIdValue(value));
+          record.set(field, MongoBsonValues.toStored(value));
         }
       }
 
@@ -650,7 +650,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         // replacement's own _id is some other type.
         if ("_id".equals(entry.getKey()))
           idIsObjectId = value instanceof ObjectId;
-        record.set(entry.getKey(), normalizeIdValue(value));
+        record.set(entry.getKey(), MongoBsonValues.toStored(value));
       }
     } else {
       final Boolean setIdIsObjectId = applyOperatorsToDocument(record, u);
@@ -669,14 +669,6 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
     final Object id = record.get("_id");
     return idIsObjectId && id instanceof String hex ? new ObjectId(hex) : id;
-  }
-
-  /**
-   * The filter seeding loop copies values verbatim; an {@code ObjectId}-typed filter value (e.g. {@code eq("_id", objectId)})
-   * must be normalized to its hex string, matching how {@code insertDocuments} and {@code buildValue} store an ObjectId.
-   */
-  private static Object normalizeIdValue(final Object value) {
-    return MongoBsonValues.toStored(value);
   }
 
   /**
@@ -699,7 +691,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
           final Object value = f.getValue();
           if ("_id".equals(f.getKey()))
             idIsObjectId = value instanceof ObjectId;
-          record.set(f.getKey(), normalizeIdValue(value));
+          record.set(f.getKey(), MongoBsonValues.toStored(value));
         }
       }
       case "$unset" -> {
@@ -711,7 +703,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
           final Number current = (Number) record.get(f.getKey());
           final Number delta = (Number) f.getValue();
           if (current == null)
-            record.set(f.getKey(), delta);
+            record.set(f.getKey(), MongoBsonValues.toStored(delta));
           else if (current instanceof BigDecimal || delta instanceof Decimal128)
             record.set(f.getKey(), toBigDecimal(current).add(toBigDecimal(delta)));
           else
@@ -729,6 +721,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       return decimal;
     if (number instanceof Decimal128 decimal)
       return (BigDecimal) MongoBsonValues.toStored(decimal);
+    if (number instanceof Long || number instanceof Integer || number instanceof Short || number instanceof Byte)
+      return BigDecimal.valueOf(number.longValue());
     return BigDecimal.valueOf(number.doubleValue());
   }
 
