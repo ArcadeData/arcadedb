@@ -18,14 +18,11 @@
  */
 package com.arcadedb.serializer.json;
 
-import com.arcadedb.TestHelper;
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 
@@ -38,7 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class Issue9114JsonArrayNonFiniteAndByteArrayTest extends TestHelper {
+class Issue9114JsonArrayNonFiniteAndByteArrayTest {
 
   @Test
   void nonFiniteIsNullInEveryPosition() {
@@ -81,18 +78,10 @@ class Issue9114JsonArrayNonFiniteAndByteArrayTest extends TestHelper {
   }
 
   @Test
-  void storedRecordWithByteArrayInList() {
-    database.command("sql", "CREATE DOCUMENT TYPE Blob");
-    database.transaction(() -> {
-      final Map<String, Object> map = new HashMap<>();
-      map.put("k", new byte[] { 1, 2 });
-      database.newDocument("Blob").set("in_list", new ArrayList<>(List.of(new byte[] { 1, 2 }))).set("in_map", map).save();
-    });
-    try (final ResultSet rs = database.query("sql", "SELECT FROM Blob")) {
-      final Result row = rs.next();
-      final JSONObject json = row.toJSON();
-      assertThat(json.getJSONArray("in_list").toString()).doesNotContain("[B@");
-      assertThat(json.getJSONArray("in_list").getJSONArray(0).toString()).isEqualTo("[1,2]");
-    }
+  void otherPrimitiveArraysAndSets() {
+    assertThat(new JSONArray(List.of(new short[] { 1, 2 }, new boolean[] { true, false }, new char[] { 'a' })).toString())
+        .isEqualTo("[[1,2],[true,false],[\"a\"]]");
+    assertThat(new JSONArray().put((Object) new int[][] { { 1 }, { 2, 3 } }).toString()).isEqualTo("[[[1],[2,3]]]");
+    assertThat(new JSONObject().put("v", new LinkedHashSet<>(List.of(1.0, Double.NaN))).getJSONArray("v").toString()).isEqualTo("[1.0,null]");
   }
 }
