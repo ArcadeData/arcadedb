@@ -319,4 +319,13 @@ public class MongoDBBsonTypesRoundTripTest extends BaseMongoServerTest {
     collection.updateOne(eq("_id", 61), set("ref", oid));
     assertThat(collection.find(eq("_id", 61)).first().get("ref")).isEqualTo(oid);
   }
+
+  @Test
+  void filterMatchesAnObjectIdStoredAsHexBeforeTagging() {
+    final ObjectId oid = new ObjectId("507f1f77bcf86cd799439013");
+    final Database db = getServer(0).getDatabase(getDatabaseName());
+    db.transaction(() -> db.newDocument("bson").set("_id", 62).set("ref", oid.toHexString()).save());
+    assertThat(collection.find(eq("ref", oid)).first().get("_id")).isEqualTo(62);
+    assertThat(collection.find(in("ref", List.of(oid))).first().get("_id")).isEqualTo(62);
+  }
 }

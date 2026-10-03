@@ -58,6 +58,14 @@ public class MongoDBToSqlTranslator {
           buildOr(buffer, params, list);
         } else
           throw new IllegalArgumentException("Invalid operator " + key);
+      } else if (value instanceof ObjectId objectId && !"_id".equals(key)) {
+        // data stored before ObjectIds were tagged holds the bare hex string, so match both forms
+        final String field = quoteFieldPath(entry.getKey());
+        buffer.append('(').append(field).append(" = ");
+        buildValue(buffer, params, objectId);
+        buffer.append(" OR ").append(field).append(" = ");
+        bindStored(buffer, params, objectId.getHexData());
+        buffer.append(')');
       } else {
         buffer.append(quoteFieldPath(entry.getKey()));
         buildEquality(buffer, params, true, value);
@@ -212,8 +220,12 @@ public class MongoDBToSqlTranslator {
     Collection<?> normalized = coll;
     if (needsConversion) {
       final List<Object> converted = new ArrayList<>(coll.size());
-      for (final Object element : coll)
+      for (final Object element : coll) {
         converted.add(MongoBsonValues.toBound(element));
+        // a non-_id ObjectId also matches the bare hex string stored before ObjectIds were tagged
+        if (element instanceof ObjectId objectId)
+          converted.add(objectId.getHexData());
+      }
       normalized = converted;
     }
 
