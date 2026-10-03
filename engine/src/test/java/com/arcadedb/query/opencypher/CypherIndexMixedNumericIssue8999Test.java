@@ -126,7 +126,7 @@ class CypherIndexMixedNumericIssue8999Test {
     assertThat(run("MATCH (n:B) WHERE n.id = 3 RETURN n.x AS x")).containsExactly("4.5");
     assertThat(run("MATCH (n:B) WHERE n.id = 4 RETURN n.x AS x")).containsExactly("def");
     final Property declared = database.getSchema().getType("B").getPropertyIfExists("x");
-    assertThat(declared == null || declared.getType().name().equals("STRING")).isTrue();
+    assertThat(declared).isNull();
   }
 
   private List<List<String>> run(final String[] queries) {

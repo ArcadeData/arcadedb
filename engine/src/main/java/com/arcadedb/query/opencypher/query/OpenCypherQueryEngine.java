@@ -1070,6 +1070,10 @@ public class OpenCypherQueryEngine implements QueryEngine {
           return null;
         }
 
+        if (valueType == null)
+          // a class no type is registered for (a LocalDate, say): the values that follow must not settle the declaration
+          return null;
+
         if (settled == null) {
           settled = valueType;
           continue;
