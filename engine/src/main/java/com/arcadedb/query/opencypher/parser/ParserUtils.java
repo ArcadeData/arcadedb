@@ -19,6 +19,12 @@
 package com.arcadedb.query.opencypher.parser;
 
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.query.opencypher.InternalVariables;
+import com.arcadedb.query.opencypher.ast.BooleanExpression;
+import com.arcadedb.query.opencypher.ast.LabelCheckExpression;
+import com.arcadedb.query.opencypher.ast.LabelPredicate;
+import com.arcadedb.query.opencypher.ast.LogicalExpression;
+import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.grammar.Cypher25Parser;
 
 import org.antlr.v4.runtime.ParserRuleContext;
@@ -26,6 +32,7 @@ import org.antlr.v4.runtime.tree.ParseTree;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Utility methods for Cypher parser operations.
@@ -34,6 +41,9 @@ import java.util.List;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class ParserUtils {
+  // Numbers the internal variables newLabelExpressionVariable() hands out; global, see that method.
+  private static final AtomicLong LABEL_EXPRESSION_VARIABLE_COUNTER = new AtomicLong();
+
 
   /**
    * Strips backticks from an escaped symbolic name.
@@ -131,6 +141,137 @@ public class ParserUtils {
     // backtick-quoted label name is a character of that name and not an operator.
     return hasOperator(ctx, Cypher25Parser.LabelExpression4Context.class)
         && !hasOperator(ctx, Cypher25Parser.LabelExpression3Context.class);
+  }
+
+  /**
+   * Returns the full label expression as a {@link LabelPredicate} tree when a label list plus the disjunction flag
+   * cannot say what it means, or {@code null} when they can.
+   * <p>
+   * {@link #extractLabels} and {@link #isLabelDisjunction} describe a plain conjunction ({@code :A:B}, {@code :A&B})
+   * and a plain disjunction ({@code :A|B}) exactly, and that is the form the planner turns into a label scan. A
+   * negation ({@code !A}), the wildcard ({@code %}) or a mix of {@code &} and {@code |} has no such description: read
+   * through those two methods alone it lost the operator without an error, so {@code (n:!A)} matched the {@code A}
+   * nodes (issue #8992). Every builder asks this first and evaluates the returned tree instead.
+   *
+   * @throws CommandParsingException when the expression combines a dynamic {@code $(...)} label with one of those
+   *                                 operators, which is not supported
+   */
+  public static LabelPredicate buildLabelPredicate(final Cypher25Parser.LabelExpressionContext ctx) {
+    if (ctx == null || isPlainLabelExpression(ctx))
+      return null;
+    return buildLabelPredicate(ctx.labelExpression4(), ctx);
+  }
+
+  /**
+   * Relationship-pattern form of {@link #buildLabelPredicate(Cypher25Parser.LabelExpressionContext)}. A relationship
+   * pattern's type list always means "any of these types", so a conjunction of types ({@code [r:R&S]}) has no
+   * description in it either: it used to match both {@code R} and {@code S} relationships, while a relationship has
+   * exactly one type and Neo4j matches none.
+   */
+  public static LabelPredicate buildRelationshipTypePredicate(final Cypher25Parser.LabelExpressionContext ctx) {
+    if (ctx == null)
+      return null;
+    if (isPlainLabelExpression(ctx) && !hasOperator(ctx, Cypher25Parser.LabelExpression3Context.class))
+      return null;
+    return buildLabelPredicate(ctx.labelExpression4(), ctx);
+  }
+
+  /**
+   * A fresh name for a pattern element the query left anonymous but whose label expression has to be evaluated as a
+   * predicate over it. The {@link InternalVariables#PREFIX} keeps it out of {@code RETURN *} and out of the scope
+   * checks; the counter is global because a subquery body is built by a builder of its own, and two clauses binding
+   * the same generated name would be joined on it.
+   */
+  public static String newLabelExpressionVariable() {
+    return InternalVariables.PREFIX + "lblexpr" + LABEL_EXPRESSION_VARIABLE_COUNTER.getAndIncrement();
+  }
+
+  /**
+   * The predicate a pattern element carries for a label expression {@link #buildLabelPredicate} returned, checked
+   * against the element bound to {@code variable}.
+   */
+  public static LabelCheckExpression labelCheckOn(final String variable, final LabelPredicate predicate,
+      final Cypher25Parser.LabelExpressionContext ctx) {
+    return new LabelCheckExpression(new VariableExpression(variable), predicate, variable + ctx.getText());
+  }
+
+  /** ANDs a pattern element's label check (may be null) with its inline WHERE predicate (may be null). */
+  public static BooleanExpression andLabelCheck(final BooleanExpression labelCheck, final BooleanExpression where) {
+    if (labelCheck == null)
+      return where;
+    if (where == null)
+      return labelCheck;
+    return new LogicalExpression(LogicalExpression.Operator.AND, labelCheck, where);
+  }
+
+  /**
+   * The variable-length expansion filters each hop on a type list only, so a relationship label expression that
+   * needs a predicate is refused there rather than run with its operators dropped (issue #9117 tracks support).
+   */
+  public static void rejectOnVariableLengthRelationship(final Cypher25Parser.LabelExpressionContext ctx) {
+    throw new CommandParsingException("UnexpectedSyntax: the label expression '" + ctx.getText()
+        + "' is not supported on a variable-length relationship yet: only a type or a '|' of types is");
+  }
+
+  private static boolean isPlainLabelExpression(final ParseTree node) {
+    if (!isFreeOfNegationAndWildcard(node))
+      return false;
+    return !(hasOperator(node, Cypher25Parser.LabelExpression4Context.class)
+        && hasOperator(node, Cypher25Parser.LabelExpression3Context.class));
+  }
+
+  private static boolean isFreeOfNegationAndWildcard(final ParseTree node) {
+    if (node instanceof Cypher25Parser.AnyLabelContext)
+      return false;
+    if (node instanceof Cypher25Parser.LabelExpression2Context le2 && !le2.EXCLAMATION_MARK().isEmpty())
+      return false;
+    if (node instanceof Cypher25Parser.DynamicLabelContext)
+      return true;
+    for (int i = 0; i < node.getChildCount(); i++)
+      if (!isFreeOfNegationAndWildcard(node.getChild(i)))
+        return false;
+    return true;
+  }
+
+  private static LabelPredicate buildLabelPredicate(final Cypher25Parser.LabelExpression4Context ctx,
+      final Cypher25Parser.LabelExpressionContext root) {
+    final List<Cypher25Parser.LabelExpression3Context> operands = ctx.labelExpression3();
+    if (operands.size() == 1)
+      return buildLabelPredicate(operands.getFirst(), root);
+    final LabelPredicate[] out = new LabelPredicate[operands.size()];
+    for (int i = 0; i < out.length; i++)
+      out[i] = buildLabelPredicate(operands.get(i), root);
+    return new LabelPredicate.Or(out);
+  }
+
+  private static LabelPredicate buildLabelPredicate(final Cypher25Parser.LabelExpression3Context ctx,
+      final Cypher25Parser.LabelExpressionContext root) {
+    final List<Cypher25Parser.LabelExpression2Context> operands = ctx.labelExpression2();
+    if (operands.size() == 1)
+      return buildLabelPredicate(operands.getFirst(), root);
+    final LabelPredicate[] out = new LabelPredicate[operands.size()];
+    for (int i = 0; i < out.length; i++)
+      out[i] = buildLabelPredicate(operands.get(i), root);
+    return new LabelPredicate.And(out);
+  }
+
+  private static LabelPredicate buildLabelPredicate(final Cypher25Parser.LabelExpression2Context ctx,
+      final Cypher25Parser.LabelExpressionContext root) {
+    final Cypher25Parser.LabelExpression1Context inner = ctx.labelExpression1();
+    LabelPredicate result;
+    if (inner instanceof Cypher25Parser.ParenthesizedLabelExpressionContext parenthesized)
+      result = buildLabelPredicate(parenthesized.labelExpression4(), root);
+    else if (inner instanceof Cypher25Parser.AnyLabelContext)
+      result = LabelPredicate.AnyLabel.INSTANCE;
+    else if (inner instanceof Cypher25Parser.LabelNameContext)
+      result = new LabelPredicate.Name(stripBackticks(inner.getText()));
+    else
+      throw new CommandParsingException("UnexpectedSyntax: a dynamic label $(...) cannot be combined with '!', '%' or a"
+          + " mix of '&' and '|' in the label expression '" + root.getText() + "'");
+    // '!!A' is A: only the parity of the marks matters.
+    if ((ctx.EXCLAMATION_MARK().size() & 1) == 1)
+      result = new LabelPredicate.Not(result);
+    return result;
   }
 
   /**

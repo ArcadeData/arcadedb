@@ -39,6 +39,7 @@ import com.arcadedb.query.opencypher.ast.InExpression;
 import com.arcadedb.query.opencypher.ast.IsNullExpression;
 import com.arcadedb.query.opencypher.ast.IsTypedExpression;
 import com.arcadedb.query.opencypher.ast.LabelCheckExpression;
+import com.arcadedb.query.opencypher.ast.LabelPredicate;
 import com.arcadedb.query.opencypher.ast.ListExpression;
 import com.arcadedb.query.opencypher.ast.LiteralExpression;
 import com.arcadedb.query.opencypher.ast.LoadCSVClause;
@@ -99,6 +100,10 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
   // Delegate expression parsing to a dedicated builder
   private final CypherExpressionBuilder expressionBuilder = new CypherExpressionBuilder();
+
+  // The write clause (CREATE or MERGE) whose pattern is being visited, null in every other position. A label
+  // expression beyond a plain conjunction says which labels a node MAY have, which only a read can answer.
+  private String writeClause;
 
   // AST rewriter for query canonicalization (applied after parsing)
   private static final ExpressionRewriter AST_REWRITER = new CompositeRewriter(
@@ -576,7 +581,14 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
   @Override
   public CreateClause visitCreateClause(final Cypher25Parser.CreateClauseContext ctx) {
-    final List<PathPattern> pathPatterns = visitPatternList(ctx.patternList());
+    final String previous = writeClause;
+    writeClause = "CREATE";
+    final List<PathPattern> pathPatterns;
+    try {
+      pathPatterns = visitPatternList(ctx.patternList());
+    } finally {
+      writeClause = previous;
+    }
     return new CreateClause(pathPatterns);
   }
 
@@ -837,7 +849,14 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
   @Override
   public MergeClause visitMergeClause(final Cypher25Parser.MergeClauseContext ctx) {
-    final PathPattern pathPattern = visitPattern(ctx.pattern());
+    final String previous = writeClause;
+    writeClause = "MERGE";
+    final PathPattern pathPattern;
+    try {
+      pathPattern = visitPattern(ctx.pattern());
+    } finally {
+      writeClause = previous;
+    }
     validateNoParameterProperties(List.of(pathPattern), "MERGE");
 
     // Parse ON CREATE SET and ON MATCH SET actions
@@ -1588,6 +1607,10 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
   private LabelCheckExpression parseLabelCheckExpression(final Expression variableExpr,
       final Cypher25Parser.LabelExpressionContext labelExprCtx,
       final String text) {
+    // A negation, the wildcard or a mix of '&' and '|' is evaluated as the tree it is (issue #8992).
+    final LabelPredicate predicate = ParserUtils.buildLabelPredicate(labelExprCtx);
+    if (predicate != null)
+      return new LabelCheckExpression(variableExpr, predicate, text);
     // Same extraction the node pattern uses, so `n:`Event Message`` in a WHERE resolves the very
     // label that (n:`Event Message`) resolves in a pattern - backticks stripped, quoted names kept
     // whole. Reading them off the text instead left the backticks on the label, which made the
@@ -1938,8 +1961,18 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       variable = stripBackticks(ctx.variable().getText());
     }
 
-    // Label expression (static labels + Cypher 25 dynamic $(expression) labels)
-    if (ctx.labelExpression() != null) {
+    // A negation, the wildcard or a mix of '&' and '|': the pattern keeps the labels every match must carry, so the
+    // planner can still pick a label scan, and the whole expression is checked as a predicate on the node (#8992).
+    BooleanExpression labelCheck = null;
+    final LabelPredicate labelPredicate = ParserUtils.buildLabelPredicate(ctx.labelExpression());
+    if (labelPredicate != null) {
+      rejectLabelExpressionInWriteClause(ctx.labelExpression());
+      labels = labelPredicate.requiredLabels();
+      if (variable == null)
+        variable = ParserUtils.newLabelExpressionVariable();
+      labelCheck = ParserUtils.labelCheckOn(variable, labelPredicate, ctx.labelExpression());
+    } else if (ctx.labelExpression() != null) {
+      // Label expression (static labels + Cypher 25 dynamic $(expression) labels)
       labels = extractLabels(ctx.labelExpression());
       labelDisjunction = ParserUtils.isLabelDisjunction(ctx.labelExpression());
       final List<Cypher25Parser.ExpressionContext> dynCtxs = ParserUtils.collectDynamicLabelContexts(ctx.labelExpression());
@@ -1964,6 +1997,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     BooleanExpression whereExpression = null;
     if (ctx.expression() != null)
       whereExpression = parseBooleanExpression(ctx.expression());
+    whereExpression = ParserUtils.andLabelCheck(labelCheck, whereExpression);
 
     return new NodePattern(variable, labels, dynamicLabels, properties, propertiesParameterName, labelDisjunction,
         whereExpression);
@@ -1981,8 +2015,20 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       variable = stripBackticks(ctx.variable().getText());
     }
 
-    // Label expression (relationship types)
-    if (ctx.labelExpression() != null) {
+    // Label expression (relationship types). A negation, the wildcard or a mix of '&' and '|' is checked as a
+    // predicate on the relationship, keeping as its type filter only a type every match must have (#8992).
+    BooleanExpression labelCheck = null;
+    final LabelPredicate labelPredicate = ParserUtils.buildRelationshipTypePredicate(ctx.labelExpression());
+    if (labelPredicate != null) {
+      rejectLabelExpressionInWriteClause(ctx.labelExpression());
+      if (ctx.pathLength() != null)
+        ParserUtils.rejectOnVariableLengthRelationship(ctx.labelExpression());
+      final List<String> required = labelPredicate.requiredLabels();
+      types = required.isEmpty() ? null : required;
+      if (variable == null)
+        variable = ParserUtils.newLabelExpressionVariable();
+      labelCheck = ParserUtils.labelCheckOn(variable, labelPredicate, ctx.labelExpression());
+    } else if (ctx.labelExpression() != null) {
       types = extractLabels(ctx.labelExpression());
     }
 
@@ -2019,9 +2065,17 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     BooleanExpression whereExpression = null;
     if (ctx.expression() != null)
       whereExpression = parseBooleanExpression(ctx.expression());
+    whereExpression = ParserUtils.andLabelCheck(labelCheck, whereExpression);
 
     return new RelationshipPattern(variable, types, direction, properties, propertiesParameterName, minHops, maxHops,
         whereExpression);
+  }
+
+  private void rejectLabelExpressionInWriteClause(final Cypher25Parser.LabelExpressionContext ctx) {
+    if (writeClause != null)
+      throw new CommandParsingException("UnexpectedSyntax: the label expression '" + ctx.getText() + "' is not allowed in "
+          + writeClause + ", only in MATCH and in expressions: it says which labels an element MAY have, which is not "
+          + "something a write can act on");
   }
 
   public Map<String, Object> visitProperties(final Cypher25Parser.PropertiesContext ctx) {
