@@ -245,7 +245,7 @@ class Issue8486ForwardersHoldUnnamedLeaderRefusalTest {
   }
 
   @Test
-  void theHoldKeyFallsBackToTheIdReadBeforeTheDial() {
+  void theHoldKeyFallsBackToTheIdReadBeforeThenAfterTheDial() {
     assertThat(LeaderForwardContext.holdLeaderId("stable", "before", "after")).isEqualTo("stable");
     assertThat(LeaderForwardContext.holdLeaderId(null, "before", "after")).isEqualTo("before");
     // Issue #8925: no leader named before the dial, one named after it - the after id is the only one the forward has.
