@@ -1072,6 +1072,10 @@ public enum Type {
     }
   }
 
+  private static String forProperty(final Property property) {
+    return property != null ? " for property '" + property.getName() + "'" : "";
+  }
+
   private static InconvertibleValueException inconvertible(final Object value, final String targetType, final Property property) {
     return inconvertible(value, targetType, property, null);
   }
@@ -1082,7 +1086,7 @@ public enum Type {
     final String shown = value.getClass().isArray() || value instanceof Collection || value instanceof Map ? "" : "'" + value + "' ";
     return new InconvertibleValueException(
         "Value " + shown + "of type " + value.getClass().getSimpleName() + " cannot be converted to type " + targetType //
-            + (property != null ? " for property '" + property.getName() + "'" : ""), cause);
+            + forProperty(property), cause);
   }
 
   private static Number asNumber(final Object value, final String targetType, final Property property) {
@@ -1107,8 +1111,7 @@ public enum Type {
   private static boolean isZero(final Number number, final Property property) {
     if (isNaN(number))
       throw new IllegalArgumentException(
-          "Value '" + number + "' is NaN and cannot be converted to type BOOLEAN" //
-              + (property != null ? " for property '" + property.getName() + "'" : ""));
+          "Value '" + number + "' is NaN and cannot be converted to type BOOLEAN" + forProperty(property));
     return switch (number) {
       case BigDecimal bigDecimal -> bigDecimal.signum() == 0;
       case BigInteger bigInteger -> bigInteger.signum() == 0;
@@ -1118,21 +1121,23 @@ public enum Type {
     };
   }
 
-  /**
-   * The LONG counterpart of {@link #narrowToIntegral(Number, long, long, String, Property)}: LONG has no narrower range,
-   * but a {@link BigInteger}, a {@link BigDecimal}, a {@link Double} or a {@link Float} can still be outside the 64-bit
-   * one, where {@code longValue()} wraps (the first two) or saturates (the others) without a word (issue #9024).
-   */
   private static final BigDecimal LONG_MAX_DECIMAL = BigDecimal.valueOf(Long.MAX_VALUE);
   private static final BigDecimal LONG_MIN_DECIMAL = BigDecimal.valueOf(Long.MIN_VALUE);
   private static final BigInteger LONG_MAX_INTEGER = BigInteger.valueOf(Long.MAX_VALUE);
   private static final BigInteger LONG_MIN_INTEGER = BigInteger.valueOf(Long.MIN_VALUE);
 
+  /**
+   * The LONG counterpart of {@link #narrowToIntegral(Number, long, long, String, Property)}: LONG has no narrower range,
+   * but a {@link BigInteger}, a {@link BigDecimal}, a {@link Double} or a {@link Float} can still be outside the 64-bit
+   * one, where {@code longValue()} wraps (the first two) or saturates (the others) without a word (issue #9024).
+   * <p>
+   * The range is only enforced for a declared property: the plain public conversion (a getter, a query comparison, an
+   * index lookup by a literal) keeps clamping, as it always did.
+   */
   private static long narrowToLong(final Number value, final Property property) {
     if (isNaN(value))
       throw new IllegalArgumentException(
-          "Value '" + value + "' is NaN and cannot be converted to type LONG" //
-              + (property != null ? " for property '" + property.getName() + "'" : ""));
+          "Value '" + value + "' is NaN and cannot be converted to type LONG" + forProperty(property));
 
     final boolean outOfRange = switch (value) {
       case BigDecimal bigDecimal -> bigDecimal.compareTo(LONG_MAX_DECIMAL) > 0 || bigDecimal.compareTo(LONG_MIN_DECIMAL) < 0;
@@ -1142,10 +1147,10 @@ public enum Type {
       case Float floatValue -> floatValue >= 0x1p63f || floatValue < -0x1p63f;
       default -> false;
     };
-    if (outOfRange)
+    if (outOfRange && property != null)
       throw new IllegalArgumentException(
           "Value '" + value + "' is out of range for type LONG (" + Long.MIN_VALUE + " to " + Long.MAX_VALUE + ")" //
-              + (property != null ? " for property '" + property.getName() + "'" : ""));
+              + forProperty(property));
 
     return value.longValue();
   }
