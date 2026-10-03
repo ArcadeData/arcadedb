@@ -569,7 +569,7 @@ public enum Type {
       if (targetClass.equals(String.class)) {
         // An array's toString() is its class code and identity hash ("[B@72e34f77"): not the content, not stable, and
         // not reversible. Refuse it rather than store that (issue #9041).
-        if (valueClass.isArray())
+        if (property != null && valueClass.isArray())
           throw inconvertible(value, "STRING", property);
         return value.toString();
       }
@@ -710,7 +710,7 @@ public enum Type {
         if (value instanceof Short)
           return value;
         else if (value instanceof String string)
-          return Short.parseShort(string);
+          return string.isEmpty() && property == null ? 0 : Short.parseShort(string);
         else
           return narrowToIntegral(asNumber(value, "SHORT", property), Short.MIN_VALUE, Short.MAX_VALUE, "SHORT", property).shortValue();
 
@@ -718,7 +718,7 @@ public enum Type {
         if (value instanceof Integer)
           return value;
         else if (value instanceof String string)
-          return Integer.parseInt(string);
+          return string.isEmpty() && property == null ? 0 : Integer.parseInt(string);
         else
           return narrowToIntegral(asNumber(value, "INTEGER", property), Integer.MIN_VALUE, Integer.MAX_VALUE, "INTEGER", property).intValue();
 
@@ -726,7 +726,7 @@ public enum Type {
         if (value instanceof Long)
           return value;
         else if (value instanceof String string)
-          return Long.parseLong(string);
+          return string.isEmpty() && property == null ? 0L : Long.parseLong(string);
         else if (DateUtils.isDate(value))
           return DateUtils.dateTimeToTimestamp(value, ChronoUnit.MILLIS);
         else
@@ -736,7 +736,7 @@ public enum Type {
         if (value instanceof Float)
           return value;
         else if (value instanceof String string)
-          return Float.parseFloat(string);
+          return string.isEmpty() && property == null ? 0f : Float.parseFloat(string);
         else
           return asNumber(value, "FLOAT", property).floatValue();
 
@@ -745,13 +745,14 @@ public enum Type {
           return new BigDecimal(string);
         else if (value instanceof Number)
           return new BigDecimal(value.toString());
-        throw inconvertible(value, "DECIMAL", property);
+        if (property != null)
+          throw inconvertible(value, "DECIMAL", property);
 
       } else if (targetClass.equals(Double.TYPE) || targetClass.equals(Double.class)) {
         if (value instanceof Double)
           return value;
         else if (value instanceof String string)
-          return Double.parseDouble(string);
+          return string.isEmpty() && property == null ? 0d : Double.parseDouble(string);
         else if (value instanceof Float float1)
           // The primitive widening would carry the float's rounding error into the double; widenFloat re-reads its
           // decimal instead, and skips the round-trip where it provably cannot matter (issue #7609).
@@ -771,8 +772,9 @@ public enum Type {
         } else if (value instanceof Number number)
           // 0 is false and anything else is true, as documented: intValue() truncated 0.5 to 0 and kept only the low
           // 32 bits of a LONG, so 0.5 and 4294967296 were stored as false (issue #9027)
-          return !isZero(number);
-        throw inconvertible(value, "BOOLEAN", property);
+          return !isZero(number, property);
+        if (property != null)
+          throw inconvertible(value, "BOOLEAN", property);
 
       } else if (Set.class.isAssignableFrom(targetClass)) {
         // The caller specifically wants a Set.  If the value is a collection
@@ -835,6 +837,10 @@ public enum Type {
           return time.toLocalDate();
         else if (value instanceof Instant instant)
           return instant.atOffset(ZoneOffset.UTC).toLocalDate();
+        else if (value instanceof ZonedDateTime zoned)
+          return zoned.toInstant().atOffset(ZoneOffset.UTC).toLocalDate();
+        else if (value instanceof OffsetDateTime offset)
+          return offset.toInstant().atOffset(ZoneOffset.UTC).toLocalDate();
         else if (value instanceof Number number)
           return DateUtils.date(database, DateUtils.numberToEpochUnits(number), LocalDate.class);
         else if (value instanceof Date date)
@@ -868,6 +874,8 @@ public enum Type {
             return truncateToPropertyPrecision(time, property);
         } else if (value instanceof Number number) {
           return DateUtils.date(database, DateUtils.numberToEpochUnits(number), LocalDateTime.class);
+        } else if (value instanceof LocalDate date) {
+          return truncateToPropertyPrecision(date.atStartOfDay(), property);
         } else if (value instanceof Instant instant) {
           // the moment as the stored value reads back (UTC wall clock, as the Date and Number branches do), so an
           // equality lookup agrees with the ordering path and with the index key
@@ -883,6 +891,8 @@ public enum Type {
           return DateUtils.dateTime(database, calendar.getTimeInMillis(), ChronoUnit.MILLIS, LocalDateTime.class,
               property != null ? DateUtils.getPrecisionFromType(property.getType()) : ChronoUnit.MILLIS);
         else if (value instanceof String valueAsString) {
+          if (isEpochString(valueAsString))
+            return convert(database, Long.parseLong(valueAsString), targetClass, property);
           if (!FileUtils.isLong(valueAsString))
             // DateUtils.parseDateTime(), not a private copy of its fallback chain: this branch used to carry its own
             // and the two drifted apart, so a literal the bulk GraphBatch path accepted was rejected here (and vice
@@ -905,7 +915,15 @@ public enum Type {
         if (value instanceof ZonedDateTime time) {
           if (property != null)
             return truncateToPropertyPrecision(time, property);
-        } else if (value instanceof Number number)
+        } else if (value instanceof LocalDateTime local)
+          return truncateToPropertyPrecision(local.atZone(ZoneOffset.UTC), property);
+        else if (value instanceof LocalDate date)
+          return truncateToPropertyPrecision(date.atStartOfDay(ZoneOffset.UTC), property);
+        else if (value instanceof OffsetDateTime offset)
+          return truncateToPropertyPrecision(offset.toZonedDateTime(), property);
+        else if (value instanceof Instant instant)
+          return truncateToPropertyPrecision(instant.atZone(ZoneOffset.UTC), property);
+        else if (value instanceof Number number)
           return DateUtils.dateTime(database, DateUtils.numberToEpochUnits(number), ChronoUnit.MILLIS, ZonedDateTime.class,
               property != null ? DateUtils.getPrecisionFromType(property.getType()) : ChronoUnit.MILLIS);
         else if (value instanceof Date date)
@@ -915,6 +933,8 @@ public enum Type {
           return DateUtils.dateTime(database, calendar.getTimeInMillis(), ChronoUnit.MILLIS, ZonedDateTime.class,
               property != null ? DateUtils.getPrecisionFromType(property.getType()) : ChronoUnit.MILLIS);
         if (value instanceof String valueAsString) {
+          if (isEpochString(valueAsString))
+            return convert(database, Long.parseLong(valueAsString), targetClass, property);
           if (!FileUtils.isLong(valueAsString))
             // parseZonedDateTime keeps an offset the input carries rather than dropping it, so the same moment
             // denotes the same instant whether it arrives ISO- or space-separated, and anchors an offset-free input
@@ -940,6 +960,18 @@ public enum Type {
           return DateUtils.dateTime(database, calendar.getTimeInMillis(), ChronoUnit.MILLIS, Instant.class,
               property != null ? DateUtils.getPrecisionFromType(property.getType()) : ChronoUnit.MILLIS);
         }
+        case LocalDateTime local -> {
+          return truncateToPropertyPrecision(local.toInstant(ZoneOffset.UTC), property);
+        }
+        case LocalDate date -> {
+          return truncateToPropertyPrecision(date.atStartOfDay().toInstant(ZoneOffset.UTC), property);
+        }
+        case ZonedDateTime zoned -> {
+          return truncateToPropertyPrecision(zoned.toInstant(), property);
+        }
+        case OffsetDateTime offset -> {
+          return truncateToPropertyPrecision(offset.toInstant(), property);
+        }
         case String valueAsString -> {
           // This branch had no String case at all, so `arcadedb.dateTimeImplementation=java.time.Instant` left a
           // datetime literal in the record as the raw String it arrived as. It now goes through the same shared
@@ -950,6 +982,8 @@ public enum Type {
           // epoch count, so the three disagree about what a numeric string means for a datetime target. That
           // predates this issue and is left alone here rather than settled in passing - it is a question about
           // epoch semantics, not about which spellings parse, which is what #8090 is.
+          if (isEpochString(valueAsString))
+            return convert(database, Long.parseLong(valueAsString), targetClass, property);
           if (!FileUtils.isLong(valueAsString)) {
             // parseZonedDateTime, not parseDateTime().atZone(): an Instant IS an instant, so an offset the value
             // carries has to survive. The wall-clock chain drops it - deliberately, for LocalDateTime (issue #4125) -
@@ -975,7 +1009,9 @@ public enum Type {
                 result.add(RID.create(database, string));
               } catch (final Exception e) {
                 if (property != null)
-                  throw inconvertible(o, "LINK", property);
+                  throw inconvertible(o, "LINK", property, e);
+                LogManager.instance()
+                    .log(Type.class, Level.FINE, "Error in conversion of value '%s' to type '%s'", e, o, targetClass);
               }
             } else if (property != null)
               // a member that is no link cannot be dropped: the result would silently be a different value (issue #9015)
@@ -999,9 +1035,13 @@ public enum Type {
       // PASS THROUGH
       throw e;
     } catch (final ClassCastException e) {
-      // a value of a shape the target cannot take, reaching a cast the branches above did not guard: refuse, never
-      // answer NULL for a non-null input (issue #9014)
-      throw inconvertible(value, targetClass.getSimpleName(), property);
+      LogManager.instance().log(Type.class, Level.FINE, "Error in conversion of value '%s' to type '%s'", e, value, targetClass);
+      // a value of a shape the target cannot take, reaching a cast the branches above did not guard: a write refuses,
+      // never answering NULL for a non-null input (issue #9014). Without a declared property this is the plain public
+      // conversion, which keeps answering null for it.
+      if (property == null)
+        return null;
+      throw inconvertible(value, targetClass.getSimpleName(), property, e);
     } catch (final DateTimeException e) {
       // A date/time value that cannot be parsed must fail the write, not empty the column. This is the date/time
       // family's equivalent of the NumberFormatException the arm above already lets through, and it was the reason a
@@ -1032,9 +1072,9 @@ public enum Type {
 
     // No branch had a case for this value. For these targets the property can only hold an instance of the target, so
     // keeping the value as it came stores a type the index and the serializer cannot read back (issue #9015).
-    // A link is the exception: without a declared property this is the plain public conversion, which has always
-    // answered the original for a string that is no RID
-    if ((mustBeInstanceOfTarget(targetClass) || property != null && targetClass.equals(Identifiable.class))
+    // Without a declared property this is the plain public conversion (the BaseDocument getters, a query comparison),
+    // which has always answered the original value
+    if (property != null && (mustBeInstanceOfTarget(targetClass) || targetClass.equals(Identifiable.class))
         && !targetClass.isInstance(value))
       throw inconvertible(value, targetClass.getSimpleName(), property);
 
@@ -1048,20 +1088,30 @@ public enum Type {
    * behavior they always had for such a value, while a WRITE through {@code convert()} fails (issue #9110).
    */
   private static final class InconvertibleValueException extends IllegalArgumentException {
-    InconvertibleValueException(final String message) {
-      super(message);
+    InconvertibleValueException(final String message, final Throwable cause) {
+      super(message, cause);
     }
   }
 
   private static InconvertibleValueException inconvertible(final Object value, final String targetType, final Property property) {
+    return inconvertible(value, targetType, property, null);
+  }
+
+  private static InconvertibleValueException inconvertible(final Object value, final String targetType, final Property property,
+      final Throwable cause) {
+    // only the class of an array, a collection or a map: its text can be as large as the value, or just an identity hash
+    final String shown = value.getClass().isArray() || value instanceof Collection || value instanceof Map ? "" : "'" + value + "' ";
     return new InconvertibleValueException(
-        "Value '" + value + "' of type " + value.getClass().getSimpleName() + " cannot be converted to type " + targetType //
-            + (property != null ? " for property '" + property.getName() + "'" : ""));
+        "Value " + shown + "of type " + value.getClass().getSimpleName() + " cannot be converted to type " + targetType //
+            + (property != null ? " for property '" + property.getName() + "'" : ""), cause);
   }
 
   private static Number asNumber(final Object value, final String targetType, final Property property) {
     if (value instanceof Number number)
       return number;
+    if (property == null)
+      // the plain public conversion answers null for it, through the ClassCastException handler
+      return (Number) value;
     throw inconvertible(value, targetType, property);
   }
 
@@ -1070,7 +1120,16 @@ public enum Type {
         || targetClass.equals(ZonedDateTime.class) || targetClass.equals(Instant.class) || targetClass.equals(byte[].class);
   }
 
-  private static boolean isZero(final Number number) {
+  /** A non-empty string of digits only: read as an epoch count, as the DATE branch does and as a number would be. */
+  private static boolean isEpochString(final String text) {
+    return !text.isEmpty() && FileUtils.isLong(text);
+  }
+
+  private static boolean isZero(final Number number, final Property property) {
+    if (isNaN(number))
+      throw new IllegalArgumentException(
+          "Value '" + number + "' is NaN and cannot be converted to type BOOLEAN" //
+              + (property != null ? " for property '" + property.getName() + "'" : ""));
     return switch (number) {
       case BigDecimal bigDecimal -> bigDecimal.signum() == 0;
       case BigInteger bigInteger -> bigInteger.signum() == 0;
@@ -1085,6 +1144,11 @@ public enum Type {
    * but a {@link BigInteger}, a {@link BigDecimal}, a {@link Double} or a {@link Float} can still be outside the 64-bit
    * one, where {@code longValue()} wraps (the first two) or saturates (the others) without a word (issue #9024).
    */
+  private static final BigDecimal LONG_MAX_DECIMAL = BigDecimal.valueOf(Long.MAX_VALUE);
+  private static final BigDecimal LONG_MIN_DECIMAL = BigDecimal.valueOf(Long.MIN_VALUE);
+  private static final BigInteger LONG_MAX_INTEGER = BigInteger.valueOf(Long.MAX_VALUE);
+  private static final BigInteger LONG_MIN_INTEGER = BigInteger.valueOf(Long.MIN_VALUE);
+
   private static long narrowToLong(final Number value, final Property property) {
     if (isNaN(value))
       throw new IllegalArgumentException(
@@ -1092,10 +1156,8 @@ public enum Type {
               + (property != null ? " for property '" + property.getName() + "'" : ""));
 
     final boolean outOfRange = switch (value) {
-      case BigDecimal bigDecimal ->
-          bigDecimal.compareTo(BigDecimal.valueOf(Long.MAX_VALUE)) > 0 || bigDecimal.compareTo(BigDecimal.valueOf(Long.MIN_VALUE)) < 0;
-      case BigInteger bigInteger ->
-          bigInteger.compareTo(BigInteger.valueOf(Long.MAX_VALUE)) > 0 || bigInteger.compareTo(BigInteger.valueOf(Long.MIN_VALUE)) < 0;
+      case BigDecimal bigDecimal -> bigDecimal.compareTo(LONG_MAX_DECIMAL) > 0 || bigDecimal.compareTo(LONG_MIN_DECIMAL) < 0;
+      case BigInteger bigInteger -> bigInteger.compareTo(LONG_MAX_INTEGER) > 0 || bigInteger.compareTo(LONG_MIN_INTEGER) < 0;
       // 2^63 is the first double above the range, and -2^63 is exactly Long.MIN_VALUE
       case Double doubleValue -> doubleValue >= 0x1p63 || doubleValue < -0x1p63;
       case Float floatValue -> floatValue >= 0x1p63f || floatValue < -0x1p63f;
