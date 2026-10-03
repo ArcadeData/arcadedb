@@ -59,18 +59,25 @@ public class MongoDBToSqlTranslator {
         } else
           throw new IllegalArgumentException("Invalid operator " + key);
       } else if (value instanceof ObjectId objectId && !"_id".equals(key)) {
-        // data stored before ObjectIds were tagged holds the bare hex string, so match both forms
-        final String field = quoteFieldPath(entry.getKey());
-        buffer.append('(').append(field).append(" = ");
-        buildValue(buffer, params, objectId);
-        buffer.append(" OR ").append(field).append(" = ");
-        bindStored(buffer, params, objectId.getHexData());
-        buffer.append(')');
+        appendObjectIdEquality(buffer, params, quoteFieldPath(entry.getKey()), objectId, true);
       } else {
         buffer.append(quoteFieldPath(entry.getKey()));
         buildEquality(buffer, params, true, value);
       }
     }
+  }
+
+  /**
+   * Compares a non-{@code _id} field with an ObjectId. Data stored before ObjectIds were tagged holds the bare hex string, so both
+   * forms are matched (or, when negated, both excluded).
+   */
+  private static void appendObjectIdEquality(final StringBuilder buffer, final Map<String, Object> params, final String field,
+      final ObjectId objectId, final boolean positive) {
+    buffer.append('(').append(field).append(positive ? " = " : " <> ");
+    buildValue(buffer, params, objectId);
+    buffer.append(positive ? " OR " : " AND ").append(field).append(positive ? " = " : " <> ");
+    bindStored(buffer, params, objectId.getHexData());
+    buffer.append(')');
   }
 
   protected static void buildAnd(final StringBuilder sql, final Map<String, Object> params, final Object key, final Object value) {
@@ -117,6 +124,8 @@ public class MongoDBToSqlTranslator {
             buildExpression(sql, params, notEntry.getKey(), notEntry.getValue());
           }
           sql.append(")");
+        } else if (key != null && !"_id".equals(key) && subValue instanceof ObjectId objectId && ("$eq".equals(subKey) || "$ne".equals(subKey))) {
+          appendObjectIdEquality(sql, params, quoteFieldPath(key.toString()), objectId, "$eq".equals(subKey));
         } else {
           if (key != null)
             sql.append(quoteFieldPath(key.toString()));
@@ -384,7 +393,7 @@ public class MongoDBToSqlTranslator {
       return value;
     else if (value instanceof BigDecimal)
       return MongoBsonValues.toBson(value);
-    else if (value instanceof String string && MongoBsonValues.isStoredObjectId(string))
+    else if (value instanceof String string && MongoBsonValues.isEncodedString(string))
       return MongoBsonValues.toBson(value);
     else if (MongoBsonValues.isTagged(value)) {
       final Object bson = MongoBsonValues.toBson(value);
