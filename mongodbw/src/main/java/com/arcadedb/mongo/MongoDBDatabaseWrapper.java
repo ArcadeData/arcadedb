@@ -611,6 +611,12 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     final List<Document> upserted = new ArrayList<>();
 
     if (updates != null) {
+      // a schema change cannot happen inside the transaction: an upsert creates the collection with its _id index up front
+      if (updates.stream().anyMatch(upd -> Utils.isTrue(upd.get("upsert")))) {
+        database.getSchema().getOrCreateDocumentType(collectionName);
+        MongoDBCollectionWrapper.ensureIdIndex(database, collectionName);
+      }
+
       database.begin();
       try {
         int index = 0;
@@ -894,6 +900,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       return copy;
     }
 
+    requireEmbedded(container, head);
     final Map<String, Object> copy = copyOfEmbedded(container);
     copy.put(head, dot < 0 ? value : setNested(copy.get(head), path.substring(dot + 1), value));
     return copy;
@@ -925,6 +932,10 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       copy.set(index, dot < 0 ? null : unsetNested(copy.get(index), path.substring(dot + 1)));
       return copy;
     }
+
+    // MongoDB leaves a scalar alone on $unset of a path below it
+    if (!(container instanceof Map) && !(container instanceof com.arcadedb.database.Document))
+      return container;
 
     final Map<String, Object> copy = copyOfEmbedded(container);
     if (dot < 0)
@@ -965,6 +976,15 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     return new LinkedHashMap<>();
   }
 
+  /**
+   * MongoDB refuses to create a field below a scalar or an array (with a non-numeric key) instead of replacing it: doing so
+   * here would silently destroy the stored value.
+   */
+  private static void requireEmbedded(final Object container, final String field) {
+    if (container != null && !(container instanceof Map) && !(container instanceof com.arcadedb.database.Document))
+      throw new MongoServerError(28, "PathNotViable", "Cannot create field '" + field + "' in element {" + container + "}");
+  }
+
   private static boolean isArrayIndex(final String segment) {
     if (segment.isEmpty() || segment.length() > 9)
       return false;
@@ -981,7 +1001,13 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     if (current == null)
       return delta;
     if (isIntegral(current) && isIntegral(delta)) {
-      final long sum = Math.addExact(current.longValue(), delta.longValue());
+      final long sum;
+      try {
+        sum = Math.addExact(current.longValue(), delta.longValue());
+      } catch (final ArithmeticException e) {
+        // like MongoDB, an overflowing long becomes a double
+        return current.doubleValue() + delta.doubleValue();
+      }
       return current instanceof Long || delta instanceof Long || sum > Integer.MAX_VALUE || sum < Integer.MIN_VALUE ? (Number) sum : (Number) (int) sum;
     }
     return current.doubleValue() + delta.doubleValue();

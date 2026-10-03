@@ -21,6 +21,8 @@ package com.arcadedb.mongo;
 import com.arcadedb.GlobalConfiguration;
 import com.mongodb.MongoBulkWriteException;
 import com.mongodb.MongoClient;
+import com.mongodb.MongoCommandException;
+import com.mongodb.MongoQueryException;
 import com.mongodb.MongoClientOptions;
 import com.mongodb.MongoCredential;
 import com.mongodb.MongoWriteException;
@@ -220,5 +222,70 @@ public class MongoDBWireSemanticsTest extends BaseMongoServerTest {
     assertThatThrownBy(() -> collection.replaceOne(new Document("_id", 2), Document.parse("{_id: 5, name: 'x'}")))
         .isInstanceOf(RuntimeException.class);
     assertThat(collection.countDocuments(new Document("_id", 2))).isEqualTo(1);
+  }
+
+  @Test
+  void setBelowAScalarOrArrayIsRefusedAndKeepsTheValue() {
+    collection.insertOne(Document.parse("{_id: 1, name: 'bob', tags: ['a', 'b']}"));
+
+    assertThatThrownBy(() -> collection.updateOne(new Document("_id", 1), Document.parse("{$set: {'name.first': 'x'}}")))
+        .isInstanceOf(MongoCommandException.class);
+    assertThatThrownBy(() -> collection.updateOne(new Document("_id", 1), Document.parse("{$set: {'tags.x': 1}}")))
+        .isInstanceOf(MongoCommandException.class);
+
+    final Document doc = collection.find(new Document("_id", 1)).first();
+    assertThat(doc.getString("name")).isEqualTo("bob");
+    assertThat(doc.getList("tags", String.class)).containsExactly("a", "b");
+  }
+
+  @Test
+  void setThroughAnArrayIndex() {
+    collection.insertOne(Document.parse("{_id: 1, items: [{n: 1}, {n: 2}]}"));
+    collection.updateOne(new Document("_id", 1), Document.parse("{$set: {'items.1.n': 9}}"));
+    final List<Document> items = collection.find(new Document("_id", 1)).first().getList("items", Document.class);
+    assertThat(items.get(0).get("n")).isEqualTo(1);
+    assertThat(items.get(1).get("n")).isEqualTo(9);
+  }
+
+  @Test
+  void notOfNullAwareOperators() {
+    seedAges();
+    assertThat(ids("{age: {$not: {$ne: 30}}}")).containsExactly(1);
+    assertThat(ids("{age: {$not: {$nin: [25]}}}")).containsExactly(2);
+    assertThat(ids("{age: {$in: [null]}}")).containsExactly(3, 4);
+    assertThat(ids("{age: {$nin: [null]}}")).containsExactly(1, 2);
+  }
+
+  @Test
+  void invalidRegularExpressionsAreRefused() {
+    collection.insertOne(Document.parse("{_id: 1, name: 'a'}"));
+    assertThatThrownBy(() -> ids("{name: {$regex: 'a)|(b'}}")).isInstanceOf(MongoQueryException.class);
+    assertThatThrownBy(() -> ids("{name: {$regex: 'a', $options: 'z'}}")).isInstanceOf(MongoQueryException.class);
+  }
+
+  @Test
+  void replaceOneWithTheSameIdIsAllowed() {
+    collection.insertOne(Document.parse("{_id: 2, name: 'bob'}"));
+    assertThat(collection.replaceOne(new Document("_id", 2), Document.parse("{_id: 2, name: 'x'}")).getMatchedCount()).isEqualTo(1);
+    assertThat(collection.find(new Document("_id", 2)).first().getString("name")).isEqualTo("x");
+  }
+
+  @Test
+  void duplicatedIdOnATypeCreatedBySql() {
+    getServerDatabase(0, getDatabaseName()).getSchema().createDocumentType("bysql");
+    final MongoCollection<Document> sqlCollection = client.getDatabase(getDatabaseName()).getCollection("bysql");
+    // the plugin adds the unique index on the first insert, so both a batch and a later insert are checked
+    assertThatThrownBy(() -> sqlCollection.insertMany(List.of(new Document("_id", 1), new Document("_id", 1))))
+        .isInstanceOf(MongoBulkWriteException.class);
+    sqlCollection.insertOne(new Document("_id", 5));
+    assertThatThrownBy(() -> sqlCollection.insertOne(new Document("_id", 5))).isInstanceOf(MongoWriteException.class);
+  }
+
+  @Test
+  void projectionOnDottedPath() {
+    collection.insertOne(Document.parse("{_id: 1, addr: {city: 'X', zip: '1'}, n: 1}"));
+    final Document projected = collection.find().projection(Document.parse("{'addr.city': 1}")).first();
+    assertThat(projected.keySet()).containsExactly("_id", "addr");
+    assertThat(projected.get("addr", Document.class).keySet()).containsExactly("city");
   }
 }
