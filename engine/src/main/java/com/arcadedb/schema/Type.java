@@ -358,8 +358,9 @@ public enum Type {
    * of its branches, which issue #8090 turned into a refusal - this restores it as a stated contract rather than as
    * a side effect of where the branches happened to stop.
    * <p>
-   * Two shapes of giving up are kept, not one. The date that motivates the policy arrives as a REFUSAL, and only a
-   * date's refusal is kept - anything else propagates. But {@code convert()} can also give up SILENTLY, through its
+   * Three shapes of giving up are kept, not one. The date that motivates the policy arrives as a REFUSAL, and so does
+   * a value the declared type cannot take (an {@code InconvertibleValueException}: a list for an INTEGER, an empty
+   * string, a number out of range) - those two are kept, anything else propagates. But {@code convert()} can also give up SILENTLY, through its
    * own blanket handler, and that answers {@code null} for any target: a {@code List} handed to an {@code Integer}
    * column, say. The original is kept there too, for the same reason and with no date about it - the contract is
    * "never answers {@code null} for a non-null input", which is what {@code convertOrKeepNeverAnswersNullForANonNullValue}
@@ -407,7 +408,8 @@ public enum Type {
    * since {@code build()} rethrows, would also fail an ordinary {@code INSERT} that used to index a null key and
    * continue - a regression {@code convert()} becoming strict in issue #8090 would otherwise have caused.
    * <p>
-   * Every OTHER refusal still fails the build, exactly as it did before that change: a non-numeric string reaching a
+   * Every OTHER refusal still fails the build, exactly as it did before that change (this method passes no property, so
+   * the refusals reserved for a declared property never reach it): a non-numeric string reaching a
    * {@code LONG} key raised {@link NumberFormatException} through {@code convert()} then and still does. Using
    * {@code convertOrNull()} here instead would swallow those too, silently indexing a genuinely mismatched value
    * under a null key - a widening that has nothing to do with the date parsing this rule exists for.
@@ -724,8 +726,6 @@ public enum Type {
           return new BigDecimal(string);
         else if (value instanceof Number)
           return new BigDecimal(value.toString());
-        if (property != null)
-          throw inconvertible(value, "DECIMAL", property);
 
       } else if (targetClass.equals(Double.TYPE) || targetClass.equals(Double.class)) {
         if (value instanceof Double)
@@ -1088,6 +1088,8 @@ public enum Type {
   private static InconvertibleValueException inconvertible(final Object value, final String targetType, final Property property,
       final Throwable cause) {
     // only the class of an array, a collection or a map: its text can be as large as the value, or just an identity hash
+    if (value == null)
+      return new InconvertibleValueException("A null element cannot be converted to type " + targetType + forProperty(property), cause);
     final String text = value.getClass().isArray() || value instanceof Collection || value instanceof Map ? null : value.toString();
     final String shown = text == null ? "" : "'" + (text.length() > 100 ? text.substring(0, 100) + "..." : text) + "' ";
     return new InconvertibleValueException(
