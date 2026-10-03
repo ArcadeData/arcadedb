@@ -662,6 +662,24 @@ public class JSONObject implements Map<String, Object> {
     throw new IllegalArgumentException("Element " + element + " not supported");
   }
 
+  /** A token a double may not hold exactly: more digits than a double keeps, or a value that overflowed or underflowed. */
+  static boolean mayLoseDigits(final String token, final double value) {
+    if (Math.abs(value) < Double.MIN_NORMAL || !Double.isFinite(value))
+      return true;
+    if (token.length() <= 15)
+      return false;
+    // THE SIGN, THE POINT AND THE EXPONENT MAKE A TOKEN LONG WITHOUT MAKING IT HOLD MORE THAN 15 DIGITS, WHICH A double ALWAYS HOLDS
+    int digits = 0;
+    for (int i = 0, n = token.length(); i < n; i++) {
+      final char c = token.charAt(i);
+      if (c == 'e' || c == 'E')
+        break;
+      if (c >= '0' && c <= '9')
+        digits++;
+    }
+    return digits > 15;
+  }
+
   /**
    * Whether a decimal token holds nothing the double parsed from it loses: it has the same significant digits (sign, decimal point,
    * exponent and the zeros around the digits ignored) as {@link Double#toString(double)}, the shortest rendering that parses back to
@@ -669,11 +687,6 @@ public class JSONObject implements Map<String, Object> {
    * Compared in place, so the common long token of an embedding (a double written with 17 digits) costs no extra object
    * besides that string, and no {@link BigDecimal}.
    */
-  /** A token a double may not hold exactly: more digits than a double keeps, or a value that overflowed or underflowed. */
-  static boolean mayLoseDigits(final String token, final double value) {
-    return token.length() > 15 || Math.abs(value) < Double.MIN_NORMAL || !Double.isFinite(value);
-  }
-
   static boolean isExactDouble(final String token, final double value) {
     if (!Double.isFinite(value))
       return false;
