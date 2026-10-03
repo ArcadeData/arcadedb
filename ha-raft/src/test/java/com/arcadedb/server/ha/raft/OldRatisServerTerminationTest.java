@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.log.WarningCapture;
 import org.apache.ratis.proto.RaftProtos;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import org.apache.ratis.thirdparty.io.grpc.Server;
@@ -124,7 +125,7 @@ class OldRatisServerTerminationTest {
 
   @Test
   void aNonGrpcRpcHasNoServersToCheck() {
-    assertThat(OldRatisServerTermination.grpcServersOf(null)).isEmpty();
+    assertThat(OldRatisServerTermination.serversOf(null)).isEmpty();
   }
 
   @Test
@@ -145,6 +146,25 @@ class OldRatisServerTerminationTest {
   }
 
   @Test
+  void aSkippedCheckOnAnotherRpcClassIsReportedOnceAtWarning() {
+    OldRatisServerTermination.resetForTesting();
+    try {
+      final FakeServer server = new FakeServer(false, true);
+      // Resolve the cached field on one class, then hand in an instance of a different class that also has one.
+      assertThat(OldRatisServerTermination.serversOf(new RpcWithServers(server))).hasSize(1);
+
+      final List<String> warnings = WarningCapture.captureWarnings(() -> {
+        assertThat(OldRatisServerTermination.serversOf(new OtherRpcWithServers(server))).isEmpty();
+        assertThat(OldRatisServerTermination.serversOf(new OtherRpcWithServers(server))).isEmpty();
+      });
+      assertThat(warnings).hasSize(1);
+      assertThat(warnings.getFirst()).contains("will not verify");
+    } finally {
+      OldRatisServerTermination.resetForTesting();
+    }
+  }
+
+  @Test
   void aServersFieldThatIsNotAMapIsIgnored() {
     OldRatisServerTermination.resetForTesting();
     try {
@@ -159,6 +179,15 @@ class OldRatisServerTerminationTest {
     private final Map<String, Server> servers = new LinkedHashMap<>();
 
     RpcWithServers(final Server server) {
+      servers.put("GrpcServerProtocolService", server);
+    }
+  }
+
+  private static final class OtherRpcWithServers {
+    @SuppressWarnings("unused")
+    private final Map<String, Server> servers = new LinkedHashMap<>();
+
+    OtherRpcWithServers(final Server server) {
       servers.put("GrpcServerProtocolService", server);
     }
   }

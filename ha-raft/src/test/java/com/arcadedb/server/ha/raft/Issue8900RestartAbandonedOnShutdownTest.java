@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.util.LifeCycle;
 import org.junit.jupiter.api.Test;
@@ -74,6 +75,41 @@ class Issue8900RestartAbandonedOnShutdownTest {
     assertThat(getField(raft, "raftServer")).as("no new server").isSameAs(old);
     assertThat(getField(raft, "restartFailureCount")).as("not a failed restart").isEqualTo(0);
     assertThat(raft.getRecoverRestartCount()).isZero();
+  }
+
+  @Test
+  @Timeout(value = 25, unit = TimeUnit.SECONDS) // hang detector: the close-in-progress wait alone is 30s
+  void anInterruptDuringTheCloseInProgressWaitLeavesTheClientAndBrokerOpen() throws Exception {
+    final RaftHAServer raft = detachedServer();
+    final CountDownLatch waiting = new CountDownLatch(1);
+    final AtomicInteger stateReads = new AtomicInteger();
+    final RaftServer old = mock(RaftServer.class);
+    when(old.getDivision(any())).thenThrow(new IllegalStateException("closing"));
+    when(old.getLifeCycleState()).thenAnswer(invocation -> {
+      if (stateReads.incrementAndGet() >= 2)
+        waiting.countDown();
+      return LifeCycle.State.CLOSING;
+    });
+    final RaftClient client = mock(RaftClient.class);
+    final RaftTransactionBroker broker = mock(RaftTransactionBroker.class);
+    setField(raft, "raftServer", old);
+    setField(raft, "raftClient", client);
+    setField(raft, "transactionBroker", broker);
+
+    final Thread restart = new Thread(raft::restartRatisIfNeeded, "Issue8900-interrupted-wait");
+    restart.start();
+    assertThat(waiting.await(10, TimeUnit.SECONDS)).as("the restart must be waiting on the close in flight").isTrue();
+
+    restart.interrupt();
+    restart.join();
+
+    // The restart was abandoned before closing anything, so the next tick finds the client and broker still usable.
+    verify(broker, never()).stop();
+    verify(client, never()).close();
+    verify(old, never()).close();
+    assertThat(getField(raft, "raftClient")).isSameAs(client);
+    assertThat(getField(raft, "transactionBroker")).isSameAs(broker);
+    assertThat(getField(raft, "restartFailureCount")).isEqualTo(0);
   }
 
   @Test

@@ -563,7 +563,7 @@ public class PluginApiSpec implements OpenApiContributor {
     schema.addProperty("leaderContactElapsedMs", SpecBuilders.integer(
         "Milliseconds since this follower's Raft division last heard from its leader (an append or a heartbeat). "
             + "'raftState' can read RUNNING while the leader's appends never reach this division; this figure then "
-            + "keeps growing (issue #8900). -1 on the leader, with no leader known, or when the division cannot be read"));
+            + "keeps growing. -1 on the leader, with no leader known, or when the division cannot be read"));
     schema.addProperty("isLeader", SpecBuilders.bool("True when this server is the leader"));
     schema.addProperty("leaderReady", SpecBuilders.bool(
         "True when the leader has finished the work that makes it safe to serve writes"));

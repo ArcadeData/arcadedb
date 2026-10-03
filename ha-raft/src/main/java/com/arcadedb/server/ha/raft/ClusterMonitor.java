@@ -628,7 +628,7 @@ public class ClusterMonitor {
       state.channelEarlyResetDone = true;
       LogManager.instance().log(this, Level.WARNING,
           "Follower '%s' answers over HTTP but no Raft RPC to it has succeeded for %dms; resetting its replication "
-              + "channel now so the leader reconnects to the server holding its Raft port (issue #8900).",
+              + "channel now so the leader reconnects to the server holding its Raft port.",
           replicaId, lastRpcElapsedMs);
       try {
         unreachablePeerChannelHandler.accept(replicaId);

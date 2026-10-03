@@ -19,7 +19,6 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.log.LogManager;
-import org.apache.ratis.server.RaftServerRpc;
 import org.apache.ratis.thirdparty.io.grpc.Server;
 import org.apache.ratis.util.LifeCycle;
 
@@ -67,6 +66,7 @@ final class OldRatisServerTermination {
   /** Cached handle on {@code GrpcServicesImpl.servers}; null until resolved or when it cannot be resolved. */
   private static volatile Field serversField;
   private static volatile boolean serversFieldUnavailable;
+  private static volatile boolean otherRpcClassReported;
 
   private OldRatisServerTermination() {
   }
@@ -146,15 +146,11 @@ final class OldRatisServerTermination {
   }
 
   /**
-   * The gRPC servers of a Ratis {@code GrpcServicesImpl}, read reflectively because Ratis does not publish them. Empty
-   * for any other RPC implementation, or when the field is not there (a Ratis upgrade renamed it): the restart then
-   * proceeds without the check, as it did before issue #8900, and says so once.
+   * The gRPC servers of a Ratis {@code GrpcServicesImpl} ({@code rpc} is a {@code RaftServerRpc}; typed as Object so
+   * the reflective read can be tested without one), read reflectively because Ratis does not publish them. Empty for
+   * any other RPC implementation, or when the field is not there (a Ratis upgrade renamed it): the restart then
+   * proceeds without the check, as it did before, and says so once at WARNING.
    */
-  static Map<String, Server> grpcServersOf(final RaftServerRpc rpc) {
-    return serversOf(rpc);
-  }
-
-  /** {@link #grpcServersOf} on any object, so the reflective read can be tested without a Ratis RPC. */
   static Map<String, Server> serversOf(final Object rpc) {
     if (rpc == null || serversFieldUnavailable)
       return Map.of();
@@ -167,9 +163,12 @@ final class OldRatisServerTermination {
         field.setAccessible(true);
         serversField = field;
       } else if (!field.getDeclaringClass().isInstance(rpc)) {
-        LogManager.instance().log(OldRatisServerTermination.class, Level.FINE,
-            "Ratis RPC %s is not the %s the gRPC check reads; not verifying its servers", rpc.getClass().getName(),
-            field.getDeclaringClass().getName());
+        // A skipped check must not be silent: say so once, at the level an operator reads.
+        final boolean first = !otherRpcClassReported;
+        otherRpcClassReported = true;
+        LogManager.instance().log(OldRatisServerTermination.class, first ? Level.WARNING : Level.FINE,
+            "Ratis RPC %s is not the %s the gRPC check reads; an in-place Ratis restart will not verify that its "
+                + "gRPC services terminated", rpc.getClass().getName(), field.getDeclaringClass().getName());
         return Map.of();
       }
       final Object value = field.get(rpc);
@@ -180,14 +179,13 @@ final class OldRatisServerTermination {
         if (entry.getValue() instanceof Server server)
           servers.put(String.valueOf(entry.getKey()), server);
       return servers;
-    } catch (final RuntimeException e) {
-      if (!(e instanceof InaccessibleObjectException)) {
-        // Not a resolution failure: skip the check this once, keep it for the next restart.
-        LogManager.instance().log(OldRatisServerTermination.class, Level.FINE,
-            "Cannot read the gRPC servers of the Ratis RPC layer this time: %s", e.toString());
-        return Map.of();
-      }
+    } catch (final InaccessibleObjectException e) {
       return disableCheck(e);
+    } catch (final RuntimeException e) {
+      // Not a resolution failure: skip the check this once, keep it for the next restart.
+      LogManager.instance().log(OldRatisServerTermination.class, Level.FINE,
+          "Cannot read the gRPC servers of the Ratis RPC layer this time: %s", e.toString());
+      return Map.of();
     } catch (final ReflectiveOperationException e) {
       return disableCheck(e);
     }
@@ -198,7 +196,7 @@ final class OldRatisServerTermination {
     serversFieldUnavailable = true;
     LogManager.instance().log(OldRatisServerTermination.class, Level.WARNING,
         "Cannot read the gRPC servers of the Ratis RPC layer (%s); an in-place Ratis restart will not verify that the "
-            + "old server's gRPC services terminated (issue #8900)", e.toString());
+            + "old server's gRPC services terminated", e.toString());
     return Map.of();
   }
 
@@ -206,6 +204,7 @@ final class OldRatisServerTermination {
   static void resetForTesting() {
     serversField = null;
     serversFieldUnavailable = false;
+    otherRpcClassReported = false;
   }
 
   private static Field findField(final Class<?> type, final String name) {

@@ -105,7 +105,7 @@ class Issue8900ClosedServerInPlaceRestartIT extends BaseRaftHATest {
 
     // The restart verified the OLD server's gRPC services against the real Ratis, not against nothing: they are found,
     // and none is still running beside the new server.
-    final var oldGrpcServers = OldRatisServerTermination.grpcServersOf(oldServer.getServerRpc());
+    final var oldGrpcServers = OldRatisServerTermination.serversOf(oldServer.getServerRpc());
     assertThat(oldGrpcServers).as("the old server's gRPC services must be readable").isNotEmpty();
     assertThat(oldGrpcServers.values()).allMatch(Server::isTerminated);
 

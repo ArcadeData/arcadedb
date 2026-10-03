@@ -599,7 +599,7 @@ class ClusterMonitorTest {
     answeredAt.set(now.get() - 1_000L);
     monitor.updateReplicaMatchIndex("replica-2", 1000L, 17_000L);
     assertThat(resets).containsExactly("replica-2");
-    assertThat(captured.linesContaining("issue #8900")).hasSize(1);
+    assertThat(captured.linesContaining("answers over HTTP but no Raft RPC")).hasSize(1);
 
     // Only one per streak: still refusing five seconds later, nothing more until the regular schedule.
     now.addAndGet(5_000L);

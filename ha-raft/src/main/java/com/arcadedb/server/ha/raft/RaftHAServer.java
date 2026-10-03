@@ -2308,7 +2308,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       if (Thread.currentThread().isInterrupted()) {
         LogManager.instance().log(this, Level.WARNING,
             "In-place Ratis restart called on an interrupted thread without a shutdown; skipped, the next health tick "
-                + "retries it (issue #8900)");
+                + "retries it");
         return;
       }
 
@@ -2332,6 +2332,38 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       final RaftServer oldServer = this.raftServer;
       final RaftTransactionBroker oldBroker = this.transactionBroker;
 
+      // Issue #8900: the waits below end early on a shutdown (stop() does not take recoveryLock) or an interrupt (the
+      // health monitor being stopped), and such an ending is not a failed restart.
+      final BooleanSupplier abandoned = () -> shutdownRequested || Thread.currentThread().isInterrupted();
+      // Issue #8900: read before the close, which empties the server's group map.
+      RaftServer.Division oldDivision = null;
+      if (oldServer != null)
+        try {
+          oldDivision = oldServer.getDivision(raftGroup.getGroupId());
+        } catch (final Throwable t) {
+          // No readable division (never started, or already removed): nothing to wait for below.
+        }
+
+      // Issue #8900: Ratis may already be closing this server on another thread - the JVM-pause monitor does it on its
+      // own thread. close() below would then be a no-op that still INTERRUPTS that thread (pauseMonitor.stop()), cutting
+      // its gRPC shutdown short, so let that close finish first. This reads the PROXY state: an #8651 zombie (proxy
+      // RUNNING, division stuck CLOSING) does not wait here. The wait runs before anything is closed, so a restart
+      // abandoned here leaves the client and broker usable for the next tick.
+      LifeCycle.State beforeClose = null;
+      if (oldServer != null) {
+        try {
+          beforeClose = OldRatisServerTermination.awaitCloseInProgress(oldServer::getLifeCycleState,
+              OldRatisServerTermination.CLOSE_IN_PROGRESS_WAIT_MS, abandoned);
+        } catch (final Throwable t) {
+          LogManager.instance().log(this, Level.FINE, "Cannot read the old Ratis server state: %s", t, t.getMessage());
+        }
+        if (abandoned.getAsBoolean()) {
+          // stop() closes this server itself; closing it here too would only interrupt that close.
+          HALog.log(this, HALog.BASIC, "Recovery abandoned: shutdown or interrupt while the old Ratis server was closing");
+          return;
+        }
+      }
+
       try {
         if (oldBroker != null)
           oldBroker.stop();
@@ -2344,34 +2376,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       } catch (final Throwable t) {
         LogManager.instance().log(this, Level.FINE, "Error closing old client: %s", t, t.getMessage());
       }
-      // Issue #8900: the waits below end early on a shutdown (stop() does not take recoveryLock) or an interrupt (the
-      // health monitor being stopped), and such an ending is not a failed restart.
-      final BooleanSupplier abandoned = () -> shutdownRequested || Thread.currentThread().isInterrupted();
-      // Issue #8900: read before the close, which empties the server's group map.
-      RaftServer.Division oldDivision = null;
-      if (oldServer != null)
-        try {
-          oldDivision = oldServer.getDivision(raftGroup.getGroupId());
-        } catch (final Throwable t) {
-          // No readable division (never started, or already removed): nothing to wait for below.
-        }
       try {
         if (oldServer != null) {
-          // Issue #8900: Ratis may already be closing this server on another thread - the JVM-pause monitor does it on
-          // its own thread. close() below would then be a no-op that still INTERRUPTS that thread (pauseMonitor.stop()),
-          // cutting its gRPC shutdown short, so let that close finish first. This reads the PROXY state: an #8651 zombie
-          // (proxy RUNNING, division stuck CLOSING) does not wait here.
-          final LifeCycle.State beforeClose = OldRatisServerTermination.awaitCloseInProgress(oldServer::getLifeCycleState,
-              OldRatisServerTermination.CLOSE_IN_PROGRESS_WAIT_MS, abandoned);
-          if (abandoned.getAsBoolean()) {
-            // stop() closes this server itself; closing it here too would only interrupt that close.
-            HALog.log(this, HALog.BASIC, "Recovery abandoned: shutdown requested while the old Ratis server was closing");
-            return;
-          }
           if (beforeClose == LifeCycle.State.CLOSING)
             LogManager.instance().log(this, Level.WARNING,
-                "Old Ratis server is still CLOSING after %dms; closing it from the restart, which interrupts that close "
-                    + "(issue #8900)", OldRatisServerTermination.CLOSE_IN_PROGRESS_WAIT_MS);
+                "Old Ratis server is still CLOSING after %dms; closing it from the restart, which interrupts that close",
+                OldRatisServerTermination.CLOSE_IN_PROGRESS_WAIT_MS);
           oldServer.close();
           // Issue #8898: a close that returns with the server not CLOSED means a second server is about to start
           // beside one that may still answer the leader. A close Ratis already performed itself, or a gRPC shutdown
@@ -2485,18 +2495,18 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private void verifyOldServerTerminated(final RaftServer oldServer, final RaftServer.Division oldDivision,
       final BooleanSupplier abandoned) throws IOException {
     final List<String> running = OldRatisServerTermination.terminateGrpcServers(
-        OldRatisServerTermination.grpcServersOf(oldServer.getServerRpc()), OldRatisServerTermination.GRPC_TERMINATION_WAIT_MS);
+        OldRatisServerTermination.serversOf(oldServer.getServerRpc()), OldRatisServerTermination.GRPC_TERMINATION_WAIT_MS);
     if (!running.isEmpty())
       throw new IOException("The old Ratis server's gRPC services " + running + " did not terminate within "
           + OldRatisServerTermination.GRPC_TERMINATION_WAIT_MS + "ms; not starting a new server beside one that can still "
-          + "answer the leader (issue #8900)");
+          + "answer the leader");
 
     if (oldDivision != null) {
       final LifeCycle.State divisionState = OldRatisServerTermination.awaitClosed(
           () -> oldDivision.getInfo().getLifeCycleState(), OldRatisServerTermination.DIVISION_CLOSE_WAIT_MS, abandoned);
       if (divisionState != LifeCycle.State.CLOSED && !abandoned.getAsBoolean())
         LogManager.instance().log(this, Level.WARNING,
-            "Old Ratis division is %s after its server closed; starting the new server anyway (issue #8900)", divisionState);
+            "Old Ratis division is %s after its server closed; starting the new server anyway", divisionState);
     }
   }
 
