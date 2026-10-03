@@ -89,9 +89,14 @@ public class QueryOperatorEquals {
     }
   }
 
-  // "=" semantics (numbers by value, other side converted), not Object.equals(); links keep plain equals() so a link never recurses (#9031)
+  // "=" semantics, tried both ways like the list form of IN (the other side is converted to the class of the column, or the column to
+  // the class of the other side). Links keep plain equals() so a link never recurses (#9031).
   private static boolean valueEquals(final Object fieldValue, final Object other) {
-    return fieldValue.equals(other) || !(fieldValue instanceof Identifiable || fieldValue instanceof Result) && equals(fieldValue, other);
+    if (fieldValue.equals(other))
+      return true;
+    if (fieldValue instanceof Identifiable || fieldValue instanceof Result)
+      return false;
+    return equals(other, fieldValue) || equals(fieldValue, other);
   }
 
   protected static boolean comparesValues(Object value, final Identifiable record, final boolean iConsiderIn) {
