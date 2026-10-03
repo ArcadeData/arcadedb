@@ -3638,7 +3638,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   /**
    * Whether this node is the only voter of the live Raft configuration: there is no peer to hand the leadership to and
-   * none to install a database from (issue #8940).
+   * none to install a database from (issue #8940). When the live configuration cannot be read this falls back to the
+   * declared server list, which may name non-voting peers: a declared multi-node list answers false, the safe side.
    */
   public boolean isSoleVoter() {
     final Collection<RaftPeer> voters = getLivePeers();

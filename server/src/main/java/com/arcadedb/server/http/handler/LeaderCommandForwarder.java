@@ -393,7 +393,8 @@ public final class LeaderCommandForwarder {
     final ExecutionResponse response = relayEventStream && isEventStreamRequested(exchange) ?
         transport.stream(dial.client(), request, dial.address(), longRunningCommand, streamTargetFactory.apply(exchange)) :
         transport.send(dial.client(), request, dial.address(), longRunningCommand);
-    return holdUnnamedNotTheLeaderRefusal(response, ha, LeaderForwardContext.holdLeaderId(intendedLeaderId, leaderIdBeforeDial, leaderIdAfterDial),
+    final String holdLeaderId = LeaderForwardContext.holdLeaderId(intendedLeaderId, leaderIdBeforeDial, leaderIdAfterDial);
+    return holdUnnamedNotTheLeaderRefusal(response, ha, holdLeaderId,
         httpServer.getServer().getConfiguration());
   }
 
