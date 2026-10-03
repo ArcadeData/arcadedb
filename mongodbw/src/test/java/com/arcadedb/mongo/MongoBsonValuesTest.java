@@ -24,6 +24,7 @@ import de.bwaldvogel.mongo.exception.ErrorCode;
 import de.bwaldvogel.mongo.exception.MongoServerError;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigDecimal;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -87,5 +88,12 @@ class MongoBsonValuesTest {
     assertThatThrownBy(() -> MongoBsonValues.toStored(stringTag)).isInstanceOf(MongoServerError.class);
     assertThatThrownBy(() -> MongoBsonValues.toStored(numberTag)).isInstanceOf(MongoServerError.class);
     assertThatThrownBy(() -> MongoBsonValues.toStored(nested)).isInstanceOf(MongoServerError.class);
+  }
+
+  @Test
+  void decimalArithmeticCoercionIsExactAndRefusesNonFinite() {
+    assertThat(MongoBsonValues.toBigDecimal(Long.MAX_VALUE)).isEqualByComparingTo(new BigDecimal(Long.MAX_VALUE));
+    assertThatThrownBy(() -> MongoBsonValues.toBigDecimal(Double.NaN)).isInstanceOf(MongoServerError.class);
+    assertThatThrownBy(() -> MongoBsonValues.toBigDecimal(Double.POSITIVE_INFINITY)).isInstanceOf(MongoServerError.class);
   }
 }

@@ -44,6 +44,7 @@ import de.bwaldvogel.mongo.backend.DatabaseResolver;
 import de.bwaldvogel.mongo.backend.QueryResult;
 import de.bwaldvogel.mongo.backend.Utils;
 import de.bwaldvogel.mongo.backend.aggregation.Aggregation;
+import de.bwaldvogel.mongo.bson.BsonRegularExpression;
 import de.bwaldvogel.mongo.bson.Decimal128;
 import de.bwaldvogel.mongo.bson.Document;
 import de.bwaldvogel.mongo.bson.ObjectId;
@@ -631,11 +632,16 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         if (value instanceof Document opDoc) {
           if (opDoc.containsKey("$eq")) {
             final Object eqValue = opDoc.get("$eq");
+            // a regex in the filter is a pattern to match, not a value to insert
+            if (eqValue instanceof BsonRegularExpression)
+              continue;
             if ("_id".equals(field) && eqValue instanceof ObjectId)
               idIsObjectId = true;
             record.set(field, MongoBsonValues.toStored(eqValue));
           }
         } else {
+          if (value instanceof BsonRegularExpression)
+            continue;
           if ("_id".equals(field) && value instanceof ObjectId)
             idIsObjectId = true;
           record.set(field, MongoBsonValues.toStored(value));
@@ -705,7 +711,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
           if (current == null)
             record.set(f.getKey(), MongoBsonValues.toStored(delta));
           else if (current instanceof BigDecimal || delta instanceof Decimal128)
-            record.set(f.getKey(), toBigDecimal(current).add(toBigDecimal(delta)));
+            record.set(f.getKey(), MongoBsonValues.toBigDecimal(current).add(MongoBsonValues.toBigDecimal(delta)));
           else
             record.set(f.getKey(), current.doubleValue() + delta.doubleValue());
         }
@@ -714,16 +720,6 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       }
     }
     return idIsObjectId;
-  }
-
-  private static BigDecimal toBigDecimal(final Number number) {
-    if (number instanceof BigDecimal decimal)
-      return decimal;
-    if (number instanceof Decimal128 decimal)
-      return (BigDecimal) MongoBsonValues.toStored(decimal);
-    if (number instanceof Long || number instanceof Integer || number instanceof Short || number instanceof Byte)
-      return BigDecimal.valueOf(number.longValue());
-    return BigDecimal.valueOf(number.doubleValue());
   }
 
   /**

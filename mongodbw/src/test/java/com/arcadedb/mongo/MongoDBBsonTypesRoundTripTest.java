@@ -274,4 +274,12 @@ public class MongoDBBsonTypesRoundTripTest extends BaseMongoServerTest {
   void regexWithoutOptionsRoundTrips() {
     assertThat(roundTrip(46, new BsonRegularExpression("abc"))).isEqualTo(new BsonRegularExpression("abc"));
   }
+
+  @Test
+  void upsertDoesNotSeedARegexFilterIntoTheDocument() {
+    collection.updateOne(new Document("name", new BsonRegularExpression("^a")), set("x", 1), new UpdateOptions().upsert(true));
+    final Document back = collection.find(eq("x", 1)).first();
+    assertThat(back).isNotNull();
+    assertThat(back.containsKey("name")).isFalse();
+  }
 }
