@@ -369,6 +369,10 @@ public enum Type {
       // is what this method promises; letting that null through would discard a value that arrived intact by a route
       // this method cannot see.
       return converted == null && value != null ? value : converted;
+    } catch (final InconvertibleValueException e) {
+      // a value of a shape the target cannot take, read by a caller that has no schema to blame: keep what arrived
+      LogManager.instance().log(Type.class, Level.FINE, "Error in conversion of value '%s' to type '%s'", e, value, targetClass);
+      return value;
     } catch (final IllegalArgumentException e) {
       // Only a DATE/TIME parse failure is kept. That is the one this method exists for: the client has no schema in
       // scope, so a value the server formatted with a pattern it cannot see is unreadable HERE rather than wrong.
@@ -406,6 +410,11 @@ public enum Type {
   public static Object convertIndexKeyOrNull(final Database database, final Object value, final Class<?> targetClass) {
     try {
       return convert(database, value, targetClass);
+    } catch (final InconvertibleValueException e) {
+      // a value of a shape the key type cannot take indexed under a null key before it was refused, and a
+      // heterogeneous schemaless row must not fail CREATE INDEX (see above)
+      LogManager.instance().log(Type.class, Level.FINE, "Error in conversion of value '%s' to type '%s'", e, value, targetClass);
+      return null;
     } catch (final IllegalArgumentException e) {
       if (!isUnreadableDate(e))
         throw e;
@@ -536,8 +545,13 @@ public enum Type {
     }
 
     try {
-      if (targetClass.equals(String.class))
+      if (targetClass.equals(String.class)) {
+        // An array's toString() is its class code and identity hash ("[B@72e34f77"): not the content, not stable, and
+        // not reversible. Refuse it rather than store that (issue #9041).
+        if (valueClass.isArray())
+          throw inconvertible(value, "STRING", property);
         return value.toString();
+      }
       else if (value instanceof Binary binary && targetClass.isAssignableFrom(byte[].class))
         return binary.toByteArray();
       else if (byte[].class.isAssignableFrom(valueClass)) {
@@ -665,65 +679,60 @@ public enum Type {
         else if (value instanceof String string)
           return Byte.parseByte(string);
         else
-          return narrowToIntegral((Number) value, Byte.MIN_VALUE, Byte.MAX_VALUE, "BYTE", property).byteValue();
+          return narrowToIntegral(asNumber(value, "BYTE", property), Byte.MIN_VALUE, Byte.MAX_VALUE, "BYTE", property).byteValue();
 
       } else if (targetClass.equals(Short.TYPE) || targetClass.equals(Short.class)) {
         if (value instanceof Short)
           return value;
         else if (value instanceof String string)
-          return string.isEmpty() ? 0 : Short.parseShort(string);
+          return Short.parseShort(string);
         else
-          return narrowToIntegral((Number) value, Short.MIN_VALUE, Short.MAX_VALUE, "SHORT", property).shortValue();
+          return narrowToIntegral(asNumber(value, "SHORT", property), Short.MIN_VALUE, Short.MAX_VALUE, "SHORT", property).shortValue();
 
       } else if (targetClass.equals(Integer.TYPE) || targetClass.equals(Integer.class)) {
         if (value instanceof Integer)
           return value;
         else if (value instanceof String string)
-          return string.isEmpty() ? 0 : Integer.parseInt(string);
+          return Integer.parseInt(string);
         else
-          return narrowToIntegral((Number) value, Integer.MIN_VALUE, Integer.MAX_VALUE, "INTEGER", property).intValue();
+          return narrowToIntegral(asNumber(value, "INTEGER", property), Integer.MIN_VALUE, Integer.MAX_VALUE, "INTEGER", property).intValue();
 
       } else if (targetClass.equals(Long.TYPE) || targetClass.equals(Long.class)) {
         if (value instanceof Long)
           return value;
         else if (value instanceof String string)
-          return string.isEmpty() ? 0L : Long.parseLong(string);
+          return Long.parseLong(string);
         else if (DateUtils.isDate(value))
           return DateUtils.dateTimeToTimestamp(value, ChronoUnit.MILLIS);
-        else if (isNaN((Number) value))
-          // LONG never goes through narrowToIntegral() - there is no narrower range to check, it IS the widest
-          // integral type - so it needs its own NaN guard (issue #5970).
-          throw new IllegalArgumentException(
-              "Value '" + value + "' is NaN and cannot be converted to type LONG" //
-                  + (property != null ? " for property '" + property.getName() + "'" : ""));
         else
-          return ((Number) value).longValue();
+          return narrowToLong(asNumber(value, "LONG", property), property);
 
       } else if (targetClass.equals(Float.TYPE) || targetClass.equals(Float.class)) {
         if (value instanceof Float)
           return value;
         else if (value instanceof String string)
-          return string.isEmpty() ? 0f : Float.parseFloat(string);
+          return Float.parseFloat(string);
         else
-          return ((Number) value).floatValue();
+          return asNumber(value, "FLOAT", property).floatValue();
 
       } else if (targetClass.equals(BigDecimal.class)) {
         if (value instanceof String string)
           return new BigDecimal(string);
         else if (value instanceof Number)
           return new BigDecimal(value.toString());
+        throw inconvertible(value, "DECIMAL", property);
 
       } else if (targetClass.equals(Double.TYPE) || targetClass.equals(Double.class)) {
         if (value instanceof Double)
           return value;
         else if (value instanceof String string)
-          return string.isEmpty() ? 0d : Double.parseDouble(string);
+          return Double.parseDouble(string);
         else if (value instanceof Float float1)
           // The primitive widening would carry the float's rounding error into the double; widenFloat re-reads its
           // decimal instead, and skips the round-trip where it provably cannot matter (issue #7609).
           return widenFloat(float1);
         else
-          return ((Number) value).doubleValue();
+          return asNumber(value, "DOUBLE", property).doubleValue();
 
       } else if (targetClass.equals(Boolean.TYPE) || targetClass.equals(Boolean.class)) {
         if (value instanceof Boolean)
@@ -735,7 +744,10 @@ public enum Type {
             return Boolean.FALSE;
           throw new IllegalArgumentException("Value is not boolean. Expected true or false but received '" + value + "'");
         } else if (value instanceof Number number)
-          return number.intValue() != 0;
+          // 0 is false and anything else is true, as documented: intValue() truncated 0.5 to 0 and kept only the low
+          // 32 bits of a LONG, so 0.5 and 4294967296 were stored as false (issue #9027)
+          return !isZero(number);
+        throw inconvertible(value, "BOOLEAN", property);
 
       } else if (Set.class.isAssignableFrom(targetClass)) {
         // The caller specifically wants a Set.  If the value is a collection
@@ -933,14 +945,16 @@ public enum Type {
             } else if (o instanceof Result resultObj && resultObj.isElement()) {
               // Extract the document from Result object
               result.add((Identifiable) resultObj.getElement().get());
-            } else if (o instanceof String) {
+            } else if (o instanceof String string) {
               try {
-                result.add(RID.create(database, value.toString()));
+                result.add(RID.create(database, string));
               } catch (final Exception e) {
-                LogManager.instance()
-                    .log(Type.class, Level.FINE, "Error in conversion of value '%s' to type '%s'", e, value, targetClass);
+                if (property != null)
+                  throw inconvertible(o, "LINK", property);
               }
-            }
+            } else if (property != null)
+              // a member that is no link cannot be dropped: the result would silently be a different value (issue #9015)
+              throw inconvertible(o, "LINK", property);
           }
           // If the property type is LINK (not LIST) and we have a single-element list, unwrap it
           if (property != null && property.getType() == LINK && result.size() == 1) {
@@ -959,6 +973,10 @@ public enum Type {
     } catch (final IllegalArgumentException e) {
       // PASS THROUGH
       throw e;
+    } catch (final ClassCastException e) {
+      // a value of a shape the target cannot take, reaching a cast the branches above did not guard: refuse, never
+      // answer NULL for a non-null input (issue #9014)
+      throw inconvertible(value, targetClass.getSimpleName(), property);
     } catch (final DateTimeException e) {
       // A date/time value that cannot be parsed must fail the write, not empty the column. This is the date/time
       // family's equivalent of the NumberFormatException the arm above already lets through, and it was the reason a
@@ -987,7 +1005,83 @@ public enum Type {
       return null;
     }
 
+    // No branch had a case for this value. For these targets the property can only hold an instance of the target, so
+    // keeping the value as it came stores a type the index and the serializer cannot read back (issue #9015).
+    // A link is the exception: without a declared property this is the plain public conversion, which has always
+    // answered the original for a string that is no RID
+    if ((mustBeInstanceOfTarget(targetClass) || property != null && targetClass.equals(Identifiable.class))
+        && !targetClass.isInstance(value))
+      throw inconvertible(value, targetClass.getSimpleName(), property);
+
     return value;
+  }
+
+  /**
+   * A refusal of a value whose SHAPE the target cannot take at all (a list for an INTEGER, a boolean for a DECIMAL),
+   * as opposed to a malformed value of an acceptable shape. The distinction is what lets
+   * {@link #convertOrKeep(Database, Object, Class, Property)} and {@link #convertIndexKeyOrNull} keep the lenient
+   * behavior they always had for such a value, while a WRITE through {@code convert()} fails (issue #9110).
+   */
+  private static final class InconvertibleValueException extends IllegalArgumentException {
+    InconvertibleValueException(final String message) {
+      super(message);
+    }
+  }
+
+  private static InconvertibleValueException inconvertible(final Object value, final String targetType, final Property property) {
+    return new InconvertibleValueException(
+        "Value '" + value + "' of type " + value.getClass().getSimpleName() + " cannot be converted to type " + targetType //
+            + (property != null ? " for property '" + property.getName() + "'" : ""));
+  }
+
+  private static Number asNumber(final Object value, final String targetType, final Property property) {
+    if (value instanceof Number number)
+      return number;
+    throw inconvertible(value, targetType, property);
+  }
+
+  private static boolean mustBeInstanceOfTarget(final Class<?> targetClass) {
+    return targetClass.equals(BigDecimal.class) || targetClass.equals(LocalDate.class) || targetClass.equals(LocalDateTime.class)
+        || targetClass.equals(ZonedDateTime.class) || targetClass.equals(Instant.class) || targetClass.equals(byte[].class);
+  }
+
+  private static boolean isZero(final Number number) {
+    return switch (number) {
+      case BigDecimal bigDecimal -> bigDecimal.signum() == 0;
+      case BigInteger bigInteger -> bigInteger.signum() == 0;
+      case Double doubleValue -> doubleValue == 0d;
+      case Float floatValue -> floatValue == 0f;
+      default -> number.longValue() == 0L;
+    };
+  }
+
+  /**
+   * The LONG counterpart of {@link #narrowToIntegral(Number, long, long, String, Property)}: LONG has no narrower range,
+   * but a {@link BigInteger}, a {@link BigDecimal}, a {@link Double} or a {@link Float} can still be outside the 64-bit
+   * one, where {@code longValue()} wraps (the first two) or saturates (the others) without a word (issue #9024).
+   */
+  private static long narrowToLong(final Number value, final Property property) {
+    if (isNaN(value))
+      throw new IllegalArgumentException(
+          "Value '" + value + "' is NaN and cannot be converted to type LONG" //
+              + (property != null ? " for property '" + property.getName() + "'" : ""));
+
+    final boolean outOfRange = switch (value) {
+      case BigDecimal bigDecimal ->
+          bigDecimal.compareTo(BigDecimal.valueOf(Long.MAX_VALUE)) > 0 || bigDecimal.compareTo(BigDecimal.valueOf(Long.MIN_VALUE)) < 0;
+      case BigInteger bigInteger ->
+          bigInteger.compareTo(BigInteger.valueOf(Long.MAX_VALUE)) > 0 || bigInteger.compareTo(BigInteger.valueOf(Long.MIN_VALUE)) < 0;
+      // 2^63 is the first double above the range, and -2^63 is exactly Long.MIN_VALUE
+      case Double doubleValue -> doubleValue >= 0x1p63 || doubleValue < -0x1p63;
+      case Float floatValue -> floatValue >= 0x1p63f || floatValue < -0x1p63f;
+      default -> false;
+    };
+    if (outOfRange)
+      throw new IllegalArgumentException(
+          "Value '" + value + "' is out of range for type LONG (" + Long.MIN_VALUE + " to " + Long.MAX_VALUE + ")" //
+              + (property != null ? " for property '" + property.getName() + "'" : ""));
+
+    return value.longValue();
   }
 
   /**
