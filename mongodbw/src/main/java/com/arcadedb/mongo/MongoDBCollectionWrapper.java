@@ -29,7 +29,6 @@ import de.bwaldvogel.mongo.backend.Index;
 import de.bwaldvogel.mongo.backend.QueryParameters;
 import de.bwaldvogel.mongo.backend.QueryResult;
 import de.bwaldvogel.mongo.bson.Document;
-import de.bwaldvogel.mongo.bson.ObjectId;
 import de.bwaldvogel.mongo.oplog.Oplog;
 
 import java.util.ArrayList;
@@ -229,11 +228,7 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
       final MutableDocument record = database.newDocument(collectionName);
 
       for (final Map.Entry<String, Object> p : d.entrySet()) {
-        final Object value = p.getValue();
-        if (value instanceof ObjectId id)
-          record.set(p.getKey(), id.getHexData());
-        else
-          record.set(p.getKey(), value);
+        record.set(p.getKey(), MongoBsonValues.toStored(p.getValue()));
       }
 
       record.save();

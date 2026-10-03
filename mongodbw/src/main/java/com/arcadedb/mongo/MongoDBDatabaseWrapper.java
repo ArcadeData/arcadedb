@@ -674,7 +674,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * must be normalized to its hex string, matching how {@code insertDocuments} and {@code buildValue} store an ObjectId.
    */
   private static Object normalizeIdValue(final Object value) {
-    return value instanceof ObjectId oid ? oid.getHexData() : value;
+    return MongoBsonValues.toStored(value);
   }
 
   /**
@@ -809,9 +809,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       for (final Object item : list)
         converted.add(toMapValue(item));
       return converted;
-    } else if (value instanceof ObjectId id)
-      return id.getHexData();
-    return value;
+    }
+    return MongoBsonValues.toStored(value);
   }
 
   private Document responseOk() {
