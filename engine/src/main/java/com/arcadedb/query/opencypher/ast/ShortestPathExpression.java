@@ -148,9 +148,7 @@ public class ShortestPathExpression implements Expression {
     final EdgeConstraint constraint = EdgeConstraint.from(relationship, result, context);
     final String[] typesArray = edgeTypes == null || edgeTypes.isEmpty() ? null : edgeTypes.toArray(new String[0]);
 
-    // allShortestPaths() in expression position answers with every co-shortest path, exactly as the MATCH form
-    // returns one row per path: the same two evaluators, so a parallel relationship or a second middle vertex
-    // yields a path of its own here too (issue #8995).
+    // Same evaluators as the MATCH form, so every co-shortest path is listed.
     if (allPaths)
       return new ArrayList<>(constraint != null ?
           ShortestPathStep.computeFilteredAllShortestPaths(startVertex, endVertex, traversalDirection, typesArray, constraint,
