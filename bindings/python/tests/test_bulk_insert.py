@@ -67,6 +67,98 @@ class TestInsertMany:
         assert _count(temp_db, "Tx") == 2
 
 
+class _Unsettable:
+    """A value json.dumps rejects AND the Java side cannot store (#7882)."""
+
+
+class _InterruptingRow(dict):
+    """A row whose iteration raises KeyboardInterrupt, standing in for a ^C
+    landing mid-insert. json.dumps never calls items() on a dict subclass, so
+    only the per-row fallback reaches it."""
+
+    def items(self):
+        raise KeyboardInterrupt
+
+
+class TestInsertManyTransactionHygiene:
+    """insert_many must leave the transaction state exactly as it found it,
+    on every exit path (#7882)."""
+
+    def test_fallback_set_failure_rolls_back(self, temp_db):
+        temp_db.command("sql", "CREATE DOCUMENT TYPE FbFail")
+        rows = [{"a": datetime.datetime(2026, 1, 1)}, {"b": _Unsettable()}]
+        with pytest.raises(Exception):
+            temp_db.insert_many("FbFail", rows)
+        # Before #7882 the transaction begun by the fallback was left open,
+        # holding the first row's write for the next caller to inherit.
+        assert temp_db.is_transaction_active() is False
+        assert _count(temp_db, "FbFail") == 0
+
+    def test_fallback_failure_keeps_earlier_committed_batches_only(self, temp_db):
+        temp_db.command("sql", "CREATE DOCUMENT TYPE FbBatch")
+        rows = [{"k": i, "when": datetime.datetime(2026, 1, 1)} for i in range(3)]
+        rows.append({"k": 3, "bad": _Unsettable()})
+        with pytest.raises(Exception):
+            temp_db.insert_many("FbBatch", rows, commit_every=2)
+        assert temp_db.is_transaction_active() is False
+        # The batch of 2 committed before the failure is durable; row 2, the
+        # one in the open batch, is rolled back rather than left pending.
+        assert _count(temp_db, "FbBatch") == 2
+
+    def test_fallback_keyboard_interrupt_rolls_back(self, temp_db):
+        temp_db.command("sql", "CREATE DOCUMENT TYPE FbIntr")
+        rows = [{"a": datetime.datetime(2026, 1, 1)}, _InterruptingRow(b=1)]
+        with pytest.raises(KeyboardInterrupt):
+            temp_db.insert_many("FbIntr", rows)
+        assert temp_db.is_transaction_active() is False
+        assert _count(temp_db, "FbIntr") == 0
+
+    def test_fallback_failure_leaves_caller_transaction_alone(self, temp_db):
+        temp_db.command("sql", "CREATE DOCUMENT TYPE FbCaller")
+        temp_db.begin()
+        temp_db.new_document("FbCaller").set("k", "caller").save()
+        rows = [{"a": datetime.datetime(2026, 1, 1)}, {"b": _Unsettable()}]
+        with pytest.raises(Exception):
+            temp_db.insert_many("FbCaller", rows)
+        # The caller's transaction is the caller's to end.
+        assert temp_db.is_transaction_active() is True
+        temp_db.rollback()
+        assert _count(temp_db, "FbCaller") == 0
+
+    def test_fast_path_failure_rolls_back(self, temp_db):
+        temp_db.command("sql", "CREATE DOCUMENT TYPE FastFail")
+        temp_db.command("sql", "CREATE PROPERTY FastFail.req STRING (mandatory true)")
+        rows = [{"req": "x"}, {"other": 1}]
+        with pytest.raises(Exception):
+            temp_db.insert_many("FastFail", rows)
+        assert temp_db.is_transaction_active() is False
+        assert _count(temp_db, "FastFail") == 0
+
+    def test_fast_path_failure_leaves_caller_transaction_alone(self, temp_db):
+        temp_db.command("sql", "CREATE DOCUMENT TYPE FastCaller")
+        temp_db.command("sql", "CREATE PROPERTY FastCaller.req STRING (mandatory true)")
+        temp_db.begin()
+        temp_db.new_document("FastCaller").set("req", "caller").save()
+        with pytest.raises(Exception):
+            temp_db.insert_many("FastCaller", [{"req": "x"}, {"other": 1}])
+        assert temp_db.is_transaction_active() is True
+        temp_db.rollback()
+        assert _count(temp_db, "FastCaller") == 0
+
+    def test_fast_path_does_not_commit_caller_transaction(self, temp_db):
+        temp_db.command("sql", "CREATE DOCUMENT TYPE FastNoCommit")
+        temp_db.begin()
+        temp_db.insert_many(
+            "FastNoCommit", [{"k": i} for i in range(5)], commit_every=2
+        )
+        assert temp_db.is_transaction_active() is True
+        temp_db.rollback()
+        # commit_every batches only the transactions insert_many itself owns,
+        # as the per-row fallback already did: rolling back the caller's
+        # transaction must discard every row.
+        assert _count(temp_db, "FastNoCommit") == 0
+
+
 class TestAsyncCreateRecord:
     def test_create_and_wait(self, temp_db):
         temp_db.command("sql", "CREATE DOCUMENT TYPE ARec")
