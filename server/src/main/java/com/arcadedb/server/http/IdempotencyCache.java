@@ -50,6 +50,8 @@ import java.util.concurrent.TimeUnit;
 public class IdempotencyCache {
 
   public static final String HEADER_REQUEST_ID = "X-Request-Id";
+  /** Sent on every response: this server answers a write that carries the same {@link #HEADER_REQUEST_ID} from the cache (issue #8526). */
+  public static final String HEADER_REPLAY_PROTECTION = "X-ArcadeDB-Replay-Protection";
 
   public static class CachedEntry {
     public final int    statusCode;

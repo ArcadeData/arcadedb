@@ -452,10 +452,9 @@ public class JSONObject implements Map<String, Object> {
    * Converts the object to a Java {@link Map}.
    *
    * @param optimizeNumericArrays when {@code true}, homogeneous numeric arrays found anywhere in
-   *                              the tree are returned as primitive {@code float[]} instead of
-   *                              {@code List<Number>}. This avoids per-element boxing and the
-   *                              downstream double-to-float narrowing for large vector payloads
-   *                              (issue #3864 follow-up). Used by the HTTP command handler when
+   *                              the tree are returned as primitive {@code long[]}/{@code double[]} instead of
+   *                              {@code List<Number>}. This avoids per-element boxing for large vector payloads
+   *                              (issue #3864 follow-up), see {@link JSONArray#toPrimitiveNumericArrayOrNull()}. Used by the HTTP command handler when
    *                              parsing {@code params}.
    */
   public Map<String, Object> toMap(final boolean optimizeNumericArrays) {
@@ -631,20 +630,26 @@ public class JSONObject implements Map<String, Object> {
 
         // Efficient check to determine the appropriate type
         if (strValue.contains(".") || strValue.contains("e") || strValue.contains("E")) {
-          // Contains decimal point or scientific notation - definitely a double
-          return primitive.getAsDouble();
+          // Contains decimal point or scientific notation: a double, unless it carries more digits than a double holds
+          final double doubleVal = primitive.getAsDouble();
+          if (strValue.length() > 15) {
+            final BigDecimal exact = new BigDecimal(strValue);
+            if (!Double.isFinite(doubleVal) || exact.compareTo(new BigDecimal(Double.toString(doubleVal))) != 0)
+              return exact;
+          }
+          return doubleVal;
         } else {
-
-          // Check if it fits in an Integer
+          // Check if it fits in an Integer or a Long. LazilyParsedNumber.longValue() would silently keep the low 64 bits of a
+          // bigger number, so the value is parsed from its text (issue #9004)
           try {
-            final long longVal = primitive.getAsLong();
+            final long longVal = Long.parseLong(strValue);
             if (longVal >= Integer.MIN_VALUE && longVal <= Integer.MAX_VALUE)
               return (int) longVal;
             return longVal;
 
           } catch (NumberFormatException e) {
-            // It could be a very large number, use double as fallback
-            return primitive.getAsDouble();
+            // beyond the long range: keep every digit
+            return new BigDecimal(strValue);
           }
         }
       } else if (primitive.isString())

@@ -62,6 +62,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Consumer;
 import java.util.logging.Level;
@@ -105,6 +106,10 @@ public class RemoteHttpComponent extends RWLockContext {
   private         CONNECTION_STRATEGY         connectionStrategy        = CONNECTION_STRATEGY.ROUND_ROBIN;
   private volatile Pair<String, Integer>       leaderServer;
   private volatile int                         currentReplicaServerIndex = -1;
+  // Learned from any response of the server: it answers a request that carries the same X-Request-Id from its replay cache (issue #8526)
+  private volatile boolean                     serverReplaysRequestIds;
+  static final     String                      HEADER_REQUEST_ID         = "X-Request-Id";
+  static final     String                      HEADER_REPLAY_PROTECTION  = "X-ArcadeDB-Replay-Protection";
   private          int                         timeout;
   protected        String                      currentServer;
   protected        int                         currentPort;
@@ -477,6 +482,13 @@ public class RemoteHttpComponent extends RWLockContext {
 
     String server = null;
 
+    // One id per logical call, sent again with every attempt, so that a write whose response was lost can be sent again: the server
+    // answers the replay from its IdempotencyCache instead of running the statement twice (issue #8526). Not for a request inside
+    // a remote transaction, whose outcome is not settled until the commit and which the server never caches.
+    final boolean replayProtected = !replayable && controlPlane == null && "POST".equalsIgnoreCase(method) && payloadCommand != null
+        && !(this instanceof RemoteDatabase sessionDb && sessionDb.getSessionId() != null);
+    final String requestId = replayProtected ? UUID.randomUUID().toString() : null;
+
     for (int retry = 0; retry < maxAttempts && connectToServer != null; ++retry) {
       server = connectToServer.getFirst() + ":" + connectToServer.getSecond();
       String url = protocol + "://" + server + "/api/v" + apiVersion + "/" + operation;
@@ -500,6 +512,9 @@ public class RemoteHttpComponent extends RWLockContext {
         //                                 last-applied commit index so the client can
         //                                 use it as the next Read-After bookmark.
         requestBuilder = addReadConsistencyHeaders(requestBuilder);
+
+        if (requestId != null)
+          requestBuilder = requestBuilder.header(HEADER_REQUEST_ID, requestId);
 
         HttpRequest request;
 
@@ -548,6 +563,9 @@ public class RemoteHttpComponent extends RWLockContext {
 
         HttpResponse<String> response = sendWithWatchdog(request);
 
+        if (response.headers().firstValue(HEADER_REPLAY_PROTECTION).isPresent())
+          serverReplaysRequestIds = true;
+
         // Capture commit-index from response for read-your-writes consistency.
         if (this instanceof RemoteDatabase remoteDb)
           remoteDb.captureResponseHeaders(response);
@@ -591,7 +609,9 @@ public class RemoteHttpComponent extends RWLockContext {
           break;
 
         if (connectionStrategy == CONNECTION_STRATEGY.FIXED || stickyPinned) {
-          refuseToReplayAPossiblyAppliedRequest(e, replayable, messageLabel, connectToServer);
+          // The same server, which holds the entry of a write it applied: with the id on the request the replay is answered, not run again
+          refuseToReplayAPossiblyAppliedRequest(e, replayable || requestId != null && serverReplaysRequestIds, messageLabel,
+              connectToServer);
           LogManager.instance()
               .log(this, Level.WARNING, "Remote server (%s:%d) seems unreachable, retrying...",
                   connectToServer.getFirst(), connectToServer.getSecond());
