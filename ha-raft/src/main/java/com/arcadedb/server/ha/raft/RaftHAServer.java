@@ -3638,11 +3638,18 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   /**
    * Whether this node is the only voter of the live Raft configuration: there is no peer to hand the leadership to and
-   * none to install a database from (issue #8940). When the live configuration cannot be read this falls back to the
-   * declared server list, which may name non-voting peers: a declared multi-node list answers false, the safe side.
+   * none to install a database from (issue #8940). Non-voting listeners are not counted, so a single voter with
+   * listeners is a sole voter. When the live configuration cannot be read this falls back to the declared server list,
+   * which may name non-voting peers: a declared multi-node list answers false, the safe side. During a membership
+   * change that leaves this node as the only committed voter it answers true, which only affects the one replay
+   * of a missing-database install entry at startup.
    */
   public boolean isSoleVoter() {
-    final Collection<RaftPeer> voters = getLivePeers();
+    return isSoleVoter(getLivePeers(), localPeerId);
+  }
+
+  // @VisibleForTesting
+  static boolean isSoleVoter(final Collection<RaftPeer> voters, final RaftPeerId localPeerId) {
     return voters.size() == 1 && voters.iterator().next().getId().equals(localPeerId);
   }
 
