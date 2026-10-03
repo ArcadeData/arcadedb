@@ -104,7 +104,7 @@ class Issue8982LostUpdateLargeDocumentTest extends TestHelper {
               final MutableDocument d = database.lookupByRID(rid, true).asDocument().modify();
               d.set("n", d.getInteger("n") + 1);
               d.save();
-            }, false, 100000);
+            }, false, 1000);
             committed.incrementAndGet();
           }
         } catch (final Throwable e) {
