@@ -72,4 +72,13 @@ class RedisBinaryCodecTest {
     assertThat(RedisBinaryCodec.sanitize(RedisBinaryCodec.decode(bytes, bytes.length))).isEqualTo("a�é");
     assertThat(RedisBinaryCodec.sanitize("😀 plain")).isEqualTo("😀 plain");
   }
+
+  @Test
+  void truncatedAndSurrogateSequencesRoundTrip() {
+    roundTrip(new byte[] { (byte) 0xed, (byte) 0xa0, (byte) 0x80 }); // CESU-8 high surrogate
+    roundTrip(new byte[] { (byte) 0xed, (byte) 0xb2, (byte) 0x80 }); // CESU-8 low surrogate
+    roundTrip(new byte[] { (byte) 0xed, (byte) 0xa0, (byte) 0xbd, (byte) 0xed, (byte) 0xb8, (byte) 0x80 }); // CESU-8 pair
+    roundTrip(new byte[] { 'a', (byte) 0xf0, (byte) 0x9f, (byte) 0x98 }); // truncated 4-byte sequence
+    roundTrip(new byte[] { (byte) 0xc0, (byte) 0x80 }); // overlong NUL
+  }
 }

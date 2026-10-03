@@ -309,7 +309,7 @@ public class GraphBatch implements AutoCloseable {
   private final Map<String, Integer> edgeTypeFirstBucketCache = new ConcurrentHashMap<>();
   private final Map<String, Boolean> lightweightTypeCache     = new ConcurrentHashMap<>();
   private final Map<String, Boolean> bidirectionalTypeCache   = new ConcurrentHashMap<>();
-  private final Map<String, Boolean> declaredPropertiesCache  = new ConcurrentHashMap<>();
+  private final Map<String, Boolean> emptyEdgeSchemaCache     = new ConcurrentHashMap<>();
 
   // --- Head chunk RID cache: avoids vertex loads when chunk is already known ---
   // Bounded LRU wrapped in synchronizedMap (issue #5664): getOrCreate*EdgeChunk() is called from parallel async
@@ -770,9 +770,9 @@ public class GraphBatch implements AutoCloseable {
     this.edgeProperties[idx] = hasProps ? propertyPairs(edgeProperties) : null;
     // A LIGHTWEIGHT type is stored lightweight whatever the builder was told: the storage shape belongs to the
     // schema, and withLightEdges() is only the legacy per-batch override for types that do not declare one.
-    // An edge type with declared properties is never stored lightweight by that override: its defaults and MANDATORY
-    // constraints apply to an edge without properties too (issue #9019).
-    edgeIsLightweight[idx] = typeIsLightweight || (lightEdges && !hasProps && !typeDeclaresProperties(edgeTypeName));
+    // An edge type with a default or a MANDATORY property is never stored lightweight by that override: those apply to an
+    // edge without properties too (issue #9019). Types with only optional properties keep their compact property-less edges.
+    edgeIsLightweight[idx] = typeIsLightweight || (lightEdges && !hasProps && !typeAppliesSchemaToEmptyEdge(edgeTypeName));
     edgeIsBidirectional[idx] = typeIsBidirectional;
 
     edgeCount++;
@@ -803,9 +803,13 @@ public class GraphBatch implements AutoCloseable {
     return properties;
   }
 
-  private boolean typeDeclaresProperties(final String edgeTypeName) {
-    return declaredPropertiesCache.computeIfAbsent(edgeTypeName,
-        name -> !edgeType(name).getPolymorphicProperties().isEmpty());
+  private boolean typeAppliesSchemaToEmptyEdge(final String edgeTypeName) {
+    return emptyEdgeSchemaCache.computeIfAbsent(edgeTypeName, name -> {
+      for (final Property property : edgeType(name).getPolymorphicProperties())
+        if (property.isMandatory() || property.getDefaultValueDefinition() != null)
+          return true;
+      return false;
+    });
   }
 
   /** The edge type {@code name}, or a clear refusal for a name that is missing or not an edge type. */
@@ -1286,7 +1290,7 @@ public class GraphBatch implements AutoCloseable {
       buffer.putNumber(Double.doubleToLongBits(((Number) value).doubleValue()));
       break;
     case BinaryTypes.TYPE_BYTE:
-      // wraps: callers reach here with a value already converted to the declared type by applySchema()
+      // already converted to the declared type by applySchema()
       buffer.putByte(((Number) value).byteValue());
       break;
     case BinaryTypes.TYPE_BOOLEAN:
