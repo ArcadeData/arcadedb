@@ -25,7 +25,9 @@ import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -105,11 +107,13 @@ class Issue8972DecimalNotUniqueIndexTest extends TestHelper {
     assertThat(names("C")).hasSize(12);
 
     final IndexCursor cursor = index.get(new Object[] { new BigDecimal("5") });
-    int found = 0;
+    final Set<RID> found = new HashSet<>();
     while (cursor.hasNext()) {
-      assertThat(database.lookupByRID(cursor.next().getIdentity(), true)).isNotNull();
-      found++;
+      final RID rid = cursor.next().getIdentity();
+      assertThat(database.lookupByRID(rid, true)).isNotNull();
+      found.add(rid);
     }
-    assertThat(found).isEqualTo(12);
+    // a wrong value offset could return the same record twice
+    assertThat(found).hasSize(12);
   }
 }

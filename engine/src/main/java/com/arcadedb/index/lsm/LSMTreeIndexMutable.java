@@ -321,13 +321,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
       final int firstKeyPos = findFirstEntryOfSameKey(currentPageBuffer, convertedKeys, startIndexArray, mid);
       final int lastKeyPos = findLastEntryOfSameKey(count, currentPageBuffer, convertedKeys, startIndexArray, mid);
 
-      final int[] positionsArray = new int[lastKeyPos - firstKeyPos + 1];
-      for (int i = firstKeyPos; i <= lastKeyPos; ++i) {
-        final int entryPos = currentPageBuffer.getInt(startIndexArray + (i * INT_SERIALIZED_SIZE));
-        // KEYS THAT COMPARE EQUAL CAN SERIALIZE TO DIFFERENT SIZES (E.G. DECIMAL 5.00 vs 5), SO EACH ENTRY HAS ITS OWN KEY SIZE (#8972)
-        currentPageBuffer.position(entryPos);
-        positionsArray[i - firstKeyPos] = entryPos + getSerializedKeySize(currentPageBuffer, convertedKeys.length);
-      }
+      final int[] positionsArray = getValuePositionsOfRun(currentPageBuffer, startIndexArray, convertedKeys.length, firstKeyPos, lastKeyPos);
 
       return new LookupResult(true, false, lastKeyPos, positionsArray);
     }

@@ -99,39 +99,44 @@ class Issue8973OrderByAggregateTest extends TestHelper {
   }
 
   @Test
-  void aggregateOrderByWithLoneStarAndUnwindKeepsRows() {
-    // the early-exit shapes of addOrderByProjections must not be switched into the aggregate split path
+  void aggregateOrderByWithLoneStarKeepsEveryRecordUnchanged() {
+    // a lone * is an early-exit shape of addOrderByProjections: it must not be switched into the aggregate split path, so every record comes back
+    final List<Integer> ks = new ArrayList<>();
     try (final ResultSet rs = database.query("sql", "SELECT * FROM G ORDER BY count(*)")) {
-      int rows = 0;
       while (rs.hasNext()) {
-        rs.next();
-        rows++;
+        final Result row = rs.next();
+        assertThat(row.getPropertyNames()).contains("k", "v");
+        ks.add(row.<Number>getProperty("k").intValue());
       }
-      assertThat(rows).isGreaterThan(0);
-    } catch (final RuntimeException e) {
-      // a clear rejection is acceptable, silently wrong rows are not
-      assertThat(e.getMessage()).isNotNull();
     }
+    assertThat(ks).containsExactlyInAnyOrder(1, 1, 2, 3, 3, 3);
+  }
 
+  @Test
+  void aggregateOrderByWithUnwindKeepsEveryUnwoundRow() {
     database.command("sql", "CREATE DOCUMENT TYPE U");
     database.transaction(() -> {
       database.newDocument("U").set("k", 1, "tags", List.of("a", "b")).save();
       database.newDocument("U").set("k", 2, "tags", List.of("a")).save();
     });
-    final List<Integer> ks = new ArrayList<>();
-    try (final ResultSet rs = database.query("sql", "SELECT k, tags FROM U ORDER BY k DESC UNWIND tags")) {
-      while (rs.hasNext())
-        ks.add(rs.next().<Number>getProperty("k").intValue());
-    }
-    assertThat(ks).containsExactly(2, 1, 1);
 
-    // an aggregate in ORDER BY next to UNWIND must reach the planner's early-exit path, not the aggregate split: it is either rejected
-    // with a message or answered, never answered with the aggregate evaluated per record
-    try (final ResultSet rs = database.query("sql", "SELECT k, tags FROM U ORDER BY count(*) UNWIND tags")) {
-      while (rs.hasNext())
-        assertThat(rs.next().<Number>getProperty("k")).isNotNull();
-    } catch (final RuntimeException e) {
-      assertThat(e.getMessage()).isNotBlank();
+    final List<String> plain = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", "SELECT k, tags FROM U ORDER BY k DESC UNWIND tags")) {
+      while (rs.hasNext()) {
+        final Result row = rs.next();
+        plain.add(row.<Number>getProperty("k") + ":" + row.getProperty("tags"));
+      }
     }
+    assertThat(plain).containsExactly("2:a", "1:a", "1:b");
+
+    // UNWIND is an early-exit shape: the aggregate stays out of the split path, and no row is lost or duplicated
+    final List<String> withAggregate = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", "SELECT k, tags FROM U ORDER BY count(*) UNWIND tags")) {
+      while (rs.hasNext()) {
+        final Result row = rs.next();
+        withAggregate.add(row.<Number>getProperty("k") + ":" + row.getProperty("tags"));
+      }
+    }
+    assertThat(withAggregate).containsExactlyInAnyOrder("1:a", "1:b", "2:a");
   }
 }
