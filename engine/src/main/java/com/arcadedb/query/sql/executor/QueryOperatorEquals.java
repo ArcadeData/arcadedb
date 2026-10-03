@@ -90,7 +90,8 @@ public class QueryOperatorEquals {
   }
 
   // "=" semantics, tried both ways like the list form of IN (the other side is converted to the class of the column, or the column to
-  // the class of the other side). Links keep plain equals() so a link never recurses (#9031).
+  // the class of the other side). Links keep plain equals() so a link never recurses (#9031); an Identifiable or Result on the other side
+  // terminates too: a record with an identity goes straight to RID equality and a Result cannot form a cycle.
   private static boolean valueEquals(final Object fieldValue, final Object other) {
     if (fieldValue.equals(other))
       return true;

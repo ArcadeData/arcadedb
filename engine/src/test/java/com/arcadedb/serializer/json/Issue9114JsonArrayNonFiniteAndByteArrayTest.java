@@ -91,4 +91,13 @@ class Issue9114JsonArrayNonFiniteAndByteArrayTest {
     assertThat(new JSONArray().put((Object) new int[][] { { 1 }, { 2, 3 } }).toString()).isEqualTo("[[[1],[2,3]]]");
     assertThat(new JSONObject().put("v", new LinkedHashSet<>(List.of(1.0, Double.NaN))).getJSONArray("v").toString()).isEqualTo("[1.0,null]");
   }
+
+  @Test
+  void finitePrimitiveArraysRoundTripAndFloatNaNInCollections() {
+    assertThat(new JSONObject().put("v", new float[] { 1.5F, -2F }).getJSONArray("v").toString()).isEqualTo("[1.5,-2.0]");
+    assertThat(new JSONObject().put("v", new double[] { 0.25D, 3D }).getJSONArray("v").toString()).isEqualTo("[0.25,3.0]");
+    assertThat(new JSONObject().put("v", new long[] { 1L, Long.MAX_VALUE }).getJSONArray("v").toString()).isEqualTo("[1," + Long.MAX_VALUE + "]");
+    assertThat(new JSONArray(List.of(1F, Float.NaN)).toString()).isEqualTo("[1.0,null]");
+    assertThat(new JSONArray(new Object[] { Float.NaN, 2 }).toString()).isEqualTo("[null,2]");
+  }
 }
