@@ -103,4 +103,30 @@ class Issue8983HashIndexKeyChangeTest extends TestHelper {
     assertThatThrownBy(() -> database.transaction(() -> database.lookupByRID(rid[0], true).asDocument().modify().set("k", 2).save()))
         .isInstanceOf(DuplicatedKeyException.class);
   }
+
+  @Test
+  void sameRecordUpdatedTwiceInOneTransactionKeepsOneEntry() {
+    for (final String kind : new String[] { "UNIQUE", "NOTUNIQUE", "UNIQUE_HASH", "NOTUNIQUE_HASH" }) {
+      final String t = create("E_" + kind, kind);
+      database.transaction(() -> database.newDocument(t).set("k", 0).save());
+      database.transaction(() -> {
+        database.command("sql", "UPDATE " + t + " SET k = 1 WHERE k = 0");
+        database.command("sql", "UPDATE " + t + " SET k = 2 WHERE k = 1");
+      });
+      assertThat(database.getSchema().getType(t).getPolymorphicIndexByProperties("k").countEntries()).as(kind).isEqualTo(1);
+      assertThat(count("SELECT count(*) AS c FROM " + t + " WHERE k = 2")).as(kind).isEqualTo(1);
+      assertThat(count("SELECT count(*) AS c FROM " + t + " WHERE k = 1")).as(kind).isZero();
+    }
+  }
+
+  @Test
+  void multiPageDocumentWithIndexedPropertyKeepsOneEntry() {
+    database.command("sql", "CREATE DOCUMENT TYPE Big");
+    database.command("sql", "CREATE PROPERTY Big.k INTEGER");
+    database.command("sql", "CREATE INDEX ON Big (k) UNIQUE_HASH");
+    database.transaction(() -> database.newDocument("Big").set("k", 0).set("s", "x".repeat(200_000)).save());
+    database.transaction(() -> database.command("sql", "UPDATE Big SET k = 1 WHERE k = 0"));
+    assertThat(database.getSchema().getType("Big").getPolymorphicIndexByProperties("k").countEntries()).isEqualTo(1);
+    assertThat(count("SELECT count(*) AS c FROM Big WHERE k = 1")).isEqualTo(1);
+  }
 }
