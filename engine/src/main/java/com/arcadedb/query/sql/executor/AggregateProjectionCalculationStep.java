@@ -569,7 +569,7 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
       // numeric types (e.g. Integer(1) vs Long(1), or BigDecimal("1") vs BigDecimal("1.0")) end up in the same
       // group instead of being split (issue #4516).
       for (int i = 0; i < values.length; i++)
-        values[i] = Type.normalizeNumberForKey(values[i]);
+        values[i] = Type.normalizeForKey(values[i]);
       this.values = values;
       this.hashCode = Arrays.hashCode(values);
     }

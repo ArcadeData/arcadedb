@@ -43,14 +43,12 @@ public class BetweenCondition extends BooleanExpression {
   @Override
   public Boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
     final Object firstValue = first.execute(currentRecord, context);
-    if (firstValue == null) {
-      return false;
-    }
+    if (firstValue == null)
+      return null;
 
     Object secondValue = second.execute(currentRecord, context);
-    if (secondValue == null) {
-      return false;
-    }
+    if (secondValue == null)
+      return null;
 
     // A bound with no defined ordering against firstValue (e.g. a non-numeric String bound on a numeric column)
     // makes the comparison undefined, not an error: report "not between" rather than let the raw conversion
@@ -61,9 +59,8 @@ public class BetweenCondition extends BooleanExpression {
     }
 
     Object thirdValue = third.execute(currentRecord, context);
-    if (thirdValue == null) {
-      return false;
-    }
+    if (thirdValue == null)
+      return null;
 
     thirdValue = Type.convertOrNull(context.getDatabase(), thirdValue, firstValue.getClass());
     if (thirdValue == null) {
@@ -76,14 +73,12 @@ public class BetweenCondition extends BooleanExpression {
   @Override
   public Boolean evaluate(final Result currentRecord, final CommandContext context) {
     final Object firstValue = first.execute(currentRecord, context);
-    if (firstValue == null) {
-      return false;
-    }
+    if (firstValue == null)
+      return null;
 
     Object secondValue = second.execute(currentRecord, context);
-    if (secondValue == null) {
-      return false;
-    }
+    if (secondValue == null)
+      return null;
 
     secondValue = Type.convertOrNull(context.getDatabase(), secondValue, firstValue.getClass());
     if (secondValue == null) {
@@ -91,9 +86,8 @@ public class BetweenCondition extends BooleanExpression {
     }
 
     Object thirdValue = third.execute(currentRecord, context);
-    if (thirdValue == null) {
-      return false;
-    }
+    if (thirdValue == null)
+      return null;
     thirdValue = Type.convertOrNull(context.getDatabase(), thirdValue, firstValue.getClass());
     if (thirdValue == null) {
       return false;

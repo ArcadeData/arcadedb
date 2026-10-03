@@ -21,6 +21,7 @@ package com.arcadedb.function.sql;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.query.sql.executor.SQLFunction;
+import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.utility.NumberUtils;
 
 /**
@@ -127,6 +128,9 @@ public abstract class SQLFunctionAbstract implements SQLFunction {
    */
   @SuppressWarnings("unchecked")
   protected int compareValues(final Object left, final Object right) {
+    // STRINGS ORDER BY CODE POINT, AS IN THE INDEX, ORDER BY AND THE COMPARISON OPERATORS (ISSUE #8975)
+    if (left instanceof String leftString && right instanceof String rightString)
+      return BinaryComparator.compareStrings(leftString, rightString);
     try {
       return ((Comparable<Object>) left).compareTo(right);
     } catch (final ClassCastException e) {

@@ -58,6 +58,11 @@ public class NeOperator extends SimpleNode implements BinaryCompareOperator {
   }
 
   @Override
+  public boolean isUnknownOnNull() {
+    return true;
+  }
+
+  @Override
   public boolean isLess() {
     return false;
   }
