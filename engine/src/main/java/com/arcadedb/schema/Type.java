@@ -1117,6 +1117,18 @@ public enum Type {
     return value;
   }
 
+  /**
+   * Adds two integral values exactly. On {@code long} overflow the result is widened to a {@link BigDecimal}, the same
+   * way an {@code int} sum is widened to {@code long}, instead of silently wrapping (issue #8974).
+   */
+  private static Number addExactOrWiden(final long a, final long b) {
+    final long sum = a + b;
+    // HACKER'S DELIGHT: OVERFLOW HAPPENS ONLY WHEN BOTH OPERANDS HAVE THE SIGN OPPOSITE TO THE RESULT
+    if (((a ^ sum) & (b ^ sum)) < 0)
+      return BigDecimal.valueOf(a).add(BigDecimal.valueOf(b));
+    return sum;
+  }
+
   public static Number increment(final Number a, final Number b) {
     if (a == null || b == null)
       throw new IllegalArgumentException("Cannot increment a null value");
@@ -1133,7 +1145,7 @@ public enum Type {
         }
       }
       case Long l -> {
-        return a.intValue() + b.longValue();
+        return addExactOrWiden(a.intValue(), b.longValue());
       }
       case Short aShort -> {
         try {
@@ -1159,13 +1171,13 @@ public enum Type {
     case Long l -> {
       switch (b) {
       case Integer i -> {
-        return a.longValue() + b.intValue();
+        return addExactOrWiden(a.longValue(), b.intValue());
       }
       case Long aLong -> {
-        return a.longValue() + b.longValue();
+        return addExactOrWiden(a.longValue(), b.longValue());
       }
       case Short i -> {
-        return a.longValue() + b.shortValue();
+        return addExactOrWiden(a.longValue(), b.shortValue());
       }
       case Float v -> {
         return a.longValue() + b.floatValue();
@@ -1191,7 +1203,7 @@ public enum Type {
         }
       }
       case Long l -> {
-        return Long.valueOf(a.shortValue() + b.longValue());
+        return addExactOrWiden(a.shortValue(), b.longValue());
       }
       case Short aShort -> {
         // A SHORT + SHORT SUM CAN NEVER OVERFLOW int (MAGNITUDE <= 2 * 32768), SO int ARITHMETIC IS ALWAYS EXACT HERE

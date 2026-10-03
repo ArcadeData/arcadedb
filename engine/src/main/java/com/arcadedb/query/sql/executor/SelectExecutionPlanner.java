@@ -961,7 +961,7 @@ public class SelectExecutionPlanner {
     }
 
     splitProjectionsForGroupBy(info, context);
-    addOrderByProjections(info);
+    addOrderByProjections(info, context);
     addUnwindProjections(info);
   }
 
@@ -1045,7 +1045,7 @@ public class SelectExecutionPlanner {
   /**
    * creates additional projections for ORDER BY
    */
-  private static void addOrderByProjections(final QueryPlanningInfo info) {
+  private static void addOrderByProjections(final QueryPlanningInfo info, final CommandContext context) {
     if (info.orderApplied || info.expand || info.unwind != null || info.orderBy == null || info.orderBy.getItems().size() == 0
         || info.projection == null || info.projection.getItems() == null || (info.projection.getItems().size() == 1
         && info.projection.getItems().getFirst().isAll())) {
@@ -1066,7 +1066,20 @@ public class SelectExecutionPlanner {
       }
 
       for (final ProjectionItem item : additionalOrderByProjections) {
-        if (info.preAggregateProjection != null) {
+        if (info.aggregateProjection != null && isAggregate(item, context)) {
+          // AN AGGREGATE IN ORDER BY (ORDER BY sum(v)) MUST BE SPLIT LIKE ANY AGGREGATE IN THE PROJECTION, OTHERWISE IT IS EVALUATED PER
+          // RECORD AND THE GROUP TAKES THE VALUE OF ITS FIRST RECORD (#8973)
+          final AggregateProjectionSplit split = new AggregateProjectionSplit();
+          final ProjectionItem post = item.splitForAggregation(split, context);
+          post.setAlias(new Identifier(item.getAlias(), true));
+          if (info.preAggregateProjection == null) {
+            info.preAggregateProjection = new Projection();
+            info.preAggregateProjection.setItems(new ArrayList<>());
+          }
+          info.preAggregateProjection.getItems().addAll(split.getPreAggregate());
+          info.aggregateProjection.getItems().addAll(split.getAggregate());
+          info.projection.getItems().add(post);
+        } else if (info.preAggregateProjection != null) {
           info.preAggregateProjection.getItems().add(item);
           info.aggregateProjection.getItems().add(projectionFromAlias(item.getAlias()));
           info.projection.getItems().add(projectionFromAlias(item.getAlias()));
@@ -1184,6 +1197,14 @@ public class SelectExecutionPlanner {
     if (info.groupBy != null && info.groupBy.getItems() != null)
       for (final Expression exp : info.groupBy.getItems())
         if (!exp.isBaseIdentifier()) {
+          isSplitted = true;
+          break;
+        }
+
+    // AN AGGREGATE ONLY IN ORDER BY (SELECT k ... GROUP BY k ORDER BY count(*)) ALSO NEEDS THE SPLIT, addOrderByProjections() ADDS ITS PARTS (#8973)
+    if (!isSplitted && info.orderBy != null && info.orderBy.getItems() != null)
+      for (final OrderByItem orderItem : info.orderBy.getItems())
+        if (orderItem.expression != null && orderItem.expression.isAggregate(context)) {
           isSplitted = true;
           break;
         }
