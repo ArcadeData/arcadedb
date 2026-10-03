@@ -160,4 +160,22 @@ class Issue8983HashIndexKeyChangeTest extends TestHelper {
         }
     }
   }
+
+  @Test
+  void indexFollowsTheLastSaveNotALaterUnsavedMutation() {
+    // Pins the contract documented on LocalDatabase.updateRecordNoLock: the commit flush no longer re-indexes, so a property
+    // changed after the last save() is not indexed (it used to be, through the very double write this issue removes)
+    for (final String kind : new String[] { "NOTUNIQUE", "NOTUNIQUE_HASH" }) {
+      final String t = create("U_" + kind, kind);
+      final RID[] rid = new RID[1];
+      database.transaction(() -> rid[0] = database.newDocument(t).set("k", 0).save().getIdentity());
+      database.transaction(() -> {
+        final MutableDocument d = database.lookupByRID(rid[0], true).asDocument().modify();
+        d.set("k", 1).save();
+        d.set("k", 2);
+      });
+      assertThat(database.getSchema().getType(t).getPolymorphicIndexByProperties("k").countEntries()).as(kind).isEqualTo(1);
+      assertThat(count("SELECT count(*) AS c FROM " + t + " WHERE k = 0")).as(kind).isZero();
+    }
+  }
 }
