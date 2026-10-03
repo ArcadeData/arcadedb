@@ -40,6 +40,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 
 /**
@@ -50,11 +51,16 @@ import java.util.logging.Level;
  * tagged with {@link #TAG}, and turned back into the BSON object on the way out. A {@link Decimal128} is stored as a
  * {@link BigDecimal} (a DECIMAL) and read back as a Decimal128. A value the engine cannot hold at all is refused with an
  * error instead of being silently dropped.
+ * <p>
+ * The field name {@code $bson} is reserved for the tag: a map with a string {@code $bson} key written through SQL or another
+ * protocol is read back by the MongoDB plugin as the BSON value it names (a malformed or unknown tag stays a plain map).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 final class MongoBsonValues {
   static final String TAG = "$bson";
+
+  private static final AtomicBoolean WIDE_DECIMAL_WARNED = new AtomicBoolean();
 
   private static final String BIN_DATA = "binData";
   private static final String REGEX = "regex";
@@ -176,7 +182,9 @@ final class MongoBsonValues {
         return new Decimal128(decimal);
       } catch (final ArithmeticException | IllegalArgumentException e) {
         // more than 34 significant digits or an exponent out of range: keep the response readable
-        LogManager.instance().log(MongoBsonValues.class, Level.FINE, "DECIMAL %s exceeds Decimal128 and is returned as a double", decimal);
+        // warn once: a large result set would otherwise flood the log
+        LogManager.instance().log(MongoBsonValues.class, WIDE_DECIMAL_WARNED.compareAndSet(false, true) ? Level.WARNING : Level.FINE,
+            "A DECIMAL beyond Decimal128 is returned as a double (value %s)", decimal);
         return decimal.doubleValue();
       }
     }
@@ -187,6 +195,24 @@ final class MongoBsonValues {
 
   static boolean isTagged(final Object value) {
     return value instanceof Map<?, ?> map && map.get(TAG) instanceof String;
+  }
+
+  /**
+   * Exact numeric coercion for arithmetic on a DECIMAL: integers and Decimal128 keep every digit.
+   *
+   * @throws MongoServerError for a NaN or infinite floating point value, which has no decimal form
+   */
+  static BigDecimal toBigDecimal(final Number number) {
+    if (number instanceof BigDecimal decimal)
+      return decimal;
+    if (number instanceof Decimal128 decimal)
+      return toBigDecimal(decimal);
+    if (number instanceof Long || number instanceof Integer || number instanceof Short || number instanceof Byte)
+      return BigDecimal.valueOf(number.longValue());
+    final double value = number.doubleValue();
+    if (!Double.isFinite(value))
+      throw new MongoServerError(ErrorCode.BadValue, "The value " + value + " (NaN or Infinity) cannot be combined with a decimal");
+    return BigDecimal.valueOf(value);
   }
 
   private static BigDecimal toBigDecimal(final Decimal128 decimal) {
