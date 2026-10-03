@@ -706,7 +706,10 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       }
       case "$inc" -> {
         for (final Map.Entry<String, Object> f : operand.entrySet()) {
-          final Number current = (Number) record.get(f.getKey());
+          final Object currentValue = record.get(f.getKey());
+          if (currentValue != null && !(currentValue instanceof Number))
+            throw new MongoServerError(ErrorCode.TypeMismatch, "Cannot apply $inc to a value of non-numeric type");
+          final Number current = (Number) currentValue;
           final Number delta = (Number) f.getValue();
           if (current == null)
             record.set(f.getKey(), MongoBsonValues.toStored(delta));

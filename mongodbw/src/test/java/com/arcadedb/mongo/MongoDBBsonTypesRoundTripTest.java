@@ -238,7 +238,7 @@ public class MongoDBBsonTypesRoundTripTest extends BaseMongoServerTest {
   }
 
   @Test
-  void reservedTagIsRefusedWhateverItsValueType() {
+  void driverRefusesReservedTagWhateverItsValueType() {
     assertThatThrownBy(() -> collection.insertOne(new Document("_id", 35).append("v", new Document("$bson", 1)))).isInstanceOf(IllegalArgumentException.class);
   }
 
@@ -281,5 +281,12 @@ public class MongoDBBsonTypesRoundTripTest extends BaseMongoServerTest {
     final Document back = collection.find(eq("x", 1)).first();
     assertThat(back).isNotNull();
     assertThat(back.containsKey("name")).isFalse();
+  }
+
+  @Test
+  void setWithNanDecimalIsRefused() {
+    collection.insertOne(new Document("_id", 48).append("x", 1));
+    assertThatThrownBy(() -> collection.updateOne(eq("_id", 48), set("v", Decimal128.NaN))).isInstanceOf(MongoCommandException.class);
+    assertThat(collection.find(eq("_id", 48)).first().containsKey("v")).isFalse();
   }
 }
