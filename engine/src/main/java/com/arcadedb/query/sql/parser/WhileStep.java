@@ -50,7 +50,7 @@ public class WhileStep extends AbstractExecutionStep {
     if (finalResult != null)
       return finalResult.syncPull(context, nRecords);
 
-    while (condition.evaluate(new ResultInternal(context.getDatabase()), context)) {
+    while (Boolean.TRUE.equals(condition.evaluate(new ResultInternal(context.getDatabase()), context))) {
       final ScriptExecutionPlan plan = initPlan(context);
       final ExecutionStepInternal result = plan.executeFull();
       if (result != null) {

@@ -91,12 +91,12 @@ class OrderByIndexNullScanTest extends TestHelper {
     assertThat(values("SELECT x FROM D WHERE x IS NULL OR x < 3 ORDER BY x")).hasSize(3);
   }
 
-  /** {@code >=} and {@code <=} answer true for two nulls, so they must not be taken as excluding null rows. */
+  /** A comparison with a null operand is unknown (#8979), so {@code >=} and {@code <=} exclude null rows like {@code >}. */
   @Test
-  void selfComparisonWithGreaterOrEqualKeepsTheNullRow() {
+  void selfComparisonWithGreaterOrEqualExcludesTheNullRow() {
     load("D", false, true);
-    assertThat(plan("SELECT x FROM D WHERE x >= x ORDER BY x LIMIT 3")).contains("FETCH FROM TYPE");
-    assertThat(values("SELECT x FROM D WHERE x >= x ORDER BY x")).hasSize(21);
+    assertThat(plan("SELECT x FROM D WHERE x >= x ORDER BY x LIMIT 3")).doesNotContain("FETCH FROM TYPE");
+    assertThat(values("SELECT x FROM D WHERE x >= x ORDER BY x")).hasSize(20).doesNotContainNull();
   }
 
   /** Only one OR branch excludes nulls: the other can match a null row, so the null sub-plan must stay. */

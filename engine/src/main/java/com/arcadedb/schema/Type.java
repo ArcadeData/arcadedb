@@ -1905,7 +1905,7 @@ public enum Type {
   }
 
   /**
-   * Deep variant of {@link #normalizeNumberForKey}: canonicalizes the numbers held inside a list, a set, a map (its values) or
+   * Deep variant of {@link #normalizeNumberForKey}: canonicalizes the numbers held inside a list, a set, a map (its values; the keys are kept as they are, they are rarely numbers) or
    * a Java array too, so {@code [1]}, {@code [1L]} and {@code [1.0]}, or {@code {a: 1}} and {@code {a: 1L}}, key the same
    * way the scalars do (issue #8977). Arrays are keyed as lists, since an array compares by identity. A scalar costs one
    * extra type check over {@link #normalizeNumberForKey}.
@@ -1917,6 +1917,13 @@ public enum Type {
   public static Object normalizeForKey(final Object value) {
     if (value == null || value instanceof Number)
       return normalizeNumberForKey(value);
+    if (value instanceof Set<?> set) {
+      // A set compares without order: keyed as a list, two equal sets could differ by iteration order
+      final Set<Object> items = new HashSet<>((int) (set.size() / 0.75f) + 1);
+      for (final Object item : set)
+        items.add(normalizeForKey(item));
+      return items;
+    }
     if (value instanceof Collection<?> collection) {
       final List<Object> items = new ArrayList<>(collection.size());
       for (final Object item : collection)
