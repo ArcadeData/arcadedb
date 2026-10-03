@@ -98,15 +98,23 @@ public class Issue6950RecordImageGuardTest extends TestHelper {
   }
 
   @Test
-  void aMultiPageRecordIsNotReportedAsChanged() {
+  void aMultiPageRecordIsReportedAsChangedWhenItWas() {
     final RID rid = createRecord("x".repeat(200_000));
     final Binary image = imageOf(rid);
 
     replaceValueWith(rid, "y".repeat(200_000));
 
     database.transaction(() -> assertThat(guard(rid, image))
-        .as("a head chunk keeps its body off this page, so the slot cannot answer: the off-page fingerprint does")
-        .isFalse());
+        .as("a head chunk keeps its body off this page, so the record is assembled and compared whole (#8985)")
+        .isTrue());
+  }
+
+  @Test
+  void aMultiPageRecordIsNotReportedAsChangedWhenItWasNot() {
+    final RID rid = createRecord("x".repeat(200_000));
+    final Binary image = imageOf(rid);
+
+    database.transaction(() -> assertThat(guard(rid, image)).isFalse());
   }
 
   private boolean guard(final RID rid, final Binary image) {

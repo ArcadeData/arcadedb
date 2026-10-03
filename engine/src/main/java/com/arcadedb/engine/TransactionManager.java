@@ -65,6 +65,8 @@ public class TransactionManager {
   private final String                       logContext;
   private final Timer                        task;
   private final AtomicLong                   transactionIds      = new AtomicLong();
+  // BUMPED AFTER A TRANSACTION THAT CREATED UNIDIRECTIONAL EDGES PUBLISHED THEM, UNDER THE LOCK OF THE FILES OF THEIR TARGETS (ISSUE #8986)
+  private final AtomicLong                   unidirectionalEdgeCommits = new AtomicLong();
   private final AtomicLong                   logFileCounter      = new AtomicLong();
   private final LockManager<Integer, Object> fileIdsLockManager  = new LockManager<>();
   private final AtomicLong                   statsPagesWritten   = new AtomicLong();
@@ -108,6 +110,15 @@ public class TransactionManager {
    * the local commit path - so it is nowhere near a hot path.
    */
   private final ReentrantReadWriteLock       applyLock           = new ReentrantReadWriteLock();
+
+  /** How many transactions published unidirectional edges: a delete that scanned for them before one did cannot commit (#8986). */
+  public long getUnidirectionalEdgeCommits() {
+    return unidirectionalEdgeCommits.get();
+  }
+
+  public void unidirectionalEdgesCommitted() {
+    unidirectionalEdgeCommits.incrementAndGet();
+  }
 
   public TransactionManager(final DatabaseInternal database) {
     this.database = database;

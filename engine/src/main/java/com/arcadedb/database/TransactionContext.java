@@ -140,6 +140,7 @@ public class TransactionContext implements Transaction {
   private static final int                           RECORDS_CACHE_CAPACITY = 1024;
   private static final int                           PAGES_CACHE_CAPACITY   = 64;
   private static final int                           DELETED_SET_CAPACITY   = 256;
+  private static final int                           UNIDIRECTIONAL_TARGET_BUCKET_SHIFT = 40;
   private       Map<RID, Record>                     immutableRecordsCache = new HashMap<>(RECORDS_CACHE_CAPACITY);
   private       Map<RID, Record>                     modifiedRecordsCache  = new HashMap<>(RECORDS_CACHE_CAPACITY);
   // Records created in this transaction (they got an optimistically-assigned RID at creation time). On rollback that
@@ -274,6 +275,11 @@ public class TransactionContext implements Transaction {
   // The edges of unidirectional types this context's transactions created or deleted, for the queries that read their
   // incoming side (issue #8625). Created on the first such change; outlives the transaction, like the context.
   private       UnidirectionalEdgeChanges            unidirectionalEdgeChanges;
+  // #8986: the targets of the unidirectional edges this transaction created, as (bucket id, position), checked at commit
+  private       LongHashSet                          unidirectionalEdgeTargets;
+  // #8986: TransactionManager.getUnidirectionalEdgeCommits() when this transaction first scanned for the edges ending in
+  // a vertex it deletes, or -1 when it did not
+  private       long                                 unidirectionalScanEpoch = -1L;
   // #8610: identifies the transaction a vertex was read in. Drawn from one JVM-wide sequence, not counted per context,
   // so that a nested transaction (a context of its own) can never share a value with the one it is nested in.
   private static final AtomicLong                    BEGIN_SEQUENCE        = new AtomicLong();
@@ -997,6 +1003,10 @@ public class TransactionContext implements Transaction {
     if (updatedRecords.put(record.getIdentity(), record) == null) {
       final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(rid.getBucketId());
       final MutablePage recordPage = bucket.fetchPageInTransaction(rid);
+      // #8985: BEFORE the read image is compared with what the pin loaded, so a change to the part of the record that
+      // lives off the page is either seen by that comparison or by the commit's comparison with this value, never
+      // by neither.
+      final long fingerprint = bucket.offPageContentFingerprint(rid, recordPage, slotMerge);
       try {
         checkRecordIsStillTheOneRead(bucket, rid, recordPage, record);
       } catch (final ConcurrentModificationException e) {
@@ -1011,7 +1021,6 @@ public class TransactionContext implements Transaction {
       // pointer) has that part covered by nothing: the write reaches it at commit, on a page loaded fresh under the
       // lock, which no version check can ever refuse. The fingerprint is what lets the commit tell whether it is still
       // updating the record it read.
-      final long fingerprint = bucket.offPageContentFingerprint(rid, recordPage, slotMerge);
       if (fingerprint != LocalBucket.NO_OFF_PAGE_FINGERPRINT) {
         if (offPageFingerprints == null)
           offPageFingerprints = new HashMap<>();
@@ -1052,6 +1061,21 @@ public class TransactionContext implements Transaction {
         return true;
 
     return immutablePages.containsKey(pageId);
+  }
+
+  /**
+   * The page this transaction already holds for {@code pageId} (its own modified or new copy, or the immutable one
+   * pinned by {@code REPEATABLE_READ}), or null when the transaction holds none. Never reaches the page manager.
+   */
+  public BasePage getPinnedPage(final PageId pageId) {
+    BasePage page = null;
+    if (modifiedPages != null)
+      page = modifiedPages.get(pageId);
+    if (page == null && newPages != null)
+      page = newPages.get(pageId);
+    if (page == null)
+      page = immutablePages.get(pageId);
+    return page;
   }
 
   /**
@@ -2202,6 +2226,8 @@ public class TransactionContext implements Transaction {
         // LOCK FILES IN ORDER (TO AVOID DEADLOCK)
         lockedFiles = lockFilesInOrder(modifiedFiles);
 
+      checkUnidirectionalEdgesAgainstConcurrentDeletes();
+
       // Process updatedRecords AFTER acquiring locks
       if (updatedRecords != null) {
         for (final Record rec : updatedRecords.values())
@@ -2511,6 +2537,11 @@ public class TransactionContext implements Transaction {
       for (final Map.Entry<Integer, Integer> entry : newPageCounters.entrySet())
         ((PaginatedComponent) database.getSchema().getFileById(entry.getKey())).updatePageCount(entry.getValue());
 
+      // #8986: AFTER the edges are published and while their targets' files are still locked, so a delete that did not
+      // see them has either taken its epoch before this bump, and fails at its commit, or after it, and saw them
+      if (unidirectionalEdgeTargets != null)
+        database.getTransactionManager().unidirectionalEdgesCommitted();
+
       // UPDATE RECORD COUNT
       bucketRecordDelta.forEach((bucketId, delta) -> {
         // THE BUCKET/FILE COULD HAVE BEEN REMOVED IN THE CURRENT TRANSACTION
@@ -2786,6 +2817,25 @@ public class TransactionContext implements Transaction {
     this.asyncFlush = value;
   }
 
+  /**
+   * Remembers the target of a unidirectional edge this transaction created. The target record is not written, so no page
+   * version tells the commit that a concurrent transaction deleted it (#8986): the commit asks it directly.
+   */
+  public void addUnidirectionalEdgeTarget(final RID target) {
+    if (unidirectionalEdgeTargets == null)
+      unidirectionalEdgeTargets = new LongHashSet();
+    unidirectionalEdgeTargets.add(((long) target.getBucketId() << UNIDIRECTIONAL_TARGET_BUCKET_SHIFT) | target.getPosition());
+  }
+
+  /**
+   * A delete of this transaction is about to scan for the unidirectional edges ending in its vertex. An edge another
+   * transaction publishes after this point is one the scan cannot find, so the commit refuses to go on (#8986).
+   */
+  public void noteUnidirectionalEdgeScan() {
+    if (unidirectionalScanEpoch < 0L)
+      unidirectionalScanEpoch = database.getTransactionManager().getUnidirectionalEdgeCommits();
+  }
+
   /** The unidirectional edge changes of this context, created on the first call. */
   public UnidirectionalEdgeChanges getUnidirectionalEdgeChanges() {
     if (unidirectionalEdgeChanges == null)
@@ -2799,6 +2849,8 @@ public class TransactionContext implements Transaction {
   }
 
   public void reset() {
+    unidirectionalEdgeTargets = null;
+    unidirectionalScanEpoch = -1L;
     if (unidirectionalEdgeChanges != null)
       unidirectionalEdgeChanges.transactionEnded();
     // #7933: FIRST, while the file locks below are still held. This is the point every conclusion that is NOT a
@@ -2949,6 +3001,54 @@ public class TransactionContext implements Transaction {
     return false;
   }
 
+  /**
+   * Under the commit locks, refuses a transaction whose unidirectional edges and vertex deletes were each prepared
+   * without the other transaction's (#8986). The target of such an edge is never written, so the page versions cannot
+   * tell: a delete finds the edges ending in a vertex by scanning for the ones it can see, and an edge another
+   * transaction creates meanwhile is not among them.
+   * <ul>
+   * <li>An edge whose target was deleted and committed since is refused, as the same sequence on a bidirectional type
+   * is, because that edge also writes the target's incoming list.</li>
+   * <li>A delete whose scan started before another transaction published unidirectional edges is refused, so the retry
+   * scans again and finds them. Targets are not compared: the scan is a snapshot of whole types, and the answer is
+   * only needed while two such transactions overlap.</li>
+   * </ul>
+   * The first holds because the files of the targets are locked by {@link #lockFilesFromChanges()} until the edges are
+   * published, the second because the counter is bumped by {@link #publishCommittedPages} before that lock is released.
+   */
+  private void checkUnidirectionalEdgesAgainstConcurrentDeletes() {
+    if (unidirectionalScanEpoch >= 0L && !deletedRecordsInTx.isEmpty()
+        && database.getTransactionManager().getUnidirectionalEdgeCommits() != unidirectionalScanEpoch)
+      throw new ConcurrentModificationException("A unidirectional edge ending in a vertex deleted by this transaction was "
+          + "committed by a concurrent transaction after the edges to delete were looked up. Please retry the operation");
+
+    if (unidirectionalEdgeTargets == null)
+      return;
+
+    final LocalSchema schema = database.getSchema().getEmbedded();
+    for (final long packed : unidirectionalEdgeTargets.toArray()) {
+      final int bucketId = (int) (packed >>> UNIDIRECTIONAL_TARGET_BUCKET_SHIFT);
+      final RID target = new RID(bucketId, packed & ((1L << UNIDIRECTIONAL_TARGET_BUCKET_SHIFT) - 1));
+      if (deletedRecordsInTx.contains(target))
+        // THIS TRANSACTION DELETES IT: THE EDGE IS ITS OWN BUSINESS
+        continue;
+
+      final LocalBucket bucket = schema.getBucketById(bucketId, false);
+      if (bucket == null || bucket.existsRecordInCommittedPage(target) || isCreatedInThisTransaction(target))
+        continue;
+
+      throw new ConcurrentModificationException("Vertex " + target + ", the target of a unidirectional edge created by this "
+          + "transaction, was deleted by a concurrent transaction. Please retry the operation");
+    }
+  }
+
+  private boolean isCreatedInThisTransaction(final RID rid) {
+    for (int i = 0; i < newRecords.size(); i++)
+      if (rid.equals(newRecords.get(i).getIdentity()))
+        return true;
+    return false;
+  }
+
   private IntHashSet lockFilesFromChanges() {
     final IntHashSet modifiedFiles = new IntHashSet(modifiedPages.size() + 16);
 
@@ -2959,6 +3059,12 @@ public class TransactionContext implements Transaction {
         modifiedFiles.add(p.getFileId());
 
     indexChanges.addFilesToLock(modifiedFiles);
+
+    // #8986: the commit checks the targets of its unidirectional edges against the committed state, and the check only
+    // holds while no other transaction can commit a delete of one of them. An explicit lock list is the user's contract
+    // and is not widened: the check still runs, without the lock.
+    if (unidirectionalEdgeTargets != null && explicitLockedFiles == null)
+      unidirectionalEdgeTargets.forEach(target -> modifiedFiles.add((int) (target >>> UNIDIRECTIONAL_TARGET_BUCKET_SHIFT)));
 
     for (final Integer fid : newPageCounters.keySet())
       modifiedFiles.add(fid);
