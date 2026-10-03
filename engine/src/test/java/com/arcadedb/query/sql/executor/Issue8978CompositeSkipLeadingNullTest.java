@@ -107,4 +107,15 @@ class Issue8978CompositeSkipLeadingNullTest extends TestHelper {
     assertThat(names("SELECT name FROM Composite WHERE a < 5 ORDER BY a DESC")).containsExactly("r2", "r1");
     assertThat(names("SELECT name FROM Composite WHERE a IS NULL")).containsExactlyInAnyOrder("r3", "r4", "r5");
   }
+
+  @Test
+  void everyComparisonOperatorAgreesWithTheScan() {
+    for (final String where : new String[] { "a < 2", "a <= 2", "a > 0", "a >= 1", "a <> 1", "a != 2", "a = 1", "a BETWEEN 1 AND 2",
+        "NOT (a > 1)", "a <= 2 AND b IS NULL" }) {
+      assertThat(names("SELECT name FROM Composite WHERE " + where + " ORDER BY name")).as(where)
+          .isEqualTo(names("SELECT name FROM Plain WHERE " + where + " ORDER BY name"));
+      assertThat(names("SELECT name FROM Composite WHERE " + where + " ORDER BY a DESC")).as(where + " DESC")
+          .containsExactlyInAnyOrderElementsOf(names("SELECT name FROM Plain WHERE " + where + " ORDER BY name"));
+    }
+  }
 }
