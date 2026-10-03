@@ -71,6 +71,16 @@ class Issue9004JsonNumbersBeyondLongAndDoubleTest extends TestHelper {
   }
 
   @Test
+  void longDoubleTokensThatRoundTripStayPrimitive() {
+    // 17 significant digits, as Double.toString writes them: no BigDecimal, the array keeps the primitive path
+    final double a = 0.1234567890123456;
+    final double b = 1.0 / 3;
+    final Map<String, Object> map = new JSONObject("{\"v\":[" + a + "," + b + "]}").toMap(true);
+    assertThat(map.get("v")).isInstanceOf(double[].class);
+    assertThat((double[]) map.get("v")).containsExactly(a, b);
+  }
+
+  @Test
   void numericArraysAreExact() {
     final Map<String, Object> map = new JSONObject(
         "{\"d\":[0.1,3.141592653589793],\"big\":[1,18446744073709551617],\"mixed\":[2,3.5],\"wide\":[1.5,1.23456789012345678901234567890]}").toMap(true);

@@ -185,11 +185,17 @@ public class JSONArray implements Iterable<Object> {
     // EXACT: A float[] WOULD NARROW EVERY ELEMENT TO 24 BITS OF PRECISION, EVEN WHEN THE ARRAY IS NOT A VECTOR (issue #9003)
     final double[] result = new double[size];
     for (int i = 0; i < size; i++) {
-      final Object value = JSONObject.elementToObject(list.get(i));
-      // MORE DIGITS THAN A double HOLDS: THE LIST KEEPS THEM (BigDecimal)
-      if (value instanceof BigDecimal)
-        return null;
-      result[i] = ((Number) value).doubleValue();
+      final String token = ((JsonPrimitive) list.get(i)).getAsString();
+      if (token.length() <= 15)
+        // FEW ENOUGH DIGITS: A double HOLDS THEM ALL
+        result[i] = Double.parseDouble(token);
+      else {
+        // MORE DIGITS THAN A double HOLDS: THE LIST KEEPS THEM (BigDecimal)
+        final Object value = JSONObject.elementToObject(list.get(i));
+        if (value instanceof BigDecimal)
+          return null;
+        result[i] = ((Number) value).doubleValue();
+      }
     }
     return result;
   }

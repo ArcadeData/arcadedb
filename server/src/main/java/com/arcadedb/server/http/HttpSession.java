@@ -149,7 +149,8 @@ public class HttpSession implements QuerySession {
     try {
       transaction.begin(transaction.getIsolationLevel());
     } catch (final Exception ex) {
-      // THE SESSION STAYS WITHOUT A TRANSACTION: SAME OUTCOME AS BEFORE THE RESTART EXISTED
+      // THE SESSION CANNOT GO ON IN A TRANSACTION: IT IS REFUSED RATHER THAN RUN IN AUTOCOMMIT
+      LogManager.instance().log(this, Level.WARNING, "Session %s could not start a new transaction after a failed command", ex, id);
       rolledBackByFailure = true;
     }
   }

@@ -202,7 +202,9 @@ class Issue9002HttpParamsFidelityIT extends BaseGraphServerTest {
     if (sql == null)
       b.POST(HttpRequest.BodyPublishers.noBody());
     else {
-      final String body = "{\"language\":\"sql\",\"command\":" + "\"" + sql + "\"" + (params != null ? ",\"params\":" + params : "") + "}";
+      // the command text goes through the JSON writer (escaping); the raw params text is appended so its numbers stay as written
+      final String commandJson = new JSONObject().put("language", "sql").put("command", sql).toString();
+      final String body = commandJson.substring(0, commandJson.length() - 1) + (params != null ? ",\"params\":" + params : "") + "}";
       b.POST(HttpRequest.BodyPublishers.ofString(body));
     }
     return http.send(b.build(), HttpResponse.BodyHandlers.ofString());
