@@ -29,6 +29,8 @@ import de.bwaldvogel.mongo.bson.LegacyUUID;
 import de.bwaldvogel.mongo.bson.MaxKey;
 import de.bwaldvogel.mongo.bson.MinKey;
 import de.bwaldvogel.mongo.bson.ObjectId;
+import de.bwaldvogel.mongo.exception.ErrorCode;
+import de.bwaldvogel.mongo.exception.MongoServerError;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
@@ -72,7 +74,8 @@ final class MongoBsonValues {
 
   /**
    * Converts a value used in a filter into the form it is stored in. A regular expression is left alone: as a filter value it
-   * is a pattern to match, not a value to compare.
+   * is a pattern to match, not a value to compare. Known limitation: an equality filter on a binary value does not match,
+   * because the stored map holds a byte array, which the engine compares by reference.
    */
   static Object toBound(final Object value) {
     return needsConversion(value) ? toStored(value) : value;
@@ -81,7 +84,7 @@ final class MongoBsonValues {
   /**
    * Converts a value received from a client into the form stored in the database. An {@link ObjectId} becomes its hex string.
    *
-   * @throws IllegalArgumentException if the value (or an element nested in it) has a type that cannot be stored
+   * @throws MongoServerError if the value (or an element nested in it) has a type that cannot be stored
    */
   @SuppressWarnings("unchecked")
   static Object toStored(final Object value) {
@@ -107,7 +110,7 @@ final class MongoBsonValues {
       return tagged(LEGACY_UUID, "uuid", uuid.getUuid().toString());
     if (value instanceof Map<?, ?> map) {
       if (map.get(TAG) instanceof String)
-        throw new IllegalArgumentException("The field name '" + TAG + "' is reserved");
+        throw new MongoServerError(ErrorCode.BadValue, "The field name '" + TAG + "' is reserved");
       final Map<String, Object> converted = LinkedHashMap.newLinkedHashMap(map.size());
       for (final Map.Entry<String, Object> entry : ((Map<String, Object>) map).entrySet())
         converted.put(entry.getKey(), toStored(entry.getValue()));
@@ -120,7 +123,7 @@ final class MongoBsonValues {
       return converted;
     }
     if (BinaryTypes.getTypeFromValue(value, null) == -1)
-      throw new IllegalArgumentException("The BSON type " + value.getClass().getSimpleName() + " is not supported");
+      throw new MongoServerError(ErrorCode.BadValue, "The BSON type " + value.getClass().getSimpleName() + " is not supported");
     return value;
   }
 
@@ -143,7 +146,10 @@ final class MongoBsonValues {
     try {
       return decimal.toBigDecimal();
     } catch (final ArithmeticException e) {
-      throw new IllegalArgumentException("The Decimal128 value " + decimal + " (NaN, Infinity or negative zero) cannot be stored", e);
+      // BigDecimal HAS NO NEGATIVE ZERO: IT IS STORED AS ZERO, WHICH COMPARES EQUAL TO IT
+      if (decimal.doubleValue() == 0)
+        return BigDecimal.ZERO;
+      throw new MongoServerError(ErrorCode.BadValue, "The Decimal128 value " + decimal + " (NaN or Infinity) cannot be stored");
     }
   }
 

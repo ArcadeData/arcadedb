@@ -800,9 +800,11 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   }
 
   private static Object toMapValue(final Object value) {
-    if (value instanceof Document document)
+    if (value instanceof Document document) {
+      if (document.get(MongoBsonValues.TAG) instanceof String)
+        throw new MongoServerError(ErrorCode.BadValue, "The field name '" + MongoBsonValues.TAG + "' is reserved");
       return documentToMap(document);
-    else if (value instanceof List<?> list) {
+    } else if (value instanceof List<?> list) {
       final List<Object> converted = new ArrayList<>(list.size());
       for (final Object item : list)
         converted.add(toMapValue(item));

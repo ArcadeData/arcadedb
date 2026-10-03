@@ -176,4 +176,34 @@ public class MongoDBBsonTypesRoundTripTest extends BaseMongoServerTest {
         .isInstanceOf(Exception.class);
     assertThat(collection.find(eq("_id", 15)).first()).isNull();
   }
+
+  @Test
+  void refusalLeavesNoOpenTransaction() {
+    assertThatThrownBy(() -> collection.insertOne(new Document("_id", 16).append("v", Decimal128.POSITIVE_INFINITY)))
+        .isInstanceOf(Exception.class);
+    collection.insertOne(new Document("_id", 17).append("v", 1));
+    assertThat(collection.find(eq("_id", 17)).first()).isNotNull();
+    assertThat(collection.find(eq("_id", 16)).first()).isNull();
+  }
+
+  @Test
+  void reservedTagIsRefusedByUpdateToo() {
+    collection.insertOne(new Document("_id", 18).append("x", 1));
+    assertThatThrownBy(() -> collection.updateOne(eq("_id", 18), set("v", new Document("$bson", "timestamp").append("value", 5L))))
+        .isInstanceOf(Exception.class);
+    assertThat(collection.find(eq("_id", 18)).first().containsKey("v")).isFalse();
+  }
+
+  @Test
+  void negativeZeroDecimalIsStoredAsZero() {
+    final Object v = roundTrip(19, Decimal128.NEGATIVE_ZERO);
+    assertThat(((Decimal128) v).bigDecimalValue().signum()).isZero();
+  }
+
+  @Test
+  void inFilterOnMinAndMaxKey() {
+    collection.insertOne(new Document("_id", 20).append("v", new MinKey()));
+    collection.insertOne(new Document("_id", 21).append("v", new MaxKey()));
+    assertThat(collection.find(in("v", List.of(new MaxKey()))).first().get("_id")).isEqualTo(21);
+  }
 }

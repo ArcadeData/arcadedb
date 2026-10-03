@@ -223,18 +223,22 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
   @Override
   public void insertDocuments(final List<Document> list) {
     database.begin();
+    try {
+      for (final Document d : list) {
+        final MutableDocument record = database.newDocument(collectionName);
 
-    for (final Document d : list) {
-      final MutableDocument record = database.newDocument(collectionName);
+        for (final Map.Entry<String, Object> p : d.entrySet()) {
+          record.set(p.getKey(), MongoBsonValues.toStored(p.getValue()));
+        }
 
-      for (final Map.Entry<String, Object> p : d.entrySet()) {
-        record.set(p.getKey(), MongoBsonValues.toStored(p.getValue()));
+        record.save();
       }
 
-      record.save();
+      database.commit();
+    } catch (final RuntimeException e) {
+      database.rollback();
+      throw e;
     }
-
-    database.commit();
   }
 
   @Override
