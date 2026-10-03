@@ -871,7 +871,7 @@ public enum Type {
               property != null ? DateUtils.getPrecisionFromType(property.getType()) : ChronoUnit.MILLIS);
         else if (value instanceof String valueAsString) {
           if (property != null && isEpochString(valueAsString))
-            return convert(database, Long.parseLong(valueAsString), targetClass, property);
+            return convert(database, parseEpoch(valueAsString, targetClass, property), targetClass, property);
           if (!FileUtils.isLong(valueAsString))
             // DateUtils.parseDateTime(), not a private copy of its fallback chain: this branch used to carry its own
             // and the two drifted apart, so a literal the bulk GraphBatch path accepted was rejected here (and vice
@@ -913,7 +913,7 @@ public enum Type {
               property != null ? DateUtils.getPrecisionFromType(property.getType()) : ChronoUnit.MILLIS);
         if (value instanceof String valueAsString) {
           if (property != null && isEpochString(valueAsString))
-            return convert(database, Long.parseLong(valueAsString), targetClass, property);
+            return convert(database, parseEpoch(valueAsString, targetClass, property), targetClass, property);
           if (!FileUtils.isLong(valueAsString))
             // parseZonedDateTime keeps an offset the input carries rather than dropping it, so the same moment
             // denotes the same instant whether it arrives ISO- or space-separated, and anchors an offset-free input
@@ -958,7 +958,7 @@ public enum Type {
           //
           // An all-digits string is an epoch count for a declared property, as in every other date branch (#9110).
           if (property != null && isEpochString(valueAsString))
-            return convert(database, Long.parseLong(valueAsString), targetClass, property);
+            return convert(database, parseEpoch(valueAsString, targetClass, property), targetClass, property);
           if (!FileUtils.isLong(valueAsString)) {
             // parseZonedDateTime, not parseDateTime().atZone(): an Instant IS an instant, so an offset the value
             // carries has to survive. The wall-clock chain drops it - deliberately, for LocalDateTime (issue #4125) -
@@ -1113,6 +1113,15 @@ public enum Type {
         || targetClass.equals(ZonedDateTime.class) || targetClass.equals(Instant.class) || targetClass.equals(byte[].class);
   }
 
+  private static long parseEpoch(final String text, final Class<?> targetClass, final Property property) {
+    try {
+      return Long.parseLong(text);
+    } catch (final NumberFormatException e) {
+      // more digits than a long holds: a shape no date target can take
+      throw inconvertible(text, targetClass.getSimpleName(), property, e);
+    }
+  }
+
   /** A non-empty string of digits only: read as an epoch count, as the DATE branch does and as a number would be. */
   private static boolean isEpochString(final String text) {
     return !text.isEmpty() && FileUtils.isLong(text);
@@ -1168,6 +1177,9 @@ public enum Type {
    * index lookup by a literal) keeps clamping, as it always did.
    */
   private static long narrowToLong(final Number value, final Property property) {
+    if (value instanceof Integer || value instanceof Short || value instanceof Byte)
+      return value.longValue();
+
     if (isNaN(value))
       throw new InconvertibleValueException(
           "Value '" + value + "' is NaN and cannot be converted to type LONG" + forProperty(property), null);
