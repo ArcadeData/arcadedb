@@ -217,7 +217,7 @@ public class MongoDBToSqlTranslator {
     }
 
     buffer.append('(');
-    buildValue(buffer, params, normalized);
+    bindStored(buffer, params, normalized);
     buffer.append(')');
   }
 
@@ -259,6 +259,16 @@ public class MongoDBToSqlTranslator {
   protected static void buildValue(final StringBuilder buffer, final Map<String, Object> params, final Object value) {
     final String name = "p" + params.size();
     params.put(name, MongoBsonValues.toBound(value));
+    buffer.append(':').append(name);
+  }
+
+  /**
+   * Binds a payload that is already in its stored form (see {@link MongoBsonValues#toStored}) as a named parameter, converting
+   * nothing: converting it again would take its type tags for a client-supplied reserved field.
+   */
+  protected static void bindStored(final StringBuilder buffer, final Map<String, Object> params, final Object value) {
+    final String name = "p" + params.size();
+    params.put(name, value);
     buffer.append(':').append(name);
   }
 

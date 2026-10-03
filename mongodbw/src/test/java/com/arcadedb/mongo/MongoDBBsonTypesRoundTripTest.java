@@ -206,4 +206,32 @@ public class MongoDBBsonTypesRoundTripTest extends BaseMongoServerTest {
     collection.insertOne(new Document("_id", 21).append("v", new MaxKey()));
     assertThat(collection.find(in("v", List.of(new MaxKey()))).first().get("_id")).isEqualTo(21);
   }
+
+  @Test
+  void decimalWiderThanDecimal128DoesNotFailTheRead() {
+    final com.arcadedb.database.Database db = getServer(0).getDatabase(getDatabaseName());
+    db.transaction(() -> db.newDocument("bson").set("_id", 30).set("v", new BigDecimal("1234567890123456789012345678901234567890.5")).save());
+    final Document back = collection.find(eq("_id", 30)).first();
+    assertThat(back).isNotNull();
+    assertThat(((Number) back.get("v")).doubleValue()).isGreaterThan(1e39);
+  }
+
+  @Test
+  void binaryEqualityFilterMatches() {
+    collection.insertOne(new Document("_id", 31).append("v", new Binary(new byte[] { 1, 2, 3 })));
+    collection.insertOne(new Document("_id", 32).append("v", new Binary(new byte[] { 4 })));
+    assertThat(collection.find(eq("v", new Binary(new byte[] { 1, 2, 3 }))).first().get("_id")).isEqualTo(31);
+  }
+
+  @Test
+  void incOnDecimalFieldKeepsPrecision() {
+    collection.insertOne(new Document("_id", 34).append("v", new Decimal128(new BigDecimal("0.1"))));
+    collection.updateOne(eq("_id", 34), com.mongodb.client.model.Updates.inc("v", new Decimal128(new BigDecimal("0.2"))));
+    assertThat(collection.find(eq("_id", 34)).first().get("v")).isEqualTo(new Decimal128(new BigDecimal("0.3")));
+  }
+
+  @Test
+  void reservedTagIsRefusedWhateverItsValueType() {
+    assertThatThrownBy(() -> collection.insertOne(new Document("_id", 35).append("v", new Document("$bson", 1)))).isInstanceOf(Exception.class);
+  }
 }
