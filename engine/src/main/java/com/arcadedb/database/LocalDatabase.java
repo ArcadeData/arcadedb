@@ -1694,6 +1694,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * and the commit-time {@code updatedRecords} flush - is deliberately unguarded here, because the check already ran
    * once for it. A NEW direct caller that opens its own transaction and then calls this is therefore the one shape
    * that would slip through both: route it through {@link #updateRecord(Record)} instead of adding a third bypass.
+   * <p>
+   * <b>Indexes are not maintained while the transaction is in {@code COMMIT_1ST_PHASE} (#8983).</b> The only caller there
+   * is the flush of deferred updates, whose index changes {@code updateRecord()} queued at save time; indexing again would
+   * write them twice. A new caller running in that phase must queue its own index changes.
    */
   @Override
   public void updateRecordNoLock(final Record record, final boolean discardRecordAfter) {
