@@ -127,9 +127,23 @@ class Issue9004JsonNumbersBeyondLongAndDoubleTest extends TestHelper {
     assertThat(map.get("n")).isEqualTo(Double.NEGATIVE_INFINITY);
     assertThat(map.get("u")).isEqualTo(0.0);
     assertThat(map.get("long")).isEqualTo(Double.POSITIVE_INFINITY);
+    // an exponent that would wrap around a long is refused too, not handed to BigDecimal
+    assertThat(new JSONObject("{\"w\":1e18446744073709551617,\"v\":1e-18446744073709551617}").toMap().get("w")).isEqualTo(Double.POSITIVE_INFINITY);
+    assertThat(new JSONObject("{\"w\":1e18446744073709551617,\"v\":1e-18446744073709551617}").toMap().get("v")).isEqualTo(0.0);
+    assertThat(new JSONObject("{\"a\":[1.5,1e18446744073709551617]}").toMap(true).get("a")).isEqualTo(List.of(1.5, Double.POSITIVE_INFINITY));
     // within the limits the number is still kept exact
     assertThat(new JSONObject("{\"x\":1e900}").toMap().get("x")).isEqualTo(new BigDecimal("1e900"));
     assertThat(new JSONObject("{\"z\":0.000000000000000000000}").toMap().get("z")).isEqualTo(0.0);
+  }
+
+  @Test
+  void everyPrimitiveNumberArrayExpandsToEveryCollectionTarget() {
+    final Object[] arrays = { new long[] { 1, 2 }, new double[] { 1, 2 }, new int[] { 1, 2 }, new float[] { 1, 2 }, new short[] { 1, 2 } };
+    for (final Object array : arrays) {
+      assertThat((List<?>) Type.convert(database, array, List.class)).hasSize(2);
+      assertThat((Set<?>) Type.convert(database, array, Set.class)).hasSize(2);
+      assertThat((Collection<?>) Type.convert(database, array, Collection.class)).hasSize(2);
+    }
   }
 
   @Test

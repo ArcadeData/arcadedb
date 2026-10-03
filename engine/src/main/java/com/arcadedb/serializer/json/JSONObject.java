@@ -679,10 +679,14 @@ public class JSONObject implements Map<String, Object> {
         long exponent = 0;
         for (int j = i + 1; j < token.length(); j++) {
           final char d = token.charAt(j);
-          if (d >= '0' && d <= '9')
+          if (d >= '0' && d <= '9') {
             exponent = exponent * 10 + (d - '0');
+            // STOP BEFORE A LONG EXPONENT WRAPS AROUND TO A SMALL ONE (1e18446744073709551617) AND REACHES new BigDecimal(), WHICH REFUSES IT
+            if (exponent > MAX_BIG_NUMBER_EXPONENT)
+              return false;
+          }
         }
-        return exponent <= MAX_BIG_NUMBER_EXPONENT;
+        return true;
       }
     }
     return true;
