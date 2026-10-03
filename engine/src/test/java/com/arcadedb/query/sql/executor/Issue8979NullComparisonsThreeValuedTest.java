@@ -165,4 +165,20 @@ class Issue8979NullComparisonsThreeValuedTest extends TestHelper {
       assertThat(rs.next().<Number>getProperty("n").intValue()).isEqualTo(2);
     }
   }
+
+  @Test
+  void betweenFollowsKleeneLogicWithANullBound() {
+    // 1 >= 5 is false, so the whole BETWEEN is false even though the upper bound is unknown; 7 >= 5 is true and 7 <= null is unknown
+    assertThat(names("name = 'one' AND NOT (k BETWEEN 5 AND null)")).containsExactly("one");
+    assertThat(names("name = 'five' AND NOT (k BETWEEN 5 AND null)")).isEmpty();
+    assertThat(names("k BETWEEN null AND 6")).isEmpty();
+    assertThat(names("k BETWEEN 0 AND 6")).containsExactly("five", "one");
+  }
+
+  @Test
+  void rightBinaryFilterDropsNullElements() {
+    try (final ResultSet rs = database.query("sql", "SELECT [1, null, 5, 7][<> 5].size() AS n")) {
+      assertThat(rs.next().<Number>getProperty("n").intValue()).isEqualTo(2);
+    }
+  }
 }

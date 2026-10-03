@@ -112,7 +112,11 @@ public class RightBinaryCondition extends SimpleNode {
 
   private boolean matchesFilters(final Identifiable currentRecord, final Object element, final CommandContext context) {
     if (operator != null) {
-      return operator.execute(context.getDatabase(), element, right.execute(currentRecord, context));
+      final Object rightValue = right.execute(currentRecord, context);
+      // A comparison with a null operand is unknown, so the element is not kept (issue #8979)
+      if ((element == null || rightValue == null) && operator.isUnknownOnNull())
+        return false;
+      return operator.execute(context.getDatabase(), element, rightValue);
     } else if (inOperator != null) {
 
       final Object rightVal = evaluateRight(currentRecord, context);
@@ -130,7 +134,11 @@ public class RightBinaryCondition extends SimpleNode {
 
   private boolean matchesFilters(final Result currentRecord, final Object element, final CommandContext context) {
     if (operator != null) {
-      return operator.execute(context.getDatabase(), element, right.execute(currentRecord, context));
+      final Object rightValue = right.execute(currentRecord, context);
+      // A comparison with a null operand is unknown, so the element is not kept (issue #8979)
+      if ((element == null || rightValue == null) && operator.isUnknownOnNull())
+        return false;
+      return operator.execute(context.getDatabase(), element, rightValue);
     } else if (inOperator != null) {
 
       final Object rightVal = evaluateRight(currentRecord, context);
