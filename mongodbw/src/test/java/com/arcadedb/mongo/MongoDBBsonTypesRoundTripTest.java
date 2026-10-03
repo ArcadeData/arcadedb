@@ -22,9 +22,9 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.mongodb.MongoClient;
 import com.mongodb.MongoClientOptions;
+import com.mongodb.MongoCommandException;
 import com.mongodb.MongoCredential;
 import com.mongodb.ServerAddress;
-import com.mongodb.MongoCommandException;
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.model.UpdateOptions;
 import org.bson.BsonRegularExpression;
@@ -377,5 +377,21 @@ public class MongoDBBsonTypesRoundTripTest extends BaseMongoServerTest {
     final List<Document> found = collection.find(new Document("ref", new Document("$not", new Document("$eq", oid)))).into(new ArrayList<>());
     assertThat(found).hasSize(1);
     assertThat(found.getFirst().get("_id")).isEqualTo(72);
+  }
+
+  @Test
+  void taggedMapsMissingARequiredFieldReadAsPlainMaps() {
+    final Database db = getServer(0).getDatabase(getDatabaseName());
+    db.transaction(() -> {
+      db.newDocument("bson").set("_id", 80).set("v", Map.of(MongoBsonValues.TAG, "regex")).save();
+      db.newDocument("bson").set("_id", 81).set("v", Map.of(MongoBsonValues.TAG, "javascript")).save();
+      db.newDocument("bson").set("_id", 82).set("v", Map.of(MongoBsonValues.TAG, "binData")).save();
+      db.newDocument("bson").set("_id", 83).set("v", Map.of(MongoBsonValues.TAG, "timestamp")).save();
+    });
+    for (int id = 80; id <= 83; id++) {
+      final Document back = collection.find(eq("_id", id)).first();
+      assertThat(back).isNotNull();
+      assertThat(back.get("v")).isInstanceOf(Document.class);
+    }
   }
 }
