@@ -491,6 +491,9 @@ public class RemoteHttpComponent extends RWLockContext {
         && payloadCommand != null
         && !(this instanceof RemoteDatabase sessionDb && sessionDb.getSessionId() != null);
     final String requestId = replayProtected ? UUID.randomUUID().toString() : null;
+    // Whether an earlier attempt may have reached the server: only then does the retry name the server process it expects, because a
+    // request that provably never left (connection refused) is a first execution, whatever process answers it now
+    boolean mayHaveBeenSent = false;
 
     for (int retry = 0; retry < maxAttempts && connectToServer != null; ++retry) {
       server = connectToServer.getFirst() + ":" + connectToServer.getSecond();
@@ -519,7 +522,7 @@ public class RemoteHttpComponent extends RWLockContext {
         if (requestId != null) {
           requestBuilder = requestBuilder.header(HEADER_REQUEST_ID, requestId);
           final String advertisedInstance = serverReplayInstances.get(server);
-          if (retry > 0 && advertisedInstance != null)
+          if (retry > 0 && mayHaveBeenSent && advertisedInstance != null)
             requestBuilder = requestBuilder.header(HEADER_REPLAY_INSTANCE, advertisedInstance);
         }
 
@@ -611,6 +614,8 @@ public class RemoteHttpComponent extends RWLockContext {
 
       } catch (final IOException | ServerIsNotTheLeaderException e) {
         lastException = e;
+        if (e instanceof IOException ioe && !provablyNeverSent(ioe))
+          mayHaveBeenSent = true;
 
         if (!autoReconnect || retry + 1 >= maxRetry)
           break;

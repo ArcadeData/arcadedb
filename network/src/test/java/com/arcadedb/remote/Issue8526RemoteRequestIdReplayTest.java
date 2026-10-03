@@ -28,6 +28,8 @@ import java.io.InputStream;
 import java.lang.reflect.Field;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -108,6 +110,46 @@ class Issue8526RemoteRequestIdReplayTest {
   }
 
   @Test
+  void aRestartedServerAfterAConnectFailureStillRunsTheCommand() throws Exception {
+    // the client saw process proc-old, the server restarted (now another process): the first attempt is refused at connect, so nothing
+    // was sent and the retry must not insist on the old process
+    final int port;
+    try (final ServerSocket probe = new ServerSocket(0)) {
+      port = probe.getLocalPort();
+    }
+    final ScriptedServer[] restarted = new ScriptedServer[1];
+    final ContextConfiguration cfg = new ContextConfiguration();
+    cfg.setValue(GlobalConfiguration.NETWORK_SAME_SERVER_ERROR_RETRIES, 3);
+    final RemoteHttpComponentTest.TestableRemoteHttpComponent c = new RemoteHttpComponentTest.TestableRemoteHttpComponent("127.0.0.1", port,
+        "root", "test", cfg) {
+      @Override
+      HttpResponse<String> sendWithWatchdog(final HttpRequest request, final long watchdogMs)
+          throws IOException, InterruptedException {
+        if (restarted[0] == null) {
+          try {
+            return super.sendWithWatchdog(request, watchdogMs);
+          } finally {
+            // the server comes back right after the refused attempt
+            restarted[0] = new ScriptedServer(port, true, "answer");
+          }
+        }
+        return super.sendWithWatchdog(request, watchdogMs);
+      }
+    };
+    c.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.FIXED);
+    try {
+      c.serverReplayInstances.put("127.0.0.1:" + port, "proc-old");
+      final Object result = c.httpCommand("POST", "db", "command", "sql", INSERT, null, false, true, (response, json) -> json.getString("result"));
+      assertThat(result).isEqualTo("ok");
+      assertThat(restarted[0].instances().get(0)).isNull();
+    } finally {
+      c.close();
+      if (restarted[0] != null)
+        restarted[0].close();
+    }
+  }
+
+  @Test
   void failoverAfterAConnectFailureDoesNotCarryTheOtherServersInstance() throws Exception {
     final int closedPort;
     try (final ServerSocket probe = new ServerSocket(0)) {
@@ -162,9 +204,13 @@ class Issue8526RemoteRequestIdReplayTest {
     private final boolean       advertise;
 
     ScriptedServer(final boolean advertise, final String... script) throws IOException {
+      this(0, advertise, script);
+    }
+
+    ScriptedServer(final int port, final boolean advertise, final String... script) throws IOException {
       this.advertise = advertise;
       this.script = List.of(script);
-      socket = new ServerSocket(0);
+      socket = new ServerSocket(port);
       final Thread t = new Thread(() -> {
         while (!socket.isClosed()) {
           try (final Socket client = socket.accept()) {

@@ -665,7 +665,8 @@ public class JSONObject implements Map<String, Object> {
   /**
    * Whether a decimal token holds nothing the double parsed from it loses: it has the same significant digits (sign, decimal point,
    * exponent and the zeros around the digits ignored) as {@link Double#toString(double)}, the shortest rendering that parses back to
-   * the double. Compared in place, so the common long token of an embedding (a double written with 17 digits) costs no extra object
+   * the double (guaranteed from JDK 19; an older JDK may render a longer string, which only sends more tokens to {@link BigDecimal}).
+   * Compared in place, so the common long token of an embedding (a double written with 17 digits) costs no extra object
    * besides that string, and no {@link BigDecimal}.
    */
   static boolean isExactDouble(final String token, final double value) {
