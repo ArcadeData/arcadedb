@@ -273,7 +273,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // Issue #8901: the division's position right after the latest in-place restartRatis() (the reformat included),
   // PENDING_BASELINE from before the new server starts until it can be read, null when never restarted in place or once
   // the path was proven. Evaluations only ever compare-and-set.
-  private final    AtomicReference<InPlaceRestartBaseline>  inPlaceRestartBaseline = new AtomicReference<>();
+  private final    AtomicReference<InPlaceRestartBaseline> inPlaceRestartBaseline = new AtomicReference<>();
   private          RaftClient                raftClient;
   private volatile RaftProperties            raftProperties;
   private volatile RaftTransactionBroker     transactionBroker;

@@ -306,7 +306,8 @@ public class ClusterAlerts {
             + "via a fresh snapshot install. "
             + "It does not reformat a node whose Raft layer was restarted in place and has taken no entry since, "
             + "under the same term: the leader's appends are then not reaching it, which a reformat cannot fix, and "
-            + "its log says so at WARNING (issue #8901); restart that node by hand. "
+            + "its log says so at WARNING every 5 minutes (issue #8901); restart that node by hand. A reformat that "
+            + "did not help is held the same way, so such a node never reaches the SEVERE give-up below. "
             + "It gives up after arcadedb.ha.divergedFollowerMaxReformats attempts (logged at SEVERE); if that "
             + "happened, if recovery is disabled, or if this recurs, restart this node by hand.")
         .put("details", new JSONObject().put("stuckAtStaleTerm", true)));

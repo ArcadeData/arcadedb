@@ -352,9 +352,9 @@ public final class HealthMonitor {
   // answer true for a streak whose condition cleared after its first tick, until the next tick got round to it.
   private volatile boolean                  stuckConfirmed              = false;
   // When the suspected dead replication path was last logged in the current streak (-1 = not yet), and how many times
-  // it was, for tests (issue #8901). Tick executor only.
+  // it was (issue #8901). Written on the tick executor only; the count is volatile because tests read it.
   private          long                     deadPathReportedAtMs        = -1;
-  private          int                      deadPathReports             = 0;
+  private volatile int                      deadPathReports             = 0;
   // Bounded reformat budget (#4741 review): reformats fired in the current divergence episode, the
   // time the follower started looking healthy again, and whether the budget is exhausted (logged once).
   private          int                      divergenceReformatCount     = 0;
