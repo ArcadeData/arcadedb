@@ -36,10 +36,12 @@ import java.util.Date;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
 public class MongoDBToSqlTranslator {
+  private static final Set<String> FIELD_OPERATORS = Set.of("$in", "$nin", "$eq", "$ne", "$lt", "$lte", "$gt", "$gte", "$exists", "$size");
 
   protected static void buildExpression(final StringBuilder buffer, final Map<String, Object> params, final Document query) {
     int expressionCount = 0;
@@ -153,6 +155,10 @@ public class MongoDBToSqlTranslator {
    */
   protected static void buildExpression(final StringBuilder sql, final Map<String, Object> params, final String field,
       final String key, final Object value) {
+    // the operators applied to a field are meaningless without one: a clear error instead of malformed SQL
+    if (field == null && FIELD_OPERATORS.contains(key))
+      throw new IllegalArgumentException("The operator " + key + " needs a field to apply to");
+
     if ("$in".equals(key)) {
       if (value instanceof Collection<?> collection) {
         // MongoDB's {$in: [.., null]} matches a null or missing field too, which SQL's IN never does (unknown)

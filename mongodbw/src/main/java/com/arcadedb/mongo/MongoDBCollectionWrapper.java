@@ -23,12 +23,12 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.TypeIndexBuilder;
-import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.query.sql.parser.Identifier;
 import de.bwaldvogel.mongo.MongoCollection;
 import de.bwaldvogel.mongo.MongoDatabase;
 import de.bwaldvogel.mongo.backend.ArrayFilters;
@@ -41,14 +41,14 @@ import de.bwaldvogel.mongo.oplog.Oplog;
 
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.locks.ReadWriteLock;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReadWriteLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.logging.Level;
 import java.util.stream.Stream;
 
@@ -272,6 +272,15 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
 
   private static String idIndexKey(final Database database, final String collectionName) {
     return database.getDatabasePath() + "/" + collectionName;
+  }
+
+  /**
+   * {@link #forgetIdIndex} for every collection of a database that is dropped.
+   */
+  static void forgetIdIndexes(final Database database) {
+    final String prefix = database.getDatabasePath() + "/";
+    ID_INDEX_LOCKS.keySet().removeIf(key -> key.startsWith(prefix));
+    ID_INDEX_GAVE_UP.removeIf(key -> key.startsWith(prefix));
   }
 
   /**
