@@ -133,4 +133,16 @@ class Issue9113InScalarAndSubqueryScanEqualityTest extends TestHelper {
     assertThat(ids("S", "k IN (?)", (Object) null)).isEmpty();
     assertThat(ids("S", "k NOT IN (?)", (Object) null)).isEmpty();
   }
+
+  @Test
+  void subqueryDateAndDecimalAgainstStringAgreeWithTheListForm() {
+    load();
+    database.transaction(() -> database.newDocument("Src").set("ts", "2000-01-01 00:00:00").set("ms", "1.5").save());
+    for (final String col : new String[] { "t", "m" }) {
+      final String src = col.equals("t") ? "ts" : "ms";
+      final String literal = col.equals("t") ? "'2000-01-01 00:00:00'" : "'1.5'";
+      assertThat(ids("S", col + " IN (SELECT " + src + " FROM Src WHERE " + src + " IS NOT NULL)")).as(col)
+          .isEqualTo(ids("S", col + " IN [" + literal + "]"));
+    }
+  }
 }
