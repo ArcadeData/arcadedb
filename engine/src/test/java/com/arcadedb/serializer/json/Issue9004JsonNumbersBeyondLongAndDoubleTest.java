@@ -81,6 +81,18 @@ class Issue9004JsonNumbersBeyondLongAndDoubleTest extends TestHelper {
   }
 
   @Test
+  void tokenLengthBoundaryAndExponentOverflow() {
+    // 15 characters: always a double. 16 characters that a double does not hold exactly: exact. 1e400 overflows a double: exact
+    final Map<String, Object> map = new JSONObject("{\"a\":0.1234567890123,\"b\":0.12345678901234567,\"c\":0.1234567890123456789,\"d\":1e400}").toMap();
+    assertThat(map.get("a")).isEqualTo(0.1234567890123);
+    // the shortest rendering of that double is ...66, so the token holds a digit the double loses
+    assertThat(map.get("b")).isEqualTo(new BigDecimal("0.12345678901234567"));
+    assertThat(map.get("c")).isEqualTo(new BigDecimal("0.1234567890123456789"));
+    assertThat(map.get("d")).isEqualTo(new BigDecimal("1e400"));
+    assertThat(new JSONObject("{\"v\":[1e400,1.5e0]}").toMap(true).get("v")).isEqualTo(List.of(new BigDecimal("1e400"), 1.5));
+  }
+
+  @Test
   void numericArraysAreExact() {
     final Map<String, Object> map = new JSONObject(
         "{\"d\":[0.1,3.141592653589793],\"big\":[1,18446744073709551617],\"mixed\":[2,3.5],\"wide\":[1.5,1.23456789012345678901234567890]}").toMap(true);
@@ -107,7 +119,7 @@ class Issue9004JsonNumbersBeyondLongAndDoubleTest extends TestHelper {
     database.transaction(() -> {
       final DocumentType type = database.getSchema().createDocumentType("Lst");
       type.createProperty("lst", Type.LIST);
-      assertThat(Type.convert(database, new long[] { 1, 2, 3 }, java.util.List.class)).isEqualTo(List.of(1L, 2L, 3L));
+      assertThat(Type.convert(database, new long[] { 1, 2, 3 }, List.class)).isEqualTo(List.of(1L, 2L, 3L));
       final MutableDocument doc = database.newDocument("Lst").set("lst", new double[] { 0.5, 1.5 });
       doc.save();
       assertThat(doc.get("lst")).isEqualTo(List.of(0.5, 1.5));

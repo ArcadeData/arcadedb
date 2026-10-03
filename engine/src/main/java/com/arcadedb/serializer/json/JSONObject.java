@@ -632,7 +632,7 @@ public class JSONObject implements Map<String, Object> {
         if (strValue.contains(".") || strValue.contains("e") || strValue.contains("E")) {
           // Contains decimal point or scientific notation: a double, unless it carries more digits than a double holds
           final double doubleVal = primitive.getAsDouble();
-          if (strValue.length() > 15 && (!Double.isFinite(doubleVal) || !sameSignificantDigits(strValue, Double.toString(doubleVal))))
+          if ((strValue.length() > 15 || !Double.isFinite(doubleVal)) && !isExactDouble(strValue, doubleVal))
             return new BigDecimal(strValue);
           return doubleVal;
         } else {
@@ -663,33 +663,64 @@ public class JSONObject implements Map<String, Object> {
   }
 
   /**
-   * Whether two decimal renderings of the same number carry the same significant digits (sign, decimal point, exponent and the zeros
-   * around the digits ignored). {@link Double#toString(double)} is the shortest rendering that parses back to the double, so a token
-   * with the same digits holds nothing a double loses; it is cheaper than building a {@link BigDecimal} for the comparison.
+   * Whether a decimal token holds nothing the double parsed from it loses: it has the same significant digits (sign, decimal point,
+   * exponent and the zeros around the digits ignored) as {@link Double#toString(double)}, the shortest rendering that parses back to
+   * the double. Compared in place, so the common long token of an embedding (a double written with 17 digits) costs no extra object
+   * besides that string, and no {@link BigDecimal}.
    */
-  private static boolean sameSignificantDigits(final String token, final String shortest) {
-    return significantDigits(token).equals(significantDigits(shortest));
+  static boolean isExactDouble(final String token, final double value) {
+    if (!Double.isFinite(value))
+      return false;
+    final String shortest = Double.toString(value);
+    final int tokenEnd = endOfDigits(token);
+    final int shortestEnd = endOfDigits(shortest);
+    int i = 0;
+    int j = 0;
+    boolean started = false;
+    while (true) {
+      i = nextDigit(token, i, tokenEnd, started);
+      j = nextDigit(shortest, j, shortestEnd, started);
+      if (i < 0 && j < 0)
+        return true;
+      // ONE SIDE ENDED: THE OTHER MAY ONLY HAVE TRAILING ZEROS LEFT
+      if (i < 0)
+        return onlyZerosFrom(shortest, j, shortestEnd);
+      if (j < 0)
+        return onlyZerosFrom(token, i, tokenEnd);
+      if (token.charAt(i) != shortest.charAt(j))
+        return false;
+      started = true;
+      i++;
+      j++;
+    }
   }
 
-  private static String significantDigits(final String number) {
-    int end = number.length();
-    for (int i = 0; i < end; i++) {
+  private static int endOfDigits(final String number) {
+    for (int i = 0; i < number.length(); i++) {
       final char c = number.charAt(i);
-      if (c == 'e' || c == 'E') {
-        end = i;
-        break;
-      }
+      if (c == 'e' || c == 'E')
+        return i;
     }
-    final StringBuilder digits = new StringBuilder(end);
-    for (int i = 0; i < end; i++) {
+    return number.length();
+  }
+
+  /** Index of the next digit at or after {@code from}, leading zeros skipped until the first significant digit, or -1. */
+  private static int nextDigit(final String number, final int from, final int end, final boolean started) {
+    for (int i = from; i < end; i++) {
       final char c = number.charAt(i);
-      if (c >= '0' && c <= '9' && !(c == '0' && digits.length() == 0))
-        digits.append(c);
+      if (c >= '0' && c <= '9' && (started || c != '0'))
+        return i;
     }
-    int len = digits.length();
-    while (len > 0 && digits.charAt(len - 1) == '0')
-      len--;
-    return digits.substring(0, len);
+    return -1;
+  }
+
+  private static boolean onlyZerosFrom(final String number, final int from, final int end) {
+    for (int i = from; i < end; i++) {
+      final char c = number.charAt(i);
+      if (c >= '1' && c <= '9')
+        return false;
+    }
+    return true;
   }
 
   /**

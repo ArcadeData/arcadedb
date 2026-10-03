@@ -59,6 +59,9 @@ class Issue8526RemoteRequestIdReplayTest {
         assertThat(server.received()).isEqualTo(3);
         final List<String> ids = server.requestIds();
         assertThat(ids.get(1)).isNotNull().isEqualTo(ids.get(2));
+        // the retry names the server process that advertised replay protection, the first attempt does not
+        assertThat(server.instances().get(1)).isNull();
+        assertThat(server.instances().get(2)).isEqualTo("proc-1");
       } finally {
         c.close();
       }
@@ -115,6 +118,7 @@ class Issue8526RemoteRequestIdReplayTest {
   private static final class ScriptedServer implements AutoCloseable {
     private final ServerSocket  socket;
     private final List<String>  requestIds = Collections.synchronizedList(new ArrayList<>());
+    private final List<String>  instances  = Collections.synchronizedList(new ArrayList<>());
     private final List<String>  script;
     private final boolean       advertise;
 
@@ -125,7 +129,7 @@ class Issue8526RemoteRequestIdReplayTest {
       final Thread t = new Thread(() -> {
         while (!socket.isClosed()) {
           try (final Socket client = socket.accept()) {
-            final String id = readRequest(client.getInputStream());
+            final String id = readRequest(client.getInputStream(), instances);
             final int n = requestIds.size();
             requestIds.add(id);
             if (n < this.script.size() && "answer".equals(this.script.get(n)))
@@ -147,6 +151,10 @@ class Issue8526RemoteRequestIdReplayTest {
       return requestIds.size();
     }
 
+    List<String> instances() {
+      return new ArrayList<>(instances);
+    }
+
     List<String> requestIds() {
       return new ArrayList<>(requestIds);
     }
@@ -154,14 +162,14 @@ class Issue8526RemoteRequestIdReplayTest {
     private void answer(final Socket client) throws IOException {
       final byte[] body = "{\"result\":\"ok\"}".getBytes(StandardCharsets.UTF_8);
       client.getOutputStream().write(("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
-          + (advertise ? "X-ArcadeDB-Replay-Protection: true\r\n" : "") + "Content-Length: " + body.length + "\r\nConnection: close\r\n\r\n")
+          + (advertise ? "X-ArcadeDB-Replay-Protection: proc-1\r\n" : "") + "Content-Length: " + body.length + "\r\nConnection: close\r\n\r\n")
           .getBytes(StandardCharsets.ISO_8859_1));
       client.getOutputStream().write(body);
       client.getOutputStream().flush();
     }
 
     /** Reads the request in full and returns its X-Request-Id, or null. */
-    private static String readRequest(final InputStream in) throws IOException {
+    private static String readRequest(final InputStream in, final List<String> instances) throws IOException {
       final StringBuilder head = new StringBuilder();
       while (head.indexOf("\r\n\r\n") < 0) {
         final int b = in.read();
@@ -171,14 +179,18 @@ class Issue8526RemoteRequestIdReplayTest {
       }
       int contentLength = 0;
       String requestId = null;
+      String instance = null;
       for (final String line : head.toString().split("\r\n")) {
         final String lower = line.toLowerCase(Locale.ROOT);
         if (lower.startsWith("content-length:"))
           contentLength = Integer.parseInt(line.substring("content-length:".length()).trim());
         else if (lower.startsWith("x-request-id:"))
           requestId = line.substring("x-request-id:".length()).trim();
+        else if (lower.startsWith("x-arcadedb-replay-instance:"))
+          instance = line.substring("x-arcadedb-replay-instance:".length()).trim();
       }
       in.readNBytes(contentLength);
+      instances.add(instance);
       return requestId;
     }
 

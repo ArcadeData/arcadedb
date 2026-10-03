@@ -186,16 +186,11 @@ public class JSONArray implements Iterable<Object> {
     final double[] result = new double[size];
     for (int i = 0; i < size; i++) {
       final String token = ((JsonPrimitive) list.get(i)).getAsString();
-      if (token.length() <= 15)
-        // FEW ENOUGH DIGITS: A double HOLDS THEM ALL
-        result[i] = Double.parseDouble(token);
-      else {
-        // MORE DIGITS THAN A double HOLDS: THE LIST KEEPS THEM (BigDecimal)
-        final Object value = JSONObject.elementToObject(list.get(i));
-        if (value instanceof BigDecimal)
-          return null;
-        result[i] = ((Number) value).doubleValue();
-      }
+      final double value = Double.parseDouble(token);
+      // MORE DIGITS THAN A double HOLDS: THE LIST KEEPS THEM (BigDecimal)
+      if ((token.length() > 15 || !Double.isFinite(value)) && !JSONObject.isExactDouble(token, value))
+        return null;
+      result[i] = value;
     }
     return result;
   }

@@ -818,7 +818,7 @@ public enum Type {
         if (value instanceof Collection<?> collection) {
           final Set<Object> set = new HashSet<Object>(collection);
           return set;
-        } else if (isNumericPrimitiveArray(value)) {
+        } else if (isPrimitiveNumberArray(value)) {
           return new HashSet<Object>(primitiveArrayToList(value));
         } else {
           final Set<Object> set = new HashSet<>(2);
@@ -835,7 +835,7 @@ public enum Type {
         if (value instanceof Collection<?> collection) {
           final List<Object> list = new ArrayList<Object>(collection);
           return list;
-        } else if (isNumericPrimitiveArray(value)) {
+        } else if (isPrimitiveNumberArray(value)) {
           // A primitive array (e.g. a JSON array parameter parsed to long[]/double[]) is the elements of the list, not one element (issue #9002)
           return primitiveArrayToList(value);
         } else {
@@ -851,7 +851,7 @@ public enum Type {
         if (value instanceof Collection<?> collection) {
           final List<Object> set = new ArrayList<Object>(collection);
           return set;
-        } else if (isNumericPrimitiveArray(value)) {
+        } else if (isPrimitiveNumberArray(value)) {
           return primitiveArrayToList(value);
         } else {
           final Set<Object> set = new HashSet<>(2);
@@ -2520,13 +2520,14 @@ public enum Type {
     return property == null ? value : value.truncatedTo(DateUtils.getPrecisionFromType(property.getType()));
   }
 
-  /** A primitive array that stands for a list of numbers: not {@code byte[]}, which is binary content, not a collection. */
-  private static boolean isNumericPrimitiveArray(final Object value) {
-    return value != null && !(value instanceof byte[]) && value.getClass().isArray() && value.getClass().getComponentType().isPrimitive();
+  /** A primitive array of numbers (not {@code byte[]}, which is binary content, nor {@code boolean[]}/{@code char[]}). */
+  public static boolean isPrimitiveNumberArray(final Object value) {
+    return value instanceof long[] || value instanceof double[] || value instanceof int[] || value instanceof float[]
+        || value instanceof short[];
   }
 
   /** Boxes the elements of a primitive array into a mutable list (the shape a collection target expects). */
-  private static List<Object> primitiveArrayToList(final Object array) {
+  public static List<Object> primitiveArrayToList(final Object array) {
     final int length = Array.getLength(array);
     final List<Object> list = new ArrayList<>(length);
     for (int i = 0; i < length; i++)

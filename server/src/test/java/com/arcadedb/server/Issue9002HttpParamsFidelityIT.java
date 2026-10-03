@@ -23,6 +23,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.http.IdempotencyCache;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -182,7 +183,19 @@ class Issue9002HttpParamsFidelityIT extends BaseGraphServerTest {
   @Test
   void everyResponseAdvertisesReplayProtection() throws Exception {
     final HttpResponse<String> response = post("query", null, "SELECT 1", null);
-    assertThat(response.headers().firstValue("X-ArcadeDB-Replay-Protection")).hasValue("true");
+    assertThat(response.headers().firstValue("X-ArcadeDB-Replay-Protection")).hasValue(IdempotencyCache.PROCESS_ID);
+  }
+
+  @Test
+  void aRetryTellingAnotherServerProcessIsRefusedBeforeItRuns() throws Exception {
+    final HttpRequest request = HttpRequest.newBuilder(URI.create(getServerHttpUrl(0, "/api/v1/command/" + getDatabaseName())))
+        .header("Authorization",
+            "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes(StandardCharsets.UTF_8)))
+        .header("Content-Type", "application/json").header("X-Request-Id", "restart-9002")
+        .header("X-ArcadeDB-Replay-Instance", "another-process")
+        .POST(HttpRequest.BodyPublishers.ofString("{\"language\":\"sql\",\"command\":\"INSERT INTO S9006 SET name = 'never'\"}")).build();
+    assertThat(http.send(request, HttpResponse.BodyHandlers.ofString()).statusCode()).isEqualTo(412);
+    assertThat(count("S9006")).isZero();
   }
 
   private long count(final String type) {

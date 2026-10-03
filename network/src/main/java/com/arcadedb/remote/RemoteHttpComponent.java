@@ -106,10 +106,12 @@ public class RemoteHttpComponent extends RWLockContext {
   private         CONNECTION_STRATEGY         connectionStrategy        = CONNECTION_STRATEGY.ROUND_ROBIN;
   private volatile Pair<String, Integer>       leaderServer;
   private volatile int                         currentReplicaServerIndex = -1;
-  // Learned from any response of the server: it answers a request that carries the same X-Request-Id from its replay cache (issue #8526)
-  private volatile boolean                     serverReplaysRequestIds;
+  // Learned from any response of the server: it answers a request that carries the same X-Request-Id from its replay cache. The value
+  // names the server process, which a retry sends back so a server that restarted since refuses it (issue #8526)
+  private volatile String                      serverReplayInstance;
   static final     String                      HEADER_REQUEST_ID         = "X-Request-Id";
   static final     String                      HEADER_REPLAY_PROTECTION  = "X-ArcadeDB-Replay-Protection";
+  static final     String                      HEADER_REPLAY_INSTANCE    = "X-ArcadeDB-Replay-Instance";
   private          int                         timeout;
   protected        String                      currentServer;
   protected        int                         currentPort;
@@ -510,8 +512,11 @@ public class RemoteHttpComponent extends RWLockContext {
         //                                 use it as the next Read-After bookmark.
         requestBuilder = addReadConsistencyHeaders(requestBuilder);
 
-        if (requestId != null)
+        if (requestId != null) {
           requestBuilder = requestBuilder.header(HEADER_REQUEST_ID, requestId);
+          if (retry > 0 && serverReplayInstance != null)
+            requestBuilder = requestBuilder.header(HEADER_REPLAY_INSTANCE, serverReplayInstance);
+        }
 
         HttpRequest request;
 
@@ -560,8 +565,7 @@ public class RemoteHttpComponent extends RWLockContext {
 
         HttpResponse<String> response = sendWithWatchdog(request);
 
-        if (response.headers().firstValue(HEADER_REPLAY_PROTECTION).isPresent())
-          serverReplaysRequestIds = true;
+        response.headers().firstValue(HEADER_REPLAY_PROTECTION).ifPresent(instance -> serverReplayInstance = instance);
 
         // Capture commit-index from response for read-your-writes consistency.
         if (this instanceof RemoteDatabase remoteDb)
@@ -607,7 +611,7 @@ public class RemoteHttpComponent extends RWLockContext {
 
         if (connectionStrategy == CONNECTION_STRATEGY.FIXED || stickyPinned) {
           // The same server, which holds the entry of a write it applied: with the id on the request the replay is answered, not run again
-          refuseToReplayAPossiblyAppliedRequest(e, replayable || requestId != null && serverReplaysRequestIds, messageLabel,
+          refuseToReplayAPossiblyAppliedRequest(e, replayable || requestId != null && serverReplayInstance != null, messageLabel,
               connectToServer);
           LogManager.instance()
               .log(this, Level.WARNING, "Remote server (%s:%d) seems unreachable, retrying...",
