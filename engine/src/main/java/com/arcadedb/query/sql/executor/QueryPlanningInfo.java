@@ -46,9 +46,9 @@ public class QueryPlanningInfo {
 
   Projection preAggregateProjection;
   Projection aggregateProjection;
+  int        nextAggregateAliasId   = 0;
   Projection projection             = null;
   Projection projectionAfterOrderBy = null;
-  int        nextAggregateAliasId   = 0;
   Projection projectionAfterUnwind  = null;
 
   LetClause globalLetClause  = null;

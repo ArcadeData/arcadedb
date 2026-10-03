@@ -256,6 +256,28 @@ class Issue8285DescribeComputedColumnTypeIT extends PostgresWireProtocolTestBase
   }
 
   @Test
+  void sumOfALongPropertyThatOverflowsDescribesAsNumericAndKeepsTheValue() throws Exception {
+    // a LONG sum past Long.MAX_VALUE is widened to a BigDecimal (#8974): an int8 column would wrap it
+    try (final Connection connection = openJdbcConnection()) {
+      try (final Statement statement = connection.createStatement()) {
+        statement.execute("CREATE DOCUMENT TYPE Items8974Long IF NOT EXISTS");
+        statement.execute("CREATE PROPERTY Items8974Long.n IF NOT EXISTS LONG");
+        for (int i = 0; i < 3; i++)
+          statement.execute("INSERT INTO Items8974Long SET n = 4000000000000000000");
+      }
+
+      try (final PreparedStatement statement = connection.prepareStatement("SELECT sum(n) AS s FROM Items8974Long")) {
+        assertThat(statement.getMetaData().getColumnTypeName(1)).isEqualTo("numeric");
+
+        try (final ResultSet resultSet = statement.executeQuery()) {
+          assertThat(resultSet.next()).isTrue();
+          assertThat(resultSet.getBigDecimal(1)).isEqualByComparingTo("12000000000000000000");
+        }
+      }
+    }
+  }
+
+  @Test
   void sumOfADecimalPropertyDescribesAsNumericNotFloat8BeforeExecution() throws Exception {
     // SQLFunctionSum/Type#increment keep a DECIMAL accumulator as BigDecimal: describing it as float8 would make
     // binary encoding call doubleValue() and lose precision (review of #8285).
