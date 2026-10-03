@@ -3025,13 +3025,12 @@ public class TransactionContext implements Transaction {
    * deletes from is refused, so the retry scans again and finds them. Per bucket rather than per vertex: the scan is a
    * snapshot of whole types.</li>
    * </ul>
+   * The first holds because the files of the targets are locked by {@link #lockFilesFromChanges()} until the edges are
+   * published, the second because the sequence is bumped by {@link #publishCommittedPages} before that lock is released.
+   * <p>
    * Known limits: with an explicit lock list the first check runs without the target-file lock, so a delete can still
    * commit between the check and the publish; and the first check asks whether a record sits at the target RID, so a
    * new record that reused the freed slot passes it.
-   * <ul>
-   * </ul>
-   * The first holds because the files of the targets are locked by {@link #lockFilesFromChanges()} until the edges are
-   * published, the second because the counter is bumped by {@link #publishCommittedPages} before that lock is released.
    */
   private void checkUnidirectionalEdgesAgainstConcurrentDeletes() {
     if (unidirectionalScanEpoch >= 0L && deletedBuckets != null) {
@@ -3047,30 +3046,30 @@ public class TransactionContext implements Transaction {
       return;
 
     final LocalSchema schema = database.getSchema().getEmbedded();
-    RidHashSet createdHere = null;
-    for (final long packed : unidirectionalEdgeTargets.toArray()) {
+    final RidHashSet[] createdHere = new RidHashSet[1];
+    unidirectionalEdgeTargets.forEach(packed -> {
       final int bucketId = (int) (packed >>> UNIDIRECTIONAL_TARGET_BUCKET_SHIFT);
       final RID target = new RID(bucketId, packed & ((1L << UNIDIRECTIONAL_TARGET_BUCKET_SHIFT) - 1));
       if (deletedRecordsInTx.contains(target))
         // THIS TRANSACTION DELETES IT: THE EDGE IS ITS OWN BUSINESS
-        continue;
+        return;
 
       final LocalBucket bucket = schema.getBucketById(bucketId, false);
       if (bucket == null || bucket.existsRecordInCommittedPage(target))
-        continue;
+        return;
 
       // ONLY A TARGET THE COMMITTED PAGES DO NOT HOLD GETS HERE: HASHED ONCE, SO A BULK LOAD OF VERTICES AND EDGES STAYS LINEAR
-      if (createdHere == null) {
-        createdHere = new RidHashSet(Math.max(DELETED_SET_CAPACITY, newRecords.size()));
+      if (createdHere[0] == null) {
+        createdHere[0] = new RidHashSet(Math.max(DELETED_SET_CAPACITY, newRecords.size()));
         for (int i = 0; i < newRecords.size(); i++)
-          createdHere.add(newRecords.get(i).getIdentity());
+          createdHere[0].add(newRecords.get(i).getIdentity());
       }
-      if (createdHere.contains(target))
-        continue;
+      if (createdHere[0].contains(target))
+        return;
 
       throw new ConcurrentModificationException("Vertex " + target + ", the target of a unidirectional edge created by this "
           + "transaction, was deleted by a concurrent transaction. Please retry the operation");
-    }
+    });
   }
 
   private IntHashSet lockFilesFromChanges() {

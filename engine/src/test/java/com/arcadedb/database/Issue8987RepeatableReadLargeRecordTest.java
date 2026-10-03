@@ -18,7 +18,11 @@
  */
 package com.arcadedb.database;
 
+import com.arcadedb.exception.ConcurrentModificationException;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -70,6 +74,48 @@ class Issue8987RepeatableReadLargeRecordTest extends BucketPageLayoutTestSupport
       assertThat(again.getString("s")).hasSize(size);
     } finally {
       database.rollback();
+    }
+  }
+
+  /**
+   * First reads of large records under REPEATABLE_READ while another thread rewrites them: the pages the walk pins itself
+   * can come from different commits, so a read must never return a head of one version with the chunks of another.
+   */
+  @Test
+  @Tag("slow")
+  void firstReadsNeverReturnATornRecord() throws Exception {
+    database.transaction(() -> database.getSchema().createDocumentType("Doc"));
+    final RID[] rid = new RID[1];
+    database.transaction(
+        () -> rid[0] = database.newDocument("Doc").set("v", 0).set("s", "0".repeat(150_000)).save().getIdentity());
+
+    final AtomicBoolean stop = new AtomicBoolean();
+    final Thread writer = new Thread(() -> {
+      for (int v = 1; !stop.get(); v++) {
+        final int version = v;
+        database.transaction(() -> database.lookupByRID(rid[0], true).asDocument().modify().set("v", version)
+            .set("s", String.valueOf(version % 10).repeat(150_000 + version % 3 * 20_000)).save(), false, 100);
+      }
+    });
+    writer.start();
+    try {
+      for (int i = 0; i < 400; i++) {
+        database.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+        try {
+          final Document read = database.lookupByRID(rid[0], true).asDocument();
+          final int v = read.getInteger("v");
+          final String s = read.getString("s");
+          assertThat(s).as("v=" + v).isNotNull();
+          assertThat(s.chars().allMatch(c -> c == (char) ('0' + v % 10))).as("s of version " + v + " is a mix").isTrue();
+        } catch (final ConcurrentModificationException e) {
+          // a refused read is consistent too
+        } finally {
+          database.rollback();
+        }
+      }
+    } finally {
+      stop.set(true);
+      writer.join();
     }
   }
 }
