@@ -51,15 +51,31 @@ import java.util.UUID;
 final class MongoBsonValues {
   static final String TAG = "$bson";
 
-  private static final String BIN_DATA       = "binData";
-  private static final String REGEX          = "regex";
-  private static final String TIMESTAMP      = "timestamp";
-  private static final String MIN_KEY        = "minKey";
-  private static final String MAX_KEY        = "maxKey";
-  private static final String JAVASCRIPT     = "javascript";
-  private static final String LEGACY_UUID    = "legacyUuid";
+  private static final String BIN_DATA = "binData";
+  private static final String REGEX = "regex";
+  private static final String TIMESTAMP = "timestamp";
+  private static final String MIN_KEY = "minKey";
+  private static final String MAX_KEY = "maxKey";
+  private static final String JAVASCRIPT = "javascript";
+  private static final String LEGACY_UUID = "legacyUuid";
 
   private MongoBsonValues() {
+  }
+
+  /**
+   * Whether {@link #toStored} changes this value: an ObjectId, or a BSON type the engine stores in another form.
+   */
+  static boolean needsConversion(final Object value) {
+    return value instanceof ObjectId || value instanceof Decimal128 || value instanceof BinData || value instanceof BsonTimestamp
+        || value instanceof MinKey || value instanceof MaxKey || value instanceof BsonJavaScript || value instanceof LegacyUUID;
+  }
+
+  /**
+   * Converts a value used in a filter into the form it is stored in. A regular expression is left alone: as a filter value it
+   * is a pattern to match, not a value to compare.
+   */
+  static Object toBound(final Object value) {
+    return needsConversion(value) ? toStored(value) : value;
   }
 
   /**
@@ -69,12 +85,12 @@ final class MongoBsonValues {
    */
   @SuppressWarnings("unchecked")
   static Object toStored(final Object value) {
-    if (value == null)
-      return null;
+    if (value == null || value instanceof String || value instanceof Number && !(value instanceof Decimal128) || value instanceof Boolean)
+      return value;
     if (value instanceof ObjectId id)
       return id.getHexData();
     if (value instanceof Decimal128 decimal)
-      return decimal.toBigDecimal();
+      return toBigDecimal(decimal);
     if (value instanceof BinData bin)
       return tagged(BIN_DATA, "data", bin.getData());
     if (value instanceof BsonRegularExpression regex)
@@ -90,6 +106,8 @@ final class MongoBsonValues {
     if (value instanceof LegacyUUID uuid)
       return tagged(LEGACY_UUID, "uuid", uuid.getUuid().toString());
     if (value instanceof Map<?, ?> map) {
+      if (map.get(TAG) instanceof String)
+        throw new IllegalArgumentException("The field name '" + TAG + "' is reserved");
       final Map<String, Object> converted = LinkedHashMap.newLinkedHashMap(map.size());
       for (final Map.Entry<String, Object> entry : ((Map<String, Object>) map).entrySet())
         converted.put(entry.getKey(), toStored(entry.getValue()));
@@ -121,7 +139,27 @@ final class MongoBsonValues {
     return value instanceof Map<?, ?> map && map.get(TAG) instanceof String;
   }
 
+  private static BigDecimal toBigDecimal(final Decimal128 decimal) {
+    try {
+      return decimal.toBigDecimal();
+    } catch (final ArithmeticException e) {
+      throw new IllegalArgumentException("The Decimal128 value " + decimal + " (NaN, Infinity or negative zero) cannot be stored", e);
+    }
+  }
+
+  /**
+   * A map that is tagged but does not have the shape written by {@link #toStored} (data written through SQL or another
+   * protocol) is returned as a plain map rather than failing the whole read.
+   */
   private static Object fromTagged(final String kind, final Map<?, ?> map) {
+    try {
+      return decode(kind, map);
+    } catch (final ClassCastException | NullPointerException | IllegalArgumentException e) {
+      return map;
+    }
+  }
+
+  private static Object decode(final String kind, final Map<?, ?> map) {
     switch (kind) {
     case BIN_DATA:
       return new BinData((byte[]) map.get("data"));
