@@ -43,6 +43,12 @@ class Issue9047RegistryFunctionArityTest extends TestHelper {
   }
 
   @Test
+  void theMessageNamesTheFunctionAndTheCounts() {
+    assertThatThrownBy(() -> drain("sql", "SELECT text.replace('abc') AS r")).isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("text.replace").hasMessageContaining("got 1");
+  }
+
+  @Test
   void tooManyArgumentsIsASemanticError() {
     assertThatThrownBy(() -> drain("sql", "SELECT text.replace('a', 'b', 'c', 'd') AS r")).isInstanceOf(CommandSemanticException.class);
     assertThatThrownBy(() -> drain("opencypher", "RETURN text.replace('a', 'b', 'c', 'd') AS r")).isInstanceOf(CommandSemanticException.class);
