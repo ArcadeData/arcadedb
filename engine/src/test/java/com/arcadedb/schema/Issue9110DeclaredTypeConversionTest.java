@@ -199,7 +199,7 @@ class Issue9110DeclaredTypeConversionTest extends TestHelper {
     type.createProperty("dts", Type.DATETIME_SECOND);
     type.createProperty("dtm", Type.DATETIME_MICROS);
     assertThat(roundTrip("Epoch9110", "dt", "1791000000000")).isEqualTo(roundTrip("Epoch9110", "dt", 1791000000000L));
-    assertThat(roundTrip("Epoch9110", "dt", "1791000000000")).isNotNull();
+    assertThat(roundTrip("Epoch9110", "dt", "1791000000000")).isEqualTo(LocalDateTime.of(2026, 10, 3, 4, 0));
     assertThat(roundTrip("Epoch9110", "dts", "1791000000")).isEqualTo(roundTrip("Epoch9110", "dts", 1791000000L));
     assertThat(roundTrip("Epoch9110", "dtm", "1791000000000000")).isEqualTo(roundTrip("Epoch9110", "dtm", 1791000000000000L));
     // a compact yyyyMMdd date is read as an epoch count too, as the DATE branch already did
@@ -267,8 +267,25 @@ class Issue9110DeclaredTypeConversionTest extends TestHelper {
     database.getSchema().createDocumentType("Link9110").createProperty("link", Type.LINK);
     assertRefused("Link9110", "link", new ArrayList<>(List.of("not-a-rid", "#1:2")));
     final List<Object> list = new ArrayList<>(List.of(1, 2));
-    assertThat(Type.convertOrKeep(database, true, java.math.BigDecimal.class)).isEqualTo(true);
+    assertThat(Type.convertOrKeep(database, true, BigDecimal.class)).isEqualTo(true);
     assertThat(Type.convertIndexKeyOrNull(database, list, Integer.class)).isNull();
+  }
+
+  @Test
+  void convertOrKeepWithAPropertyKeepsTheOriginalForContentRefusals() {
+    final DocumentType type = database.getSchema().createDocumentType("Remote9110");
+    type.createProperty("i", Type.INTEGER);
+    type.createProperty("l", Type.LONG);
+    type.createProperty("f", Type.FLOAT);
+    type.createProperty("flag", Type.BOOLEAN);
+    // the remote client reads records it did not write: a column that cannot be converted must not fail the read
+    assertThat(Type.convertOrKeep(database, "", Integer.class, type.getProperty("i"))).isEqualTo("");
+    assertThat(Type.convertOrKeep(database, 1e30d, Long.class, type.getProperty("l"))).isEqualTo(1e30d);
+    assertThat(Type.convertOrKeep(database, 1e40d, Float.class, type.getProperty("f"))).isEqualTo(1e40d);
+    assertThat(Type.convertOrKeep(database, Double.NaN, Boolean.class, type.getProperty("flag"))).isEqualTo(Double.NaN);
+    // while a write of the same values is refused
+    assertThatThrownBy(() -> Type.convert(database, "", Integer.class, type.getProperty("i")))
+        .isInstanceOf(IllegalArgumentException.class);
   }
 
   @Test

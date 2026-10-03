@@ -710,7 +710,7 @@ public enum Type {
         if (value instanceof Short)
           return value;
         else if (value instanceof String string)
-          return string.isEmpty() && property == null ? 0 : Short.parseShort(string);
+          return string.isEmpty() ? emptyNumericString((short) 0, "SHORT", property) : Short.parseShort(string);
         else
           return narrowToIntegral(asNumber(value, "SHORT", property), Short.MIN_VALUE, Short.MAX_VALUE, "SHORT", property).shortValue();
 
@@ -718,7 +718,7 @@ public enum Type {
         if (value instanceof Integer)
           return value;
         else if (value instanceof String string)
-          return string.isEmpty() && property == null ? 0 : Integer.parseInt(string);
+          return string.isEmpty() ? emptyNumericString(0, "INTEGER", property) : Integer.parseInt(string);
         else
           return narrowToIntegral(asNumber(value, "INTEGER", property), Integer.MIN_VALUE, Integer.MAX_VALUE, "INTEGER", property).intValue();
 
@@ -726,7 +726,7 @@ public enum Type {
         if (value instanceof Long)
           return value;
         else if (value instanceof String string)
-          return string.isEmpty() && property == null ? 0L : Long.parseLong(string);
+          return string.isEmpty() ? emptyNumericString(0L, "LONG", property) : Long.parseLong(string);
         else if (DateUtils.isDate(value))
           return DateUtils.dateTimeToTimestamp(value, ChronoUnit.MILLIS);
         else
@@ -736,7 +736,7 @@ public enum Type {
         if (value instanceof Float)
           return value;
         else if (value instanceof String string)
-          return string.isEmpty() && property == null ? 0f : Float.parseFloat(string);
+          return string.isEmpty() ? emptyNumericString(0f, "FLOAT", property) : Float.parseFloat(string);
         else
           return narrowToFloat(asNumber(value, "FLOAT", property), property);
 
@@ -752,7 +752,7 @@ public enum Type {
         if (value instanceof Double)
           return value;
         else if (value instanceof String string)
-          return string.isEmpty() && property == null ? 0d : Double.parseDouble(string);
+          return string.isEmpty() ? emptyNumericString(0d, "DOUBLE", property) : Double.parseDouble(string);
         else if (value instanceof Float float1)
           // The primitive widening would carry the float's rounding error into the double; widenFloat re-reads its
           // decimal instead, and skips the round-trip where it provably cannot matter (issue #7609).
@@ -1089,6 +1089,13 @@ public enum Type {
     }
   }
 
+  /** An empty string is no number for a declared property, but the plain conversion has always read it as zero. */
+  private static <T extends Number> T emptyNumericString(final T zero, final String targetType, final Property property) {
+    if (property != null)
+      throw inconvertible("", targetType, property);
+    return zero;
+  }
+
   private static String forProperty(final Property property) {
     return property != null ? " for property '" + property.getName() + "'" : "";
   }
@@ -1129,15 +1136,15 @@ public enum Type {
   /** A finite number that overflows to an infinity is refused for a declared FLOAT (issue #9110, as #9024 for LONG). */
   private static float narrowToFloat(final Number value, final Property property) {
     final float result = value.floatValue();
-    if (property != null && Float.isInfinite(result) && !(value instanceof Float) && !isInfinite(value))
-      throw new IllegalArgumentException("Value '" + value + "' is out of range for type FLOAT" + forProperty(property));
+    if (property != null && Float.isInfinite(result) && !isInfinite(value))
+      throw new InconvertibleValueException("Value '" + value + "' is out of range for type FLOAT" + forProperty(property), null);
     return result;
   }
 
   private static double narrowToDouble(final Number value, final Property property) {
     final double result = value.doubleValue();
     if (property != null && Double.isInfinite(result) && !isInfinite(value))
-      throw new IllegalArgumentException("Value '" + value + "' is out of range for type DOUBLE" + forProperty(property));
+      throw new InconvertibleValueException("Value '" + value + "' is out of range for type DOUBLE" + forProperty(property), null);
     return result;
   }
 
@@ -1150,8 +1157,8 @@ public enum Type {
       if (property == null)
         // the plain conversion always answered false for it (NaN.intValue() is 0)
         return true;
-      throw new IllegalArgumentException(
-          "Value '" + number + "' is NaN and cannot be converted to type BOOLEAN" + forProperty(property));
+      throw new InconvertibleValueException(
+          "Value '" + number + "' is NaN and cannot be converted to type BOOLEAN" + forProperty(property), null);
     }
     return switch (number) {
       case BigDecimal bigDecimal -> bigDecimal.signum() == 0;
@@ -1177,8 +1184,8 @@ public enum Type {
    */
   private static long narrowToLong(final Number value, final Property property) {
     if (isNaN(value))
-      throw new IllegalArgumentException(
-          "Value '" + value + "' is NaN and cannot be converted to type LONG" + forProperty(property));
+      throw new InconvertibleValueException(
+          "Value '" + value + "' is NaN and cannot be converted to type LONG" + forProperty(property), null);
 
     final boolean outOfRange = switch (value) {
       case BigDecimal bigDecimal -> bigDecimal.compareTo(LONG_MAX_DECIMAL) > 0 || bigDecimal.compareTo(LONG_MIN_DECIMAL) < 0;
@@ -1189,9 +1196,9 @@ public enum Type {
       default -> false;
     };
     if (outOfRange && property != null)
-      throw new IllegalArgumentException(
+      throw new InconvertibleValueException(
           "Value '" + value + "' is out of range for type LONG (" + Long.MIN_VALUE + " to " + Long.MAX_VALUE + ")" //
-              + forProperty(property));
+              + forProperty(property), null);
 
     return value.longValue();
   }
