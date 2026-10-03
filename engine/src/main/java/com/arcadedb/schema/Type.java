@@ -576,6 +576,10 @@ public enum Type {
       else if (value instanceof Binary binary && targetClass.isAssignableFrom(byte[].class))
         return binary.toByteArray();
       else if (byte[].class.isAssignableFrom(valueClass)) {
+        // with a declared property the value must be one it can hold: a byte[] left in an INTEGER or BOOLEAN property
+        // would reach the serializer as is. Without a property this stays the plain pass-through.
+        if (property != null && !targetClass.isAssignableFrom(byte[].class))
+          throw inconvertible(value, targetClass.getSimpleName(), property);
         return value;
       } else if (value instanceof JSONArray jsonArray) {
         // JSONArray is an Iterable but not a java.util.Collection, so without this branch it would fall through to

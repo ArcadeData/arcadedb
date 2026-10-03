@@ -178,6 +178,17 @@ class Issue9110DeclaredTypeConversionTest extends TestHelper {
   }
 
   @Test
+  void byteArrayIsRefusedByEveryDeclaredTypeThatCannotHoldIt() {
+    final DocumentType type = database.getSchema().createDocumentType("Bytes9110");
+    type.createProperty("i", Type.INTEGER);
+    type.createProperty("flag", Type.BOOLEAN);
+    type.createProperty("dec", Type.DECIMAL);
+    type.createProperty("dt", Type.DATETIME);
+    for (final String p : new String[] { "i", "flag", "dec", "dt" })
+      assertRefused("Bytes9110", p, new byte[] { 1, 2, 3 });
+  }
+
+  @Test
   void validValuesStillConvert() {
     final DocumentType type = database.getSchema().createDocumentType("Ok9110");
     type.createProperty("dec", Type.DECIMAL);
