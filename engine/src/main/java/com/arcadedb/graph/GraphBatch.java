@@ -309,6 +309,7 @@ public class GraphBatch implements AutoCloseable {
   private final Map<String, Integer> edgeTypeFirstBucketCache = new ConcurrentHashMap<>();
   private final Map<String, Boolean> lightweightTypeCache     = new ConcurrentHashMap<>();
   private final Map<String, Boolean> bidirectionalTypeCache   = new ConcurrentHashMap<>();
+  private final Map<String, Boolean> emptyEdgeSchemaCache     = new ConcurrentHashMap<>();
 
   // --- Head chunk RID cache: avoids vertex loads when chunk is already known ---
   // Bounded LRU wrapped in synchronizedMap (issue #5664): getOrCreate*EdgeChunk() is called from parallel async
@@ -766,16 +767,49 @@ public class GraphBatch implements AutoCloseable {
           + "needs to carry data");
 
     edgeHasProperties[idx] = hasProps;
-    this.edgeProperties[idx] = hasProps ? edgeProperties : null;
+    this.edgeProperties[idx] = hasProps ? propertyPairs(edgeProperties) : null;
     // A LIGHTWEIGHT type is stored lightweight whatever the builder was told: the storage shape belongs to the
     // schema, and withLightEdges() is only the legacy per-batch override for types that do not declare one.
-    edgeIsLightweight[idx] = typeIsLightweight || (lightEdges && !hasProps);
+    // An edge type with a default or a MANDATORY property is never stored lightweight by that override: those apply to an
+    // edge without properties too (issue #9019). Types with only optional properties keep their compact property-less edges.
+    edgeIsLightweight[idx] = typeIsLightweight || (lightEdges && !hasProps && !typeAppliesSchemaToEmptyEdge(edgeTypeName));
     edgeIsBidirectional[idx] = typeIsBidirectional;
 
     edgeCount++;
 
     if (edgeCount >= batchSize)
       flush();
+  }
+
+  /**
+   * The properties as the flat {@code [name, value, name, value, ...]} array the bulk writer reads. A single {@link Map}
+   * is how a caller hands over a property map, as on {@code Vertex.newEdge()}: it is flattened here, because read as
+   * name/value pairs it would hold none and its properties would be dropped without a word (issue #9020).
+   */
+  private static Object[] propertyPairs(final Object[] properties) {
+    if (properties.length == 1 && properties[0] instanceof Map<?, ?> map) {
+      final Object[] pairs = new Object[map.size() * 2];
+      int i = 0;
+      for (final Map.Entry<?, ?> entry : map.entrySet()) {
+        if (entry.getKey() == null)
+          throw new IllegalArgumentException("Property names cannot be null");
+        pairs[i++] = entry.getKey().toString();
+        pairs[i++] = entry.getValue();
+      }
+      return pairs;
+    }
+    if (properties.length % 2 != 0)
+      throw new IllegalArgumentException("Properties must be an even number as pairs of name, value");
+    return properties;
+  }
+
+  private boolean typeAppliesSchemaToEmptyEdge(final String edgeTypeName) {
+    return emptyEdgeSchemaCache.computeIfAbsent(edgeTypeName, name -> {
+      for (final Property property : edgeType(name).getPolymorphicProperties())
+        if (property.isMandatory() || property.getDefaultValueDefinition() != null)
+          return true;
+      return false;
+    });
   }
 
   /** The edge type {@code name}, or a clear refusal for a name that is missing or not an edge type. */
@@ -1103,7 +1137,7 @@ public class GraphBatch implements AutoCloseable {
   private EdgeSerializationTemplate getOrCreateTemplate(final Object[] props, final int edgeTypeBucketId) {
     // Build signature from property names
     final int propCount = props.length / 2;
-    final StringBuilder sig = new StringBuilder(edgeTypeBucketId);
+    final StringBuilder sig = new StringBuilder().append(edgeTypeBucketId).append(':');
     for (int p = 0; p < propCount; p++) {
       if (p > 0)
         sig.append(',');
@@ -1256,7 +1290,8 @@ public class GraphBatch implements AutoCloseable {
       buffer.putNumber(Double.doubleToLongBits(((Number) value).doubleValue()));
       break;
     case BinaryTypes.TYPE_BYTE:
-      buffer.putByte((Byte) value);
+      // already converted to the declared type by applySchema()
+      buffer.putByte(((Number) value).byteValue());
       break;
     case BinaryTypes.TYPE_BOOLEAN:
       buffer.putByte((byte) ((Boolean) value ? 1 : 0));
@@ -1283,7 +1318,8 @@ public class GraphBatch implements AutoCloseable {
    * Bulk-creates edge records using template-based serialization and sequential page writes.
    * For each unique set of property names, a template is created once that pre-resolves
    * dictionary IDs and type tags. Edges are then serialized directly into Binary buffers
-   * without MutableEdge allocation or HashMap operations.
+   * without MutableEdge allocation or HashMap operations, except for an edge of a type with declared properties, which goes
+   * through {@link #applySchema} once for the conversion, defaults and constraints (issue #9019).
    */
   private void createEdgeRecordsBulk(final RID[] edgeRIDs, final int nonLightCount) {
     // Collect indices of non-light edges
@@ -1292,6 +1328,18 @@ public class GraphBatch implements AutoCloseable {
     for (int i = 0; i < edgeCount; i++)
       if (edgeRIDs[i] == null)
         nonLightIndices[nlIdx++] = i;
+
+    // An edge type with declared properties gets what every other write path gives it: the value converted to the declared
+    // type, the defaults, and the constraints (issue #9019). The bulk writer casts raw values to the declared binary type,
+    // which wraps a SHORT, throws on a BYTE and never runs a validation.
+    final Map<Integer, Boolean> declaresProperties = new HashMap<>();
+    for (int k = 0; k < nonLightCount; k++) {
+      final int i = nonLightIndices[k];
+      final Boolean declared = declaresProperties.computeIfAbsent(edgeTypeBucketIds[i],
+          bucketId -> !database.getSchema().getTypeByBucketId(bucketId).getPolymorphicProperties().isEmpty());
+      if (declared)
+        applySchema(i);
+    }
 
     // Serialize all edge records using templates
     final Binary[] serializedBuffers = new Binary[nonLightCount];
@@ -1363,6 +1411,31 @@ public class GraphBatch implements AutoCloseable {
         edgeRIDs[i] = edge.getIdentity();
       }
     }
+  }
+
+  /**
+   * Replaces the buffered properties of edge {@code i} with what {@code Vertex.newEdge()} would store: converted to the
+   * declared types, completed with the defaults and validated against the constraints (issue #9019). The edge is built
+   * only to run that logic and is never saved.
+   */
+  private void applySchema(final int i) {
+    final EdgeType edgeType = (EdgeType) database.getSchema().getTypeByBucketId(edgeTypeBucketIds[i]);
+    final MutableEdge edge = new MutableEdge(database, edgeType, new RID(edgeSrcBucketIds[i], edgeSrcPositions[i]),
+        new RID(edgeDstBucketIds[i], edgeDstPositions[i]));
+    if (edgeProperties[i] != null)
+      GraphEngine.setProperties(edge, edgeProperties[i]);
+    edgeType.applyDefaultValues(edge);
+    edge.validate();
+
+    final Set<String> names = edge.getPropertyNames();
+    final Object[] pairs = new Object[names.size() * 2];
+    int p = 0;
+    for (final String name : names) {
+      pairs[p++] = name;
+      pairs[p++] = edge.get(name);
+    }
+    edgeProperties[i] = pairs.length > 0 ? pairs : null;
+    edgeHasProperties[i] = pairs.length > 0;
   }
 
   /**
