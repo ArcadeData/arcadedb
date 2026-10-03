@@ -1170,7 +1170,8 @@ public class OpenCypherQueryEngine implements QueryEngine {
       case BYTE -> 0;
       case SHORT -> 1;
       case INTEGER -> 2;
-      default -> 3;
+      case LONG -> 3;
+      default -> throw new IllegalArgumentException("Not an integral type: " + type);
     };
   }
 

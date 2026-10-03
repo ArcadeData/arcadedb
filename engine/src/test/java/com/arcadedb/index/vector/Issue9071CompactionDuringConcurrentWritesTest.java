@@ -109,7 +109,11 @@ class Issue9071CompactionDuringConcurrentWritesTest extends TestHelper {
     }));
 
     threads.forEach(Thread::start);
+    final long deadline = System.currentTimeMillis() + 60_000;
     Thread.sleep(12_000);
+    // keep the writers going until at least one compaction has run among them, so a slow runner cannot pass without exercising the fix
+    while (compactions.get() == 0 && System.currentTimeMillis() < deadline)
+      Thread.sleep(250);
     stop.set(true);
     for (final Thread t : threads)
       t.join();

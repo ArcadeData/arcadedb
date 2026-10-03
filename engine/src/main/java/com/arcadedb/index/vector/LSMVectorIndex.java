@@ -350,7 +350,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
   // that a build has passed the point after which further mutations are preserved rather than folded into the
   // build's own snapshot (issue #3683).
   private volatile long    rebuildSnapshotGeneration = 0;
-  /** The data file this compaction holds the commit lock of, or -1. Only touched under {@code graphBuildLock}. */
+  /**
+   * The data file this compaction holds the commit lock of, or -1. Only touched under {@code graphBuildLock}. The commits of the
+   * index are held off for the page read, the document scan fallback when pages miss vectors, and the rewrite.
+   */
   private          int     compactionFileLock = -1;
 
   // Dedicated ForkJoinPool for graph building, so we can shut it down on close() to cancel
@@ -789,6 +792,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // Every pending entry of the delta buffer carries an id the renumbering just reissued, and its vector is in the rewritten
         // file and therefore in the graph this build is about to make: kept, it would be scored under an id that now names
         // another vector (issue #9071)
+        // (same critical section as the swap above: the write lock is held)
         deltaVectors = new ArrayList<>();
         recountDeltaResidentPayloads();
 

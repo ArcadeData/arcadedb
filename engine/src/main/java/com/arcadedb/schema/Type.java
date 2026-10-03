@@ -425,8 +425,9 @@ public enum Type {
   }
 
   /**
-   * The text of a floating point or decimal number as an index key over a STRING key type of a property that is not declared, which
-   * is what a Cypher index on a property that no record had yet falls back to (a declared STRING property keeps the text it holds). One number has to be one key whatever type it was written with: 3 and 3.0 and
+   * The text of a floating point or decimal number as an index key over a STRING key type of a property that is not declared,
+   * which is what a Cypher index on a property that no record had yet falls back to (a declared STRING property keeps the
+   * text it holds). One number has to be one key whatever type it was written with: 3 and 3.0 and
    * 3.00 are equal for Cypher, and the default spellings ("3", "3.0", "3.00") would put them under three keys, so an equality
    * lookup, a MERGE or a unique constraint on one would miss the others (issue #8993). The shortest decimal of a float or double
    * (widenFloat for a float, so 0.1f reads as 0.1), without trailing zeros and without an exponent, is the spelling of the integer
@@ -437,7 +438,13 @@ public enum Type {
     if (number instanceof BigDecimal bigDecimal)
       decimal = bigDecimal;
     else {
-      final double d = number instanceof Float f ? widenFloat(f) : (Double) number;
+      final double d;
+      if (number instanceof Float f)
+        d = widenFloat(f);
+      else if (number instanceof Double dbl)
+        d = dbl;
+      else
+        throw new IllegalArgumentException("Not a floating point or decimal number: " + number);
       if (Double.isNaN(d) || Double.isInfinite(d))
         return Double.toString(d);
       decimal = BigDecimal.valueOf(d);
