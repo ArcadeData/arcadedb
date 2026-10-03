@@ -251,7 +251,10 @@ class CypherAllShortestPathsParallelEdgesIssue8995Test extends TestHelper {
       }
     });
 
-    database.getConfiguration().setValue(GlobalConfiguration.COMMAND_TIMEOUT, 20L);
+    // 100 ms: generous enough that a cold JIT or a GC pause cannot spend it inside the 13-vertex BFS or planning, and
+    // still orders of magnitude short of enumerating 16.7M paths. The stack-trace assertions naming the back-tracking
+    // methods ARE the point of the test: they tell this guard apart from the BFS one right before it.
+    database.getConfiguration().setValue(GlobalConfiguration.COMMAND_TIMEOUT, 100L);
     try {
       final String target = "MATCH (a:Chain {id: 0}), (b:Chain {id: " + hops + "}) ";
       assertThatThrownBy(() -> countRows(target + "MATCH p = allShortestPaths((a)-[:P*]->(b)) RETURN p"))

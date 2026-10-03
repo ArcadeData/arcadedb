@@ -886,10 +886,17 @@ public class ShortestPathStep extends AbstractExecutionStep {
     }
   }
 
+  private static final Vertex.DIRECTION[] OUT_ONLY = { Vertex.DIRECTION.OUT };
+  private static final Vertex.DIRECTION[] IN_ONLY  = { Vertex.DIRECTION.IN };
+  private static final Vertex.DIRECTION[] OUT_IN   = { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN };
+
+  /** Shared arrays, never written: callers only iterate them. */
   private static Vertex.DIRECTION[] expandDirections(final Vertex.DIRECTION direction) {
-    return direction == Vertex.DIRECTION.BOTH ?
-        new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN } :
-        new Vertex.DIRECTION[] { direction };
+    return switch (direction) {
+      case OUT -> OUT_ONLY;
+      case IN -> IN_ONLY;
+      default -> OUT_IN;
+    };
   }
 
   /**
