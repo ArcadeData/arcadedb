@@ -26,8 +26,10 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.utility.TimeBoundRegex;
 
 import java.math.BigDecimal;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Date;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -229,12 +231,79 @@ public class DocumentValidator {
         final LocalDatabase embedded = (LocalDatabase) ((DatabaseInternal) document.getDatabase()).getEmbedded();
         final Document originalDocument = embedded.getOriginalDocument(document);
         final Object originalFieldValue = originalDocument.get(p.getName());
-        if (!Objects.equals(fieldValue, originalFieldValue))
-          throwValidationException(document.getType(), p, "is immutable and cannot be altered. Field value is: " + fieldValue);
+        if (!sameReadonlyValue(fieldValue, originalFieldValue))
+          throwValidationException(document.getType(), p,
+              "is immutable and cannot be altered. Field value is: " + printableValue(fieldValue));
       }
     }
 
     return deferred;
+  }
+
+  /**
+   * Content equality for the READONLY check (issue #9023). BINARY and ARRAY_OF_* values are Java arrays, whose
+   * {@code equals()} is identity, and the current and stored values are always two independently deserialized
+   * instances: comparing them with {@link Objects#equals} refused every update of the record, even one that did not
+   * touch the property. Arrays are compared by content, and lists, maps and embedded documents element by element, so
+   * an array nested inside them is compared the same way.
+   */
+  static boolean sameReadonlyValue(final Object a, final Object b) {
+    if (a == b)
+      return true;
+    if (a == null || b == null)
+      return false;
+
+    if (a.getClass().isArray() || b.getClass().isArray()) {
+      if (a instanceof Object[] aa && b instanceof Object[] ba) {
+        if (aa.length != ba.length)
+          return false;
+        for (int i = 0; i < aa.length; i++)
+          if (!sameReadonlyValue(aa[i], ba[i]))
+            return false;
+        return true;
+      }
+      // PRIMITIVE ARRAYS OF THE SAME COMPONENT TYPE ARE COMPARED BY CONTENT, ANY OTHER MIX IS A CHANGE
+      return Objects.deepEquals(a, b);
+    }
+
+    if (a instanceof List<?> al && b instanceof List<?> bl) {
+      if (al.size() != bl.size())
+        return false;
+      final Iterator<?> ai = al.iterator();
+      final Iterator<?> bi = bl.iterator();
+      while (ai.hasNext())
+        if (!sameReadonlyValue(ai.next(), bi.next()))
+          return false;
+      return true;
+    }
+
+    if (a instanceof Map<?, ?> am && b instanceof Map<?, ?> bm)
+      return sameReadonlyMap(am, bm);
+
+    if (a instanceof EmbeddedDocument ad && b instanceof EmbeddedDocument bd)
+      return Objects.equals(ad.getTypeName(), bd.getTypeName()) && sameReadonlyMap(ad.toMap(false), bd.toMap(false));
+
+    return a.equals(b);
+  }
+
+  private static boolean sameReadonlyMap(final Map<?, ?> a, final Map<?, ?> b) {
+    if (a.size() != b.size())
+      return false;
+    for (final Map.Entry<?, ?> entry : a.entrySet()) {
+      final Object key = entry.getKey();
+      if (!b.containsKey(key) || !sameReadonlyValue(entry.getValue(), b.get(key)))
+        return false;
+    }
+    return true;
+  }
+
+  private static String printableValue(final Object value) {
+    if (value != null && value.getClass().isArray()) {
+      final String deep = Arrays.deepToString(new Object[] { value });
+      // STRIP THE WRAPPING BRACKETS ADDED BY THE SINGLE-ELEMENT ARRAY
+      return deep.substring(1, deep.length() - 1);
+    }
+    return String.valueOf(value);
   }
 
   private static void validateMaxValue(MutableDocument document, Property p, Object fieldValue) {
