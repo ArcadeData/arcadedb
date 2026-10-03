@@ -166,8 +166,12 @@ final class OldRatisServerTermination {
           return Map.of(); // a different RPC implementation: nothing to check
         field.setAccessible(true);
         serversField = field;
-      } else if (!field.getDeclaringClass().isInstance(rpc))
+      } else if (!field.getDeclaringClass().isInstance(rpc)) {
+        LogManager.instance().log(OldRatisServerTermination.class, Level.FINE,
+            "Ratis RPC %s is not the %s the gRPC check reads; not verifying its servers", rpc.getClass().getName(),
+            field.getDeclaringClass().getName());
         return Map.of();
+      }
       final Object value = field.get(rpc);
       if (!(value instanceof Map<?, ?> map))
         return Map.of();

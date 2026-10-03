@@ -2303,6 +2303,14 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         HALog.log(this, HALog.BASIC, "Recovery skipped: shutdown requested");
         return;
       }
+      // Issue #8900: the waits below give up at once on an interrupted thread. Leave before closing anything, so the
+      // client, broker and server stay as they are and the next health tick retries the whole restart.
+      if (Thread.currentThread().isInterrupted()) {
+        LogManager.instance().log(this, Level.WARNING,
+            "In-place Ratis restart called on an interrupted thread without a shutdown; skipped, the next health tick "
+                + "retries it (issue #8900)");
+        return;
+      }
 
       final int maxRetries = configuration.getValueAsInteger(GlobalConfiguration.HA_RATIS_RESTART_MAX_RETRIES);
       if (restartFailureCount >= maxRetries) {
@@ -2339,10 +2347,6 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       // Issue #8900: the waits below end early on a shutdown (stop() does not take recoveryLock) or an interrupt (the
       // health monitor being stopped), and such an ending is not a failed restart.
       final BooleanSupplier abandoned = () -> shutdownRequested || Thread.currentThread().isInterrupted();
-      if (!shutdownRequested && Thread.currentThread().isInterrupted())
-        LogManager.instance().log(this, Level.WARNING,
-            "In-place Ratis restart called on an interrupted thread without a shutdown; it will be abandoned and the next "
-                + "health tick retries it (issue #8900)");
       // Issue #8900: read before the close, which empties the server's group map.
       RaftServer.Division oldDivision = null;
       if (oldServer != null)
