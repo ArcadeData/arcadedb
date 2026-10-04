@@ -211,6 +211,28 @@ class GraphAlgorithmsTest extends TestHelper {
     assertThat(GraphAlgorithms.countComponents(components)).isEqualTo(2);
   }
 
+  /** #9133: a restricted edgeTypes list must ignore the other edge types present in the view. */
+  @Test
+  void connectedComponentsRestrictedToEdgeTypeSubset() {
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+    database.getSchema().createEdgeType("OTHER");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Node").save();
+    final MutableVertex b = database.newVertex("Node").save();
+    final MutableVertex c = database.newVertex("Node").save();
+    a.newEdge("LINK", b);
+    b.newEdge("OTHER", c);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database).withVertexTypes("Node").withEdgeTypes("LINK", "OTHER").build();
+    final int[] linkOnly = GraphAlgorithms.connectedComponents(gav, "LINK");
+    assertThat(GraphAlgorithms.countComponents(linkOnly)).isEqualTo(2);
+    assertThat(linkOnly[gav.getNodeId(a.getIdentity())]).isEqualTo(linkOnly[gav.getNodeId(b.getIdentity())]);
+    assertThat(GraphAlgorithms.countComponents(GraphAlgorithms.connectedComponents(gav, "LINK", "OTHER"))).isEqualTo(1);
+  }
+
   @Test
   void connectedComponentsSingleNodeNoEdges() {
     database.getSchema().createVertexType("Node");
