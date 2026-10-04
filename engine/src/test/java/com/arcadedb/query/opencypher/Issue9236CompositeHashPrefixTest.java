@@ -123,6 +123,15 @@ class Issue9236CompositeHashPrefixTest extends TestHelper {
   }
 
   @Test
+  void nullParameterForTheSecondPropertyOfAnOrderedCompositeIndexMatchesNothing() {
+    create("LsmN", "NOTUNIQUE");
+    final Map<String, Object> params = new HashMap<>();
+    params.put("p", 1);
+    params.put("q", null);
+    assertThat(ps("MATCH (n:LsmN) WHERE n.p = $p AND n.q = $q RETURN n.p AS p", params)).isEmpty();
+  }
+
+  @Test
   void orderedCompositeIndexStillAnswersAPrefix() {
     create("LsmT", "NOTUNIQUE");
     assertThat(ps("MATCH (n:LsmT) WHERE n.p = 1 RETURN n.p AS p", Map.of())).containsExactly(1L);
