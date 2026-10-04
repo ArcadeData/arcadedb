@@ -263,8 +263,11 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     // like MongoDB, a pipeline over a collection that does not exist is answered with no documents (countDocuments is one). A
     // pipeline that writes ($out, $merge) is not read-only: it keeps failing on the missing collection, as it always did
     if (!database.getSchema().existsType(collectionName)) {
-      if (writesTo(document.get("pipeline")))
+      if (writesTo(document.get("pipeline")) || startsWithChangeStream(document.get("pipeline")))
         throw new MongoServerError(26, "NamespaceNotFound", "ns does not exist: " + getFullCollectionNamespace(collectionName));
+      // the pipeline is still validated: a malformed stage is an error whether or not the collection exists
+      final List<Document> missingPipeline = Aggregation.parse(Aggregation.parse(document.get("pipeline")));
+      Aggregation.fromPipeline(missingPipeline, plugin, this, null, oplog).validate(document);
       return firstBatchCursorResponse(collectionName, "firstBatch", new ArrayList<>(), 0);
     }
 
@@ -288,6 +291,11 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   }
 
   // the stages that need no input collection ($documents, $collStats) are out of scope here: they answer empty on a missing one
+  private static boolean startsWithChangeStream(final Object pipeline) {
+    return pipeline instanceof List<?> stages && !stages.isEmpty() && stages.getFirst() instanceof Document first
+        && first.containsKey("$changeStream");
+  }
+
   private static boolean writesTo(final Object pipeline) {
     if (pipeline instanceof List<?> stages)
       for (final Object stage : stages)
