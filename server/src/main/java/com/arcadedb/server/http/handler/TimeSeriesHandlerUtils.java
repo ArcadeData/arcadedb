@@ -105,7 +105,7 @@ final class TimeSeriesHandlerUtils {
     try {
       return owner.getJSONObject(name);
     } catch (final JSONException e) {
-      throw wrongType(path, "a JSON object", owner.opt(name), e);
+      throw wrongType(path, "a JSON object", peek(owner, name), e);
     }
   }
 
@@ -118,7 +118,7 @@ final class TimeSeriesHandlerUtils {
     try {
       return owner.getJSONArray(name);
     } catch (final JSONException e) {
-      throw wrongType(path, "a JSON array", owner.opt(name), e);
+      throw wrongType(path, "a JSON array", peek(owner, name), e);
     }
   }
 
@@ -131,7 +131,7 @@ final class TimeSeriesHandlerUtils {
     try {
       return owner.getString(name);
     } catch (final JSONException e) {
-      throw wrongType(path, "a string", owner.opt(name), e);
+      throw wrongType(path, "a string", peek(owner, name), e);
     }
   }
 
@@ -193,7 +193,7 @@ final class TimeSeriesHandlerUtils {
     try {
       return owner.getString(name);
     } catch (final JSONException e) {
-      throw wrongType(path, "a string", owner.opt(name), e);
+      throw wrongType(path, "a string", peek(owner, name), e);
     }
   }
 
@@ -271,7 +271,7 @@ final class TimeSeriesHandlerUtils {
    * two refused it.
    */
   private static long readLong(final JSONObject owner, final String name, final String path) {
-    final Object received = owner.opt(name);
+    final Object received = peek(owner, name);
 
     // Before the parse, because BigDecimal's cost grows with the digit count and the body limit was the only
     // other bound on it. Only a STRING can be long in the first place - an extreme value written as a JSON
@@ -346,6 +346,18 @@ final class TimeSeriesHandlerUtils {
 
   static IllegalArgumentException missingMember(final String path, final String kind) {
     return new IllegalArgumentException("'" + path + "' is required and must be " + kind);
+  }
+
+  /**
+   * The member as the JSON layer reads it, or a short stand-in when the layer itself refuses it: a number token with an extreme exponent
+   * or thousands of digits is refused when it is read, and that refusal is reported as the same "must be a ..." client error.
+   */
+  private static Object peek(final JSONObject owner, final String name) {
+    try {
+      return owner.opt(name);
+    } catch (final JSONException e) {
+      return "a number the JSON parser refused (too large)";
+    }
   }
 
   private static IllegalArgumentException wrongType(final String path, final String kind, final Object received,

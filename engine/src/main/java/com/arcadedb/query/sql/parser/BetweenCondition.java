@@ -64,12 +64,16 @@ public class BetweenCondition extends BooleanExpression {
     // A bound with no defined ordering against firstValue (e.g. a non-numeric String bound on a numeric column)
     // makes the comparison undefined, not an error: report "not between" rather than let the raw conversion
     // failure (e.g. NumberFormatException) escape (#5900). That verdict is false even when the other bound is null
-    if (secondValue != null) {
+    // An integer value is compared with a numeric bound as it is, as >= and <= compare it: converted to the value's class, 11.5
+    // read as 11 and 3e9 wrapped around (issue #9021)
+    final boolean integralValue = firstValue instanceof Integer || firstValue instanceof Long || firstValue instanceof Short
+        || firstValue instanceof Byte;
+    if (secondValue != null && !(integralValue && secondValue instanceof Number)) {
       secondValue = Type.convertOrNull(context.getDatabase(), secondValue, firstValue.getClass());
       if (secondValue == null)
         return false;
     }
-    if (thirdValue != null) {
+    if (thirdValue != null && !(integralValue && thirdValue instanceof Number)) {
       thirdValue = Type.convertOrNull(context.getDatabase(), thirdValue, firstValue.getClass());
       if (thirdValue == null)
         return false;

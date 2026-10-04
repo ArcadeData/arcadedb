@@ -366,4 +366,25 @@ class DateUtilsTest {
     assertThatThrownBy(() -> DateUtils.toEpochMillis(Boolean.TRUE)).isInstanceOf(IllegalArgumentException.class);
     assertThatThrownBy(() -> DateUtils.toEpochMillis(new Object())).isInstanceOf(IllegalArgumentException.class);
   }
+
+  /**
+   * Regression for issue #9036: a negative microsecond count that is not a whole second was read one second late
+   * because the seconds were truncated toward zero while the nanoseconds were floored.
+   */
+  @Test
+  void microsBeforeEpochKeepTheSecond() {
+    final Instant expected = Instant.EPOCH.minus(1, ChronoUnit.MICROS);
+    assertThat(DateUtils.dateTime(null, -1L, ChronoUnit.MICROS, Instant.class, ChronoUnit.MICROS)).isEqualTo(expected);
+    assertThat(((ZonedDateTime) DateUtils.dateTime(null, -1L, ChronoUnit.MICROS, ZonedDateTime.class, ChronoUnit.MICROS)).toInstant())
+        .isEqualTo(expected);
+    assertThat(DateUtils.dateTime(null, -1L, ChronoUnit.MICROS, LocalDateTime.class, ChronoUnit.MICROS))
+        .isEqualTo(LocalDateTime.parse("1969-12-31T23:59:59.999999"));
+
+    assertThat(DateUtils.dateTime(null, -1_000_001L, ChronoUnit.MICROS, LocalDateTime.class, ChronoUnit.MICROS))
+        .isEqualTo(LocalDateTime.parse("1969-12-31T23:59:58.999999"));
+
+    final LocalDateTime written = LocalDateTime.parse("1960-06-15T12:30:45.123456");
+    final long micros = ChronoUnit.MICROS.between(Instant.EPOCH, written.toInstant(ZoneOffset.UTC));
+    assertThat(DateUtils.dateTime(null, micros, ChronoUnit.MICROS, LocalDateTime.class, ChronoUnit.MICROS)).isEqualTo(written);
+  }
 }

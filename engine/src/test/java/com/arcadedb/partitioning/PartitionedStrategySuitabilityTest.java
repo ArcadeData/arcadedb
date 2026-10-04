@@ -41,6 +41,7 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
+import java.util.Calendar;
 import java.util.Date;
 import java.util.List;
 
@@ -544,6 +545,22 @@ class PartitionedStrategySuitabilityTest extends TestHelper {
     // The exact case the issue proposed: sub-millisecond precision on a millisecond-precision DATETIME property.
     assertPlacementSurvivesRoundTrip("RtInstant", "DATETIME", Instant.ofEpochSecond(1600000000L, 123456789));
     assertPlacementSurvivesRoundTrip("RtInstantNanos", "DATETIME_NANOS", Instant.ofEpochSecond(1600000000L, 123456789));
+  }
+
+  /**
+   * A sub-millisecond DATETIME column reads back as a {@code LocalDateTime} under a millisecond-bound implementation
+   * ({@code Calendar}, {@code Date}, issue #8158), which carries no zone: the guard asks the class the deserializer really
+   * hands back, so the key is accepted, and placement must then survive the round trip. A plain DATETIME under
+   * {@code Calendar} still carries its zone and stays refused.
+   */
+  @Test
+  void aSubMillisecondPartitionKeyUnderAMillisecondBoundImplementationIsAcceptedAndSurvivesARoundTrip() {
+    useDateTimeImplementation(Calendar.class);
+    assertPlacementSurvivesRoundTrip("RtCalendarMicros", "DATETIME_MICROS", Instant.ofEpochSecond(1600000000L, 123456789));
+    assertPlacementSurvivesRoundTrip("RtCalendarNanos", "DATETIME_NANOS", Instant.ofEpochSecond(1600000000L, 123456789));
+
+    createIndexedType("CalendarMillis", "DATETIME");
+    assertThatThrownBy(() -> partition("CalendarMillis")).as("a zone-carrying Calendar key").hasMessageContaining("DATETIME");
   }
 
   private void assertPlacementSurvivesRoundTrip(final String typeName, final String propertyType, final Object value) {

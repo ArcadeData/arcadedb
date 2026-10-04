@@ -108,13 +108,12 @@ class Issue6725DescribeSampleRowTypeMismatchIT extends PostgresWireProtocolTestB
       assertThat(rowIn.readUnsignedShort()).as("this query projects exactly one column").isEqualTo(1);
       final int declaredLength = rowIn.readInt();
       assertThat(declaredLength)
-          .as("the DESCRIBE-promised int4 binary width (4 bytes) must be honored for every row this portal "
-              + "returns, even one - like id=2's \"val\" - whose actual value is a String \"300\"")
-          .isEqualTo(4);
+          .as("the promised column is varchar, because \"val\" is undeclared and only text holds every record's value "
+              + "(issue #9009): the row's own String \"300\" is written as its 3 bytes, with no second layout")
+          .isEqualTo(3);
       final byte[] valueBytes = new byte[declaredLength];
       rowIn.readFully(valueBytes);
-      final int decoded = ((valueBytes[0] & 0xFF) << 24) | ((valueBytes[1] & 0xFF) << 16) | ((valueBytes[2] & 0xFF) << 8) | (valueBytes[3] & 0xFF);
-      assertThat(decoded).as("the String \"300\" coerces cleanly into the promised int4 column, same as a real INTEGER value would").isEqualTo(300);
+      assertThat(new String(valueBytes, StandardCharsets.UTF_8)).isEqualTo("300");
     }
   }
 

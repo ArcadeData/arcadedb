@@ -89,6 +89,22 @@ public class QueryOperatorEquals {
     }
   }
 
+  // "=" semantics, tried both ways like the list form of IN (the other side is converted to the class of the column, or the column to
+  // the class of the other side). Links keep plain equals() so a link never recurses (#9031); an Identifiable or Result on the other side
+  // terminates too: a record with an identity goes straight to RID equality and a Result cannot form a cycle.
+  private static boolean valueEquals(final Object fieldValue, final Object other) {
+    if (fieldValue.equals(other))
+      return true;
+    if (fieldValue instanceof Identifiable || fieldValue instanceof Result)
+      return false;
+    // same class or two numbers: the comparison is symmetric, so the reverse call would repeat the one that just failed
+    if (other == null)
+      return false;
+    if (fieldValue.getClass() == other.getClass() || (fieldValue instanceof Number && other instanceof Number))
+      return equals(fieldValue, other);
+    return equals(other, fieldValue) || equals(fieldValue, other);
+  }
+
   protected static boolean comparesValues(Object value, final Identifiable record, final boolean iConsiderIn) {
     // ORID && RECORD
     final RID other = record.getIdentity();
@@ -101,12 +117,12 @@ public class QueryOperatorEquals {
         if (fieldValue != null) {
           if (iConsiderIn && MultiValue.isMultiValue(fieldValue)) {
             for (final Object o : MultiValue.getMultiValueIterable(fieldValue, false)) {
-              if (o != null && o.equals(value))
+              if (o != null && valueEquals(o, value))
                 return true;
             }
           }
 
-          return fieldValue.equals(value);
+          return valueEquals(fieldValue, value);
         }
       }
       return false;
@@ -133,12 +149,12 @@ public class QueryOperatorEquals {
       if (fieldValue != null) {
         if (iConsiderIn && MultiValue.isMultiValue(fieldValue)) {
           for (final Object o : MultiValue.getMultiValueIterable(fieldValue, false)) {
-            if (o != null && o.equals(iValue))
+            if (o != null && valueEquals(o, iValue))
               return true;
           }
         }
 
-        return fieldValue.equals(iValue);
+        return valueEquals(fieldValue, iValue);
       }
     }
     return false;

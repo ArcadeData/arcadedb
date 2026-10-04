@@ -20,6 +20,7 @@ package com.arcadedb.serializer.json;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -32,7 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * distinct longs onto identical float bits (e.g. both {@code 1000000000000} and
  * {@code 1000000000001} mapped to the same float, then back to {@code 999999995904}).
  * After the fix, integer-only arrays are returned as {@code long[]} so the round trip preserves
- * every bit, while fractional / scientific arrays continue to take the {@code float[]} fast path
+ * every bit, while fractional / scientific arrays continue to take the {@code double[]} fast path
  * used by vector embeddings.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -60,37 +61,35 @@ class Issue4148ArrayOfLongsParamPrecisionTest {
   }
 
   @Test
-  void fractionalArrayKeepsFloatFastPath() {
-    // Vector embeddings: fractional values must continue to take the float[] fast path so we
+  void fractionalArrayKeepsDoubleFastPath() {
+    // Vector embeddings: fractional values must continue to take the double[] fast path so we
     // do not regress the issue #3864 follow-up optimization.
     final JSONObject obj = new JSONObject("{\"vector\":[1.5, 2.5, 3.5]}");
     final Map<String, Object> map = obj.toMap(true);
 
-    assertThat(map.get("vector")).isInstanceOf(float[].class);
-    assertThat((float[]) map.get("vector")).containsExactly(1.5f, 2.5f, 3.5f);
+    assertThat(map.get("vector")).isInstanceOf(double[].class);
+    assertThat((double[]) map.get("vector")).containsExactly(1.5, 2.5, 3.5);
   }
 
   @Test
-  void scientificNotationKeepsFloatFastPath() {
+  void scientificNotationKeepsDoubleFastPath() {
     // 1e3 is integer-valued numerically but the textual form has 'e', so we treat it as float.
     // This matches what JSON callers expect: an explicit decimal/exponent means floating point.
     final JSONObject obj = new JSONObject("{\"v\":[1e3, 2e-2]}");
     final Map<String, Object> map = obj.toMap(true);
 
-    assertThat(map.get("v")).isInstanceOf(float[].class);
-    assertThat((float[]) map.get("v")).containsExactly(1000.0f, 0.02f);
+    assertThat(map.get("v")).isInstanceOf(double[].class);
+    assertThat((double[]) map.get("v")).containsExactly(1000.0, 0.02);
   }
 
   @Test
-  void mixedDecimalAndIntegerInSameArrayBecomesFloatArray() {
-    // A single fractional element forces the whole array to float[]. Integers in that mix lose
-    // precision the same way they did before; the contract is "if any element looks like a float,
-    // treat the array as float-valued".
+  void mixedDecimalAndIntegerInSameArrayStaysAsList() {
+    // A primitive array would turn the integers into floating point values (issue #9003): the list keeps each element as written
     final JSONObject obj = new JSONObject("{\"v\":[1, 2.5, 3]}");
     final Map<String, Object> map = obj.toMap(true);
 
-    assertThat(map.get("v")).isInstanceOf(float[].class);
-    assertThat((float[]) map.get("v")).containsExactly(1.0f, 2.5f, 3.0f);
+    assertThat(map.get("v")).isInstanceOf(List.class);
+    assertThat(map.get("v")).isEqualTo(List.of(1, 2.5, 3));
   }
 
   @Test

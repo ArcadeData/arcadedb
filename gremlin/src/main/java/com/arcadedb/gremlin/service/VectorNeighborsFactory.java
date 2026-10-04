@@ -18,11 +18,9 @@
  */
 package com.arcadedb.gremlin.service;
 
-import com.arcadedb.database.RID;
+import com.arcadedb.database.Document;
 import com.arcadedb.gremlin.ArcadeGraph;
-import com.arcadedb.index.TypeIndex;
-import com.arcadedb.index.vector.LSMVectorIndex;
-import com.arcadedb.utility.Pair;
+import com.arcadedb.query.sql.executor.ResultSet;
 import org.apache.tinkerpop.gremlin.process.traversal.Traverser;
 import org.apache.tinkerpop.gremlin.process.traversal.traverser.util.TraverserSet;
 import org.apache.tinkerpop.gremlin.structure.Vertex;
@@ -74,24 +72,33 @@ public class VectorNeighborsFactory extends ArcadeServiceRegistry.ArcadeServiceF
   }
 
   public CloseableIterator<List<Map>> execute(final ServiceCallContext ctx, final Map params) {
-    final String indexName = (String) params.get("indexName");
+    final Object indexName = params.get("indexName");
     final Object vectorParam = params.get("vector");
+    final Object limitParam = params.get("limit");
 
-    Integer limit = (Integer) params.get("limit");
-    if (limit == null)
-      limit = -1;
-    if (vectorParam instanceof float[] vector) {
+    if (indexName == null)
+      throw new IllegalArgumentException("Parameter 'indexName' is required by " + NAME);
+    if (vectorParam == null)
+      throw new IllegalArgumentException("Parameter 'vector' is required by " + NAME);
+    if (!(limitParam instanceof Number limit))
+      throw new IllegalArgumentException("Parameter 'limit' is required by " + NAME + " and must be a number");
 
-      TypeIndex indexByName = (TypeIndex) graph.getDatabase().getSchema().getIndexByName(indexName);
-      final LSMVectorIndex persistentIndex = (LSMVectorIndex) indexByName.getIndexesOnBuckets()[0];
-      final List<Pair<RID, Float>> neighbors = persistentIndex.findNeighborsFromVector(vector, limit);
-
-      final List<Map> result = new ArrayList<>(neighbors.size());
-      for (Pair<RID, Float> n : neighbors)
-        result.add(Map.of("record", graph.getVertexFromRecord(n.getFirst()), "distance", n.getSecond()));
-      return CloseableIterator.of(List.of(result).iterator());
+    // THE SQL FUNCTION IS THE SINGLE IMPLEMENTATION OF THE SEARCH: IT SPANS EVERY BUCKET (AND SUB-TYPE) INDEX OF THE TYPE,
+    // MERGES THEIR RESULTS AND ACCEPTS THE SAME VECTOR AND LIMIT SHAPES (#9143)
+    final List<Map> result = new ArrayList<>();
+    try (final ResultSet resultSet = graph.getDatabase()
+        .query("sql", "select vectorNeighbors(?, ?, ?) as neighbors", indexName.toString(), vectorParam, limit.intValue())) {
+      if (resultSet.hasNext()) {
+        final List<Map<String, Object>> neighbors = resultSet.next().getProperty("neighbors");
+        if (neighbors != null)
+          for (final Map<String, Object> n : neighbors) {
+            final Object distance = n.get("distance");
+            result.add(Map.of("record", graph.getVertexFromRecord(((Document) n.get("record")).getIdentity()), "distance",
+                distance != null ? distance : Float.NaN));
+          }
+      }
     }
-    else return CloseableIterator.empty();
+    return CloseableIterator.of(List.of(result).iterator());
   }
 
   @Override

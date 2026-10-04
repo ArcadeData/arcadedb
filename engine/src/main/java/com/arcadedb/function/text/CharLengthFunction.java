@@ -51,6 +51,6 @@ public class CharLengthFunction implements StatelessFunction {
     final String source = CypherFunctionHelper.requireStringArgument(args[0], getName());
     if (source == null)
       return null;
-    return (long) source.length();
+    return (long) CypherFunctionHelper.codePointLength(source);
   }
 }

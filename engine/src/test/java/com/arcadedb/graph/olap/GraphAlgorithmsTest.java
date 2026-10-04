@@ -25,6 +25,11 @@ import com.arcadedb.graph.Vertex;
 import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Random;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -181,6 +186,265 @@ class GraphAlgorithmsTest extends TestHelper {
     // Different components
     assertThat(components[gav.getNodeId(a.getIdentity())])
         .isNotEqualTo(components[gav.getNodeId(c.getIdentity())]);
+  }
+
+  /** #9133: tiny graphs, self-loops and parallel edges (rows shorter than the sampling rounds, n below the sample size). */
+  @Test
+  void connectedComponentsSelfLoopsParallelEdgesAndSingleNode() {
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Node").save();
+    final MutableVertex b = database.newVertex("Node").save();
+    final MutableVertex c = database.newVertex("Node").save();
+    a.newEdge("LINK", a);
+    a.newEdge("LINK", b);
+    a.newEdge("LINK", b);
+    b.newEdge("LINK", a);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database).withVertexTypes("Node").withEdgeTypes("LINK").build();
+    final int[] components = GraphAlgorithms.connectedComponents(gav, "LINK");
+    assertThat(components[gav.getNodeId(a.getIdentity())]).isEqualTo(components[gav.getNodeId(b.getIdentity())]);
+    assertThat(components[gav.getNodeId(c.getIdentity())]).isEqualTo(gav.getNodeId(c.getIdentity()));
+    assertThat(GraphAlgorithms.countComponents(components)).isEqualTo(2);
+  }
+
+  /** #9133: a restricted edgeTypes list must ignore the other edge types present in the view. */
+  @Test
+  void connectedComponentsRestrictedToEdgeTypeSubset() {
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+    database.getSchema().createEdgeType("OTHER");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Node").save();
+    final MutableVertex b = database.newVertex("Node").save();
+    final MutableVertex c = database.newVertex("Node").save();
+    a.newEdge("LINK", b);
+    b.newEdge("OTHER", c);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database).withVertexTypes("Node").withEdgeTypes("LINK", "OTHER").build();
+    final int[] linkOnly = GraphAlgorithms.connectedComponents(gav, "LINK");
+    assertThat(GraphAlgorithms.countComponents(linkOnly)).isEqualTo(2);
+    assertThat(linkOnly[gav.getNodeId(a.getIdentity())]).isEqualTo(linkOnly[gav.getNodeId(b.getIdentity())]);
+    assertThat(GraphAlgorithms.countComponents(GraphAlgorithms.connectedComponents(gav, "LINK", "OTHER"))).isEqualTo(1);
+  }
+
+  @Test
+  void connectedComponentsSingleNodeNoEdges() {
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+    database.transaction(() -> database.newVertex("Node").save());
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database).withVertexTypes("Node").withEdgeTypes("LINK").build();
+    assertThat(GraphAlgorithms.connectedComponents(gav, "LINK")).containsExactly(0);
+  }
+
+  /** #9133: parallel-sized sparse graph over two edge types, checked against a sequential reference. */
+  @Test
+  void connectedComponentsMatchesReferenceOnLargeSparseGraph() {
+    final int n = 30_000;
+    final Random rnd = new Random(42);
+    final int[][] edges = new int[2 * 22_000][];
+    for (int i = 0; i < edges.length; i++)
+      edges[i] = new int[] { rnd.nextInt(n), rnd.nextInt(n) };
+    assertMatchesReference(n, edges);
+  }
+
+  /** #9133: a giant component whose satellites are attached through incoming-only edges. The sampling pass must not skip them. */
+  @Test
+  void connectedComponentsGiantComponentWithIncomingOnlySatellites() {
+    final int giant = 20_000;
+    final int satellites = 5_000;
+    final Random rnd = new Random(7);
+    final List<int[]> edges = new ArrayList<>();
+    for (int i = 1; i < giant; i++) {
+      edges.add(new int[] { i, rnd.nextInt(i) });
+      edges.add(new int[] { rnd.nextInt(giant), rnd.nextInt(giant) });
+    }
+    for (int s = 0; s < satellites; s++) {
+      final int v = giant + s;
+      // the satellite is only the TARGET of an edge from the giant, so only its backward CSR row reaches the giant
+      edges.add(new int[] { rnd.nextInt(giant), v });
+    }
+    // a few satellite-only pairs and chains, away from the giant
+    for (int s = 0; s + 1 < 200; s += 2)
+      edges.add(new int[] { giant + satellites + s, giant + satellites + s + 1 });
+    assertKernelMatchesReference(giant + satellites + 200, edges.toArray(new int[0][]));
+  }
+
+  /** #9133: the lowest-id vertex is an incoming-only satellite, so phase 3 re-hooks the giant's root under it. The 20k-node
+   *  giant dominates the deterministic 1024-node sample, so it is the one picked as dominant; keep that in mind if the sampling
+   *  constants or hash change. */
+  @Test
+  void connectedComponentsGiantRootRehookedByLowestIdSatellite() {
+    final int giant = 20_000;
+    final Random rnd = new Random(11);
+    final List<int[]> edges = new ArrayList<>();
+    // vertex 0 only receives an edge from the giant (vertices 1..giant)
+    for (int i = 2; i <= giant; i++) {
+      edges.add(new int[] { i, 1 + rnd.nextInt(i - 1) });
+      edges.add(new int[] { 1 + rnd.nextInt(giant), 1 + rnd.nextInt(giant) });
+    }
+    edges.add(new int[] { 1 + rnd.nextInt(giant), 0 });
+    assertKernelMatchesReference(giant + 1, edges.toArray(new int[0][]));
+  }
+
+  /** #9133: hubs outside the dominant component with out-degree far above the sampling rounds, so the "remaining forward edges" loop does the work. */
+  @Test
+  void connectedComponentsHubsOutsideGiantWithHighOutDegree() {
+    final int giant = 12_000;
+    final Random rnd = new Random(23);
+    final List<int[]> edges = new ArrayList<>();
+    for (int i = 1; i < giant; i++)
+      edges.add(new int[] { i, rnd.nextInt(i) });
+    // 20 hubs, each with 60 out-edges to its own private leaves, plus one edge from a hub into the giant for half of them
+    int next = giant;
+    for (int h = 0; h < 20; h++) {
+      final int hub = next++;
+      for (int k = 0; k < 60; k++)
+        edges.add(new int[] { hub, next++ });
+      if (h % 2 == 0)
+        edges.add(new int[] { hub, rnd.nextInt(giant) });
+    }
+    assertKernelMatchesReference(next, edges.toArray(new int[0][]));
+  }
+
+  /** #9133: above the parallel threshold with no dominant component (disjoint pairs and short chains): the sampled "giant" is arbitrary. */
+  @Test
+  void connectedComponentsManySmallComponentsAboveParallelThreshold() {
+    final int n = 24_000;
+    final List<int[]> edges = new ArrayList<>();
+    for (int i = 0; i + 1 < n; i += 3) {
+      edges.add(new int[] { i + 1, i });
+      if (i % 2 == 0)
+        edges.add(new int[] { i + 1, i + 2 });
+    }
+    assertKernelMatchesReference(n, edges.toArray(new int[0][]));
+  }
+
+  /**
+   * Drives the kernel with hand-built CSR arrays so node ids are exactly the indexes used in {@code edges} (a GAV assigns
+   * dense ids in scan order, which is not creation order). Edges alternate between two edge types.
+   */
+  private static void assertKernelMatchesReference(final int n, final int[][] edges) {
+    final int types = 2;
+    final int[][] fwdOff = new int[types][n + 1];
+    final int[][] bwdOff = new int[types][n + 1];
+    for (int i = 0; i < edges.length; i++) {
+      fwdOff[i % types][edges[i][0] + 1]++;
+      bwdOff[i % types][edges[i][1] + 1]++;
+    }
+    final int[][] fwdNb = new int[types][];
+    final int[][] bwdNb = new int[types][];
+    for (int t = 0; t < types; t++) {
+      for (int v = 0; v < n; v++) {
+        fwdOff[t][v + 1] += fwdOff[t][v];
+        bwdOff[t][v + 1] += bwdOff[t][v];
+      }
+      fwdNb[t] = new int[fwdOff[t][n]];
+      bwdNb[t] = new int[bwdOff[t][n]];
+    }
+    final int[][] fwdPos = new int[types][];
+    final int[][] bwdPos = new int[types][];
+    for (int t = 0; t < types; t++) {
+      fwdPos[t] = Arrays.copyOf(fwdOff[t], n);
+      bwdPos[t] = Arrays.copyOf(bwdOff[t], n);
+    }
+    final int[] ref = new int[n];
+    for (int i = 0; i < n; i++)
+      ref[i] = i;
+    for (int i = 0; i < edges.length; i++) {
+      final int t = i % types;
+      fwdNb[t][fwdPos[t][edges[i][0]]++] = edges[i][1];
+      bwdNb[t][bwdPos[t][edges[i][1]]++] = edges[i][0];
+      int ra = edges[i][0];
+      while (ref[ra] != ra)
+        ra = ref[ra];
+      int rb = edges[i][1];
+      while (ref[rb] != rb)
+        rb = ref[rb];
+      if (ra != rb)
+        ref[Math.max(ra, rb)] = Math.min(ra, rb);
+    }
+
+    // a trailing edge type with no CSR (null entries) must be skipped by every phase
+    final int[][] fwdOffN = Arrays.copyOf(fwdOff, types + 1);
+    final int[][] fwdNbN = Arrays.copyOf(fwdNb, types + 1);
+    final int[][] bwdOffN = Arrays.copyOf(bwdOff, types + 1);
+    final int[][] bwdNbN = Arrays.copyOf(bwdNb, types + 1);
+
+    // the kernel is racy by design: repeat the run, every schedule must produce the same exact result
+    for (int run = 0; run < 5; run++) {
+      final int[] components = GraphAlgorithms.connectedComponents(n, fwdOffN, fwdNbN, bwdOffN, bwdNbN);
+      assertThat(components).hasSize(n);
+      for (int i = 0; i < n; i++) {
+        int r = i;
+        while (ref[r] != r)
+          r = ref[r];
+        assertThat(components[i]).as("run %d, component of node %d", run, i).isEqualTo(r);
+      }
+    }
+  }
+
+  // creates the schema types, so it can be called once per test
+  private void assertMatchesReference(final int n, final int[][] edges) {
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+    database.getSchema().createEdgeType("OTHER");
+
+    final MutableVertex[] vertices = new MutableVertex[n];
+    database.begin();
+    for (int i = 0; i < n; i++)
+      vertices[i] = database.newVertex("Node").save();
+    database.commit();
+
+    // sequential reference: union-find over the edges, root = min index
+    final int[] ref = new int[n];
+    for (int i = 0; i < n; i++)
+      ref[i] = i;
+
+    database.begin();
+    for (int i = 0; i < edges.length; i++) {
+      vertices[edges[i][0]].newEdge(i % 2 == 0 ? "LINK" : "OTHER", vertices[edges[i][1]]);
+      int ra = edges[i][0];
+      while (ref[ra] != ra)
+        ra = ref[ra];
+      int rb = edges[i][1];
+      while (ref[rb] != rb)
+        rb = ref[rb];
+      if (ra != rb)
+        ref[Math.max(ra, rb)] = Math.min(ra, rb);
+      if (i % 10_000 == 9_999) {
+        database.commit();
+        database.begin();
+      }
+    }
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node")
+        .withEdgeTypes("LINK", "OTHER")
+        .build();
+
+    final int[] components = GraphAlgorithms.connectedComponents(gav, "LINK", "OTHER");
+    assertThat(components).hasSize(n);
+    // component id is the min dense node id of the component; map reference roots to dense ids
+    final int[] minDense = new int[n];
+    Arrays.fill(minDense, Integer.MAX_VALUE);
+    final int[] refRoot = new int[n];
+    for (int i = 0; i < n; i++) {
+      int r = i;
+      while (ref[r] != r)
+        r = ref[r];
+      refRoot[i] = r;
+      minDense[r] = Math.min(minDense[r], gav.getNodeId(vertices[i].getIdentity()));
+    }
+    for (int i = 0; i < n; i++)
+      assertThat(components[gav.getNodeId(vertices[i].getIdentity())]).isEqualTo(minDense[refRoot[i]]);
   }
 
   @Test

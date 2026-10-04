@@ -19,7 +19,6 @@
 package com.arcadedb.database.bucketselectionstrategy;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
@@ -329,25 +328,12 @@ public class PartitionedBucketSelectionStrategy extends RoundRobinBucketSelectio
 
   /**
    * The class the binary deserializer will hand a temporal property back as, which is what decides whether the zone a
-   * record was placed under survives a round trip.
-   * <p>
-   * Asked of the serializer directly. {@link Type#getJavaImplementation} used to resolve the configured implementation
-   * for {@code DATE} and {@code DATETIME} only and answer the static default ({@code LocalDateTime}) for the three
-   * precision subtypes, while {@code BinarySerializer.deserializeValue} passes the configured
-   * {@code dateTimeImplementation} for all four datetime binary types; reading the subtypes through that helper reported
-   * every one of them zone-free and admitted exactly the configuration this guard exists to catch - measured: a
-   * {@code DATETIME_NANOS} partition key under {@code ZonedDateTime} let 3 of 6 writes of a single instant into a UNIQUE
-   * index. {@code getJavaImplementation} now resolves the subtypes as well (the write path needed it once
-   * {@code Type.convert} started reading an {@code Instant} into a {@code LocalDateTime}, issue #8886); this guard keeps
-   * asking the serializer's datetime implementation, the conservative reading of the two.
+   * record was placed under survives a round trip. {@link Type#getJavaImplementation} answers it for every DATETIME
+   * precision, the one place the write path asks too, so the two cannot drift apart again (a {@code DATETIME_NANOS} key
+   * read as zone-free under {@code ZonedDateTime} once let 3 of 6 writes of a single instant into a UNIQUE index).
    */
   private static Class<?> readBackClass(final Database database, final Type propertyType) {
-    if (!(database instanceof DatabaseInternal internal))
-      return propertyType.getJavaImplementation(database);
-
-    return propertyType == Type.DATE ?
-        internal.getSerializer().getDateImplementation() :
-        internal.getSerializer().getDateTimeImplementation();
+    return propertyType.getJavaImplementation(database);
   }
 
   /**

@@ -380,9 +380,8 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
       final int firstKeyPos = findFirstEntryOfSameKey(currentPageBuffer, convertedKeys, startIndexArray, mid);
       final int lastKeyPos = findLastEntryOfSameKey(count, currentPageBuffer, convertedKeys, startIndexArray, mid);
 
-      final int[] positionsArray = new int[lastKeyPos - firstKeyPos + 1];
-      for (int i = firstKeyPos; i <= lastKeyPos; ++i)
-        positionsArray[i - firstKeyPos] = currentPageBuffer.getInt(startIndexArray + (i * INT_SERIALIZED_SIZE)) + keySerializedSize;
+      final int[] positionsArray = valuePositionsOfRun(currentPageBuffer, startIndexArray, convertedKeys.length, firstKeyPos, lastKeyPos, mid,
+          keySerializedSize);
 
       return new LookupResult(true, false, lastKeyPos, positionsArray);
     }

@@ -709,10 +709,10 @@ public enum GlobalConfiguration {
 
   SQL_MAX_EXPRESSION_DEPTH("arcadedb.sql.maxExpressionDepth", SCOPE.DATABASE,
       """
-      Maximum nesting depth allowed for parentheses in a single SQL statement (WHERE conditions, sub-expressions, \
-      nested function/statement calls, ...). The ANTLR-generated SQL parser resolves ambiguity between several \
-      grammar rules that all start with '(' (a parenthesized expression, condition, or sub-statement) by first \
-      trying a fast SLL prediction and falling back to full ALL(*) prediction on failure; for a query with enough \
+      Maximum nesting depth allowed for parentheses, brackets, braces (map/JSON literals) and CASE expressions in a \
+      single SQL statement (WHERE conditions, sub-expressions, nested function/statement calls, ...). The \
+      ANTLR-generated SQL parser resolves ambiguity between several grammar rules that all start with '(' (a \
+      parenthesized expression, condition, or sub-statement) by first trying a fast SLL prediction and falling back to full ALL(*) prediction on failure; for a query with enough \
       nested parentheses that fallback's cost grows so steeply that a query of only a few KB can tie up a worker \
       thread for minutes without ever crashing, which is worse than a fast failure since it is not distinguishable \
       from a slow legitimate query. This is checked on the token stream before any parse is attempted, so a query \
@@ -828,7 +828,9 @@ public enum GlobalConfiguration {
       (0), which is the default. Every entry point reached through a command context - MATCHES, =~, PromQL's matchers \
       and the text.regexReplace()/.normalize() functions - shares ONE deadline for the whole command: not one per row, \
       not one per function, and not one per worker of a parallel type scan. Full-text search and REGEXP property \
-      validation run outside a command context and share one deadline across an entire scan (not per item). A large, \
+      validation run outside a command context and share one deadline across an entire scan (not per item). The MongoDB \
+      wire protocol plugin applies a regex filter the same way: one budget per command, counting only the time spent \
+      inside the regular expressions. A large, \
       legitimately slow (non-catastrophic) operation can hit this bound too, so raise it for workloads that need more \
       than 1s. Set to 0 to disable (not recommended).""",
       Long.class, 1000),
@@ -984,15 +986,26 @@ public enum GlobalConfiguration {
   // than wired up: two settings for one cache is the defect, and the surviving one already works.
   CYPHER_MAX_EXPRESSION_DEPTH("arcadedb.cypher.maxExpressionDepth", SCOPE.DATABASE,
       """
-      Maximum nesting depth allowed for a single Cypher expression, for example parentheses, list/map literals \
-      or function arguments nested inside one another, and the depth of a chain of AND/OR/string-concatenation \
-      terms in the resulting expression tree. The ANTLR-generated parser re-enters its expression grammar rule \
-      roughly ten Java stack frames per nesting level, so a few thousand levels is enough to exhaust the default \
-      JVM thread stack with a payload of only a few KB; a query past this limit is rejected as a normal parse \
-      error instead of crashing the worker thread with a StackOverflowError. Real-world queries rarely nest \
+      Maximum nesting depth allowed for a single Cypher expression, for example parentheses, list/map literals, \
+      function arguments, pattern parentheses or CALL/EXISTS/COUNT/COLLECT subqueries nested inside one another, \
+      and the depth of a chain of AND/OR/string-concatenation terms in the resulting expression tree. The levels of \
+      all these kinds add up: they are counted cumulatively against this one limit. The ANTLR-generated parser \
+      re-enters its expression grammar rule roughly ten Java stack frames per nesting level, so a few thousand \
+      levels is enough to exhaust the default JVM thread stack with a payload of only a few KB; a query past this \
+      limit is rejected as a normal parse error instead of crashing the worker thread with a StackOverflowError. Real-world queries rarely nest \
       more than a handful of levels, so the default is deliberately generous while staying far below the point \
       where the stack is at risk. Raise it only if a legitimate, deeply-nested or very long generated query needs it.""",
       Integer.class, 200),
+
+  CYPHER_MAX_CLAUSES("arcadedb.cypher.maxClauses", SCOPE.DATABASE,
+      """
+      Maximum number of clauses (MATCH, WITH, CREATE, RETURN, ...) in one query or subquery body; each branch of a \
+      UNION is counted on its own, not the UNION as a whole. The clauses of a query \
+      execute as a pull pipeline in which every step asks the previous one for its next row, so the Java stack is \
+      as deep as the clause chain is long; a query of a few thousand clauses is parsed but then exhausts the JVM \
+      thread stack while its rows are fetched. A query past this limit is rejected as a normal parse error. \
+      Must be at least 1; raise it only if a legitimate, very long generated query needs it.""",
+      Integer.class, 500),
 
   CYPHER_ALGO_MAX_WORKING_MEMORY("arcadedb.cypher.algoMaxWorkingMemory", SCOPE.DATABASE,
       """

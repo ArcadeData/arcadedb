@@ -51,6 +51,9 @@ public class HttpSession implements QuerySession {
   private final        Map<String, Object> parametersView  = Collections.unmodifiableMap(parameters);
   private final        ReentrantLock       lock            = new ReentrantLock();
   private volatile     long                lastUpdate      = System.currentTimeMillis();
+  // Set when a failed command rolled the transaction back (issue #9006): what the client wrote before is gone, so the session
+  // refuses every request that would run in it, instead of running them in autocommit and letting /commit report success.
+  private volatile     boolean             rolledBackByFailure;
 
   public HttpSession(final ServerSecurityUser user, final String id, final TransactionContext dbTx,
       final HttpSessionManager manager) {
@@ -142,6 +145,16 @@ public class HttpSession implements QuerySession {
 
   enum IdleCancelOutcome {BUSY, ROLLED_BACK, ALREADY_IDLE}
 
+  private void restartTransaction() {
+    try {
+      transaction.begin(transaction.getIsolationLevel());
+    } catch (final Exception ex) {
+      // THE SESSION CANNOT GO ON IN A TRANSACTION: IT IS REFUSED RATHER THAN RUN IN AUTOCOMMIT
+      LogManager.instance().log(this, Level.WARNING, "Session %s could not start a new transaction after a failed command", ex, id);
+      rolledBackByFailure = true;
+    }
+  }
+
   /**
    * Rolls back the transaction if active. Must be called while holding {@code lock}.
    */
@@ -183,6 +196,20 @@ public class HttpSession implements QuerySession {
    */
   public HttpSession execute(final ServerSecurityUser user, final Callable callback, final boolean rollbackOnFailure)
       throws Exception {
+    return execute(user, callback, rollbackOnFailure, false);
+  }
+
+  /** True when a failed command rolled the transaction back (issue #9006). */
+  public boolean isRolledBackByFailure() {
+    return rolledBackByFailure;
+  }
+
+  /**
+   * @param endsSession true for the routes that end the session (/commit, /rollback): they run even when a failed command already
+   *                    rolled the transaction back, every other one is refused (issue #9006)
+   */
+  public HttpSession execute(final ServerSecurityUser user, final Callable callback, final boolean rollbackOnFailure,
+      final boolean endsSession) throws Exception {
     if (!this.user.equals(user))
       throw new SecurityException("Cannot use the requested transaction because in use by a different user");
 
@@ -197,6 +224,10 @@ public class HttpSession implements QuerySession {
         if (!manager.isSessionRegistered(id))
           throw new HttpSessionException("Remote transaction '" + id + "' not found or expired");
 
+        if (rolledBackByFailure && rollbackOnFailure && !endsSession)
+          throw new HttpSessionException("Remote transaction '" + id
+              + "' was rolled back after a failed command and cannot run anything more. Send /rollback to end the session");
+
         LogManager.instance().log(this, Level.FINE, "Executing session %s for user %s", id, user.getName());
         callback.call();
         // REFRESH WHILE STILL HOLDING THE LOCK: OTHERWISE THE IDLE-TIMEOUT SWEEP COULD tryLock() SUCCESSFULLY
@@ -208,8 +239,19 @@ public class HttpSession implements QuerySession {
         // ALREADY HOLDS `lock` HERE, AND ReentrantLock.lockInterruptibly() CHECKS Thread.interrupted() BEFORE
         // ITS REENTRANT FAST PATH - IF THIS THREAD'S INTERRUPT FLAG IS SET, cancel() WOULD THROW
         // InterruptedException AND SILENTLY SKIP THE ROLLBACK
-        if (rollbackOnFailure)
-          rollbackIfActive();
+        if (rollbackOnFailure) {
+          final boolean wasActive = transaction != null && transaction.isActive();
+          final boolean hadChanges = wasActive && transaction.hasChanges();
+          final boolean rolledBack = rollbackIfActive();
+          // A TRANSACTION THE ENGINE ALREADY ENDED BENEATH THE COMMAND TOOK ITS WORK WITH IT: NOTHING CAN BE SAID TO BE SAFE
+          if (!wasActive || hadChanges)
+            // WORK THE CLIENT WROTE BEFORE THE FAILURE IS GONE (OR ITS ROLLBACK FAILED): THE SESSION MUST NOT PRETEND OTHERWISE (issue #9006)
+            rolledBackByFailure = true;
+          else if (rolledBack)
+            // NOTHING WAS LOST (A FAILED READ, AN ERROR BEFORE THE FIRST WRITE): THE SESSION GOES ON IN A FRESH TRANSACTION
+            // INSTEAD OF FALLING BACK TO AUTOCOMMIT
+            restartTransaction();
+        }
         throw e;
       } finally {
         lock.unlock();

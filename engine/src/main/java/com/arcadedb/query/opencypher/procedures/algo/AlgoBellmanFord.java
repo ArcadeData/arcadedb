@@ -26,7 +26,6 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.WorkGuard;
 
-import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
@@ -221,7 +220,9 @@ public class AlgoBellmanFord extends AbstractAlgoProcedure {
       }
     }
 
-    final Map<String, Object> path = buildPath(new ArrayList<>(pathRids), db);
+    // The vertex walk lost its edges: put them back so the path exposes its relationships. 1.0 is the weight the
+    // relaxation above gave an edge without the property, so the lightest parallel edge is the one that was relaxed
+    final Map<String, Object> path = buildPath(attachEdges(pathRids, relType, Vertex.DIRECTION.OUT, weightProperty, 1.0).ridsWithEdges(), db);
 
     final ResultInternal result = new ResultInternal();
     result.setProperty("path", path);

@@ -62,6 +62,11 @@ public class PostgresPortal {
   public boolean                   describedNoData      = false;
   /** The prepared statement this portal was bound from, or null for a statement template itself (issue #8379). */
   public PostgresPortal            statement;
+  /**
+   * True on a prepared-statement template that PARSE registered under a name. A named statement is the one a client
+   * keeps and re-executes, and may describe once and reuse that description for later rows (issue #9009).
+   */
+  public boolean                   namedStatement       = false;
   /** True once a {@code Describe('P')} answered this portal with a RowDescription, which supersedes a statement-level NoData. */
   public boolean                   rowsDescribed        = false;
   /**

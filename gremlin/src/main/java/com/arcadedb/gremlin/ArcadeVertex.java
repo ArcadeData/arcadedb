@@ -25,6 +25,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.LightEdge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.schema.DocumentType;
@@ -222,16 +223,21 @@ public class ArcadeVertex extends ArcadeElement<com.arcadedb.graph.Vertex> imple
 
     if (edgeLabels.length == 0) {
       for (final com.arcadedb.graph.Edge edge : this.baseElement.getEdges(ArcadeGraph.mapDirection(direction))) {
-        if (graph.getDatabase().existsRecord(edge.getIdentity())) // FILTER OUT DELETED EDGES
+        if (exists(edge))
           result.add(new ArcadeEdge(this.graph, edge));
       }
     } else {
       for (final com.arcadedb.graph.Edge edge : this.baseElement.getEdges(ArcadeGraph.mapDirection(direction), edgeLabels))
-        if (graph.getDatabase().existsRecord(edge.getIdentity())) // FILTER OUT DELETED EDGES
+        if (exists(edge))
           result.add(new ArcadeEdge(this.graph, edge));
     }
 
     return result.iterator();
+  }
+
+  /** Filters out deleted edges. A lightweight edge has no record to look for: it exists as long as the vertex lists it (#9142). */
+  private boolean exists(final com.arcadedb.graph.Edge edge) {
+    return edge instanceof LightEdge || graph.getDatabase().existsRecord(edge.getIdentity());
   }
 
   @Override

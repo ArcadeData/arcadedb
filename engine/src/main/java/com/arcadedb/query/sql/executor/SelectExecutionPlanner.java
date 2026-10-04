@@ -27,6 +27,7 @@ import com.arcadedb.database.bucketselectionstrategy.BucketSelectionStrategy;
 import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
@@ -467,6 +468,8 @@ public class SelectExecutionPlanner {
         final ProjectionItem item = projection.getItems().getFirst();
         final FunctionCall function = ((BaseExpression) item.getExpression().getMathExpression()).getIdentifier().getLevelZero()
             .getFunctionCall();
+        if (function.getParams() == null || function.getParams().isEmpty())
+          throw new CommandSQLParsingException("distinct() requires one argument: distinct(<expression>)");
         final Expression exp = function.getParams().getFirst();
         final ProjectionItem resultItem = new ProjectionItem();
         resultItem.setAlias(item.getAlias());
@@ -524,6 +527,10 @@ public class SelectExecutionPlanner {
       final CommandContext context) {
     final Identifier targetClass = info.target == null ? null : info.target.getItem().getIdentifier();
     if (targetClass == null)
+      return false;
+
+    // a variable ($parent, a LET) is not a type name: the schema has nothing to count (#9049)
+    if (targetClass.getStringValue().startsWith("$"))
       return false;
 
     if (info.distinct || info.expand)
@@ -982,7 +989,11 @@ public class SelectExecutionPlanner {
 
       String typeName = info.target.getItem().getIdentifier().getStringValue();
       if (typeName.startsWith("$")) {
-        typeName = (String) context.getVariable(typeName);
+        // only a variable holding a type name can be resolved here: an unset one ($parent at the top level, a script
+        // LET) is resolved at execution time, and one holding RIDs or records is not a type at all (#9049)
+        if (!(context.getVariable(typeName) instanceof final String variableValue) || variableValue.startsWith("#"))
+          return;
+        typeName = variableValue;
         info.target.getItem().setIdentifier(new Identifier(typeName));
       }
 
@@ -1864,7 +1875,7 @@ public class SelectExecutionPlanner {
       else if (name.startsWith("index:"))
         plan.chain(new FetchFromSchemaIndexDetailStep(metadata.getName().substring("index:".length()), context));
       else
-        throw new UnsupportedOperationException("Invalid metadata: " + metadata.getName());
+        throw new CommandExecutionException("Invalid metadata: " + metadata.getName());
     }
     }
   }
@@ -5056,8 +5067,11 @@ public class SelectExecutionPlanner {
             // side of the range)
             while (blockIterator.hasNext()) {
               BooleanExpression next = blockIterator.next();
-              // The other side of a range over field.toLowerCase() is probed lower-cased too, so it must already be
-              if (next.createRangeWith(singleExp) && rangePartnerAllowed(singleExp, next, ciCollation, info)
+              // The other side of a range over field.toLowerCase() is probed lower-cased too, so it must already be.
+              // The other side becomes a key the index scan computes with no record, so it must pass the same
+              // isIndexAware test as the first side: a bound that reads the record (u <= id, u <= w * 100) is not
+              // early calculated and stays in the filter, and the search goes on for a constant partner (issue #9029)
+              if (next.createRangeWith(singleExp) && next.isIndexAware(info) && rangePartnerAllowed(singleExp, next, ciCollation, info)
                   && !hasLossyDecimalLiteralBound(next, clazz, baseFieldName, context)) {
                 additionalRangeCondition = (BinaryCondition) next;
                 blockIterator.remove();

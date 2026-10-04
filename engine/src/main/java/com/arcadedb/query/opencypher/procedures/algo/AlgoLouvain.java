@@ -247,15 +247,18 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
     if (totalWeight == 0.0)
       return 0.0;
 
-    double modularity = 0.0;
+    // Q = sum_c [ L_c/m - (d_c/(2m))^2 ] with L_c the weight of the edges inside community c and d_c the sum of the
+    // weighted degrees of its vertices. Community ids are vertex indexes (0..n-1).
     final int n = vertices.size();
+    final double[] internalWeight = new double[n];
+    final double[] communityDegree = new double[n];
 
     for (int i = 0; i < n; i++) {
+      communityDegree[community[i]] += nodeDegree[i];
       final Vertex v = vertices.get(i);
       for (final Edge edge : v.getEdges(Vertex.DIRECTION.OUT)) {
         try {
-          final Vertex neighbor = edge.getInVertex();
-          final Integer j = vertexIndex.get(neighbor);
+          final Integer j = vertexIndex.get(edge.getInVertex());
           if (j == null || community[i] != community[j])
             continue;
 
@@ -265,12 +268,18 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
             if (wObj instanceof Number num)
               w = num.doubleValue();
           }
-          modularity += w - (nodeDegree[i] * nodeDegree[j]) / (2.0 * totalWeight);
+          internalWeight[community[i]] += w;
         } catch (final RecordNotFoundException e) {
           GhostEdgeReporter.reportSkipped(e);
         }
       }
     }
-    return modularity / (2.0 * totalWeight);
+
+    double modularity = 0.0;
+    for (int c = 0; c < n; c++) {
+      final double share = communityDegree[c] / (2.0 * totalWeight);
+      modularity += internalWeight[c] / totalWeight - share * share;
+    }
+    return modularity;
   }
 }

@@ -28,7 +28,6 @@ import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.QueryOperatorEquals;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.utility.CodeUtils;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -265,6 +264,7 @@ public class InCondition extends BooleanExpression {
    * non-match, or {@code null} (UNKNOWN) when the left value is null or no match was found but the
    * right collection contains a null element. UNKNOWN is mapped to false at the WHERE boundary.
    * @param convertOperand false when {@code iLeft} is a record property: it is compared without converting the items, like {@code =}
+   *                       (a sub-query row is the exception: it converts either way in QueryOperatorEquals)
    */
   protected static Boolean evaluateExpressionThreeValued(Object iLeft, final Object iRight, final boolean convertOperand) {
     if (iLeft instanceof Result r && !r.isElement()) {
@@ -337,6 +337,7 @@ public class InCondition extends BooleanExpression {
           sawNull = true;
           continue;
         }
+        // A sub-query row is a Result: equals() compares its first property, converting either way inside comparesValues()/valueEquals()
         if (QueryOperatorEquals.equals(iLeft, o))
           return Boolean.TRUE;
       }
@@ -345,10 +346,11 @@ public class InCondition extends BooleanExpression {
       return sawNull ? null : Boolean.FALSE;
     }
 
-    // Scalar right-hand side: degrade to an equality test (e.g. IN with a single non-collection value).
+    // Scalar right-hand side: degrade to the same equality test as "=" and the list forms (e.g. IN with a single non-collection
+    // value), so a Long matches an Integer, two BigDecimals of different scale match, and a Date matches the stored DATETIME (#9030)
     if (iLeft == null)
       return null;
-    return CodeUtils.compare(iLeft, iRight) ? Boolean.TRUE : Boolean.FALSE;
+    return equalsEitherWay(iLeft, iRight, convertOperand) ? Boolean.TRUE : Boolean.FALSE;
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {

@@ -48,6 +48,8 @@ import de.bwaldvogel.mongo.backend.DatabaseResolver;
 import de.bwaldvogel.mongo.backend.QueryResult;
 import de.bwaldvogel.mongo.backend.Utils;
 import de.bwaldvogel.mongo.backend.aggregation.Aggregation;
+import de.bwaldvogel.mongo.bson.BsonRegularExpression;
+import de.bwaldvogel.mongo.bson.Decimal128;
 import de.bwaldvogel.mongo.bson.Document;
 import de.bwaldvogel.mongo.bson.ObjectId;
 import de.bwaldvogel.mongo.exception.ErrorCode;
@@ -57,6 +59,7 @@ import de.bwaldvogel.mongo.oplog.Oplog;
 import de.bwaldvogel.mongo.wire.message.MongoQuery;
 import io.netty.channel.Channel;
 
+import java.math.BigDecimal;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.Lock;
@@ -65,6 +68,9 @@ import java.util.logging.Level;
 import static de.bwaldvogel.mongo.backend.Utils.markOkay;
 
 public class MongoDBDatabaseWrapper implements MongoDatabase {
+  // how many times a command on a single record selects again when its candidate was changed or deleted by a concurrent commit in between
+  private static final int SINGLE_RECORD_ATTEMPTS = 3;
+
   /**
    * The largest array index {@code $set} may reach: the gap is padded with nulls in memory, so an unbounded index is a way to
    * exhaust the heap with one request.
@@ -160,7 +166,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
     final Document transformedQuery = json2Document(q);
 
-    final MongoQuery mongoQuery = new MongoQuery(null, null, collection, numberToSkip, numberToReturn, transformedQuery, null);
+    final MongoQuery mongoQuery = new MongoQuery(null, null, getFullCollectionNamespace(collection), numberToSkip, numberToReturn,
+        transformedQuery, null);
 
     final QueryResult result = handleQuery(mongoQuery);
 
@@ -256,7 +263,17 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   private Document aggregateCollection(final String command, final Document document, final Oplog oplog)
       throws MongoServerException {
     final String collectionName = document.get("aggregate").toString();
-    database.countType(collectionName, false);
+    // like MongoDB, a pipeline over a collection that does not exist is answered with no documents (countDocuments is one). A
+    // pipeline that writes ($out, $merge) is not read-only: it keeps failing on the missing collection, as it always did
+    if (!database.getSchema().existsType(collectionName)) {
+      if (writesTo(document.get("pipeline")) || startsWithChangeStream(document.get("pipeline")))
+        throw new MongoServerError(26, "NamespaceNotFound", "ns does not exist: " + getFullCollectionNamespace(collectionName));
+      // accepted deviation: a stage that needs no input collection ($documents, $collStats) answers empty here
+      // the pipeline is still validated: a malformed stage is an error whether or not the collection exists
+      final List<Document> missingPipeline = Aggregation.parse(Aggregation.parse(document.get("pipeline")));
+      Aggregation.fromPipeline(missingPipeline, plugin, this, null, oplog).validate(document);
+      return firstBatchCursorResponse(collectionName, "firstBatch", new ArrayList<>(), 0);
+    }
 
     final MongoCollection<Long> collection = getCollection(collectionName);
 
@@ -275,6 +292,19 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     aggregation.validate(document);
 
     return firstBatchCursorResponse(collectionName, "firstBatch", aggregation.computeResult(), 0);
+  }
+
+  private static boolean startsWithChangeStream(final Object pipeline) {
+    return pipeline instanceof List<?> stages && !stages.isEmpty() && stages.getFirst() instanceof Document first
+        && first.containsKey("$changeStream");
+  }
+
+  private static boolean writesTo(final Object pipeline) {
+    if (pipeline instanceof List<?> stages)
+      for (final Object stage : stages)
+        if (stage instanceof Document document && (document.containsKey("$out") || document.containsKey("$merge")))
+          return true;
+    return false;
   }
 
   private Document firstBatchCursorResponse(final String ns, final String key, final List<Document> documents,
@@ -464,7 +494,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       // reject an invalid projection up front, even when no document would be projected
       MongoDBToSqlTranslator.isInclusionProjection(projection, "_id");
 
-    final MongoQuery mongoQuery = new MongoQuery(null, null, collectionName, skip, limit, queryPayload, null);
+    final MongoQuery mongoQuery = new MongoQuery(null, null, getFullCollectionNamespace(collectionName), skip, limit, queryPayload, null);
 
     final QueryResult result = handleQuery(mongoQuery);
 
@@ -578,7 +608,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * Handles the MongoDB {@code delete} command (used by the driver's {@code deleteOne} /
    * {@code deleteMany} helpers). Each delete spec carries a filter {@code q} and a {@code limit}:
    * a limit of 1 deletes only the first match ({@code deleteOne}), 0 deletes all matches
-   * ({@code deleteMany}). Filters are translated to the same SQL {@code WHERE} clause used by find.
+   * ({@code deleteMany}). The records to delete are the ones the filter selects, as in find (see {@link MongoFilter}).
    */
   private Document deleteDocuments(final Document document) {
     final String collectionName = document.get("delete").toString();
@@ -590,18 +620,23 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       indexLock.lock();
       database.begin();
       try {
+        // one regex budget for the whole command, whatever the number of entries
+        final MongoFilter.RegexBudget budget = MongoFilter.RegexBudget.of(database);
         for (final Document del : deletes) {
           final Document q = (Document) del.get("q");
           final Number limit = (Number) del.get("limit");
           final boolean single = limit != null && limit.intValue() == 1;
 
-          final Map<String, Object> params = new HashMap<>();
-          final StringBuilder sql = new StringBuilder("DELETE FROM ").append(Identifier.quote(collectionName));
-          appendWhere(sql, params, q);
-          if (single)
-            sql.append(" LIMIT 1");
+          final MongoFilter filter = new MongoFilter(database, q, budget);
+          if (filter.isEmpty()) {
+            final Map<String, Object> params = new HashMap<>();
+            final StringBuilder sql = new StringBuilder("DELETE FROM ").append(Identifier.quote(collectionName));
+            if (single)
+              sql.append(" LIMIT 1");
 
-          n += executeCount(sql.toString(), params);
+            n += executeCount(sql.toString(), params);
+          } else
+            n += deleteMatching(collectionName, filter, single);
         }
         database.commit();
       } catch (final RuntimeException e) {
@@ -610,6 +645,11 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       } finally {
         indexLock.unlock();
       }
+    } else if (deletes != null) {
+      // nothing to delete from, but an invalid filter is an error whether or not the collection exists
+      final MongoFilter.RegexBudget budget = MongoFilter.RegexBudget.of(database);
+      for (final Document del : deletes)
+        new MongoFilter(database, (Document) del.get("q"), budget);
     }
 
     final Document response = new Document("n", n);
@@ -620,9 +660,9 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   /**
    * Handles the MongoDB {@code update} command (used by {@code updateOne}, {@code updateMany},
    * {@code replaceOne} and {@code replaceMany}). The update document {@code u} is either a full
-   * replacement (no {@code $}-prefixed keys, mapped to SQL {@code CONTENT}) or a set of update
-   * operators ({@code $set}, {@code $unset}, {@code $inc}). The {@code multi} flag selects between
-   * updating the first match only ({@code LIMIT 1}) and all matches. When {@code upsert} is set and
+   * replacement (no {@code $}-prefixed keys) or a set of update operators ({@code $set}, {@code $unset},
+   * {@code $inc}). The {@code multi} flag selects between updating the first match only and all matches; the matches are the
+   * records the filter selects (see {@link MongoFilter}), each updated in turn. When {@code upsert} is set and
    * nothing matched, a new document seeded from the filter's equalities and the update is inserted.
    */
   private Document updateDocuments(final Document document) {
@@ -634,8 +674,10 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     final List<Document> upserted = new ArrayList<>();
 
     if (updates != null) {
+      // one regex budget for the whole command, whatever the number of entries
+      final MongoFilter.RegexBudget budget = MongoFilter.RegexBudget.of(database);
       // a schema change cannot happen inside the transaction: an upsert creates the collection with its _id index up front
-      prepareUpsertIdIndex(collectionName, updates);
+      prepareUpsertIdIndex(collectionName, updates, budget);
 
       // the transaction maintains the unique _id index, which must not be dropped and rebuilt under it
       final Lock indexLock = MongoDBCollectionWrapper.idIndexLock(database, collectionName).readLock();
@@ -649,7 +691,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
           final boolean multi = Utils.isTrue(upd.get("multi"));
           final boolean upsert = Utils.isTrue(upd.get("upsert"));
 
-          final int updated = executeUpdate(collectionName, q, u, multi);
+          final int updated = executeUpdate(collectionName, q, u, multi, budget);
           n += updated;
           nModified += updated;
 
@@ -685,7 +727,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * string kind) of an upsert without one. Only an upsert that matches nothing inserts, so the others leave the index alone
    * (a rebuild is a full copy of it).
    */
-  private void prepareUpsertIdIndex(final String collectionName, final List<Document> updates) {
+  private void prepareUpsertIdIndex(final String collectionName, final List<Document> updates, final MongoFilter.RegexBudget budget) {
     List<Object> samples = null;
     for (final Document upd : updates) {
       if (!Utils.isTrue(upd.get("upsert")))
@@ -711,7 +753,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       database.getSchema().getOrCreateDocumentType(collectionName);
       final Object sample = hasId && id != null ? id : new ObjectId();
       // nothing to do when the index already holds this kind of key: no need to look for a match either
-      if (MongoDBCollectionWrapper.idIndexSatisfies(database, collectionName, List.of(sample)) || matchesAny(collectionName, q))
+      // for a key other than the _id this is a scan until an index can narrow it (issue #9162), and the update scans again
+      if (MongoDBCollectionWrapper.idIndexSatisfies(database, collectionName, List.of(sample)) || matchesAny(collectionName, q, budget))
         continue;
 
       if (samples == null)
@@ -726,29 +769,26 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   /**
    * Advisory: it only decides whether to touch the index ahead of the transaction, the match can change before it starts.
    */
-  private boolean matchesAny(final String collectionName, final Document q) {
-    final Map<String, Object> params = new HashMap<>();
-    final StringBuilder sql = new StringBuilder("SELECT @rid FROM ").append(Identifier.quote(collectionName));
-    appendWhere(sql, params, q);
-    sql.append(" LIMIT 1");
-    try (final ResultSet rs = database.query("sql", sql.toString(), params)) {
-      return rs.hasNext();
-    }
+  private boolean matchesAny(final String collectionName, final Document q, final MongoFilter.RegexBudget budget) {
+    return !new MongoFilter(database, q, budget).select(database, collectionName, 1).isEmpty();
   }
 
-  private int executeUpdate(final String collectionName, final Document q, final Document u, final boolean multi) {
+  private int executeUpdate(final String collectionName, final Document q, final Document u, final boolean multi,
+      final MongoFilter.RegexBudget budget) {
+    // built first: an invalid filter is an error whether or not the collection exists
+    final MongoFilter filter = new MongoFilter(database, q, budget);
     if (!database.getSchema().existsType(collectionName) || u == null)
       return 0;
 
-    // A replacement must keep the stored _id and $set on a dotted path must reach into the embedded document: neither can be
-    // expressed as a single SQL UPDATE, so those are applied to each matching record. Everything else stays one SQL UPDATE.
-    if (isReplacement(u) || setsDottedPath(u) || touchesId(u))
-      return executeUpdateOnRecords(collectionName, q, u, multi);
+    // Every filtered update is applied to each record the filter selects (the matcher verifies the candidates, so the answer is exact
+    // for any shape of data). Only an update without a filter stays one SQL UPDATE.
+    // a filter the SQL cannot answer exactly (see MongoFilter) also selects the records itself
+    if (isReplacement(u) || setsDottedPath(u) || touchesId(u) || !filter.isEmpty())
+      return executeUpdateOnRecords(collectionName, filter, u, multi);
 
     final Map<String, Object> params = new HashMap<>();
     final StringBuilder sql = new StringBuilder("UPDATE ").append(Identifier.quote(collectionName));
     appendUpdateOperations(sql, params, u);
-    appendWhere(sql, params, q);
     if (!multi)
       sql.append(" LIMIT 1");
 
@@ -774,7 +814,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     for (final Map.Entry<String, Object> op : u.entrySet()) {
       if (!(op.getValue() instanceof Document fields) || !fields.containsKey("_id"))
         continue;
-      if (!"$set".equals(op.getKey()) || (stored != null && !sameId(stored, normalizeIdValue(fields.get("_id")))))
+      if (!"$set".equals(op.getKey()) || (stored != null && !sameId(stored, idValue(fields.get("_id")))))
         throw new MongoServerError(66, "ImmutableField", "Performing an update on the path '_id' would modify the immutable field '_id'");
     }
   }
@@ -792,30 +832,35 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     return false;
   }
 
-  private int executeUpdateOnRecords(final String collectionName, final Document q, final Document u, final boolean multi) {
-    final Map<String, Object> params = new HashMap<>();
-    final StringBuilder sql = new StringBuilder("SELECT @rid FROM ").append(Identifier.quote(collectionName));
-    appendWhere(sql, params, q);
-    if (!multi)
-      sql.append(" LIMIT 1");
-
+  private int executeUpdateOnRecords(final String collectionName, final MongoFilter filter, final Document u, final boolean multi) {
     // collect the RIDs first (the records are modified while the result set would still be open on them), and load each record
-    // in turn: only identities are held on the heap, not every matching document
-    final List<RID> rids = new ArrayList<>();
-    try (final ResultSet rs = database.query("sql", sql.toString(), params)) {
-      while (rs.hasNext())
-        rs.next().getIdentity().ifPresent(rids::add);
+    // in turn: only identities are held on the heap, not every matching document. An update of one record selects again, a few times,
+    // when its candidate stopped matching since the selection while another record still matches
+    int applied = 0;
+    for (int attempt = 0; attempt < (multi ? 1 : SINGLE_RECORD_ATTEMPTS); attempt++) {
+      final List<RID> rids = filter.select(database, collectionName, multi ? 0 : 1);
+      applied = updateRecords(rids, filter, u);
+      if (applied > 0 || rids.isEmpty())
+        break;
     }
+    return applied;
+  }
 
+  private int updateRecords(final List<RID> rids, final MongoFilter filter, final Document u) {
     final boolean replacement = isReplacement(u);
-    int skipped = 0;
+    int vanished = 0;
     for (final RID rid : rids) {
       final MutableDocument record;
       try {
         record = rid.asDocument().modify();
       } catch (final RecordNotFoundException e) {
         // deleted since the select: it no longer matches, like a single statement would not have touched it
-        --skipped;
+        ++vanished;
+        continue;
+      }
+      // the filter is tested again on the record as it is now: one that stopped matching since the selection is left alone
+      if (!filter.isEmpty() && !filter.matches(record)) {
+        ++vanished;
         continue;
       }
       if (replacement)
@@ -826,7 +871,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       }
       record.save();
     }
-    return rids.size() + skipped;
+    return rids.size() - vanished;
   }
 
   /**
@@ -835,7 +880,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    */
   private static void replaceContent(final MutableDocument record, final Document replacement) {
     final Object storedId = record.get("_id");
-    final Object newId = replacement.containsKey("_id") ? normalizeIdValue(replacement.get("_id")) : storedId;
+    final Object newId = replacement.containsKey("_id") ? idValue(replacement.get("_id")) : storedId;
     if (storedId != null && !sameId(storedId, newId))
       throw new MongoServerError(66, "ImmutableField", "After applying the update, the (immutable) field '_id' was found to have been altered");
 
@@ -868,14 +913,19 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         if (value instanceof Document opDoc) {
           if (opDoc.containsKey("$eq")) {
             final Object eqValue = opDoc.get("$eq");
+            // a regex in the filter is a pattern to match, not a value to insert
+            if (eqValue instanceof BsonRegularExpression)
+              continue;
             if ("_id".equals(field) && eqValue instanceof ObjectId)
               idIsObjectId = true;
-            record.set(field, normalizeIdValue(eqValue));
+            record.set(field, MongoBsonValues.toStored(field, eqValue));
           }
         } else {
+          if (value instanceof BsonRegularExpression)
+            continue;
           if ("_id".equals(field) && value instanceof ObjectId)
             idIsObjectId = true;
-          record.set(field, normalizeIdValue(value));
+          record.set(field, MongoBsonValues.toStored(field, value));
         }
       }
 
@@ -887,7 +937,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         // replacement's own _id is some other type.
         if ("_id".equals(entry.getKey()))
           idIsObjectId = value instanceof ObjectId;
-        record.set(entry.getKey(), normalizeIdValue(value));
+        record.set(entry.getKey(), MongoBsonValues.toStored(entry.getKey(), value));
       }
     } else {
       final Boolean setIdIsObjectId = applyOperatorsToDocument(record, u);
@@ -906,14 +956,6 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
     final Object id = record.get("_id");
     return idIsObjectId && id instanceof String hex ? new ObjectId(hex) : id;
-  }
-
-  /**
-   * The filter seeding loop copies values verbatim; an {@code ObjectId}-typed filter value (e.g. {@code eq("_id", objectId)})
-   * must be normalized to its hex string, matching how {@code insertDocuments} and {@code buildValue} store an ObjectId.
-   */
-  private static Object normalizeIdValue(final Object value) {
-    return value instanceof ObjectId oid ? oid.getHexData() : value;
   }
 
   /**
@@ -936,7 +978,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
           final Object value = f.getValue();
           if ("_id".equals(f.getKey()))
             idIsObjectId = value instanceof ObjectId;
-          setPath(record, f.getKey(), toMapValue(value));
+          setPath(record, f.getKey(), "_id".equals(f.getKey()) ? idValue(value) : toMapValue(value));
         }
       }
       case "$unset" -> {
@@ -945,7 +987,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       }
       case "$inc" -> {
         for (final Map.Entry<String, Object> f : operand.entrySet())
-          setPath(record, f.getKey(), add(numberOf(getPath(record, f.getKey())), numberOf(f.getValue())));
+          // toStored: a Decimal128 delta added to a missing field is a Number that must still become a DECIMAL
+          setPath(record, f.getKey(), MongoBsonValues.toStored(add(numberOf(getPath(record, f.getKey())), numberOf(f.getValue()))));
       }
       default -> throw new UnsupportedOperationException("Unsupported update operator '" + op + "'");
       }
@@ -967,7 +1010,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
     if (isReplacement(u)) {
       sql.append(" CONTENT ");
-      MongoDBToSqlTranslator.buildValue(sql, params, documentToMap(u));
+      MongoDBToSqlTranslator.bindStored(sql, params, documentToMap(u, true));
       return;
     }
 
@@ -977,7 +1020,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       switch (op) {
       case "$set" -> {
         sql.append(" MERGE ");
-        MongoDBToSqlTranslator.buildValue(sql, params, documentToMap(operand));
+        MongoDBToSqlTranslator.bindStored(sql, params, documentToMap(operand, true));
       }
       case "$unset" -> {
         sql.append(" REMOVE ");
@@ -1160,6 +1203,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       }
       return current instanceof Long || delta instanceof Long || sum > Integer.MAX_VALUE || sum < Integer.MIN_VALUE ? (Number) sum : (Number) (int) sum;
     }
+    if (current instanceof BigDecimal || delta instanceof BigDecimal || current instanceof Decimal128 || delta instanceof Decimal128)
+      return MongoBsonValues.toBigDecimal(current).add(MongoBsonValues.toBigDecimal(delta));
     return current.doubleValue() + delta.doubleValue();
   }
 
@@ -1174,11 +1219,31 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     return true;
   }
 
-  private void appendWhere(final StringBuilder sql, final Map<String, Object> params, final Document q) {
-    if (q != null && !q.isEmpty()) {
-      sql.append(" WHERE ");
-      MongoDBToSqlTranslator.buildExpression(sql, params, q);
+  private int deleteMatching(final String collectionName, final MongoFilter filter, final boolean single) {
+    int deleted = 0;
+    for (int attempt = 0; attempt < (single ? SINGLE_RECORD_ATTEMPTS : 1); attempt++) {
+      final List<RID> rids = filter.select(database, collectionName, single ? 1 : 0);
+      deleted = deleteRecords(rids, filter);
+      if (deleted > 0 || rids.isEmpty())
+        break;
     }
+    return deleted;
+  }
+
+  private int deleteRecords(final List<RID> rids, final MongoFilter filter) {
+    int deleted = 0;
+    for (final RID rid : rids)
+      try {
+        final com.arcadedb.database.Document record = rid.asDocument();
+        // the filter is tested again on the record as it is now: one that stopped matching since the selection is left alone
+        if (filter.matches(record)) {
+          record.delete();
+          deleted++;
+        }
+      } catch (final RecordNotFoundException e) {
+        // deleted since the selection: it is not this command's to count
+      }
+    return deleted;
   }
 
   private int executeCount(final String sql, final Map<String, Object> params) {
@@ -1193,27 +1258,34 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   }
 
   /**
+   * An {@code _id} value in its stored form: an ObjectId is its hex string.
+   */
+  private static Object idValue(final Object value) {
+    return MongoBsonValues.toStored("_id", value);
+  }
+
+  /**
    * Converts a BSON document into the map bound as the payload of {@code UPDATE ... MERGE} / {@code ... CONTENT}. Insertion
    * order is preserved so a replacement document reaches the record in wire order.
    */
-  private static Map<String, Object> documentToMap(final Document doc) {
+  private static Map<String, Object> documentToMap(final Document doc, final boolean topLevel) {
     final Map<String, Object> map = LinkedHashMap.newLinkedHashMap(doc.size());
     for (final Map.Entry<String, Object> entry : doc.entrySet())
-      map.put(entry.getKey(), toMapValue(entry.getValue()));
+      map.put(entry.getKey(), topLevel && "_id".equals(entry.getKey()) ? MongoBsonValues.toStored("_id", entry.getValue()) : toMapValue(entry.getValue()));
     return map;
   }
 
   private static Object toMapValue(final Object value) {
-    if (value instanceof Document document)
-      return documentToMap(document);
-    else if (value instanceof List<?> list) {
+    if (value instanceof Document document) {
+      MongoBsonValues.checkNotReserved(document);
+      return documentToMap(document, false);
+    } else if (value instanceof List<?> list) {
       final List<Object> converted = new ArrayList<>(list.size());
       for (final Object item : list)
         converted.add(toMapValue(item));
       return converted;
-    } else if (value instanceof ObjectId id)
-      return id.getHexData();
-    return value;
+    }
+    return MongoBsonValues.toStored(value);
   }
 
   private Document responseOk() {

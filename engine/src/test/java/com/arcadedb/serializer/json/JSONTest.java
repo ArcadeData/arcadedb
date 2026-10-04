@@ -111,8 +111,8 @@ class JSONTest extends TestHelper {
         .put("arrayNan", new JSONArray().put(0).put(Double.NaN).put(5));
 
     assertThat(json.isNull("nan")).isTrue();
-    assertThat(json.getJSONArray("arrayNan").get(0)).isEqualTo(0);
-    assertThat(json.getJSONArray("arrayNan").get(1)).isEqualTo(0);
+    assertThat(json.getJSONArray("arrayNan").get(0)).isEqualTo(0); // A GENUINE ZERO, NOT A CONVERTED NaN
+    assertThat(json.getJSONArray("arrayNan").isNull(1)).isTrue();
     assertThat(json.getJSONArray("arrayNan").get(2)).isEqualTo(5);
 
     final JSONObject json2 = new JSONObject(Map.of(
@@ -123,7 +123,7 @@ class JSONTest extends TestHelper {
 
     assertThat(json2.isNull("nan")).isTrue();
     assertThat(json2.getJSONArray("arrayNan").get(0)).isEqualTo(0);
-    assertThat(json2.getJSONArray("arrayNan").get(1)).isEqualTo(0);
+    assertThat(json2.getJSONArray("arrayNan").isNull(1)).isTrue();
     assertThat(json2.getJSONArray("arrayNan").get(2)).isEqualTo(5);
   }
 

@@ -25,6 +25,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
+import com.arcadedb.index.IntegralKeyBound;
 import com.arcadedb.index.RangeIndex;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.opencypher.Labels;
@@ -495,7 +496,30 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
           resolvedLowerBound = null;
           resolvedUpperBound = null;
         }
-        return true;
+
+        // A bound no integral key equals (12.5, 1e19) would be truncated or clamped by the index, which then answers for another
+        // bound: it moves onto the key that bounds the same keys, inclusive, or matches none (issue #9021). The leading column of
+        // a composite index takes it too, as a prefix bound
+        final Type[] keyTypes = typeIndex.getKeyTypes();
+        final byte leadingKeyType = IntegralKeyBound.binaryTypeOf(keyTypes != null && keyTypes.length > 0 ? keyTypes[0] : null);
+        if (resolvedLowerBound != null && IntegralKeyBound.isInexact(leadingKeyType, resolvedLowerBound)) {
+          final Number mapped = IntegralKeyBound.ceiling(leadingKeyType, (Number) resolvedLowerBound);
+          if (mapped == null)
+            return false;
+          resolvedLowerBound = mapped;
+          resolvedLowerInclusive = true;
+        }
+        if (resolvedUpperBound != null && IntegralKeyBound.isInexact(leadingKeyType, resolvedUpperBound)) {
+          final Number mapped = IntegralKeyBound.floor(leadingKeyType, (Number) resolvedUpperBound);
+          if (mapped == null)
+            return false;
+          resolvedUpperBound = mapped;
+          resolvedUpperInclusive = true;
+        }
+        // 11.5 < n.i < 11.9 maps to 12 <= n.i <= 11, which no key satisfies
+        return leadingKeyType < 0 || !(resolvedLowerBound instanceof Number lower) || !(resolvedUpperBound instanceof Number upper)
+            || IntegralKeyBound.isInexact(leadingKeyType, lower) || IntegralKeyBound.isInexact(leadingKeyType, upper)
+            || lower.longValue() <= upper.longValue();
       }
 
       /**

@@ -24,6 +24,7 @@ import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.schema.DocumentType;
@@ -43,8 +44,10 @@ import de.bwaldvogel.mongo.oplog.Oplog;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -240,11 +243,7 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
         final MutableDocument record = database.newDocument(collectionName);
 
         for (final Map.Entry<String, Object> p : d.entrySet()) {
-          final Object value = p.getValue();
-          if (value instanceof ObjectId id)
-            record.set(p.getKey(), id.getHexData());
-          else
-            record.set(p.getKey(), value);
+          record.set(p.getKey(), MongoBsonValues.toStored(p.getKey(), p.getValue()));
         }
 
         record.save();
@@ -510,44 +509,40 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
   public int count(final Document document, final int skip, final int limit) {
     // The count command's own default for an unspecified limit is -1 (MongoDBDatabaseWrapper#countCollection), so
     // limit <= 0 here means "no limit" - deliberately, not incidentally lining up with an explicit limit: 0.
-    final boolean hasFilter = document != null && !document.isEmpty();
-    if (!hasFilter && skip <= 0 && limit <= 0)
+    final MongoFilter filter = new MongoFilter(database, document);
+    if (filter.isEmpty() && skip <= 0 && limit <= 0)
       return (int) database.countType(collectionName, false);
 
-    int counted;
+    int counted = 0;
 
-    if (skip <= 0 && limit <= 0) {
-      // No pagination to apply: let the engine aggregate instead of materializing every matching row.
-      final Map<String, Object> params = new HashMap<>();
-      final StringBuilder sql = new StringBuilder("select count(*) as count from ").append(Identifier.quote(collectionName));
-      if (hasFilter) {
-        sql.append(" where ");
-        MongoDBToSqlTranslator.buildExpression(sql, params, document);
-      }
-
-      try (final ResultSet rs = database.query("SQL", sql.toString(), params)) {
-        counted = rs.hasNext() ? ((Number) rs.next().getProperty("count")).intValue() : 0;
-      }
-    } else {
+    if (filter.isEmpty()) {
       // Push skip/limit into the query itself - @rid is enough to count a row, no need to materialize the record.
       final Map<String, Object> params = new HashMap<>();
       final StringBuilder sql = new StringBuilder("select @rid from ").append(Identifier.quote(collectionName));
-      if (hasFilter) {
-        sql.append(" where ");
-        MongoDBToSqlTranslator.buildExpression(sql, params, document);
-      }
       if (skip > 0)
         sql.append(" SKIP ").append(skip);
       if (limit > 0)
         sql.append(" LIMIT ").append(limit);
 
-      counted = 0;
       try (final ResultSet rs = database.query("SQL", sql.toString(), params)) {
         while (rs.hasNext()) {
           rs.next();
           counted++;
         }
       }
+    } else {
+      // the documents are tested one by one: the skipped matches are not counted, the scan stops at the limit
+      final int[] skipped = { 0 };
+      final int[] matched = { 0 };
+      filter.scanMatches(database, collectionName, rid -> {
+        if (skipped[0] < skip) {
+          skipped[0]++;
+          return true;
+        }
+        matched[0]++;
+        return limit <= 0 || matched[0] < limit;
+      });
+      counted = matched[0];
     }
 
     return counted;
@@ -582,23 +577,23 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
   private Iterable<Document> queryDocuments(final Document query, final Document orderBy, final int numberToSkip, final int numberToReturn) {
     final List<Document> result = new ArrayList<>();
 
-    final boolean hasFilter = query != null && !query.isEmpty();
+    final MongoFilter filter = new MongoFilter(database, query);
     final boolean hasOrderBy = orderBy != null && !orderBy.isEmpty();
 
-    if (!hasFilter && !hasOrderBy) {
+    if (filter.isEmpty() && !hasOrderBy) {
       // SCAN
       MongoDBToSqlTranslator.fillResultSet(numberToSkip, numberToReturn, result, database.iterateType(collectionName, false));
     } else {
       // EXECUTE A SQL QUERY. A sort-only find() (no filter) still has to reach here rather than the scan above,
-      // otherwise the order-by would be silently dropped.
+      // otherwise the order-by would be silently dropped. A filter the SQL cannot answer exactly (see MongoFilter) is applied to
+      // the rows the query returns, in the order it returns them, so skip and limit count the matches.
       final Map<String, Object> params = new HashMap<>();
       final StringBuilder sql = new StringBuilder("select from ").append(Identifier.quote(collectionName));
 
-      if (hasFilter) {
-        sql.append(" where ");
-        MongoDBToSqlTranslator.buildExpression(sql, params, query);
-      }
+      filter.appendCandidateWhere(sql, params);
 
+      // known cost: with a filter the SQL cannot answer and no _id to narrow it, every row of the type is sorted before the filter
+      // discards most of them
       if (hasOrderBy) {
         sql.append(" order by ");
         int i = 0;
@@ -613,10 +608,54 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
       }
 
       try (final ResultSet rs = database.query("SQL", sql.toString(), params)) {
-        MongoDBToSqlTranslator.fillResultSet(numberToSkip, numberToReturn, result, rs);
+        if (filter.isEmpty())
+          MongoDBToSqlTranslator.fillResultSet(numberToSkip, numberToReturn, result, rs);
+        else
+          MongoDBToSqlTranslator.fillResultSet(numberToSkip, numberToReturn, result, new FilteredIterator(rs, filter));
       }
     }
 
     return result;
+  }
+
+  // com.arcadedb.database.Document is spelled out in full below: its simple name is the one of the MongoDB Document imported here
+  /**
+   * The rows (or records) of an iterator that match a filter.
+   */
+  private static final class FilteredIterator implements Iterator<Object> {
+    private final Iterator<?> rows;
+    private final MongoFilter filter;
+    private       Object      next;
+
+    FilteredIterator(final Iterator<?> rows, final MongoFilter filter) {
+      this.rows = rows;
+      this.filter = filter;
+    }
+
+    @Override
+    public boolean hasNext() {
+      while (next == null && rows.hasNext()) {
+        final Object candidate = rows.next();
+        final boolean matches;
+        if (candidate instanceof Result row)
+          matches = filter.matchesRow(row);
+        else if (candidate instanceof com.arcadedb.database.Document document)
+          matches = filter.matches(document);
+        else
+          throw new IllegalArgumentException("Object not supported: " + (candidate != null ? candidate.getClass().getName() : null));
+        if (matches)
+          next = candidate;
+      }
+      return next != null;
+    }
+
+    @Override
+    public Object next() {
+      if (!hasNext())
+        throw new NoSuchElementException();
+      final Object result = next;
+      next = null;
+      return result;
+    }
   }
 }

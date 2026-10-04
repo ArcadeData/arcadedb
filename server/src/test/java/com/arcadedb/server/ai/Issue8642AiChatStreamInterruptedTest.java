@@ -406,7 +406,10 @@ class Issue8642AiChatStreamInterruptedTest extends BaseGraphServerTest {
    * never writes still ends: the drop happens and the assertions say what was missing.
    */
   private void awaitFirstRelayedFrame() throws InterruptedException {
-    firstFrameRelayed.await(HANG_DETECT_MS, TimeUnit.MILLISECONDS);
+    if (!firstFrameRelayed.await(HANG_DETECT_MS, TimeUnit.MILLISECONDS))
+      // the drop goes ahead; this line is what tells a failing assertion below apart from a relay that never wrote
+      LogManager.instance().log(this, Level.WARNING, "No relayed frame reached the client within %d ms: dropping anyway",
+          HANG_DETECT_MS);
   }
 
   private static void write(final OutputStream out, final String text) throws IOException {
