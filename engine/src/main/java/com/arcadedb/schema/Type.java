@@ -526,9 +526,19 @@ public enum Type {
       for (final Object item : sourceCollection)
         result.add(coerceScalarItem(database, item, ofClass, ofType));
       return result;
+    } else if (List.class.isAssignableFrom(targetClass) && isPlainScalar(value, ofType)) {
+      // a scalar written to a LIST OF <type> is wrapped as one element, converted like the elements of a list are (#9028)
+      final List<Object> result = new ArrayList<>(1);
+      result.add(coerceScalarItem(database, value, ofClass, ofType));
+      return result;
     }
 
     return null;
+  }
+
+  private static boolean isPlainScalar(final Object item, final Type ofType) {
+    return item instanceof Number || item instanceof Boolean || item instanceof CharSequence || item instanceof Character
+        || ofType.isDateOrDateTime() && isDateValue(item);
   }
 
   /**
@@ -553,10 +563,9 @@ public enum Type {
       return null;
 
     // Only coerce plain scalar values; leave nested documents/collections/links to the validation layer.
-    if (item instanceof Number || item instanceof Boolean || item instanceof CharSequence || item instanceof Character
-        // a date value is only coerced towards a date type: in a LIST OF STRING / INTEGER it stays what it is, for the
-        // validator to refuse (#9111)
-        || ofType.isDateOrDateTime() && isDateValue(item))
+    // a date value is only coerced towards a date type: in a LIST OF STRING / INTEGER it stays what it is, for the
+    // validator to refuse (#9111)
+    if (isPlainScalar(item, ofType))
       return convert(database, item, ofClass, null);
 
     return item;
