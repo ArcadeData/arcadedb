@@ -596,12 +596,14 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       indexLock.lock();
       database.begin();
       try {
+        // one regex budget for the whole command, whatever the number of entries
+        final MongoFilter.RegexBudget budget = MongoFilter.RegexBudget.of(database);
         for (final Document del : deletes) {
           final Document q = (Document) del.get("q");
           final Number limit = (Number) del.get("limit");
           final boolean single = limit != null && limit.intValue() == 1;
 
-          final MongoFilter filter = new MongoFilter(database, q);
+          final MongoFilter filter = new MongoFilter(q, budget, database);
           if (filter.isSql()) {
             final Map<String, Object> params = new HashMap<>();
             final StringBuilder sql = new StringBuilder("DELETE FROM ").append(Identifier.quote(collectionName));
@@ -644,8 +646,10 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     final List<Document> upserted = new ArrayList<>();
 
     if (updates != null) {
+      // one regex budget for the whole command, whatever the number of entries
+      final MongoFilter.RegexBudget budget = MongoFilter.RegexBudget.of(database);
       // a schema change cannot happen inside the transaction: an upsert creates the collection with its _id index up front
-      prepareUpsertIdIndex(collectionName, updates);
+      prepareUpsertIdIndex(collectionName, updates, budget);
 
       // the transaction maintains the unique _id index, which must not be dropped and rebuilt under it
       final Lock indexLock = MongoDBCollectionWrapper.idIndexLock(database, collectionName).readLock();
@@ -659,7 +663,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
           final boolean multi = Utils.isTrue(upd.get("multi"));
           final boolean upsert = Utils.isTrue(upd.get("upsert"));
 
-          final int updated = executeUpdate(collectionName, q, u, multi);
+          final int updated = executeUpdate(collectionName, q, u, multi, budget);
           n += updated;
           nModified += updated;
 
@@ -695,7 +699,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * string kind) of an upsert without one. Only an upsert that matches nothing inserts, so the others leave the index alone
    * (a rebuild is a full copy of it).
    */
-  private void prepareUpsertIdIndex(final String collectionName, final List<Document> updates) {
+  private void prepareUpsertIdIndex(final String collectionName, final List<Document> updates, final MongoFilter.RegexBudget budget) {
     List<Object> samples = null;
     for (final Document upd : updates) {
       if (!Utils.isTrue(upd.get("upsert")))
@@ -721,7 +725,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       database.getSchema().getOrCreateDocumentType(collectionName);
       final Object sample = hasId && id != null ? id : new ObjectId();
       // nothing to do when the index already holds this kind of key: no need to look for a match either
-      if (MongoDBCollectionWrapper.idIndexSatisfies(database, collectionName, List.of(sample)) || matchesAny(collectionName, q))
+      if (MongoDBCollectionWrapper.idIndexSatisfies(database, collectionName, List.of(sample)) || matchesAny(collectionName, q, budget))
         continue;
 
       if (samples == null)
@@ -736,17 +740,18 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   /**
    * Advisory: it only decides whether to touch the index ahead of the transaction, the match can change before it starts.
    */
-  private boolean matchesAny(final String collectionName, final Document q) {
-    return !new MongoFilter(database, q).select(database, collectionName, 1).isEmpty();
+  private boolean matchesAny(final String collectionName, final Document q, final MongoFilter.RegexBudget budget) {
+    return !new MongoFilter(q, budget, database).select(database, collectionName, 1).isEmpty();
   }
 
-  private int executeUpdate(final String collectionName, final Document q, final Document u, final boolean multi) {
+  private int executeUpdate(final String collectionName, final Document q, final Document u, final boolean multi,
+      final MongoFilter.RegexBudget budget) {
     if (!database.getSchema().existsType(collectionName) || u == null)
       return 0;
 
     // A replacement must keep the stored _id and $set on a dotted path must reach into the embedded document: neither can be
     // expressed as a single SQL UPDATE, so those are applied to each matching record. Everything else stays one SQL UPDATE.
-    final MongoFilter filter = new MongoFilter(database, q);
+    final MongoFilter filter = new MongoFilter(q, budget, database);
     // a filter the SQL cannot answer exactly (see MongoFilter) also selects the records itself
     if (isReplacement(u) || setsDottedPath(u) || touchesId(u) || !filter.isSql())
       return executeUpdateOnRecords(collectionName, filter, u, multi);

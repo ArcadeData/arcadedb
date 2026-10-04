@@ -70,6 +70,14 @@ final class MongoFilter {
   private final QueryMatcher matcher;
 
   MongoFilter(final Database database, final Document filter) {
+    this(filter, null, database);
+  }
+
+  /**
+   * @param budget the regex budget of the whole command, shared by the filters of its entries (a bulk update or delete holds one
+   *               filter per entry), or {@code null} for one of its own
+   */
+  MongoFilter(final Document filter, final RegexBudget budget, final Database database) {
     this.original = filter;
     this.empty = filter == null || filter.isEmpty();
     this.sql = empty || onlyId(filter);
@@ -77,8 +85,7 @@ final class MongoFilter {
       this.normalized = null;
       this.matcher = null;
     } else {
-      final RegexBudget deadline = new RegexBudget(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(database));
-      this.normalized = normalizeQuery(filter, deadline, true);
+      this.normalized = normalizeQuery(filter, budget != null ? budget : RegexBudget.of(database), true);
       this.matcher = new DefaultQueryMatcher();
     }
   }
@@ -324,11 +331,15 @@ final class MongoFilter {
    * expression is not cut short while a pathological one still is. The clock is read every few hundred steps of a search, so a very
    * short value never trips it. Not thread-safe: a filter is built per command and evaluated by one thread.
    */
-  private static final class RegexBudget {
+  static final class RegexBudget {
     private final long timeoutNanos;
     private       long remainingNanos;
 
-    RegexBudget(final long timeoutMillis) {
+    static RegexBudget of(final Database database) {
+      return new RegexBudget(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(database));
+    }
+
+    private RegexBudget(final long timeoutMillis) {
       this.timeoutNanos = timeoutMillis > 0 ? timeoutMillis * 1_000_000L : 0;
       this.remainingNanos = timeoutNanos;
     }
