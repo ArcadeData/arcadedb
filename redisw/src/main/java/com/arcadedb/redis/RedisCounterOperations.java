@@ -137,8 +137,8 @@ public final class RedisCounterOperations {
    * <p>
    * NaN/Infinity (as an increment, as the sum, or as a magnitude beyond what Redis' {@code long double} holds) are
    * refused with real Redis' own "increment would produce NaN or Infinity"; a stored non-finite text is "value is not a
-   * valid float". The magnitude check also keeps a hostile exponent such as {@code 1e999999999} from allocating a
-   * gigantic number.
+   * valid float". The magnitude check and the early rounding to 17 decimals keep a hostile exponent such as
+   * {@code 1e999999999} or {@code 1e-999999999} from allocating a gigantic number.
    */
   public static UnaryOperator<Object> incrementByFloat(final String delta) {
     final BigDecimal increment = parseFloatOperand(delta, "increment would produce NaN or Infinity");
@@ -173,7 +173,9 @@ public final class RedisCounterOperations {
     }
     if (isOutOfRange(number))
       throw new RedisException(nonFiniteMessage);
-    return number;
+    // Beyond 17 decimals nothing survives the result's rounding, and aligning a huge scale such as 1e-999999999 to the other
+    // operand would allocate a gigantic number
+    return number.scale() > 17 ? number.setScale(17, RoundingMode.HALF_EVEN) : number;
   }
 
   private static boolean isNonFiniteSpelling(final String text) {
