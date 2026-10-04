@@ -109,7 +109,9 @@ class Issue9028ScalarIntoTypedListTest extends TestHelper {
       final MutableDocument doc = database.newDocument("D");
       doc.set("days", LocalDate.of(2026, 10, 3));
       doc.save();
-      assertThat((List<Object>) doc.get("days")).hasSize(1);
+      final List<Object> days = (List<Object>) doc.get("days");
+      assertThat(days).hasSize(1);
+      assertThat(String.valueOf(days.get(0))).contains("2026");
     });
   }
 
