@@ -32,6 +32,7 @@ import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.NodeEdgeWeights;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.WorkGuard;
@@ -44,6 +45,7 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Abstract base class for algorithm procedures.
@@ -51,6 +53,8 @@ import java.util.Map;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public abstract class AbstractAlgoProcedure implements CypherProcedure {
+  /** Upper bound on waiting for a restoring or rebuilding Graph Analytical View before taking the record-by-record path. */
+  private static final long VIEW_RESTORE_WAIT_MINUTES = 10;
 
   /**
    * Hard upper bound for every embedding-dimension-shaped parameter (`embeddingDimension`,
@@ -619,6 +623,17 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
    * @param relTypes edge types to filter by (null = any provider)
    */
   protected GraphTraversalProvider findProvider(final Database db, final String[] relTypes) {
+    final GraphTraversalProvider provider = findReadyProvider(db, relTypes);
+    if (provider != null)
+      return provider;
+    // A view that was only just restored from disk is not usable until its deferred restore resolves, and the first
+    // isReady() above is what dispatched it. These algorithms are O(V+E) over the whole graph, so the record-by-record
+    // fallback costs far more than the restore: 173 seconds for the first algo.wcc after a restart on a large database,
+    // against seconds once the view served it. Wait for the views that cover the request, then ask again.
+    return awaitCoveringViews(db, relTypes) ? findReadyProvider(db, relTypes) : null;
+  }
+
+  private GraphTraversalProvider findReadyProvider(final Database db, final String[] relTypes) {
     // Try exact match first (covers all requested types)
     final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(db, relTypes);
     if (provider != null && provider.coversVertexType(null))
@@ -642,6 +657,35 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
         found = p;
     }
     return found;
+  }
+
+  /**
+   * Waits for every view that covers the request and is {@code BUILDING} (a deferred restore-from-disk, or the rebuild it
+   * falls back to) to settle.
+   *
+   * @return true if it waited for at least one view and all of them became ready, so asking again can succeed
+   */
+  private boolean awaitCoveringViews(final Database db, final String[] relTypes) {
+    boolean waited = false;
+    for (final GraphTraversalProvider p : GraphTraversalProviderRegistry.getProviders(db)) {
+      if (!(p instanceof GraphAnalyticalView gav) || gav.getStatus() != GraphAnalyticalView.Status.BUILDING)
+        continue;
+      boolean covers = true;
+      if (relTypes == null || relTypes.length == 0)
+        covers = gav.coversEdgeType(null);
+      else
+        for (final String relType : relTypes)
+          if (!gav.coversEdgeType(relType)) {
+            covers = false;
+            break;
+          }
+      if (!covers)
+        continue;
+      if (!gav.awaitReady(VIEW_RESTORE_WAIT_MINUTES, TimeUnit.MINUTES))
+        return false;
+      waited = true;
+    }
+    return waited;
   }
 
   /**
