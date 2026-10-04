@@ -481,7 +481,7 @@ public class AnchorSelector {
    *
    * @param indexes      list of available indexes
    * @param propertyName property to search for
-   * @param pinned       the properties the query holds equal to a value
+   * @param pinned       the other properties the query holds equal to a value; {@code propertyName} itself counts as pinned
    * @return index statistics if found, null otherwise
    */
   private IndexStatistics findEqualitySeekIndex(final List<IndexStatistics> indexes, final String propertyName,
@@ -489,7 +489,7 @@ public class AnchorSelector {
     if (indexes == null)
       return null;
     for (final IndexStatistics index : indexes) {
-      if (!index.isOrdered() && !pinned.containsAll(index.getPropertyNames()))
+      if (!index.isOrdered() && !fillsKey(index, propertyName, pinned))
         continue;
       if (leadsWithProperty(index, propertyName))
         return index;
@@ -528,6 +528,14 @@ public class AnchorSelector {
     }
 
     return null;
+  }
+
+  /** Whether the property being seeked and the pinned ones cover every column of the index key */
+  private static boolean fillsKey(final IndexStatistics index, final String propertyName, final Set<String> pinned) {
+    for (final String column : index.getPropertyNames())
+      if (!column.equals(propertyName) && !pinned.contains(column))
+        return false;
+    return true;
   }
 
   /** A single-property index on the property, or a composite one whose leading column it is (the index prefix) */
