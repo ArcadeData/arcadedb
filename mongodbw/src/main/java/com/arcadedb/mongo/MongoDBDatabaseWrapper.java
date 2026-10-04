@@ -163,7 +163,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
     final Document transformedQuery = json2Document(q);
 
-    final MongoQuery mongoQuery = new MongoQuery(null, null, getFullCollectionNamespace(collection), numberToSkip, numberToReturn, transformedQuery, null);
+    final MongoQuery mongoQuery = new MongoQuery(null, null, getFullCollectionNamespace(collection), numberToSkip, numberToReturn,
+        transformedQuery, null);
 
     final QueryResult result = handleQuery(mongoQuery);
 

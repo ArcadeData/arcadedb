@@ -320,7 +320,9 @@ class MongoDBFilterSemanticsTest extends BaseMongoServerTest {
     final long previous = GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong();
     GlobalConfiguration.COMMAND_REGEX_TIMEOUT.setValue(200);
     try {
-      assertThatThrownBy(() -> ids(c, "{s:{$regex:'(.*a){20}$'}}")).isInstanceOf(MongoException.class);
+      // 50 is MaxTimeMSExpired, the answer to a regular expression that ran out of its time
+      assertThatThrownBy(() -> ids(c, "{s:{$regex:'(.*a){20}$'}}")).isInstanceOf(MongoException.class)
+          .satisfies(e -> assertThat(((MongoException) e).getCode()).isEqualTo(50));
     } finally {
       GlobalConfiguration.COMMAND_REGEX_TIMEOUT.setValue(previous);
     }
@@ -333,7 +335,8 @@ class MongoDBFilterSemanticsTest extends BaseMongoServerTest {
     final long previous = GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong();
     GlobalConfiguration.COMMAND_REGEX_TIMEOUT.setValue(200);
     try {
-      assertThatThrownBy(() -> ids(c, "{_id:{$regex:'(.*a){20}$'}, n:1}")).isInstanceOf(MongoException.class);
+      assertThatThrownBy(() -> ids(c, "{_id:{$regex:'(.*a){20}$'}, n:1}")).isInstanceOf(MongoException.class)
+          .satisfies(e -> assertThat(((MongoException) e).getCode()).isEqualTo(50));
       assertThatThrownBy(() -> c.find(new Document("$or", List.of(new Document("_id", Pattern.compile("(.*a){20}$")), new Document("n", 2))))
           .into(new ArrayList<>())).isInstanceOf(MongoException.class);
     } finally {
