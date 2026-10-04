@@ -18,6 +18,7 @@
  */
 package com.arcadedb.index.sparsevector;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.RID;
 
 import java.io.IOException;
@@ -347,6 +348,16 @@ public final class BmwScorer {
    * O(aligned * log terms).
    */
   private static void scan(final DimEntry[] terms, final Collector collector, final RID endExclusive) throws IOException {
+    final int window = GlobalConfiguration.SPARSE_VECTOR_SCORING_WINDOW.getValueAsInteger();
+    if (window > 0) {
+      scanWindowed(terms, collector, endExclusive, Math.min(MAX_WINDOW, (window + 63) & ~63));
+      return;
+    }
+    scanDocumentAtATime(terms, collector, endExclusive);
+  }
+
+  private static void scanDocumentAtATime(final DimEntry[] terms, final Collector collector, final RID endExclusive)
+      throws IOException {
     final int n = terms.length;
     // Keys are packed relative to the smallest bucket id any cursor starts on: cursors only move
     // forward, so no key this traversal will ever see has a smaller one (issue #8553).
@@ -461,6 +472,247 @@ public final class BmwScorer {
         splitDirty = true;
       }
     }
+  }
+
+  // ---------- window traversal (issue #9200) ----------
+
+  /** Upper cap of {@link GlobalConfiguration#SPARSE_VECTOR_SCORING_WINDOW}: the window array is 4 bytes per position. */
+  private static final int MAX_WINDOW = 1 << 20;
+
+  /** Size of the first window of a traversal; each window after it doubles, up to the configured size. */
+  private static final int INITIAL_WINDOW = 128;
+
+  /**
+   * Window MaxScore: the shape of Lucene's {@code MaxScoreBulkScorer}. The terms are split into essential and
+   * non-essential exactly as in {@link #scanDocumentAtATime}, but instead of keeping the essential cursors ordered by
+   * current RID, the traversal takes the smallest RID any essential cursor sits on as the start of a window of
+   * {@code windowSize} RID positions and, one term at a time, adds every posting of that term inside the window into a
+   * score array. No per-posting heap is kept: the cost of ordering the cursors, which dominated the document-at-a-time
+   * traversal on corpora where the essential set stays large, is gone. Each document that received a score then probes
+   * the non-essential terms from the highest ceiling down and is abandoned as soon as it cannot beat the threshold.
+   * <p>
+   * A tombstone poisons its document's slot with NaN, which stays NaN under every later addition and is skipped when
+   * the window is drained. Documents are drained in ascending RID order, so the collector sees the same sequence as in
+   * the document-at-a-time traversal. The threshold is re-read per document and the split per window, never walked back.
+   * Falls to {@link #scanWide} on a RID the packed order cannot hold, like the other traversal.
+   */
+  private static void scanWindowed(final DimEntry[] terms, final Collector collector, final RID endExclusive,
+      final int windowSize) throws IOException {
+    final int n = terms.length;
+    int base = Integer.MAX_VALUE;
+    for (final DimEntry t : terms)
+      base = Math.min(base, t.cursor.currentBucketId());
+    final KeyMirror mirror = new KeyMirror(n, base);
+    final long endKey = endExclusive != null ?
+        SparseSegmentBuilder.packRidCeiling(endExclusive.getBucketId(), endExclusive.getPosition(), base) :
+        Long.MAX_VALUE;
+    final float[] prefix = new float[n + 1];
+    recomputePrefix(terms, prefix);
+    final long[] keys = mirror.keys;
+    for (int i = 0; i < n; i++)
+      mirror.sync(terms, i);
+
+    // Allocated lazily: a query that prunes everything away never pays for the arrays.
+    float[] scores = null;
+    long[] touched = null;
+    float[] blockMax = null;
+    RID[] blockEndOut = null;
+    // Windows start small and double up to windowSize: the threshold only exists once the first top-K documents have
+    // been collected, and an opening window as wide as the whole corpus would score everything before pruning could
+    // start (the same reason the classic traversal fills its heap from the first documents).
+    int currentWindow = Math.min(windowSize, INITIAL_WINDOW);
+    int split = 0;
+    boolean splitDirty = true;
+    float lastThreshold = Float.NEGATIVE_INFINITY;
+
+    while (true) {
+      if (mirror.overflow) {
+        WIDE_FALLBACKS.incrementAndGet();
+        scanWide(terms, collector, endExclusive);
+        return;
+      }
+      final float threshold = collector.threshold();
+      if (splitDirty || threshold > lastThreshold) {
+        lastThreshold = threshold;
+        splitDirty = false;
+        while (split < n && prefix[split + 1] <= threshold)
+          split++;
+        if (split >= n)
+          return;
+      }
+
+      long windowStart = Long.MAX_VALUE;
+      for (int i = split; i < n; i++) {
+        final long key = keys[i];
+        if (key >= 0 && key < windowStart)
+          windowStart = key;
+      }
+      if (windowStart == Long.MAX_VALUE || windowStart >= endKey)
+        return;  // every essential term is exhausted, or the range is done.
+      final long windowEnd = Math.min(endKey,
+          windowStart > Long.MAX_VALUE - currentWindow ? Long.MAX_VALUE : windowStart + currentWindow);
+
+      // Block-Max: when even the best block of every essential term cannot lift a document of this stretch over the
+      // threshold, move the cursors past it without decoding a weight. Only worth asking once a threshold exists.
+      if (threshold > Float.NEGATIVE_INFINITY && prefix[split] <= threshold) {
+        if (blockMax == null) {
+          blockMax = new float[n];
+          blockEndOut = new RID[1];
+        }
+        if (trySkipWindow(terms, mirror, split, windowStart, windowEnd, prefix[split], threshold, blockMax, blockEndOut))
+          continue;
+      }
+
+      if (scores == null) {
+        scores = new float[windowSize];
+        touched = new long[windowSize >>> 6];
+      }
+
+      // Add the essential terms' postings of this window, one term at a time.
+      boolean exhaustedAny = false;
+      for (int i = split; i < n; i++) {
+        long key = keys[i];
+        if (key < 0 || key >= windowEnd)
+          continue;
+        final DimEntry t = terms[i];
+        final DimCursor c = t.cursor;
+        final float w = t.queryWeight;
+        while (true) {
+          final int offset = (int) (key - windowStart);
+          final int word = offset >>> 6;
+          final long bit = 1L << offset;
+          if (c.isTombstone())
+            scores[offset] = Float.NaN;  // stays NaN under every later addition
+          else if ((touched[word] & bit) == 0L)
+            scores[offset] = w * c.currentWeight();
+          else
+            scores[offset] += w * c.currentWeight();
+          touched[word] |= bit;
+          c.advance();
+          mirror.sync(terms, i);
+          key = keys[i];
+          if (key < 0 || key >= windowEnd)
+            break;
+        }
+        if (key < 0)
+          exhaustedAny |= t.clearSigma();
+      }
+
+      // Drain in ascending RID order; every slot is zeroed on the way out so the arrays are reusable.
+      final float nonEssentialCeiling = prefix[split];
+      final int words = (currentWindow + 63) >>> 6;
+      if (currentWindow < windowSize)
+        currentWindow = Math.min(windowSize, currentWindow << 1);
+      for (int word = 0; word < words; word++) {
+        long bits = touched[word];
+        if (bits == 0L)
+          continue;
+        touched[word] = 0L;
+        while (bits != 0L) {
+          final int offset = (word << 6) + Long.numberOfTrailingZeros(bits);
+          bits &= bits - 1;
+          final float essentialScore = scores[offset];
+          scores[offset] = 0.0f;
+          if (essentialScore != essentialScore)
+            continue;  // a tombstone
+          scoreWindowDocument(terms, mirror, split, prefix, nonEssentialCeiling, windowStart + offset, essentialScore,
+              collector);
+        }
+      }
+
+      if (exhaustedAny) {
+        recomputePrefix(terms, prefix);
+        splitDirty = true;
+      }
+    }
+  }
+
+  /**
+   * The Block-Max half of the window traversal. Takes, for every essential term with a posting inside the window, the
+   * maximum of the block its cursor sits in, and shortens the stretch to the earliest block end so that every term's
+   * bound covers all of it. If the ceiling of the non-essential terms plus those maxima cannot beat {@code threshold},
+   * no document of {@code [windowStart, skipEnd)} can: the essential cursors are sought to {@code skipEnd} and the
+   * stretch is never decoded.
+   *
+   * @return true if a stretch was skipped (progress is guaranteed: {@code skipEnd} is past {@code windowStart}).
+   */
+  private static boolean trySkipWindow(final DimEntry[] terms, final KeyMirror mirror, final int split,
+      final long windowStart, final long windowEnd, final float nonEssentialCeiling, final float threshold,
+      final float[] blockMax, final RID[] blockEndOut) throws IOException {
+    final long[] keys = mirror.keys;
+    final int base = mirror.baseBucketId;
+    long skipEnd = windowEnd;
+    for (int i = split; i < terms.length; i++) {
+      final long key = keys[i];
+      if (key < 0 || key >= windowEnd)
+        continue;
+      blockMax[i] = terms[i].cursor.blockBoundsAt(SparseSegmentBuilder.unpackBucketId(key, base),
+          SparseSegmentBuilder.unpackPosition(key), blockEndOut);
+      final RID be = blockEndOut[0];
+      if (be == null)
+        continue;  // no finite block boundary (memtable or loose source): its bound holds for the whole stretch.
+      final long endKey = SparseSegmentBuilder.packRidCeiling(be.getBucketId(), be.getPosition(), base);
+      if (endKey == SparseSegmentBuilder.UNPACKABLE)
+        return false;
+      if (endKey + 1 < skipEnd)
+        skipEnd = endKey + 1;  // the key after the block's last RID
+    }
+
+    float bound = nonEssentialCeiling;
+    for (int i = split; i < terms.length; i++) {
+      final long key = keys[i];
+      if (key < 0 || key >= skipEnd)
+        continue;
+      bound += terms[i].queryWeight * blockMax[i];
+      if (bound > threshold)
+        return false;
+    }
+
+    final int targetBucketId = SparseSegmentBuilder.unpackBucketId(skipEnd, base);
+    final long targetPosition = SparseSegmentBuilder.unpackPosition(skipEnd);
+    for (int i = split; i < terms.length; i++) {
+      final long key = keys[i];
+      if (key < 0 || key >= skipEnd)
+        continue;
+      terms[i].cursor.seekTo(targetBucketId, targetPosition);
+      mirror.sync(terms, i);
+    }
+    return true;
+  }
+
+  /** Probes the non-essential terms for one document of the window and collects it if it still beats the threshold. */
+  private static void scoreWindowDocument(final DimEntry[] terms, final KeyMirror mirror, final int split,
+      final float[] prefix, final float nonEssentialCeiling, final long candidateKey, final float essentialScore,
+      final Collector collector) throws IOException {
+    final float threshold = collector.threshold();
+    if (essentialScore + nonEssentialCeiling <= threshold)
+      return;
+    final int candidateBucketId = SparseSegmentBuilder.unpackBucketId(candidateKey, mirror.baseBucketId);
+    final long candidatePosition = SparseSegmentBuilder.unpackPosition(candidateKey);
+    final RID candidate = new RID(candidateBucketId, candidatePosition);
+    if (!collector.accepts(candidate))
+      return;
+    final long[] keys = mirror.keys;
+    float score = essentialScore;
+    for (int i = split - 1; i >= 0; i--) {
+      if (score + prefix[i + 1] <= threshold)
+        return;
+      long key = keys[i];
+      if (key < 0)
+        continue;
+      if (key < candidateKey) {
+        terms[i].cursor.seekTo(candidateBucketId, candidatePosition);
+        mirror.sync(terms, i);
+        key = keys[i];
+      }
+      if (key != candidateKey)
+        continue;
+      final DimCursor c = terms[i].cursor;
+      if (c.isTombstone())
+        return;
+      score += terms[i].queryWeight * c.currentWeight();
+    }
+    collector.collect(candidate, score);
   }
 
   /**

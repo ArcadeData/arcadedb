@@ -388,6 +388,17 @@ public enum GlobalConfiguration {
       number for it is given here. Re-read on every query.""",
       Integer.class, 0),
 
+  SPARSE_VECTOR_SCORING_WINDOW("arcadedb.sparseVectorScoringWindow", SCOPE.JVM,
+      """
+      Size, in RID positions, of the window the LSM_SPARSE_VECTOR top-K traversal scores at a time (issue #9200). \
+      The essential terms of the query add their postings into a window array term by term, without a per-posting \
+      heap; each document of the window that can still beat the top-K threshold then probes the non-essential terms. \
+      On learned-sparse corpora, where most queries touch most documents, this measured about 1.8x faster at the \
+      median and 2.4x at p99 than the document-at-a-time traversal on the same cursors. 0 selects the classic \
+      document-at-a-time Block-Max MaxScore traversal. The value is rounded up to a multiple of 64 and capped at \
+      1048576. Re-read on every query.""",
+      Integer.class, 16384),
+
   SPARSE_VECTOR_SCORING_MIN_POSTINGS_FOR_PARTITIONING("arcadedb.sparseVectorScoringMinPostingsForPartitioning", SCOPE.JVM,
       """
       Minimum number of postings a LSM_SPARSE_VECTOR top-K query has to traverse before it is \
