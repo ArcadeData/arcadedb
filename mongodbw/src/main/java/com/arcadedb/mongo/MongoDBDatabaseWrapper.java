@@ -287,6 +287,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     return firstBatchCursorResponse(collectionName, "firstBatch", aggregation.computeResult(), 0);
   }
 
+  // the stages that need no input collection ($documents, $collStats) are out of scope here: they answer empty on a missing one
   private static boolean writesTo(final Object pipeline) {
     if (pipeline instanceof List<?> stages)
       for (final Object stage : stages)
@@ -634,6 +635,11 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       } finally {
         indexLock.unlock();
       }
+    } else if (deletes != null) {
+      // nothing to delete from, but an invalid filter is an error whether or not the collection exists
+      final MongoFilter.RegexBudget budget = MongoFilter.RegexBudget.of(database);
+      for (final Document del : deletes)
+        new MongoFilter(database, (Document) del.get("q"), budget);
     }
 
     final Document response = new Document("n", n);
@@ -759,12 +765,13 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
   private int executeUpdate(final String collectionName, final Document q, final Document u, final boolean multi,
       final MongoFilter.RegexBudget budget) {
+    // built first: an invalid filter is an error whether or not the collection exists
+    final MongoFilter filter = new MongoFilter(database, q, budget);
     if (!database.getSchema().existsType(collectionName) || u == null)
       return 0;
 
     // A replacement must keep the stored _id and $set on a dotted path must reach into the embedded document: neither can be
     // expressed as a single SQL UPDATE, so those are applied to each matching record. Everything else stays one SQL UPDATE.
-    final MongoFilter filter = new MongoFilter(database, q, budget);
     // a filter the SQL cannot answer exactly (see MongoFilter) also selects the records itself
     if (isReplacement(u) || setsDottedPath(u) || touchesId(u) || !filter.isEmpty())
       return executeUpdateOnRecords(collectionName, filter, u, multi);

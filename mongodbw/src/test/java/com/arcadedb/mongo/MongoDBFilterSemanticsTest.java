@@ -454,4 +454,27 @@ class MongoDBFilterSemanticsTest extends BaseMongoServerTest {
         .into(new ArrayList<>()).stream().map(d -> d.get("_id")).toList()).containsExactly("abc1", 3);
     assertThat(ids(c, "{_id:{$in:[null, 3]}}")).containsExactly(3);
   }
+
+  @Test
+  void anInvalidFilterIsAnErrorEvenOnAMissingCollection() {
+    final MongoCollection<Document> missing = client.getDatabase(getDatabaseName()).getCollection("missing_for_filters");
+    assertThatThrownBy(() -> missing.updateMany(Document.parse("{$expr:{$eq:[1,1]}}"), Document.parse("{$set:{x:1}}"))).isInstanceOf(
+        MongoException.class);
+    assertThatThrownBy(() -> missing.deleteMany(Document.parse("{$expr:{$eq:[1,1]}}"))).isInstanceOf(MongoException.class);
+    assertThat(missing.deleteMany(Document.parse("{k:1}")).getDeletedCount()).isZero();
+  }
+
+  @Test
+  void skipAndLimitCountTheMatchesOfASparseFilterOnALargerCollection() {
+    final MongoCollection<Document> c = client.getDatabase(getDatabaseName()).getCollection("sparse");
+    final List<Document> docs = new ArrayList<>();
+    for (int i = 0; i < 300; i++)
+      docs.add(new Document("_id", i).append("t", i % 10 == 0 ? List.of("hit", "x") : List.of("x")).append("n", i));
+    c.insertMany(docs);
+    final List<Object> page = new ArrayList<>();
+    for (final Document d : c.find(Document.parse("{t:'hit'}")).sort(Document.parse("{n:1}")).skip(5).limit(3))
+      page.add(d.get("_id"));
+    assertThat(page).containsExactly(50, 60, 70);
+    assertThat(c.countDocuments(Document.parse("{t:'hit'}"))).isEqualTo(30);
+  }
 }

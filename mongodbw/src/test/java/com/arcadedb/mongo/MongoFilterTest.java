@@ -84,6 +84,13 @@ class MongoFilterTest {
   }
 
   @Test
+  void aNullBoundOfARangeOnTheIdNeverNarrowsTheCandidates() {
+    assertThat(new MongoFilter(null, parse("{_id: {$lte: null}}")).narrowsById()).isFalse();
+    assertThat(new MongoFilter(null, parse("{_id: {$gte: null}, k: 1}")).narrowsById()).isFalse();
+    assertThat(new MongoFilter(null, parse("{_id: {$gte: 0}, k: 1}")).narrowsById()).isTrue();
+  }
+
+  @Test
   void aRegexOperandOnTheIdNeverNarrowsTheCandidates() {
     assertThat(new MongoFilter(null, new Document("_id", new Document("$in", List.of(new BsonRegularExpression("^abc"))))).narrowsById()).isFalse();
     assertThat(new MongoFilter(null, new Document("_id", new Document("$eq", new BsonRegularExpression("^abc"))).append("k", 1)).narrowsById())
