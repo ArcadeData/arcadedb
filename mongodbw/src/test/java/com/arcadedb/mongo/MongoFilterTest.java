@@ -32,8 +32,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Routing of a MongoDB filter: only an empty filter or one on the {@code _id} alone is answered by SQL (and so keeps the unique
- * index on it), every other one is evaluated on the documents.
+ * Routing of a MongoDB filter: only an empty filter is answered by SQL alone. Every other one is evaluated on the documents, and one on
+ * the {@code _id} (with equality, {@code $in} or a range) reads its candidates through the unique index on it first.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
