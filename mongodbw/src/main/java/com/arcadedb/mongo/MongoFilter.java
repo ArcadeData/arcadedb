@@ -406,13 +406,13 @@ final class MongoFilter {
    * short value never trips it. Not thread-safe: a filter is built per command and evaluated by one thread.
    */
   static final class RegexBudget {
+    private final long    timeoutNanos;
+    private       long    remainingNanos;
+    private       boolean exhausted;
+
     static RegexBudget ofMillis(final long timeoutMillis) {
       return new RegexBudget(timeoutMillis);
     }
-
-    private final long timeoutNanos;
-    private       long remainingNanos;
-    private       boolean exhausted;
 
     static RegexBudget of(final Database database) {
       return new RegexBudget(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(database));
