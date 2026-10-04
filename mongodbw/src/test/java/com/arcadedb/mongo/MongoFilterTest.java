@@ -69,7 +69,7 @@ class MongoFilterTest {
     assertThat(new MongoFilter(null, parse("{_id: 1}")).narrowsById()).isTrue();
     assertThat(new MongoFilter(null, parse("{_id: {$in: [1, 2]}}")).narrowsById()).isTrue();
     assertThat(new MongoFilter(null, parse("{$or: [{_id: 1}, {_id: 2}]}")).narrowsById()).isTrue();
-    assertThat(new MongoFilter(null, parse("{$and: [{$or: [{_id: 1}, {_id: 2}]}, {_id: {$gt: 0}}]}")).narrowsById()).isTrue();
+    assertThat(new MongoFilter(null, parse("{$and: [{$or: [{_id: 1}, {_id: 2}]}, {_id: {$in: [1]}}]}")).narrowsById()).isTrue();
     assertThat(new MongoFilter(null, parse("{_id: 1, k: 1}")).narrowsById()).isTrue();
     assertThat(new MongoFilter(null, parse("{_id: {$in: [1, 2]}, tags: 'a'}")).narrowsById()).isTrue();
   }
@@ -80,14 +80,15 @@ class MongoFilterTest {
     assertThat(new MongoFilter(null, parse("{_id: {$nin: [1]}}")).narrowsById()).isFalse();
     assertThat(new MongoFilter(null, parse("{_id: {$not: {$gt: 2}}, k: 1}")).narrowsById()).isFalse();
     assertThat(new MongoFilter(null, parse("{$or: [{_id: 1}, {_id: {$ne: 2}}]}")).narrowsById()).isFalse();
-    assertThat(new MongoFilter(null, parse("{_id: {$gt: 1, $lte: 5}, k: 1}")).narrowsById()).isTrue();
+    assertThat(new MongoFilter(null, parse("{_id: {$in: [1, 5]}, k: 1}")).narrowsById()).isTrue();
   }
 
   @Test
-  void aNullBoundOfARangeOnTheIdNeverNarrowsTheCandidates() {
+  void aRangeOnTheIdNeverNarrowsTheCandidates() {
+    assertThat(new MongoFilter(null, parse("{_id: {$gt: 5}}")).narrowsById()).isFalse();
+    assertThat(new MongoFilter(null, parse("{_id: {$gte: 0, $lte: 9}, k: 1}")).narrowsById()).isFalse();
     assertThat(new MongoFilter(null, parse("{_id: {$lte: null}}")).narrowsById()).isFalse();
-    assertThat(new MongoFilter(null, parse("{_id: {$gte: null}, k: 1}")).narrowsById()).isFalse();
-    assertThat(new MongoFilter(null, parse("{_id: {$gte: 0}, k: 1}")).narrowsById()).isTrue();
+    assertThat(new MongoFilter(null, parse("{$or: [{_id: 1}, {_id: {$lt: 3}}]}")).narrowsById()).isFalse();
   }
 
   @Test
