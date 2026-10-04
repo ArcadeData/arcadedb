@@ -68,7 +68,7 @@ public class PluginApiSpec implements OpenApiContributor {
       "/api/v1/cluster", "/api/v1/cluster/peer", "/api/v1/cluster/peer/{peerId}",
       "/api/v1/cluster/leader", "/api/v1/cluster/stepdown", "/api/v1/cluster/leave",
       "/api/v1/cluster/verify/{database}", "/api/v1/cluster/resync/{database}",
-      "/api/v1/cluster/bootstrap-state", "/api/v1/cluster/capabilities",
+      "/api/v1/cluster/accept-copy/{database}", "/api/v1/cluster/bootstrap-state", "/api/v1/cluster/capabilities",
       "/api/v1/cluster/security-seed",
       "/api/v1/ha/snapshot/{database}", "/api/v1/ha/snapshot/{database}/checksums");
 
@@ -95,6 +95,7 @@ public class PluginApiSpec implements OpenApiContributor {
     openAPI.getPaths().addPathItem("/api/v1/cluster/leave", createLeavePath());
     openAPI.getPaths().addPathItem("/api/v1/cluster/verify/{database}", createVerifyPath());
     openAPI.getPaths().addPathItem("/api/v1/cluster/resync/{database}", createResyncPath());
+    openAPI.getPaths().addPathItem("/api/v1/cluster/accept-copy/{database}", createAcceptCopyPath());
     openAPI.getPaths().addPathItem("/api/v1/cluster/bootstrap-state", createBootstrapStatePath());
     openAPI.getPaths().addPathItem("/api/v1/cluster/capabilities", createCapabilitiesPath());
     openAPI.getPaths().addPathItem("/api/v1/cluster/security-seed", createSecuritySeedPath());
@@ -311,6 +312,21 @@ public class PluginApiSpec implements OpenApiContributor {
     post.setResponses(SpecBuilders.standardResponses("200",
         SpecBuilders.jsonResponse("Database resynced", "ClusterActionResponse"),
         "400", "401", "403", "409", "500", "503"));
+
+    final PathItem pathItem = new PathItem();
+    pathItem.setPost(post);
+    return pathItem;
+  }
+
+  private PathItem createAcceptCopyPath() {
+    final Operation post = SpecBuilders.operation("acceptClusterDatabaseCopy", "Cluster",
+        "Accept the leader's unverified copy of a database",
+        """
+            Accepts this leader's closed copy of one database, which the last resync could not verify, as             the cluster's copy without the other servers' confirmation. Before reopening such a copy the             leader asks every peer about its own, and refuses while any peer is unanswered or holds a copy             that cannot be ordered (the critical unverified-closed-copy-refused alert); a peer that can             never answer again keeps the database closed on every node. This override removes the copy's             marker and logs who accepted it, at which applied index, over which refusal. The copy is not             reopened by this call: the next request that names the database reopens it, and every follower             then installs it. Root only. Answers 400 on a follower, and 404 when this server holds no             closed copy of the database marked unverified. The body is ignored. """ + RAFT_REQUIRED);
+    post.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
+    post.setResponses(SpecBuilders.standardResponses("200",
+        SpecBuilders.jsonResponse("Copy accepted", "ClusterActionResponse"),
+        "400", "401", "403", "404", "500"));
 
     final PathItem pathItem = new PathItem();
     pathItem.setPost(post);
@@ -903,10 +919,14 @@ public class PluginApiSpec implements OpenApiContributor {
     schema.addProperty("leaderId", SpecBuilders.string(
         "Leader after the action. Present on leadership transfer."));
     schema.addProperty("database", SpecBuilders.string(
-        "Database the action applied to. Present on resync."));
+        "Database the action applied to. Present on resync and accept-copy."));
     schema.addProperty("localServer", SpecBuilders.string(
-        "Server that performed the action. Present on resync."));
-    // 'result' is the one member every one of these routes writes; the other three say in their own
+        "Server that performed the action. Present on resync and accept-copy."));
+    schema.addProperty("appliedIndex", SpecBuilders.integer(
+        "Last Raft index applied to the accepted copy, or -1 when none is recorded. Present on accept-copy."));
+    schema.addProperty("overriddenRefusal", SpecBuilders.string(
+        "Why the leader had refused to reopen the copy, when a refusal was standing. Present on accept-copy."));
+    // 'result' is the one member every one of these routes writes; the others say in their own
     // descriptions which action produces them (issue #7578).
     schema.setRequired(List.of("result"));
     return schema;

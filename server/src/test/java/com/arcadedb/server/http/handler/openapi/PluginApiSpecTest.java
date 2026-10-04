@@ -45,7 +45,7 @@ class PluginApiSpecTest {
   }
 
   @Test
-  void allFourteenPluginOperationsAreDeclared() {
+  void allFifteenPluginOperationsAreDeclared() {
     assertThat(openAPI.getPaths().keySet()).containsExactlyInAnyOrder(
         "/prometheus",
         "/api/v1/cluster",
@@ -56,6 +56,7 @@ class PluginApiSpecTest {
         "/api/v1/cluster/leave",
         "/api/v1/cluster/verify/{database}",
         "/api/v1/cluster/resync/{database}",
+        "/api/v1/cluster/accept-copy/{database}",
         "/api/v1/cluster/bootstrap-state",
         "/api/v1/cluster/capabilities",
         "/api/v1/cluster/security-seed",
@@ -64,7 +65,7 @@ class PluginApiSpecTest {
 
     final long operations = openAPI.getPaths().values().stream()
         .mapToLong(item -> item.readOperations().size()).sum();
-    assertThat(operations).isEqualTo(14);
+    assertThat(operations).isEqualTo(15);
   }
 
   @Test
@@ -312,6 +313,16 @@ class PluginApiSpecTest {
     final Operation post = openAPI.getPaths().get("/api/v1/cluster/resync/{database}").getPost();
     assertThat(post.getResponses().keySet())
         .containsExactlyInAnyOrder("200", "400", "401", "403", "409", "500", "503");
+  }
+
+  /** Issue #8641: root-only override on the leader; 404 when no marked copy is held, 400 on a follower. */
+  @Test
+  void acceptCopyDeclaresWhatTheHandlerAnswers() {
+    final Operation post = openAPI.getPaths().get("/api/v1/cluster/accept-copy/{database}").getPost();
+    assertThat(post.getOperationId()).isEqualTo("acceptClusterDatabaseCopy");
+    assertThat(post.getResponses().keySet()).containsExactlyInAnyOrder("200", "400", "401", "403", "404", "500");
+    assertThat(openAPI.getComponents().getSchemas().get("ClusterActionResponse").getProperties().keySet())
+        .contains("database", "localServer", "appliedIndex", "overriddenRefusal");
   }
 
   /**

@@ -535,6 +535,8 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     postVerifyDatabaseHandler = new PostVerifyDatabaseHandler(httpServer, this);
     routes.addPrefixPath("/api/v1/cluster/verify/", postVerifyDatabaseHandler);
     routes.addPrefixPath("/api/v1/cluster/resync/", new PostResyncDatabaseHandler(httpServer, this));
+    // Issue #8641: the operator's audited override of a leader's refusal to reopen a closed copy it cannot verify.
+    routes.addPrefixPath(PostAcceptCopyHandler.ROUTE, new PostAcceptCopyHandler(httpServer, this));
     // Issue #4147: pre-bootstrap state RPC, used by the bootstrap leader at first cluster
     // formation to collect each peer's (fingerprint, lastTxId) per database.
     routes.addExactPath("/api/v1/cluster/bootstrap-state", new PostBootstrapStateHandler(httpServer, this));
