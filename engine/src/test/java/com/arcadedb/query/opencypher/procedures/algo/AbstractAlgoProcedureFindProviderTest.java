@@ -83,6 +83,41 @@ class AbstractAlgoProcedureFindProviderTest {
     assertThat(provider.readyCalls.get()).as("the lookup was repeated after the wait").isEqualTo(2);
   }
 
+  /**
+   * The whole-graph fallback accepts a ready view on the same terms as the exact-match lookup: it must cover every vertex
+   * type, not only every edge type, or the algorithm would run on a part of the graph and answer as if it were the whole.
+   */
+  @Test
+  void aWholeGraphLookupRefusesAViewOverSomeVertexTypesOnly() {
+    GraphTraversalProviderRegistry.register(database, new FinishesAfterTheFirstAsk() {
+      @Override
+      public boolean coversVertexType(final String typeName) {
+        return "Person".equals(typeName);
+      }
+
+      @Override
+      public boolean isReady() {
+        return true;
+      }
+    });
+
+    assertThat(new Probe().find(database, null)).as("a view over one vertex type").isNull();
+    assertThat(new Probe().find(database, new String[0])).as("a view over one vertex type, empty request").isNull();
+  }
+
+  @Test
+  void aWholeGraphLookupAcceptsAReadyViewOverEveryVertexType() {
+    final FinishesAfterTheFirstAsk provider = new FinishesAfterTheFirstAsk() {
+      @Override
+      public boolean isReady() {
+        return true;
+      }
+    };
+    GraphTraversalProviderRegistry.register(database, provider);
+
+    assertThat(new Probe().find(database, null)).isSameAs(provider);
+  }
+
   /** Exposes the protected lookup. */
   private static final class Probe extends AbstractAlgoProcedure {
     GraphTraversalProvider find(final Database db, final String[] relTypes) {
@@ -121,7 +156,7 @@ class AbstractAlgoProcedureFindProviderTest {
   }
 
   /** A provider whose restore has already ended by the time the second question arrives: not ready once, then ready. */
-  private static final class FinishesAfterTheFirstAsk implements GraphTraversalProvider {
+  private static class FinishesAfterTheFirstAsk implements GraphTraversalProvider {
     final AtomicInteger readyCalls = new AtomicInteger();
 
     @Override

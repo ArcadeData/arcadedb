@@ -246,9 +246,17 @@ public class HashIndex implements IndexInternal {
     return lock.executeInReadLock(() -> getDiskResult(convertedKeys, limit));
   }
 
+  /** An all-null key is exempt from uniqueness, so a unique index holds an entry per record that has it (issue #9237) */
+  private static boolean isAllNull(final Object[] keys) {
+    for (final Object key : keys)
+      if (key != null)
+        return false;
+    return true;
+  }
+
   private IndexCursor getDiskResult(final Object[] convertedKeys, final int limit) {
     try {
-      final List<RID> rids = bucket.get(convertedKeys, isUnique() ? 1 : limit);
+      final List<RID> rids = bucket.get(convertedKeys, isUnique() && !isAllNull(convertedKeys) ? 1 : limit);
       if (rids.isEmpty())
         return EMPTY_CURSOR;
 

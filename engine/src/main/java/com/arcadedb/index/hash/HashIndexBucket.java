@@ -415,7 +415,9 @@ public class HashIndexBucket extends PaginatedComponent {
 
       if (unique) {
         result.add(readCompressedRID(page, offset));
-        return;
+        // a unique key holds one entry, but an all-null key is exempt from uniqueness (issue #9237): the caller asks for all of them
+        if (limit > 0)
+          return;
       } else {
         final int ridCount = readVarIntFromPage(page, offset);
         offset += varIntSize(ridCount);
@@ -526,7 +528,7 @@ public class HashIndexBucket extends PaginatedComponent {
     final int dirIndex = directoryIndex(hash, metaPage.readInt(META_GLOBAL_DEPTH));
     final int bucketPageNum = readDirectoryEntry(metaPage.readInt(metaTailOffset), dirIndex);
 
-    removeFromBucket(bucketPageNum, serializedKey, tagOf(hash), null);
+    removeFromBucket(bucketPageNum, serializedKey, tagOf(hash), null, false);
   }
 
   /**
@@ -539,11 +541,19 @@ public class HashIndexBucket extends PaginatedComponent {
     final int dirIndex = directoryIndex(hash, metaPage.readInt(META_GLOBAL_DEPTH));
     final int bucketPageNum = readDirectoryEntry(metaPage.readInt(metaTailOffset), dirIndex);
 
-    removeFromBucket(bucketPageNum, serializedKey, tagOf(hash), rid);
+    removeFromBucket(bucketPageNum, serializedKey, tagOf(hash), rid, isAllNull(keys));
   }
 
-  private void removeFromBucket(final int bucketPageNum, final byte[] serializedKey, final int tag, final RID specificRID)
-      throws IOException {
+  /** An all-null key is exempt from uniqueness, so a unique bucket can hold an entry per record for it (issue #9237) */
+  private static boolean isAllNull(final Object[] keys) {
+    for (final Object key : keys)
+      if (key != null)
+        return false;
+    return true;
+  }
+
+  private void removeFromBucket(final int bucketPageNum, final byte[] serializedKey, final int tag, final RID specificRID,
+      final boolean nullKey) throws IOException {
     int currentPageNum = bucketPageNum;
     int totalRemoved = 0;
     final int maxChainPages = getTotalPages();
@@ -559,7 +569,17 @@ public class HashIndexBucket extends PaginatedComponent {
 
       final int pos = findNextEntry(page, entryCount, serializedKey, tag, 0);
       if (pos >= 0) {
-        if (specificRID != null && !unique) {
+        if (specificRID != null && unique && nullKey) {
+          // the entries of an all-null key belong to different records: only the one of this RID goes away
+          for (int p = pos; p >= 0; p = findNextEntry(page, entryCount, serializedKey, tag, p + 1)) {
+            final int offset = readSlot(page, p);
+            if (specificRID.equals(readCompressedRID(page, offset + computeKeyLengthFromPage(page, offset)))) {
+              updateTotalEntries(-removeEntryFromPage(page, entryCount, p));
+              return;
+            }
+          }
+          // RID not in any entry on this page - continue to overflow pages
+        } else if (specificRID != null && !unique) {
           // Search all matching entries on this page (entries for the same key may be split). No re-scan is needed after a
           // removal: the loop returns on the first one.
           for (int p = pos; p >= 0; p = findNextEntry(page, entryCount, serializedKey, tag, p + 1)) {

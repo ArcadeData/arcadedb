@@ -215,14 +215,14 @@ public class SelectExecutionPlanner {
     final long epoch = db.getExecutionPlanCache().getInvalidationEpoch();
     final String key = context.isProfiling() ? null : keyHolder.resolve(target, whereClause, timeout, epoch);
     if (key == null)
-      return new SelectExecutionPlanner(DmlSourcePlanKey.newSource(target, whereClause, timeout, false)).createExecutionPlan(context,
+      return new SelectExecutionPlanner(DmlSourcePlanKey.newSource(target, whereClause, timeout, null)).createExecutionPlan(context,
           false);
 
     final ExecutionPlan cached = db.getExecutionPlanCache().get(key, context);
     if (cached != null)
       return (InternalExecutionPlan) cached;
 
-    final InternalExecutionPlan plan = new SelectExecutionPlanner(DmlSourcePlanKey.newSource(target, whereClause, timeout, true))
+    final InternalExecutionPlan plan = new SelectExecutionPlanner(DmlSourcePlanKey.newSource(target, whereClause, timeout, key))
         .createExecutionPlan(context, true);
     keyHolder.planned(db.getExecutionPlanCache().contains(key), epoch, db.getExecutionPlanCache().getInvalidationEpoch());
     return plan;

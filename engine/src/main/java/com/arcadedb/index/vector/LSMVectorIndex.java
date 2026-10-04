@@ -697,6 +697,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // each >= their rank), so a renumbered entry is never bigger on disk than the one it replaces.
         final List<VectorEntryForGraphBuild> sorted = new ArrayList<>(liveEntries);
         sorted.sort((a, b) -> Integer.compare(a.vectorId, b.vectorId));
+        // the old id of each entry, ascending: the position of an old id is its new one (issue #9241)
+        final int[] oldVectorIds = new int[sorted.size()];
+        for (int i = 0; i < oldVectorIds.length; i++)
+          oldVectorIds[i] = sorted.get(i).vectorId;
 
         final List<MutablePage> newPages = new ArrayList<>();
         final int pageSize = getPageSize();
@@ -789,12 +793,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // entry's bytes, or the dropped compacted component through a null reference.
         publishLocationIndex(liveEntries);
 
-        // Every pending entry of the delta buffer carries an id the renumbering just reissued, and its vector is in the rewritten
-        // file and therefore in the graph this build is about to make: kept, it would be scored under an id that now names
-        // another vector (issue #9071)
-        // (same critical section as the swap above: the write lock is held)
-        deltaVectors = new ArrayList<>();
-        recountDeltaResidentPayloads();
+        // The renumbering reissued every id, and what is resident still speaks the old ones until the graph this build is about
+        // to make is published: the resident graph's ordinal map and the pending entries of the delta buffer. Both are
+        // translated here, in the critical section of the swap, rather than dropped (the buffer was emptied for issue #9071,
+        // which made every record added since the last build unsearchable for the whole build, issue #9241). An id that is no
+        // longer live (deleted, or superseded by a newer vector of its record) has no new one: its ordinal answers -1, which
+        // every reader of the map treats as a vector that is gone. The write lock is held.
+        renumberResidentIds(oldVectorIds);
 
         // The rename and the schema re-keying are ONE step and must stay adjacent: `indexName` is volatile and read
         // without this lock (getName(), which is what TransactionIndexContext keys a lane by), so between these two
@@ -916,6 +921,34 @@ public class LSMVectorIndex implements Index, IndexInternal {
    *
    * @param liveEntries the live set the index must hold, already pointing at the file that is current now
    */
+  /**
+   * Translates the ids the resident graph's ordinal map and the delta buffer hold into the ids a renumbering compaction
+   * handed out. Called with the write lock held, in the section that swaps the data file and publishes the new location
+   * index, so no reader sees one generation of ids through the other (issue #9241).
+   *
+   * @param oldVectorIds the ids of the live set before the renumbering, ascending; the position of an id is its new id
+   */
+  private void renumberResidentIds(final int[] oldVectorIds) {
+    final int[] oldOrdinalMap = ordinalToVectorId;
+    if (oldOrdinalMap != null && oldOrdinalMap.length > 0) {
+      final int[] renumbered = new int[oldOrdinalMap.length];
+      for (int ordinal = 0; ordinal < renumbered.length; ordinal++) {
+        final int newId = Arrays.binarySearch(oldVectorIds, oldOrdinalMap[ordinal]);
+        renumbered[ordinal] = newId < 0 ? -1 : newId;
+      }
+      ordinalToVectorId = renumbered;
+    }
+
+    final List<DeltaVectorEntry> renumberedDelta = new ArrayList<>(deltaVectors.size());
+    for (final DeltaVectorEntry entry : deltaVectors) {
+      final int newId = Arrays.binarySearch(oldVectorIds, entry.vectorId);
+      if (newId >= 0)
+        renumberedDelta.add(new DeltaVectorEntry(newId, entry.rid, entry.vector));
+    }
+    deltaVectors = renumberedDelta;
+    recountDeltaResidentPayloads();
+  }
+
   private void publishLocationIndex(final Collection<VectorEntryForGraphBuild> liveEntries) {
     // The location index never evicts, so it will hold every live entry and is sized for exactly that: the hint is
     // the live count itself, NOT the classic size*4/3 load-factor pre-adjustment. ConcurrentHashMap's constructor
