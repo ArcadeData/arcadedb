@@ -198,7 +198,7 @@ public class AnchorSelector {
         final Object propertyValue = property.getValue();
 
         // Check if there's an index on this property
-        final IndexStatistics indexStats = findIndexForProperty(indexes, propertyName);
+        final IndexStatistics indexStats = findIndexForProperty(indexes, propertyName, allPredicates.keySet());
 
         if (indexStats != null) {
           // INDEX SEEK - PREFERRED (lowest cost)
@@ -232,7 +232,7 @@ public class AnchorSelector {
         final String propertyName = property.getKey();
         final List<Expression> values = property.getValue();
 
-        final IndexStatistics indexStats = findIndexForProperty(indexes, propertyName);
+        final IndexStatistics indexStats = findIndexForProperty(indexes, propertyName, allPredicates.keySet());
 
         if (indexStats != null) {
           final int nValues = Math.max(1, values.size());
@@ -423,7 +423,8 @@ public class AnchorSelector {
 
       for (final DocumentType root : roots) {
         final String typeName = root.getName();
-        final IndexStatistics indexStats = findIndexForProperty(statisticsProvider.getIndexesForType(typeName), propertyName);
+        final IndexStatistics indexStats = findIndexForProperty(statisticsProvider.getIndexesForType(typeName), propertyName,
+            equalityPredicates.keySet());
         if (indexStats == null) {
           everyRootIndexed = false;
           break; // all-or-nothing for this predicate: try the next candidate predicate instead
@@ -485,11 +486,26 @@ public class AnchorSelector {
    * @param propertyName property to search for
    * @return index statistics if found, null otherwise
    */
-  private IndexStatistics findIndexForProperty(final List<IndexStatistics> indexes, final String propertyName) {
-    return findIndexForProperty(indexes, propertyName, false);
+  /**
+   * Same as {@link #findIndexForProperty(List, String, boolean)} for an equality seek, whose key is built from {@code pinned}, the
+   * properties the query holds equal to a value. A hash index answers an exact key only, so a composite one whose key the query
+   * cannot fill is skipped: the seek would have to read it as a prefix range (issue #9236).
+   */
+  private IndexStatistics findIndexForProperty(final List<IndexStatistics> indexes, final String propertyName,
+      final Set<String> pinned) {
+    if (indexes == null)
+      return null;
+    for (final IndexStatistics index : indexes) {
+      if (!index.isOrdered() && !pinned.containsAll(index.getPropertyNames()))
+        continue;
+      final IndexStatistics found = findIndexForProperty(List.of(index), propertyName, false);
+      if (found != null)
+        return found;
+    }
+    return null;
   }
 
-  /** Same as {@link #findIndexForProperty(List, String)}, skipping the indexes that cannot be read in key order (a hash index). */
+  /** Same as {@link #findIndexForProperty(List, String, boolean)}, skipping the indexes that cannot be read in key order (a hash index). */
   private IndexStatistics findOrderedIndexForProperty(final List<IndexStatistics> indexes, final String propertyName) {
     return findIndexForProperty(indexes, propertyName, true);
   }
@@ -712,7 +728,7 @@ public class AnchorSelector {
     for (final Map.Entry<String, SeekValues> branch : branches.entrySet()) {
       final String propertyName = branch.getKey();
       final List<Expression> values = branch.getValue().values;
-      final IndexStatistics indexStats = findIndexForProperty(indexes, propertyName);
+      final IndexStatistics indexStats = findIndexForProperty(indexes, propertyName, Set.of(propertyName));
       if (indexStats == null)
         return null;
 
@@ -739,7 +755,8 @@ public class AnchorSelector {
       final Map<String, SeekValues> branches, final Map<String, Object> allPredicates) {
     final Map.Entry<String, SeekValues> only = branches.entrySet().iterator().next();
     final String propertyName = only.getKey();
-    final IndexStatistics indexStats = findIndexForProperty(statisticsProvider.getIndexesForType(label), propertyName);
+    final IndexStatistics indexStats = findIndexForProperty(statisticsProvider.getIndexesForType(label), propertyName,
+        allPredicates.keySet());
     if (indexStats == null)
       return null;
 
@@ -1049,7 +1066,7 @@ public class AnchorSelector {
 
     // Check if any property has an index
     for (final String propertyName : properties.keySet()) {
-      if (findIndexForProperty(indexes, propertyName) != null) {
+      if (findIndexForProperty(indexes, propertyName, properties.keySet()) != null) {
         return true; // Index available for this property
       }
     }

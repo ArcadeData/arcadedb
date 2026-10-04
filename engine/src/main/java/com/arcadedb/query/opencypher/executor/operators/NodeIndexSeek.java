@@ -211,7 +211,9 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
           addSeekKey(resolveValue(propertyValue), trailing);
         }
 
-        if (seekKeys.isEmpty())
+        // A null parameter cut the key short of the index. A hash index answers an exact key only, and a null never equals a value
+        // (issue #9236), so there is nothing to read
+        if (seekKeys.isEmpty() || (!wholeKey && !index.supportsOrderedIterations()))
           finished = true;
       }
 

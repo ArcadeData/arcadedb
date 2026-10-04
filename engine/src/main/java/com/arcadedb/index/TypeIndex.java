@@ -153,7 +153,8 @@ public class TypeIndex implements RangeIndex, IndexInternal {
       Set<Identifiable> result = null;
 
       for (final Index index : getIndexesByKeys(keys)) {
-        final boolean unique = index.isUnique();
+        // an all-null key is exempt from uniqueness, so a unique index holds an entry per record that has it (issue #9237)
+        final boolean unique = index.isUnique() && !isAllNull(keys);
 
         // #5662: try-with-resources - the unique branch returns from inside the loop, abandoning the cursor partway
         try (final IndexCursor cursor = index.get(keys, unique ? 1 : -1)) {
@@ -243,6 +244,13 @@ public class TypeIndex implements RangeIndex, IndexInternal {
       }
       return keyedCursor(result != null ? result : Collections.emptyList(), keys);
     }
+  }
+
+  private static boolean isAllNull(final Object[] keys) {
+    for (final Object key : keys)
+      if (key != null)
+        return false;
+    return true;
   }
 
   /**

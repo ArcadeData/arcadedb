@@ -184,11 +184,9 @@ public class GraphTraversalProviderRegistry {
    * restore can ask again once that restore has settled, instead of falling back to a record-by-record scan.
    * <p>
    * Only a provider that covers every requested edge type and every vertex type is considered: a view that cannot
-   * serve the request is neither waited for nor, by this method, touched. The vertex-type requirement is the one the
-   * exact-match lookup applies. The whole-graph fallback in {@code AbstractAlgoProcedure#findReadyProvider} is looser
-   * and accepts a ready view on edge coverage alone, so a restoring view over a subset of the vertex types is not
-   * waited for here: that call answers from the records, which is complete, instead of waiting for a view that may
-   * only show part of the graph. A provider that is merely rebuilding after
+   * serve the request is neither waited for nor, by this method, touched. The whole-graph fallback in
+   * {@code AbstractAlgoProcedure#findReadyProvider} applies the same vertex-type rule, so a view this method skips is
+   * never one that lookup would accept. A provider that is merely rebuilding after
    * a commit does not count as restoring. Every provider is waited for under one shared deadline, not one budget per
    * provider, and {@code abortCheck} runs at every poll so the caller's own command timeout and interrupt end the
    * wait (it is expected to throw to abort).

@@ -614,8 +614,9 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
   /**
    * Finds a {@link GraphTraversalProvider} suitable for graph algorithms.
    * When {@code relTypes} is null (whole-graph algorithms like PageRank, WCC, LCC), accepts any
-   * ready provider even if it covers only specific types — the algorithm will use whatever the
-   * CSR contains, which is the desired behavior for whole-graph analytics.
+   * ready provider that covers every edge type and every vertex type, the same terms as the
+   * exact-match lookup: a view over a subset of the vertex types would run the algorithm on part
+   * of the graph and answer as if it were the whole.
    *
    * @param db       the database
    * @param relTypes edge types to filter by (null = any provider)
@@ -648,7 +649,8 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
       return provider;
 
     // For whole-graph algorithms (null/empty relTypes), accept any ready provider that covers
-    // all edge types. A partial-coverage provider would silently produce wrong results.
+    // all edge types and all vertex types, the terms of the exact match above. A partial-coverage
+    // provider would silently produce wrong results (issue #9240).
     if (relTypes != null && relTypes.length != 0)
       return null;
     // Coverage checked before readiness: coversEdgeType() is a pure config check, while a
@@ -661,7 +663,7 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     GraphTraversalProvider found = null;
     while (found == null && iterator.hasNext()) {
       final GraphTraversalProvider p = iterator.next();
-      if (p.coversEdgeType(null) && p.isReady())
+      if (p.coversEdgeType(null) && p.coversVertexType(null) && p.isReady())
         found = p;
     }
     return found;

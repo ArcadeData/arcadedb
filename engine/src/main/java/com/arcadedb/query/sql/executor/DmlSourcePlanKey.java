@@ -23,6 +23,8 @@ import com.arcadedb.query.sql.parser.SelectStatement;
 import com.arcadedb.query.sql.parser.Timeout;
 import com.arcadedb.query.sql.parser.WhereClause;
 
+import java.util.concurrent.atomic.AtomicLong;
+
 /**
  * Plan-cache key of the read side of an UPDATE or DELETE (the synthetic {@code SELECT FROM <target> WHERE <where>}), built
  * once per parsed statement. The statement itself comes from the statement cache, so the deep copy and the text rendering
@@ -33,6 +35,8 @@ import com.arcadedb.query.sql.parser.WhereClause;
 public class DmlSourcePlanKey {
   /** Consecutive plannings that left nothing in the cache before the statement stops trying (e.g. a parameter dependent plan) */
   private static final int MAX_UNSTORED_PLANS = 3;
+
+  private static final AtomicLong STATEMENT_IDS = new AtomicLong();
 
   private volatile boolean resolved;
   private volatile String  key;
@@ -48,8 +52,14 @@ public class DmlSourcePlanKey {
    */
   String resolve(final FromClause target, final WhereClause whereClause, final Timeout timeout, final long cacheEpoch) {
     if (!resolved) {
-      final SelectStatement source = newSource(target, whereClause, timeout, true);
-      key = source.executionPlanCanBeCached() ? source.getOriginalStatement() : null;
+      final SelectStatement source = newSource(target, whereClause, timeout, "");
+      String text = source.executionPlanCanBeCached() ? source.getOriginalStatement() : null;
+      // a positional parameter prints as '?' whatever its number, while the plan reads the value by the number fixed at parse
+      // time (the WHERE of "UPDATE A SET x = ? WHERE y = ?" reads parameter 1): the text cannot tell two statements apart that
+      // read the same WHERE from different positions, so such a statement keeps its plan to itself (issue #9245)
+      if (text != null && text.indexOf('?') >= 0)
+        text += " /*dml:" + STATEMENT_IDS.incrementAndGet() + "*/";
+      key = text;
       resolved = true;
     }
     if (unstoredPlans >= MAX_UNSTORED_PLANS) {
@@ -75,16 +85,23 @@ public class DmlSourcePlanKey {
     }
   }
 
+  /**
+   * @param key the key returned by {@link #resolve} under which the planner stores the plan, empty to key it by the plain text
+   * of the source, null for a source that is not cached
+   */
   static SelectStatement newSource(final FromClause target, final WhereClause whereClause, final Timeout timeout,
-      final boolean cacheable) {
+      final String key) {
     final SelectStatement source = new SelectStatement();
     source.setTarget(target);
     source.setWhereClause(whereClause);
     if (timeout != null)
       source.setTimeout(timeout.copy());
-    if (cacheable)
+    if (key != null) {
       // the planner works on this statement, the cache key is the text of an untouched copy
       source.setOriginalStatement(source.copy());
+      if (!key.isEmpty())
+        source.originalStatementAsString = key;
+    }
     return source;
   }
 }
