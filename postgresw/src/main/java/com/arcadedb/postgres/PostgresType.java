@@ -1114,10 +1114,15 @@ public enum PostgresType {
    */
   private static PostgresType getArrayTypeForElements(final Iterator<?> elements) {
     PostgresType type = null;
+    Class<?> lastClass = null;
     while (elements.hasNext()) {
       final Object element = elements.next();
       if (element == null)
         continue;
+      // an element of the class just seen cannot change the answer: spares the type chain on a long homogeneous list
+      if (element.getClass() == lastClass)
+        continue;
+      lastClass = element.getClass();
       final PostgresType elementType = getArrayTypeForElementType(element);
       type = type == null ? elementType : mergeTypes(type, elementType, true);
       if (type == ARRAY_TEXT)
@@ -1144,6 +1149,9 @@ public enum PostgresType {
    * double (a long beyond 2^53 is then rounded, which numeric could avoid only by failing on NaN and infinity), and
    * anything meeting a BigDecimal to numeric. Anything else that
    * differs falls back to the one type every value can be written under: varchar for a column, text[] for a list.
+   *
+   * <p>A column mixing a BigDecimal row with a NaN or infinite double row is announced numeric and cannot carry the
+   * double; that combination is accepted as too rare to give up numeric for.
    *
    * @param listElements true when merging the element types of ONE list (so json, which stands for a list of
    *                     documents there, merges into text[]); false when merging the types of one column across rows

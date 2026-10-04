@@ -94,6 +94,7 @@ class Issue9008And9009MixedTypesIT extends PostgresWireProtocolTestBase {
           try (final ResultSet resultSet = select.executeQuery()) {
             assertThat(resultSet.next()).isTrue();
             assertThat(resultSet.getInt("id")).isEqualTo(id);
+            assertThat(resultSet.getMetaData().getColumnTypeName(1)).as("a declared property keeps its native type").isEqualTo("int4");
             final String expectedU = switch (id) {
               case 1 -> "1";
               case 2 -> "3000000000";
