@@ -27,7 +27,6 @@ import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PaginatedComponent;
-import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
@@ -417,7 +416,7 @@ public class HashIndexBucket extends PaginatedComponent {
       if (unique) {
         result.add(readCompressedRID(page, offset));
         // a unique key holds one entry, but an all-null key is exempt from uniqueness (issue #9237): the caller asks for all of them
-        if (limit > 0)
+        if (limit > 0 && result.size() >= limit)
           return;
       } else {
         final int ridCount = readVarIntFromPage(page, offset);
@@ -529,7 +528,7 @@ public class HashIndexBucket extends PaginatedComponent {
     final int dirIndex = directoryIndex(hash, metaPage.readInt(META_GLOBAL_DEPTH));
     final int bucketPageNum = readDirectoryEntry(metaPage.readInt(metaTailOffset), dirIndex);
 
-    removeFromBucket(bucketPageNum, serializedKey, tagOf(hash), null, TypeIndex.isAllNull(keys));
+    removeFromBucket(bucketPageNum, serializedKey, tagOf(hash), null, LSMTreeIndexAbstract.isKeyNull(keys));
   }
 
   /**
@@ -542,7 +541,7 @@ public class HashIndexBucket extends PaginatedComponent {
     final int dirIndex = directoryIndex(hash, metaPage.readInt(META_GLOBAL_DEPTH));
     final int bucketPageNum = readDirectoryEntry(metaPage.readInt(metaTailOffset), dirIndex);
 
-    removeFromBucket(bucketPageNum, serializedKey, tagOf(hash), rid, TypeIndex.isAllNull(keys));
+    removeFromBucket(bucketPageNum, serializedKey, tagOf(hash), rid, LSMTreeIndexAbstract.isKeyNull(keys));
   }
 
   private void removeFromBucket(final int bucketPageNum, final byte[] serializedKey, final int tag, final RID specificRID,

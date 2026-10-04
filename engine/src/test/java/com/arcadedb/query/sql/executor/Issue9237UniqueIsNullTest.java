@@ -19,6 +19,8 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.index.IndexCursor;
+import com.arcadedb.index.TypeIndex;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -99,6 +101,21 @@ class Issue9237UniqueIsNullTest extends TestHelper {
       assertThat(ids("SELECT count(*) AS id FROM " + t[0] + " WHERE p IS NULL")).as(t[0]).containsExactly(3003L);
       database.transaction(() -> database.command("sql", "DELETE FROM " + t[0] + " WHERE id >= 100 AND id < 105"));
       assertThat(ids("SELECT count(*) AS id FROM " + t[0] + " WHERE p IS NULL")).as(t[0]).containsExactly(2998L);
+    }
+  }
+
+  @Test
+  void aBoundedLookupOfTheNullKeyReturnsUpToTheLimit() {
+    for (final String[] t : TYPES) {
+      if (t[1] == null)
+        continue;
+      final TypeIndex index = database.getSchema().getType(t[0]).getIndexByProperties("p");
+      for (int limit = 1; limit <= 3; limit++) {
+        int entries = 0;
+        for (final IndexCursor c = index.get(new Object[] { null }, limit); c.hasNext(); c.next())
+          entries++;
+        assertThat(entries).as(t[0] + " limit " + limit).isEqualTo(limit);
+      }
     }
   }
 

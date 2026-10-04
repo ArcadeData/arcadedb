@@ -195,7 +195,7 @@ public class HashIndex implements IndexInternal {
       // what the pending entries of this key hide from the disk result, or null when they hide nothing (#6970)
       PendingIndexRemovals removals = null;
       // the entries of an all-null key belong to different records, so a pending removal of one never removes the key (issue #9237)
-      final boolean unique = isUnique() && !TypeIndex.isAllNull(convertedKeys);
+      final boolean unique = isUnique() && !LSMTreeIndexAbstract.isKeyNull(convertedKeys);
 
       final Map<TransactionIndexContext.ComparableKey, Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey>> indexChanges =
           getDatabase().getTransaction().getIndexChanges().getIndexKeys(getName());
@@ -249,7 +249,7 @@ public class HashIndex implements IndexInternal {
 
   private IndexCursor getDiskResult(final Object[] convertedKeys, final int limit) {
     try {
-      final List<RID> rids = bucket.get(convertedKeys, isUnique() && !TypeIndex.isAllNull(convertedKeys) ? 1 : limit);
+      final List<RID> rids = bucket.get(convertedKeys, isUnique() && !LSMTreeIndexAbstract.isKeyNull(convertedKeys) ? 1 : limit);
       if (rids.isEmpty())
         return EMPTY_CURSOR;
 

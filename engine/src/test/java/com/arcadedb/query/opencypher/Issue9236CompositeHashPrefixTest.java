@@ -70,6 +70,14 @@ class Issue9236CompositeHashPrefixTest extends TestHelper {
   }
 
   @Test
+  void everyColumnPinnedStillSeeksTheCompositeHashIndex() {
+    create("HashAll", "NOTUNIQUE_HASH");
+    try (final ResultSet rs = database.query("opencypher", "EXPLAIN MATCH (n:HashAll) WHERE n.p = 1 AND n.q = 5 RETURN n.p AS p")) {
+      assertThat(rs.next().toJSON().toString()).contains("NodeIndexSeek");
+    }
+  }
+
+  @Test
   void nullParameterForTheSecondPropertyMatchesNothing() {
     create("HashN", "NOTUNIQUE_HASH");
     final Map<String, Object> params = new HashMap<>();
