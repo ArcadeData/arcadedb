@@ -25,6 +25,7 @@ import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.query.opencypher.InternalVariables;
 import com.arcadedb.query.opencypher.ast.ClauseEntry;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.ast.Expression;
@@ -35,7 +36,6 @@ import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.executor.CypherExecutionPlan;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
-import com.arcadedb.query.opencypher.InternalVariables;
 import com.arcadedb.query.opencypher.executor.LabelReplacements;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -524,18 +524,19 @@ public class SubqueryStep extends AbstractExecutionStep {
       // The outer clauses' generated bindings (  nd0, ...) are not query variables. The inner plan numbers its own
       // anonymous elements from zero, so a leaked one would pre-bind an inner anonymous pattern to the outer value
       // (issue #9205: an OPTIONAL MATCH that matched nothing turned the inner MATCH () into a bound null).
-      ResultInternal filtered = null;
-      for (final String name : outerRow.getPropertyNames()) {
-        if (!InternalVariables.isInternal(name))
-          continue;
-        if (filtered == null) {
-          filtered = new ResultInternal();
-          for (final String keep : outerRow.getPropertyNames())
-            if (!InternalVariables.isInternal(keep))
-              filtered.setProperty(keep, outerRow.getProperty(keep));
+      boolean hasInternal = false;
+      for (final String name : outerRow.getPropertyNames())
+        if (InternalVariables.isInternal(name)) {
+          hasInternal = true;
+          break;
         }
-      }
-      return filtered != null ? filtered : outerRow;
+      if (!hasInternal)
+        return outerRow;
+      final ResultInternal filtered = new ResultInternal();
+      for (final String name : outerRow.getPropertyNames())
+        if (!InternalVariables.isInternal(name))
+          filtered.setProperty(name, outerRow.getProperty(name));
+      return filtered;
     }
     if (importedVariables.isEmpty())
       return new ResultInternal();
