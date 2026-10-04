@@ -72,4 +72,22 @@ class Issue9028ScalarIntoTypedListTest extends TestHelper {
       assertThat((List<Object>) r.getProperty("longs")).containsExactly(5L);
     }
   }
+
+  @Test
+  void primitiveArrayAndOtherElementTypes() {
+    database.command("sql", "CREATE DOCUMENT TYPE P");
+    database.command("sql", "CREATE PROPERTY P.longs LIST OF LONG");
+    database.command("sql", "CREATE PROPERTY P.strs LIST OF STRING");
+    database.command("sql", "CREATE PROPERTY P.ints LIST OF INTEGER");
+    database.transaction(() -> {
+      final var doc = database.newDocument("P");
+      doc.set("longs", new int[] { 1, 2 });
+      doc.set("strs", 7);
+      doc.save();
+      assertThat((List<Object>) doc.get("longs")).containsExactly(1L, 2L);
+      assertThat((List<Object>) doc.get("strs")).containsExactly("7");
+    });
+    org.assertj.core.api.Assertions.assertThatThrownBy(
+        () -> database.transaction(() -> database.command("sql", "INSERT INTO P SET ints = 'abc'"))).isNotNull();
+  }
 }

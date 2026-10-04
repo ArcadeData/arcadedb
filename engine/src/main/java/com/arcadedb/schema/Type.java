@@ -526,6 +526,14 @@ public enum Type {
       for (final Object item : sourceCollection)
         result.add(coerceScalarItem(database, item, ofClass, ofType));
       return result;
+    } else if (List.class.isAssignableFrom(targetClass) && value.getClass().isArray() && value instanceof byte[] == false
+        && value.getClass().getComponentType().isPrimitive()) {
+      // a primitive array (long[], int[]...) is the same list of numbers, converted element by element
+      final List<Object> items = primitiveArrayToList(value);
+      final List<Object> result = new ArrayList<>(items.size());
+      for (final Object item : items)
+        result.add(coerceScalarItem(database, item, ofClass, ofType));
+      return result;
     } else if (List.class.isAssignableFrom(targetClass) && isPlainScalar(value, ofType)) {
       // a scalar written to a LIST OF <type> is wrapped as one element, converted like the elements of a list are (#9028)
       final List<Object> result = new ArrayList<>(1);
