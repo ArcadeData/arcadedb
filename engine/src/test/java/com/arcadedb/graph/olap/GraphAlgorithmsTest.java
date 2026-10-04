@@ -293,6 +293,26 @@ class GraphAlgorithmsTest extends TestHelper {
     assertKernelMatchesReference(giant + 1, edges.toArray(new int[0][]));
   }
 
+  /** #9133: hubs outside the dominant component with out-degree far above the sampling rounds, so the "remaining forward edges" loop does the work. */
+  @Test
+  void connectedComponentsHubsOutsideGiantWithHighOutDegree() {
+    final int giant = 12_000;
+    final Random rnd = new Random(23);
+    final List<int[]> edges = new ArrayList<>();
+    for (int i = 1; i < giant; i++)
+      edges.add(new int[] { i, rnd.nextInt(i) });
+    // 20 hubs, each with 60 out-edges to its own private leaves, plus one edge from a hub into the giant for half of them
+    int next = giant;
+    for (int h = 0; h < 20; h++) {
+      final int hub = next++;
+      for (int k = 0; k < 60; k++)
+        edges.add(new int[] { hub, next++ });
+      if (h % 2 == 0)
+        edges.add(new int[] { hub, rnd.nextInt(giant) });
+    }
+    assertKernelMatchesReference(next, edges.toArray(new int[0][]));
+  }
+
   /** #9133: above the parallel threshold with no dominant component (disjoint pairs and short chains): the sampled "giant" is arbitrary. */
   @Test
   void connectedComponentsManySmallComponentsAboveParallelThreshold() {
