@@ -326,9 +326,9 @@ public class MongoDBWireSemanticsTest extends BaseMongoServerTest {
   }
 
   @Test
-  void inlineCommentsModeRegexIsACleanError() {
+  void inlineCommentsModeRegexIsSearchedAsWritten() {
     collection.insertOne(Document.parse("{_id: 1, name: 'a'}"));
-    assertThatThrownBy(() -> ids("{name: {$regex: '(?x) a # note'}}")).isInstanceOf(MongoQueryException.class);
+    assertThat(ids("{name: {$regex: '(?x) a # note'}}")).containsExactly(1);
   }
 
   @Test
