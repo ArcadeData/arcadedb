@@ -756,6 +756,7 @@ public class MatchExecutionPlanner {
     final List<String> involvedAliases = filter.getBaseExpression().getMatchPatternInvolvedAliases();
     // getMatchPatternInvolvedAliases() DOES NOT SEE A $matched INSIDE A NESTED STATEMENT (A SUBQUERY OF AN IN), SO THE WHOLE TREE
     // IS WALKED TOO: A NODE THAT READS AN ALIAS ONLY THERE MUST NOT BE PREFETCHED OR PLANNED AS INDEPENDENT OF IT (ISSUE #9249)
+    // A BARE $matched (NO ALIAS SUFFIX) IS STILL NOT ATTRIBUTED TO ANY ALIAS, AS IN outerAliasesRead()
     final Set<String> aliases = new LinkedHashSet<>();
     if (involvedAliases != null)
       aliases.addAll(involvedAliases);

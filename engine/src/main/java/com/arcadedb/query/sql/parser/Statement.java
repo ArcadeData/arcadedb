@@ -251,8 +251,7 @@ public class Statement extends SimpleNode {
 
   /** The plan-cache key; the parameter-number suffix applies to the computed text, not to the raw text the parser presets. */
   public String getOriginalStatement() {
-    if (originalStatementAsString == null)
-      {
+    if (originalStatementAsString == null) {
       final String text = originalStatement.toString();
       // NO PARAMETER, NO NUMBERS TO TELL APART: SKIP THE TREE WALK
       originalStatementAsString = text.indexOf('?') < 0 && text.indexOf(':') < 0 ?
