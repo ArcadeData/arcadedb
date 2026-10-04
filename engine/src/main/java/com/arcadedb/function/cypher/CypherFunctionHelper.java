@@ -265,7 +265,11 @@ public final class CypherFunctionHelper {
   public static String leftCodePoints(final String str, final int length) {
     if (length >= str.length())
       return str;
-    return str.substring(0, str.offsetByCodePoints(0, Math.min(length, codePointLength(str))));
+    // walk at most length code points instead of counting the whole string: left(bigText, 3) stays O(3)
+    int end = 0;
+    for (int i = 0; i < length && end < str.length(); i++)
+      end += Character.charCount(str.codePointAt(end));
+    return str.substring(0, end);
   }
 
   /**
