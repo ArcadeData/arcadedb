@@ -43,6 +43,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
@@ -246,7 +247,19 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
 
   private final AtomicReference<Memtable>                  memtable     = new AtomicReference<>(new Memtable());
   private final AtomicReference<PaginatedSegmentReader[]>  segments     = new AtomicReference<>(new PaginatedSegmentReader[0]);
+  /**
+   * The memtable a {@link #flush} has swapped out and not yet published as a segment, or null (issue #9209). Readers
+   * look at it between the live memtable and the segments, so the postings of a memtable being flushed never vanish
+   * from a query. Written only under {@link #mutatorLock}.
+   */
+  private final AtomicReference<Memtable>                  sealedMemtable = new AtomicReference<>();
   private final AtomicLong                                 nextSegmentId = new AtomicLong(1L);
+  /**
+   * Number of flushes and compactions of THIS engine that are running or queued on {@link #mutatorLock} (issue #9210).
+   * A local mutation publishes its own result under the lock, so a query that finds its segment files changed by one
+   * has nothing to reconcile and answers from the current snapshot rather than waiting for it to finish.
+   */
+  private final AtomicInteger                              localMutations = new AtomicInteger();
   /**
    * Latches once the pre-#6379 warning has been emitted for this engine instance, so the same line
    * can be raised from the follower refresh path without repeating on every query.
@@ -272,6 +285,10 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   // O(total registered files) walk. Without this guard, every {@code topK} on a database with N
   // indexes pays an N-scaled cost just to confirm the segment set is stable.
   private final AtomicLong lastObservedFileManagerMods = new AtomicLong(Long.MIN_VALUE);
+
+  // Test seam: runs inside a flush (memtable swapped out, segment file not yet created) and a compaction (output file registered, merge not
+  // started), both under mutatorLock.
+  private volatile Runnable mutationHookForTest;
 
   private volatile boolean closed;
 
@@ -419,7 +436,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
 
     refreshSegmentsFromFileManager();
 
-    final Memtable mtSnapshot = memtable.get();
+    final MemSnapshot mtSnapshot = captureMemtables();
     final PaginatedSegmentReader[] segSnapshot = segments.get();
 
     // Splitting off globally: return before touching the pool at all. getInstance() would build a
@@ -463,7 +480,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * cache their per-dim metadata behind a CAS and their pages behind the shared page cache, and the
    * memtable is a {@code ConcurrentSkipListMap}. Nothing else is shared.
    */
-  private List<RidScore> rangeTopK(final int[] queryDims, final float[] queryWeights, final int k, final Memtable mtSnapshot,
+  private List<RidScore> rangeTopK(final int[] queryDims, final float[] queryWeights, final int k, final MemSnapshot mtSnapshot,
       final PaginatedSegmentReader[] segSnapshot, final RID startInclusive, final RID endExclusive) throws IOException {
     final DimCursor[] cursors = new DimCursor[queryDims.length];
     try {
@@ -627,7 +644,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * {@code SQLFunctionVectorSparseNeighbors}.
    */
   private List<RidScore> parallelTopK(final int[] queryDims, final float[] queryWeights, final int k,
-      final Memtable mtSnapshot, final PaginatedSegmentReader[] segSnapshot, final RID[] boundaries) throws IOException {
+      final MemSnapshot mtSnapshot, final PaginatedSegmentReader[] segSnapshot, final RID[] boundaries) throws IOException {
     final int partitions = boundaries.length + 1;
     final ExecutorService pool = SparseVectorScoringPool.getInstance().getExecutorService();
     // Ranges [1, partitions) go to workers; the caller scores range 0 itself rather than blocking on
@@ -794,7 +811,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   private List<RidScore> groupedSearch(final int[] queryDims, final GroupedSearch search) throws IOException {
     refreshSegmentsFromFileManager();
 
-    final Memtable mtSnapshot = memtable.get();
+    final MemSnapshot mtSnapshot = captureMemtables();
     final PaginatedSegmentReader[] segSnapshot = segments.get();
 
     // Grouped queries never split, but they are still load: they run a full traversal on their
@@ -832,7 +849,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * segments, after newest-source-wins merging. Used to compute IDF document frequency.
    */
   public long countDim(final int dim) throws IOException {
-    final DimCursor c = openMergedCursor(dim, memtable.get(), segments.get());
+    final DimCursor c = openMergedCursor(dim, captureMemtables(), segments.get());
     if (c == null)
       return 0L;
     long df = 0L;
@@ -886,16 +903,23 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    */
   public long flush() {
     ensureOpen();
+    localMutations.incrementAndGet();
     mutatorLock.lock();
     try {
-      final Memtable old = memtable.getAndSet(new Memtable());
+      final Memtable old = memtable.get();
       if (old.isEmpty())
         return -1L;
+      // Readers capture the live memtable, then the sealed one, then the segments. Exposing the sealed memtable BEFORE
+      // the swap and clearing it only AFTER the segment is published means every posting is reachable from one of the
+      // three at every instant (issue #9209); a reader that sees a posting twice merges the copies by recency.
+      sealedMemtable.set(old);
+      memtable.set(new Memtable());
       final long segmentId = nextSegmentId.getAndIncrement();
       final SparseSegmentComponent[] componentRef = new SparseSegmentComponent[1];
       final boolean ranOnLeader;
       try {
         ranOnLeader = database.getWrappedDatabaseInstance().runWithCompactionReplication(() -> {
+          runMutationHookForTest();
           componentRef[0] = buildSegmentComponent(segmentId, old);
           // Open the reader and publish it under {@link #mutatorLock} (held by the caller) AND
           // inside the recording session, so:
@@ -907,6 +931,8 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
           //     the duplicate-reader bug that otherwise lands on the next query.
           try {
             appendSegment(new PaginatedSegmentReader(componentRef[0]));
+            // Published: the segment now carries the postings, so the sealed memtable can stop being read.
+            sealedMemtable.set(null);
           } catch (final IOException e) {
             // Build succeeded (component is registered with the FileManager) but reader open
             // failed - drop the orphan so it does not leak into the next refresh scan and
@@ -942,7 +968,11 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
         ;
       return segmentId;
     } finally {
+      // Also covers a flush that threw or ran on a follower: nothing was published, and a stale sealed memtable would
+      // be read as a source for ever.
+      sealedMemtable.set(null);
       mutatorLock.unlock();
+      localMutations.decrementAndGet();
     }
   }
 
@@ -1225,6 +1255,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   private long compactInputs(final boolean dropAllTombstones,
       final Function<PaginatedSegmentReader[], PaginatedSegmentReader[]> pickInputs) {
     ensureOpen();
+    localMutations.incrementAndGet();
     mutatorLock.lock();
     try {
       final PaginatedSegmentReader[] active = segments.get();
@@ -1248,6 +1279,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       try {
         ranOnLeader = database.getWrappedDatabaseInstance().runWithCompactionReplication(() -> {
           componentRef[0] = createComponent(newId);
+          runMutationHookForTest();
           try {
             // No enclosing database.transaction(): the builder streams merged pages straight to
             // disk in RAM-bounded chunks (issue #5189) so a compacted segment past the WALFile
@@ -1347,6 +1379,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       return newId;
     } finally {
       mutatorLock.unlock();
+      localMutations.decrementAndGet();
     }
   }
 
@@ -1406,11 +1439,11 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     ensureOpen();
     refreshSegmentsFromFileManager();
 
-    final Memtable mtSnapshot;
+    final MemSnapshot mtSnapshot;
     final PaginatedSegmentReader[] segSnapshot;
     mutatorLock.lock();
     try {
-      mtSnapshot = memtable.get();
+      mtSnapshot = new MemSnapshot(memtable.get(), null);
       segSnapshot = segments.get();
     } finally {
       mutatorLock.unlock();
@@ -1418,8 +1451,8 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
 
     // The union of the dims any source holds. IntHashSet rather than a boxed Set: a wide corpus reaches millions of
     // dims, and this would otherwise be one Integer allocation each.
-    final IntHashSet dims = new IntHashSet(mtSnapshot.dimCount() + 16);
-    for (final int dim : mtSnapshot.sortedDims())
+    final IntHashSet dims = new IntHashSet(mtSnapshot.active().dimCount() + 16);
+    for (final int dim : mtSnapshot.active().sortedDims())
       dims.add(dim);
     for (final PaginatedSegmentReader r : segSnapshot)
       for (final int dim : r.dims())
@@ -1537,6 +1570,16 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * leaking into test code that would otherwise silently break on a rename. The lock is fully
    * encapsulated for production: nothing on the public API exposes it.
    */
+  void setMutationHookForTest(final Runnable hook) {
+    mutationHookForTest = hook;
+  }
+
+  private void runMutationHookForTest() {
+    final Runnable hook = mutationHookForTest;
+    if (hook != null)
+      hook.run();
+  }
+
   ReentrantLock mutatorLockForTest() {
     return mutatorLock;
   }
@@ -1824,7 +1867,15 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       return;
     }
 
-    mutatorLock.lock();
+    // A flush or compaction of this engine registers its output file at the start and publishes it, with the segment
+    // array, under the lock when it is done (issue #9210). That file is not news to this query: the published array is
+    // a consistent snapshot until then, and the mutation reconciles itself. Waiting for it would hold every query for
+    // the length of a compaction. Nothing is recorded as observed, so the first query after it runs the reconcile.
+    if (!mutatorLock.tryLock()) {
+      if (localMutations.get() > 0)
+        return;
+      mutatorLock.lock();
+    }
     try {
       // Re-check under lock to skip the reconcile when a concurrent refresh on another thread
       // computed the SAME fingerprint and finished writing it back before we acquired the lock.
@@ -2151,6 +2202,22 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   }
 
   /**
+   * The memtables a reader sees: the live one and, while a flush is publishing, the one being flushed (issue #9209).
+   */
+  private record MemSnapshot(Memtable active, Memtable sealed) {
+  }
+
+  /**
+   * Captures the memtables for a read. MUST run before the reader captures {@link #segments}: {@link #flush} publishes
+   * the segment before it clears the sealed memtable, so a reader that sees the sealed memtable gone sees the segment.
+   */
+  private MemSnapshot captureMemtables() {
+    final Memtable active = memtable.get();
+    final Memtable sealed = sealedMemtable.get();
+    return new MemSnapshot(active, sealed == active ? null : sealed);
+  }
+
+  /**
    * Build a merged {@link DimCursor} from the memtable and segment snapshot for one dim.
    * <p>
    * Sources are added unstarted; {@link DimCursor#start} is responsible for starting every
@@ -2160,9 +2227,9 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * for DimCursor to start, which had the same observable behaviour but was easy to misread as
    * a hidden ordering requirement.
    */
-  private DimCursor openMergedCursor(final int dim, final Memtable mt, final PaginatedSegmentReader[] segSnapshot)
+  private DimCursor openMergedCursor(final int dim, final MemSnapshot mt, final PaginatedSegmentReader[] segSnapshot)
       throws IOException {
-    final List<SourceCursor> sources = new ArrayList<>(segSnapshot.length + 1);
+    final List<SourceCursor> sources = new ArrayList<>(segSnapshot.length + 2);
     for (final PaginatedSegmentReader r : segSnapshot) {
       final PaginatedSegmentDimCursor c = r.openCursor(dim);
       if (c != null)
@@ -2174,8 +2241,12 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     // costs one slot in {@link DimCursor#materializeMin}'s per-advance scan, and dims that are
     // not in the memtable are the common case (queries typically touch ~10 dims while the
     // memtable holds postings for thousands).
-    if (mt != null && mt.containsDim(dim))
-      sources.add(new MemtableSourceCursor(mt, dim));
+    // The memtable being flushed (issue #9209) sits between the segments and the live memtable: it is newer than every
+    // published segment and older than whatever has landed since the swap.
+    if (mt != null && mt.sealed() != null && mt.sealed().containsDim(dim))
+      sources.add(new MemtableSourceCursor(mt.sealed(), dim));
+    if (mt != null && mt.active().containsDim(dim))
+      sources.add(new MemtableSourceCursor(mt.active(), dim));
     if (sources.isEmpty())
       return null;
     return new DimCursor(dim, sources);
