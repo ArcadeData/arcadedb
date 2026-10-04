@@ -220,13 +220,16 @@ public class HashIndex implements IndexInternal {
               txChanges.add(new IndexCursorEntry(convertedKeys, value.rid, 1));
 
               if (limit > -1 && txChanges.size() > limit)
-                return new TempIndexCursor(txChanges);
+                return new TempIndexCursor(TypeIndex.cappedTo(txChanges, limit));
             }
           }
         }
       }
 
-      final IndexCursor result = lock.executeInReadLock(() -> getDiskResult(convertedKeys, limit));
+      // the disk rows that a pending removal hides do not count towards the limit: with removals pending the whole key is read
+      // and the limit is applied to the merged rows below
+      final int diskLimit = removals != null ? -1 : limit;
+      final IndexCursor result = lock.executeInReadLock(() -> getDiskResult(convertedKeys, diskLimit));
 
       if (txChanges != null || removals != null) {
         if (txChanges == null)
@@ -238,7 +241,7 @@ public class HashIndex implements IndexInternal {
             continue;
           txChanges.add(new IndexCursorEntry(convertedKeys, next, 1));
         }
-        return new TempIndexCursor(txChanges);
+        return new TempIndexCursor(TypeIndex.cappedTo(txChanges, limit));
       }
 
       return result;

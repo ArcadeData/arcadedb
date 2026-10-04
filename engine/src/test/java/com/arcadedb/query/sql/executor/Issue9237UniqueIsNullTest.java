@@ -153,6 +153,24 @@ class Issue9237UniqueIsNullTest extends TestHelper {
   }
 
   @Test
+  void aBoundedLookupInsideATransactionCountsOnlyTheRowsThatSurviveItsRemovals() {
+    for (final String[] t : TYPES) {
+      if (t[1] == null)
+        continue;
+      final TypeIndex index = database.getSchema().getType(t[0]).getIndexByProperties("p");
+      database.transaction(() -> {
+        database.command("sql", "DELETE FROM " + t[0] + " WHERE id = 2");
+        for (int limit = 1; limit <= 2; limit++) {
+          int entries = 0;
+          for (final IndexCursor c = index.get(new Object[] { null }, limit); c.hasNext(); c.next())
+            entries++;
+          assertThat(entries).as(t[0] + " limit " + limit).isEqualTo(limit);
+        }
+      });
+    }
+  }
+
+  @Test
   void isNullAfterAReopen() {
     reopenDatabase();
     for (final String[] t : TYPES)
