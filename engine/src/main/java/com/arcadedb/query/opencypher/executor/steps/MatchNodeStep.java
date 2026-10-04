@@ -1116,7 +1116,8 @@ public class MatchNodeStep extends AbstractExecutionStep {
     builder.append("+ MATCH NODE ");
     builder.append("(").append(variable);
     if (pattern.hasLabels()) {
-      builder.append(":").append(String.join("|", pattern.getLabels()));
+      // ':' between the labels of a conjunction, '|' only for a disjunction: (n:N:A) used to print as (n:N|A).
+      builder.append(":").append(String.join(pattern.isLabelDisjunction() ? "|" : ":", pattern.getLabels()));
     }
     builder.append(")");
     // The ID push-down is the single most consequential thing this step can do - it turns a full type scan (and,
