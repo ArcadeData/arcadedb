@@ -446,4 +446,12 @@ class MongoDBFilterSemanticsTest extends BaseMongoServerTest {
       page.add(d.get("_id"));
     assertThat(page).containsExactly(1, 5);
   }
+
+  @Test
+  void idInWithARegexAndANullMatchesLikeMongoDB() {
+    final MongoCollection<Document> c = collection("idin", "{_id:'abc1', k:1}", "{_id:'abd2', k:2}", "{_id:3, k:3}");
+    assertThat(c.find(new Document("_id", new Document("$in", List.of(Pattern.compile("^abc"), 3)))).sort(Document.parse("{k:1}"))
+        .into(new ArrayList<>()).stream().map(d -> d.get("_id")).toList()).containsExactly("abc1", 3);
+    assertThat(ids(c, "{_id:{$in:[null, 3]}}")).containsExactly(3);
+  }
 }

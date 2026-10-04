@@ -237,13 +237,26 @@ final class MongoFilter {
     return true;
   }
 
+  /**
+   * A regular expression operand (alone or in a list) is a pattern only the matcher evaluates: SQL compares it as a value.
+   */
+  private static boolean holdsRegex(final Object operand) {
+    if (operand instanceof BsonRegularExpression)
+      return true;
+    if (operand instanceof List<?> list)
+      for (final Object item : list)
+        if (item instanceof BsonRegularExpression)
+          return true;
+    return false;
+  }
+
   private static boolean narrowsValue(final Object operand) {
     if (operand instanceof Document operators) {
       if (!isOperatorDocument(operators))
         // a document _id, compared as a whole
         return false;
-      for (final String operator : operators.keySet())
-        if (!NARROWING_OPERATORS.contains(operator))
+      for (final Map.Entry<String, Object> entry : operators.entrySet())
+        if (!NARROWING_OPERATORS.contains(entry.getKey()) || holdsRegex(entry.getValue()))
           return false;
       return true;
     }
