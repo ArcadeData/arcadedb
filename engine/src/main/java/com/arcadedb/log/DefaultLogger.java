@@ -370,6 +370,33 @@ public class DefaultLogger implements Logger {
     return new AnsiLogFormatter();
   }
 
+  @Override
+  public boolean isLoggable(final Object requester, final Level level) {
+    if (shuttingDown)
+      return level.intValue() >= Level.INFO.intValue();
+
+    init();
+
+    final String requesterName;
+    if (requester instanceof String string)
+      requesterName = string;
+    else if (requester instanceof Class<?> class1)
+      requesterName = class1.getName();
+    else if (requester != null)
+      requesterName = requester.getClass().getName();
+    else
+      requesterName = DEFAULT_LOG;
+
+    java.util.logging.Logger log = loggersCache.get(requesterName);
+    if (log == null) {
+      log = java.util.logging.Logger.getLogger(requesterName);
+      final java.util.logging.Logger oldLogger = loggersCache.putIfAbsent(requesterName, log);
+      if (oldLogger != null)
+        log = oldLogger;
+    }
+    return log.isLoggable(level);
+  }
+
   public void log(final Object requester, final Level level, String message, final Throwable exception,
                   final String context,
                   final Object arg1, final Object arg2, final Object arg3, final Object arg4, final Object arg5,

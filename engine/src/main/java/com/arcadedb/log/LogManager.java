@@ -325,6 +325,14 @@ public class LogManager {
         null, null, null, null, null, null, null, null);
   }
 
+  /**
+   * Cheap pre-check for hot paths: false when a message at this level would be dropped, so the caller can skip building
+   * (and boxing) its arguments. Unlike {@link #isDebugEnabled()}, it follows the real logging configuration.
+   */
+  public boolean isLoggable(final Object requester, final Level level) {
+    return logger.isLoggable(requester, level);
+  }
+
   public boolean isDebugEnabled() {
     return debug;
   }

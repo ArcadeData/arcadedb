@@ -18,6 +18,7 @@
  */
 package com.arcadedb.schema;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.index.Index;
@@ -35,6 +36,7 @@ import java.util.List;
  */
 public abstract class IndexBuilder<T extends Index> {
   public static final int BUILD_BATCH_SIZE = 5_000;
+  static final int        MIN_DEFAULT_PAGE_SIZE = 8_192;
 
   /**
    * Value of {@link #pageSize} meaning "the caller did not ask for a page size", so each index implementation is free
@@ -343,7 +345,8 @@ public abstract class IndexBuilder<T extends Index> {
    * "the caller asked for 262144" from "the caller asked for nothing".
    */
   public int getPageSize() {
-    return getPageSize(LSMTreeIndexAbstract.DEF_PAGE_SIZE);
+    return getPageSize(Math.max(MIN_DEFAULT_PAGE_SIZE,
+        database.getConfiguration().getValueAsInteger(GlobalConfiguration.INDEX_DEFAULT_PAGE_SIZE)));
   }
 
   /**

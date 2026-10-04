@@ -673,9 +673,10 @@ public class WALFile extends LockContext {
               "Invalid modified range for page " + newPage.getPageId() + " v" + newPage.version + ": deltaRange=[" + rangeFrom
                   + "," + rangeTo + "] deltaSize=" + deltaSize + " pageSize=" + newPage.getPhysicalSize());
 
-        LogManager.instance()
-            .log(WALFile.class, Level.FINE, "Writing page %s v%d range %d-%d into buffer (txId=%d threadId=%d)", null,
-                newPage.getPageId(), newPage.version + 1, rangeFrom, rangeTo, txId, Thread.currentThread().getId());
+        if (LogManager.instance().isLoggable(WALFile.class, Level.FINE))
+          LogManager.instance()
+              .log(WALFile.class, Level.FINE, "Writing page %s v%d range %d-%d into buffer (txId=%d threadId=%d)", null,
+                  newPage.getPageId(), newPage.version + 1, rangeFrom, rangeTo, txId, Thread.currentThread().threadId());
 
         bufferChanges.putInt(newPage.getPageId().getFileId());
         bufferChanges.putInt(newPage.getPageId().getPageNumber());
@@ -704,8 +705,9 @@ public class WALFile extends LockContext {
   public void writeTransactionToFile(final DatabaseInternal database, final List<MutablePage> pages, final FlushType sync, final WALFile file, final long txId,
       final Binary buffer) throws IOException {
 
-    LogManager.instance()
-        .log(this, Level.FINE, "Appending WAL for txId=%d (size=%d file=%s threadId=%d)", null, txId, buffer.size(), filePath, Thread.currentThread().getId());
+    if (LogManager.instance().isLoggable(this, Level.FINE))
+      LogManager.instance()
+          .log(this, Level.FINE, "Appending WAL for txId=%d (size=%d file=%s threadId=%d)", null, txId, buffer.size(), filePath, Thread.currentThread().threadId());
 
     file.append(buffer.getByteBuffer());
 
