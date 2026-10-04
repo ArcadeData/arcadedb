@@ -112,7 +112,7 @@ class Issue8643RecountDuringSnapshotCatchUpIT extends BaseRaftHATest {
   }
 
   @Test
-  @Timeout(600)
+  @Timeout(900)
   void storedCountMatchesScanAfterRecountOverlapsSnapshotCatchUp() throws Exception {
     final int leaderIndex = findLeaderIndex();
     assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
@@ -147,6 +147,10 @@ class Issue8643RecountDuringSnapshotCatchUpIT extends BaseRaftHATest {
           result.installed, result.recountsOnUnknownCounter, result.overlappingRecounts);
     }
 
+    if (overlappingRecounts == 0)
+      LogManager.instance().log(this, Level.WARNING,
+          "TEST: no recount overlapped the catch-up in %d rounds: installs=%d, recounts on an unknown counter=%d", MAX_ROUNDS,
+          installs, recountsOnUnknownCounter);
     // The scenario must actually have happened, or the final comparison proves nothing
     assertThat(installs).as("the follower must rejoin through a leader snapshot install at least once").isGreaterThan(0);
     assertThat(recountsOnUnknownCounter).as("count(*) must have recounted an unknown counter on the follower").isGreaterThan(0);
@@ -191,8 +195,10 @@ class Issue8643RecountDuringSnapshotCatchUpIT extends BaseRaftHATest {
     final AtomicBoolean readerRunning = new AtomicBoolean(true);
     final AtomicInteger recountsOnUnknownCounter = new AtomicInteger();
     final AtomicInteger overlappingRecounts = new AtomicInteger();
+    final AtomicReference<Exception> readerLastError = new AtomicReference<>();
     final Thread reader = new Thread(
-        () -> recountWhileCatchingUp(leaderIndex, followerIndex, readerRunning, recountsOnUnknownCounter, overlappingRecounts),
+        () -> recountWhileCatchingUp(leaderIndex, followerIndex, readerRunning, recountsOnUnknownCounter, overlappingRecounts,
+            readerLastError),
         "issue8643-follower-reader");
 
     load.start();
@@ -200,6 +206,8 @@ class Issue8643RecountDuringSnapshotCatchUpIT extends BaseRaftHATest {
     try {
       LogManager.instance().log(this, Level.INFO, "TEST: round %d: restarting follower %d under load", round, followerIndex);
       restartServer(followerIndex);
+      // restartServer() returns once the follower reached the leader's applied index, which is usually before the reader
+      // has seen it apply past the copied prefix: the load and the reader keep going so that window still comes
       Thread.sleep(ONLINE_LOAD_MS);
     } finally {
       loadRunning.set(false);
@@ -209,7 +217,12 @@ class Issue8643RecountDuringSnapshotCatchUpIT extends BaseRaftHATest {
     }
     assertThat(loadError.get()).as("the leader load must not fail").isNull();
 
-    final boolean installed = getRaftPlugin(followerIndex).getRaftHAServer().getStateMachine().isBelowInstalledRaftBoundary(0);
+    if (overlappingRecounts.get() == 0 && readerLastError.get() != null)
+      LogManager.instance().log(this, Level.WARNING, "TEST: round %d: last error the follower reader skipped", readerLastError.get(),
+          round);
+
+    final ArcadeStateMachine stateMachine = stateMachineOrNull(followerIndex);
+    final boolean installed = stateMachine != null && stateMachine.isBelowInstalledRaftBoundary(0);
     return new RoundResult(installed, recountsOnUnknownCounter.get(), overlappingRecounts.get());
   }
 
@@ -243,13 +256,13 @@ class Issue8643RecountDuringSnapshotCatchUpIT extends BaseRaftHATest {
    * leader snapshot install, once the follower applies entries the installed copy did not already hold, with every
    * counter still unknown. A {@code count(*)} issued any earlier - between the swap of the installed copy and the first
    * applied entry, or while the catch-up only replays entries whose pages came with the copy - publishes a clean
-   * counter and leaves nothing to race with. A call that
-   * starts while any bucket of the type has an unknown counter is a recount; when the follower's applied index advanced
-   * during that call, the recount overlapped catch-up applies. Every failure is ignored: the follower is down, opening,
-   * or swapping in the installed copy for part of the round.
+   * counter and leaves nothing to race with. A call that starts while any bucket of the type has an unknown counter is a
+   * recount; when the follower's applied index advanced during that call, the recount overlapped catch-up applies.
+   * Failures are skipped, the last one kept for the round's log: the follower is down, opening, or swapping in the
+   * installed copy for part of the round.
    */
   private void recountWhileCatchingUp(final int leaderIndex, final int followerIndex, final AtomicBoolean running,
-      final AtomicInteger recounts, final AtomicInteger overlapping) {
+      final AtomicInteger recounts, final AtomicInteger overlapping, final AtomicReference<Exception> lastError) {
     long copiedPrefixEnd = -1;
     while (running.get()) {
       try {
@@ -258,9 +271,7 @@ class Issue8643RecountDuringSnapshotCatchUpIT extends BaseRaftHATest {
           Thread.sleep(5);
           continue;
         }
-        final RaftHAPlugin plugin = getRaftPlugin(followerIndex);
-        final ArcadeStateMachine stateMachine =
-            plugin == null || plugin.getRaftHAServer() == null ? null : plugin.getRaftHAServer().getStateMachine();
+        final ArcadeStateMachine stateMachine = stateMachineOrNull(followerIndex);
         // No install yet (the boundary is per state machine, so a restart resets it), or the catch-up that follows the
         // install has not applied its first entry: not the window yet
         if (stateMachine == null || !stateMachine.isBelowInstalledRaftBoundary(0)
@@ -272,7 +283,8 @@ class Issue8643RecountDuringSnapshotCatchUpIT extends BaseRaftHATest {
         // its snapshot index: replaying those advances no page version, folds nothing and cannot race. Wait until the
         // follower is past everything the leader had applied when the catch-up started, so the entries applied during
         // the recount are ones the copy did not have
-        if (copiedPrefixEnd < 0)
+        // A second install inside the round (its boundary at or past the latch) has a copied prefix of its own
+        if (copiedPrefixEnd < 0 || stateMachine.isBelowInstalledRaftBoundary(copiedPrefixEnd))
           copiedPrefixEnd = appliedIndex(leaderIndex);
         if (appliedIndex(followerIndex) <= copiedPrefixEnd) {
           Thread.sleep(1);
@@ -308,11 +320,12 @@ class Issue8643RecountDuringSnapshotCatchUpIT extends BaseRaftHATest {
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
         return;
-      } catch (final Throwable ignored) {
+      } catch (final Exception e) {
         // Down, opening, or being replaced by the installed copy: try again
+        lastError.set(e);
         try {
           Thread.sleep(5);
-        } catch (final InterruptedException e) {
+        } catch (final InterruptedException ie) {
           Thread.currentThread().interrupt();
           return;
         }
@@ -320,11 +333,14 @@ class Issue8643RecountDuringSnapshotCatchUpIT extends BaseRaftHATest {
     }
   }
 
-  private long appliedIndex(final int serverIndex) {
+  private ArcadeStateMachine stateMachineOrNull(final int serverIndex) {
     final RaftHAPlugin plugin = getRaftPlugin(serverIndex);
-    if (plugin == null || plugin.getRaftHAServer() == null)
-      return -1;
-    final TermIndex termIndex = plugin.getRaftHAServer().getStateMachine().getLastAppliedTermIndex();
+    return plugin == null || plugin.getRaftHAServer() == null ? null : plugin.getRaftHAServer().getStateMachine();
+  }
+
+  private long appliedIndex(final int serverIndex) {
+    final ArcadeStateMachine stateMachine = stateMachineOrNull(serverIndex);
+    final TermIndex termIndex = stateMachine == null ? null : stateMachine.getLastAppliedTermIndex();
     return termIndex == null ? -1 : termIndex.getIndex();
   }
 

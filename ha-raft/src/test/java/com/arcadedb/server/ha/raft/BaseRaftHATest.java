@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.ServerPlugin;
@@ -378,8 +379,12 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
         continue;
       final Map<RaftPeerId, String> httpAddresses = plugin.getRaftHAServer().getHttpAddresses();
       for (int j = 0; j < getServerCount(); j++) {
+        // A peer that is down keeps the address it had: a stopped server reports no port to replace it with
+        final ArcadeDBServer peer = getServer(j);
+        if (peer == null || !peer.isStarted() || peer.getHttpServer() == null || peer.getHttpServer().getPort() <= 0)
+          continue;
         final RaftPeerId peerId = RaftPeerId.valueOf(peerIdForIndex(j));
-        httpAddresses.put(peerId, "localhost:" + getServer(j).getHttpServer().getPort());
+        httpAddresses.put(peerId, "localhost:" + peer.getHttpServer().getPort());
       }
     }
   }
@@ -829,7 +834,9 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
     getServer(serverIndex).start();
     // The restarted node builds a fresh RaftHAServer from the 2480 + i hints of getServerAddresses(), and with 2480 held
     // by another process every hint names the wrong node: a leader-initiated snapshot install then asks a neighbour for
-    // the leader's state, is refused as answered by the wrong peer, and never completes (issue #8643)
+    // the leader's state, is refused as answered by the wrong peer, and never completes (issue #8643). Patched once
+    // start() returns, so a query fired while it was still running can hit a stale hint once; the install retries it.
+    // Bare getServer(i).start() calls elsewhere still lack this: issue #9243
     patchPeerHttpAddressesWithBoundPorts();
 
     // Wait for the restarted peer to catch up to the current leader's last applied index. The line says which
