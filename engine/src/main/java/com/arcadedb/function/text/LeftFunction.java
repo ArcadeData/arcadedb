@@ -55,6 +55,6 @@ public class LeftFunction implements StatelessFunction {
       // Invalid user-supplied argument value: surface as a client error (HTTP 400), matching Neo4j/Memgraph.
       // CommandSemanticException extends CommandParsingException, which the HTTP handler maps to 400. See issue #5296.
       throw new CommandSemanticException("left(): negative length is not supported: " + length);
-    return str.substring(0, Math.min(length, str.length()));
+    return CypherFunctionHelper.leftCodePoints(str, length);
   }
 }
