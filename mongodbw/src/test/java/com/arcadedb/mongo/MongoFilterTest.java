@@ -23,6 +23,7 @@ import com.arcadedb.exception.TimeoutException;
 import de.bwaldvogel.mongo.bson.BsonRegularExpression;
 import de.bwaldvogel.mongo.bson.Document;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.List;
 import java.util.Map;
@@ -169,5 +170,18 @@ class MongoFilterTest {
     // (MongoDB matches a regex against strings only, the library also tests the string form of a number: a known leniency)
     assertThat(filter.matches(Map.<String, Object>of("n", "123"))).isTrue();
     assertThat(filter.matches(Map.<String, Object>of("n", List.of(5, "1x")))).isTrue();
+  }
+
+  /**
+   * The library compares an {@code $eq} / {@code $ne} / range operand by value and never searches it as a pattern, so a regular
+   * expression there cannot run unbounded. A library that started to do so would hang here, hence the generous timeout.
+   */
+  @Test
+  @Timeout(60)
+  void aRegexUnderEqualityAndRangeOperatorsIsNeverSearched() {
+    final BsonRegularExpression pathological = new BsonRegularExpression("(.*a){20}$");
+    final Map<String, Object> record = Map.of("s", "a".repeat(40) + "!");
+    for (final String operator : List.of("$eq", "$ne", "$gt", "$gte", "$lt", "$lte"))
+      new MongoFilter(null, new Document("s", new Document(operator, pathological))).matches(record);
   }
 }
