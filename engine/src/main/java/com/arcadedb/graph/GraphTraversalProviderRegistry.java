@@ -24,8 +24,8 @@ import com.arcadedb.database.TransactionContext;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.log.LogManager;
 
-import java.util.Collections;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.WeakHashMap;
@@ -184,7 +184,11 @@ public class GraphTraversalProviderRegistry {
    * restore can ask again once that restore has settled, instead of falling back to a record-by-record scan.
    * <p>
    * Only a provider that covers every requested edge type and every vertex type is considered: a view that cannot
-   * serve the request is neither waited for nor, by this method, touched. A provider that is merely rebuilding after
+   * serve the request is neither waited for nor, by this method, touched. The vertex-type requirement is the one the
+   * exact-match lookup applies. The whole-graph fallback in {@code AbstractAlgoProcedure#findReadyProvider} is looser
+   * and accepts a ready view on edge coverage alone, so a restoring view over a subset of the vertex types is not
+   * waited for here: that call answers from the records, which is complete, instead of waiting for a view that may
+   * only show part of the graph. A provider that is merely rebuilding after
    * a commit does not count as restoring. Every provider is waited for under one shared deadline, not one budget per
    * provider, and {@code abortCheck} runs at every poll so the caller's own command timeout and interrupt end the
    * wait (it is expected to throw to abort).
@@ -196,8 +200,9 @@ public class GraphTraversalProviderRegistry {
    * @param timeoutMs  the total time to wait, in milliseconds; zero or less does not wait
    * @param abortCheck called between polls; throws to abort the wait
    *
-   * @return true if at least one covering provider was restoring when the call started, so asking again is
-   * worthwhile; false if there was nothing to wait for
+   * @return true if at least one covering provider was restoring when the call started; false if there was nothing to
+   * wait for. Informational: a restore can end between the caller's first lookup and this call, so callers look
+   * again either way
    */
   public static boolean awaitRestoring(final Database database, final String[] edgeTypes, final long timeoutMs,
       final Runnable abortCheck) {

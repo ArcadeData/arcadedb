@@ -632,9 +632,11 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     if (awaitMs <= 0)
       return null;
     final WorkGuard guard = WorkGuard.forCommand(context, getName() + "()");
-    return GraphTraversalProviderRegistry.awaitRestoring(db, relTypes, awaitMs, guard::check) ?
-        findReadyProvider(db, relTypes) :
-        null;
+    GraphTraversalProviderRegistry.awaitRestoring(db, relTypes, awaitMs, guard::check);
+    // Ask again whatever the wait reported: the restore runs on another thread and can finish between the first lookup
+    // and the moment the wait samples it. It then has nothing to wait for, yet the view is ready, and answering null
+    // here would send this call down the record-by-record path anyway. The lookup is a few volatile reads.
+    return findReadyProvider(db, relTypes);
   }
 
   private GraphTraversalProvider findReadyProvider(final Database db, final String[] relTypes) {
