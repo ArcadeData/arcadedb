@@ -76,7 +76,11 @@ public class GeoUtils {
     if (point instanceof List<?> list) {
       if (list.size() < 2)
         throw new IllegalArgumentException("Invalid point element: " + point);
-      return new double[] { getDoubleValue(list.get(0)), getDoubleValue(list.get(1)) };
+      try {
+        return new double[] { getDoubleValue(list.get(0)), getDoubleValue(list.get(1)) };
+      } catch (final ClassCastException | IllegalArgumentException e) {
+        throw new IllegalArgumentException("Invalid point element: " + point, e);
+      }
     }
     if (point instanceof String || point instanceof Map<?, ?>) {
       final Shape shape;

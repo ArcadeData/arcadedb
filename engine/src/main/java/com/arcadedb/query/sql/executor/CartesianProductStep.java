@@ -28,7 +28,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.function.Function;
-import java.util.function.Supplier;
 
 /**
  * Combines the rows of the disjoint sub-patterns of a MATCH into their cartesian product, as a nested loop over the sub-plans.
@@ -377,20 +376,13 @@ public class CartesianProductStep extends AbstractExecutionStep {
   }
 
   public void addSubPlan(final InternalExecutionPlan subPlan) {
-    addSubPlan(subPlan, null);
+    addSubPlan(subPlan, null, null, null);
   }
 
   /**
-   * @param factory non-null when the sub-plan reads, through {@code $matched}, an alias bound by a sub-plan added before
-   *                it: it is then planned again through the factory and executed for every tuple of those, instead of
-   *                being buffered and replayed. The sub-plan given is the one EXPLAIN prints
-   */
-  public void addSubPlan(final InternalExecutionPlan subPlan, final Supplier<InternalExecutionPlan> factory) {
-    addSubPlan(subPlan, factory == null ? null : ctx -> factory.get(), null, null);
-  }
-
-  /**
-   * @param factory     non-null for a correlated level: plans the sub-pattern again, bound to the context it is given
+   * @param subPlan     the sub-plan EXPLAIN prints
+   * @param factory     non-null for a correlated level, one that reads through {@code $matched} an alias bound by a level
+   *                    before it: plans the sub-pattern again, bound to the context it is given, for every outer tuple
    * @param readAliases the aliases of the earlier levels the correlated level reads through {@code $matched} and no
    *                    others, or null when that cannot be told: the level is then given the whole outer tuple and
    *                    its rows are never remembered

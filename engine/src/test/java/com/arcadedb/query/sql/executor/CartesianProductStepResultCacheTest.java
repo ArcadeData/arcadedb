@@ -51,6 +51,7 @@ class CartesianProductStepResultCacheTest extends TestHelper {
     database.getSchema().createVertexType("MA");
     database.getSchema().createVertexType("MB");
     database.getSchema().createVertexType("MC");
+    database.getSchema().createEdgeType("MLink");
     database.transaction(() -> {
       for (int k = 1; k <= KEYS; k++) {
         database.command("sql", "create vertex MA set name = 'a" + k + "', k = " + k).close();
@@ -66,7 +67,7 @@ class CartesianProductStepResultCacheTest extends TestHelper {
       "MATCH {type: MB, as: b}, {type: MA, as: a}, {type: MC, as: c, where: (k = $matched.a.k)} RETURN a.name AS a, b.name AS b, c.name AS c";
 
   @Test
-  void levelRunsOncePerDistinctValueOfTheAliasItReads() {
+  void levelRunsOncePerDistinctRecordOfTheAliasItReads() {
     final ResultSet rs = database.query("sql", LEVEL_READS_ONE_ALIAS);
     final List<String> rows = drain(rs);
 
@@ -79,7 +80,7 @@ class CartesianProductStepResultCacheTest extends TestHelper {
     final CorrelatedSubQueryCache cache = levelCache(rs);
     assertThat(cache).as("result cache in use").isNotNull();
     assertThat(cache.isDisabled()).isFalse();
-    assertThat(cache.getMisses()).as("one execution per distinct a").isEqualTo(KEYS);
+    assertThat(cache.getMisses()).as("one execution per distinct record bound to a").isEqualTo(KEYS);
     assertThat(cache.getHits()).isEqualTo(KEYS * B_PER_RUN - KEYS);
     rs.close();
   }
@@ -143,6 +144,48 @@ class CartesianProductStepResultCacheTest extends TestHelper {
     drain(rs);
     assertThat(levelCache(rs)).isNull();
     rs.close();
+  }
+
+  @Test
+  void anIndexedMatchedReadGivesTheLevelTheWholeTuple() {
+    final ResultSet rs = database.query("sql",
+        "MATCH {type: MB, as: b}, {type: MA, as: a}, {type: MC, as: c, where: (k = $matched.a.k AND $matched['b'] IS NOT NULL)} "
+            + "RETURN a.name AS a, b.name AS b, c.name AS c");
+    assertThat(drain(rs)).hasSize(EXPECTED_TUPLES);
+    assertThat(levelCache(rs)).isNull();
+    rs.close();
+  }
+
+  @Test
+  void aNotPatternNextToARememberedLevel() {
+    final ResultSet rs = database.query("sql",
+        LEVEL_READS_ONE_ALIAS.replace(" RETURN", ", NOT {as: c}-MLink->{type: MA, where: (k = 99)} RETURN"));
+    final List<String> rows = drain(rs);
+    assertThat(rows).hasSize(EXPECTED_TUPLES);
+    assertThat(levelCache(rs)).isNotNull();
+    rs.close();
+  }
+
+  @Test
+  void sameRowsWithTheCacheOnAndOff() {
+    final List<String> cached = drain(database.query("sql", LEVEL_READS_ONE_ALIAS));
+    final int previous = GlobalConfiguration.SQL_LET_SUBQUERY_CACHE_SIZE.getValueAsInteger();
+    GlobalConfiguration.SQL_LET_SUBQUERY_CACHE_SIZE.setValue(0);
+    try {
+      final List<String> plain = drain(database.query("sql", LEVEL_READS_ONE_ALIAS));
+      assertThat(new TreeSet<>(cached)).isEqualTo(new TreeSet<>(plain));
+      assertThat(cached).hasSameSizeAs(plain);
+    } finally {
+      GlobalConfiguration.SQL_LET_SUBQUERY_CACHE_SIZE.setValue(previous);
+    }
+  }
+
+  @Test
+  void aLimitThatStopsTheProductMidLevelLeavesNothingStale() {
+    final ResultSet limited = database.query("sql", LEVEL_READS_ONE_ALIAS + " LIMIT 1");
+    assertThat(drain(limited)).hasSize(1);
+    limited.close();
+    assertThat(drain(database.query("sql", LEVEL_READS_ONE_ALIAS))).hasSize(EXPECTED_TUPLES);
   }
 
   @Test
