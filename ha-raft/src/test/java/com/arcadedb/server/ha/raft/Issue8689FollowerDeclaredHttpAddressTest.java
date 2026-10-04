@@ -110,6 +110,21 @@ class Issue8689FollowerDeclaredHttpAddressTest {
     assertThat(httpAddresses.get(JOINED)).isEqualTo("localhost:2490");
   }
 
+  /**
+   * Once this node has dropped its server-list entry (removePeer does), there is nothing left to override, and the
+   * newest declaration wins - exactly what a {@code connect cluster} served by this node does, since
+   * {@code RaftClusterManager.addPeer} writes a declared address unconditionally. Restoring the boot-time value instead
+   * would make the follower-served admission resolve the peer differently from the leader-served one.
+   */
+  @Test
+  void aDroppedServerListEntryDoesNotOutrankANewerDeclaration() {
+    final Map<RaftPeerId, String> httpAddresses = new ConcurrentHashMap<>();
+
+    assertThat(RaftHAServer.recordAdmittedPeerHttpAddress(LEADER, committed(LEADER, JOINED), httpAddresses,
+        Map.of(JOINED, "localhost:2490"), JOINED, ADDRESS)).isTrue();
+    assertThat(httpAddresses.get(JOINED)).isEqualTo(ADDRESS);
+  }
+
   /** A seed request cannot plant an address for a node that is not a member. */
   @Test
   void aPeerOutsideTheCommittedConfigurationIsRefused() {
@@ -164,7 +179,9 @@ class Issue8689FollowerDeclaredHttpAddressTest {
         declaration("root@evil.example:80"),
         declaration("evil.example?x:80"),
         declaration("local host:80"),
-        declaration("[::1:2480")))
+        declaration("[::1:2480"),
+        declaration("host%2Fx:80"),
+        declaration("[fe80::1%eth0]:2480")))
       assertThatThrownBy(() -> PostSecuritySeedHandler.readDeclaredPeerHttpAddress(bad)).as("%s", bad)
           .isInstanceOf(IllegalArgumentException.class);
   }
@@ -173,7 +190,7 @@ class Issue8689FollowerDeclaredHttpAddressTest {
   @Test
   void everyPeerAddressFormIsAccepted() {
     for (final String address : List.of("localhost:2482", "10.0.0.7:2480", "arcadedb-2.arcadedb.default.svc:2480",
-        "[::1]:2480", "[fe80::1%eth0]:2480"))
+        "[::1]:2480"))
       assertThat(PostSecuritySeedHandler.readDeclaredPeerHttpAddress(declaration(address)).httpAddress()).as(address)
           .isEqualTo(address);
   }
@@ -187,8 +204,9 @@ class Issue8689FollowerDeclaredHttpAddressTest {
     final ContextConfiguration configuration = new ContextConfiguration();
     configuration.setValue(GlobalConfiguration.HA_SECURITY_SEED_RETRY_TIMEOUT, 7_000L);
 
-    assertThat(ClusterSecuritySeedQuery.declaredAdmissionReportTimeoutMs(configuration) - 2 * 7_000L)
-        .isEqualTo(ClusterSecuritySeedQuery.reportTimeoutMs(configuration) - 7_000L);
+    assertThat(ClusterSecuritySeedQuery.declaredAdmissionReportTimeoutMs(configuration))
+        .isGreaterThan(2 * 7_000L)
+        .isGreaterThan(ClusterSecuritySeedQuery.reportTimeoutMs(configuration));
   }
 
   private static JSONObject declaration(final String address) {

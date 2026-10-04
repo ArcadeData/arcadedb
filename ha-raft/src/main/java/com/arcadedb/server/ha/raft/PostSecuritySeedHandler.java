@@ -305,10 +305,13 @@ public class PostSecuritySeedHandler extends AbstractServerHttpHandler {
     return new DeclaredPeerHttpAddress(peerId, address);
   }
 
-  /** A host name, an IPv4 or bracketed IPv6 literal with an optional zone, and the port separator. */
+  /**
+   * A host name, an IPv4 or bracketed IPv6 literal, and the port separator. No '%': an IPv6 zone id would have to be
+   * written {@code %25} to be a legal URI authority, and anywhere else it is a percent-escape the dial would decode.
+   */
   private static boolean isAddressCharacter(final char c) {
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '-'
-        || c == '_' || c == ':' || c == '[' || c == ']' || c == '%';
+        || c == '_' || c == ':' || c == '[' || c == ']';
   }
 
   /**
