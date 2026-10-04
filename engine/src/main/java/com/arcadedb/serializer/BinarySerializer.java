@@ -40,6 +40,7 @@ import com.arcadedb.database.Record;
 import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.ConfigurationException;
+import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.SerializationException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.EdgeSegment;
@@ -292,6 +293,9 @@ public class BinarySerializer {
         final String name = database.getSchema().getDictionary().getNameById(nameId);
         result.add(name);
       }
+    } catch (final DatabaseIsClosedException e) {
+      // A CLOSED DATABASE IS NOT A DAMAGED RECORD: LET THE CALLER SEE IT, AS db.query() DOES (SAME AT EVERY CATCH BELOW)
+      throw e;
     } catch (Exception e) {
       LogManager.instance().log(this, Level.WARNING, "Possible corrupted record %s, returning %d names read so far", e, rid,
           result.size());
@@ -376,6 +380,8 @@ public class BinarySerializer {
           }
 
           values.put(propertyName, propertyValue);
+        } catch (final DatabaseIsClosedException e) {
+          throw e;
         } catch (Exception e) {
           if (strict)
             throw new SerializationException("Property '" + propertyName + "' of record " + rid + " cannot be decoded: "
@@ -390,6 +396,8 @@ public class BinarySerializer {
           // ALL REQUESTED PROPERTIES ALREADY FOUND
           break;
       }
+    } catch (final DatabaseIsClosedException e) {
+      throw e;
     } catch (Exception e) {
       if (strict)
         throw e instanceof SerializationException serializationException ?
@@ -420,6 +428,8 @@ public class BinarySerializer {
           return true;
         buffer.getUnsignedNumber(); // contentPosition
       }
+    } catch (final DatabaseIsClosedException e) {
+      throw e;
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Possible corrupted record %s", e, rid);
     }
@@ -481,6 +491,8 @@ public class BinarySerializer {
 
         return deserializeValue(database, buffer, type, propertyModifier);
       }
+    } catch (final DatabaseIsClosedException e) {
+      throw e;
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Possible corrupted record %s", e, rid);
       return found ? null : absentValue;
