@@ -22,8 +22,8 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
-import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.database.RID;
+import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.StallAwareStopwatch;
@@ -184,7 +184,7 @@ class Issue9148_9053_9050_9049Test extends TestHelper {
           // any ArcadeDB exception is acceptable, a raw Error is not
         }
       }
-    }, "default-stack", 0);
+    }, "small-stack", 256 * 1024);
     final Throwable[] failure = new Throwable[1];
     t.setUncaughtExceptionHandler((th, e) -> failure[0] = e);
     t.start();
@@ -198,15 +198,6 @@ class Issue9148_9053_9050_9049Test extends TestHelper {
   }
 
   // ---- #9049
-
-  private void assertNotARawJdkException(final String sql) {
-    assertThatThrownBy(() -> {
-      try (final ResultSet rs = database.query("sql", sql)) {
-        while (rs.hasNext())
-          rs.next();
-      }
-    }).isInstanceOf(ArcadeDBException.class).satisfies(e -> assertThat(e.getMessage()).isNotNull());
-  }
 
   @Test
   void unknownSchemaMetadataIsAnArcadeDBException() {
@@ -234,16 +225,13 @@ class Issue9148_9053_9050_9049Test extends TestHelper {
   }
 
   @Test
-  void nestedLetIsAnArcadeDBException() {
+  void nestedLetDoesNotThrowRawUnsupportedOperation() {
     try (final ResultSet rs = database.query("sql", "SELECT $x LET $x = {\"a\": 1}")) {
       assertThat(rs.hasNext()).isTrue();
     }
-    // must not be the raw UnsupportedOperationException of Statement.refersToParent()
+    // used to be the raw UnsupportedOperationException of Statement.refersToParent()
     try (final ResultSet rs = database.query("sql", "SELECT $x LET $x = LET $x = {\"a\": 1}")) {
-      while (rs.hasNext())
-        rs.next();
-    } catch (final ArcadeDBException e) {
-      assertThat(e.getMessage()).isNotNull();
+      assertThat(rs.hasNext()).isTrue();
     }
   }
 
@@ -267,7 +255,8 @@ class Issue9148_9053_9050_9049Test extends TestHelper {
     database.transaction(() -> database.command("sql", "INSERT INTO T SET tags = ['a','b']").close());
     // pre-existing behaviour pinned: parses and runs without a raw exception
     try (final ResultSet rs = database.query("sql", "SELECT tags[#1:0, #1:1] AS x FROM T")) {
-      assertThat(rs.hasNext()).isTrue();
+      // the RIDs parse as plain expressions, so they are real selectors, not dropped ones (the dead rid branches)
+      assertThat(rs.next().<List<Object>>getProperty("x")).isNotEmpty().containsOnlyNulls();
     }
   }
 }
