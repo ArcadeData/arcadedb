@@ -122,4 +122,10 @@ class Issue9032InWithNullThroughIndexTest extends TestHelper {
     assertThat(ids("C", "x IN ? AND z > 3", Arrays.asList(1, null))).containsExactly(1);
     assertThat(ids("S", "x IN ? AND z > 3", Arrays.asList(1, null))).containsExactly(1);
   }
+
+  @Test
+  void inWithOnlyNullMatchesNothing() {
+    for (final String t : new String[] { "I", "C", "S" })
+      assertThat(ids(t, "x IN ?", Arrays.asList((Object) null))).as(t).isEmpty();
+  }
 }

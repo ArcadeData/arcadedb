@@ -18,6 +18,7 @@
  */
 package com.arcadedb.serializer.json;
 
+import com.arcadedb.utility.DateUtils;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.parallel.ResourceLock;
 import org.junit.jupiter.api.parallel.Resources;
@@ -47,6 +48,7 @@ class Issue9037JSONObjectLocalDateTimeZoneTest {
         TimeZone.setDefault(TimeZone.getTimeZone(zone));
         final JSONObject direct = new JSONObject().put("day", (Object) LocalDate.of(2024, 1, 2));
         assertThat(direct.getLong("day")).as(zone).isEqualTo(UTC_MIDNIGHT);
+        assertThat(DateUtils.millisToLocalDate(direct.getLong("day"))).as(zone).isEqualTo(LocalDate.of(2024, 1, 2));
 
         final JSONObject nested = new JSONObject().put("days", (Object) List.of(LocalDate.of(2024, 1, 2)));
         assertThat(nested.getJSONArray("days").getLong(0)).as(zone).isEqualTo(UTC_MIDNIGHT);
