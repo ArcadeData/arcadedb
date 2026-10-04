@@ -53,7 +53,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.UnaryOperator;
-import java.util.regex.Pattern;
 import java.util.logging.Level;
 
 public class RedisNetworkExecutor extends Thread {
@@ -519,7 +518,7 @@ public class RedisNetworkExecutor extends Thread {
       final List<String> variables = new ArrayList<>();
       for (int i = 2; i < list.size(); i++) {
         final String key = (String) list.get(i);
-        if (RID_PATTERN.matcher(key).matches())
+        if (isRid(key))
           rids.add(parseRid(key));
         else
           variables.add(key);
@@ -529,6 +528,7 @@ public class RedisNetworkExecutor extends Thread {
           for (final RID rid : rids)
             deleted[0] += deleteByRid(database, rid) ? 1 : 0;
         });
+      // the two phases are not one atomic unit: variable removal cannot fail, but it is not undone with the records
       for (final String variable : variables)
         // setGlobalVariable atomically returns the previous value
         if (database.setGlobalVariable(variable, null) != null)
@@ -546,7 +546,7 @@ public class RedisNetworkExecutor extends Thread {
         rids.add(parseRid(keyType));
         for (int i = 2; i < list.size(); i++) {
           final String key = (String) list.get(i);
-          if (RID_PATTERN.matcher(key).matches())
+          if (isRid(key))
             rids.add(parseRid(key));
         }
         database.transaction(() -> {
@@ -571,7 +571,16 @@ public class RedisNetworkExecutor extends Thread {
     value.append(deleted[0]);
   }
 
-  private static final Pattern RID_PATTERN = Pattern.compile("#-?\\d+:-?\\d+");
+  /** {@code #<bucket-id>:<position>}, both non-negative: the only shape of key HDEL reads as a record rather than a variable. */
+  private static boolean isRid(final String key) {
+    final int colon = key.indexOf(':');
+    if (colon < 2 || key.charAt(0) != '#' || colon == key.length() - 1)
+      return false;
+    for (int i = 1; i < key.length(); i++)
+      if (i != colon && (key.charAt(i) < '0' || key.charAt(i) > '9'))
+        return false;
+    return true;
+  }
 
   private static RID parseRid(final String text) {
     try {
