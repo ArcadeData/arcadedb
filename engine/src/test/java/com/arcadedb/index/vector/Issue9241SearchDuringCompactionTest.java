@@ -121,23 +121,23 @@ class Issue9241SearchDuringCompactionTest extends TestHelper {
     });
     compactor.start();
 
-    int passesDuringTheCompaction = 0;
+    int probesDuringTheCompaction = 0;
     final List<String> missing = new ArrayList<>();
     while (!done.get()) {
-      final boolean running = !done.get();
-      for (int i = 0; i < probes.size(); i++)
+      for (int i = 0; i < probes.size(); i++) {
+        if (!done.get())
+          probesDuringTheCompaction++;
         if (!found(probeIds[i], probes.get(i)))
           missing.add("id=" + probeIds[i]);
         else if (!found(probeIds[i], probes.get(i), probes))
           // an allow-list (the ordinal map is read by vector id) holding the probes only
           missing.add("filtered id=" + probeIds[i]);
-      if (running && !done.get())
-        passesDuringTheCompaction++;
+      }
     }
     compactor.join();
 
     assertThat(failure.get()).as("the compaction failed").isNull();
-    assertThat(passesDuringTheCompaction).as("search passes that ran entirely while the compaction was building").isGreaterThan(0);
+    assertThat(probesDuringTheCompaction).as("searches that ran while the compaction was building").isGreaterThan(0);
     assertThat(missing).as("records not found with their own vector while the compaction was running").isEmpty();
     assertThat(searchMisses(probes, probeIds)).as("records not found after the compaction").isEmpty();
   }

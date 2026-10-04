@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
 import org.junit.jupiter.api.Test;
@@ -28,6 +29,7 @@ import java.util.Collections;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #9237: {@code p IS NULL} answered through a UNIQUE or UNIQUE_HASH index with NULL_STRATEGY INDEX returned one of the
@@ -116,6 +118,21 @@ class Issue9237UniqueIsNullTest extends TestHelper {
           entries++;
         assertThat(entries).as(t[0] + " limit " + limit).isEqualTo(limit);
       }
+    }
+  }
+
+  @Test
+  void aDuplicateNonNullKeyIsStillRefusedNextToNullKeys() {
+    for (final String[] t : TYPES) {
+      if (t[1] == null || t[1].startsWith("NOTUNIQUE"))
+        continue;
+      assertThatThrownBy(() -> database.transaction(() -> {
+        database.newVertex(t[0]).set("id", 10).save();
+        database.newVertex(t[0]).set("id", 11, "p", 7).save();
+        database.newVertex(t[0]).set("id", 12, "p", 7).save();
+        database.newVertex(t[0]).set("id", 13).save();
+      })).as(t[0]).isInstanceOf(DuplicatedKeyException.class);
+      assertThat(ids("SELECT id FROM " + t[0] + " WHERE p IS NULL")).as(t[0]).containsExactly(2L, 3L, 4L);
     }
   }
 

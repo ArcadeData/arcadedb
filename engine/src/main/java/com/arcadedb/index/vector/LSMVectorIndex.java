@@ -2784,7 +2784,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
       if (ordinal < 0 || ordinal >= graphNodes || ordinal >= ordinalToVectorId.length)
         continue;
       final int vectorId = ordinalToVectorId[ordinal];
-      if (!alreadyQueued.contains(vectorId))
+      // -1: the vector is gone (a map translated by a compaction)
+      if (vectorId >= 0 && !alreadyQueued.contains(vectorId))
         candidates[count++] = vectorId;
     }
     return count == candidates.length ? candidates : Arrays.copyOf(candidates, count);
