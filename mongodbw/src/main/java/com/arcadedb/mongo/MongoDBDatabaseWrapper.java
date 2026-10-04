@@ -737,6 +737,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       database.getSchema().getOrCreateDocumentType(collectionName);
       final Object sample = hasId && id != null ? id : new ObjectId();
       // nothing to do when the index already holds this kind of key: no need to look for a match either
+      // for a key other than the _id this is a scan until an index can narrow it (issue #9162), and the update scans again
       if (MongoDBCollectionWrapper.idIndexSatisfies(database, collectionName, List.of(sample)) || matchesAny(collectionName, q, budget))
         continue;
 

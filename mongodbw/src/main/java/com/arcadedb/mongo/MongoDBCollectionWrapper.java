@@ -635,6 +635,7 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
   /**
    * The rows (or records) of an iterator that match a filter.
    */
+  // com.arcadedb.database.Document is spelled out in full: its simple name is the one of the MongoDB Document imported in this class
   private static final class FilteredIterator implements Iterator<Object> {
     private final Iterator<?> rows;
     private final MongoFilter filter;
