@@ -117,7 +117,7 @@ final class MongoFilter {
   }
 
   boolean matches(final com.arcadedb.database.Document record) {
-    return sql || matches(record.toMap());
+    return sql || matches(record.toMap(false));
   }
 
   boolean matchesRow(final Result result) {
@@ -143,7 +143,7 @@ final class MongoFilter {
     } else {
       for (final Iterator<Record> it = database.iterateType(collectionName, false); it.hasNext(); ) {
         final Record record = it.next();
-        if (record instanceof com.arcadedb.database.Document document && matches(document.toMap())) {
+        if (record instanceof com.arcadedb.database.Document document && matches(document.toMap(false))) {
           rids.add(record.getIdentity());
           if (limit > 0 && rids.size() >= limit)
             break;
