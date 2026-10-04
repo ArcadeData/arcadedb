@@ -87,7 +87,7 @@ public final class FakeLeader implements AutoCloseable {
   private final    CountDownLatch answered                 = new CountDownLatch(1);
   private final    CountDownLatch connectionClosedByClient = new CountDownLatch(1);
   private volatile boolean        closing;
-  private volatile RuntimeException scriptFailure;
+  private volatile Throwable      scriptFailure;
 
   private FakeLeader(final Mode mode, final Script script) throws IOException {
     this.mode = mode;
@@ -153,13 +153,13 @@ public final class FakeLeader implements AutoCloseable {
 
   /**
    * {@link Mode#SCRIPTED} only: whether the script had written its answer within the bound. A script that threw a
-   * runtime exception fails this call with that exception as the cause, rather than reading as a plain timeout.
+   * runtime exception or failed an assertion fails this call with that exception as the cause, rather than reading as a plain timeout.
    */
   public boolean awaitAnswered(final long timeout, final TimeUnit unit) throws InterruptedException {
     requireMode("awaitAnswered", Mode.SCRIPTED);
     if (!answered.await(timeout, unit))
       return false;
-    final RuntimeException failure = scriptFailure;
+    final Throwable failure = scriptFailure;
     if (failure != null)
       throw new IllegalStateException("the leader's script threw instead of answering", failure);
     return true;
@@ -189,13 +189,20 @@ public final class FakeLeader implements AutoCloseable {
       socket = accepted.getFirst();
     }
     // setSoTimeout(0) would block forever: a bound of zero or less is the shortest wait instead
+    // SO_TIMEOUT bounds each read, not the loop: a client that keeps sending would otherwise extend the wait forever
+    final long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(Math.max(1L, boundMs));
     final byte[] drain = new byte[4096];
     try {
-      socket.setSoTimeout((int) Math.max(1L, Math.min(boundMs, Integer.MAX_VALUE)));
-      while (socket.getInputStream().read(drain) != -1) {
+      while (true) {
+        final long remainingMs = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime());
+        if (remainingMs <= 0)
+          return false;
+        // setSoTimeout(0) would block forever, so the remaining time never goes below 1ms
+        socket.setSoTimeout((int) Math.min(remainingMs, Integer.MAX_VALUE));
+        if (socket.getInputStream().read(drain) == -1)
+          return !closing;
         // discard: only the end of the stream answers the question
       }
-      return !closing;
     } catch (final SocketTimeoutException e) {
       return false;
     } catch (final SocketException e) {
@@ -260,7 +267,7 @@ public final class FakeLeader implements AutoCloseable {
     } catch (final IOException e) {
       // a reset, or the client closing before its request was complete: either way the client let go of it, unless
       // this is the leader's own teardown, which the check below tells apart
-    } catch (final RuntimeException e) {
+    } catch (final RuntimeException | AssertionError e) {
       // a broken script: surfaced by awaitAnswered() instead of dying silently with this thread
       scriptFailure = e;
       answered.countDown();

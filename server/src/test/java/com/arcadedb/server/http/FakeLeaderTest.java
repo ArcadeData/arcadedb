@@ -183,6 +183,48 @@ class FakeLeaderTest {
   }
 
   @Test
+  void aScriptAssertionFailureIsReportedRatherThanReadAsATimeout() throws Exception {
+    try (final FakeLeader leader = FakeLeader.scripted(out -> assertThat(out).as("failing script assertion").isNull());
+        final Socket client = connect(leader)) {
+      client.getOutputStream().write(REQUEST);
+      assertThatThrownBy(() -> leader.awaitAnswered(30, TimeUnit.SECONDS)).isInstanceOf(IllegalStateException.class)
+          .hasRootCauseInstanceOf(AssertionError.class);
+    }
+  }
+
+  @Test
+  void theClientCloseWaitIsBoundedEvenWhileTheClientKeepsSending() throws Exception {
+    try (final FakeLeader leader = FakeLeader.silent(); final Socket client = connect(leader)) {
+      assertThat(leader.awaitFirstConnection(5, TimeUnit.SECONDS)).isTrue();
+      final Thread sender = new Thread(() -> {
+        try {
+          while (!Thread.currentThread().isInterrupted()) {
+            client.getOutputStream().write('x');
+            Thread.sleep(50);
+          }
+        } catch (final IOException | InterruptedException ignored) {
+          // the test is over
+        }
+      });
+      sender.setDaemon(true);
+      sender.start();
+      try {
+        // per-read SO_TIMEOUT alone would never expire here: a byte arrives every 50ms
+        final CompletableFuture<Boolean> closed = CompletableFuture.supplyAsync(() -> {
+          try {
+            return leader.firstConnectionClosedByClientWithin(500L);
+          } catch (final IOException e) {
+            throw new UncheckedIOException(e);
+          }
+        });
+        assertThat(closed.get(30, TimeUnit.SECONDS)).isFalse();
+      } finally {
+        sender.interrupt();
+      }
+    }
+  }
+
+  @Test
   void aSilentLeaderDoesNotReportItsOwnTeardownAsTheClientClosing() throws Exception {
     final FakeLeader leader = FakeLeader.silent();
     try (final Socket ignored = connect(leader)) {
