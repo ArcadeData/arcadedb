@@ -19,6 +19,7 @@
 package com.arcadedb.database;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
@@ -32,6 +33,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 
 /**
  * Validates documents against constraints defined in the schema.
@@ -131,6 +133,181 @@ public class DocumentValidator {
   }
 
   /**
+   * The value constraints a stored record is checked against when a constraint is about to be declared over existing
+   * records (#9112). Only the constraints being added are set, so an {@code ALTER PROPERTY ... MAX} asks nothing about
+   * the others.
+   *
+   * @param checkType whether the stored value has to be readable as the property's declared type
+   * @param min       lower bound, or null
+   * @param max       upper bound, or null
+   * @param regexp    pattern the value has to match, or null
+   */
+  public record StoredValueConstraints(boolean checkType, String min, String max, String regexp, Pattern pattern,
+                                       long regexTimeoutMs) {
+    /**
+     * Compiles the pattern once, so the scan over a whole type does not compile it per record, and refuses an invalid one
+     * up front rather than only when the first record is read.
+     */
+    public static StoredValueConstraints of(final Database database, final boolean checkType, final String min,
+        final String max, final String regexp) {
+      final Pattern pattern;
+      try {
+        pattern = regexp != null ? Pattern.compile(regexp) : null;
+      } catch (final PatternSyntaxException e) {
+        throw new CommandExecutionException("Invalid regular expression '" + regexp + "': " + e.getMessage(), e);
+      }
+      // read once per scan, not per record
+      return new StoredValueConstraints(checkType, min, max, regexp, pattern,
+          regexp != null ? GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(database) : 0L);
+    }
+
+    public static StoredValueConstraints of(final Database database, final Property p) {
+      return of(database, true, p.getMin(), p.getMax(), p.getRegexp());
+    }
+
+    /**
+     * @return false when no stored value can violate these constraints on a property of this type, so a scan would read
+     * every record for nothing
+     */
+    public boolean canBeViolatedOn(final Property p) {
+      final Type type = p.getType();
+      return checkType && (isScalarType(type) || (type == Type.LIST || type == Type.MAP) && p.getOfType() != null) || min != null || max != null || regexp != null;
+    }
+  }
+
+  /**
+   * Checks the value a record ALREADY HOLDS for a property against constraints that are about to be declared, and throws
+   * a {@link ValidationException} naming the property and the value when it does not satisfy them (#9112). The value is
+   * first read the way the write path would read it, so the string {@code '12'} stored before an INTEGER declaration is
+   * a legal INTEGER, while {@code 'abc'} or {@code true} is not.
+   * <p>
+   * Existence (MANDATORY / NOTNULL) is not part of this: it has its own rule, {@link #unmetExistenceConstraint}.
+   * Structural checks of collections and embedded documents are not part of it either - the write path converts those
+   * rather than refusing them, so a stored shape that predates the declaration is not necessarily wrong.
+   */
+  public static void validateStoredValue(final Document document, final Property p, final StoredValueConstraints constraints) {
+    final Object stored = document.get(p.getName());
+    if (stored == null)
+      return;
+
+    final Type type = p.getType();
+    Object value = stored;
+    if (isScalarType(type)) {
+      final Database database = document.getDatabase();
+      final Class<?> target = type.getJavaImplementation(database);
+      Object converted;
+      try {
+        converted = Type.convert(database, stored, target, p);
+      } catch (final RuntimeException e) {
+        converted = null;
+      }
+      final boolean readable = converted != null && (target.isInstance(converted) || type.isDateOrDateTime() && Type.isDateValue(
+          converted));
+      if (!readable) {
+        if (constraints.checkType())
+          throwValidationException(document.getType(), p,
+              "is declared as " + type + " but a stored value cannot be read as such: " + stored);
+        return;
+      }
+      if (converted instanceof Number narrowed && stored instanceof Number original && isIntegralType(type)
+          && !sameIntegralValue(original, narrowed)) {
+        // a LONG over an INTEGER declaration, or 3.7 over a SHORT, would be silently truncated: not the same value
+        if (constraints.checkType())
+          throwValidationException(document.getType(), p,
+              "is declared as " + type + " but a stored value does not fit it without loss: " + stored);
+        return;
+      }
+      value = converted;
+    }
+
+    if (constraints.checkType() && (type == Type.LIST || type == Type.MAP) && p.getOfType() != null) {
+      // the elements are read the way the write path reads them (a LIST OF LONG holds the Integer 5 as a Long), then held
+      // to the declared element type
+      final Database database = document.getDatabase();
+      Object coerced;
+      try {
+        coerced = Type.convert(database, stored, type.getJavaImplementation(database), p);
+      } catch (final RuntimeException e) {
+        coerced = null;
+      }
+      if (coerced == null)
+        throwValidationException(document.getType(), p, "is declared as " + type + " but a stored value cannot be read as such: "
+            + stored);
+      validateEmbeddedValues(document, p, type, coerced);
+      value = coerced;
+    }
+
+    if (constraints.pattern() != null && !TimeBoundRegex.matchesUntil(constraints.pattern(), value.toString(),
+        TimeBoundRegex.newDeadline(constraints.regexTimeoutMs())))
+      throwValidationException(document.getType(), p,
+          "does not match the regular expression '" + constraints.regexp() + "'. Field value is: " + stored);
+
+    if (constraints.min() != null)
+      validateMinValue(document, p, value, constraints.min());
+
+    if (constraints.max() != null)
+      validateMaxValue(document, p, value, constraints.max());
+  }
+
+  /** NaN and the infinities have no integral value at all, so they never survive a narrowing */
+  private static boolean sameIntegralValue(final Number original, final Number narrowed) {
+    if ((original instanceof Byte || original instanceof Short || original instanceof Integer || original instanceof Long)
+        && (narrowed instanceof Byte || narrowed instanceof Short || narrowed instanceof Integer || narrowed instanceof Long))
+      // the common case, and an allocation-free one
+      return original.longValue() == narrowed.longValue();
+
+    final double asDouble = original.doubleValue();
+    if (Double.isNaN(asDouble) || Double.isInfinite(asDouble))
+      return false;
+    return new BigDecimal(original.toString()).compareTo(new BigDecimal(narrowed.toString())) == 0;
+  }
+
+  private static boolean isIntegralType(final Type type) {
+    return type == Type.BYTE || type == Type.SHORT || type == Type.INTEGER || type == Type.LONG;
+  }
+
+  /**
+   * Refuses a MIN or MAX bound that cannot be read as the property's type, up front, so it is refused over an empty type
+   * too instead of failing every later write.
+   */
+  public static void requireReadableBound(final Database database, final DocumentType owner, final Property p, final String bound, final String side) {
+    final Type type = p.getType();
+    if (bound == null)
+      return;
+    if (type == Type.STRING || type == Type.BINARY || type == Type.LIST || type == Type.MAP) {
+      // a length, a size: parsed as an int by the write path
+      try {
+        Integer.parseInt(bound);
+      } catch (final NumberFormatException e) {
+        throw new CommandExecutionException("The " + side + " '" + bound + "' of property '" + owner.getName() + "." + p.getName()
+            + "' cannot be read as a number of " + (type == Type.STRING ? "characters" : type == Type.BINARY ? "bytes" : "items"), e);
+      }
+      return;
+    }
+    if (!isScalarType(type))
+      return;
+    Object converted;
+    Throwable cause = null;
+    try {
+      converted = Type.convert(database, bound, type.getJavaImplementation(database), p);
+    } catch (final RuntimeException e) {
+      converted = null;
+      cause = e;
+    }
+    if (converted == null)
+      throw new CommandExecutionException("The " + side + " '" + bound + "' of property '" + owner.getName() + "." + p.getName()
+          + "' cannot be read as " + type, cause);
+  }
+
+  private static boolean isScalarType(final Type type) {
+    return switch (type) {
+      case BOOLEAN, BYTE, SHORT, INTEGER, LONG, FLOAT, DOUBLE, DECIMAL, DATE, DATETIME, DATETIME_SECOND, DATETIME_MICROS,
+           DATETIME_NANOS -> true;
+      default -> false;
+    };
+  }
+
+  /**
    * The properties of a type that carry an existence constraint at all - the only ones
    * {@link #unmetExistenceConstraint} can answer anything but null for - polymorphic properties included.
    * <p>
@@ -213,11 +390,11 @@ public class DocumentValidator {
       }
 
       if (p.getMin() != null) {
-        validateMinValue(document, p, fieldValue);
+        validateMinValue(document, p, fieldValue, p.getMin());
       }
 
       if (p.getMax() != null) {
-        validateMaxValue(document, p, fieldValue);
+        validateMaxValue(document, p, fieldValue, p.getMax());
       }
     }
 
@@ -237,9 +414,8 @@ public class DocumentValidator {
     return deferred;
   }
 
-  private static void validateMaxValue(MutableDocument document, Property p, Object fieldValue) {
+  private static void validateMaxValue(final Document document, final Property p, final Object fieldValue, final String max) {
     // CHECK MAX VALUE
-    final String max = p.getMax();
     final Type type = p.getType();
     switch (type) {
     case LONG -> {
@@ -311,9 +487,8 @@ public class DocumentValidator {
     }
   }
 
-  private static void validateMinValue(MutableDocument document, Property p, Object fieldValue) {
+  private static void validateMinValue(final Document document, final Property p, final Object fieldValue, final String min) {
     // CHECK MIN VALUE
-    final String min = p.getMin();
     final ValidationResult result = switch (p.getType()) {
       case LONG -> {
         final long minAsLong = Long.parseLong(min);
@@ -402,7 +577,8 @@ public class DocumentValidator {
   private record ValidationResult(boolean hasError, String message) {
   }
 
-  private static void validateEmbeddedValues(MutableDocument document, Property p, Type propertyType, Object fieldValue) {
+  private static void validateEmbeddedValues(final Document document, final Property p, final Type propertyType,
+      final Object fieldValue) {
     final String ofType = p.getOfType();
 
     // CHECK EMBEDDED VALUES
@@ -448,27 +624,7 @@ public class DocumentValidator {
       final Type embType = ofType != null ? Type.getTypeByName(ofType) : null;
 
       for (final Object item : ((List<?>) fieldValue)) {
-        if (ofType != null) {
-          if (embType != null) {
-            if (Type.getTypeByValue(item) != embType)
-              throwValidationException(document.getType(), p,
-                  "has been declared as LIST of '" + ofType + "' but a value of type '" + Type.getTypeByValue(item)
-                      + "' is used. Value: " + fieldValue);
-          } else if (item instanceof EmbeddedDocument embeddedDocument) {
-            if (!embeddedDocument.getType().instanceOf(ofType))
-              throwValidationException(document.getType(), p,
-                  "has been declared as LIST of '" + ofType + "' but an embedded document of type '"
-                      + embeddedDocument.getType().getName() + "' is used. Value: " + fieldValue);
-          } else if (item instanceof Identifiable identifiable) {
-            final RID rid = identifiable.getIdentity();
-            final DocumentType embSchemaType = document.getDatabase().getSchema().getTypeByBucketId(rid.getBucketId());
-            if (!embSchemaType.instanceOf(ofType))
-              throwValidationException(document.getType(), p,
-                  "has been declared as LIST of '" + ofType + "' but a link to type '" + embSchemaType.getName()
-                      + "' is used. Value: "
-                      + fieldValue);
-          }
-        }
+        validateCollectionElement(document, p, ofType, embType, item, false, fieldValue);
 
         if (item instanceof MutableEmbeddedDocument embeddedDocument)
           embeddedDocument.validate();
@@ -484,26 +640,7 @@ public class DocumentValidator {
       final Type embType = ofType != null ? Type.getTypeByName(ofType) : null;
 
       for (final Object item : ((Map<?, ?>) fieldValue).values()) {
-        if (ofType != null) {
-          if (embType != null) {
-            if (Type.getTypeByValue(item) != embType)
-              throwValidationException(document.getType(), p,
-                  "has been declared as a MAP of <String,'" + ofType + "'> but a value of type '" + Type.getTypeByValue(item)
-                      + "' is used. Value: " + fieldValue);
-          } else if (item instanceof EmbeddedDocument embeddedDocument) {
-            if (!embeddedDocument.getType().instanceOf(ofType))
-              throwValidationException(document.getType(), p,
-                  "has been declared as a MAP of <String," + ofType + "> but an embedded document of type '"
-                      + embeddedDocument.getType().getName() + "' is used. Value: " + fieldValue);
-          } else if (item instanceof Identifiable identifiable) {
-            final RID rid = identifiable.getIdentity();
-            final DocumentType embSchemaType = document.getDatabase().getSchema().getTypeByBucketId(rid.getBucketId());
-            if (!embSchemaType.instanceOf(ofType))
-              throwValidationException(document.getType(), p,
-                  "has been declared as a MAP of <String," + ofType + "> but a link to type '" + embSchemaType.getName()
-                      + "' is used. Value: " + fieldValue);
-          }
-        }
+        validateCollectionElement(document, p, ofType, embType, item, true, fieldValue);
 
         if (item instanceof MutableEmbeddedDocument embeddedDocument)
           embeddedDocument.validate();
@@ -511,6 +648,48 @@ public class DocumentValidator {
     }
     break;
     }
+  }
+
+  private static String declaredAs(final boolean isMap, final String ofType) {
+    return isMap ? "a MAP of <String,'" + ofType + "'>" : "LIST of '" + ofType + "'";
+  }
+
+  /**
+   * Checks one element of a {@code LIST OF} / {@code MAP OF} property against the declared {@code ofType}.
+   * <p>
+   * A scalar {@code ofType} accepts the Java types the schema coerces to it; for the date family that is any date value,
+   * because {@code Type.getTypeByValue()} only answers DATETIME for them and could never match DATE or a precision type
+   * (#9111). A document {@code ofType} accepts an embedded document of that type or a link to a record of it, and
+   * refuses everything else: a map has already been turned into an embedded document by the write path, so a value that
+   * is still a plain scalar or map here is not one (#9111).
+   */
+  private static void validateCollectionElement(final Document document, final Property p, final String ofType,
+      final Type embType, final Object item, final boolean isMap, final Object fieldValue) {
+    if (ofType == null || (item == null && embType == null))
+      return;
+
+    if (embType != null) {
+      if (Type.getTypeByValue(item) != embType && !(embType.isDateOrDateTime() && Type.isDateValue(item)))
+        throwValidationException(document.getType(), p,
+            "has been declared as " + declaredAs(isMap, ofType) + " but a value of type '" + Type.getTypeByValue(item) + "' is used. Value: "
+                + fieldValue);
+    } else if (item instanceof EmbeddedDocument embeddedDocument) {
+      if (!embeddedDocument.getType().instanceOf(ofType))
+        throwValidationException(document.getType(), p,
+            "has been declared as " + declaredAs(isMap, ofType) + " but an embedded document of type '" + embeddedDocument.getType().getName()
+                + "' is used. Value: " + fieldValue);
+    } else if (item instanceof Identifiable identifiable) {
+      final RID rid = identifiable.getIdentity();
+      final DocumentType embSchemaType = document.getDatabase().getSchema().getTypeByBucketId(rid.getBucketId());
+      if (!embSchemaType.instanceOf(ofType))
+        throwValidationException(document.getType(), p,
+            "has been declared as " + declaredAs(isMap, ofType) + " but a link to type '" + embSchemaType.getName() + "' is used. Value: "
+                + fieldValue);
+    } else if (!(item instanceof String link && RID.is(link)))
+      // a link written as a "#bucket:position" string is what JSON and HTTP clients send, and has always been accepted
+      throwValidationException(document.getType(), p,
+          "has been declared as " + declaredAs(isMap, ofType) + " but a value that is not a document of that type is used (" + item.getClass()
+              .getSimpleName() + "). Value: " + fieldValue);
   }
 
   /**

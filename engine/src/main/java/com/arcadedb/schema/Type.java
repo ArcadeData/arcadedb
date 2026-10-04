@@ -513,29 +513,50 @@ public enum Type {
       // The "ofType" refers to an embedded document type, not a scalar: nothing to coerce here.
       return null;
 
-    final Class<?> ofClass = ofType.getDefaultJavaType();
+    // getJavaImplementation, not the default: a LIST OF DATE / DATETIME holds what the database materialises those as (#9111)
+    final Class<?> ofClass = ofType.getJavaImplementation(database);
 
     if (value instanceof Map<?, ?> sourceMap && Map.class.isAssignableFrom(targetClass)) {
       final Map<Object, Object> result = new LinkedHashMap<>(sourceMap.size());
       for (final Map.Entry<?, ?> entry : sourceMap.entrySet())
-        result.put(entry.getKey(), coerceScalarItem(database, entry.getValue(), ofClass));
+        result.put(entry.getKey(), coerceScalarItem(database, entry.getValue(), ofClass, ofType));
       return result;
     } else if (value instanceof Collection<?> sourceCollection && List.class.isAssignableFrom(targetClass)) {
       final List<Object> result = new ArrayList<>(sourceCollection.size());
       for (final Object item : sourceCollection)
-        result.add(coerceScalarItem(database, item, ofClass));
+        result.add(coerceScalarItem(database, item, ofClass, ofType));
       return result;
     }
 
     return null;
   }
 
-  private static Object coerceScalarItem(final Database database, final Object item, final Class<?> ofClass) {
+  /**
+   * @return true for the values a DATE or DATETIME property accepts as a date: {@link Date}, {@link Calendar} and the
+   * {@code java.time} instant/date types (#9111)
+   */
+  public static boolean isDateValue(final Object value) {
+    return value instanceof Date || value instanceof Calendar || value instanceof LocalDate || value instanceof LocalDateTime
+        || value instanceof ZonedDateTime || value instanceof OffsetDateTime || value instanceof Instant;
+  }
+
+  /**
+   * @return true for DATE and every DATETIME precision
+   */
+  public boolean isDateOrDateTime() {
+    return this == DATE || this == DATETIME || this == DATETIME_SECOND || this == DATETIME_MICROS || this == DATETIME_NANOS;
+  }
+
+  private static Object coerceScalarItem(final Database database, final Object item, final Class<?> ofClass,
+      final Type ofType) {
     if (item == null)
       return null;
 
     // Only coerce plain scalar values; leave nested documents/collections/links to the validation layer.
-    if (item instanceof Number || item instanceof Boolean || item instanceof CharSequence || item instanceof Character)
+    if (item instanceof Number || item instanceof Boolean || item instanceof CharSequence || item instanceof Character
+        // a date value is only coerced towards a date type: in a LIST OF STRING / INTEGER it stays what it is, for the
+        // validator to refuse (#9111)
+        || ofType.isDateOrDateTime() && isDateValue(item))
       return convert(database, item, ofClass, null);
 
     return item;
