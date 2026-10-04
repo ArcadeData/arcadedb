@@ -509,7 +509,7 @@ public class RedisNetworkExecutor extends Thread {
 
     // HDEL <db>.<rid> may stand alone (the record is named by the bucket); every other form needs at least one key, and the
     // table can only express the lower bound of 2
-    if (list.size() < 3 && (pos < 0 || bucketName.charAt(pos + 1) != '#'))
+    if (list.size() < 3 && (pos < 0 || !bucketName.startsWith("#", pos + 1)))
       throw wrongArity("HDEL");
 
     if (pos < 0) {
