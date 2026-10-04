@@ -24,7 +24,6 @@ import com.arcadedb.query.sql.parser.Statement;
 import com.arcadedb.query.sql.parser.Timeout;
 import com.arcadedb.query.sql.parser.WhereClause;
 
-
 /**
  * Plan-cache key of the read side of an UPDATE or DELETE (the synthetic {@code SELECT FROM <target> WHERE <where>}), built
  * once per parsed statement. The statement itself comes from the statement cache, so the deep copy and the text rendering

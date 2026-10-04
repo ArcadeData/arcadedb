@@ -137,6 +137,22 @@ class Issue9237UniqueIsNullTest extends TestHelper {
   }
 
   @Test
+  void compositeUniqueKeysAllNullAreExemptAndPartiallyNullAreStillEnforced() {
+    database.command("sql", "CREATE VERTEX TYPE Pair");
+    database.command("sql", "CREATE PROPERTY Pair.a INTEGER");
+    database.command("sql", "CREATE PROPERTY Pair.b INTEGER");
+    database.command("sql", "CREATE INDEX ON Pair (a, b) UNIQUE NULL_STRATEGY INDEX");
+    database.transaction(() -> {
+      database.newVertex("Pair").save();
+      database.newVertex("Pair").save();
+      database.newVertex("Pair").set("a", 1).save();
+    });
+    assertThat(ids("SELECT count(*) AS id FROM Pair WHERE a IS NULL AND b IS NULL")).containsExactly(2L);
+    assertThatThrownBy(() -> database.transaction(() -> database.newVertex("Pair").set("a", 1).save()))
+        .isInstanceOf(DuplicatedKeyException.class);
+  }
+
+  @Test
   void isNullAfterAReopen() {
     reopenDatabase();
     for (final String[] t : TYPES)
