@@ -3051,7 +3051,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       if (ctx.identifier() != null) {
         item.leftIdentifier = (Identifier) visit(ctx.identifier());
       } else if (ctx.MAXDEPTH() != null) {
-        item.leftIdentifier = new Identifier(ctx.MAXDEPTH().getText());
+        // the keyword is case-insensitive but the option consumers look the key up as spelled: normalise it
+        item.leftIdentifier = new Identifier("maxDepth");
       } else if (ctx.STRING_LITERAL() != null) {
         // Remove quotes from string literal
         String str = ctx.STRING_LITERAL().getText();
