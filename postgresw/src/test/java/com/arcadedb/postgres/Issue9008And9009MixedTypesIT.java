@@ -78,6 +78,34 @@ class Issue9008And9009MixedTypesIT extends PostgresWireProtocolTestBase {
     verifyRows("prepareThreshold=-1", new int[] { 1, 2, 3 });
   }
 
+  @Test
+  void aProjectionOfAnUndeclaredPropertyKeepsOneLayoutToo() throws Exception {
+    for (final String options : new String[] { "", "prepareThreshold=-1" }) {
+      try (final Connection connection = openJdbcConnection(options)) {
+        final Database database = getServerDatabase(0, getDatabaseName());
+        database.transaction(() -> {
+          if (!database.getSchema().existsType("Projected9009")) {
+            database.getSchema().createDocumentType("Projected9009").createProperty("id", Type.INTEGER);
+            database.newDocument("Projected9009").set("id", 1).set("u", 1).save();
+            database.newDocument("Projected9009").set("id", 2).set("u", 3000000000L).save();
+            database.newDocument("Projected9009").set("id", 3).set("u", 1.5).save();
+          }
+        });
+        final int[] ids = options.isEmpty() ? new int[] { 1, 1, 1, 1, 1, 2, 3, 1 } : new int[] { 1, 2, 3 };
+        try (final PreparedStatement select = connection.prepareStatement("SELECT u FROM Projected9009 WHERE id = ?")) {
+          for (final int id : ids) {
+            select.setInt(1, id);
+            try (final ResultSet resultSet = select.executeQuery()) {
+              assertThat(resultSet.next()).isTrue();
+              assertThat(resultSet.getString("u")).as("u of id " + id + " with " + options)
+                  .isEqualTo(switch (id) { case 1 -> "1"; case 2 -> "3000000000"; default -> "1.5"; });
+            }
+          }
+        }
+      }
+    }
+  }
+
   private void verifyRows(final String options, final int[] ids) throws Exception {
     try (final Connection connection = openJdbcConnection(options); final Statement statement = connection.createStatement()) {
       final Database database = getServerDatabase(0, getDatabaseName());
