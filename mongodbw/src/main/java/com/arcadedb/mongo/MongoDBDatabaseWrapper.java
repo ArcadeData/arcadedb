@@ -603,7 +603,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
           final Number limit = (Number) del.get("limit");
           final boolean single = limit != null && limit.intValue() == 1;
 
-          final MongoFilter filter = new MongoFilter(q, budget, database);
+          final MongoFilter filter = new MongoFilter(database, q, budget);
           if (filter.isSql()) {
             final Map<String, Object> params = new HashMap<>();
             final StringBuilder sql = new StringBuilder("DELETE FROM ").append(Identifier.quote(collectionName));
@@ -741,7 +741,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * Advisory: it only decides whether to touch the index ahead of the transaction, the match can change before it starts.
    */
   private boolean matchesAny(final String collectionName, final Document q, final MongoFilter.RegexBudget budget) {
-    return !new MongoFilter(q, budget, database).select(database, collectionName, 1).isEmpty();
+    return !new MongoFilter(database, q, budget).select(database, collectionName, 1).isEmpty();
   }
 
   private int executeUpdate(final String collectionName, final Document q, final Document u, final boolean multi,
@@ -751,7 +751,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
     // A replacement must keep the stored _id and $set on a dotted path must reach into the embedded document: neither can be
     // expressed as a single SQL UPDATE, so those are applied to each matching record. Everything else stays one SQL UPDATE.
-    final MongoFilter filter = new MongoFilter(q, budget, database);
+    final MongoFilter filter = new MongoFilter(database, q, budget);
     // a filter the SQL cannot answer exactly (see MongoFilter) also selects the records itself
     if (isReplacement(u) || setsDottedPath(u) || touchesId(u) || !filter.isSql())
       return executeUpdateOnRecords(collectionName, filter, u, multi);
