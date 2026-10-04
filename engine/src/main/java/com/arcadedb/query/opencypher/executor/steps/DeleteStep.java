@@ -85,7 +85,9 @@ public class DeleteStep extends AbstractExecutionStep {
   /**
    * True while the transaction this step opened itself (no outer one) is kept open across rows, because a vertex is
    * pending: the rows deleting its relationships and the final check are one unit, so a vertex still connected at the
-   * end rolls them all back instead of leaving the relationships deleted (#8997).
+   * end rolls them all back instead of leaving the relationships deleted (#8997). Rows processed before the first pending
+   * vertex are committed one by one, as before. Every exit from {@code fetchMore} while this is true either commits at the
+   * end of the statement or leaves the rollback to {@code close()}.
    */
   private boolean holdingTransaction = false;
 
@@ -632,6 +634,7 @@ public class DeleteStep extends AbstractExecutionStep {
           // already deleted
           continue;
         }
+        // records equal by RID (see BaseRecord.equals), so a freshly loaded vertex matches the ones stored earlier
         if (deleted.contains(current))
           continue;
         deleted.add(current);
