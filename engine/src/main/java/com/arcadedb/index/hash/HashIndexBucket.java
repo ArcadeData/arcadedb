@@ -48,20 +48,39 @@ import java.util.logging.Level;
  * <pre>
  *   Page 0:   Metadata page (global depth, key types, bucket/directory start pages, etc.)
  *   Page 1+:  Directory pages (array of int bucket page numbers)
- *   Page D+:  Bucket pages (sorted entries of compressed key + compressed RID)
+ *   Page D+:  Bucket pages (entries of compressed key + compressed RID)
  * </pre>
  * <p>
- * Each bucket page stores entries sorted by serialized key for binary search within the bucket.
+ * Two bucket page layouts exist, told apart by the file version (issue #5712):
+ * <ul>
+ *   <li>{@link #CURRENT_VERSION} (2): entries are NOT ordered. A new entry is appended at the end of the data area and
+ *   its slot at the end of the slot directory, so an insert dirties the entry, one slot and the page header instead of
+ *   the whole run of slots after a sorted insertion point. Each slot carries a 1-byte tag (the low byte of the key
+ *   hash): a lookup scans the slots comparing the tag, and compares full keys only on a tag hit.</li>
+ *   <li>{@link #LEGACY_SORTED_VERSION} (1): the layout of the indexes created before #5712. Entries are kept sorted by
+ *   serialized key and binary-searched. Such an index keeps working as it is and moves to the new layout on
+ *   REBUILD INDEX (or DROP and recreate), which always creates the current version.</li>
+ * </ul>
  * Overflow pages are chained when a bucket is full and cannot split (same hash prefix collision).
  */
 public class HashIndexBucket extends PaginatedComponent {
   public static final String UNIQUE_INDEX_EXT    = "uhashidx";
   public static final String NOTUNIQUE_INDEX_EXT = "nhashidx";
 
-  // Page size used when the caller does not ask for one. It currently coincides with MAX_PAGE_SIZE, but the two are
-  // independent: this one is a tuning choice, MAX_PAGE_SIZE is a hard limit of the on-page addressing.
-  public static final int DEF_PAGE_SIZE     = 65_536;
-  public static final int CURRENT_VERSION   = 1;
+  // Page size used when the caller does not ask for one. 4 KB was the fastest of the sizes measured for inserts and for
+  // lookups, for long, string and composite keys, sequential and random, unique and not (issue #5712): a lookup scans the
+  // tags of the page, so a bigger page costs more per probe, and an insert of a bigger page dirties more of it. It is
+  // a tuning choice, independent of MAX_PAGE_SIZE, which is a hard limit of the on-page addressing.
+  public static final int DEF_PAGE_SIZE     = 4_096;
+  // Default for a key with a variable-width column (STRING, BINARY, DECIMAL): the width of an entry is not known at creation,
+  // and a key wider than a page is refused at insert (see entryTooLarge). It measured the same as DEF_PAGE_SIZE for short
+  // strings and leaves four times the room for long ones.
+  public static final int DEF_VARIABLE_KEY_PAGE_SIZE = 16_384;
+  // The default of the indexes created before #5712. A rebuild of a sorted-layout index of this size moves it to DEF_PAGE_SIZE.
+  static final int LEGACY_DEF_PAGE_SIZE     = 65_536;
+  public static final int CURRENT_VERSION   = 2;
+  // Version of the files created before #5712: sorted bucket pages, no slot tags
+  public static final int LEGACY_SORTED_VERSION = 1;
   public static final int NO_OVERFLOW_PAGE  = -1;
 
   /**
@@ -123,15 +142,20 @@ public class HashIndexBucket extends PaginatedComponent {
   static final int BUCKET_DATA_END       = 8;                        // short (2): offset past last entry data
   static final int BUCKET_CONTENT_START   = 10;                      // entries start here
 
-  // Slot directory: 2-byte entry offsets stored at the END of the page, growing downward.
-  // slot[i] is at pageOffset = (pageSize - PAGE_HEADER_SIZE) - (i + 1) * 2
-  // Each slot stores the byte offset (relative to PAGE_HEADER_SIZE) of the entry's data.
-  static final int SLOT_SIZE = 2;
+  // Slot directory: entry offsets stored at the END of the page, growing downward.
+  // slot[i] is at pageOffset = (pageSize - PAGE_HEADER_SIZE) - (i + 1) * slotSize
+  // Each slot stores the byte offset (relative to PAGE_HEADER_SIZE) of the entry's data (2 bytes). The current layout
+  // adds a 1-byte hash tag right after the offset, the legacy sorted layout has none.
+  static final int SLOT_SIZE        = 2;
+  static final int TAGGED_SLOT_SIZE = 3;
 
   final HashIndex mainIndex;
   final BinarySerializer serializer;
   final BinaryComparator comparator;
   final boolean unique;
+  // True for the current layout (unordered entries + slot tags), false for the legacy sorted one (#5712)
+  final boolean tagged;
+  final int     slotSize;
 
   Type[]  keyTypes;
   // Binary type declared by the schema for each key column: this is what is persisted on the metadata page and
@@ -154,22 +178,39 @@ public class HashIndexBucket extends PaginatedComponent {
   // (dirStartPage, bucketsStartPage, bucketCount) on the metadata page is stable and computed once.
   private int metaTailOffset;
 
+  // First key column whose type the metadata page declares but a hash index cannot encode, or -1. Set at load only. With
+  // unordered buckets a lookup parses just the entries whose tag matches the key, and a key encoded with a damaged type
+  // matches nothing, so without this the damage would read as "no such key" instead of the actionable error (#352).
+  private int unsupportedKeyColumn = -1;
+
   /**
    * Called at creation time.
    */
   HashIndexBucket(final HashIndex mainIndex, final DatabaseInternal database, final String name, final boolean unique,
       final String filePath, final ComponentFile.MODE mode, final Type[] keyTypes, final int pageSize,
       final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy) throws IOException {
+    this(mainIndex, database, name, unique, filePath, mode, keyTypes, pageSize, nullStrategy, CURRENT_VERSION);
+  }
+
+  /**
+   * Called at creation time with an explicit layout version. Production code always creates the current one; the
+   * legacy sorted layout can only be asked for to exercise the read path of the indexes created before #5712.
+   */
+  HashIndexBucket(final HashIndex mainIndex, final DatabaseInternal database, final String name, final boolean unique,
+      final String filePath, final ComponentFile.MODE mode, final Type[] keyTypes, final int pageSize,
+      final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, final int layoutVersion) throws IOException {
     // The page size is validated inside the super() argument list on purpose: this constructor is the ONLY path that
     // creates the file, and super() creates it, so checking here - before super() runs - is what guarantees no hash
     // index file can exist with a page size the bucket cannot address (#5713).
     super(database, name, filePath, unique ? UNIQUE_INDEX_EXT : NOTUNIQUE_INDEX_EXT, mode,
-        checkSupportedPageSize(name, pageSize), CURRENT_VERSION);
+        checkSupportedPageSize(name, pageSize), layoutVersion);
 
     this.mainIndex = mainIndex;
     this.serializer = database.getSerializer();
     this.comparator = serializer.getComparator();
     this.unique = unique;
+    this.tagged = layoutVersion >= CURRENT_VERSION;
+    this.slotSize = tagged ? TAGGED_SLOT_SIZE : SLOT_SIZE;
     this.keyTypes = checkSupportedKeyTypes(name, keyTypes);
     this.declaredKeyTypes = new byte[keyTypes.length];
     this.binaryKeyTypes = new byte[keyTypes.length];
@@ -195,6 +236,8 @@ public class HashIndexBucket extends PaginatedComponent {
     this.serializer = database.getSerializer();
     this.comparator = serializer.getComparator();
     this.unique = unique;
+    this.tagged = version >= CURRENT_VERSION;
+    this.slotSize = tagged ? TAGGED_SLOT_SIZE : SLOT_SIZE;
 
     // Read metadata from page 0 (called during construction, like LSMTreeIndexMutable.onAfterLoad)
     onAfterLoad();
@@ -316,7 +359,7 @@ public class HashIndexBucket extends PaginatedComponent {
       final int bucketPageNum = readDirectoryEntry(metaPage.readInt(metaTailOffset), dirIndex);
 
       if (isValidBucketPage(bucketPageNum))
-        return searchBucket(bucketPageNum, serializedKey, limit);
+        return searchBucket(bucketPageNum, serializedKey, tagOf(hash), limit);
 
       if (attempt >= MAX_LOOKUP_RETRIES)
         throw new IndexException(
@@ -329,7 +372,7 @@ public class HashIndexBucket extends PaginatedComponent {
   /**
    * Searches a bucket page (and its overflow chain) for entries matching the given keys.
    */
-  private List<RID> searchBucket(final int bucketPageNum, final byte[] searchKey,
+  private List<RID> searchBucket(final int bucketPageNum, final byte[] searchKey, final int tag,
       final int limit) throws IOException {
     final List<RID> result = new ArrayList<>();
     int currentPage = bucketPageNum;
@@ -347,7 +390,7 @@ public class HashIndexBucket extends PaginatedComponent {
       final int overflowPage = page.readInt(BUCKET_OVERFLOW_PAGE);
 
       if (entryCount > 0)
-        searchInPage(page, entryCount, searchKey, result, limit);
+        searchInPage(page, entryCount, searchKey, tag, result, limit);
 
       if (limit > 0 && result.size() >= limit)
         break;
@@ -358,20 +401,15 @@ public class HashIndexBucket extends PaginatedComponent {
   }
 
   /**
-   * Binary search within a single bucket page for entries matching the given key.
+   * Looks within a single bucket page for the entries matching the given key.
    */
-  private void searchInPage(final BasePage page, final int entryCount, final byte[] searchKey,
+  private void searchInPage(final BasePage page, final int entryCount, final byte[] searchKey, final int tag,
       final List<RID> result, final int limit) {
-    int pos = findFirstEntry(page, entryCount, searchKey);
-    if (pos < 0)
-      return;
+    int pos = findNextEntry(page, entryCount, searchKey, tag, 0);
 
-    while (pos < entryCount) {
+    while (pos >= 0) {
       int offset = readSlot(page, pos);
       final int keyLen = computeKeyLengthFromPage(page, offset);
-
-      if (!keysMatch(page, offset, searchKey))
-        break;
 
       offset += keyLen;
 
@@ -389,7 +427,7 @@ public class HashIndexBucket extends PaginatedComponent {
             return;
         }
       }
-      pos++;
+      pos = findNextEntry(page, entryCount, searchKey, tag, pos + 1);
     }
   }
 
@@ -435,9 +473,9 @@ public class HashIndexBucket extends PaginatedComponent {
         final MutablePage currentPage = database.getTransaction()
             .getPageToModify(new PageId(database, fileId, currentPageNum), pageSize, false);
         final int currentEntryCount = currentPage.readShort(BUCKET_ENTRY_COUNT) & 0xFFFF;
-        final int existingPos = findExactEntry(currentPage, currentEntryCount, serializedKey);
+        final int existingPos = findNextEntry(currentPage, currentEntryCount, serializedKey, tagOf(hash), 0);
         if (existingPos >= 0) {
-          addRIDToExistingEntry(currentPageNum, currentPage, currentEntryCount, existingPos, serializedKey, serializedRID);
+          addRIDToExistingEntry(currentPageNum, currentPage, currentEntryCount, existingPos, serializedKey, serializedRID, hash);
           updateTotalEntries(1);
           return;
         }
@@ -449,13 +487,13 @@ public class HashIndexBucket extends PaginatedComponent {
     final int entryDataSize = unique ?
         serializedKey.length + serializedRID.length :
         serializedKey.length + varIntSize(1) + serializedRID.length;
-    final int totalNeeded = entryDataSize + SLOT_SIZE;
+    final int totalNeeded = entryDataSize + slotSize;
 
     // Try to insert into the bucket
     final int available = freeSpace(bucketPage, entryCount);
 
     if (totalNeeded <= available) {
-      insertEntryInSlottedPage(bucketPage, entryCount, serializedKey, serializedRID);
+      insertEntryInSlottedPage(bucketPage, entryCount, serializedKey, serializedRID, hash);
       updateTotalEntries(1);
     } else {
       // Bucket is full — try to split if it would help
@@ -466,11 +504,11 @@ public class HashIndexBucket extends PaginatedComponent {
           splitBucket(bucketPageNum, localDepth, dirIndex, hash);
           putInternal(serializedKey, rid, hash);
         } else {
-          insertIntoOverflow(bucketPage, bucketPageNum, serializedKey, serializedRID);
+          insertIntoOverflow(bucketPage, bucketPageNum, serializedKey, serializedRID, hash);
           updateTotalEntries(1);
         }
       } else {
-        insertIntoOverflow(bucketPage, bucketPageNum, serializedKey, serializedRID);
+        insertIntoOverflow(bucketPage, bucketPageNum, serializedKey, serializedRID, hash);
         updateTotalEntries(1);
       }
     }
@@ -488,7 +526,7 @@ public class HashIndexBucket extends PaginatedComponent {
     final int dirIndex = directoryIndex(hash, metaPage.readInt(META_GLOBAL_DEPTH));
     final int bucketPageNum = readDirectoryEntry(metaPage.readInt(metaTailOffset), dirIndex);
 
-    removeFromBucket(bucketPageNum, serializedKey, null);
+    removeFromBucket(bucketPageNum, serializedKey, tagOf(hash), null);
   }
 
   /**
@@ -501,10 +539,11 @@ public class HashIndexBucket extends PaginatedComponent {
     final int dirIndex = directoryIndex(hash, metaPage.readInt(META_GLOBAL_DEPTH));
     final int bucketPageNum = readDirectoryEntry(metaPage.readInt(metaTailOffset), dirIndex);
 
-    removeFromBucket(bucketPageNum, serializedKey, rid);
+    removeFromBucket(bucketPageNum, serializedKey, tagOf(hash), rid);
   }
 
-  private void removeFromBucket(final int bucketPageNum, final byte[] serializedKey, final RID specificRID) throws IOException {
+  private void removeFromBucket(final int bucketPageNum, final byte[] serializedKey, final int tag, final RID specificRID)
+      throws IOException {
     int currentPageNum = bucketPageNum;
     int totalRemoved = 0;
     final int maxChainPages = getTotalPages();
@@ -518,13 +557,11 @@ public class HashIndexBucket extends PaginatedComponent {
       int entryCount = page.readShort(BUCKET_ENTRY_COUNT) & 0xFFFF;
       final int overflowPage = page.readInt(BUCKET_OVERFLOW_PAGE);
 
-      final int pos = findExactEntry(page, entryCount, serializedKey);
+      final int pos = findNextEntry(page, entryCount, serializedKey, tag, 0);
       if (pos >= 0) {
         if (specificRID != null && !unique) {
           // Search all matching entries on this page (entries for the same key may be split)
-          for (int p = pos; p < entryCount; p++) {
-            if (!keysMatch(page, readSlot(page, p), serializedKey))
-              break;
+          for (int p = pos; p >= 0; p = findNextEntry(page, entryCount, serializedKey, tag, p + 1)) {
             final int removed = removeRIDFromEntry(page, entryCount, p, specificRID);
             if (removed > 0) {
               updateTotalEntries(-removed);
@@ -538,10 +575,12 @@ public class HashIndexBucket extends PaginatedComponent {
           // may be split across multiple overflow pages (see addRIDToExistingEntry when
           // space runs out), so we must keep scanning subsequent pages too.
           int p = pos;
-          while (p < entryCount && keysMatch(page, readSlot(page, p), serializedKey)) {
+          while (p >= 0) {
             totalRemoved += removeEntryFromPage(page, entryCount, p);
             entryCount--;
-            // next entry has shifted into position p, do not advance
+            // another entry has moved into position p (the next one in the legacy layout, the last one otherwise):
+            // look again from p
+            p = findNextEntry(page, entryCount, serializedKey, tag, p);
           }
           if (unique) {
             updateTotalEntries(-totalRemoved);
@@ -652,7 +691,7 @@ public class HashIndexBucket extends PaginatedComponent {
       final long entryHash = hashSerializedKey(entry);
       final int newDirIndex = directoryIndex(entryHash, globalDepth);
       final int targetBucketPage = readDirectoryEntry(directoryStartPage, newDirIndex);
-      insertRawEntry(targetBucketPage, entry);
+      insertRawEntry(targetBucketPage, entry, entryHash);
     }
   }
 
@@ -701,11 +740,11 @@ public class HashIndexBucket extends PaginatedComponent {
   // ─── OVERFLOW PAGES ──────────────────────────────────────
 
   private void insertIntoOverflow(MutablePage currentPage, int currentPageNum,
-      final byte[] serializedKey, final byte[] serializedRID) throws IOException {
+      final byte[] serializedKey, final byte[] serializedRID, final long hash) throws IOException {
     final int entryDataSize = unique ?
         serializedKey.length + serializedRID.length :
         serializedKey.length + varIntSize(1) + serializedRID.length;
-    final int totalNeeded = entryDataSize + SLOT_SIZE;
+    final int totalNeeded = entryDataSize + slotSize;
 
     // Defensive cycle detection: a corrupted overflow chain that loops back to a previously-seen page would
     // otherwise spin forever. A valid chain visits distinct pages, so it cannot be longer than the file: the
@@ -730,14 +769,14 @@ public class HashIndexBucket extends PaginatedComponent {
       final int entryCount = overflowPage.readShort(BUCKET_ENTRY_COUNT) & 0xFFFF;
 
       if (totalNeeded <= freeSpace(overflowPage, entryCount)) {
-        insertEntryInPage(overflowPage, entryCount, serializedKey, serializedRID);
+        insertEntryInSlottedPage(overflowPage, entryCount, serializedKey, serializedRID, hash);
         return;
       }
 
       // The dead space of removed and grown entries is only reclaimed when an entry does not fit, as everywhere else
       if (hasDeadSpace(overflowPage, entryCount) && compactPage(overflowPage, entryCount) == entryCount
           && totalNeeded <= freeSpace(overflowPage, entryCount)) {
-        insertEntryInPage(overflowPage, entryCount, serializedKey, serializedRID);
+        insertEntryInSlottedPage(overflowPage, entryCount, serializedKey, serializedRID, hash);
         return;
       }
 
@@ -848,6 +887,7 @@ public class HashIndexBucket extends PaginatedComponent {
     final int maxKeysForPage = (metaPage.getMaxContentSize() - META_KEY_TYPES_START) / Binary.BYTE_SERIALIZED_SIZE;
     final boolean numKeysCorrupt = rawNumKeys < 1 || rawNumKeys > MAX_SANE_KEY_COUNT || rawNumKeys > maxKeysForPage;
     final int numKeys = numKeysCorrupt ? 0 : rawNumKeys;
+    unsupportedKeyColumn = -1;
 
     boolean metadataCorrupt = numKeysCorrupt;
 
@@ -859,8 +899,11 @@ public class HashIndexBucket extends PaginatedComponent {
       declaredKeyTypes[i] = metaPage.readByte(pos);
       binaryKeyTypes[i] = storageKeyType(declaredKeyTypes[i]);
       keyTypes[i] = Type.getByBinaryType(declaredKeyTypes[i]);
-      if (!isSupportedKeyType(declaredKeyTypes[i]))
+      if (!isSupportedKeyType(declaredKeyTypes[i])) {
         metadataCorrupt = true;
+        if (unsupportedKeyColumn < 0)
+          unsupportedKeyColumn = i;
+      }
       pos += Binary.BYTE_SERIALIZED_SIZE;
     }
 
@@ -934,6 +977,17 @@ public class HashIndexBucket extends PaginatedComponent {
     return isPageSizeDamaging(pageSize) ?
         "bucket pages address entries with 16-bit offsets, so this index is damaged" :
         "below the minimum required for the metadata page, though the index may still be working";
+  }
+
+  /**
+   * The page size a new index gets when the caller does not ask for one: {@link #DEF_PAGE_SIZE}, or
+   * {@link #DEF_VARIABLE_KEY_PAGE_SIZE} when any key column has no fixed width.
+   */
+  static int defaultPageSize(final Type[] keyTypes) {
+    for (final Type keyType : keyTypes)
+      if (keyType == Type.STRING || keyType == Type.BINARY || keyType == Type.DECIMAL)
+        return DEF_VARIABLE_KEY_PAGE_SIZE;
+    return DEF_PAGE_SIZE;
   }
 
   /**
@@ -1340,6 +1394,9 @@ public class HashIndexBucket extends PaginatedComponent {
    * Serializes composite keys into a byte array using BinarySerializer.
    */
   byte[] serializeKeys(final Object[] keys) {
+    if (unsupportedKeyColumn >= 0)
+      throw unsupportedKeyType(declaredKeyTypes[unsupportedKeyColumn], unsupportedKeyColumn, -1);
+
     final Binary buffer = new Binary(64, true);
     for (int i = 0; i < keys.length; i++) {
       if (keys[i] == null) {
@@ -1462,18 +1519,9 @@ public class HashIndexBucket extends PaginatedComponent {
   // ─── PAGE-LEVEL ENTRY OPERATIONS ─────────────────────────
 
   /**
-   * Inserts a new entry into a bucket page at the correct sorted position (builds offsets internally).
-   * Used by overflow insertion where offsets aren't pre-computed.
-   */
-  private void insertEntryInPage(final MutablePage page, final int entryCount, final byte[] serializedKey,
-      final byte[] serializedRID) {
-    insertEntryInSlottedPage(page, entryCount, serializedKey, serializedRID);
-  }
-
-  /**
    * Inserts a raw entry (already serialized) into a bucket page, finding the correct position.
    */
-  private void insertRawEntry(final int bucketPageNum, final byte[] rawEntry) throws IOException {
+  private void insertRawEntry(final int bucketPageNum, final byte[] rawEntry, final long hash) throws IOException {
     int currentPageNum = bucketPageNum;
 
     // Defensive, allocation-free cycle detection on the overflow chain (see insertIntoOverflow above).
@@ -1487,26 +1535,10 @@ public class HashIndexBucket extends PaginatedComponent {
       final MutablePage page = database.getTransaction()
           .getPageToModify(new PageId(database, fileId, currentPageNum), pageSize, false);
       final int entryCount = page.readShort(BUCKET_ENTRY_COUNT) & 0xFFFF;
-      final int totalNeeded = rawEntry.length + SLOT_SIZE;
+      final int totalNeeded = rawEntry.length + slotSize;
 
       if (totalNeeded <= freeSpace(page, entryCount)) {
-        final int keyLen = computeKeyLengthFromEntry(rawEntry, 0);
-        final byte[] serializedKey = new byte[keyLen];
-        System.arraycopy(rawEntry, 0, serializedKey, 0, keyLen);
-
-        final int insertPos = findInsertionPoint(page, entryCount, serializedKey);
-
-        // Append data at dataEnd
-        final int dataEnd = page.readShort(BUCKET_DATA_END) & 0xFFFF;
-        page.writeByteArray(dataEnd, rawEntry);
-        page.writeShort(BUCKET_DATA_END, (short) (dataEnd + rawEntry.length));
-
-        // Shift slots right and insert
-        for (int i = entryCount; i > insertPos; i--)
-          writeSlot(page, i, readSlot(page, i - 1));
-        writeSlot(page, insertPos, dataEnd);
-
-        page.writeShort(BUCKET_ENTRY_COUNT, (short) (entryCount + 1));
+        appendEntry(page, entryCount, rawEntry, hash);
         return;
       }
 
@@ -1540,12 +1572,19 @@ public class HashIndexBucket extends PaginatedComponent {
       removedCount = readVarIntFromPage(page, entryOffset + keyLen);
     }
 
-    // For slotted pages, we don't need to shift entry data (it becomes a hole).
-    // We only need to shift the slot directory to remove the slot.
-    // The hole will be reclaimed on the next page rebuild (during split/compaction).
-    // For simplicity, just shift slots left.
-    for (int i = pos; i < entryCount - 1; i++)
-      writeSlot(page, i, readSlot(page, i + 1));
+    // For slotted pages, we don't need to shift entry data (it becomes a hole): only the slot goes away. The hole is
+    // reclaimed on the next page rebuild (during split/compaction).
+    if (tagged) {
+      // Unordered layout: the last slot (offset and tag) takes the place of the removed one, nothing else moves
+      final int last = entryCount - 1;
+      if (pos != last) {
+        writeSlot(page, pos, readSlot(page, last));
+        writeTag(page, pos, readTag(page, last));
+      }
+    } else
+      // Sorted layout: the order must be preserved, shift the following slots left
+      for (int i = pos; i < entryCount - 1; i++)
+        writeSlot(page, i, readSlot(page, i + 1));
 
     // Note: dataEnd stays the same (dead space). We'll recover it during splits.
     page.writeShort(BUCKET_ENTRY_COUNT, (short) (entryCount - 1));
@@ -1600,7 +1639,7 @@ public class HashIndexBucket extends PaginatedComponent {
    * For non-unique index: adds a RID to an existing entry for the same key.
    */
   private void addRIDToExistingEntry(final int bucketPageNum, final MutablePage page, int entryCount,
-      final int pos, final byte[] serializedKey, final byte[] serializedRID) throws IOException {
+      final int pos, final byte[] serializedKey, final byte[] serializedRID, final long hash) throws IOException {
     int entryStart = readSlot(page, pos);
     final int oldEntrySize = getEntrySize(page, entryStart);
 
@@ -1644,12 +1683,12 @@ public class HashIndexBucket extends PaginatedComponent {
         // oversized entry, keep the existing entry in place and insert a separate entry
         // for just the new RID (key + ridCount=1 + RID). The search handles multiple
         // entries for the same key correctly by scanning the entire overflow chain.
-        insertIntoOverflow(page, bucketPageNum, serializedKey, serializedRID);
+        insertIntoOverflow(page, bucketPageNum, serializedKey, serializedRID, hash);
         return;
       }
 
       // After compaction, the slot positions may have changed - find the entry again
-      final int newPos = findExactEntry(page, entryCount, serializedKey);
+      final int newPos = findNextEntry(page, entryCount, serializedKey, tagOf(hash), 0);
       if (newPos >= 0)
         entryStart = readSlot(page, newPos);
     }
@@ -1732,7 +1771,7 @@ public class HashIndexBucket extends PaginatedComponent {
    * Slots grow from the end of the usable page area downward.
    */
   private int slotPosition(final int index) {
-    return (pageSize - BasePage.PAGE_HEADER_SIZE) - (index + 1) * SLOT_SIZE;
+    return (pageSize - BasePage.PAGE_HEADER_SIZE) - (index + 1) * slotSize;
   }
 
   /**
@@ -1743,10 +1782,29 @@ public class HashIndexBucket extends PaginatedComponent {
   }
 
   /**
-   * Writes a data offset into slot[index].
+   * Writes a data offset into slot[index]. The tag of the slot (current layout) is left untouched.
    */
   private void writeSlot(final MutablePage page, final int index, final int dataOffset) {
     page.writeShort(slotPosition(index), (short) dataOffset);
+  }
+
+  /**
+   * Reads the hash tag of slot[index]. Only the current layout has one.
+   */
+  private int readTag(final BasePage page, final int index) {
+    return page.readByte(slotPosition(index) + SLOT_SIZE) & 0xFF;
+  }
+
+  private void writeTag(final MutablePage page, final int index, final int tag) {
+    page.writeByte(slotPosition(index) + SLOT_SIZE, (byte) tag);
+  }
+
+  /**
+   * The tag a key is filed under: the low byte of its hash. The directory takes the TOP bits of the hash, so every key
+   * of a bucket shares them and only the low ones can tell the keys of a bucket apart.
+   */
+  static int tagOf(final long hash) {
+    return (int) hash & 0xFF;
   }
 
   /**
@@ -1755,12 +1813,32 @@ public class HashIndexBucket extends PaginatedComponent {
    */
   private int freeSpace(final BasePage page, final int entryCount) {
     final int dataEnd = page.readShort(BUCKET_DATA_END) & 0xFFFF;
-    final int slotStart = (pageSize - BasePage.PAGE_HEADER_SIZE) - entryCount * SLOT_SIZE;
+    final int slotStart = (pageSize - BasePage.PAGE_HEADER_SIZE) - entryCount * slotSize;
     return slotStart - dataEnd;
   }
 
   /**
-   * Binary search using slot directory. Returns position of first match or -1.
+   * Returns the position of the first slot at or after {@code from} whose entry has the given key, or -1.
+   * <p>
+   * Current layout: the slots are scanned comparing the 1-byte tag, and the key bytes only on a tag hit. Legacy sorted
+   * layout: the entries of a key are adjacent, so the first one is found by binary search and the following ones are
+   * the slots right after it.
+   */
+  private int findNextEntry(final BasePage page, final int entryCount, final byte[] searchKey, final int tag, final int from) {
+    if (tagged) {
+      for (int i = from; i < entryCount; i++)
+        if (readTag(page, i) == tag && keysMatch(page, readSlot(page, i), searchKey))
+          return i;
+      return -1;
+    }
+
+    if (from == 0)
+      return findFirstEntry(page, entryCount, searchKey);
+    return from < entryCount && keysMatch(page, readSlot(page, from), searchKey) ? from : -1;
+  }
+
+  /**
+   * Binary search using slot directory (legacy sorted layout). Returns position of first match or -1.
    */
   private int findFirstEntry(final BasePage page, final int entryCount, final byte[] searchKey) {
     if (entryCount == 0)
@@ -1786,12 +1864,8 @@ public class HashIndexBucket extends PaginatedComponent {
     return result;
   }
 
-  private int findExactEntry(final BasePage page, final int entryCount, final byte[] searchKey) {
-    return findFirstEntry(page, entryCount, searchKey);
-  }
-
   /**
-   * Finds insertion point using slot directory. Returns position for new entry.
+   * Finds insertion point using slot directory (legacy sorted layout). Returns position for new entry.
    */
   private int findInsertionPoint(final BasePage page, final int entryCount, final byte[] searchKey) {
     if (entryCount == 0)
@@ -1813,11 +1887,10 @@ public class HashIndexBucket extends PaginatedComponent {
   }
 
   /**
-   * Inserts entry into page using slotted page layout. Appends data at dataEnd,
-   * inserts slot at correct sorted position by shifting subsequent slots.
+   * Inserts entry into page using slotted page layout (see {@link #appendEntry}).
    */
   private void insertEntryInSlottedPage(final MutablePage page, final int entryCount,
-      final byte[] serializedKey, final byte[] serializedRID) {
+      final byte[] serializedKey, final byte[] serializedRID, final long hash) {
     final byte[] entryBytes;
     if (unique) {
       entryBytes = new byte[serializedKey.length + serializedRID.length];
@@ -1831,20 +1904,33 @@ public class HashIndexBucket extends PaginatedComponent {
       System.arraycopy(serializedRID, 0, entryBytes, serializedKey.length + ridCountBytes.length, serializedRID.length);
     }
 
-    final int insertPos = findInsertionPoint(page, entryCount, serializedKey);
+    appendEntry(page, entryCount, entryBytes, hash);
+  }
 
-    // Append entry data at the end of the data area
+  /**
+   * Appends an already serialized entry (key + value) at the end of the data area of a page that has room for it.
+   * <p>
+   * Current layout: the slot is appended after the last one, so the insert writes the entry, one slot and the page
+   * header. Legacy sorted layout: the slot goes to its sorted position, shifting the slots after it.
+   */
+  private void appendEntry(final MutablePage page, final int entryCount, final byte[] entryBytes, final long hash) {
     final int dataEnd = page.readShort(BUCKET_DATA_END) & 0xFFFF;
     page.writeByteArray(dataEnd, entryBytes);
-    final int newDataEnd = dataEnd + entryBytes.length;
-    page.writeShort(BUCKET_DATA_END, (short) newDataEnd);
+    page.writeShort(BUCKET_DATA_END, (short) (dataEnd + entryBytes.length));
 
-    // Shift slots from insertPos..entryCount-1 right by one position
-    for (int i = entryCount; i > insertPos; i--)
-      writeSlot(page, i, readSlot(page, i - 1));
+    if (tagged) {
+      writeSlot(page, entryCount, dataEnd);
+      writeTag(page, entryCount, tagOf(hash));
+    } else {
+      final int keyLen = computeKeyLengthFromEntry(entryBytes, 0);
+      final byte[] serializedKey = new byte[keyLen];
+      System.arraycopy(entryBytes, 0, serializedKey, 0, keyLen);
+      final int insertPos = findInsertionPoint(page, entryCount, serializedKey);
 
-    // Write new slot pointing to the appended data
-    writeSlot(page, insertPos, dataEnd);
+      for (int i = entryCount; i > insertPos; i--)
+        writeSlot(page, i, readSlot(page, i - 1));
+      writeSlot(page, insertPos, dataEnd);
+    }
 
     page.writeShort(BUCKET_ENTRY_COUNT, (short) (entryCount + 1));
   }
