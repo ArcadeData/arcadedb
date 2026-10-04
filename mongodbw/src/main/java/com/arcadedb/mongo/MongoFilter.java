@@ -38,6 +38,7 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Predicate;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -68,6 +69,7 @@ final class MongoFilter {
   // com.arcadedb.database.Document is spelled out in full below: its simple name is the one of the MongoDB Document imported here
   private static final Pattern ALWAYS = Pattern.compile("");
   private static final Pattern NEVER  = Pattern.compile("(?!)");
+  private static final Set<String> NARROWING_OPERATORS = Set.of("$eq", "$in", "$gt", "$gte", "$lt", "$lte");
 
   private final Document     original;
   private final boolean      empty;
@@ -90,7 +92,9 @@ final class MongoFilter {
     this.sql = empty;
     // the part of the filter on the _id narrows the candidates through the unique index (an _id is never an array, so the SQL cannot
     // miss a match there), and the matcher tests the whole filter on what it returns
-    this.idPart = empty ? null : onlyId(filter) ? filter : filter.containsKey("_id") ? new Document("_id", filter.get("_id")) : null;
+    this.idPart = empty ? null :
+        onlyId(filter) && narrows(filter) ? filter :
+            filter.containsKey("_id") && narrowsValue(filter.get("_id")) ? new Document("_id", filter.get("_id")) : null;
     if (sql) {
       this.normalized = null;
       this.matcher = null;
@@ -210,6 +214,41 @@ final class MongoFilter {
         return limit <= 0 || rids.size() < limit;
       });
     return rids;
+  }
+
+  /**
+   * Whether the SQL answer for the {@code _id} conditions of a filter can only be wider than the matcher's, never narrower: the
+   * matcher then verifies every candidate and nothing it would accept is lost. SQL coerces across types, so it can only add matches
+   * for an equality, {@code $in} or a range, but it can drop one for a negation ({@code $ne}, {@code $nin}, {@code $not}) of a
+   * mixed-type {@code _id}.
+   */
+  private static boolean narrows(final Document filter) {
+    for (final Map.Entry<String, Object> entry : filter.entrySet()) {
+      final String key = entry.getKey();
+      if ("_id".equals(key)) {
+        if (!narrowsValue(entry.getValue()))
+          return false;
+      } else if (entry.getValue() instanceof List<?> list) {
+        for (final Object item : list)
+          if (!(item instanceof Document document) || !narrows(document))
+            return false;
+      }
+    }
+    return true;
+  }
+
+  private static boolean narrowsValue(final Object operand) {
+    if (operand instanceof Document operators) {
+      if (!isOperatorDocument(operators))
+        // a document _id, compared as a whole
+        return false;
+      for (final String operator : operators.keySet())
+        if (!NARROWING_OPERATORS.contains(operator))
+          return false;
+      return true;
+    }
+    // a plain value is an equality, but not a regular expression, which only the matcher evaluates like MongoDB
+    return !(operand instanceof BsonRegularExpression);
   }
 
   /**
@@ -439,7 +478,8 @@ final class MongoFilter {
       if (timeoutNanos <= 0)
         return TimeBoundRegex.findUntil(pattern, input, Long.MAX_VALUE);
       if (exhausted)
-        throw new TimeoutException("Regular expression time of the command exhausted (arcadedb.command.regexTimeout)");
+        throw new TimeoutException(
+            "Regular expression time of the command exhausted: arcadedb.command.regexTimeout is shared by every document the command scans");
       final long start = System.nanoTime();
       try {
         final long now = start + remainingNanos;

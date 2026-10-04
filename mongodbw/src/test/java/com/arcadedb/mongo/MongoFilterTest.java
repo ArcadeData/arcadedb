@@ -74,6 +74,15 @@ class MongoFilterTest {
   }
 
   @Test
+  void aNegationOnTheIdNeverNarrowsTheCandidates() {
+    assertThat(new MongoFilter(null, parse("{_id: {$ne: 1}, k: 1}")).narrowsById()).isFalse();
+    assertThat(new MongoFilter(null, parse("{_id: {$nin: [1]}}")).narrowsById()).isFalse();
+    assertThat(new MongoFilter(null, parse("{_id: {$not: {$gt: 2}}, k: 1}")).narrowsById()).isFalse();
+    assertThat(new MongoFilter(null, parse("{$or: [{_id: 1}, {_id: {$ne: 2}}]}")).narrowsById()).isFalse();
+    assertThat(new MongoFilter(null, parse("{_id: {$gt: 1, $lte: 5}, k: 1}")).narrowsById()).isTrue();
+  }
+
+  @Test
   void anyOtherFilterIsEvaluatedOnTheDocuments() {
     assertThat(new MongoFilter(null, parse("{k: 1}")).narrowsById()).isFalse();
     assertThat(new MongoFilter(null, parse("{$or: [{_id: 1}, {k: 2}]}")).narrowsById()).isFalse();
