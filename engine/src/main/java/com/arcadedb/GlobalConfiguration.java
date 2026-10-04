@@ -3061,8 +3061,11 @@ public enum GlobalConfiguration {
       Graph Analytical View (GAV/CSR) whose deferred restore from disk is still in flight, so the first call after a \
       database reopen runs on the restored view instead of scanning every record. The wait ends early when the restore \
       finishes, and it also ends when the command's own timeout expires. A view that is only rebuilding after a commit is \
-      never waited for. 0 does not wait: the call takes the record path, as it did before this setting existed. This is \
-      separate from arcadedb.gavRestoreAwaitTimeout, which makes database open() itself block (default 0 = do not block)""",
+      never waited for. 0 does not wait: the call takes the record path, as it did before this setting existed. A command \
+      without a timeout of its own (see arcadedb.command.timeout) can block for this whole budget when a restore never \
+      ends, for example while it is stuck waiting for a build permit, so lower it if such commands must answer quickly. \
+      This is separate from arcadedb.gavRestoreAwaitTimeout, which makes database open() itself block (default 0 = do \
+      not block)""",
       Long.class, 600_000L),
 
   GAV_PERSIST_CSR("arcadedb.gavPersistCsr", SCOPE.DATABASE,
