@@ -393,12 +393,6 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
                 targetNodePattern.getLabels(), targetNodePattern.isLabelDisjunction()))
               continue;
 
-            // Inline property map: the properties live on the record, so the vertex is loaded only when the pattern
-            // actually carries a map (#8991)
-            if (targetNodePattern != null && targetNodePattern.hasProperties()
-                && !matchesTargetProperties(db.lookupByRID(targetRid, true).asVertex(), lastResult))
-              continue;
-
             // Bound variable identity check (no vertex load)
             // Compare bucket+offset only — RIDs from GAV may lack the database reference
             if (boundVariableNames != null && boundVariableNames.contains(targetVariable)) {
@@ -411,6 +405,17 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
               if (boundRid != null
                   && (boundRid.getBucketId() != targetRid.getBucketId() || boundRid.getPosition() != targetRid.getPosition()))
                 continue;
+            }
+
+            // Inline property map: the properties live on the record, not in the view, so the vertex is loaded - last, and
+            // only when the pattern carries a map (#8991). A record deleted since the view was built is skipped.
+            if (targetNodePattern != null && targetNodePattern.hasProperties()) {
+              try {
+                if (!matchesTargetProperties(db.lookupByRID(targetRid, true).asVertex(), lastResult))
+                  continue;
+              } catch (final RecordNotFoundException e) {
+                continue;
+              }
             }
 
             // Create result with GAVVertex (no OLTP load)

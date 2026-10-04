@@ -1168,10 +1168,12 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
   /**
    * Path finders that return vertex RIDs only (A*, Bellman-Ford) lose the edges that were walked. This rebuilds them: for
    * every pair of consecutive vertices the lightest edge in the given direction (optionally restricted to one edge type)
-   * is picked, so the returned weight is the sum of the path's edge weights and the path exposes its relationships.
+   * is picked (an edge without the weight property counts {@code missingWeight}), so the returned weight is the sum of the path's edge weights and the path exposes its relationships.
    */
-  protected WeightedPath attachEdges(final List<RID> vertexRids, final String relType, final Vertex.DIRECTION dir,
-      final String weightProperty) {
+  protected WeightedPath attachEdges(final List<RID> pathRids, final String relType, final Vertex.DIRECTION dir,
+      final String weightProperty, final double missingWeight) {
+    // callers hand a LinkedList: index it once as an array-backed list
+    final List<RID> vertexRids = new ArrayList<>(pathRids);
     final String[] edgeTypeFilter = relType != null && !relType.isEmpty() ? new String[] { relType } : null;
 
     final List<RID> pathWithEdges = new ArrayList<>(vertexRids.size() * 2 - 1);
@@ -1190,7 +1192,7 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
           if (!toRid.equals(otherRid))
             continue;
           final Object w = weightProperty != null ? edge.get(weightProperty) : null;
-          final double edgeWeight = w instanceof Number num ? num.doubleValue() : 0.0;
+          final double edgeWeight = w instanceof Number num ? num.doubleValue() : missingWeight;
           if (bestEdge == null || edgeWeight < bestWeight) {
             bestWeight = edgeWeight;
             bestEdge = edge;

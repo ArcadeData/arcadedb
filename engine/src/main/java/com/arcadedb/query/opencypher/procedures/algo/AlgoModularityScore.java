@@ -133,7 +133,7 @@ public class AlgoModularityScore extends AbstractAlgoProcedure {
       }
     }
 
-    // m = total edges (directed count)
+    // m = total number of edges (each stored edge once; the degrees above count both of its ends)
     final long m = totalEdges;
     if (m == 0) {
       final ResultInternal r = new ResultInternal();
