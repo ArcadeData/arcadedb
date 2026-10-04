@@ -170,12 +170,13 @@ public class PostSecuritySeedHandler extends AbstractServerHttpHandler {
     // Issue #8689: an admission served by a follower carries the HTTP address the operator declared for the peer, which
     // only the follower's own map holds. Recorded before the seed is asked for, because the seed's capability gate probes
     // the peer at whatever this node's map holds - and a catch-up is a node repairing itself, with no peer to declare.
-    final boolean addressRecorded = declared != null && !catchUp
-        && raftHAServer.recordAdmittedPeerHttpAddress(RaftPeerId.valueOf(declared.peerId()), declared.httpAddress());
+    final DeclaredPeerHttpAddress toRecord = declarationToRecord(declared, catchUp);
+    final boolean addressRecorded = toRecord != null
+        && raftHAServer.recordAdmittedPeerHttpAddress(RaftPeerId.valueOf(toRecord.peerId()), toRecord.httpAddress());
     if (addressRecorded)
       LogManager.instance().log(this, Level.INFO,
           "Recorded HTTP address %s for peer '%s' as declared by the node that admitted it; seeding again so the "
-              + "capability probe dials it", declared.httpAddress(), declared.peerId());
+              + "capability probe dials it", toRecord.httpAddress(), toRecord.peerId());
 
     final List<String> failedSeeds;
     try {
@@ -303,6 +304,15 @@ public class PostSecuritySeedHandler extends AbstractServerHttpHandler {
         throw new IllegalArgumentException("'" + DECLARED_HTTP_ADDRESS + "' contains '" + address.charAt(i)
             + "', which no host:port does: '" + address + "'");
     return new DeclaredPeerHttpAddress(peerId, address);
+  }
+
+  /**
+   * The declaration this request asks the leader to record: none for a catch-up, which is a node repairing itself and
+   * has no admitted peer to speak for, whatever its body carries. Package-private so the rule is pinned directly.
+   */
+  // @VisibleForTesting
+  static DeclaredPeerHttpAddress declarationToRecord(final DeclaredPeerHttpAddress declared, final boolean catchUp) {
+    return catchUp ? null : declared;
   }
 
   /**

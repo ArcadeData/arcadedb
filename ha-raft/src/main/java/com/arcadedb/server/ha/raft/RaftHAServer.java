@@ -233,7 +233,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // httpAddresses starts from the same entries but is rewritten as peers join and leave, so it cannot say which of its
   // entries the operator configured here; recordAdmittedPeerHttpAddress needs exactly that, to never let another node's
   // declaration replace this node's own (issue #8689).
-  private volatile Map<RaftPeerId, String> serverListHttpAddresses = Map.of();
+  private final    Map<RaftPeerId, String> serverListHttpAddresses;
   // Logged at most once: warns operators that HTTP addresses are derived (not explicitly configured).
   private final    AtomicBoolean           httpFallbackWarned = new AtomicBoolean(false);
   // Logged at most once: notes that peer HTTPS endpoints are derived from this node's local HTTPS port.
@@ -3883,6 +3883,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * here, and a declaration made on another node does not outrank it. A derived or runtime-written entry is replaced,
    * exactly as a {@code connect cluster} served by this node would have replaced it.</li>
    * </ul>
+   * <b>Trust.</b> The only caller is {@code PostSecuritySeedHandler}, behind the root / cluster-token check every
+   * peer-to-peer route has. A holder of the cluster token can therefore point this node's dials of a committed member
+   * that its server list does not declare at a {@code host:port} of its choosing - dials that carry the token. That is
+   * no wider than what the token already grants (the same caller can run {@code connect cluster} on this node, which
+   * writes the same map), and the address is refused unless it is a plain authority. The host is deliberately not
+   * required to equal the peer's Raft host: a node may serve HTTP on a different interface than Raft.
    *
    * @return {@code true} when the map now holds {@code httpAddress} for the peer and did not before, which is what
    * tells the caller that a seed run earlier probed a different address

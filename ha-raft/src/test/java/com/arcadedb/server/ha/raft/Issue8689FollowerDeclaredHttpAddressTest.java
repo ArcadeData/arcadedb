@@ -186,6 +186,16 @@ class Issue8689FollowerDeclaredHttpAddressTest {
           .isInstanceOf(IllegalArgumentException.class);
   }
 
+  /** A catch-up is a node repairing itself: whatever its body carries, it records nothing. An admission does. */
+  @Test
+  void onlyAnAdmissionRecordsItsDeclaration() {
+    final DeclaredPeerHttpAddress declared = new DeclaredPeerHttpAddress(JOINED.toString(), ADDRESS);
+
+    assertThat(PostSecuritySeedHandler.declarationToRecord(declared, true)).isNull();
+    assertThat(PostSecuritySeedHandler.declarationToRecord(declared, false)).isEqualTo(declared);
+    assertThat(PostSecuritySeedHandler.declarationToRecord(null, false)).isNull();
+  }
+
   /** The forms a real peer address takes are accepted, a bracketed IPv6 literal included. */
   @Test
   void everyPeerAddressFormIsAccepted() {
@@ -207,6 +217,8 @@ class Issue8689FollowerDeclaredHttpAddressTest {
     assertThat(ClusterSecuritySeedQuery.declaredAdmissionReportTimeoutMs(configuration))
         .isGreaterThan(2 * 7_000L)
         .isGreaterThan(ClusterSecuritySeedQuery.reportTimeoutMs(configuration));
+    assertThat(ClusterSecuritySeedQuery.CLIENT_HEADROOM_MS)
+        .as("the admitting node waits longer than the leader, so it reads the leader's answer").isPositive();
   }
 
   private static JSONObject declaration(final String address) {

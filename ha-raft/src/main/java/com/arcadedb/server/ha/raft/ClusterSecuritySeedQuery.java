@@ -72,6 +72,12 @@ public final class ClusterSecuritySeedQuery {
   private static final long SEED_REPORT_MARGIN_MS = 30_000L;
 
   /**
+   * How much longer than the leader's own deadline a declared admission's request waits (issue #8689), so the leader's
+   * answer - a 503 naming the documents, or a 200 - reaches the caller before the caller gives up on it.
+   */
+  static final long CLIENT_HEADROOM_MS = 5_000L;
+
+  /**
    * Attempts a request whose only failure is "you are not the leader any more" (issue #7834).
    * <p>
    * The address this dials was resolved a moment earlier, so a 409 is an election that landed in between - a
@@ -143,8 +149,9 @@ public final class ClusterSecuritySeedQuery {
    * The deadline of an admission request that DECLARED the admitted peer's HTTP address (issue #8689): room for two
    * whole seeds plus the margin, because the leader that records the address answers only after the seed already in
    * flight - which was probing the old address and may spend its whole retry budget doing so - and then a fresh one.
-   * The leader waits this long and the admitting node's request is given the same, so the operator reads the leader's
-   * answer rather than a client-side timeout that lands at the same instant.
+   * The leader waits this long; the admitting node's request is given {@link #CLIENT_HEADROOM_MS} more, because the
+   * leader's clock starts only once the request has arrived, and with equal values the client would time out first and
+   * the operator would read a timeout instead of the leader's answer.
    */
   public static long declaredAdmissionReportTimeoutMs(final ContextConfiguration configuration) {
     return 2 * Math.max(0L, configuration.getValueAsLong(GlobalConfiguration.HA_SECURITY_SEED_RETRY_TIMEOUT))
@@ -314,7 +321,8 @@ public final class ClusterSecuritySeedQuery {
       body.put(PostSecuritySeedHandler.ADMITTED_PEER_ID, declared.peerId())
           .put(PostSecuritySeedHandler.DECLARED_HTTP_ADDRESS, declared.httpAddress());
 
-    final long timeoutMs = Math.max(declared != null ? declaredAdmissionReportTimeoutMs(server.getConfiguration())
+    final long timeoutMs = Math.max(declared != null
+        ? declaredAdmissionReportTimeoutMs(server.getConfiguration()) + CLIENT_HEADROOM_MS
         : reportTimeoutMs(server.getConfiguration()), LeaderDial.MIN_FORWARD_TIMEOUT_MS);
     final HttpRequest.Builder builder = HttpRequest.newBuilder()
         .uri(URI.create(dial.url(PostSecuritySeedHandler.ROUTE)))

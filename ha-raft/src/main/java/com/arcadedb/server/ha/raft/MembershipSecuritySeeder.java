@@ -362,6 +362,9 @@ public class MembershipSecuritySeeder implements AutoCloseable {
    * with no reuse. A seed that a third caller starts meanwhile is folded into, which is sound: it started after the
    * change too.
    * <p>
+   * "In flight" includes a seed that is queued but not yet running: it is waited for the same way, which costs nothing
+   * more, since it would read the new address when it ran.
+   * <p>
    * One deadline covers both waits, so the caller's own timeout, which is sized for one seed plus a margin, still
    * bounds the whole answer.
    *
