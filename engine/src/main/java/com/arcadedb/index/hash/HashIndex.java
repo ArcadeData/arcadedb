@@ -296,7 +296,7 @@ public class HashIndex implements IndexInternal {
     if (getDatabase().getTransaction().getStatus() == TransactionContext.STATUS.BEGUN)
       getDatabase().getTransaction()
           .addIndexOperation(this, TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE, convertedKeys, null);
-    else {
+    else
       lock.executeInReadLock(() -> {
         try {
           bucket.remove(convertedKeys);
@@ -305,7 +305,6 @@ public class HashIndex implements IndexInternal {
         }
         return null;
       });
-    }
   }
 
   @Override
@@ -324,7 +323,7 @@ public class HashIndex implements IndexInternal {
     if (getDatabase().getTransaction().getStatus() == TransactionContext.STATUS.BEGUN)
       getDatabase().getTransaction()
           .addIndexOperation(this, TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE, convertedKeys, rid.getIdentity());
-    else {
+    else
       lock.executeInReadLock(() -> {
         try {
           bucket.remove(convertedKeys, rid.getIdentity());
@@ -333,7 +332,6 @@ public class HashIndex implements IndexInternal {
         }
         return null;
       });
-    }
   }
 
   // Only a put is checked. A remove can never add an entry, and refusing it would leave undeletable the rows a hash index

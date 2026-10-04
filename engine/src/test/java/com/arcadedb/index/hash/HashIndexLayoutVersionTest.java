@@ -24,6 +24,8 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.junit.jupiter.api.Test;
@@ -49,6 +51,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Execution(ExecutionMode.SAME_THREAD)
 class HashIndexLayoutVersionTest extends TestHelper {
   private static final int PAGE_SIZE = 1_024;
+
+  @BeforeEach
+  void startWithTheCurrentLayout() {
+    HashIndex.HashIndexFactoryHandler.layoutVersion = HashIndexBucket.CURRENT_VERSION;
+  }
 
   @AfterEach
   void restoreLayout() {
@@ -232,6 +239,7 @@ class HashIndexLayoutVersionTest extends TestHelper {
 
   /** Readers without the file lock run while a writer appends: the write order of an insert must never show a half entry. */
   @Test
+  @Timeout(120) // a hang detector, not a latency bound
   void concurrentReadsDuringInsertsOnTheCurrentLayout() throws Exception {
     createAndFill("UNIQUE_HASH", HashIndexBucket.CURRENT_VERSION, 1_000, 1_000);
     final AtomicBoolean stop = new AtomicBoolean();
