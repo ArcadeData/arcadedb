@@ -179,8 +179,14 @@ public final class RedisCounterOperations {
     if (isOutOfRange(number))
       throw new RedisException(nonFiniteMessage);
     // Beyond 17 decimals nothing survives the result's rounding, and aligning a huge scale such as 1e-999999999 to the other
-    // operand would allocate a gigantic number
-    return number.scale() > 17 ? number.setScale(17, RoundingMode.HALF_EVEN) : number;
+    // operand would allocate a gigantic number. A value below 1e-18 is zero at 17 decimals, answered without ever rounding
+    // across the scale gap (that rounding builds a power of ten as big as the gap); any other value has at most
+    // precision + 1 digits to drop, and the operand length is capped.
+    if (number.scale() <= 17)
+      return number;
+    if ((long) number.scale() - number.precision() > 18)
+      return BigDecimal.ZERO;
+    return number.setScale(17, RoundingMode.HALF_EVEN);
   }
 
   private static boolean isNonFiniteSpelling(final String text) {
