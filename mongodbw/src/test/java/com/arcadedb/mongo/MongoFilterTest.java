@@ -58,10 +58,10 @@ class MongoFilterTest {
 
   @Test
   void onlyAnEmptyFilterIsAnsweredBySqlAlone() {
-    assertThat(new MongoFilter(null, null).isSql()).isTrue();
+    assertThat(new MongoFilter(null, null).isEmpty()).isTrue();
     assertThat(new MongoFilter(null, new Document()).isEmpty()).isTrue();
-    assertThat(new MongoFilter(null, parse("{_id: 1}")).isSql()).isFalse();
-    assertThat(new MongoFilter(null, parse("{k: 1}")).isSql()).isFalse();
+    assertThat(new MongoFilter(null, parse("{_id: 1}")).isEmpty()).isFalse();
+    assertThat(new MongoFilter(null, parse("{k: 1}")).isEmpty()).isFalse();
   }
 
   @Test

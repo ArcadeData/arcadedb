@@ -73,7 +73,6 @@ final class MongoFilter {
 
   private final Document     original;
   private final boolean      empty;
-  private final boolean      sql;
   private final Document     idPart;
   private final Document     normalized;
   private final QueryMatcher matcher;
@@ -89,13 +88,12 @@ final class MongoFilter {
   MongoFilter(final Database database, final Document filter, final RegexBudget budget) {
     this.original = filter;
     this.empty = filter == null || filter.isEmpty();
-    this.sql = empty;
     // the part of the filter on the _id narrows the candidates through the unique index (an _id is never an array, so the SQL cannot
     // miss a match there), and the matcher tests the whole filter on what it returns
     this.idPart = empty ? null :
         onlyId(filter) && narrows(filter) ? filter :
             filter.containsKey("_id") && narrowsValue(filter.get("_id")) ? new Document("_id", filter.get("_id")) : null;
-    if (sql) {
+    if (empty) {
       this.normalized = null;
       this.matcher = null;
     } else {
@@ -112,15 +110,7 @@ final class MongoFilter {
   }
 
   /**
-   * @return true only for an empty filter, which SQL answers alone; any other filter is verified on the stored documents by the
-   * matcher, with SQL at most narrowing the candidates through the {@code _id} index (see {@link #narrowsById()})
-   */
-  boolean isSql() {
-    return sql;
-  }
-
-  /**
-   * Appends the {@code WHERE} clause of a filter {@link #isSql() answered by SQL}, nothing for an empty one.
+   * Appends the {@code WHERE} clause of a filter {@link empty filter}, nothing for an empty one.
    */
   void appendWhere(final StringBuilder sqlText, final Map<String, Object> params) {
     if (!empty) {
@@ -130,11 +120,11 @@ final class MongoFilter {
   }
 
   /**
-   * Whether a stored record matches the filter. Only meaningful for a filter that is not {@link #isSql() answered by SQL}, which
+   * Whether a stored record matches the filter. Only meaningful for a filter that is not {@link empty filter}, which
    * has no clause left to test.
    */
   boolean matches(final Map<String, Object> storedProperties) {
-    if (sql)
+    if (empty)
       throw new IllegalStateException("A filter answered by SQL has no clause to test a record against");
     return matcher.matches(MongoDBToSqlTranslator.toMatchDocument(storedProperties), normalized);
   }
@@ -160,7 +150,7 @@ final class MongoFilter {
    * {@code _id} conjunct for one that {@link #narrowsById() narrows by _id}, nothing for any other.
    */
   void appendCandidateWhere(final StringBuilder sqlText, final Map<String, Object> params) {
-    if (sql)
+    if (empty)
       appendWhere(sqlText, params);
     else if (idPart != null) {
       sqlText.append(" WHERE ");
@@ -198,7 +188,7 @@ final class MongoFilter {
    */
   List<RID> select(final Database database, final String collectionName, final int limit) {
     final List<RID> rids = new ArrayList<>();
-    if (sql) {
+    if (empty) {
       final Map<String, Object> params = new HashMap<>();
       final StringBuilder text = new StringBuilder("SELECT @rid FROM ").append(Identifier.quote(collectionName));
       appendWhere(text, params);
