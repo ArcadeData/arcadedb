@@ -326,4 +326,26 @@ class MongoDBFilterSemanticsTest extends BaseMongoServerTest {
     }
     assertThat(ids(c, "{}")).containsExactly(1);
   }
+
+  @Test
+  void aCatastrophicRegexOnIdInAMixedFilterIsBoundedToo() {
+    final MongoCollection<Document> c = collection("redosid", new Document("_id", "a".repeat(40) + "!").append("n", 1).toJson());
+    final long previous = GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong();
+    GlobalConfiguration.COMMAND_REGEX_TIMEOUT.setValue(200);
+    try {
+      assertThatThrownBy(() -> ids(c, "{_id:{$regex:'(.*a){20}$'}, n:1}")).isInstanceOf(MongoException.class);
+      assertThatThrownBy(() -> c.find(new Document("$or", List.of(new Document("_id", Pattern.compile("(.*a){20}$")), new Document("n", 2))))
+          .into(new ArrayList<>())).isInstanceOf(MongoException.class);
+    } finally {
+      GlobalConfiguration.COMMAND_REGEX_TIMEOUT.setValue(previous);
+    }
+    assertThat(ids(c, "{_id:{$regex:'^a'}, n:1}")).hasSize(1);
+  }
+
+  @Test
+  void exprIsRefusedAndAllHoldingAnElemMatchWorks() {
+    final MongoCollection<Document> c = collection("exprall", "{_id:1, s:[{k:'x'},{k:'y'}]}", "{_id:2, s:[{k:'x'}]}");
+    assertThatThrownBy(() -> ids(c, "{$expr:{$regexMatch:{input:'$s', regex:'a'}}}")).isInstanceOf(MongoQueryException.class);
+    assertThat(ids(c, "{s:{$all:[{$elemMatch:{k:'x'}},{$elemMatch:{k:'y'}}]}}")).containsExactly(1);
+  }
 }
