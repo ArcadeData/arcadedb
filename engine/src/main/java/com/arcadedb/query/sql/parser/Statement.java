@@ -26,6 +26,7 @@ import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalExecutionPlan;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.SqlAstInspector;
 
 import com.arcadedb.query.OperationType;
 import com.arcadedb.schema.TimeSeriesTypeBuilder;
@@ -250,7 +251,7 @@ public class Statement extends SimpleNode {
 
   public String getOriginalStatement() {
     if (originalStatementAsString == null)
-      originalStatementAsString = originalStatement.toString();
+      originalStatementAsString = originalStatement.toString() + SqlAstInspector.parameterNumbersSuffix(originalStatement);
     return originalStatementAsString;
   }
 

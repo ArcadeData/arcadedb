@@ -22,12 +22,15 @@ import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.query.sql.method.DefaultSQLMethodFactory;
 import com.arcadedb.query.sql.parser.FunctionCall;
 import com.arcadedb.query.sql.parser.MethodCall;
+import com.arcadedb.query.sql.parser.NamedParameter;
+import com.arcadedb.query.sql.parser.PositionalParameter;
 import com.arcadedb.query.sql.parser.SimpleNode;
 import com.arcadedb.query.sql.parser.Statement;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.IdentityHashMap;
 import java.util.List;
@@ -107,6 +110,43 @@ public final class SqlAstInspector {
           return false;
     }
     return true;
+  }
+
+  /**
+   * The suffix that makes the printed text of a statement a plan-cache key: empty when the parameters of {@code root}, in
+   * the order the tree is walked, are numbered 0, 1, 2..., as in a statement parsed on its own, otherwise their numbers.
+   * A positional parameter prints as {@code ?} whatever its number and a named one prints its name, while the plan reads
+   * the value by the number fixed at parse time (positional parameters, and named ones bound by position), and a script
+   * numbers its parameters across all its statements: without the suffix two statements that print the same but read
+   * different positions would share one plan (issue #9247).
+   */
+  public static String parameterNumbersSuffix(final Object root) {
+    final int[][] holder = { new int[4] };
+    final int[] size = { 0 };
+    allNodesMatch(root, node -> {
+      final int number;
+      if (node instanceof PositionalParameter p)
+        number = p.paramNumber;
+      else if (node instanceof NamedParameter p)
+        number = p.paramNumber;
+      else
+        return true;
+      if (size[0] == holder[0].length)
+        holder[0] = Arrays.copyOf(holder[0], size[0] * 2);
+      holder[0][size[0]++] = number;
+      return true;
+    });
+    final int[] numbers = holder[0];
+    final int count = size[0];
+    boolean sequential = true;
+    for (int i = 0; i < count && sequential; i++)
+      sequential = numbers[i] == i;
+    if (sequential)
+      return "";
+    final StringBuilder builder = new StringBuilder(" /*params:");
+    for (int i = 0; i < count; i++)
+      builder.append(i > 0 ? "," : "").append(numbers[i]);
+    return builder.append("*/").toString();
   }
 
   /**
