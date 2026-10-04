@@ -92,6 +92,14 @@ class MongoFilterTest {
   }
 
   @Test
+  void anEmbeddedDocumentOrListOperandOnTheIdNeverNarrowsTheCandidates() {
+    assertThat(new MongoFilter(null, parse("{_id: {$eq: {a: 1, b: 2}}}")).narrowsById()).isFalse();
+    assertThat(new MongoFilter(null, parse("{_id: {$in: [{a: 1}, {b: 2}]}, k: 1}")).narrowsById()).isFalse();
+    assertThat(new MongoFilter(null, parse("{_id: {$in: [[1, 2]]}}")).narrowsById()).isFalse();
+    assertThat(new MongoFilter(null, parse("{_id: {a: 1, b: 2}}")).narrowsById()).isFalse();
+  }
+
+  @Test
   void aRegexOperandOnTheIdNeverNarrowsTheCandidates() {
     assertThat(new MongoFilter(null, new Document("_id", new Document("$in", List.of(new BsonRegularExpression("^abc"))))).narrowsById()).isFalse();
     assertThat(new MongoFilter(null, new Document("_id", new Document("$eq", new BsonRegularExpression("^abc"))).append("k", 1)).narrowsById())

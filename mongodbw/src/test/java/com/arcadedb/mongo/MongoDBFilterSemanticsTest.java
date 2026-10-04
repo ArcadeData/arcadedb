@@ -487,4 +487,13 @@ class MongoDBFilterSemanticsTest extends BaseMongoServerTest {
     assertThat(ids(c, "{_id:{$gt:'a'}}")).containsExactly("b");
     assertThat(ids(c, "{_id:{$gt:5}, k:'ten'}")).containsExactly(10);
   }
+
+  @Test
+  void anEmbeddedDocumentIdMatchesLikeMongoDB() {
+    final MongoCollection<Document> c = collection("docids", "{_id:{a:1,b:2}, k:'x'}", "{_id:{a:2,b:1}, k:'y'}");
+    assertThat(c.countDocuments(Document.parse("{_id:{a:1,b:2}}"))).isEqualTo(1);
+    // MongoDB compares embedded documents in key order: {b:2,a:1} is not {a:1,b:2}
+    assertThat(c.countDocuments(Document.parse("{_id:{b:2,a:1}}"))).isZero();
+    assertThat(c.countDocuments(Document.parse("{_id:{$eq:{a:2,b:1}}}"))).isEqualTo(1);
+  }
 }

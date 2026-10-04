@@ -253,14 +253,15 @@ final class MongoFilter {
   }
 
   /**
-   * A regular expression operand (alone or in a list) is a pattern only the matcher evaluates: SQL compares it as a value.
+   * A regular expression operand (alone or in a list) is a pattern only the matcher evaluates, and an embedded document or a list
+   * is compared by SQL in ways (key order) not proven to match MongoDB's: SQL compares them as a value, so none of them narrows.
    */
   private static boolean holdsRegex(final Object operand) {
-    if (operand instanceof BsonRegularExpression)
+    if (operand instanceof BsonRegularExpression || operand instanceof Document)
       return true;
     if (operand instanceof List<?> list)
       for (final Object item : list)
-        if (item instanceof BsonRegularExpression)
+        if (item instanceof BsonRegularExpression || item instanceof Document || item instanceof List)
           return true;
     return false;
   }
@@ -498,26 +499,25 @@ final class MongoFilter {
         } catch (final ArithmeticException e) {
           nanos = Long.MAX_VALUE;
         }
+      // a budget of centuries is no budget: it saturates, so that start + remaining can never wrap around
+      if (nanos > (Long.MAX_VALUE >> 2))
+        nanos = Long.MAX_VALUE;
       this.timeoutNanos = nanos;
       this.remainingNanos = nanos;
     }
 
     boolean find(final Pattern pattern, final String input) {
-      if (timeoutNanos <= 0)
+      if (timeoutNanos <= 0 || timeoutNanos == Long.MAX_VALUE)
         return TimeBoundRegex.findUntil(pattern, input, Long.MAX_VALUE);
       if (exhausted)
         throw new TimeoutException(
             "Regular expression time of the command exhausted: arcadedb.command.regexTimeout is shared by every document the command scans");
       final long start = System.nanoTime();
       try {
-        final long now = start + remainingNanos;
-        // a deadline that wraps around (a budget that is effectively endless) is no deadline
-        return TimeBoundRegex.findUntil(pattern, input, now < start ? Long.MAX_VALUE : now);
+        return TimeBoundRegex.findUntil(pattern, input, start + remainingNanos);
       } finally {
-        if (remainingNanos != Long.MAX_VALUE) {
-          remainingNanos -= System.nanoTime() - start;
-          exhausted = remainingNanos <= 0;
-        }
+        remainingNanos -= System.nanoTime() - start;
+        exhausted = remainingNanos <= 0;
       }
     }
   }
