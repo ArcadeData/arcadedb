@@ -29,6 +29,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regressions for #9209 (a query that starts between a memtable flush's swap and the segment's publication misses the
@@ -57,9 +58,9 @@ class Issue9209And9210SparseQueryDuringMutationTest extends TestHelper {
 
   /** Runs {@code mutation} on its own thread, frozen at the hook until the returned latch is released. */
   private static final class FrozenMutation {
-    final CountDownLatch                 inside  = new CountDownLatch(1);
-    final CountDownLatch                 release = new CountDownLatch(1);
-    CompletableFuture<Long>              result;
+    final CountDownLatch    inside  = new CountDownLatch(1);
+    final CountDownLatch    release = new CountDownLatch(1);
+    CompletableFuture<Long> result;
 
     void hook() {
       inside.countDown();
@@ -96,8 +97,25 @@ class Issue9209And9210SparseQueryDuringMutationTest extends TestHelper {
       }
       assertThat(frozen.result.get(30, TimeUnit.SECONDS)).isGreaterThan(0L);
       assertThat(query(engine, 1000)).hasSize(100);
-    } finally {
-      // the engine closes with the try; the TestHelper drops the database
+    }
+  }
+
+  @Test
+  void aFlushThatFailsLeavesNothingSealed() throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) database;
+    try (final PaginatedSparseVectorEngine engine = newEngine(db, "Issue9209Failure")) {
+      put(engine, 0, 50);
+      engine.setMutationHookForTest(() -> {
+        throw new IllegalStateException("injected");
+      });
+      assertThatThrownBy(engine::flush).isInstanceOf(IllegalStateException.class);
+      engine.setMutationHookForTest(null);
+
+      // The sealed memtable must not be read for ever, and the engine must keep working.
+      put(engine, 100, 120);
+      assertThat(query(engine, 1000)).hasSize(20);
+      assertThat(engine.flush()).isGreaterThan(0L);
+      assertThat(query(engine, 1000)).hasSize(20);
     }
   }
 

@@ -350,7 +350,7 @@ public final class BmwScorer {
   private static void scan(final DimEntry[] terms, final Collector collector, final RID endExclusive) throws IOException {
     final int window = GlobalConfiguration.SPARSE_VECTOR_SCORING_WINDOW.getValueAsInteger();
     if (window > 0) {
-      scanWindowed(terms, collector, endExclusive, Math.min(MAX_WINDOW, (window + 63) & ~63));
+      scanWindowed(terms, collector, endExclusive, (Math.min(window, MAX_WINDOW) + 63) & ~63);
       return;
     }
     scanDocumentAtATime(terms, collector, endExclusive);
@@ -563,9 +563,11 @@ public final class BmwScorer {
           continue;
       }
 
-      if (scores == null) {
-        scores = new float[windowSize];
-        touched = new long[windowSize >>> 6];
+      // Sized to the window in use and grown with it, so a query that ends after a few small windows never pays for the
+      // full-size array. Every slot is zeroed on drain, so a larger array starts clean.
+      if (scores == null || scores.length < currentWindow) {
+        scores = new float[currentWindow];
+        touched = new long[currentWindow >>> 6];
       }
 
       // Add the essential terms' postings of this window, one term at a time.

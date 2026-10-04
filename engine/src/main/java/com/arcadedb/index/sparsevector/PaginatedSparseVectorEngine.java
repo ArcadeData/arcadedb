@@ -286,8 +286,8 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   // indexes pays an N-scaled cost just to confirm the segment set is stable.
   private final AtomicLong lastObservedFileManagerMods = new AtomicLong(Long.MIN_VALUE);
 
-  // Test seam: runs inside a flush (memtable swapped out, segment file not yet created) and a compaction (output file registered, merge not
-  // started), both under mutatorLock.
+  // Test seam: runs inside a flush (memtable swapped out, segment file not yet created) and a compaction (output file
+  // registered, merge not started), both under mutatorLock.
   private volatile Runnable mutationHookForTest;
 
   private volatile boolean closed;
@@ -1562,14 +1562,6 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     return out;
   }
 
-  /**
-   * Test-only accessor for the engine's mutator lock. Used by the backpressure regression test
-   * to exercise the soft-block path: the test takes the lock from a worker thread to simulate an
-   * in-flight flush, then verifies that a put past the threshold blocks until release. Reflection
-   * was the previous workaround; a typed package-private accessor keeps the field name from
-   * leaking into test code that would otherwise silently break on a rename. The lock is fully
-   * encapsulated for production: nothing on the public API exposes it.
-   */
   void setMutationHookForTest(final Runnable hook) {
     mutationHookForTest = hook;
   }
@@ -1580,6 +1572,14 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       hook.run();
   }
 
+  /**
+   * Test-only accessor for the engine's mutator lock. Used by the backpressure regression test
+   * to exercise the soft-block path: the test takes the lock from a worker thread to simulate an
+   * in-flight flush, then verifies that a put past the threshold blocks until release. Reflection
+   * was the previous workaround; a typed package-private accessor keeps the field name from
+   * leaking into test code that would otherwise silently break on a rename. The lock is fully
+   * encapsulated for production: nothing on the public API exposes it.
+   */
   ReentrantLock mutatorLockForTest() {
     return mutatorLock;
   }
@@ -1871,6 +1871,8 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     // array, under the lock when it is done (issue #9210). That file is not news to this query: the published array is
     // a consistent snapshot until then, and the mutation reconciles itself. Waiting for it would hold every query for
     // the length of a compaction. Nothing is recorded as observed, so the first query after it runs the reconcile.
+    // The count includes mutations still queued on the lock, so a change that is NOT the mutation's own (a segment
+    // replicated to a follower) can wait one query behind a queued local mutation: staleness of one query, never a loss.
     if (!mutatorLock.tryLock()) {
       if (localMutations.get() > 0)
         return;
@@ -2212,9 +2214,14 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * the segment before it clears the sealed memtable, so a reader that sees the sealed memtable gone sees the segment.
    */
   private MemSnapshot captureMemtables() {
-    final Memtable active = memtable.get();
-    final Memtable sealed = sealedMemtable.get();
-    return new MemSnapshot(active, sealed == active ? null : sealed);
+    while (true) {
+      final Memtable active = memtable.get();
+      final Memtable sealed = sealedMemtable.get();
+      // Two flushes between the two reads would pair a stale live memtable with the NEWER sealed one, and the stale
+      // one would be read as the newest source. The live memtable still being the same one proves no swap came between.
+      if (memtable.get() == active)
+        return new MemSnapshot(active, sealed == active ? null : sealed);
+    }
   }
 
   /**
