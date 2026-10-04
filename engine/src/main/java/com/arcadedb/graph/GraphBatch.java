@@ -703,7 +703,7 @@ public class GraphBatch implements AutoCloseable {
             null, attempt, commitRetries, e.getMessage());
 
         backoffBeforeRetry(attempt);
-      } catch (final RuntimeException e) {
+      } catch (final RuntimeException | Error e) {
         // NOT RETRYABLE: DO NOT LEAVE THE TRANSACTION THIS METHOD BEGAN OPEN (#9040)
         if (ownsTx && database.isTransactionActive()) {
           try {
