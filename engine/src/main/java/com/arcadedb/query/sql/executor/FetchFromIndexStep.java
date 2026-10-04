@@ -537,6 +537,11 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       if (isRangeCondition() && (endsWithNull(convertedFrom, rangeKeySize) || endsWithNull(convertedTo, rangeKeySize)))
         continue;
 
+      // x IN (..., null) is UNKNOWN for a null element, never true, as in a scan: the index must not answer it with the records whose
+      // key is null (#9032)
+      if (hasNullInKeySlot(convertedFrom) || hasNullInKeySlot(convertedTo))
+        continue;
+
       if (!valuesConvertToIndexKeyTypes(convertedFrom) || !valuesConvertToIndexKeyTypes(convertedTo))
         // This combination's bound has no defined ordering against the index's declared key type: it matches no
         // indexed row, consistent with the row-scan operators (#5900). Skip it rather than aborting the whole scan.
@@ -587,6 +592,22 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       cursor = nextCursors.removeFirst();
       fetchNextEntry();
     }
+  }
+
+  /**
+   * Whether a key position that an {@code IN} condition fills holds null. The positions of the key follow the sub-blocks of the
+   * condition, so the sub-block at a position says which operator produced it: only {@code IN} turns a null into "matches
+   * nothing", an equality keeps its own handling.
+   */
+  private boolean hasNullInKeySlot(final Object[] key) {
+    if (key == null || !(condition instanceof AndBlock andBlock))
+      return false;
+    final List<BooleanExpression> subBlocks = andBlock.getSubBlocks();
+    final int slots = Math.min(key.length, subBlocks.size());
+    for (int i = 0; i < slots; i++)
+      if (key[i] == null && subBlocks.get(i) instanceof InCondition in && !in.not)
+        return true;
+    return false;
   }
 
   private static boolean endsWithNull(final Object[] key, final int rangeKeySize) {

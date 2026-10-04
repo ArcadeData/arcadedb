@@ -581,6 +581,12 @@ public class GraphBatch implements AutoCloseable {
     vertex.save();
 
     if (preAllocateEdgeChunks) {
+      // A NEW VERTEX CANNOT OWN A SEGMENT YET: ANY ENTRY CACHED FOR ITS POSITION BELONGS TO A VERTEX WHOSE TRANSACTION WAS ROLLED BACK AND
+      // WHOSE POSITION WAS REUSED (#9039)
+      final RID vertexRID = vertex.getIdentity();
+      final long key = packVertexKey(vertexRID.getBucketId(), vertexRID.getPosition());
+      outChunkRIDCache.remove(key);
+      inChunkRIDCache.remove(key);
       getOrCreateOutEdgeChunk(vertex);
       if (bidirectional)
         getOrCreateInEdgeChunk(vertex);
@@ -688,6 +694,11 @@ public class GraphBatch implements AutoCloseable {
             null, attempt, commitRetries, e.getMessage());
 
         backoffBeforeRetry(attempt);
+      } catch (final RuntimeException e) {
+        // NOT RETRYABLE: DO NOT LEAVE THE TRANSACTION THIS METHOD BEGAN OPEN (#9040)
+        if (database.isTransactionActive())
+          database.rollback();
+        throw e;
       }
     }
   }

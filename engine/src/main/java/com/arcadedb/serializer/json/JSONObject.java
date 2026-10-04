@@ -164,8 +164,8 @@ public class JSONObject implements Map<String, Object> {
     }
     case LocalDate localDate -> {
       if (dateFormatAsString == null)
-        // SAVE AS TIMESTAMP (resolve the offset for the target date's midnight, DST-correct)
-        object.addProperty(name, localDate.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli());
+        // SAVE AS TIMESTAMP: a DATE is a calendar day, anchored at UTC midnight so the number never depends on the JVM time zone (#9037)
+        object.addProperty(name, localDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli());
       else
         // SAVE AS STRING
         object.addProperty(name, dateFormat.format(localDate.atStartOfDay()));
@@ -863,7 +863,7 @@ public class JSONObject implements Map<String, Object> {
       case Enum<?> enumValue -> new JsonPrimitive(enumValue.name());
       case Object o when o.getClass().isArray() -> primitiveArrayToElement(o);
       case Date date -> new JsonPrimitive(date.getTime());
-      case LocalDate localDate -> new JsonPrimitive(localDate.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli());
+      case LocalDate localDate -> new JsonPrimitive(localDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli());
       case TemporalAccessor temporalAccessor -> {
         final Long timestamp = DateUtils.dateTimeToTimestamp(temporalAccessor, ChronoUnit.MILLIS);
         yield timestamp != null ? new JsonPrimitive(timestamp) : new JsonPrimitive(temporalAccessor.toString());
