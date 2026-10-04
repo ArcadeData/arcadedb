@@ -101,4 +101,24 @@ class Issue9123AllShortestPathsStreamingTest extends TestHelper {
     }
     assertThat(seen).hasSize(2000);
   }
+
+  // The enumeration is lazy: a write clause after the match must not see (or change) paths that are not resolved yet
+  @Test
+  @Timeout(60)
+  void aWriteClauseAfterTheMatchDoesNotDisturbTheEnumeration() {
+    database.getSchema().createVertexType("Small");
+    database.getSchema().createEdgeType("S");
+    database.transaction(() -> {
+      final MutableVertex a = database.newVertex("Small").set("id", 0).save();
+      final MutableVertex b = database.newVertex("Small").set("id", 1).save();
+      for (int k = 0; k < 5; k++)
+        a.newEdge("S", b, "eid", k);
+    });
+    database.transaction(() -> database.command("opencypher",
+        "MATCH (a:Small {id: 0}), (b:Small {id: 1}) MATCH p = allShortestPaths((a)-[:S*]->(b)) "
+            + "WITH relationships(p)[0] AS r DELETE r").close());
+    try (final ResultSet rs = database.query("opencypher", "MATCH ()-[r:S]->() RETURN count(r) AS c")) {
+      assertThat(rs.next().<Number>getProperty("c").longValue()).isZero();
+    }
+  }
 }

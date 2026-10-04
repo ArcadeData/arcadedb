@@ -72,6 +72,17 @@ class Issue9124RelationshipSubtypeLabelCheckTest extends TestHelper {
   }
 
   @Test
+  void aTwoLevelSubtypeChainMatches() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE EDGE TYPE R9124Leaf EXTENDS R9124Sub");
+      database.command("sql", "CREATE EDGE R9124Leaf FROM (SELECT FROM N9124 WHERE id = 1) TO (SELECT FROM N9124 WHERE id = 2)");
+    });
+    assertThat(types("MATCH ()-[r:R9124]->() RETURN type(r) AS t")).containsExactly("R9124", "R9124Leaf", "R9124Sub");
+    assertThat(types("MATCH ()-[r]->() WHERE r:R9124 RETURN type(r) AS t")).containsExactly("R9124", "R9124Leaf", "R9124Sub");
+    assertThat(types("MATCH ()-[r]->() WHERE r:R9124Sub RETURN type(r) AS t")).containsExactly("R9124Leaf", "R9124Sub");
+  }
+
+  @Test
   void aSiblingTypeIsStillRefused() {
     assertThat(types("MATCH ()-[r]->() WHERE r:R9124Sub RETURN type(r) AS t")).containsExactly("R9124Sub");
   }

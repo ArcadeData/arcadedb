@@ -243,7 +243,8 @@ public class BinaryTypes {
     else if (isGeoSpatialShape(value))
       type = TYPE_COMPRESSED_GEOMETRY; // Shapes are serialized as binary geometry
     else if (value instanceof BigInteger bigInteger && bigInteger.bitLength() > 63)
-      // OUTSIDE THE LONG RANGE: A DOUBLE WOULD SILENTLY DROP DIGITS, SO IT IS KEPT EXACT AS A DECIMAL (ISSUE #9146)
+      // OUTSIDE THE LONG RANGE (Long.MIN_VALUE ITSELF HAS bitLength() == 63): A DOUBLE WOULD SILENTLY DROP DIGITS, SO IT IS
+      // KEPT EXACT AS A DECIMAL AND READS BACK AS A BigDecimal (ISSUE #9146)
       type = TYPE_DECIMAL;
     else if (value instanceof Number) {
       // GENERIC NUMBER IMPLEMENTATION. THIS HAPPENS WITH JSON NUMBERS
