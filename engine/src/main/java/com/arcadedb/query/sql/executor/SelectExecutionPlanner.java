@@ -82,6 +82,7 @@ import com.arcadedb.query.sql.parser.SchemaIdentifier;
 import com.arcadedb.query.sql.parser.SelectStatement;
 import com.arcadedb.query.sql.parser.SuffixIdentifier;
 import com.arcadedb.query.sql.parser.Statement;
+import com.arcadedb.query.sql.parser.Timeout;
 import com.arcadedb.query.sql.parser.TraverseStatement;
 import com.arcadedb.query.sql.parser.SubQueryCollector;
 import com.arcadedb.query.sql.parser.ValueExpression;
@@ -197,6 +198,34 @@ public class SelectExecutionPlanner {
     // literal-only comparisons, so the verdict holds for every execution that reuses the cached plan.
     if (info.whereClause != null && info.whereClause.isAlwaysTrue(context))
       info.whereClause = null;
+  }
+
+  /**
+   * Plans the read side of an UPDATE or DELETE: {@code SELECT FROM <target> WHERE <where>}. The synthetic SELECT is its own
+   * original statement, so the plan lands in the execution plan cache under its text and the next execution of the same
+   * UPDATE/DELETE (or of the identical SELECT) takes a copy instead of planning again (issue #9207). Honors the cache
+   * rules of a SELECT: no profiling, no input-parameter dependent plan, no non-cacheable clause.
+   *
+   * @param timeout may be null
+   * @param keyHolder the key memoized on the UPDATE/DELETE statement, so a cache hit builds nothing
+   */
+  static InternalExecutionPlan createSourcePlan(final FromClause target, final WhereClause whereClause, final Timeout timeout,
+      final DmlSourcePlanKey keyHolder, final CommandContext context) {
+    final DatabaseInternal db = context.getDatabase();
+    final long epoch = db.getExecutionPlanCache().getInvalidationEpoch();
+    final String key = context.isProfiling() ? null : keyHolder.resolve(target, whereClause, timeout, epoch);
+    if (key == null)
+      return new SelectExecutionPlanner(DmlSourcePlanKey.newSource(target, whereClause, timeout, false)).createExecutionPlan(context,
+          false);
+
+    final ExecutionPlan cached = db.getExecutionPlanCache().get(key, context);
+    if (cached != null)
+      return (InternalExecutionPlan) cached;
+
+    final InternalExecutionPlan plan = new SelectExecutionPlanner(DmlSourcePlanKey.newSource(target, whereClause, timeout, true))
+        .createExecutionPlan(context, true);
+    keyHolder.planned(db.getExecutionPlanCache().contains(key), epoch, db.getExecutionPlanCache().getInvalidationEpoch());
+    return plan;
   }
 
   public InternalExecutionPlan createExecutionPlan(final CommandContext context, final boolean useCache) {
