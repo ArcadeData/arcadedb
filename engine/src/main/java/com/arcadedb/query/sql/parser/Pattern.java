@@ -23,7 +23,6 @@ import com.arcadedb.query.sql.executor.PatternEdge;
 import com.arcadedb.query.sql.executor.PatternNode;
 
 import java.util.*;
-import java.util.stream.Collectors;
 
 /**
  * Created by luigidellaquila on 28/07/15.
@@ -86,14 +85,18 @@ public class Pattern {
    * @return
    */
   public List<Pattern> getDisjointPatterns() {
-    final Map<PatternNode, String> reverseMap = new IdentityHashMap<>(this.aliasToNode.entrySet().stream().collect(Collectors.toMap(Map.Entry::getValue, Map.Entry::getKey)));
+    // IN THE ORDER THE ALIASES WERE WRITTEN, NOT IN THE ORDER OF THEIR IDENTITY HASH CODES (PatternNode COMPARES BY IDENTITY): THE
+    // CARTESIAN PRODUCT RUNS THE SUB-PATTERNS IN THIS ORDER, SO THE SAME STATEMENT MUST ALWAYS GET THE SAME PLAN (ISSUE #8443)
+    final Map<PatternNode, String> reverseMap = new LinkedHashMap<>();
+    for (final Map.Entry<String, PatternNode> entry : this.aliasToNode.entrySet())
+      reverseMap.put(entry.getValue(), entry.getKey());
 
     final List<Pattern> result = new ArrayList<>();
     while (!reverseMap.isEmpty()) {
       final Pattern pattern = new Pattern();
       result.add(pattern);
       final Map.Entry<PatternNode, String> nextNode = reverseMap.entrySet().iterator().next();
-      final Set<PatternNode> toVisit = new HashSet<>();
+      final Set<PatternNode> toVisit = new LinkedHashSet<>();
       toVisit.add(nextNode.getKey());
       while (toVisit.size() > 0) {
         final PatternNode currentNode = toVisit.iterator().next();

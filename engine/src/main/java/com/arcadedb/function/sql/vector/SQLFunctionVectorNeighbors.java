@@ -73,6 +73,9 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
     if (params == null || params.length < 3 || params.length > 4)
       throw new CommandSQLParsingException(getSyntax());
 
+    if (params[0] == null)
+      throw new CommandSQLParsingException("index name is null");
+
     final String indexSpec = params[0].toString();
 
     Object key = params[1];

@@ -25,6 +25,7 @@ import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.parser.AndBlock;
+import com.arcadedb.query.sql.parser.BaseExpression;
 import com.arcadedb.query.sql.parser.Bucket;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.FieldMatchPathItem;
@@ -45,6 +46,7 @@ import com.arcadedb.query.sql.parser.Projection;
 import com.arcadedb.query.sql.parser.ProjectionItem;
 import com.arcadedb.query.sql.parser.Rid;
 import com.arcadedb.query.sql.parser.SelectStatement;
+import com.arcadedb.query.sql.parser.SimpleNode;
 import com.arcadedb.query.sql.parser.Skip;
 import com.arcadedb.query.sql.parser.Timeout;
 import com.arcadedb.query.sql.parser.Unwind;
@@ -79,6 +81,7 @@ public class MatchExecutionPlanner {
   private final   Unwind                 unwind;
   protected final Limit                  limit;
   protected final Timeout                timeout;
+  private final   MatchStatement         statement;
 
   //post-parsing
   private Pattern                  pattern;
@@ -91,6 +94,7 @@ public class MatchExecutionPlanner {
   private static final long threshold = 100;
 
   public MatchExecutionPlanner(final MatchStatement stm) {
+    this.statement = stm;
     this.matchExpressions = stm.getMatchExpressions().stream().map(x -> x.copy()).collect(Collectors.toList());
     this.notMatchExpressions = stm.getNotMatchExpressions().stream().map(x -> x.copy()).collect(Collectors.toList());
     this.returnItems = stm.getReturnItems().stream().map(x -> x.copy()).collect(Collectors.toList());
@@ -139,8 +143,10 @@ public class MatchExecutionPlanner {
         final InternalExecutionPlan subPlan = createPlanForPattern(subPattern, context, estimatedRootEntries, aliasesToPrefetch,
             correlated);
         // A CORRELATED LEG IS PLANNED AGAIN FOR EVERY OUTER TUPLE: THE FETCH AND FILTER STEPS OF ITS ROOT SELECT DO NOT RESTART
+        // THE ALIASES IT READS ARE WHAT ITS ROWS ARE REMEMBERED BY (ISSUE #8443)
         step.addSubPlan(subPlan,
-            correlated ? () -> createPlanForPattern(subPattern, context, estimatedRootEntries, aliasesToPrefetch, true) : null);
+            correlated ? levelContext -> createPlanForPattern(subPattern, levelContext, estimatedRootEntries, aliasesToPrefetch, true) : null,
+            correlated ? outerAliasesRead(subPattern) : null, statement);
       }
       result.chain(step);
     } else {
@@ -749,6 +755,31 @@ public class MatchExecutionPlanner {
       return Collections.emptyList();
     final List<String> involvedAliases = filter.getBaseExpression().getMatchPatternInvolvedAliases();
     return involvedAliases == null ? Collections.emptyList() : involvedAliases;
+  }
+
+  /**
+   * The aliases bound outside {@code subPattern} that its nodes read through {@code $matched}, or null when that cannot
+   * be told. It can be told only when every {@code $matched} in the MATCH expressions is written
+   * {@code $matched.<alias>...}, the one form {@link #matchedDependencies} sees: a bare {@code $matched}, passed to a
+   * function or indexed, may read any alias, so a level reading it has to be given the whole outer tuple.
+   */
+  private String[] outerAliasesRead(final Pattern subPattern) {
+    if (!SqlAstInspector.allNodesMatch(matchExpressions, MatchExecutionPlanner::isAliasQualifiedMatchedRead))
+      return null;
+
+    final Set<String> aliases = new TreeSet<>();
+    for (final PatternNode node : subPattern.aliasToNode.values())
+      for (final String dependency : matchedDependencies(aliasFilters.get(node.alias)))
+        if (!subPattern.aliasToNode.containsKey(dependency))
+          aliases.add(dependency);
+    return aliases.toArray(new String[0]);
+  }
+
+  private static boolean isAliasQualifiedMatchedRead(final SimpleNode node) {
+    if (node instanceof BaseExpression expression && expression.identifier != null
+        && "$matched".equalsIgnoreCase(expression.identifier.toString()))
+      return expression.modifier != null && expression.modifier.suffix != null && expression.modifier.suffix.identifier != null;
+    return true;
   }
 
   /**

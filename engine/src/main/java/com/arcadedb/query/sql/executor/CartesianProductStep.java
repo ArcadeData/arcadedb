@@ -18,12 +18,16 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.LocalResultSet;
+import com.arcadedb.query.sql.parser.Statement;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.NoSuchElementException;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 /**
@@ -37,14 +41,25 @@ import java.util.function.Supplier;
  * reset (the same reason {@link LetQueryStep} plans a correlated subquery again per row). The planner orders the
  * sub-plans so that every alias a level reads is bound by a level before it.
  * <p>
+ * Many outer tuples feed a correlated level the same values: a level that reads only {@code $matched.a} is asked the
+ * same question once for every tuple of the levels between {@code a} and it. When the planner can name the aliases
+ * the level reads (issue #8443), the level runs with {@code $matched} bound to those aliases alone, in a context that
+ * records every other outer variable it reads, and its rows are remembered per distinct binding by a
+ * {@link CorrelatedSubQueryCache}, the one {@link LetQueryStep} uses for a correlated LET subquery (issue #8400).
+ * <p>
  * Created by luigidellaquila on 11/10/16.
  */
 public class CartesianProductStep extends AbstractExecutionStep {
 
   // THE PLANS AS BUILT BY THE PLANNER, WHAT EXPLAIN PRINTS; A CORRELATED LEVEL RUNS A FRESH ONE PER OUTER TUPLE INSTEAD
   private final List<InternalExecutionPlan>           subPlans  = new ArrayList<>();
-  // NON-NULL FOR A CORRELATED LEVEL: PLANS THE SUB-PATTERN AGAIN FOR EVERY OUTER TUPLE
-  private final List<Supplier<InternalExecutionPlan>> factories = new ArrayList<>();
+  // NON-NULL FOR A CORRELATED LEVEL: PLANS THE SUB-PATTERN AGAIN FOR EVERY OUTER TUPLE, IN THE CONTEXT IT IS GIVEN
+  private final List<Function<CommandContext, InternalExecutionPlan>> factories = new ArrayList<>();
+  // NON-NULL FOR A CORRELATED LEVEL WHOSE ROWS MAY BE REMEMBERED: THE ALIASES OF THE OUTER TUPLE THE LEVEL READS, AND
+  // THE ONLY ONES IT IS GIVEN. NULL WHEN THE PLANNER CANNOT NAME THEM ALL, WHERE THE LEVEL SEES THE WHOLE OUTER TUPLE
+  private final List<String[]>                                        readAliases = new ArrayList<>();
+  // THE STATEMENT THE LEVELS BELONG TO, WHAT THE RESULT CACHE CHECKS FOR PURITY. NULL: NO LEVEL IS REMEMBERED
+  private       Statement                                             statement;
 
   private boolean inited = false;
   // THE ROWS OF AN INDEPENDENT LEVEL'S FIRST PASS, REPLAYED THROUGH reset() FOR EVERY LATER OUTER TUPLE
@@ -53,6 +68,10 @@ public class CartesianProductStep extends AbstractExecutionStep {
   private final HeapElementsLimit       heapLimit;
   private final List<Boolean>           firstPass  = new ArrayList<>();
 
+  // ONE CACHE PER REMEMBERED LEVEL (A LEVEL'S ROWS ARE ITS OWN), CREATED WHEN THE LEVEL IS FIRST OPENED. NULL ENTRIES: NONE
+  private final List<CorrelatedSubQueryCache> caches       = new ArrayList<>();
+  // THE RUN OF A REMEMBERED LEVEL STILL BEING PULLED: THE ROWS IT HAS ANSWERED, TO STORE ONCE IT IS EXHAUSTED
+  private final List<LevelRun>                runs         = new ArrayList<>();
   private final List<ResultSet> resultSets   = new ArrayList<>();
   private       List<Result>    currentTuple = new ArrayList<>();
   // THE OUTER TUPLE A CORRELATED LEVEL IS OPEN FOR, REBOUND TO $matched BEFORE EVERY PULL FROM IT
@@ -106,6 +125,8 @@ public class CartesianProductStep extends AbstractExecutionStep {
     firstPass.clear();
     resultSets.clear();
     outerTuples.clear();
+    caches.clear();
+    runs.clear();
     currentTuple = new ArrayList<>();
     nextRecord = null;
     // THE FIRST PASS OF AN INDEPENDENT LEVEL PULLS FROM THE SUB-PLAN ITSELF: ONE LEFT EXHAUSTED WOULD ANSWER NO ROW
@@ -128,7 +149,10 @@ public class CartesianProductStep extends AbstractExecutionStep {
       firstPass.add(true);
       currentTuple.add(null);
       outerTuples.add(null);
+      caches.add(null);
+      runs.add(null);
     }
+    initResultCaches();
 
     for (int level = 0; level < subPlans.size(); level++) {
       open(level);
@@ -174,6 +198,7 @@ public class CartesianProductStep extends AbstractExecutionStep {
       if (rs.hasNext()) {
         final Result item = rs.next();
         currentTuple.set(level, item);
+        recordRow(level, item);
         if (firstPass.get(level) && factories.get(level) == null) {
           final InternalResultSet buffered = preFetches.get(level);
           buffered.add(item);
@@ -181,6 +206,10 @@ public class CartesianProductStep extends AbstractExecutionStep {
         }
         return true;
       }
+
+      // THE RUN OF A REMEMBERED LEVEL IS COMPLETE ONLY NOW: ONLY NOW DOES IT HAVE READ EVERYTHING IT WILL READ FROM THE OUTER
+      // CONTEXT, WHICH IS STILL BOUND TO ITS OUTER TUPLE (BOUND AGAIN AT THE TOP OF THIS LOOP)
+      storeRun(level);
 
       // AN INDEPENDENT LEVEL WITH NO ROW AT ALL EMPTIES THE WHOLE PRODUCT: ANSWER SO AT ONCE RATHER THAN WALKING EVERY ROW OF
       // THE LEVELS BEFORE IT TO FIND OUT. A CORRELATED LEVEL ANSWERS PER OUTER TUPLE, SO IT GETS NO SUCH SHORTCUT
@@ -204,17 +233,34 @@ public class CartesianProductStep extends AbstractExecutionStep {
     if (previous instanceof LocalResultSet)
       previous.close();
 
-    final Supplier<InternalExecutionPlan> factory = factories.get(level);
+    final Function<CommandContext, InternalExecutionPlan> factory = factories.get(level);
     if (factory != null) {
       // THE ROOT OF THE LEG READS $matched AS ITS SEED WHEN IT IS FIRST PULLED, WHICH LocalResultSet DOES RIGHT HERE. THE
       // BINDING IS NOT RESTORED: advance() BINDS IT AGAIN BEFORE EVERY LATER PULL, AND MatchBindMatchedStep BINDS EVERY ROW
       // THE PRODUCT EMITS BEFORE THE RETURN CLAUSE READS IT. A LEVEL IS ONE CONNECTED SUB-PATTERN, NEVER A PRODUCT OF ITS
       // OWN, SO THE BINDINGS DO NOT NEST
-      final ResultInternal outerTuple = partialTuple(level);
+      final ResultInternal outerTuple = partialTuple(level, readAliases.get(level));
       outerTuples.set(level, outerTuple);
       context.setVariable(MatchBindMatchedStep.MATCHED_VARIABLE, outerTuple);
-      final InternalExecutionPlan plan = factory.get();
-      resultSets.set(level, new LocalResultSet(plan));
+      runs.set(level, null);
+
+      final CorrelatedSubQueryCache cache = caches.get(level);
+      if (cache != null && !cache.isDisabled()) {
+        final DatabaseInternal database = context.getDatabase();
+        final List<Result> remembered = cache.lookup(context, database);
+        if (remembered != null) {
+          // THE ROWS THIS LEVEL ANSWERED THE LAST TIME ITS OUTER TUPLE HELD THESE VALUES: NO PLANNING, NO EXECUTION
+          final InternalResultSet replay = new InternalResultSet();
+          for (final Result row : remembered)
+            replay.add(row);
+          resultSets.set(level, replay);
+        } else {
+          final CorrelatedSubQueryCache.TrackingContext tracking = cache.newContext(context);
+          runs.set(level, new LevelRun(tracking));
+          resultSets.set(level, new LocalResultSet(factory.apply(tracking)));
+        }
+      } else
+        resultSets.set(level, new LocalResultSet(factory.apply(context)));
     } else if (firstPass.get(level))
       resultSets.set(level, new LocalResultSet(subPlans.get(level)));
     else {
@@ -236,13 +282,72 @@ public class CartesianProductStep extends AbstractExecutionStep {
   }
 
   private ResultInternal partialTuple(final int levels) {
+    return partialTuple(levels, null);
+  }
+
+  /**
+   * @param aliases the only aliases to keep, or null to keep every one of the levels
+   */
+  private ResultInternal partialTuple(final int levels, final String[] aliases) {
     final ResultInternal partial = new ResultInternal(context.getDatabase());
     for (int i = 0; i < levels; i++) {
       final Result res = currentTuple.get(i);
       for (final String s : res.getPropertyNames())
-        partial.setProperty(s, res.getProperty(s));
+        if (aliases == null || contains(aliases, s))
+          partial.setProperty(s, res.getProperty(s));
     }
     return partial;
+  }
+
+  private static boolean contains(final String[] aliases, final String alias) {
+    for (final String candidate : aliases)
+      if (candidate.equals(alias))
+        return true;
+    return false;
+  }
+
+  /** Creates the result cache of every correlated level the planner named the aliases of, unless none can be trusted. */
+  private void initResultCaches() {
+    final DatabaseInternal database = context.getDatabase();
+    if (statement == null || database == null)
+      return;
+    final int maxEntries = database.getConfiguration().getValueAsInteger(GlobalConfiguration.SQL_LET_SUBQUERY_CACHE_SIZE);
+    for (int level = 0; level < factories.size(); level++)
+      if (factories.get(level) != null && readAliases.get(level) != null)
+        caches.set(level, CorrelatedSubQueryCache.create(statement, null, database, maxEntries));
+  }
+
+  /** Keeps a row a remembered level answers, until it turns out to be too many to remember. */
+  private void recordRow(final int level, final Result row) {
+    final LevelRun run = runs.get(level);
+    if (run == null)
+      return;
+    if (run.rows.size() >= CorrelatedSubQueryCache.MAX_CACHED_ROWS_PER_ENTRY)
+      // TOO MANY TO REMEMBER: THE CACHE WOULD REFUSE THEM, SO STOP HOLDING THEM
+      runs.set(level, null);
+    else
+      run.rows.add(row);
+  }
+
+  /** Remembers the rows of a remembered level that was pulled to exhaustion, for the outer tuple it ran for. */
+  private void storeRun(final int level) {
+    final LevelRun run = runs.get(level);
+    if (run == null)
+      return;
+    runs.set(level, null);
+    final CorrelatedSubQueryCache cache = caches.get(level);
+    if (cache != null)
+      cache.store(run.tracking, context, context.getDatabase(), run.rows);
+  }
+
+  /** The rows one run of a remembered level has answered so far, and the context it reads the outer variables through. */
+  private static final class LevelRun {
+    final CorrelatedSubQueryCache.TrackingContext tracking;
+    final List<Result>                            rows = new ArrayList<>();
+
+    LevelRun(final CorrelatedSubQueryCache.TrackingContext tracking) {
+      this.tracking = tracking;
+    }
   }
 
   private void buildNextRecord() {
@@ -266,8 +371,28 @@ public class CartesianProductStep extends AbstractExecutionStep {
    *                being buffered and replayed. The sub-plan given is the one EXPLAIN prints
    */
   public void addSubPlan(final InternalExecutionPlan subPlan, final Supplier<InternalExecutionPlan> factory) {
+    addSubPlan(subPlan, factory == null ? null : ctx -> factory.get(), null, null);
+  }
+
+  /**
+   * @param factory     non-null for a correlated level: plans the sub-pattern again, bound to the context it is given
+   * @param readAliases the aliases of the earlier levels the correlated level reads through {@code $matched} and no
+   *                    others, or null when that cannot be told: the level is then given the whole outer tuple and
+   *                    its rows are never remembered
+   * @param statement   the MATCH statement, which decides whether a level's rows can be remembered at all
+   */
+  public void addSubPlan(final InternalExecutionPlan subPlan, final Function<CommandContext, InternalExecutionPlan> factory,
+      final String[] readAliases, final Statement statement) {
     this.subPlans.add(subPlan);
     this.factories.add(factory);
+    this.readAliases.add(factory == null ? null : readAliases);
+    if (statement != null)
+      this.statement = statement;
+  }
+
+  /** The cache of a correlated level, or null when the level is not remembered. Exposed for tests. */
+  CorrelatedSubQueryCache getResultCache(final int level) {
+    return level < caches.size() ? caches.get(level) : null;
   }
 
   @Override
