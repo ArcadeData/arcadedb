@@ -19,6 +19,7 @@
 package com.arcadedb.postgres;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.server.StaticBaseServerTest;
 import com.arcadedb.server.network.MultiAddressServerSocket;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -47,13 +48,15 @@ class Issue9224PostgresListensOnEveryLocalAddressIT extends PostgresWireProtocol
     super.setTestConfiguration();
     GlobalConfiguration.SERVER_PLUGINS.setValue("Postgres:com.arcadedb.postgres.PostgresProtocolPlugin");
     GlobalConfiguration.POSTGRES_HOST.setValue("localhost");
-    // the first port of the range is held on [::1] only: it must not look free for "localhost"
-    squattedPort = Integer.parseInt(GlobalConfiguration.POSTGRES_PORT.getValueAsString().split("[-,]")[0].trim());
+    // a port taken from the shared allocator, held on [::1] only and offered as the first port of the range: it must not look free
+    // for "localhost"
+    squattedPort = StaticBaseServerTest.allocateFreePorts(1)[0];
     try {
       squatter = new ServerSocket(squattedPort, 0, InetAddress.getByName("::1"));
     } catch (final IOException e) {
-      squatter = null; // no IPv6 loopback here, or the port is held already
+      squatter = null; // no IPv6 loopback here
     }
+    GlobalConfiguration.POSTGRES_PORT.setValue(squattedPort + "-" + (squattedPort + 9));
   }
 
   @AfterEach

@@ -46,19 +46,24 @@ import java.util.concurrent.LinkedBlockingQueue;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public final class MultiAddressServerSocket implements AutoCloseable {
-  private static final Object CLOSED = new Object();
+  private static final Object CLOSED           = new Object();
+  private static final long   ERROR_BACKOFF_MS = 50;
 
-  private final List<ServerSocket>        sockets;
+  private final List<ServerSocket>          sockets;
   private final LinkedBlockingQueue<Object> accepted;
-  private volatile boolean                closed;
+  private final List<Thread>                acceptors = new ArrayList<>();
+  private volatile boolean                  closed;
 
   private MultiAddressServerSocket(final List<ServerSocket> sockets) {
     this.sockets = sockets;
     if (sockets.size() > 1) {
-      accepted = new LinkedBlockingQueue<>();
+      // one slot: the backlog stays in the kernel, as with a single socket, instead of every connection being accepted ahead of the
+      // pre-authentication and connection-limit checks that run after accept()
+      accepted = new LinkedBlockingQueue<>(1);
       for (final ServerSocket socket : sockets) {
         final Thread thread = new Thread(() -> acceptLoop(socket), "ArcadeDB listener " + socket.getLocalSocketAddress());
         thread.setDaemon(true);
+        acceptors.add(thread);
         thread.start();
       }
     } else
@@ -166,11 +171,43 @@ public final class MultiAddressServerSocket implements AutoCloseable {
   private void acceptLoop(final ServerSocket socket) {
     while (!closed && !socket.isClosed())
       try {
-        accepted.offer(socket.accept());
+        final Socket client = socket.accept();
+        try {
+          accepted.put(client); // blocks while the listener is busy
+        } catch (final InterruptedException e) {
+          closeQuietly(client);
+          return;
+        }
+        if (closed)
+          drain();
       } catch (final IOException e) {
-        if (!closed && !socket.isClosed())
-          accepted.offer(e);
+        if (closed || socket.isClosed())
+          return;
+        // handed to the caller like the error of a single socket, unless it has not consumed the previous one; either way a pause,
+        // so a persistent failure (no file descriptors left) is not retried in a hot loop
+        accepted.offer(e);
+        try {
+          Thread.sleep(ERROR_BACKOFF_MS);
+        } catch (final InterruptedException ie) {
+          return;
+        }
       }
+  }
+
+  /** Closes the connections accepted but never handed out. */
+  private void drain() {
+    Object left;
+    while ((left = accepted.poll()) != null)
+      if (left instanceof Socket socket)
+        closeQuietly(socket);
+  }
+
+  private static void closeQuietly(final Socket socket) {
+    try {
+      socket.close();
+    } catch (final IOException e) {
+      // IGNORE IT
+    }
   }
 
   /** The port bound, the same on every address; -1 when not bound or closed. */
@@ -191,8 +228,12 @@ public final class MultiAddressServerSocket implements AutoCloseable {
   public void close() {
     closed = true;
     closeAll(sockets);
-    if (accepted != null)
+    if (accepted != null) {
+      for (final Thread acceptor : acceptors)
+        acceptor.interrupt();
+      drain();
       accepted.offer(CLOSED);
+    }
   }
 
   private static void closeAll(final List<ServerSocket> sockets) {
