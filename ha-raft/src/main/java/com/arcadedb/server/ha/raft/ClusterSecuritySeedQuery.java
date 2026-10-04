@@ -24,6 +24,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.ha.raft.PostSecuritySeedHandler.DeclaredPeerHttpAddress;
 import com.arcadedb.server.http.handler.LeaderDial;
 import com.arcadedb.server.security.ReplicatedSecurityFingerprintRepository;
 import com.arcadedb.server.security.ServerSecurity;
@@ -164,7 +165,25 @@ public final class ClusterSecuritySeedQuery {
    */
   public static List<String> seedForAdmission(final ArcadeDBServer server, final RaftHAPlugin plugin,
       final String admittedPeer) throws IOException {
-    return seed(server, plugin, "the admission of peer '" + admittedPeer + "'", null, false).failedSeeds();
+    return seedForAdmission(server, plugin, admittedPeer, null, null);
+  }
+
+  /**
+   * {@link #seedForAdmission(ArcadeDBServer, RaftHAPlugin, String)} for a peer whose HTTP address the admission
+   * DECLARED (issue #8689). The address goes to the leader with the request, because the leader's seed probes the
+   * peer at the address the LEADER's map holds, and a declaration served by a follower reached only the follower's.
+   * When this node is the leader there is nothing to send: {@code RaftClusterManager.addPeer} wrote it here before
+   * the membership change committed (issue #8330).
+   *
+   * @param admittedPeerId      the Raft id of the admitted peer, or {@code null} when no address is declared
+   * @param declaredHttpAddress the {@code host:port} declared for its HTTP listener, or {@code null}
+   */
+  public static List<String> seedForAdmission(final ArcadeDBServer server, final RaftHAPlugin plugin,
+      final String admittedPeer, final String admittedPeerId, final String declaredHttpAddress) throws IOException {
+    final DeclaredPeerHttpAddress declared = admittedPeerId != null && declaredHttpAddress != null
+        ? new DeclaredPeerHttpAddress(admittedPeerId, declaredHttpAddress)
+        : null;
+    return seed(server, plugin, "the admission of peer '" + admittedPeer + "'", null, false, declared).failedSeeds();
   }
 
   /**
@@ -187,7 +206,7 @@ public final class ClusterSecuritySeedQuery {
    */
   public static SeedAnswer seedForCatchUpAnswer(final ArcadeDBServer server, final RaftHAPlugin plugin,
       final String reason) throws IOException {
-    return seed(server, plugin, reason, localFingerprints(server.getSecurity()), true);
+    return seed(server, plugin, reason, localFingerprints(server.getSecurity()), true, null);
   }
 
   /** The three digests the leader compares against its own; {@code null} when there is no security store. */
@@ -201,10 +220,10 @@ public final class ClusterSecuritySeedQuery {
   }
 
   private static SeedAnswer seed(final ArcadeDBServer server, final RaftHAPlugin plugin, final String reason,
-      final JSONObject fingerprints, final boolean catchUp) throws IOException {
+      final JSONObject fingerprints, final boolean catchUp, final DeclaredPeerHttpAddress declared) throws IOException {
     for (int attempt = 1; ; attempt++) {
       try {
-        return seedOnce(server, plugin, reason, fingerprints, catchUp);
+        return seedOnce(server, plugin, reason, fingerprints, catchUp, declared);
       } catch (final NotLeaderException e) {
         if (attempt >= NOT_LEADER_ATTEMPTS)
           throw new IOException("the security seed could not be requested: " + e.getMessage());
@@ -248,9 +267,10 @@ public final class ClusterSecuritySeedQuery {
    *                catch-up on a node with no security store has no fingerprints to send and would otherwise be
    *                read as an admission - and answered by a recently completed seed it did not cause, which is
    *                the reuse hole this distinction exists to keep shut (CodeRabbit on PR #7854)
+   * @param declared the admitted peer's id and declared HTTP address, or {@code null} (issue #8689)
    */
   private static SeedAnswer seedOnce(final ArcadeDBServer server, final RaftHAPlugin plugin, final String reason,
-      final JSONObject fingerprints, final boolean catchUp) throws IOException {
+      final JSONObject fingerprints, final boolean catchUp, final DeclaredPeerHttpAddress declared) throws IOException {
     final RaftHAServer raft = plugin.getRaftHAServer();
     if (raft == null)
       throw new IOException("Raft HA is not started on this node, so no security seed can be requested");
@@ -278,6 +298,9 @@ public final class ClusterSecuritySeedQuery {
       body.put("catchUp", true);
     if (fingerprints != null)
       body.put("fingerprints", fingerprints);
+    if (declared != null)
+      body.put(PostSecuritySeedHandler.ADMITTED_PEER_ID, declared.peerId())
+          .put(PostSecuritySeedHandler.DECLARED_HTTP_ADDRESS, declared.httpAddress());
 
     final long timeoutMs = Math.max(reportTimeoutMs(server.getConfiguration()), LeaderDial.MIN_FORWARD_TIMEOUT_MS);
     final HttpRequest.Builder builder = HttpRequest.newBuilder()

@@ -2542,6 +2542,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
     return membershipSecuritySeeder.seedNowAndReport(reason, timeoutMs, mayReuseRecentSeed);
   }
 
+  /**
+   * {@link #seedSecurityNowAndReport} answered only by a seed that starts after this call (issue #8689); see
+   * {@link MembershipSecuritySeeder#seedAfterInFlightAndReport}.
+   */
+  public List<String> seedSecurityAfterInFlightAndReport(final String reason, final long timeoutMs) {
+    return membershipSecuritySeeder.seedAfterInFlightAndReport(reason, timeoutMs);
+  }
+
   /** Package-private test seam (issue #7531): substitutes the seeder the configuration callback drives. */
   /** Installs the detector {@link RaftHAServer} owns, so it outlives this state machine (issue #7819). */
   void setRuntimeJoinDetector(final RuntimeJoinDetector detector) {
