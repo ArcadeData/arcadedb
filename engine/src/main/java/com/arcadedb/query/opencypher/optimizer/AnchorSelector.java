@@ -475,6 +475,34 @@ public class AnchorSelector {
   }
 
   /**
+   * Same as {@link #findIndexForProperty(List, String, boolean)} for an equality seek, whose key is built from {@code pinned}, the
+   * properties the query holds equal to a value. A hash index answers an exact key only, so a composite one whose key the query
+   * cannot fill is skipped: the seek would have to read it as a prefix range (issue #9236).
+   *
+   * @param indexes      list of available indexes
+   * @param propertyName property to search for
+   * @param pinned       the properties the query holds equal to a value
+   * @return index statistics if found, null otherwise
+   */
+  private IndexStatistics findIndexForProperty(final List<IndexStatistics> indexes, final String propertyName,
+      final Set<String> pinned) {
+    if (indexes == null)
+      return null;
+    for (final IndexStatistics index : indexes) {
+      if (!index.isOrdered() && !pinned.containsAll(index.getPropertyNames()))
+        continue;
+      if (leadsWithProperty(index, propertyName))
+        return index;
+    }
+    return null;
+  }
+
+  /** Same as {@link #findIndexForProperty(List, String, boolean)}, skipping the indexes that cannot be read in key order (a hash index). */
+  private IndexStatistics findOrderedIndexForProperty(final List<IndexStatistics> indexes, final String propertyName) {
+    return findIndexForProperty(indexes, propertyName, true);
+  }
+
+  /**
    * Finds an index whose key starts with the given property.
    * <p>
    * A single-property index is an exact match; a composite index is usable when the property is its
@@ -486,30 +514,6 @@ public class AnchorSelector {
    * @param propertyName property to search for
    * @return index statistics if found, null otherwise
    */
-  /**
-   * Same as {@link #findIndexForProperty(List, String, boolean)} for an equality seek, whose key is built from {@code pinned}, the
-   * properties the query holds equal to a value. A hash index answers an exact key only, so a composite one whose key the query
-   * cannot fill is skipped: the seek would have to read it as a prefix range (issue #9236).
-   */
-  private IndexStatistics findIndexForProperty(final List<IndexStatistics> indexes, final String propertyName,
-      final Set<String> pinned) {
-    if (indexes == null)
-      return null;
-    for (final IndexStatistics index : indexes) {
-      if (!index.isOrdered() && !pinned.containsAll(index.getPropertyNames()))
-        continue;
-      final IndexStatistics found = findIndexForProperty(List.of(index), propertyName, false);
-      if (found != null)
-        return found;
-    }
-    return null;
-  }
-
-  /** Same as {@link #findIndexForProperty(List, String, boolean)}, skipping the indexes that cannot be read in key order (a hash index). */
-  private IndexStatistics findOrderedIndexForProperty(final List<IndexStatistics> indexes, final String propertyName) {
-    return findIndexForProperty(indexes, propertyName, true);
-  }
-
   private IndexStatistics findIndexForProperty(final List<IndexStatistics> indexes, final String propertyName,
       final boolean orderedOnly) {
     if (indexes == null) {
@@ -519,18 +523,17 @@ public class AnchorSelector {
     for (final IndexStatistics index : indexes) {
       if (orderedOnly && !index.isOrdered())
         continue;
-      // Check if this is a single-property index on the target property
-      if (index.getPropertyNames().size() == 1 && index.getPropertyNames().contains(propertyName)) {
+      if (leadsWithProperty(index, propertyName))
         return index;
-      }
-
-      // For composite indexes, check if property is the first column (can use index prefix)
-      if (!index.getPropertyNames().isEmpty() && index.getPropertyNames().get(0).equals(propertyName)) {
-        return index;
-      }
     }
 
     return null;
+  }
+
+  /** A single-property index on the property, or a composite one whose leading column it is (the index prefix) */
+  private static boolean leadsWithProperty(final IndexStatistics index, final String propertyName) {
+    final List<String> names = index.getPropertyNames();
+    return !names.isEmpty() && names.get(0).equals(propertyName);
   }
 
   /**
