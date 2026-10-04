@@ -24,6 +24,7 @@ import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.graph.LightEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.gremlin.io.ArcadeIoRegistry;
 import com.arcadedb.gremlin.service.ArcadeServiceRegistry;
@@ -418,7 +419,7 @@ public class ArcadeGraph implements Graph, Closeable {
           buckets.addAll(t.getBuckets(true));
 
       if (buckets.isEmpty())
-        return EMPTY_EDGES;
+        return lightweightEdges();
 
       // BUILD THE QUERY
       final StringBuilder query = new StringBuilder("select from bucket:[");
@@ -436,7 +437,7 @@ public class ArcadeGraph implements Graph, Closeable {
           .filter(a -> a.getIdentity().isEmpty() || database.existsRecord(a.getIdentity().get()))
           .map(result -> (Edge) new ArcadeEdge(this, (com.arcadedb.graph.Edge) result.toElement()))
           .iterator();
-      return closingIterator(base, resultSet);
+      return concat(closingIterator(base, resultSet), lightweightEdges());
 
     }
 
@@ -611,7 +612,50 @@ public class ArcadeGraph implements Graph, Closeable {
   }
 
   protected void deleteElement(final ArcadeElement element) {
-    database.deleteRecord(element.getBaseElement().getRecord());
+    // A LIGHTWEIGHT EDGE HAS NO RECORD TO DELETE: IT IS REMOVED FROM THE TWO VERTICES THAT LIST IT (#9142)
+    if (element.getBaseElement() instanceof LightEdge edge)
+      edge.delete();
+    else
+      database.deleteRecord(element.getBaseElement().getRecord());
+  }
+
+  /** The LIGHTWEIGHT edges of the database, which no bucket holds (#9142). */
+  private Iterator<Edge> lightweightEdges() {
+    final Iterator<com.arcadedb.graph.Edge> edges = LightweightEdges.all(database);
+    if (!edges.hasNext())
+      return EMPTY_EDGES;
+    return new Iterator<>() {
+      @Override
+      public boolean hasNext() {
+        return edges.hasNext();
+      }
+
+      @Override
+      public Edge next() {
+        return new ArcadeEdge(ArcadeGraph.this, edges.next());
+      }
+    };
+  }
+
+  private static <T> Iterator<T> concat(final CloseableIterator<T> first, final Iterator<T> second) {
+    if (second == EMPTY_EDGES)
+      return first;
+    return new CloseableIterator<>() {
+      @Override
+      public boolean hasNext() {
+        return first.hasNext() || second.hasNext();
+      }
+
+      @Override
+      public T next() {
+        return first.hasNext() ? first.next() : second.next();
+      }
+
+      @Override
+      public void close() {
+        first.close();
+      }
+    };
   }
 
   public BasicDatabase getDatabase() {

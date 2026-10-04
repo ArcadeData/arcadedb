@@ -21,6 +21,9 @@ package com.arcadedb.server.gremlin;
 import com.arcadedb.gremlin.ArcadeGraph;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
+import org.apache.tinkerpop.gremlin.groovy.engine.GremlinExecutor;
+import org.apache.tinkerpop.gremlin.jsr223.GremlinScriptEngine;
+import org.apache.tinkerpop.gremlin.jsr223.GremlinScriptEngineManager;
 import org.apache.tinkerpop.gremlin.process.traversal.TraversalSource;
 import org.apache.tinkerpop.gremlin.server.GraphManager;
 import org.apache.tinkerpop.gremlin.server.Settings;
@@ -28,8 +31,10 @@ import org.apache.tinkerpop.gremlin.structure.Graph;
 import org.apache.tinkerpop.gremlin.structure.Transaction;
 
 import javax.script.Bindings;
+import javax.script.ScriptContext;
 import javax.script.SimpleBindings;
 
+import java.util.Collection;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
@@ -50,6 +55,8 @@ public class ArcadeGraphManager implements GraphManager {
 
   private static ArcadeDBServer serverInstance;
 
+  // THE GLOBAL BINDINGS OF THE GREMLIN EXECUTOR, ONCE THE SERVER HAS BUILT THEM (#9147)
+  private volatile    Bindings               scriptGlobals;
   private final Map<String, Graph>           graphs           = new ConcurrentHashMap<>();
   private final Map<String, TraversalSource> traversalSources = new ConcurrentHashMap<>();
   // Targets the 'g' alias has already been announced for, see announceAliasMappingLevel().
@@ -211,7 +218,31 @@ public class ArcadeGraphManager implements GraphManager {
     final Bindings bindings = new SimpleBindings();
     graphs.forEach(bindings::put);
     traversalSources.forEach(bindings::put);
+
+    // THE EXECUTOR'S OWN COPY OF THE GLOBAL BINDINGS FOLLOWS THE DATABASES REGISTERED SINCE THE START (#9147)
+    final Bindings executorCopy = scriptGlobals;
+    if (executorCopy != null)
+      executorCopy.putAll(bindings);
     return bindings;
+  }
+
+  /**
+   * Replaces the global bindings of the given script engines with {@link LiveScriptBindings}, so a script sees the databases
+   * created after the server started (issue #9147). TinkerPop evaluates every script against a copy of {@link #getAsBindings()}
+   * taken once, while the server starts, and that copy stays the executor's own: a lambda bytecode request still reads its
+   * traversal source from it. It is kept current from here on, see {@link #getAsBindings()}.
+   */
+  public void bindScriptEnginesLive(final GremlinExecutor executor, final Collection<String> engineNames) {
+    final GremlinScriptEngineManager manager = executor.getScriptEngineManager();
+    final Bindings base = manager.getBindings();
+    final Bindings live = new LiveScriptBindings(base, this);
+    scriptGlobals = base;
+    manager.setBindings(live);
+    for (final String engineName : engineNames) {
+      final GremlinScriptEngine engine = manager.getEngineByName(engineName);
+      if (engine != null)
+        engine.setBindings(live, ScriptContext.GLOBAL_SCOPE);
+    }
   }
 
   @Override
