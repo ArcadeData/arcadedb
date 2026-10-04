@@ -168,7 +168,7 @@ class CypherFollowUpsIssue5602Test extends TestHelper {
    * there is no AST here to descend into.
    */
   private static final Set<String> LEAF_EXPRESSIONS = Set.of("LiteralExpression", "VariableExpression",
-      "ParameterExpression", "PropertyAccessExpression", "StarExpression", "ExistsExpression", "CollectExpression",
+      "ParameterExpression", "CaseOperandExpression", "PropertyAccessExpression", "StarExpression", "ExistsExpression", "CollectExpression",
       "CountExpression");
 
   /**

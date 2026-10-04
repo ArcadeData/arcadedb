@@ -57,6 +57,8 @@ import java.util.logging.Level;
 class CypherExpressionBuilder {
 
   private final ExpressionTypeDetector detector = new ExpressionTypeDetector(this);
+  // Set only while the comparison-form WHEN predicates of an extended CASE are being parsed
+  private CaseOperandExpression activeCaseOperand;
 
   /**
    * Parse an expression into an Expression AST node.
@@ -652,6 +654,8 @@ class CypherExpressionBuilder {
     }
 
     // Simple variable (strip backticks so escaped keywords like `match` match the name bound by the pattern)
+    if (activeCaseOperand != null && CaseOperandExpression.PLACEHOLDER.equals(text))
+      return activeCaseOperand;
     return new VariableExpression(CypherASTBuilder.stripBackticks(text));
   }
 
@@ -1972,16 +1976,13 @@ class CypherExpressionBuilder {
   }
 
   /**
-   * Parse an extended CASE expression (with case value).
-   * Example: CASE status WHEN 'active' THEN 1 WHEN 'inactive' THEN 0 ELSE -1 END
+   * Builds the predicate a comparison-form {@code WHEN} stands for by parsing {@code <operand placeholder> <when text>}
+   * with its whitespace intact, so that every comparison the grammar allows behaves exactly as it does written out in
+   * full, over an operand that is evaluated once.
    */
-  /**
-   * Builds the predicate a comparison-form {@code WHEN} stands for by parsing {@code (<operand>) <when text>} with its
-   * whitespace intact, so that every comparison the grammar allows behaves exactly as it does written out in full.
-   */
-  private Expression parseOperandPredicate(final Cypher25Parser.ExpressionContext operand,
+  private Expression parseOperandPredicate(final CaseOperandExpression operandHolder,
       final Cypher25Parser.ExtendedWhenContext whenCtx) {
-    final String text = "(" + CypherASTBuilder.getOriginalText(operand) + ") " + CypherASTBuilder.getOriginalText(whenCtx);
+    final String text = CaseOperandExpression.PLACEHOLDER + " " + CypherASTBuilder.getOriginalText(whenCtx);
     final CypherErrorListener errorListener = new CypherErrorListener();
     final Cypher25Lexer lexer = new Cypher25Lexer(CharStreams.fromString(text));
     lexer.removeErrorListeners();
@@ -1989,12 +1990,26 @@ class CypherExpressionBuilder {
     final Cypher25Parser parser = new Cypher25Parser(new CommonTokenStream(lexer));
     parser.removeErrorListeners();
     parser.addErrorListener(errorListener);
-    return parseExpression(parser.expression());
+    // The text is the operand placeholder plus a WHEN form that already passed the depth guard in the original query,
+    // so this small parse needs none of its own. The placeholder resolves to the shared holder while it is parsed.
+    final CaseOperandExpression previous = activeCaseOperand;
+    activeCaseOperand = operandHolder;
+    try {
+      return parseExpression(parser.expression());
+    } finally {
+      activeCaseOperand = previous;
+    }
   }
 
+  /**
+   * Parse an extended CASE expression (with case value).
+   * Example: CASE status WHEN 'active' THEN 1 WHEN 'inactive' THEN 0 ELSE -1 END
+   */
   CaseExpression parseExtendedCaseExpression(final Cypher25Parser.ExtendedCaseExpressionContext ctx) {
     // Parse the case expression (the value being tested)
     final Expression caseExpr = parseExpression(ctx.expression(0));
+    final CaseOperandExpression operandHolder = new CaseOperandExpression();
+    boolean usesOperandHolder = false;
 
     final List<CaseAlternative> alternatives = new ArrayList<>();
 
@@ -2008,9 +2023,13 @@ class CypherExpressionBuilder {
         // into something that never equals the operand (issue #8996).
         if (whenCtx instanceof Cypher25Parser.WhenEqualsContext equalsCtx)
           alternatives.add(new CaseAlternative(parseExpression(equalsCtx.expression()), thenExpr));
-        else
-          // A comparison form (WHEN > 5, WHEN IS NULL, WHEN STARTS WITH 'a') is the predicate "(operand) <form>"
-          alternatives.add(new CaseAlternative(parseOperandPredicate(ctx.expression(0), whenCtx), thenExpr, true));
+        else {
+          // A comparison form (WHEN > 5, WHEN IS NULL, WHEN STARTS WITH 'a') is the predicate "<operand> <form>" over
+          // the operand evaluated once
+          alternatives.add(new CaseAlternative(parseOperandPredicate(operandHolder, whenCtx), thenExpr,
+              CypherASTBuilder.getOriginalText(whenCtx)));
+          usesOperandHolder = true;
+        }
       }
     }
 
@@ -2020,7 +2039,7 @@ class CypherExpressionBuilder {
       elseExpr = parseExpression(ctx.elseExp);
     }
 
-    return new CaseExpression(caseExpr, alternatives, elseExpr);
+    return new CaseExpression(caseExpr, alternatives, elseExpr, usesOperandHolder ? operandHolder : null);
   }
 
   /**

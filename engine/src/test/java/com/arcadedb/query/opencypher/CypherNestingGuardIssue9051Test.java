@@ -45,7 +45,7 @@ class CypherNestingGuardIssue9051Test extends TestHelper {
   private void assertRejected(final String query) {
     // the message fragment keeps an unrelated parse error (a typo in the generated text) from satisfying the assertion
     assertThatThrownBy(() -> drain(query)).isInstanceOf(CommandParsingException.class)
-        .hasMessageMatching("(?s).*(too many clauses|too deeply|too deeply nested).*");
+        .hasMessageMatching("(?s).*(too many clauses|too deeply).*");
   }
 
   @Test

@@ -286,13 +286,26 @@ public final class CypherFunctionHelper {
   }
 
   /**
-   * The code points in {@code [startCodePoint, endCodePoint)}, both clamped to the string; never splits a surrogate pair.
+   * {@code length} code points starting at code point {@code startCodePoint} (use {@link Long#MAX_VALUE} for "to the
+   * end"), clamped to the string; never splits a surrogate pair. Walks only as far as it has to, so a short window of a
+   * long text costs the window, not the whole string.
    */
-  public static String substringCodePoints(final String str, final int startCodePoint, final int endCodePoint) {
-    if (startCodePoint == 0 && endCodePoint >= str.length())
-      return str;
-    final int begin = str.offsetByCodePoints(0, startCodePoint);
-    return str.substring(begin, str.offsetByCodePoints(begin, endCodePoint - startCodePoint));
+  public static String substringCodePoints(final String str, final int startCodePoint, final long length) {
+    final int size = str.length();
+    int begin = 0;
+    for (int i = 0; i < startCodePoint; i++) {
+      if (begin >= size)
+        return "";
+      begin += Character.charCount(str.codePointAt(begin));
+    }
+    if (begin >= size)
+      return "";
+    if (length >= size - begin)
+      return begin == 0 ? str : str.substring(begin);
+    int end = begin;
+    for (long i = 0; i < length && end < size; i++)
+      end += Character.charCount(str.codePointAt(end));
+    return str.substring(begin, end);
   }
 
   /**

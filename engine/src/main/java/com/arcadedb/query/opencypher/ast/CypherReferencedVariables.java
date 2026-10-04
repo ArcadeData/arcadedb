@@ -74,6 +74,7 @@ public final class CypherReferencedVariables {
    */
   private static final Set<Class<?>> NAMELESS_EXPRESSIONS = Set.of(
       AllReduceExpression.class, ArithmeticExpression.class, BooleanWrapperExpression.class, CaseExpression.class,
+      CaseOperandExpression.class,
       ComparisonExpressionWrapper.class, FunctionCallExpression.class, ListComprehensionExpression.class,
       ListExpression.class, ListIndexExpression.class, ListPredicateExpression.class, ListSliceExpression.class,
       LiteralExpression.class, MapExpression.class, ParameterExpression.class, PatternComprehensionExpression.class,
