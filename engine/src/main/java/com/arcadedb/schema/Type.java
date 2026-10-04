@@ -545,7 +545,7 @@ public enum Type {
 
   private static boolean isPlainScalar(final Object item, final Type ofType) {
     return item instanceof Number || item instanceof Boolean || item instanceof CharSequence || item instanceof Character
-        || ofType.isDateOrDateTime() && isDateValue(item);
+        || (ofType.isDateOrDateTime() && isDateValue(item));
   }
 
   /**

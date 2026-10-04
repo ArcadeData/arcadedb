@@ -27,6 +27,7 @@ import com.arcadedb.bolt.structure.BoltRelationship;
 import com.arcadedb.bolt.structure.BoltStructureMapper;
 import com.arcadedb.bolt.structure.BoltTemporalStructure;
 import com.arcadedb.bolt.structure.BoltUnboundRelationship;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.graph.IdFunction;
@@ -567,6 +568,18 @@ class BoltStructureTest {
     // the id(n) encoding: bucket 1 in the high bits above the 47 position bits (#9010)
     assertThat(id).isEqualTo((1L << 47) | 100L);
     assertThat(id).isEqualTo(IdFunction.encodeRidAsLong(rid));
+  }
+
+  @Test
+  void ridToIdFollowsTheConfiguredBucketBits() {
+    final int previous = GlobalConfiguration.OPENCYPHER_ID_BUCKET_BITS.getValueAsInteger();
+    try {
+      GlobalConfiguration.OPENCYPHER_ID_BUCKET_BITS.setValue(20);
+      final RID rid = new RID(3, 7);
+      assertThat(BoltStructureMapper.ridToId(rid)).isEqualTo((3L << 43) | 7L);
+    } finally {
+      GlobalConfiguration.OPENCYPHER_ID_BUCKET_BITS.setValue(previous);
+    }
   }
 
   @Test

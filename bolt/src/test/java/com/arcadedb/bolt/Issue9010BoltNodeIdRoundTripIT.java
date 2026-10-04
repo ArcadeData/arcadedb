@@ -91,4 +91,17 @@ public class Issue9010BoltNodeIdRoundTripIT extends BaseBoltServerTest {
       assertThat(rel.endNodeId()).isEqualTo(row.get("bid").asLong());
     }
   }
+
+  @Test
+  void deleteOfNodeWithSeveralRelationshipsWithReturn() {
+    try (final Driver driver = GraphDatabase.driver(getServerBoltUrl(), AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS),
+        Config.builder().withoutEncryption().build());
+        final Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+      session.run("CREATE (c:C8997 {id: 1})-[:R8997]->(:C8997 {id: 2}), (c)-[:R8997]->(:C8997 {id: 3})").consume();
+
+      final List<Record> rows = session.run("MATCH (n:C8997 {id: 1})-[r:R8997]-() DELETE r, n RETURN 1 AS one").list();
+      assertThat(rows).hasSize(2);
+      assertThat(session.run("MATCH (n:C8997) RETURN count(n) AS c").single().get("c").asLong()).isEqualTo(2L);
+    }
+  }
 }
