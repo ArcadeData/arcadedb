@@ -496,4 +496,13 @@ class MongoDBFilterSemanticsTest extends BaseMongoServerTest {
     assertThat(c.countDocuments(Document.parse("{_id:{b:2,a:1}}"))).isZero();
     assertThat(c.countDocuments(Document.parse("{_id:{$eq:{a:2,b:1}}}"))).isEqualTo(1);
   }
+
+  @Test
+  void updateOneOnAnArrayFilterModifiesExactlyOneDocument() {
+    final MongoCollection<Document> c = collection("one", "{_id:1, t:['a']}", "{_id:2, t:['a','b']}", "{_id:3, t:['b']}");
+    assertThat(c.updateOne(Document.parse("{t:'a'}"), Document.parse("{$set:{hit:true}}")).getModifiedCount()).isEqualTo(1);
+    assertThat(c.countDocuments(Document.parse("{hit:true}"))).isEqualTo(1);
+    assertThat(c.deleteOne(Document.parse("{t:'b'}")).getDeletedCount()).isEqualTo(1);
+    assertThat(c.countDocuments()).isEqualTo(2);
+  }
 }
