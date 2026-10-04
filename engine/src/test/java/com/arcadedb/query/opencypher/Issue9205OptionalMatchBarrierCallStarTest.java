@@ -81,12 +81,12 @@ class Issue9205OptionalMatchBarrierCallStarTest {
 
   /** Control: this shape already passed before the fix. */
   @Test
-  void withoutBarrier() {
+  void callStarWithoutOptionalMatchBarrier() {
     assertThat(count("CREATE (alias0:Person) " + CALL)).isEqualTo(2);
   }
 
   @Test
-  void withOptionalMatchBarrier() {
+  void callStarAfterOptionalMatchBarrier() {
     assertThat(count("CREATE (alias0:Person) OPTIONAL MATCH (:NoMatch) WHERE false WITH * " + CALL)).isEqualTo(2);
   }
 
@@ -121,6 +121,14 @@ class Issue9205OptionalMatchBarrierCallStarTest {
     // the outer MATCH () and the inner MATCH () both use generated names; the outer rows must survive the call
     assertThat(count("MATCH () WITH * CALL (*) { MATCH () RETURN 1 AS x } RETURN x")).isEqualTo(1);
     assertThat(count("MATCH () OPTIONAL MATCH (:NoMatch) WHERE false WITH * CALL (*) { MATCH () RETURN 1 AS x } MATCH () RETURN x")).isEqualTo(1);
+  }
+
+  @Test
+  void explicitImportAfterTheBarrierIsUnchanged() {
+    assertThat(count("""
+        CREATE (alias0:Person) OPTIONAL MATCH (:NoMatch) WHERE false WITH *
+        CALL (alias0) { OPTIONAL MATCH () WHERE EXISTS { MATCH (m) } RETURN 0 AS marker }
+        RETURN alias0""")).isEqualTo(2);
   }
 
   @Test
