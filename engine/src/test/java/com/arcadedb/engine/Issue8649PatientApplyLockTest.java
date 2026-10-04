@@ -233,6 +233,33 @@ class Issue8649PatientApplyLockTest extends TestHelper {
   }
 
   @Test
+  void aPatientWaitOutlastsTheCommitTimeoutByTwoScans() throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final LocalBucket bucket = bucket();
+    final int fileId = bucket.getFileId();
+    final TransactionManager txManager = db.getTransactionManager();
+
+    bucket.setCachedRecordCount(-1);
+    final Object previousTimeout = db.getConfiguration().setValue(GlobalConfiguration.COMMIT_LOCK_TIMEOUT, 100L);
+    bucket.setApplyLockPatient(true);
+    bucket.setLastRecountScanMs(150);
+
+    final Object recompute = new Object();
+    assertThat(txManager.tryLockFile(fileId, 1000, recompute)).isEqualTo(LockManager.LOCK_STATUS.YES);
+    try {
+      final long start = System.nanoTime();
+      applyInBackground(db, fileId, 5, 8654);
+      // A lower bound only, which a JVM stall can only make more true: the wait was 100 + 2 x 150 ms, not the 100ms
+      // commit timeout alone
+      assertThat(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start)).isGreaterThanOrEqualTo(400L);
+      assertThat(bucket.isApplyLockPatient()).isFalse();
+    } finally {
+      txManager.unlockFile(fileId, recompute);
+      db.getConfiguration().setValue(GlobalConfiguration.COMMIT_LOCK_TIMEOUT, previousTimeout);
+    }
+  }
+
+  @Test
   void aCounterMadeKnownAnotherWayEndsTheEpisode() {
     final LocalBucket bucket = bucket();
     bucket.setCachedRecordCount(-1);

@@ -221,9 +221,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   // any known counter), or by a patient wait that still timed out, which also starts a back-off (below)
   private volatile       boolean                   applyLockPatient;
   // #8649: System.nanoTime() before which the applies do not turn patient again, set when a patient wait timed out so
-  // the apply thread is not stalled behind every scan of a bucket whose scans outgrew the bound
+  // the apply thread is not stalled behind every scan of a bucket whose scans outgrew the bound. 0 = no back-off
   private volatile       long                      applyLockPatientBackoffUntilNanos;
-  private volatile       boolean                   applyLockPatientBackoff;
   // #8649: wall time of the last count() recompute scan that ran under the bucket lock, in ms. Sizes the patient wait
   private volatile       long                      lastRecountScanMs;
   // #8649: recomputes refused because an unlocked apply overlapped their scan, in total and since the last publish.
@@ -2495,7 +2494,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   public void setCachedRecordCount(final long count) {
     cachedRecordCount.set(count);
     // #8649: a counter made known some other way (statistics load, CHECK DATABASE) ends the episode too, or the next -1
-    // would start out patient. Two volatile reads on the commit fold, and the reset itself only once per episode
+    // would start out patient. Three volatile reads on the commit fold, and the reset itself only once per episode
     if (count > -1 && (applyLockPatient || applyLockContended || consecutiveRecountPublishesRefused != 0))
       resetApplyLockState();
   }
@@ -2535,13 +2534,15 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * Whether a patient wait timed out less than a back-off ago, so the applies must not turn patient yet (issue #8649).
    */
   boolean isApplyLockPatientBackingOff(final long nowNanos) {
-    return applyLockPatientBackoff && nowNanos - applyLockPatientBackoffUntilNanos < 0;
+    final long until = applyLockPatientBackoffUntilNanos;
+    return until != 0L && nowNanos - until < 0;
   }
 
   /** Starts the back-off after a patient wait that timed out: no patient wait for {@code backoffMs} (issue #8649). */
   void startApplyLockPatientBackoff(final long backoffMs) {
-    applyLockPatientBackoffUntilNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(backoffMs);
-    applyLockPatientBackoff = true;
+    final long until = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(backoffMs);
+    // 0 is the "no back-off" sentinel, and nanoTime() may legitimately land on it
+    applyLockPatientBackoffUntilNanos = until != 0L ? until : 1L;
   }
 
   /** Wall time of the last {@code count()} recompute scan that ran under the bucket lock, in ms (issue #8649). */
@@ -2584,7 +2585,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     consecutiveRecountPublishesRefused = 0;
     applyLockContended = false;
     applyLockPatient = false;
-    applyLockPatientBackoff = false;
+    applyLockPatientBackoffUntilNanos = 0L;
   }
 
   /**
