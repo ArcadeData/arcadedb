@@ -984,9 +984,9 @@ public enum GlobalConfiguration {
   // than wired up: two settings for one cache is the defect, and the surviving one already works.
   CYPHER_MAX_EXPRESSION_DEPTH("arcadedb.cypher.maxExpressionDepth", SCOPE.DATABASE,
       """
-      Maximum nesting depth allowed for a single Cypher expression, for example parentheses, list/map literals \
-      function arguments, pattern parentheses or CALL/EXISTS/COUNT/COLLECT subqueries nested inside one another, and the depth of a chain of AND/OR/string-concatenation \
-      terms in the resulting expression tree. The ANTLR-generated parser re-enters its expression grammar rule \
+      Maximum nesting depth allowed for a single Cypher expression, for example parentheses, list/map literals, \
+      function arguments, pattern parentheses or CALL/EXISTS/COUNT/COLLECT subqueries nested inside one another, \
+      and the depth of a chain of AND/OR/string-concatenation terms in the resulting expression tree. The ANTLR-generated parser re-enters its expression grammar rule \
       roughly ten Java stack frames per nesting level, so a few thousand levels is enough to exhaust the default \
       JVM thread stack with a payload of only a few KB; a query past this limit is rejected as a normal parse \
       error instead of crashing the worker thread with a StackOverflowError. Real-world queries rarely nest \
@@ -1000,7 +1000,7 @@ public enum GlobalConfiguration {
       execute as a pull pipeline in which every step asks the previous one for its next row, so the Java stack is \
       as deep as the clause chain is long; a query of a few thousand clauses is parsed but then exhausts the JVM \
       thread stack while its rows are fetched. A query past this limit is rejected as a normal parse error. \
-      Raise it only if a legitimate, very long generated query needs it.""",
+      Must be at least 1; raise it only if a legitimate, very long generated query needs it.""",
       Integer.class, 500),
 
   CYPHER_ALGO_MAX_WORKING_MEMORY("arcadedb.cypher.algoMaxWorkingMemory", SCOPE.DATABASE,

@@ -19,6 +19,8 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
@@ -28,6 +30,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression tests for #8998 (string functions count code points), #8996 (simple CASE with list/map literal WHEN values)
@@ -78,6 +81,17 @@ class CypherSemanticFixesBatch8998Test extends TestHelper {
     assertThat(column("RETURN substring('hello', 1, 3) AS v", "v")).containsExactly("ell");
   }
 
+  @Test
+  void substringAndNegativeLengthsOnSeveralSupplementaryCharacters() {
+    final String s = GRIN + GRIN + "b" + GRIN + "c";
+    assertThat(column("RETURN substring(\$s, 1, 3) AS v", "v", "s", s)).containsExactly(GRIN + "b" + GRIN);
+    assertThat(column("RETURN substring(\$s, 3) AS v", "v", "s", s)).containsExactly(GRIN + "c");
+    assertThat(column("RETURN left(\$s, 3) AS v", "v", "s", s)).containsExactly(GRIN + GRIN + "b");
+    assertThat(column("RETURN right(\$s, 3) AS v", "v", "s", s)).containsExactly("b" + GRIN + "c");
+    assertThatThrownBy(() -> column("RETURN left(\$s, -1) AS v", "v", "s", s)).isInstanceOf(CommandSemanticException.class);
+    assertThatThrownBy(() -> column("RETURN right(\$s, -1) AS v", "v", "s", s)).isInstanceOf(CommandSemanticException.class);
+  }
+
   // ---- #8996
 
   @Test
@@ -109,5 +123,13 @@ class CypherSemanticFixesBatch8998Test extends TestHelper {
     assertThat(column("MATCH (n:N) WHERE n.id > 1 AND (true) RETURN n.id AS id ORDER BY id", "id")).containsExactly(2, 3);
     assertThat(column("MATCH (n:N) WHERE (n.id = 1) OR (false) RETURN n.id AS id ORDER BY id", "id")).containsExactly(1);
     assertThat(column("MATCH (n:N) WHERE (null) RETURN n.id AS id", "id")).isEmpty();
+    assertThat(column("MATCH (n:N) WHERE (TRUE) RETURN n.id AS id ORDER BY id", "id")).containsExactly(1, 2, 3);
+    assertThat(column("MATCH (n:N) WHERE (Null) RETURN n.id AS id", "id")).isEmpty();
+  }
+
+  @Test
+  void parenthesizedVariableStartingWithKeywordIsStillAPattern() {
+    assertThatThrownBy(() -> column("MATCH (trueish) WHERE (trueish) RETURN trueish", "trueish"))
+        .isInstanceOf(CommandParsingException.class);
   }
 }
