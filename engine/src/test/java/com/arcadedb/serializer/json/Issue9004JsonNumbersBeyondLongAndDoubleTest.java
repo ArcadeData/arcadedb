@@ -84,12 +84,21 @@ class Issue9004JsonNumbersBeyondLongAndDoubleTest extends TestHelper {
   }
 
   @Test
+  void seventeenDigitProducersKeepThePrimitiveVectorPath() {
+    // what printf("%.17g") writes: not the shortest rendering, still one double
+    final Map<String, Object> map = new JSONObject("{\"v\":[0.10000000000000001,0.20000000000000001,0.30000000000000004]}").toMap(true);
+    assertThat(map.get("v")).isInstanceOf(double[].class);
+    assertThat((double[]) map.get("v")).containsExactly(0.1, 0.2, 0.30000000000000004);
+    assertThat(new JSONObject("{\"x\":0.10000000000000001}").toMap().get("x")).isEqualTo(0.1);
+  }
+
+  @Test
   void tokenLengthBoundaryAndExponentOverflow() {
     // 15 characters: always a double. 16 characters that a double does not hold exactly: exact. 1e400 overflows a double: exact
     final Map<String, Object> map = new JSONObject("{\"a\":0.1234567890123,\"b\":0.12345678901234567,\"c\":0.1234567890123456789,\"d\":1e400}").toMap();
     assertThat(map.get("a")).isEqualTo(0.1234567890123);
-    // the shortest rendering of that double is ...66, so the token holds a digit the double loses
-    assertThat(map.get("b")).isEqualTo(new BigDecimal("0.12345678901234567"));
+    // 17 significant digits identify one double: no BigDecimal even when it is not the shortest rendering
+    assertThat(map.get("b")).isEqualTo(0.12345678901234567);
     assertThat(map.get("c")).isEqualTo(new BigDecimal("0.1234567890123456789"));
     assertThat(map.get("d")).isEqualTo(new BigDecimal("1e400"));
     assertThat(new JSONObject("{\"v\":[1e400,1.5e0]}").toMap(true).get("v")).isEqualTo(List.of(new BigDecimal("1e400"), 1.5));
