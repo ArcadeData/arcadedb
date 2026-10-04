@@ -30,6 +30,7 @@ import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -147,6 +148,29 @@ class Issue8868StripeDirectoryHashVersionTest extends TestHelper {
     database.transaction(() -> {
       final Binary raw = bucketOf(dirRID).getRecord(dirRID);
       assertThat(raw.getByte(1)).isEqualTo(FUTURE_HASH);
+    });
+  }
+
+  /**
+   * The write path's own reload, {@code StripedEdgeList.loadDirectoryForWrite}, isolated from the factory: an
+   * edge list holding a directory loaded BEFORE the version changed (a long-lived instance) re-reads the page when a
+   * stripe head fills or a stripe is first used. That re-read must reject the new bytes instead of rewriting a slot
+   * of a directory it cannot place entries in.
+   */
+  @Test
+  void writePathReloadOfAnAlreadyLoadedEdgeListRejectsUnknownHashVersion() throws Exception {
+    final RID hub = createPromotedHub();
+    final StripeDirectory[] loadedBefore = new StripeDirectory[1];
+    database.transaction(() -> loadedBefore[0] = loadDirectory(hub));
+    assertThat(loadedBefore[0].getGenerationCount()).isEqualTo(2);
+
+    writeFutureHashVersion(hub);
+
+    final Method loadDirectoryForWrite = StripedEdgeList.class.getDeclaredMethod("loadDirectoryForWrite");
+    loadDirectoryForWrite.setAccessible(true);
+    database.transaction(() -> {
+      final StripedEdgeList list = new StripedEdgeList(hub.asVertex(), Vertex.DIRECTION.IN, loadedBefore[0]);
+      assertFailsClosed(() -> loadDirectoryForWrite.invoke(list));
     });
   }
 
