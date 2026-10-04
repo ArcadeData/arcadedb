@@ -1559,7 +1559,9 @@ mapLiteral
     ;
 
 mapEntry
-    : (identifier | STRING_LITERAL) COLON expression
+    // MAXDEPTH is a keyword of TRAVERSE, not a general identifier (it would be swallowed as a projection alias there),
+    // but it is a documented option key of the path functions, so a map key may spell it unquoted (#9148)
+    : (identifier | MAXDEPTH | STRING_LITERAL) COLON expression
     ;
 
 /**
