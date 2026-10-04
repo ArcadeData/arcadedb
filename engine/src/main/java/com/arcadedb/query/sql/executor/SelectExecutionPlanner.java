@@ -85,6 +85,7 @@ import com.arcadedb.query.sql.parser.Statement;
 import com.arcadedb.query.sql.parser.TraverseStatement;
 import com.arcadedb.query.sql.parser.SubQueryCollector;
 import com.arcadedb.query.sql.parser.ValueExpression;
+import com.arcadedb.query.sql.parser.Timeout;
 import com.arcadedb.query.sql.parser.WhereClause;
 import com.arcadedb.engine.timeseries.AggregationType;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
@@ -197,6 +198,23 @@ public class SelectExecutionPlanner {
     // literal-only comparisons, so the verdict holds for every execution that reuses the cached plan.
     if (info.whereClause != null && info.whereClause.isAlwaysTrue(context))
       info.whereClause = null;
+  }
+
+  /**
+   * Plans the read side of an UPDATE or DELETE: {@code SELECT FROM <target> WHERE <where>}. The synthetic SELECT is its own
+   * original statement, so the plan lands in the execution plan cache under its text and the next execution of the same
+   * UPDATE/DELETE (or of the identical SELECT) takes a copy instead of planning again (issue #9207). Honors the cache
+   * rules of a SELECT: no profiling, no input-parameter dependent plan, no non-cacheable clause.
+   */
+  static InternalExecutionPlan createSourcePlan(final FromClause target, final WhereClause whereClause, final Timeout timeout,
+      final CommandContext context) {
+    final SelectStatement sourceStatement = new SelectStatement();
+    sourceStatement.setTarget(target);
+    sourceStatement.setWhereClause(whereClause);
+    if (timeout != null)
+      sourceStatement.setTimeout(timeout.copy());
+    sourceStatement.setOriginalStatement(sourceStatement.copy());
+    return new SelectExecutionPlanner(sourceStatement).createExecutionPlan(context, true);
   }
 
   public InternalExecutionPlan createExecutionPlan(final CommandContext context, final boolean useCache) {

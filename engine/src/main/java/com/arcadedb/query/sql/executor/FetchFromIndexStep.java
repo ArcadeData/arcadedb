@@ -251,7 +251,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   private void updateIndexStats() {
     //stats
     final QueryStats stats = QueryStats.get(context.getDatabase());
-    if (index == null) {
+    if (!stats.isRecording() || index == null) {
       return;//this could happen, if not inited yet
     }
     final String indexName = index.getName();
