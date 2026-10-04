@@ -105,12 +105,19 @@ import javax.net.ssl.TrustManager;
 import javax.net.ssl.TrustManagerFactory;
 import java.io.IOException;
 import java.net.BindException;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.NetworkInterface;
+import java.net.ServerSocket;
+import java.net.SocketException;
+import java.net.UnknownHostException;
 import java.security.KeyStore;
 import java.security.KeyStoreException;
 import java.security.NoSuchAlgorithmException;
 import java.security.cert.CertificateException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -234,14 +241,23 @@ public class HttpServer implements ServerPlugin {
         httpsPortRange != null ? Arrays.toString(httpsPortRange) : "-");
 
     final PathHandler routes = setupRoutes();
+    // Every local address the host name resolves to, not only the first one: see resolveListenHosts() (issue #8692)
+    final List<String> listenHosts = resolveListenHosts(host);
 
     int httpsPortListening = httpsPortRange != null ? httpsPortRange[0] : 0;
     for (httpPortListening = httpPortRange[0]; httpPortListening <= httpPortRange[1]; ++httpPortListening) {
+      if (listenHosts.size() > 1 && !isPortFreeOnEveryHost(listenHosts, httpPortListening)) {
+        LogManager.instance().log(this, Level.WARNING, "- HTTP Port %s not available on every address of '%s' %s", httpPortListening,
+            host, listenHosts);
+        continue;
+      }
+
       try {
-        undertow = buildUndertowServer(configuration, host, routes, httpsPortListening);
+        undertow = buildUndertowServer(configuration, listenHosts, routes, httpsPortListening);
         undertow.start();
 
-        LogManager.instance().log(this, Level.INFO, "- HTTP Server started (host=%s port=%d httpsPort=%s)", host, httpPortListening,
+        LogManager.instance().log(this, Level.INFO, "- HTTP Server started (host=%s port=%d httpsPort=%s)",
+            listenHosts.size() > 1 ? host + " " + listenHosts : host, httpPortListening,
             httpsPortListening > 0 ? httpsPortListening : "-");
 
         // Record the bound HTTPS port (when SSL is enabled) so the HA layer can advertise/derive
@@ -422,7 +438,83 @@ public class HttpServer implements ServerPlugin {
     return registeredRoutes;
   }
 
-  private Undertow buildUndertowServer(final ContextConfiguration configuration, final String host, final PathHandler routes,
+  /**
+   * The addresses the HTTP (and HTTPS) listeners bind for the configured {@code host} (issue #8692).
+   * <p>
+   * Undertow binds the FIRST address a name resolves to. For {@code localhost} that is {@code 127.0.0.1} alone, so a
+   * port another process holds on {@code [::1]} (a JVM or a dev server on the IPv6 wildcard) looked free, the bind
+   * succeeded, and {@code localhost:<port>} then named two servers: which one a client reached depended on the family
+   * its resolver tried first. In HA a peer address declared as {@code localhost:<port>} reached the stranger, and the
+   * #7511 capability probe refused the security seed of an unrelated membership change.
+   * <p>
+   * A name that resolves to several addresses is therefore bound on each LOCAL one of them, so a port is taken only
+   * when it is free on all of them, and the name reaches this server whichever family the client picks. Addresses no
+   * local interface carries are left out: {@code /etc/hosts} commonly maps {@code localhost} to {@code ::1} on hosts
+   * where IPv6 is disabled, and binding it there fails on every port of the range. A literal, a name resolving to one
+   * address, and a name that does not resolve at all are passed through unchanged, so the listener behaves (and
+   * reports failures) exactly as before.
+   */
+  static List<String> resolveListenHosts(final String host) {
+    if (host == null || host.isEmpty())
+      return Collections.singletonList(host);
+
+    final InetAddress[] resolved;
+    try {
+      resolved = InetAddress.getAllByName(host);
+    } catch (final UnknownHostException e) {
+      return List.of(host);
+    }
+    if (resolved.length < 2)
+      return List.of(host);
+
+    final List<String> hosts = new ArrayList<>(resolved.length);
+    for (final InetAddress address : resolved) {
+      if (!isLocalAddress(address))
+        continue;
+      final String literal = address.getHostAddress();
+      if (!hosts.contains(literal))
+        hosts.add(literal);
+    }
+    return hosts.isEmpty() ? List.of(host) : List.copyOf(hosts);
+  }
+
+  /**
+   * Whether {@code port} can be bound on every one of {@code hosts}, asked before Undertow is started on it (issue #8692).
+   * <p>
+   * Undertow cannot be trusted to find this out by itself once it has more than one listener: {@code Undertow.start()}
+   * binds them in order and, when a later one fails, shuts its worker down but leaves the earlier channels open, and
+   * {@code Undertow.stop()} on that half-started server spins forever waiting for the dead worker to cancel their
+   * keys. So a port held on {@code [::1]} alone would leave {@code 127.0.0.1} of the same port bound by an abandoned
+   * server for the life of the JVM. The probe binds the same way the listener does ({@code SO_REUSEADDR} on, as XNIO
+   * sets it), so a port it calls free is one Undertow can take; only a stranger arriving between the probe and the
+   * bind can still make the start fail, and then the original single-listener handling applies.
+   */
+  static boolean isPortFreeOnEveryHost(final List<String> hosts, final int port) {
+    for (final String host : hosts) {
+      try (final ServerSocket probe = new ServerSocket()) {
+        probe.setReuseAddress(true);
+        probe.bind(new InetSocketAddress(InetAddress.getByName(host), port));
+      } catch (final BindException e) {
+        return false;
+      } catch (final IOException e) {
+        // Not a port conflict: leave it to the listener, which reports it exactly as before
+        return true;
+      }
+    }
+    return true;
+  }
+
+  private static boolean isLocalAddress(final InetAddress address) {
+    if (address.isAnyLocalAddress())
+      return true;
+    try {
+      return NetworkInterface.getByInetAddress(address) != null;
+    } catch (final SocketException e) {
+      return false;
+    }
+  }
+
+  private Undertow buildUndertowServer(final ContextConfiguration configuration, final List<String> hosts, final PathHandler routes,
       int httpsPortListening) throws Exception {
     // Undertow's own entity-size ceiling stays OFF, and arcadedb.server.httpBodyContentMaxSize is enforced by
     // AbstractServerHttpHandler.readRequestBody and PostBatchHandler's CountingInputStream instead - the two
@@ -445,17 +537,20 @@ public class HttpServer implements ServerPlugin {
     final Undertow.Builder builder = Undertow.builder()//
         .setServerOption(UndertowOptions.ENABLE_HTTP2, true)
         .setServerOption(UndertowOptions.MAX_ENTITY_SIZE, Long.MAX_VALUE)
-        .addHttpListener(httpPortListening, host)//
         .setHandler(createBodySizeLimitHandler(routes, configuration))//
         .setSocketOption(Options.READ_TIMEOUT, configuration.getValueAsInteger(GlobalConfiguration.NETWORK_SOCKET_TIMEOUT))
         .setIoThreads(configuration.getValueAsInteger(GlobalConfiguration.SERVER_HTTP_IO_THREADS))//
         .setWorkerThreads(configuration.getValueAsInteger(GlobalConfiguration.SERVER_HTTP_WORKER_THREADS))//
         .setServerOption(SHUTDOWN_TIMEOUT, 5000);
 
+    for (final String host : hosts)
+      builder.addHttpListener(httpPortListening, host);
+
     if (configuration.getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL)) {
       final SSLContext sslContext = createSSLContext();
-      builder.addHttpsListener(httpsPortListening, host, sslContext)
-          .setServerOption(UndertowOptions.ENABLE_HTTP2, true);
+      for (final String host : hosts)
+        builder.addHttpsListener(httpsPortListening, host, sslContext);
+      builder.setServerOption(UndertowOptions.ENABLE_HTTP2, true);
     }
 
     return builder.build();
