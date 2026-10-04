@@ -77,4 +77,41 @@ class CypherDeleteNodeAndAllItsRelationshipsIssue8997Test extends TestHelper {
         .isInstanceOf(CommandExecutionException.class);
     assertThat(remaining()).containsExactly("1:2", "2:0", "3:0", "4:1", "5:0");
   }
+
+  @Test
+  void selfLoopAndSharedNode() {
+    database.transaction(() -> database.command("opencypher", "CREATE (x:S {id: 9})-[:L]->(x), (x)-[:L]->(:S {id: 10})").close());
+    database.transaction(() -> database.command("opencypher", "MATCH (n:S {id: 9})-[r]-() DELETE r, n").close());
+    try (final ResultSet rs = database.query("opencypher", "MATCH (n:S) RETURN n.id AS id")) {
+      assertThat(rs.stream().map(r -> r.<Object>getProperty("id")).toList()).containsExactly(10);
+    }
+  }
+
+  @Test
+  void sameIsolatedNodeBoundInTwoRows() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:I {id: 1}), (:I {id: 2})").close());
+    database.transaction(() -> database.command("opencypher", "MATCH (a:I), (b:I) DELETE a, b").close());
+    try (final ResultSet rs = database.query("opencypher", "MATCH (n:I) RETURN count(n) AS c")) {
+      assertThat(rs.next().<Number>getProperty("c").longValue()).isZero();
+    }
+  }
+
+  @Test
+  void unidirectionalEdgeType() {
+    database.getSchema().createVertexType("U");
+    database.getSchema().buildEdgeType().withName("UE").withBidirectional(false).create();
+    database.transaction(() -> database.command("opencypher", "CREATE (u:U {id: 1})-[:UE]->(:U {id: 2}), (u)-[:UE]->(:U {id: 3})").close());
+    database.transaction(() -> database.command("opencypher", "MATCH (n:U {id: 1})-[r]-() DELETE r, n").close());
+    try (final ResultSet rs = database.query("opencypher", "MATCH (n:U) RETURN n.id AS id ORDER BY id")) {
+      assertThat(rs.stream().map(r -> r.<Object>getProperty("id")).toList()).containsExactly(2, 3);
+    }
+  }
+
+  @Test
+  void insideAnOpenTransactionTheNodeIsDeletedWhenTheStatementEnds() {
+    database.begin();
+    database.command("opencypher", "MATCH (n:N {id: 1})-[r]-() DELETE r, n").close();
+    database.commit();
+    assertThat(remaining()).containsExactly("2:0", "3:0", "4:1", "5:0");
+  }
 }

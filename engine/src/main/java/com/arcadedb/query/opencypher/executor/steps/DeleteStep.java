@@ -42,7 +42,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -75,9 +75,11 @@ public class DeleteStep extends AbstractExecutionStep {
   /**
    * Vertices of a non-DETACH DELETE that still had a relationship when their row was processed. Another row of the
    * same statement can delete that relationship (a node bound to several relationships by {@code MATCH (n)-[r]-()
-   * DELETE r, n}), so the {@code DeleteConnectedNode} check runs once every row is processed, not per row (#8997).
+   * DELETE r, n}), so the {@code DeleteConnectedNode} check runs once every row is processed, not per row (#8997). Only
+   * the RIDs are kept: a vertex is reloaded when it is checked. A consumer that stops pulling before the last row (a
+   * LIMIT downstream) leaves the pending vertices undeleted, as it leaves the rows it never pulled unprocessed.
    */
-  private final Map<RID, Vertex> pendingVertices = new LinkedHashMap<>();
+  private final Set<RID> pendingVertices = new LinkedHashSet<>();
 
   /**
    * When true, the whole upstream row set is read to completion before the first DELETE is applied.
@@ -540,12 +542,13 @@ public class DeleteStep extends AbstractExecutionStep {
     if (obj instanceof Vertex vertex) {
       if (!deleteClause.isDetach() && hasEdges(vertex)) {
         // a later row of the statement can still delete the relationships: checked when every row is processed (#8997)
-        pendingVertices.putIfAbsent(vertex.getIdentity(), vertex);
+        pendingVertices.add(vertex.getIdentity());
         return;
       }
       deleted.add(obj);
       try {
-        deleteVertex(vertex, deleted);
+        // the relationships were just looked up above: not asked again
+        deleteVertex(vertex, deleted, true);
       } catch (final RecordNotFoundException e) {
         // Already deleted - skip
       }
@@ -598,7 +601,7 @@ public class DeleteStep extends AbstractExecutionStep {
     if (pendingVertices.isEmpty())
       return;
 
-    final List<Vertex> pending = new ArrayList<>(pendingVertices.values());
+    final List<RID> pending = new ArrayList<>(pendingVertices);
     pendingVertices.clear();
 
     final DatabaseInternal database = (DatabaseInternal) context.getDatabase();
@@ -606,18 +609,18 @@ public class DeleteStep extends AbstractExecutionStep {
     try {
       if (!wasInTransaction)
         database.begin();
-      for (final Vertex vertex : pending) {
-        if (deleted.contains(vertex))
-          continue;
+      for (final RID rid : pending) {
         final Vertex current;
         try {
-          current = vertex.getIdentity().asVertex();
+          current = rid.asVertex();
         } catch (final RecordNotFoundException e) {
           // already deleted
           continue;
         }
+        if (deleted.contains(current))
+          continue;
         deleted.add(current);
-        deleteVertex(current, deleted);
+        deleteVertex(current, deleted, false);
       }
       if (!wasInTransaction)
         database.commit();
@@ -635,15 +638,15 @@ public class DeleteStep extends AbstractExecutionStep {
    * @param vertex  vertex to delete
    * @param deleted shared set of already-deleted objects, so a relationship removed both by DETACH
    *                and by an explicit edge delete in the same statement is counted only once
+   * @param edgesChecked true when the caller just verified the vertex has no relationship (non-DETACH)
    */
-  private void deleteVertex(final Vertex vertex, final Set<Object> deleted) {
+  private void deleteVertex(final Vertex vertex, final Set<Object> deleted, final boolean edgesChecked) {
     if (deleteClause.isDetach()) {
       // DETACH DELETE: Remove all connected relationships first
       deleteAllEdges(vertex, deleted);
-    } else {
+    } else if (!edgesChecked) {
       // Non-DETACH DELETE: check for connected edges
-      if (vertex.getEdges(Vertex.DIRECTION.OUT).iterator().hasNext() ||
-          vertex.getEdges(Vertex.DIRECTION.IN).iterator().hasNext() || !incomingUnidirectionalEdges(vertex).isEmpty())
+      if (hasEdges(vertex))
         throw new CommandExecutionException("DeleteConnectedNode: Cannot delete node " + vertex.getIdentity() +
             " because it still has relationships. To delete this node, you must first delete its relationships, or use DETACH DELETE");
     }
