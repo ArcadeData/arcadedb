@@ -25,11 +25,13 @@ import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.log.LogManager;
 
 import java.util.Collections;
+import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.WeakHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.LockSupport;
 import java.util.logging.Level;
 
 /**
@@ -50,6 +52,9 @@ import java.util.logging.Level;
  */
 public class GraphTraversalProviderRegistry {
   private static final WeakHashMap<Database, CopyOnWriteArrayList<GraphTraversalProvider>> REGISTRY = new WeakHashMap<>();
+
+  /** How often {@link #awaitRestoring} looks again at the restore and runs the caller's abort check. */
+  private static final long RESTORE_POLL_NANOS = TimeUnit.MILLISECONDS.toNanos(10);
 
   // Fast-path flag: when false, findProvider() returns null without acquiring the lock.
   // Updated under synchronized(REGISTRY) on every register/unregister/clearAll.
@@ -150,25 +155,83 @@ public class GraphTraversalProviderRegistry {
       // while isReady()'s dispatch is not. Checking coverage first means isReady() - and its cost - only
       // ever runs on a provider that could actually be selected, not on every registered one #6632's
       // "a view a session never actually needs shouldn't cost anything" goal for a multi-view database.
-      final boolean covers;
-      if (edgeTypes == null || edgeTypes.length == 0)
-        covers = provider.coversEdgeType(null);
-      else {
-        boolean allCovered = true;
-        for (final String et : edgeTypes)
-          if (!provider.coversEdgeType(et)) {
-            allCovered = false;
-            break;
-          }
-        covers = allCovered;
-      }
-      if (covers && provider.isReady())
+      if (coversEdgeTypes(provider, edgeTypes) && provider.isReady())
         found = provider;
     }
     if (found != null && found.isStale())
       LogManager.instance().log(GraphTraversalProviderRegistry.class, Level.FINE,
           "Using stale GraphTraversalProvider '%s' for query acceleration (data may not reflect latest commits)", found.getName());
     return found;
+  }
+
+  /**
+   * Whether {@code provider} covers every requested edge type; {@code null} or empty asks for the provider's
+   * whole-graph coverage. A pure configuration check with no side effects, unlike {@link GraphTraversalProvider#isReady()},
+   * which can dispatch a deferred restore - which is why callers check coverage first.
+   */
+  static boolean coversEdgeTypes(final GraphTraversalProvider provider, final String[] edgeTypes) {
+    if (edgeTypes == null || edgeTypes.length == 0)
+      return provider.coversEdgeType(null);
+    for (final String edgeType : edgeTypes)
+      if (!provider.coversEdgeType(edgeType))
+        return false;
+    return true;
+  }
+
+  /**
+   * Waits for the providers that could serve a request and are still {@link GraphTraversalProvider#isRestoring()
+   * restoring}, so a caller whose first {@link #findProvider} came back empty only because it dispatched a deferred
+   * restore can ask again once that restore has settled, instead of falling back to a record-by-record scan.
+   * <p>
+   * Only a provider that covers every requested edge type and every vertex type is considered: a view that cannot
+   * serve the request is neither waited for nor, by this method, touched. A provider that is merely rebuilding after
+   * a commit does not count as restoring. Every provider is waited for under one shared deadline, not one budget per
+   * provider, and {@code abortCheck} runs at every poll so the caller's own command timeout and interrupt end the
+   * wait (it is expected to throw to abort).
+   * <p>
+   * Does nothing while the calling thread has uncommitted changes, because {@link #findProvider} refuses to hand out
+   * a provider in that case no matter how long it waits.
+   *
+   * @param edgeTypes  the edge types the request needs; {@code null} or empty for the whole graph
+   * @param timeoutMs  the total time to wait, in milliseconds; zero or less does not wait
+   * @param abortCheck called between polls; throws to abort the wait
+   *
+   * @return true if at least one covering provider was restoring when the call started, so asking again is
+   * worthwhile; false if there was nothing to wait for
+   */
+  public static boolean awaitRestoring(final Database database, final String[] edgeTypes, final long timeoutMs,
+      final Runnable abortCheck) {
+    if (timeoutMs <= 0 || !hasAnyProviders || hasUncommittedChanges(database))
+      return false;
+
+    List<GraphTraversalProvider> restoring = null;
+    for (final GraphTraversalProvider provider : getProviders(database))
+      if (coversEdgeTypes(provider, edgeTypes) && provider.coversVertexType(null) && provider.isRestoring()) {
+        if (restoring == null)
+          restoring = new ArrayList<>(2);
+        restoring.add(provider);
+      }
+    if (restoring == null)
+      return false;
+
+    final long deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
+    while (anyRestoring(restoring)) {
+      abortCheck.run();
+      final long remainingNanos = deadlineNanos - System.nanoTime();
+      if (remainingNanos <= 0)
+        break;
+      LockSupport.parkNanos(Math.min(remainingNanos, RESTORE_POLL_NANOS));
+      if (Thread.currentThread().isInterrupted())
+        break;
+    }
+    return true;
+  }
+
+  private static boolean anyRestoring(final List<GraphTraversalProvider> providers) {
+    for (int i = 0; i < providers.size(); i++)
+      if (providers.get(i).isRestoring())
+        return true;
+    return false;
   }
 
   /**

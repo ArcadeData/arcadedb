@@ -3054,6 +3054,16 @@ public enum GlobalConfiguration {
       usable by the query that triggered the reopen""",
       Long.class, 0L),
 
+  GAV_ALGO_RESTORE_AWAIT_TIMEOUT("arcadedb.gavAlgoRestoreAwaitTimeout", SCOPE.DATABASE,
+      """
+      Milliseconds a whole-graph algorithm (algo.wcc, algo.pagerank, algo.bfs and the other algo.* procedures) waits for a \
+      Graph Analytical View (GAV/CSR) whose deferred restore from disk is still in flight, so the first call after a \
+      database reopen runs on the restored view instead of scanning every record. The wait ends early when the restore \
+      finishes, and it also ends when the command's own timeout expires. A view that is only rebuilding after a commit is \
+      never waited for. 0 does not wait: the call takes the record path, as it did before this setting existed. This is \
+      separate from arcadedb.gavRestoreAwaitTimeout, which makes database open() itself block (default 0 = do not block)""",
+      Long.class, 600_000L),
+
   GAV_PERSIST_CSR("arcadedb.gavPersistCsr", SCOPE.DATABASE,
       """
       When true (default), a Graph Analytical View (GAV/CSR) that is READY (with no pending overlay changes) when \
