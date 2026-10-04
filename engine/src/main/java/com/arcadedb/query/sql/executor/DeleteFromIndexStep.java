@@ -248,12 +248,13 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
     cursor = createCursor(operator, rightValue);
   }
 
-  private IndexCursor createCursor(final BinaryCompareOperator operator, Object value) {
+  private IndexCursor createCursor(final BinaryCompareOperator operator, final Object operand) {
     // A bound no integral key equals (12.5, 1e19) is moved onto the key that bounds the same keys, inclusive, or matches none:
     // the index would otherwise truncate or clamp it (issue #9125)
     final byte keyType = integralKeyType();
+    Object value = operand;
     boolean inexact = false;
-    if (IntegralKeyBound.isInexact(keyType, value)) {
+    if (IntegralKeyBound.isInexact(keyType, operand)) {
       inexact = true;
       if (operator instanceof EqualsCompareOperator)
         return new EmptyIndexCursor();
