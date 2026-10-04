@@ -21,7 +21,6 @@ package com.arcadedb.mongo;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
-import com.arcadedb.database.Record;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -36,7 +35,6 @@ import de.bwaldvogel.mongo.bson.ObjectId;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -189,23 +187,18 @@ final class MongoFilter {
    * Visits the identity of every record that matches a filter not answered by SQL, until the visitor answers {@code false}.
    */
   void scanMatches(final Database database, final String collectionName, final Predicate<RID> visitor) {
-    if (idPart != null) {
-      final Map<String, Object> params = new HashMap<>();
-      final StringBuilder text = new StringBuilder("SELECT FROM ").append(Identifier.quote(collectionName));
-      appendCandidateWhere(text, params);
-      try (final ResultSet rs = database.query("sql", text.toString(), params)) {
-        while (rs.hasNext()) {
-          final Result row = rs.next();
-          if (matchesRow(row) && row.getIdentity().isPresent() && !visitor.test(row.getIdentity().get()))
-            return;
-        }
-      }
-    } else
-      for (final Iterator<Record> it = database.iterateType(collectionName, false); it.hasNext(); ) {
-        final Record record = it.next();
-        if (record instanceof com.arcadedb.database.Document document && matches(document) && !visitor.test(record.getIdentity()))
+    // always a SQL query, narrowed by the _id when the filter has a part on it: it is how the query is counted by the metrics of the
+    // protocol and bounded by the command timeout, like every other query
+    final Map<String, Object> params = new HashMap<>();
+    final StringBuilder text = new StringBuilder("SELECT FROM ").append(Identifier.quote(collectionName));
+    appendCandidateWhere(text, params);
+    try (final ResultSet rs = database.query("sql", text.toString(), params)) {
+      while (rs.hasNext()) {
+        final Result row = rs.next();
+        if (matchesRow(row) && row.getIdentity().isPresent() && !visitor.test(row.getIdentity().get()))
           return;
       }
+    }
   }
 
   /**
