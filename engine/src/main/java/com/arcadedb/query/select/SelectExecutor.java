@@ -83,11 +83,11 @@ public class SelectExecutor {
   // SIDES MUST BE INDEXED" GATE (BECAUSE ITS PROPERTY HAD AN INDEX) BUT THEN filterWithIndexesFinalNode()'S SWITCH
   // FELL THROUGH TO A BARE return WITH NO CURSOR - SO THE WHOLE BRANCH SILENTLY CONTRIBUTED ZERO ROWS INSTEAD OF
   // JUST RUNNING LESS EFFICIENTLY. KEEP BOTH CALL SITES READING THIS ONE FIELD SO THEY CANNOT DRIFT APART AGAIN.
-  /** What {@link #integralLowerBound} and {@link #integralUpperBound} answer when no key of the index can satisfy the bound. */
-  private static final Object NO_KEY = new Object();
-
   private static final Set<SelectOperator> CURSOR_BUILDABLE_OPERATORS = EnumSet.of(SelectOperator.eq, SelectOperator.in_op,
       SelectOperator.between, SelectOperator.gt, SelectOperator.ge, SelectOperator.lt, SelectOperator.le);
+
+  /** What {@link #integralLowerBound} and {@link #integralUpperBound} answer when no key of the index can satisfy the bound. */
+  private static final Object NO_KEY = new Object();
 
   static class IndexInfo {
     public final Index   index;
@@ -739,7 +739,9 @@ public class SelectExecutor {
       if (rightValue instanceof Object[] range && range.length == 2) {
         final Object from = integralLowerBound(node.index, range[0]);
         final Object to = integralUpperBound(node.index, range[1]);
-        cursor = from == NO_KEY || to == NO_KEY ?
+        // 12.2 BETWEEN 12.7 maps to [13, 12]: an empty range, which the index is not asked to read backwards, as in SQL and Cypher
+        cursor = from == NO_KEY || to == NO_KEY || ((from != range[0] || to != range[1]) && from instanceof Number lower
+            && to instanceof Number upper && lower.longValue() > upper.longValue()) ?
             new TempIndexCursor(Collections.emptyList()) :
             node.index.range(ascendingOrder, new Object[] { from }, true, new Object[] { to }, true);
       } else
@@ -908,7 +910,9 @@ public class SelectExecutor {
 
   /**
    * The lower bound to seek an index with: {@code bound} itself, or, when the leading key is integral and no key equals it
-   * (12.5, 1e19), the smallest key above it, to be read inclusive, or {@link #NO_KEY} when there is none (issue #9021).
+   * (12.5, 1e19), the smallest key above it, to be read inclusive, or {@link #NO_KEY} when there is none (issue #9021). The
+   * callers tell a mapped bound by identity ({@code from != bound}), which is safe: a mapped key is an integral number in range,
+   * so it is never the inexact bound it replaces.
    */
   private static Object integralLowerBound(final TypeIndex index, final Object bound) {
     final byte keyType = leadingIntegralKeyType(index);

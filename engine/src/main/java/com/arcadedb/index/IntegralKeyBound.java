@@ -37,12 +37,16 @@ import java.math.RoundingMode;
  * for an equality. NaN reads as the greatest number, as the scan orders it.
  */
 public final class IntegralKeyBound {
+  /** 2^53: below it a {@code double} holds every integer exactly, and its decimal reading has the same integral part. */
+  private static final double EXACT_DOUBLE_LIMIT = 0x1p53;
+
   private IntegralKeyBound() {
   }
 
   /**
    * True when {@code keyType} is an integral binary key type and {@code bound} is a number no key of that type equals: one with
-   * a fraction, NaN, an infinity, or one past the range of the key type. Allocates nothing for an integral bound in range.
+   * a fraction, NaN, an infinity, or one past the range of the key type. Allocates nothing for an integral bound, nor for a
+   * {@code Double} or {@code Float} below 2^53 in magnitude.
    */
   public static boolean isInexact(final byte keyType, final Object bound) {
     if (!(bound instanceof Number number))
@@ -75,6 +79,12 @@ public final class IntegralKeyBound {
     }
     if (!Type.isFinite(number))
       return true;
+    if (number instanceof Double || number instanceof Float) {
+      final double value = number.doubleValue();
+      // below 2^53 every double reads as the same number in binary and in the decimal form the scan compares: no BigDecimal
+      if (Math.abs(value) < EXACT_DOUBLE_LIMIT)
+        return value != Math.rint(value) || value < min || value > max;
+    }
     final BigDecimal exact = toBigDecimal(number);
     if (exact == null)
       // not a standard number class: leave it to the conversion the index has always applied
