@@ -157,13 +157,14 @@ class RemoteDatabaseTest {
   }
 
   @Test
-  void mapArgsWithSingleMap() {
+  void mapArgsWithSingleMapIsOnePositionalArgument() {
     final Map<String, Object> params = new HashMap<>();
     params.put("name", "test");
     params.put("value", 42);
 
     final Map<String, Object> result = database.mapArgs(new Object[]{params});
-    assertThat(result).isEqualTo(params);
+    assertThat(result).hasSize(1);
+    assertThat(result.get("0")).isEqualTo(params);
   }
 
   @Test
