@@ -53,6 +53,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.UnaryOperator;
+import java.util.regex.Pattern;
 import java.util.logging.Level;
 
 public class RedisNetworkExecutor extends Thread {
@@ -60,7 +61,8 @@ public class RedisNetworkExecutor extends Thread {
   /**
    * Argument counts (command name included) real Redis enforces before it runs a command: {min, max}, max -1 = no upper
    * bound. Without it a surplus argument was read as the INCR/DECR amount, a missing one defaulted to 1, and a missing
-   * argument of GET/SET/INCR surfaced as {@code Index 1 out of bounds for length 1} (#9059).
+   * argument of GET/SET/INCR surfaced as {@code Index 1 out of bounds for length 1} (#9059). Intentionally partial: only
+   * the commands this wrapper dispatches with a fixed shape are listed.
    */
   private static final Map<String, int[]> ARITY = Map.ofEntries(//
       Map.entry("DECR", new int[] { 2, 2 }), Map.entry("DECRBY", new int[] { 3, 3 }),//
@@ -422,7 +424,11 @@ public class RedisNetworkExecutor extends Thread {
   private static void checkArity(final String cmdString, final int argumentCount) {
     final int[] arity = ARITY.get(cmdString);
     if (arity != null && (argumentCount < arity[0] || (arity[1] >= 0 && argumentCount > arity[1])))
-      throw new RedisException("wrong number of arguments for '" + cmdString.toLowerCase(Locale.ROOT) + "' command");
+      throw wrongArity(cmdString);
+  }
+
+  private static RedisException wrongArity(final String cmdString) {
+    return new RedisException("wrong number of arguments for '" + cmdString.toLowerCase(Locale.ROOT) + "' command");
   }
 
   /**
@@ -506,24 +512,27 @@ public class RedisNetworkExecutor extends Thread {
       // Transient mode: delete from globalVariables atomically. A key that is a RID deletes that record of the database
       // named by the bucket, the shape HGET/HMGET/HEXISTS read it with (#9056).
       final DatabaseInternal database = getAuthorizedDatabase(bucketName);
-      // Records first, variables last: a RID that fails (permission, rollback) must not leave the variables of the same
-      // command removed behind an error reply. Every RID is parsed up front for the same reason.
-      final List<RID> rids = new ArrayList<>();
+      // Records first, variables last, and the variables only once the records are committed: a RID that fails (permission,
+      // rollback) must not leave the variables of the same command removed behind an error reply. Every RID is parsed up
+      // front for the same reason. A key that merely starts with '#' but is not a RID is a variable name.
+      final Set<RID> rids = new LinkedHashSet<>();
+      final List<String> variables = new ArrayList<>();
       for (int i = 2; i < list.size(); i++) {
         final String key = (String) list.get(i);
-        if (key.startsWith("#"))
+        if (RID_PATTERN.matcher(key).matches())
           rids.add(parseRid(key));
+        else
+          variables.add(key);
       }
-      database.transaction(() -> {
-        for (final RID rid : rids)
-          deleted[0] += deleteByRid(database, rid) ? 1 : 0;
-        for (int i = 2; i < list.size(); i++) {
-          final String key = (String) list.get(i);
-          // setGlobalVariable atomically returns the previous value
-          if (!key.startsWith("#") && database.setGlobalVariable(key, null) != null)
-            deleted[0]++;
-        }
-      });
+      if (!rids.isEmpty())
+        database.transaction(() -> {
+          for (final RID rid : rids)
+            deleted[0] += deleteByRid(database, rid) ? 1 : 0;
+        });
+      for (final String variable : variables)
+        // setGlobalVariable atomically returns the previous value
+        if (database.setGlobalVariable(variable, null) != null)
+          deleted[0]++;
     } else {
       // Persistent mode: delete from database
       final String databaseName = bucketName.substring(0, pos);
@@ -537,7 +546,7 @@ public class RedisNetworkExecutor extends Thread {
         rids.add(parseRid(keyType));
         for (int i = 2; i < list.size(); i++) {
           final String key = (String) list.get(i);
-          if (key.startsWith("#"))
+          if (RID_PATTERN.matcher(key).matches())
             rids.add(parseRid(key));
         }
         database.transaction(() -> {
@@ -561,6 +570,8 @@ public class RedisNetworkExecutor extends Thread {
     value.append(":");
     value.append(deleted[0]);
   }
+
+  private static final Pattern RID_PATTERN = Pattern.compile("#-?\\d+:-?\\d+");
 
   private static RID parseRid(final String text) {
     try {
@@ -690,7 +701,7 @@ public class RedisNetworkExecutor extends Thread {
     } else {
       // Persistent mode: store documents in database type
       if (list.size() < 4)
-        throw new RedisException("wrong number of arguments for '" + ((String) list.get(0)).toLowerCase(Locale.ROOT) + "' command");
+        throw wrongArity((String) list.get(0));
       final String typeName = secondArg;
       final Database database = getAuthorizedDatabase(databaseName);
       database.transaction(() -> {
