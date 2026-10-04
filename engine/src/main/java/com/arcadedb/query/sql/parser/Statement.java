@@ -249,14 +249,16 @@ public class Statement extends SimpleNode {
     return false;
   }
 
-  /**
-   * The plan-cache key. The parser presets {@link #originalStatementAsString} with the raw text, which numbers its parameters from
-   * 0; the parameter-number suffix applies to the key computed here from {@link #originalStatement}, as a script statement
-   * does (the script engine calls {@link #setOriginalStatement}, which drops the preset text).
-   */
+  /** The plan-cache key; the parameter-number suffix applies to the computed text, not to the raw text the parser presets. */
   public String getOriginalStatement() {
     if (originalStatementAsString == null)
-      originalStatementAsString = originalStatement.toString() + SqlAstInspector.parameterNumbersSuffix(originalStatement);
+      {
+      final String text = originalStatement.toString();
+      // NO PARAMETER, NO NUMBERS TO TELL APART: SKIP THE TREE WALK
+      originalStatementAsString = text.indexOf('?') < 0 && text.indexOf(':') < 0 ?
+          text :
+          text + SqlAstInspector.parameterNumbersSuffix(originalStatement);
+    }
     return originalStatementAsString;
   }
 

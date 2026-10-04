@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -134,6 +135,9 @@ class Issue9247ScriptPositionalPlanCacheTest extends TestHelper {
     setup("K");
     for (int i = 0; i < 3; i++)
       assertThat(script("SELECT FROM K WHERE sku = ?; SELECT FROM K WHERE sku = ?;", "S1", "S2")).isEqualTo("S2:b2");
+    // the keys are stable: both statements are in the plan cache, each under its own parameter numbers
+    assertThat(((DatabaseInternal) database).getExecutionPlanCache().contains("SELECT FROM K WHERE sku = ?")).isTrue();
+    assertThat(((DatabaseInternal) database).getExecutionPlanCache().contains("SELECT FROM K WHERE sku = ? /*params:1*/")).isTrue();
   }
 
   @Test

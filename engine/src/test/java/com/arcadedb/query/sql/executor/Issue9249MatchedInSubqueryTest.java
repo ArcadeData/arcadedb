@@ -91,4 +91,23 @@ class Issue9249MatchedInSubqueryTest extends TestHelper {
     setup();
     assertThat(count("MATCH {type: P, as: a, where: (n = 2)}, {type: P, as: b, where: (n IN (SELECT n FROM P WHERE g = 0))} RETURN count(*) AS c")).isEqualTo(12);
   }
+
+  @Test
+  void functionArgumentReadsMatched() {
+    setup();
+    // p2 (g 0) and p5 (g 1) are the a nodes; b matches when its g equals the g of a: 3 of the 6 vertices for each
+    assertThat(count("MATCH {type: P, as: a, where: (n = 2)}, {type: P, as: b, where: (coalesce($matched.a.g, -1) = g)} RETURN count(*) AS c")).isEqualTo(6);
+  }
+
+  @Test
+  void oneHopReturnsTheRightRows() {
+    setup();
+    // 12 and 2 above: a = p2 (n 2) and p5 (n 2) reach p3 and p0 (n 0), both in the subquery set of their g
+    try (final ResultSet rs = database.query("sql",
+        "MATCH {type: P, as: a, where: (n = 2)}.out('K'){as: b, where: (n IN (SELECT n FROM P WHERE g = $matched.a.g))} RETURN b.name AS name ORDER BY name")) {
+      assertThat(rs.next().<String>getProperty("name")).isEqualTo("p0");
+      assertThat(rs.next().<String>getProperty("name")).isEqualTo("p3");
+      assertThat(rs.hasNext()).isFalse();
+    }
+  }
 }
