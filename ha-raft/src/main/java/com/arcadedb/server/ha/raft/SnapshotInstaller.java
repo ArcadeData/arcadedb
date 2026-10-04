@@ -339,6 +339,7 @@ public final class SnapshotInstaller {
    * of a swap it rolls forward (issue #8950). {@code null} in production. The recovery fixtures stand in for a snapshot
    * with placeholder files that no engine can open, so the tests about what recovery does with a snapshot that does
    * open set it to {@code path -> true}, and the ones about a snapshot that does not set it to {@code path -> false}.
+   * Process-wide: tests that set it must not run concurrently.
    */
   static volatile Predicate<Path> snapshotOpensForTesting = null;
 
@@ -1801,6 +1802,9 @@ public final class SnapshotInstaller {
         return true;
       }
 
+    LogManager.instance().log(SnapshotInstaller.class, Level.INFO,
+        "Opening the rolled-forward snapshot in %s to prove it before the retained backup is deleted (can take long on a large database)",
+        null, dbDir);
     try (final DatabaseFactory factory = new DatabaseFactory(dbDir.toString())) {
       factory.open().close();
       return true;
