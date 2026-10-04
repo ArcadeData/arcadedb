@@ -294,4 +294,36 @@ class MongoDBFilterSemanticsTest extends BaseMongoServerTest {
     assertThat(c.countDocuments()).isEqualTo(2);
     assertThat(c.deleteOne(Document.parse("{s:'b'}")).getDeletedCount()).isEqualTo(1);
   }
+
+  @Test
+  void idInsideLogicalOperatorsTakesTheStoredForm() {
+    final ObjectId oid = new ObjectId("507f1f77bcf86cd799439031");
+    final MongoCollection<Document> c = client.getDatabase(getDatabaseName()).getCollection("oridfilter");
+    c.insertOne(new Document("_id", oid).append("k", List.of(1, 2)));
+    c.insertOne(new Document("_id", new ObjectId("507f1f77bcf86cd799439032")).append("k", List.of(3)));
+    assertThat(c.countDocuments(new Document("$or", List.of(new Document("_id", oid), new Document("k", 99))))).isEqualTo(1);
+    assertThat(c.countDocuments(new Document("$and", List.of(new Document("_id", oid), new Document("k", 2))))).isEqualTo(1);
+    assertThat(c.countDocuments(new Document("$and", List.of(new Document("_id", oid), new Document("k", 3))))).isZero();
+  }
+
+  @Test
+  void regexOperandsInsideInAndNotAreBounded() {
+    final MongoCollection<Document> c = collection("regexops", "{_id:1, s:'alpha'}", "{_id:2, s:'beta'}", "{_id:3, s:['gamma','alpine']}");
+    assertThat(ids(c, "{s:{$not:{$regex:'^al'}}}")).containsExactly(2);
+    assertThat(c.find(new Document("s", new Document("$in", List.of(Pattern.compile("^al"), "beta")))).into(new ArrayList<>())).hasSize(3);
+    assertThat(c.find(new Document("s", new Document("$nin", List.of(Pattern.compile("^al"))))).into(new ArrayList<>())).hasSize(1);
+  }
+
+  @Test
+  void aCatastrophicRegexIsAbortedWithACleanErrorAndTheConnectionSurvives() {
+    final MongoCollection<Document> c = collection("redos", new Document("_id", 1).append("s", "a".repeat(40) + "!").toJson());
+    final long previous = GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong();
+    GlobalConfiguration.COMMAND_REGEX_TIMEOUT.setValue(200);
+    try {
+      assertThatThrownBy(() -> ids(c, "{s:{$regex:'(.*a){20}$'}}")).isInstanceOf(MongoException.class);
+    } finally {
+      GlobalConfiguration.COMMAND_REGEX_TIMEOUT.setValue(previous);
+    }
+    assertThat(ids(c, "{}")).containsExactly(1);
+  }
 }
