@@ -97,6 +97,7 @@ public class ArcadeGraphManager implements GraphManager {
   @Override
   public void putGraph(final String graphName, final Graph graph) {
     graphs.put(graphName, graph);
+    syncScriptGlobal(graphName);
   }
 
   @Override
@@ -170,6 +171,7 @@ public class ArcadeGraphManager implements GraphManager {
     if (graph != null) {
       ts = graph.traversal();
       traversalSources.put(traversalSourceName, ts);
+      syncScriptGlobal(traversalSourceName);
     } else
       ts = null;
 
@@ -179,17 +181,21 @@ public class ArcadeGraphManager implements GraphManager {
   @Override
   public void putTraversalSource(final String tsName, final TraversalSource ts) {
     traversalSources.put(tsName, ts);
+    syncScriptGlobal(tsName);
   }
 
   @Override
   public TraversalSource removeTraversalSource(final String tsName) {
-    return traversalSources.remove(tsName);
+    final TraversalSource removed = traversalSources.remove(tsName);
+    syncScriptGlobal(tsName);
+    return removed;
   }
 
   @Override
   public Graph removeGraph(final String graphName) {
     final Graph graph = graphs.remove(graphName);
     traversalSources.remove(graphName);
+    syncScriptGlobal(graphName);
     // A database that goes away takes its announcement with it, so should 'g' ever be resolved back onto a database
     // by this name again it is announced rather than mapped silently (issue #7230).
     announcedAliasTargets.remove(graphName);
@@ -218,25 +224,54 @@ public class ArcadeGraphManager implements GraphManager {
     final Bindings bindings = new SimpleBindings();
     graphs.forEach(bindings::put);
     traversalSources.forEach(bindings::put);
-
-    // THE EXECUTOR'S OWN COPY OF THE GLOBAL BINDINGS FOLLOWS THE DATABASES REGISTERED SINCE THE START (#9147)
-    final Bindings executorCopy = scriptGlobals;
-    if (executorCopy != null)
-      executorCopy.putAll(bindings);
     return bindings;
+  }
+
+  /**
+   * The value a script sees for a global name, read when the script runs (issue #9147): the traversal source registered under
+   * the name, else the graph, with {@code g} registered on first use once a database exists. A graph or traversal source whose
+   * database is no longer open is replaced, or dropped when the database is gone. No allocation on the common path.
+   */
+  Object getScriptBinding(final String name) {
+    TraversalSource ts = traversalSources.get(name);
+    if (ts != null && isStale(ts.getGraph()))
+      ts = null;
+    if (ts == null && "g".equals(name) && serverInstance != null && !serverInstance.getDatabaseNames().isEmpty())
+      ts = getTraversalSource(name);
+    if (ts != null)
+      return ts;
+
+    final Graph graph = graphs.get(name);
+    return graph != null && !isStale(graph) ? graph : null;
+  }
+
+  /** Mirrors the registration state of a name into the executor's own copy of the global bindings, which lambda bytecode requests read. */
+  private void syncScriptGlobal(final String name) {
+    final Bindings copy = scriptGlobals;
+    if (copy == null)
+      return;
+    Object value = traversalSources.get(name);
+    if (value == null)
+      value = graphs.get(name);
+    if (value == null)
+      copy.remove(name);
+    else
+      copy.put(name, value);
   }
 
   /**
    * Replaces the global bindings of the given script engines with {@link LiveScriptBindings}, so a script sees the databases
    * created after the server started (issue #9147). TinkerPop evaluates every script against a copy of {@link #getAsBindings()}
    * taken once, while the server starts, and that copy stays the executor's own: a lambda bytecode request still reads its
-   * traversal source from it. It is kept current from here on, see {@link #getAsBindings()}.
+   * traversal source from it. It is kept current from here on, as graphs are registered and removed.
    */
   public void bindScriptEnginesLive(final GremlinExecutor executor, final Collection<String> engineNames) {
     final GremlinScriptEngineManager manager = executor.getScriptEngineManager();
     final Bindings base = manager.getBindings();
     final Bindings live = new LiveScriptBindings(base, this);
     scriptGlobals = base;
+    for (final String name : getAsBindings().keySet())
+      syncScriptGlobal(name);
     manager.setBindings(live);
     for (final String engineName : engineNames) {
       final GremlinScriptEngine engine = manager.getEngineByName(engineName);
@@ -319,7 +354,15 @@ public class ArcadeGraphManager implements GraphManager {
       LogManager.instance().log(this, Level.INFO,
           "Evicting stale Gremlin graph for database '%s' after its underlying database was reopened", databaseName);
       graphs.remove(databaseName);
-      traversalSources.values().removeIf(ts -> ts.getGraph() == graph);
+      final Set<String> evicted = new HashSet<>();
+      traversalSources.entrySet().removeIf(e -> {
+        if (e.getValue().getGraph() != graph)
+          return false;
+        evicted.add(e.getKey());
+        return true;
+      });
+      syncScriptGlobal(databaseName);
+      evicted.forEach(this::syncScriptGlobal);
     }
 
     // Check if database exists
@@ -335,6 +378,7 @@ public class ArcadeGraphManager implements GraphManager {
       final ArcadeGraph arcadeGraph = ArcadeGraph.openShared(serverInstance.getDatabase(databaseName));
       graphs.put(databaseName, arcadeGraph);
       traversalSources.put(databaseName, arcadeGraph.traversal());
+      syncScriptGlobal(databaseName);
 
       LogManager.instance().log(this, Level.INFO,
           "Dynamically registered database '%s' as Gremlin graph", databaseName);
@@ -386,5 +430,8 @@ public class ArcadeGraphManager implements GraphManager {
     }
     graphs.clear();
     traversalSources.clear();
+    final Bindings copy = scriptGlobals;
+    if (copy != null)
+      copy.clear();
   }
 }

@@ -21,6 +21,7 @@ package com.arcadedb.server.gremlin;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.gremlin.io.ArcadeIoRegistry;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.apache.tinkerpop.gremlin.driver.Client;
@@ -33,8 +34,10 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.concurrent.ExecutionException;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * https://github.com/ArcadeData/arcadedb/issues/9147
@@ -93,6 +96,28 @@ class Issue9147ScriptGBindingNoDatabaseAtStartIT extends BaseGraphServerTest {
       final List<Result> lang = client.submit(query, RequestOptions.build().language("gremlin-lang").create()).all().get();
       assertThat(lang).hasSize(1);
       assertThat(lang.get(0).getLong()).isEqualTo(1L);
+    } finally {
+      cluster.close();
+    }
+  }
+
+  @Test
+  void aDroppedDatabaseIsNoLongerBoundForScripts() throws Exception {
+    final Database db = getServer(0).getOrCreateDatabase("mydb");
+    db.command("sql", "CREATE VERTEX TYPE Person").close();
+
+    final Cluster cluster = Cluster.build().enableSsl(false).addContactPoint("127.0.0.1").port(gremlinPort)
+        .credentials("root", DEFAULT_PASSWORD_FOR_TESTS)
+        .serializer(new GraphBinaryMessageSerializerV1(new TypeSerializerRegistry.Builder().addRegistry(new ArcadeIoRegistry()))).create();
+    try {
+      final Client client = cluster.connect();
+      final RequestOptions lang = RequestOptions.build().language("gremlin-lang").create();
+      assertThat(client.submit("g.V().count()", lang).all().get().get(0).getLong()).isZero();
+
+      ((DatabaseInternal) getServer(0).getDatabase("mydb")).getEmbedded().drop();
+      getServer(0).removeDatabase("mydb");
+
+      assertThatThrownBy(() -> client.submit("g.V().count()", lang).all().get()).isInstanceOf(ExecutionException.class);
     } finally {
       cluster.close();
     }
