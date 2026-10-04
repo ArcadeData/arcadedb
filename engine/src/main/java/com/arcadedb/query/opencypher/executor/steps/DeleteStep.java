@@ -155,7 +155,13 @@ public class DeleteStep extends AbstractExecutionStep {
         }
 
         // Fetch more results
-        fetchMore(nRecords);
+        try {
+          fetchMore(nRecords);
+        } catch (final RuntimeException e) {
+          // a failure from the upstream (or a row) must not leave the step's own transaction open
+          abortHeldTransaction();
+          throw e;
+        }
         return bufferIndex < buffer.size();
       }
 
@@ -727,6 +733,22 @@ public class DeleteStep extends AbstractExecutionStep {
     deleted.add(edge);
   }
 
+  /**
+   * Rolls back the transaction this step kept open for a pending vertex. A consumer that stops pulling before the last
+   * row (a LIMIT downstream over more rows than one batch) never reaches the final check, so the statement did not
+   * complete: the rows already applied from the first pending vertex onwards are rolled back with it, and the statistics
+   * counters still show them.
+   */
+  private void abortHeldTransaction() {
+    if (!holdingTransaction)
+      return;
+    holdingTransaction = false;
+    pendingVertices.clear();
+    final Database database = context.getDatabase();
+    if (database.isTransactionActive())
+      database.rollback();
+  }
+
   private void releaseHeap() {
     if (heapLimit != null)
       heapLimit.release();
@@ -734,14 +756,7 @@ public class DeleteStep extends AbstractExecutionStep {
 
   @Override
   public void close() {
-    if (holdingTransaction) {
-      // the consumer stopped before the last row: the statement never completed, so its rows are not left half applied
-      holdingTransaction = false;
-      pendingVertices.clear();
-      final Database database = context.getDatabase();
-      if (database.isTransactionActive())
-        database.rollback();
-    }
+    abortHeldTransaction();
     releaseHeap();
     super.close();
   }
