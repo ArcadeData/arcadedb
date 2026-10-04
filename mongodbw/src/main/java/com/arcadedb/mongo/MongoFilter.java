@@ -283,6 +283,16 @@ final class MongoFilter {
         } else
           result.put(operator, operand);
       }
+      case "$and", "$or", "$nor" -> {
+        // inside an $elemMatch operator document, for one: the regular expressions of the sub-queries are bounded too
+        if (operand instanceof List<?> list) {
+          final List<Object> converted = new ArrayList<>(list.size());
+          for (final Object item : list)
+            converted.add(item instanceof Document document ? normalizeQuery(document, deadline, false) : item);
+          result.put(operator, converted);
+        } else
+          result.put(operator, operand);
+      }
       case "$elemMatch" -> {
         if (operand instanceof Document document) {
           if (isOperatorDocument(document)) {
