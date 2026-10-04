@@ -290,7 +290,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     return firstBatchCursorResponse(collectionName, "firstBatch", aggregation.computeResult(), 0);
   }
 
-  // the stages that need no input collection ($documents, $collStats) are out of scope here: they answer empty on a missing one
+  // accepted deviation: a stage that needs no input collection ($documents, $collStats) answers empty on a missing collection here
   private static boolean startsWithChangeStream(final Object pipeline) {
     return pipeline instanceof List<?> stages && !stages.isEmpty() && stages.getFirst() instanceof Document first
         && first.containsKey("$changeStream");

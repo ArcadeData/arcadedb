@@ -259,7 +259,7 @@ final class MongoFilter {
    * A regular expression operand (alone or in a list) is a pattern only the matcher evaluates, and an embedded document or a list
    * is compared by SQL in ways (key order) not proven to match MongoDB's: SQL compares them as a value, so none of them narrows.
    */
-  private static boolean holdsRegex(final Object operand) {
+  private static boolean isNonScalarOperand(final Object operand) {
     if (operand instanceof BsonRegularExpression || operand instanceof Document)
       return true;
     if (operand instanceof List<?> list)
@@ -275,7 +275,7 @@ final class MongoFilter {
         // a document _id, compared as a whole
         return false;
       for (final Map.Entry<String, Object> entry : operators.entrySet())
-        if (!NARROWING_OPERATORS.contains(entry.getKey()) || holdsRegex(entry.getValue()))
+        if (!NARROWING_OPERATORS.contains(entry.getKey()) || isNonScalarOperand(entry.getValue()))
           return false;
       return true;
     }
