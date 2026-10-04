@@ -2117,11 +2117,12 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       // On the streaming encoding the window restarts with every byte of the upload relayed (issue #8719), so the
       // message says so. Which side stopped cannot be told from here - the leader no longer taking the upload, or the
       // client no longer sending it, when its incoming read timeout is longer than this budget - so both are named.
+      final String since = streaming ?
+          " of the last byte of the upload relayed to it: either the leader stopped taking the upload or the client "
+              + "stopped sending it" :
+          "";
       return new ExecutionResponse(504, new JSONObject()
-          .put("error", "The leader at " + url + " did not answer within " + deadlineMs + "ms" + (streaming ?
-              " of the last byte of the upload relayed to it: either the leader stopped taking the upload or the "
-                  + "client stopped sending it" :
-              ""))
+          .put("error", "The leader at " + url + " did not answer within " + deadlineMs + "ms" + since)
           .toString());
     } catch (final Exception e) {
       // This node's own body cap tripped mid-relay (issue #8161): the JDK wraps the refusal in a plain IOException.

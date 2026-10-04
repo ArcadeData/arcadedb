@@ -93,12 +93,12 @@ class Issue8719SendWhileProgressingTest {
   @Test
   void aMoveJustBeforeTheDeadlineRestartsTheWholeWindow() throws Exception {
     final long moveAtMs = BUDGET_MS * 3 / 4;
-    final long start = System.nanoTime();
-    // Changes once, at moveAtMs after the send, and never again: no thread involved, so the timing is the sampler's.
-    final LongSupplier movesOnce = () -> System.nanoTime() - start >= TimeUnit.MILLISECONDS.toNanos(moveAtMs) ? 1L : 0L;
 
     try (final SilentPeer peer = new SilentPeer()) {
       final StallAwareStopwatch watch = StallAwareStopwatch.start();
+      final long start = System.nanoTime();
+      // Changes once, moveAtMs after the send, and never again: no thread involved, so the timing is the sampler's.
+      final LongSupplier movesOnce = () -> System.nanoTime() - start >= TimeUnit.MILLISECONDS.toNanos(moveAtMs) ? 1L : 0L;
       assertGivesUp(peer, movesOnce);
       assertThat(watch.elapsedMs()).as("the window restarted at the move")
           .isGreaterThanOrEqualTo(moveAtMs + BUDGET_MS);
