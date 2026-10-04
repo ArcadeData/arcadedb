@@ -77,7 +77,7 @@ final class MongoFilter {
       this.normalized = null;
       this.matcher = null;
     } else {
-      final long deadline = TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(database));
+      final RegexBudget deadline = new RegexBudget(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(database));
       this.normalized = normalizeQuery(filter, deadline, true);
       this.matcher = new DefaultQueryMatcher();
     }
@@ -163,7 +163,7 @@ final class MongoFilter {
    * Prepares a query document for the matcher: a regular expression, however it is spelled, becomes a {@link BoundedRegex}, and
    * the {@code _id} operand takes the form the {@code _id} is stored in.
    */
-  private static Document normalizeQuery(final Document query, final long deadline, final boolean top) {
+  private static Document normalizeQuery(final Document query, final RegexBudget deadline, final boolean top) {
     final Document result = new Document();
     List<Object> lifted = null;
     for (final Map.Entry<String, Object> entry : query.entrySet()) {
@@ -231,7 +231,7 @@ final class MongoFilter {
   /**
    * The operators applied to one field: only the places a regular expression can sit need a look.
    */
-  private static Document normalizeOperators(final Document operators, final long deadline) {
+  private static Document normalizeOperators(final Document operators, final RegexBudget deadline) {
     final Document result = new Document();
     for (final Map.Entry<String, Object> entry : operators.entrySet()) {
       final String operator = entry.getKey();
@@ -268,9 +268,15 @@ final class MongoFilter {
           result.put(operator, operand);
       }
       case "$elemMatch" -> {
-        if (operand instanceof Document document)
-          result.put(operator, isOperatorDocument(document) ? regexOnly(document, deadline) : normalizeQuery(document, deadline, false));
-        else
+        if (operand instanceof Document document) {
+          if (isOperatorDocument(document)) {
+            // the matcher builds the expression of an operator document itself, out of reach of the time bound
+            if (document.containsKey("$regex"))
+              throw new IllegalArgumentException("$regex directly inside $elemMatch is not supported, match a field of the element");
+            result.put(operator, normalizeOperators(document, deadline));
+          } else
+            result.put(operator, normalizeQuery(document, deadline, false));
+        } else
           result.put(operator, operand);
       }
       default -> result.put(operator, operand);
@@ -283,7 +289,7 @@ final class MongoFilter {
    * An operator document that may be nothing but a regular expression, which is what the places that cannot take a second
    * condition (an operand of {@code $not} or {@code $elemMatch}) accept; any other operators are normalized as usual.
    */
-  private static Object regexOnly(final Document document, final long deadline) {
+  private static Object regexOnly(final Document document, final RegexBudget deadline) {
     if (!document.containsKey("$regex"))
       return normalizeOperators(document, deadline);
     if (!withoutRegex(document).isEmpty())
@@ -304,21 +310,47 @@ final class MongoFilter {
   }
 
   /**
+   * The time a filter may spend in regular expressions, shared by every search of the filter: {@code arcadedb.command.regexTimeout}
+   * counts the time inside the expressions only, not the reading of the documents around them, so a long scan with a harmless
+   * expression is not cut short while a pathological one still is.
+   */
+  private static final class RegexBudget {
+    private final long timeoutNanos;
+    private       long remainingNanos;
+
+    RegexBudget(final long timeoutMillis) {
+      this.timeoutNanos = timeoutMillis > 0 ? timeoutMillis * 1_000_000L : 0;
+      this.remainingNanos = timeoutNanos;
+    }
+
+    boolean find(final Pattern pattern, final String input) {
+      if (timeoutNanos <= 0)
+        return TimeBoundRegex.findUntil(pattern, input, Long.MAX_VALUE);
+      final long start = System.nanoTime();
+      try {
+        return TimeBoundRegex.findUntil(pattern, input, start + remainingNanos);
+      } finally {
+        remainingNanos = Math.max(1, remainingNanos - (System.nanoTime() - start));
+      }
+    }
+  }
+
+  /**
    * A regular expression whose search is bounded by a deadline shared by the whole filter. The matcher asks the expression for a
    * {@link Matcher} over the value; the answer is computed here, through {@link TimeBoundRegex}, and handed back as a matcher
    * that finds (or does not) whatever the value is.
    */
   private static final class BoundedRegex extends BsonRegularExpression {
     private final Pattern pattern;
-    private final long    deadline;
+    private final RegexBudget deadline;
 
-    BoundedRegex(final String regex, final String options, final long deadline) {
+    BoundedRegex(final String regex, final String options, final RegexBudget deadline) {
       super(regex, options);
       this.deadline = deadline;
       this.pattern = compile(regex, options);
     }
 
-    static BoundedRegex of(final Document operators, final long deadline) {
+    static BoundedRegex of(final Document operators, final RegexBudget deadline) {
       final Object options = operators.get("$options");
       return new BoundedRegex(String.valueOf(operators.get("$regex")), options != null ? options.toString() : null, deadline);
     }
@@ -348,7 +380,7 @@ final class MongoFilter {
 
     @Override
     public Matcher matcher(final String string) {
-      return (TimeBoundRegex.findUntil(pattern, string, deadline) ? ALWAYS : NEVER).matcher(string);
+      return (deadline.find(pattern, string) ? ALWAYS : NEVER).matcher(string);
     }
   }
 }
