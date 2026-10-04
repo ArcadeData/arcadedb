@@ -19,6 +19,7 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.DatabaseFactory;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -43,6 +44,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class Issue8950RollForwardProvesTheSnapshotOpensTest {
   @TempDir
   Path root;
+
+  @AfterEach
+  void resetTheOpenProofOverride() {
+    SnapshotInstaller.snapshotOpensForTesting = null;
+  }
 
   @Test
   void installedSnapshotThatDoesNotOpenRestoresTheBackup() throws Exception {

@@ -718,17 +718,6 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   /**
-   * Resolves the columns a materialized portal must be announced under, from the rows it actually produced.
-   * A catalog answer keeps its own columns, which are fixed by the catalog table being emulated rather than
-   * by whichever rows happened to match; a query that came back empty falls back to the schema, so a client
-   * probing a shape with {@code WHERE 1=0} or {@code LIMIT 0} still gets a typed result set.
-   *
-   * @param announced true when these columns are about to be sent to the client in a RowDescription (Describe 'P'),
-   *                  which a client may keep for the statement: only then are the undeclared properties of a named
-   *                  statement held to the layout every record fits (issue #9009). Execute announces nothing, so
-   *                  it types the columns from the rows themselves.
-   */
-  /**
    * A projection ({@code SELECT u FROM T}) returns rows that are not elements, so {@code getColumns} cannot tell an
    * undeclared property from a computed value by the row alone. The statement can: a projected plain property that the
    * target type does not declare is held to the text layout like the same property of a whole record (issue #9009).
@@ -750,6 +739,17 @@ public class PostgresNetworkExecutor extends Thread {
     }
   }
 
+  /**
+   * Resolves the columns a materialized portal must be announced under, from the rows it actually produced.
+   * A catalog answer keeps its own columns, which are fixed by the catalog table being emulated rather than
+   * by whichever rows happened to match; a query that came back empty falls back to the schema, so a client
+   * probing a shape with {@code WHERE 1=0} or {@code LIMIT 0} still gets a typed result set.
+   *
+   * @param announced true when these columns are about to be sent to the client in a RowDescription (Describe 'P'),
+   *                  which a client may keep for the statement: only then are the undeclared properties of a named
+   *                  statement held to the layout every record fits (issue #9009). Execute announces nothing, so
+   *                  it types the columns from the rows themselves.
+   */
   private void resolvePortalColumns(final PostgresPortal portal, final boolean announced) {
     final List<Result> rows = portal.fullResultSet != null ? portal.fullResultSet : Collections.emptyList();
     if (!portal.catalogQuery || portal.columns == null)
