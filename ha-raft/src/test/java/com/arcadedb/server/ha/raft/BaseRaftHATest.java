@@ -827,6 +827,10 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
 
     LogManager.instance().log(this, Level.INFO, "TEST: Starting server %d again", serverIndex);
     getServer(serverIndex).start();
+    // The restarted node builds a fresh RaftHAServer from the 2480 + i hints of getServerAddresses(), and with 2480 held
+    // by another process every hint names the wrong node: a leader-initiated snapshot install then asks a neighbour for
+    // the leader's state, is refused as answered by the wrong peer, and never completes (issue #8643)
+    patchPeerHttpAddressesWithBoundPorts();
 
     // Wait for the restarted peer to catch up to the current leader's last applied index. The line says which
     // happened: "caught up" after a wait that gave up was the same lie issue #7518 removed from the wait itself.
