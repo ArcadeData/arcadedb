@@ -126,7 +126,8 @@ class Issue8728FollowerSchemaEntryKeepsCountIT extends BaseRaftHATest {
     assertThat(getServerDatabase(followerIndex, getDatabaseName()).getSchema().existsType(DROPPED))
         .as("the drop-type entry must have been applied on follower %d", followerIndex).isFalse();
     assertThat(followerBucket(followerIndex))
-        .as("the drop-type entry must take the full load(), which rebuilds every component")
+        .as("the drop-type entry must take the full load(), which rebuilds every component (if loadIncremental() ever "
+            + "learns retired files, pick another fallback trigger, see Issue6988FullRebuildFallbackIT)")
         .isNotSameAs(bucketBefore);
 
     assertCachedCountOnEveryServer();
@@ -193,6 +194,7 @@ class Issue8728FollowerSchemaEntryKeepsCountIT extends BaseRaftHATest {
     });
   }
 
+  // getFirst() is the whole type only because createCountedType() builds it with withTotalBuckets(1).
   private LocalBucket followerBucket(final int followerIndex) {
     final LocalSchema schema = getServerDatabase(followerIndex, getDatabaseName()).getSchema().getEmbedded();
     return (LocalBucket) schema.getFileByIdIfExists(schema.getType(TYPE).getBuckets(false).getFirst().getFileId());
