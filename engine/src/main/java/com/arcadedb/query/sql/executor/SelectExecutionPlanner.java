@@ -5067,8 +5067,11 @@ public class SelectExecutionPlanner {
             // side of the range)
             while (blockIterator.hasNext()) {
               BooleanExpression next = blockIterator.next();
-              // The other side of a range over field.toLowerCase() is probed lower-cased too, so it must already be
-              if (next.createRangeWith(singleExp) && rangePartnerAllowed(singleExp, next, ciCollation, info)
+              // The other side of a range over field.toLowerCase() is probed lower-cased too, so it must already be.
+              // The other side becomes a key the index scan computes with no record, so it must pass the same
+              // isIndexAware test as the first side: a bound that reads the record (u <= id, u <= w * 100) is not
+              // early calculated and stays in the filter, and the search goes on for a constant partner (issue #9029)
+              if (next.createRangeWith(singleExp) && next.isIndexAware(info) && rangePartnerAllowed(singleExp, next, ciCollation, info)
                   && !hasLossyDecimalLiteralBound(next, clazz, baseFieldName, context)) {
                 additionalRangeCondition = (BinaryCondition) next;
                 blockIterator.remove();
