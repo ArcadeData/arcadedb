@@ -1482,7 +1482,8 @@ public class PostgresNetworkExecutor extends Thread {
           continue;
         }
 
-        // varchar holds every value and absorbs every other type: nothing left to widen, so skip the inspection
+        // Invariant: a column is varchar-final unless it is still a null placeholder. varchar holds every value and
+        // absorbs every other type: nothing left to widen, so skip the inspection
         if (known && columns.get(p) == PostgresType.VARCHAR && (nullOnly == null || !nullOnly.contains(p)))
           continue;
 
