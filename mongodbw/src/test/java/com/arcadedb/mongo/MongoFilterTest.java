@@ -180,6 +180,7 @@ class MongoFilterTest {
   }
 
   @Test
+  @Timeout(60)
   void aSpentRegexBudgetRefusesTheNextSearch() {
     final MongoFilter.RegexBudget budget = MongoFilter.RegexBudget.ofMillis(1);
     final Pattern pathological = Pattern.compile("(.*a){20}$");
