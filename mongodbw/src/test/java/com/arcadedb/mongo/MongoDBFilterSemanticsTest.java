@@ -571,4 +571,15 @@ class MongoDBFilterSemanticsTest extends BaseMongoServerTest {
     for (final List<Document> pipeline : pipelines)
       assertThat(missing.aggregate(pipeline).into(new ArrayList<>())).as(pipeline.toString()).isEmpty();
   }
+
+  @Test
+  void aStringFilterOnANumericIdCollectionAnswersEmptyInsteadOfFailing() {
+    final MongoCollection<Document> c = collection("numericids", "{_id:1, k:'a'}", "{_id:2, k:'b'}", "{_id:3, k:'c'}");
+    assertThat(ids(c, "{_id:'abc'}")).isEmpty();
+    assertThat(ids(c, "{_id:{$in:['abc', 2]}}")).containsExactly(2);
+    assertThat(ids(c, "{_id:'abc', k:'a'}")).isEmpty();
+    assertThat(ids(c, "{$or:[{_id:'abc'}, {_id:3}]}")).containsExactly(3);
+    assertThat(c.deleteMany(Document.parse("{_id:'abc'}")).getDeletedCount()).isZero();
+    assertThat(c.countDocuments(Document.parse("{_id:{$in:['x', 1]}}"))).isEqualTo(1);
+  }
 }
