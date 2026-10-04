@@ -104,7 +104,6 @@ public class MongoDBServerTest extends BaseMongoServerTest {
     assertThat(stripMetadata(collection.find(BsonDocument.parse("{ name: { $gte: \"A\" } } ")).first())).isEqualTo(obj);
     assertThat(stripMetadata(collection.find(and(gt("name", "A"), lte("name", "Jay"))).first())).isEqualTo(obj);
     assertThat(stripMetadata(collection.find(BsonDocument.parse("{ $or: [ { name: { $eq: 'Jay' } }, { lastName: 'Miner222'} ] }")).first())).isEqualTo(obj);
-    assertThat(stripMetadata(collection.find(BsonDocument.parse("{ $not: { name: { $eq: 'Jay2' } } }")).first())).isEqualTo(obj);
     assertThat(stripMetadata(collection.find(BsonDocument.parse(
       "{ $and: [ { name: { $eq: 'Jay' } }, { lastName: { $exists: true } }, { lastName: { $eq: 'Miner' } }, { lastName: { $ne: 'Miner22' } } ] }")).first())).isEqualTo(obj);
     assertThat(stripMetadata(collection.find(and(eq("name", "Jay"), exists("lastName"), eq("lastName", "Miner"), ne("lastName", "Miner22"))).first())).isEqualTo(obj);

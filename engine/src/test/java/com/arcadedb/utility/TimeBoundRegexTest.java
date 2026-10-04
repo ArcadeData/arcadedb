@@ -63,6 +63,23 @@ class TimeBoundRegexTest {
   }
 
   @Test
+  void findUntilSearchesAnywhereInTheInput() {
+    assertThat(TimeBoundRegex.findUntil(Pattern.compile("b+"), "aabbcc", TimeBoundRegex.newDeadline(1000))).isTrue();
+    assertThat(TimeBoundRegex.findUntil(Pattern.compile("^b+"), "aabbcc", TimeBoundRegex.newDeadline(1000))).isFalse();
+  }
+
+  @Test
+  void findUntilAbortsCatastrophicBacktracking() {
+    final Pattern pathological = Pattern.compile("(.*a){20}$");
+    final String input = "a".repeat(40) + "!";
+
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
+    assertThatThrownBy(() -> TimeBoundRegex.findUntil(pathological, input, TimeBoundRegex.newDeadline(200)))
+        .isInstanceOf(TimeoutException.class);
+    stopwatch.assertGaveUpWithin(5000, "the requested 200ms deadline from an unbounded search");
+  }
+
+  @Test
   void replaceAllReplacesEveryMatch() {
     assertThat(TimeBoundRegex.replaceAll(Pattern.compile("a"), "banana", "o", 1000)).isEqualTo("bonono");
   }
