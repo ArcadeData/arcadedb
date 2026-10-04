@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.PageSnapshot;
 import com.arcadedb.engine.PaginatedComponent;
+import com.arcadedb.engine.timeseries.ListedSealedStore;
 import com.arcadedb.engine.timeseries.TimeSeriesCompactionPause;
 import com.arcadedb.engine.timeseries.TimeSeriesSealedStore;
 import com.arcadedb.exception.PageSnapshotException;
@@ -472,7 +473,9 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
    * complete file, and it is covered by no window on either path.
    * <p>
    * A file that disappears between the listing and the read does not fail the verify, but it is REPORTED, which
-   * is the difference from how the page files above are treated. A missing page file is the same on every node; a
+   * is the difference from how the page files above are treated. So is one whose path names a DIFFERENT file by the
+   * time it is read - a TimeSeries type dropped and recreated under the same name after t0 (issue #8738): its bytes
+   * read cleanly and describe nothing at t0, so they are left out and the answer says it is short of them. A missing page file is the same on every node; a
    * sealed store this node could not read leaves its answer silently short of one, and a leader comparing only
    * its own checksum keys would report that as agreement.
    *
@@ -487,7 +490,7 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
    * caller can say the answer does not cover them rather than implying it does
    */
   private static boolean collectSealedStores(final JSONObject checksums, final JSONArray files,
-      final DatabaseInternal db, final File[] sealedFiles) {
+      final DatabaseInternal db, final List<ListedSealedStore> sealedFiles) {
     if (sealedFiles == null) {
       LogManager.instance().log(PostVerifyDatabaseHandler.class, Level.WARNING,
           "Could not list the database directory of '%s' to checksum its TimeSeries sealed stores", null, db.getName());
@@ -495,17 +498,17 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
     }
 
     boolean complete = true;
-    for (final File sealedFile : sealedFiles)
+    for (final ListedSealedStore sealedFile : sealedFiles)
       try {
         final SealedImage image = readSealedImage(sealedFile);
-        collectFileInfo(checksums, files, sealedFile.getName(), image.crc(), image.size());
+        collectFileInfo(checksums, files, sealedFile.name(), image.crc(), image.size());
       } catch (final Exception e) {
         // Reported rather than swallowed. A page file that cannot be read is skipped silently above, and that is
         // survivable there because the page enumeration is the same on every node; a sealed store that cannot be
         // read is NOT, because this node then answers a checksum set that silently omits it while still claiming
         // to cover sealed stores - a leader comparing only its own keys would roll that up as ALL_CONSISTENT.
         LogManager.instance().log(PostVerifyDatabaseHandler.class, Level.WARNING,
-            "Could not checksum the TimeSeries sealed store '%s' of database '%s': %s", null, sealedFile.getName(),
+            "Could not checksum the TimeSeries sealed store '%s' of database '%s': %s", null, sealedFile.name(),
             db.getName(), e.getMessage());
         complete = false;
       }
@@ -513,14 +516,16 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
   }
 
   /**
-   * Lists the TimeSeries sealed stores of {@code db}, or returns {@code null} when the directory cannot be listed.
+   * Lists the TimeSeries sealed stores of {@code db} with the identity of each file at this moment, or returns
+   * {@code null} when the directory cannot be listed. The identity is what lets the read, taken later, tell the listed
+   * file from a same-named one that replaced it (issue #8738).
    * <p>
    * {@code listSealedFiles} turns an unreadable directory into an EMPTY array, which reads exactly like "this database
    * has no sealed store" - and the difference decides whether this answer covers them. The ...OrNull variant keeps
    * that distinction while still listing the directory ONCE (code review on PR #7474).
    */
-  private static File[] listSealedStores(final DatabaseInternal db) {
-    return TimeSeriesSealedStore.listSealedFilesOrNull(new File(db.getDatabasePath()));
+  private static List<ListedSealedStore> listSealedStores(final DatabaseInternal db) {
+    return ListedSealedStore.listOrNull(new File(db.getDatabasePath()));
   }
 
   /** One sealed store's checksum and the number of bytes it was computed over. */
@@ -542,18 +547,22 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
    * repair of a type whose engine never loaded takes no shard lock (issue #7475), and nothing at all excludes an
    * operator replacing the file by hand - which, on an endpoint whose job is to detect exactly that, is not a
    * case to reason away.
+   * <p>
+   * Checked against the identity the file had when it was listed, before and after the read (issue #8738): the path
+   * resolving to a complete file is not the same as it resolving to the LISTED one.
    */
-  private static SealedImage readSealedImage(final File file) throws IOException {
+  private static SealedImage readSealedImage(final ListedSealedStore file) throws IOException {
     final CRC32 crc = new CRC32();
     final byte[] buffer = new byte[8192];
     long size = 0;
-    try (final FileInputStream in = new FileInputStream(file)) {
+    try (final FileInputStream in = file.open()) {
       int read;
       while ((read = in.read(buffer)) != -1) {
         crc.update(buffer, 0, read);
         size += read;
       }
     }
+    file.verifyUnchanged(size);
     return new SealedImage(crc.getValue(), size);
   }
 
@@ -713,10 +722,9 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
    * The image one verify reads on the window path: the point-in-time page window, and the TimeSeries sealed stores as
    * they were listed in the same read-locked frame as its t0. {@code sealedFiles} is {@code null} when the compaction
    * pause was not held (the sealed stores are then left out of the answer) or when the directory could not be listed.
-   * A carrier only, never compared: the array component makes the generated {@code equals}/{@code hashCode}
-   * identity-based.
+   * A carrier only, never compared.
    */
-  private record WindowImage(PageSnapshot snapshot, File[] sealedFiles) {
+  private record WindowImage(PageSnapshot snapshot, List<ListedSealedStore> sealedFiles) {
   }
 
   /**
@@ -729,8 +737,8 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
    * read. What it still protects is the pairing of the window with the sealed-store LISTING: a sealed store is not a
    * registered page file, so the window cannot carry it, and {@code TimeSeriesCompactionPause} excludes a compaction,
    * not a {@code CREATE}/{@code DROP} of a TimeSeries type. Listing inside the frame keeps the answer's sealed set the
-   * t0 one. A store listed here and deleted before it is read is REPORTED as not covered by
-   * {@link #collectSealedStores}, never silently dropped.
+   * t0 one. A store listed here and deleted - or replaced by a same-named one (issue #8738) - before it is read is
+   * REPORTED as not covered by {@link #collectSealedStores}, never silently dropped or silently passed off as t0.
    *
    * @return the image, or {@code null} when the window could not be opened and the caller must fall back
    */

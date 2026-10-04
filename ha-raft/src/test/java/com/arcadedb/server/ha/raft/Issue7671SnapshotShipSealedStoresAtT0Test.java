@@ -23,6 +23,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.PageSnapshot;
+import com.arcadedb.engine.timeseries.ListedSealedStore;
 import com.arcadedb.engine.timeseries.TimeSeriesSealedStore;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.utility.FileUtils;
@@ -209,7 +210,7 @@ class Issue7671SnapshotShipSealedStoresAtT0Test {
 
     try (final Database database = createDatabaseWithSealedStore()) {
       final DatabaseInternal db = (DatabaseInternal) database;
-      final List<File> sealedAtT0 = captureSealedSetAtT0(db, database.getName());
+      final List<ListedSealedStore> sealedAtT0 = captureSealedSetAtT0(db, database.getName());
       assertThat(sealedAtT0).as("the fixture must actually have sealed something, or this proves nothing").isNotEmpty();
 
       database.command("sql", "DROP TYPE " + TYPE);
@@ -220,12 +221,12 @@ class Issue7671SnapshotShipSealedStoresAtT0Test {
       final List<SnapshotManager.ManifestEntry> manifest = new ArrayList<>();
       assertThatThrownBy(() -> archiveSealedStores(sealedAtT0, manifest))
           .as("a sealed store the archive's own schema declares must not be skipped")
-          .hasMessageContaining(sealedAtT0.get(0).getName())
+          .hasMessageContaining(sealedAtT0.get(0).name())
           .hasMessageContaining("went away after the snapshot's point in time");
 
       assertThat(manifest)
           .as("and nothing may be recorded for it, so the completeness manifest cannot certify the hole")
-          .noneMatch(entry -> entry.name().equals(sealedAtT0.get(0).getName()));
+          .noneMatch(entry -> entry.name().equals(sealedAtT0.get(0).name()));
     }
   }
 
@@ -240,13 +241,13 @@ class Issue7671SnapshotShipSealedStoresAtT0Test {
 
     try (final Database database = createDatabaseWithSealedStore()) {
       final DatabaseInternal db = (DatabaseInternal) database;
-      final List<File> sealedAtT0 = captureSealedSetAtT0(db, database.getName());
+      final List<ListedSealedStore> sealedAtT0 = captureSealedSetAtT0(db, database.getName());
       assertThat(sealedAtT0).isNotEmpty();
 
-      assertThat(sealedAtT0.get(0).delete()).isTrue();
+      assertThat(sealedAtT0.get(0).file().delete()).isTrue();
 
       assertThatThrownBy(() -> archiveSealedStores(sealedAtT0, new ArrayList<>()))
-          .hasMessageContaining(sealedAtT0.get(0).getName());
+          .hasMessageContaining(sealedAtT0.get(0).name());
     }
   }
 
@@ -260,14 +261,14 @@ class Issue7671SnapshotShipSealedStoresAtT0Test {
 
     try (final Database database = createDatabaseWithSealedStore()) {
       final DatabaseInternal db = (DatabaseInternal) database;
-      final List<File> sealedAtT0 = captureSealedSetAtT0(db, database.getName());
+      final List<ListedSealedStore> sealedAtT0 = captureSealedSetAtT0(db, database.getName());
       assertThat(sealedAtT0).isNotEmpty();
 
       final List<SnapshotManager.ManifestEntry> manifest = new ArrayList<>();
       archiveSealedStores(sealedAtT0, manifest);
 
       assertThat(manifest.stream().map(SnapshotManager.ManifestEntry::name))
-          .containsExactlyInAnyOrderElementsOf(sealedAtT0.stream().map(File::getName).toList());
+          .containsExactlyInAnyOrderElementsOf(sealedAtT0.stream().map(ListedSealedStore::name).toList());
       for (final SnapshotManager.ManifestEntry entry : manifest)
         assertThat(entry.size()).as("%s must be archived whole", entry.name()).isGreaterThan(0L);
     }
@@ -286,10 +287,10 @@ class Issue7671SnapshotShipSealedStoresAtT0Test {
       final DatabaseInternal db = (DatabaseInternal) database;
 
       try (final PageSnapshot snapshot = db.getPageManager().openSnapshot(db)) {
-        final List<File> sealedFiles = List.of(TimeSeriesSealedStore.listSealedFiles(new File(db.getDatabasePath())));
+        final List<ListedSealedStore> sealedFiles = ListedSealedStore.listOrNull(new File(db.getDatabasePath()));
         assertThat(sealedFiles).isNotEmpty();
 
-        final long sealedBytes = sealedFiles.stream().mapToLong(File::length).sum();
+        final long sealedBytes = sealedFiles.stream().mapToLong(store -> store.file().length()).sum();
         final long windowBytes = snapshot.getFiles().stream().mapToLong(PageSnapshot.SnapshotFile::size).sum();
         final long configBytes = snapshot.getConfigurationFiles().stream()
             .mapToLong(PageSnapshot.SnapshotConfigFile::size).sum();
@@ -328,7 +329,7 @@ class Issue7671SnapshotShipSealedStoresAtT0Test {
 
       assertThat(SnapshotHttpHandler.listSealedStoresOrFail(new File(db.getDatabasePath()), database.getName()))
           .isNotEmpty()
-          .allMatch(file -> file.getName().endsWith(TimeSeriesSealedStore.FILE_EXTENSION));
+          .allMatch(file -> file.name().endsWith(TimeSeriesSealedStore.FILE_EXTENSION));
     }
   }
 
@@ -336,8 +337,8 @@ class Issue7671SnapshotShipSealedStoresAtT0Test {
    * Opens a window exactly as the ship does, takes the sealed set it captured, and closes the window again - so the
    * assertions above are about the set the ship WOULD have streamed rather than about a listing the test made up.
    */
-  private static List<File> captureSealedSetAtT0(final DatabaseInternal db, final String databaseName) {
-    final AtomicReference<List<File>> captured = new AtomicReference<>();
+  private static List<ListedSealedStore> captureSealedSetAtT0(final DatabaseInternal db, final String databaseName) {
+    final AtomicReference<List<ListedSealedStore>> captured = new AtomicReference<>();
     SnapshotHttpHandler.streamThroughPointInTimeImage(db, databaseName, null, (image, pause) -> {
       assertThat(image).as("the fixture must have taken the window path").isNotNull();
       captured.set(image.sealedFiles());
@@ -346,7 +347,7 @@ class Issue7671SnapshotShipSealedStoresAtT0Test {
     return captured.get();
   }
 
-  private static void archiveSealedStores(final List<File> sealedFiles,
+  private static void archiveSealedStores(final List<ListedSealedStore> sealedFiles,
       final List<SnapshotManager.ManifestEntry> manifest) throws Exception {
     try (final ZipOutputStream zipOut = new ZipOutputStream(new ByteArrayOutputStream())) {
       SnapshotHttpHandler.addSealedStoresToZip(zipOut, sealedFiles, manifest);
