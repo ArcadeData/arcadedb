@@ -133,6 +133,7 @@ public class Issue9058And9059And9056RedisParityTest extends BaseRedisServerTest 
         assertThat(jedis.get("z")).isEqualTo(stored);
       }
 
+      refused(jedis, "increment or decrement would overflow", "DECRBY", "z0", String.valueOf(Long.MIN_VALUE));
       assertThat(jedis.incrBy("n1", -5)).isEqualTo(5L);
       assertThat(jedis.decrBy("n1", 0)).isEqualTo(5L);
       jedis.set("min", String.valueOf(Long.MIN_VALUE));
@@ -178,8 +179,17 @@ public class Issue9058And9059And9056RedisParityTest extends BaseRedisServerTest 
       assertThat(count(db)).isEqualTo(1L);
       assertThat(jedis.hexists(bucket, "var")).isFalse();
 
+      // the bucket RID may stand alone
+      assertThat(jedis.sendCommand(() -> "HDEL".getBytes(StandardCharsets.UTF_8), bucket + "." + rid[3])).isEqualTo(1L);
+      assertThat(count(db)).isEqualTo(0L);
+
       // the dotted form deletes the bucket RID and every RID among the keys
-      assertThat(jedis.hdel(bucket + "." + rid[3], rid[3])).isEqualTo(1L);
+      final String[] more = new String[2];
+      db.transaction(() -> {
+        more[0] = db.newDocument("Item").set("n", 10).save().getIdentity().toString();
+        more[1] = db.newDocument("Item").set("n", 11).save().getIdentity().toString();
+      });
+      assertThat(jedis.hdel(bucket + "." + more[0], more[0], more[1])).isEqualTo(2L);
       assertThat(count(db)).isEqualTo(0L);
     }
   }
@@ -188,6 +198,7 @@ public class Issue9058And9059And9056RedisParityTest extends BaseRedisServerTest 
   void otherCommandsRefuseAWrongArgumentCount() {
     try (final Jedis jedis = connect()) {
       refused(jedis, "wrong number of arguments for 'hdel' command", "HDEL", "db");
+      refused(jedis, "wrong number of arguments for 'hdel' command", "HDEL", "db.notarid");
       refused(jedis, "wrong number of arguments for 'hget' command", "HGET", "db");
       refused(jedis, "wrong number of arguments for 'hget' command", "HGET", "db", "k", "extra");
       refused(jedis, "wrong number of arguments for 'hexists' command", "HEXISTS", "db", "k", "extra");

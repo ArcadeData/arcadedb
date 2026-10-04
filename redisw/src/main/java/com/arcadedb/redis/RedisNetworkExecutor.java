@@ -69,7 +69,7 @@ public class RedisNetworkExecutor extends Thread {
       Map.entry("INCRBYFLOAT", new int[] { 3, 3 }),//
       Map.entry("GET", new int[] { 2, 2 }), Map.entry("GETDEL", new int[] { 2, 2 }),//
       Map.entry("EXISTS", new int[] { 2, -1 }), Map.entry("SET", new int[] { 3, -1 }),//
-      Map.entry("HDEL", new int[] { 3, -1 }), Map.entry("HEXISTS", new int[] { 3, 3 }),//
+      Map.entry("HDEL", new int[] { 2, -1 }), Map.entry("HEXISTS", new int[] { 3, 3 }),//
       Map.entry("HGET", new int[] { 3, 3 }), Map.entry("HMGET", new int[] { 3, -1 }),//
       Map.entry("HSET", new int[] { 3, -1 }), Map.entry("HMSET", new int[] { 3, -1 }));
 
@@ -507,6 +507,11 @@ public class RedisNetworkExecutor extends Thread {
     final int pos = bucketName.indexOf(".");
     final int[] deleted = {0};
 
+    // HDEL <db>.<rid> may stand alone (the record is named by the bucket); every other form needs at least one key, and the
+    // table can only express the lower bound of 2
+    if (list.size() < 3 && (pos < 0 || bucketName.charAt(pos + 1) != '#'))
+      throw wrongArity("HDEL");
+
     if (pos < 0) {
       // Transient mode: delete from globalVariables atomically. A key that is a RID deletes that record of the database
       // named by the bucket, the shape HGET/HMGET/HEXISTS read it with (#9056).
@@ -525,8 +530,11 @@ public class RedisNetworkExecutor extends Thread {
       }
       if (!rids.isEmpty())
         database.transaction(() -> {
+          // counted locally and published once: a transaction retried after a conflict must not add its discarded attempt
+          int removed = 0;
           for (final RID rid : rids)
-            deleted[0] += deleteByRid(database, rid) ? 1 : 0;
+            removed += deleteByRid(database, rid) ? 1 : 0;
+          deleted[0] = removed;
         });
       // the two phases are not one atomic unit: variable removal cannot fail, but it is not undone with the records
       for (final String variable : variables)
@@ -550,8 +558,10 @@ public class RedisNetworkExecutor extends Thread {
             rids.add(parseRid(key));
         }
         database.transaction(() -> {
+          int removed = 0;
           for (final RID rid : rids)
-            deleted[0] += deleteByRid(database, rid) ? 1 : 0;
+            removed += deleteByRid(database, rid) ? 1 : 0;
+          deleted[0] = removed;
         });
       } else {
         final Index index = database.getSchema().getIndexByName(keyType);
@@ -709,6 +719,7 @@ public class RedisNetworkExecutor extends Thread {
       value.append(stored[0]);
     } else {
       // Persistent mode: store documents in database type
+      // the table minimum of 3 is the transient JSON form; the persistent form also needs a type and one document
       if (list.size() < 4)
         throw wrongArity((String) list.get(0));
       final String typeName = secondArg;
@@ -743,7 +754,6 @@ public class RedisNetworkExecutor extends Thread {
     // The read, the addition and the write are ONE atomic operation on the key - see computeVariable() for why a
     // get followed by a set is not good enough here (issue #7776). The arity check in executeCommand guarantees the
     // amount of INCRBY/INCRBYFLOAT is present, and INCR has none.
-    final boolean hasAmount = list.size() > 2;
     if (decimal) {
       final String text = (String) computeVariable(k, RedisCounterOperations.incrementByFloat((String) list.get(2)));
       value.append("$");
@@ -751,7 +761,7 @@ public class RedisNetworkExecutor extends Thread {
       appendCrLf();
       value.append(text);
     } else {
-      final long by = hasAmount ? RedisCounterOperations.parseInteger((String) list.get(2)) : 1L;
+      final long by = list.size() > 2 ? RedisCounterOperations.parseInteger((String) list.get(2)) : 1L;
       final long newValue = ((Number) computeVariable(k, RedisCounterOperations.incrementBy(by))).longValue();
       value.append(":");
       value.append(newValue);
