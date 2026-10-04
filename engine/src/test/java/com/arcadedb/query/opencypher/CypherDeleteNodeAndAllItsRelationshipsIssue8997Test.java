@@ -132,4 +132,25 @@ class CypherDeleteNodeAndAllItsRelationshipsIssue8997Test extends TestHelper {
     // the DELETE consumes its whole input before a downstream LIMIT can stop it
     assertThat(remaining()).containsExactly("2:0", "3:0", "4:1", "5:0");
   }
+
+  @Test
+  void failingStatementWithReturnLeavesTheGraphUnchanged() {
+    database.getSchema().createEdgeType("OTHER");
+    database.transaction(() -> database.command("opencypher", "MATCH (a:N {id: 1}), (b:N {id: 5}) CREATE (a)-[:OTHER]->(b)").close());
+
+    assertThatThrownBy(() -> {
+      try (final ResultSet rs = database.command("opencypher", "MATCH (n:N {id: 1})-[r:R]->() DELETE r, n RETURN 1 AS one")) {
+        while (rs.hasNext())
+          rs.next();
+      }
+    }).isInstanceOf(CommandExecutionException.class).hasMessageContaining("DeleteConnectedNode");
+    assertThat(remaining()).containsExactly("1:3", "2:0", "3:0", "4:1", "5:0");
+  }
+
+  @Test
+  void foreachDeleteOfNodeWithSeveralRelationships() {
+    database.transaction(() -> database.command("opencypher",
+        "MATCH (n:N {id: 1})-[r]-() WITH n, collect(r) AS rs FOREACH (x IN rs | DELETE x) DELETE n").close());
+    assertThat(remaining()).containsExactly("2:0", "3:0", "4:1", "5:0");
+  }
 }

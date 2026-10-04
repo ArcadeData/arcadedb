@@ -586,19 +586,22 @@ class BoltStructureTest {
   @Test
   void ridToIdInvalidBucketNegative() {
     final RID rid = new RID(-1, 100);
-    assertThatThrownBy(() -> BoltStructureMapper.ridToId(rid)).isInstanceOf(CommandExecutionException.class);
+    assertThatThrownBy(() -> BoltStructureMapper.ridToId(rid)).isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("numeric id()");
   }
 
   @Test
   void ridToIdInvalidBucketTooLarge() {
     final RID rid = new RID(0x10000, 100); // 65536, exceeds the 16-bit limit
-    assertThatThrownBy(() -> BoltStructureMapper.ridToId(rid)).isInstanceOf(CommandExecutionException.class);
+    assertThatThrownBy(() -> BoltStructureMapper.ridToId(rid)).isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("numeric id()");
   }
 
   @Test
   void ridToIdInvalidPositionNegative() {
     final RID rid = new RID(1, -1);
-    assertThatThrownBy(() -> BoltStructureMapper.ridToId(rid)).isInstanceOf(CommandExecutionException.class);
+    assertThatThrownBy(() -> BoltStructureMapper.ridToId(rid)).isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("numeric id()");
   }
 
   // ============ Nested collection tests ============

@@ -29,6 +29,7 @@ import org.neo4j.driver.Record;
 import org.neo4j.driver.Session;
 import org.neo4j.driver.SessionConfig;
 import org.neo4j.driver.types.Node;
+import org.neo4j.driver.types.Relationship;
 
 import java.util.List;
 import java.util.Map;
@@ -73,6 +74,21 @@ public class Issue9010BoltNodeIdRoundTripIT extends BaseBoltServerTest {
             .list(r -> r.get("name").asString());
         assertThat(found).containsExactly(node.get("name").asString());
       }
+    }
+  }
+
+  @Test
+  void relationshipStructureIdsAreTheIdFunctionValues() {
+    try (final Driver driver = GraphDatabase.driver(getServerBoltUrl(), AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS),
+        Config.builder().withoutEncryption().build());
+        final Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+      session.run("CREATE (:M9010 {name: 'a'})-[:REL9010]->(:M9010 {name: 'b'})").consume();
+
+      final Record row = session.run("MATCH (a:M9010)-[r:REL9010]->(b:M9010) RETURN r, id(r) AS rid, id(a) AS aid, id(b) AS bid").single();
+      final Relationship rel = row.get("r").asRelationship();
+      assertThat(rel.id()).isEqualTo(row.get("rid").asLong());
+      assertThat(rel.startNodeId()).isEqualTo(row.get("aid").asLong());
+      assertThat(rel.endNodeId()).isEqualTo(row.get("bid").asLong());
     }
   }
 }
