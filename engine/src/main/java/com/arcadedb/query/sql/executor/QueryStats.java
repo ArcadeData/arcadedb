@@ -34,11 +34,33 @@ public class QueryStats {
 
   public final Map<String, Long> stats = new ConcurrentHashMap<>();
 
+  /**
+   * Nothing reads the statistics today (the planner's cost() always misses), so every database shares one instance that
+   * records nothing: no key is built and no map is filled per indexed query (issue #9173).
+   */
+  private static final QueryStats SHARED = new QueryStats(false);
+
+  private final boolean recording;
+
+  public QueryStats() {
+    this(true);
+  }
+
+  private QueryStats(final boolean recording) {
+    this.recording = recording;
+  }
+
   public static QueryStats get(final Database db) {
-    return new QueryStats();//TODO
+    return SHARED;
+  }
+
+  public boolean isRecording() {
+    return recording;
   }
 
   public long getIndexStats(final String indexName, final int params, final boolean range, final boolean additionalRange) {
+    if (!recording)
+      return -1;
     final String key = generateKey("INDEX", indexName, String.valueOf(params), String.valueOf(range), String.valueOf(additionalRange));
     final Long val = stats.get(key);
     if (val != null) {
@@ -48,11 +70,15 @@ public class QueryStats {
   }
 
   public void pushIndexStats(final String indexName, final int params, final boolean range, final boolean additionalRange, final Long value) {
+    if (!recording)
+      return;
     final String key = generateKey("INDEX", indexName, String.valueOf(params), String.valueOf(range), String.valueOf(additionalRange));
     pushValue(key, value);
   }
 
   public long getAverageOutEdgeSpan(final String vertexClass, final String edgeClass) {
+    if (!recording)
+      return -1;
     final String key = generateKey(vertexClass, "-", edgeClass, "->");
     final Long val = stats.get(key);
     if (val != null) {
@@ -62,6 +88,8 @@ public class QueryStats {
   }
 
   public long getAverageInEdgeSpan(final String vertexClass, final String edgeClass) {
+    if (!recording)
+      return -1;
     final String key = generateKey(vertexClass, "<-", edgeClass, "-");
     final Long val = stats.get(key);
     if (val != null) {
@@ -71,6 +99,8 @@ public class QueryStats {
   }
 
   public long getAverageBothEdgeSpan(final String vertexClass, final String edgeClass) {
+    if (!recording)
+      return -1;
     final String key = generateKey(vertexClass, "-", edgeClass, "-");
     final Long val = stats.get(key);
     if (val != null) {
@@ -80,16 +110,22 @@ public class QueryStats {
   }
 
   public void pushAverageOutEdgeSpan(final String vertexClass, final String edgeClass, final Long value) {
+    if (!recording)
+      return;
     final String key = generateKey(vertexClass, "-", edgeClass, "->");
     pushValue(key, value);
   }
 
   public void pushAverageInEdgeSpan(final String vertexClass, final String edgeClass, final Long value) {
+    if (!recording)
+      return;
     final String key = generateKey(vertexClass, "<-", edgeClass, "-");
     pushValue(key, value);
   }
 
   public void pushAverageBothEdgeSpan(final String vertexClass, final String edgeClass, final Long value) {
+    if (!recording)
+      return;
     final String key = generateKey(vertexClass, "-", edgeClass, "-");
     pushValue(key, value);
   }

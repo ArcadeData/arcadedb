@@ -27,7 +27,6 @@ import com.arcadedb.query.sql.parser.DeleteStatement;
 import com.arcadedb.query.sql.parser.FromClause;
 import com.arcadedb.query.sql.parser.IndexIdentifier;
 import com.arcadedb.query.sql.parser.Limit;
-import com.arcadedb.query.sql.parser.SelectStatement;
 import com.arcadedb.query.sql.parser.WhereClause;
 
 import java.util.List;
@@ -180,12 +179,7 @@ public class DeleteExecutionPlanner {
       final CommandContext context,
       final FromClause fromClause,
       final WhereClause whereClause) {
-    final SelectStatement sourceStatement = new SelectStatement();
-    sourceStatement.setTarget(fromClause);
-    sourceStatement.setWhereClause(whereClause);
-    final SelectExecutionPlanner planner = new SelectExecutionPlanner(sourceStatement);
-    result.chain(
-        new SubQueryStep(planner.createExecutionPlan(context, false), context, context));
+    result.chain(new SubQueryStep(SelectExecutionPlanner.createSourcePlan(fromClause, whereClause, null, context), context, context));
   }
 
   private BooleanExpression getKeyCondition(final AndBlock andBlock) {

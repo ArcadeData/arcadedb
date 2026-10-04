@@ -26,7 +26,6 @@ import com.arcadedb.query.sql.parser.FromClause;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.query.sql.parser.Limit;
 import com.arcadedb.query.sql.parser.Projection;
-import com.arcadedb.query.sql.parser.SelectStatement;
 import com.arcadedb.query.sql.parser.Timeout;
 import com.arcadedb.query.sql.parser.UpdateItem;
 import com.arcadedb.query.sql.parser.UpdateOperations;
@@ -221,14 +220,7 @@ public class UpdateExecutionPlanner {
 
   private void handleTarget(final UpdateExecutionPlan result, final CommandContext context, final FromClause target,
       final WhereClause whereClause, final Timeout timeout, final int limitValue) {
-    final SelectStatement sourceStatement = new SelectStatement();
-    sourceStatement.setTarget(target);
-    sourceStatement.setWhereClause(whereClause);
-    if (timeout != null) {
-      sourceStatement.setTimeout(this.timeout.copy());
-    }
-    final SelectExecutionPlanner planner = new SelectExecutionPlanner(sourceStatement);
-    final InternalExecutionPlan sourcePlan = planner.createExecutionPlan(context, false);
+    final InternalExecutionPlan sourcePlan = SelectExecutionPlanner.createSourcePlan(target, whereClause, timeout, context);
     result.chain(new SubQueryStep(sourcePlan, context, context));
 
     // #8814 (Halloween problem): a statement that rewrites a key it walks must not read its own output, so the addresses
