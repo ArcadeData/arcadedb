@@ -613,6 +613,7 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
       if (filter.isSql())
         filter.appendWhere(sql, params);
 
+      // known cost: with a filter the SQL cannot answer, every row of the type is sorted before the filter discards most of them
       if (hasOrderBy) {
         sql.append(" order by ");
         int i = 0;

@@ -385,6 +385,11 @@ final class MongoFilter {
       }
     }
 
+    /**
+     * Assumes the matcher only calls {@link Matcher#find()} on what it gets back (true of the mongo-java-server this plugin is
+     * built on): the answer is computed here, so only "found or not" is carried. Tests over every regex-bearing operator pin it
+     * when the library is upgraded.
+     */
     @Override
     public Matcher matcher(final String string) {
       return (deadline.find(pattern, string) ? ALWAYS : NEVER).matcher(string);
