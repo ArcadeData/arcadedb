@@ -655,10 +655,14 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
       while (next == null && rows.hasNext()) {
         final Object candidate = rows.next();
         if (candidate instanceof Result row ? filter.matchesRow(row) :
-            candidate instanceof com.arcadedb.database.Document document && filter.matches(document))
+            candidate instanceof com.arcadedb.database.Document document ? filter.matches(document) : unsupported(candidate))
           next = candidate;
       }
       return next != null;
+    }
+
+    private static boolean unsupported(final Object candidate) {
+      throw new IllegalArgumentException("Object not supported: " + candidate.getClass().getName());
     }
 
     @Override
