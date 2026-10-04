@@ -40,7 +40,7 @@
         <netty.version>4.2.18.Final</netty.version>
         <commons-configuration2.version>2.15.1</commons-configuration2.version>
         <commons-beanutils.version>1.11.0</commons-beanutils.version>
-        <commons-lang3.version>3.20.0</commons-lang3.version>
+        <commons-lang3.version>3.21.0</commons-lang3.version>
         <ivy.version>2.6.0</ivy.version>
         <!-- Both properties below are dictated by TinkerPop, not chosen by ArcadeDB.
              Do not raise either one without upgrading gremlin.version first; see #5535. -->
