@@ -4703,6 +4703,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   private void defragPage(final MutablePage page, final List<int[]> holes, final short recordCountInPage) {
+    final boolean fine = LogManager.instance().isLoggable(this, Level.FINE);
     int gap = 0;
     for (int i = 0; i < holes.size(); i++) {
       final int[] hole = holes.get(i);
@@ -4714,7 +4715,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       if (length < 1)
         LogManager.instance().log(this, Level.SEVERE, "Error on reusing hole in page %s, invalid length %d", page.pageId, length);
 
-      if (LogManager.instance().isLoggable(this, Level.FINE))
+      if (fine)
         LogManager.instance().log(this, Level.FINE, "Moving segment page %s %d-(%d)->%d...", page.pageId, from, length, to);
       page.move(from, to, length);
 
@@ -4729,7 +4730,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         if (recordPositionInPage >= from && recordPositionInPage <= from + length) {
           page.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE,
                   recordPositionInPage - hole[1] - gap);
-          if (LogManager.instance().isLoggable(this, Level.FINE))
+          if (fine)
             LogManager.instance().log(this, Level.FINE, "- record %d %d->%d", positionInPage, recordPositionInPage,
                     recordPositionInPage - hole[1] - gap);
         }

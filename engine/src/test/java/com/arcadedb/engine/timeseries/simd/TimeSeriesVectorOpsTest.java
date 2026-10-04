@@ -18,6 +18,7 @@
  */
 package com.arcadedb.engine.timeseries.simd;
 
+import org.assertj.core.data.Percentage;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -267,7 +268,7 @@ class TimeSeriesVectorOpsTest {
     for (int i = 0; i < data.length; i++)
       data[i] = i % 17 == 0 ? Double.NaN : i;
     final TimeSeriesVectorOps scalar = new ScalarTimeSeriesVectorOps();
-    assertThat(ops.sum(data, 0, data.length)).isCloseTo(scalar.sum(data, 0, data.length), org.assertj.core.data.Percentage.withPercentage(1e-9));
+    assertThat(ops.sum(data, 0, data.length)).isCloseTo(scalar.sum(data, 0, data.length), Percentage.withPercentage(1e-9));
     assertThat(ops.countPresent(data, 0, data.length)).isEqualTo(scalar.countPresent(data, 0, data.length));
     assertThat(ops.min(data, 0, data.length)).isEqualTo(scalar.min(data, 0, data.length));
     assertThat(ops.max(data, 0, data.length)).isEqualTo(scalar.max(data, 0, data.length));

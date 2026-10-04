@@ -60,7 +60,7 @@ public final class TimeSeriesVectorOpsProvider {
     final Thread thread = new Thread(() -> {
       try {
         warmUp(ops, WARM_UP_ITERATIONS);
-      } catch (final Throwable t) {
+      } catch (final Exception | LinkageError t) {
         // BEST EFFORT: THE WARM-UP ONLY SPEEDS UP THE FIRST QUERY
         LogManager.instance().log(TimeSeriesVectorOpsProvider.class, Level.FINE, "TimeSeries SIMD warm-up failed: %s", t.getMessage());
       }

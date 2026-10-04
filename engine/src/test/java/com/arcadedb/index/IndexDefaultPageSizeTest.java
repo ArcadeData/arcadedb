@@ -21,6 +21,8 @@ package com.arcadedb.index;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -92,6 +94,20 @@ class IndexDefaultPageSizeTest extends TestHelper {
       assertThat(database.query("sql", "SELECT FROM Articles WHERE SEARCH_INDEX('Articles[body]', 'hello') = true").stream().count())
           .isEqualTo(1L);
       assertThat(pageSizeOf("Articles")).isEqualTo(LSMTreeIndexAbstract.DEF_PAGE_SIZE);
+    } finally {
+      database.getConfiguration().setValue(GlobalConfiguration.INDEX_DEFAULT_PAGE_SIZE,
+          GlobalConfiguration.INDEX_DEFAULT_PAGE_SIZE.getDefValue());
+    }
+  }
+
+  @Test
+  void explicitPageSizeBeatsTheSetting() {
+    database.getSchema().createDocumentType("Explicit").createProperty("k", Type.LONG);
+    database.getConfiguration().setValue(GlobalConfiguration.INDEX_DEFAULT_PAGE_SIZE, 32_768);
+    try {
+      database.getSchema().buildTypeIndex("Explicit", new String[] { "k" }).withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(true)
+          .withPageSize(65_536).create();
+      assertThat(pageSizeOf("Explicit")).isEqualTo(65_536);
     } finally {
       database.getConfiguration().setValue(GlobalConfiguration.INDEX_DEFAULT_PAGE_SIZE,
           GlobalConfiguration.INDEX_DEFAULT_PAGE_SIZE.getDefValue());
