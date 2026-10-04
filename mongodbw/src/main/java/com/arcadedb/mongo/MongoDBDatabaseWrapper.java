@@ -829,14 +829,14 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     final List<RID> rids = filter.select(database, collectionName, multi ? 0 : 1);
 
     final boolean replacement = isReplacement(u);
-    int skipped = 0;
+    int vanished = 0;
     for (final RID rid : rids) {
       final MutableDocument record;
       try {
         record = rid.asDocument().modify();
       } catch (final RecordNotFoundException e) {
         // deleted since the select: it no longer matches, like a single statement would not have touched it
-        --skipped;
+        ++vanished;
         continue;
       }
       if (replacement)
@@ -847,7 +847,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       }
       record.save();
     }
-    return rids.size() + skipped;
+    return rids.size() - vanished;
   }
 
   /**

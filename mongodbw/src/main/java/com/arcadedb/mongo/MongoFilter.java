@@ -59,6 +59,9 @@ import java.util.regex.PatternSyntaxException;
  * filter on them. SQL alone would not be exact even there: it coerces across the types of an {@code _id}, so {@code {_id: 1}} would
  * answer a document whose {@code _id} is the string {@code "1"}. Only an empty filter is answered by SQL alone.
  * <p>
+ * Every filter that no {@code _id} equality or {@code $in} narrows reads the whole type: restoring the index for the other fields is
+ * tracked in issue #9162.
+ * <p>
  * Known leniency of the matcher: a regular expression is also tested against the string form of a number, which MongoDB does not.
  * <p>
  * Regular expressions are searched through {@link TimeBoundRegex}, bounded by {@code arcadedb.command.regexTimeout} with one
