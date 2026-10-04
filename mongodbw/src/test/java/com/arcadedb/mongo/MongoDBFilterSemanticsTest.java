@@ -477,4 +477,14 @@ class MongoDBFilterSemanticsTest extends BaseMongoServerTest {
     assertThat(page).containsExactly(50, 60, 70);
     assertThat(c.countDocuments(Document.parse("{t:'hit'}"))).isEqualTo(30);
   }
+
+  @Test
+  void rangesOnAMixedKindIdFollowMongoDBBrackets() {
+    final MongoCollection<Document> c = collection("idranges", "{_id:5, k:'five'}", "{_id:10, k:'ten'}", "{_id:'a', k:'text'}", "{_id:'b', k:'text2'}");
+    assertThat(ids(c, "{_id:{$gt:5}}")).containsExactly(10);
+    assertThat(ids(c, "{_id:{$lt:10}}")).containsExactly(5);
+    assertThat(ids(c, "{_id:{$gte:5, $lte:10}}")).containsExactlyInAnyOrder(5, 10);
+    assertThat(ids(c, "{_id:{$gt:'a'}}")).containsExactly("b");
+    assertThat(ids(c, "{_id:{$gt:5}, k:'ten'}")).containsExactly(10);
+  }
 }

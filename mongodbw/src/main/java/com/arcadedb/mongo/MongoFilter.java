@@ -70,7 +70,7 @@ final class MongoFilter {
   // com.arcadedb.database.Document is spelled out in full below: its simple name is the one of the MongoDB Document imported here
   private static final Pattern ALWAYS = Pattern.compile("");
   private static final Pattern NEVER  = Pattern.compile("(?!)");
-  private static final Set<String> NARROWING_OPERATORS = Set.of("$eq", "$in", "$gt", "$gte", "$lt", "$lte");
+  private static final Set<String> NARROWING_OPERATORS = Set.of("$eq", "$in");
 
   private final Document     original;
   private final boolean      empty;
@@ -134,7 +134,7 @@ final class MongoFilter {
   }
 
   /**
-   * Appends the {@code WHERE} clause of a filter an empty filter, nothing for an empty one.
+   * Appends the {@code WHERE} clause that selects the candidates of the filter, nothing for an empty one.
    */
   void appendWhere(final StringBuilder sqlText, final Map<String, Object> params) {
     if (!empty) {
@@ -144,7 +144,7 @@ final class MongoFilter {
   }
 
   /**
-   * Whether a stored record matches the filter. Only meaningful for a filter that is not an empty filter, which
+   * Whether a stored record matches the filter. Only meaningful for a filter that is not empty, because an empty one
    * has no clause left to test.
    */
   boolean matches(final Map<String, Object> storedProperties) {
@@ -232,9 +232,10 @@ final class MongoFilter {
 
   /**
    * Whether the SQL answer for the {@code _id} conditions of a filter can only be wider than the matcher's, never narrower: the
-   * matcher then verifies every candidate and nothing it would accept is lost. SQL coerces across types, so it can only add matches
-   * for an equality, {@code $in} or a range, but it can drop one for a negation ({@code $ne}, {@code $nin}, {@code $not}) of a
-   * mixed-type {@code _id}.
+   * matcher then verifies every candidate and nothing it would accept is lost. That holds for an equality and {@code $in}, where SQL
+   * only coerces more values to equal. It does not for a negation ({@code $ne}, {@code $nin}, {@code $not}), which can drop a match
+   * of a mixed-type {@code _id}, nor for a range: the index of a collection that mixes kinds of {@code _id} orders them as text, so
+   * {@code {$gt: 5}} would miss {@code 10}.
    */
   private static boolean narrows(final Document filter) {
     for (final Map.Entry<String, Object> entry : filter.entrySet()) {
@@ -249,10 +250,6 @@ final class MongoFilter {
       }
     }
     return true;
-  }
-
-  private static boolean isRangeOverNull(final Map.Entry<String, Object> operator) {
-    return operator.getValue() == null && !"$eq".equals(operator.getKey()) && !"$in".equals(operator.getKey());
   }
 
   /**
@@ -274,8 +271,7 @@ final class MongoFilter {
         // a document _id, compared as a whole
         return false;
       for (final Map.Entry<String, Object> entry : operators.entrySet())
-        // a null bound of a range matches a stored null in MongoDB, which the SQL comparison never does
-        if (!NARROWING_OPERATORS.contains(entry.getKey()) || holdsRegex(entry.getValue()) || isRangeOverNull(entry))
+        if (!NARROWING_OPERATORS.contains(entry.getKey()) || holdsRegex(entry.getValue()))
           return false;
       return true;
     }
