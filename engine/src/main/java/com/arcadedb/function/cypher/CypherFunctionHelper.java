@@ -279,10 +279,13 @@ public final class CypherFunctionHelper {
    * The last {@code length} code points of the string; never splits a surrogate pair.
    */
   public static String rightCodePoints(final String str, final int length) {
-    final int codePoints = codePointLength(str);
-    if (length >= codePoints)
+    if (length >= str.length())
       return str;
-    return str.substring(str.offsetByCodePoints(0, codePoints - length));
+    // walk back at most length code points instead of counting the whole string: right(bigText, 3) stays O(3)
+    int begin = str.length();
+    for (int i = 0; i < length && begin > 0; i++)
+      begin -= Character.charCount(str.codePointBefore(begin));
+    return str.substring(begin);
   }
 
   /**

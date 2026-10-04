@@ -40,6 +40,7 @@ import java.util.LinkedHashMap;
 
 import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
+import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
 
@@ -1987,7 +1988,8 @@ class CypherExpressionBuilder {
     final Cypher25Lexer lexer = new Cypher25Lexer(CharStreams.fromString(text));
     lexer.removeErrorListeners();
     lexer.addErrorListener(errorListener);
-    final Cypher25Parser parser = new Cypher25Parser(new CommonTokenStream(lexer));
+    final CommonTokenStream tokens = new CommonTokenStream(lexer);
+    final Cypher25Parser parser = new Cypher25Parser(tokens);
     parser.removeErrorListeners();
     parser.addErrorListener(errorListener);
     // The text is the operand placeholder plus a WHEN form that already passed the depth guard in the original query,
@@ -1995,7 +1997,10 @@ class CypherExpressionBuilder {
     final CaseOperandExpression previous = activeCaseOperand;
     activeCaseOperand = operandHolder;
     try {
-      return parseExpression(parser.expression());
+      final Cypher25Parser.ExpressionContext predicate = parser.expression();
+      if (tokens.LA(1) != Token.EOF)
+        throw new CommandParsingException("Unexpected input in CASE WHEN: " + text);
+      return parseExpression(predicate);
     } finally {
       activeCaseOperand = previous;
     }

@@ -137,6 +137,14 @@ class CypherSemanticFixesBatch8998Test extends TestHelper {
     assertThat(column("UNWIND [1, 2] AS v WITH v RETURN CASE v WHEN > 1 THEN 'x' ELSE 'y' END AS r", "r")).containsExactly("y", "x");
   }
 
+  @Test
+  void nestedComparisonFormCaseKeepsEachOperand() {
+    assertThat(column("UNWIND [0, 3, 9] AS v RETURN CASE v WHEN > 1 THEN CASE v * 2 WHEN > 10 THEN 'huge' ELSE 'mid' END ELSE 'low' END AS r", "r"))
+        .containsExactly("low", "mid", "huge");
+    assertThat(column("UNWIND [1, 6] AS v RETURN CASE v WHEN > CASE v WHEN > 5 THEN 100 ELSE 0 END THEN 'gt' ELSE 'le' END AS r", "r"))
+        .containsExactly("gt", "le");
+  }
+
   // ---- #8994
 
   @Test
