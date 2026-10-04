@@ -163,6 +163,11 @@ public final class RedisCounterOperations {
   }
 
   private static BigDecimal parseFloatOperand(final String text, final String nonFiniteMessage) {
+    // Redis refuses long double text of 5 KB or more; without a cap a client could SET megabytes of digits and make every
+    // INCRBYFLOAT on the key parse and add them while the key's lock is held
+    if (text.length() >= 5120)
+      throw new RedisException("value is not a valid float");
+
     final BigDecimal number;
     try {
       number = new BigDecimal(text);

@@ -88,6 +88,12 @@ public class Issue9058And9059And9056RedisParityTest extends BaseRedisServerTest 
       assertThat(text(jedis, "INCRBYFLOAT", "t1", "1e-999999999")).isEqualTo("0");
       jedis.set("t2", "1e-999999999");
       assertThat(text(jedis, "INCRBYFLOAT", "t2", "1")).isEqualTo("1");
+
+      // an operand of 5 KB or more is refused, as a stored value and as an increment
+      final String huge = "1".repeat(5120);
+      jedis.set("h1", huge);
+      refused(jedis, "value is not a valid float", "INCRBYFLOAT", "h1", "1");
+      refused(jedis, "value is not a valid float", "INCRBYFLOAT", "h2", huge);
     }
   }
 
@@ -157,6 +163,8 @@ public class Issue9058And9059And9056RedisParityTest extends BaseRedisServerTest 
       jedis.set("var", "x");
       assertThat(jedis.hdel(bucket, rid[1], rid[2], "#999:99", "var")).isEqualTo(2L);
       assertThat(count(db)).isEqualTo(1L);
+      // the variable was deleted too, and it is the only thing besides the two records that was counted
+      assertThat(jedis.get("var")).isNull();
 
       // the dotted form deletes the bucket RID and every RID among the keys
       assertThat(jedis.hdel(bucket + "." + rid[3], rid[3])).isEqualTo(1L);
