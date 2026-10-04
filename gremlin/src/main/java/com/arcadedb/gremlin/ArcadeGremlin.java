@@ -94,11 +94,8 @@ public class ArcadeGremlin extends ArcadeQuery {
             return new ResultInternal(document);
           else if (next instanceof ArcadeElement<?> element)
             return new ResultInternal(element.getBaseElement());
-          else if (next instanceof Map) {
-            final Map<String, Object> stringMap = getStringObjectMap((Map<Object, Object>) next);
-
-            return new ResultInternal(stringMap);
-          }
+          else if (next instanceof Map)
+            return mapToResult((Map<Object, Object>) next);
           return new ResultInternal(CollectionUtils.singletonMap("result", next));
         }
       }) {
@@ -202,13 +199,40 @@ public class ArcadeGremlin extends ArcadeQuery {
     throw error;
   }
 
-  public static Map<String, Object> getStringObjectMap(final Map<Object, Object> originalMap) {
-    // TRANSFORM TO A MAP WITH STRINGS AS KEYS
-    final Map<Object, Object> map = originalMap;
+  /**
+   * A result {@link Map} as one {@link ResultInternal}, whose properties are named by strings. When the keys cannot be told
+   * apart once printed (T.id and a property called "id", the Integer 1 and the Long 1 of a {@code groupCount()}), flattening
+   * would keep only the last of them and silently lose the others (#9141), so the entries are returned as a list of
+   * {@code {key, value}} maps under {@code result} instead, the shape a non-map value has.
+   */
+  private static ResultInternal mapToResult(final Map<Object, Object> originalMap) {
+    final Map<String, Object> stringMap = getStringObjectMap(originalMap);
+    if (stringMap != null)
+      return new ResultInternal(stringMap);
+
+    final List<Map<String, Object>> entries = new ArrayList<>(originalMap.size());
+    for (final Map.Entry<Object, Object> entry : originalMap.entrySet()) {
+      final Map<String, Object> pair = new LinkedHashMap<>(2);
+      pair.put("key", entry.getKey());
+      pair.put("value", entry.getValue());
+      entries.add(pair);
+    }
+    return new ResultInternal(CollectionUtils.singletonMap("result", entries));
+  }
+
+  /**
+   * Transforms a map to one with strings as keys (a null key is named "null"), or returns null when two keys print alike
+   * and the transformation would lose an entry.
+   */
+  private static Map<String, Object> getStringObjectMap(final Map<Object, Object> originalMap) {
     final Map<String, Object> stringMap = new LinkedHashMap<>(originalMap.size());
 
-    for (Map.Entry<Object, Object> entry : map.entrySet())
-      stringMap.put(entry.getKey().toString(), entry.getValue());
+    for (final Map.Entry<Object, Object> entry : originalMap.entrySet()) {
+      final String key = String.valueOf(entry.getKey());
+      if (stringMap.containsKey(key))
+        return null;
+      stringMap.put(key, entry.getValue());
+    }
     return stringMap;
   }
 
