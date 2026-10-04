@@ -68,6 +68,9 @@ import java.util.logging.Level;
 import static de.bwaldvogel.mongo.backend.Utils.markOkay;
 
 public class MongoDBDatabaseWrapper implements MongoDatabase {
+  // how many times a command on a single record selects again when its candidate stopped matching in between
+  private static final int SINGLE_RECORD_ATTEMPTS = 3;
+
   /**
    * The largest array index {@code $set} may reach: the gap is padded with nulls in memory, so an unbounded index is a way to
    * exhaust the heap with one request.
@@ -633,7 +636,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
             n += executeCount(sql.toString(), params);
           } else
-            n += deleteRecords(filter.select(database, collectionName, single ? 1 : 0), filter);
+            n += deleteMatching(collectionName, filter, single);
         }
         database.commit();
       } catch (final RuntimeException e) {
@@ -831,9 +834,19 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
   private int executeUpdateOnRecords(final String collectionName, final MongoFilter filter, final Document u, final boolean multi) {
     // collect the RIDs first (the records are modified while the result set would still be open on them), and load each record
-    // in turn: only identities are held on the heap, not every matching document
-    final List<RID> rids = filter.select(database, collectionName, multi ? 0 : 1);
+    // in turn: only identities are held on the heap, not every matching document. An update of one record selects again, a few times,
+    // when its candidate stopped matching since the selection while another record still matches
+    int applied = 0;
+    for (int attempt = 0; attempt < (multi ? 1 : SINGLE_RECORD_ATTEMPTS); attempt++) {
+      final List<RID> rids = filter.select(database, collectionName, multi ? 0 : 1);
+      applied = updateRecords(rids, filter, u);
+      if (applied > 0 || rids.isEmpty())
+        break;
+    }
+    return applied;
+  }
 
+  private int updateRecords(final List<RID> rids, final MongoFilter filter, final Document u) {
     final boolean replacement = isReplacement(u);
     int vanished = 0;
     for (final RID rid : rids) {
@@ -1204,6 +1217,17 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       if (key.startsWith("$"))
         return false;
     return true;
+  }
+
+  private int deleteMatching(final String collectionName, final MongoFilter filter, final boolean single) {
+    int deleted = 0;
+    for (int attempt = 0; attempt < (single ? SINGLE_RECORD_ATTEMPTS : 1); attempt++) {
+      final List<RID> rids = filter.select(database, collectionName, single ? 1 : 0);
+      deleted = deleteRecords(rids, filter);
+      if (deleted > 0 || rids.isEmpty())
+        break;
+    }
+    return deleted;
   }
 
   private int deleteRecords(final List<RID> rids, final MongoFilter filter) {

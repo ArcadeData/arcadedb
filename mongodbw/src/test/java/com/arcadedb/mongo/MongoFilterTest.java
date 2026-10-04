@@ -221,4 +221,14 @@ class MongoFilterTest {
     assertThat(new MongoFilter(null, parse("{'a.c': {$exists: false}}")).matches(record)).isTrue();
     assertThat(new MongoFilter(null, parse("{'unrelated.deep': 2}")).matches(record)).isTrue();
   }
+
+  @Test
+  void aRegexIsSearchedNotMatchedWhole() {
+    final Map<String, Object> record = Map.of("s", "xxabcxx");
+    // find() semantics: an unanchored pattern matches inside the value, anchors still apply
+    assertThat(new MongoFilter(null, new Document("s", new BsonRegularExpression("abc"))).matches(record)).isTrue();
+    assertThat(new MongoFilter(null, new Document("s", new BsonRegularExpression("^abc"))).matches(record)).isFalse();
+    assertThat(new MongoFilter(null, new Document("s", new BsonRegularExpression("abc$"))).matches(record)).isFalse();
+    assertThat(new MongoFilter(null, new Document("s", new BsonRegularExpression("^xx.*xx$"))).matches(record)).isTrue();
+  }
 }
