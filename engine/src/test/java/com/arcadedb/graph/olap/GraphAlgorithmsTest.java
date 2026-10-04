@@ -188,6 +188,39 @@ class GraphAlgorithmsTest extends TestHelper {
         .isNotEqualTo(components[gav.getNodeId(c.getIdentity())]);
   }
 
+  /** #9133: tiny graphs, self-loops and parallel edges (rows shorter than the sampling rounds, n below the sample size). */
+  @Test
+  void connectedComponentsSelfLoopsParallelEdgesAndSingleNode() {
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Node").save();
+    final MutableVertex b = database.newVertex("Node").save();
+    final MutableVertex c = database.newVertex("Node").save();
+    a.newEdge("LINK", a);
+    a.newEdge("LINK", b);
+    a.newEdge("LINK", b);
+    b.newEdge("LINK", a);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database).withVertexTypes("Node").withEdgeTypes("LINK").build();
+    final int[] components = GraphAlgorithms.connectedComponents(gav, "LINK");
+    assertThat(components[gav.getNodeId(a.getIdentity())]).isEqualTo(components[gav.getNodeId(b.getIdentity())]);
+    assertThat(components[gav.getNodeId(c.getIdentity())]).isEqualTo(gav.getNodeId(c.getIdentity()));
+    assertThat(GraphAlgorithms.countComponents(components)).isEqualTo(2);
+  }
+
+  @Test
+  void connectedComponentsSingleNodeNoEdges() {
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+    database.transaction(() -> database.newVertex("Node").save());
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database).withVertexTypes("Node").withEdgeTypes("LINK").build();
+    assertThat(GraphAlgorithms.connectedComponents(gav, "LINK")).containsExactly(0);
+  }
+
   /** #9133: parallel-sized sparse graph over two edge types, checked against a sequential reference. */
   @Test
   void connectedComponentsMatchesReferenceOnLargeSparseGraph() {
@@ -236,6 +269,7 @@ class GraphAlgorithmsTest extends TestHelper {
     assertMatchesReference(giant + 1, edges.toArray(new int[0][]));
   }
 
+  // creates the schema types, so it can be called once per test
   private void assertMatchesReference(final int n, final int[][] edges) {
     database.getSchema().createVertexType("Node");
     database.getSchema().createEdgeType("LINK");
