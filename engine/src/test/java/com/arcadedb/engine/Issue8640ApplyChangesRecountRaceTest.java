@@ -296,7 +296,7 @@ class Issue8640ApplyChangesRecountRaceTest extends TestHelper {
     assertThat(bucket.isApplyLockContended()).isFalse();
   }
 
-  private static void applyInBackground(final DatabaseInternal db, final int fileId, final int delta, final long txId)
+  static void applyInBackground(final DatabaseInternal db, final int fileId, final int delta, final long txId)
       throws Exception {
     final PaginatedComponentFile file = (PaginatedComponentFile) db.getFileManager().getFile(fileId);
     final PageId pageId = new PageId(db, fileId, 0);
@@ -329,7 +329,7 @@ class Issue8640ApplyChangesRecountRaceTest extends TestHelper {
     assertThat(bucket.getCachedRecordCount()).isEqualTo(-1);
   }
 
-  private static WALFile.WALTransaction buildWalTransaction(final DatabaseInternal db, final int fileId,
+  static WALFile.WALTransaction buildWalTransaction(final DatabaseInternal db, final int fileId,
       final int targetVersion, final long txId) throws Exception {
     final PaginatedComponentFile file = (PaginatedComponentFile) db.getFileManager().getFile(fileId);
     final PageId pageId = new PageId(db, fileId, 0);

@@ -43,6 +43,7 @@ import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
@@ -51,6 +52,9 @@ import java.util.logging.Level;
 public class TransactionManager {
   private static final long MAX_LOG_FILE_SIZE = 64 * 1024 * 1024;
   private static final int  WRITE_WAL_TIMEOUT = 30_000;
+  // #8649: a contended mark turns the applies patient once it is older than this many recompute scans (and never sooner
+  // than the commit timeout), which bounds the share of the apply thread spent waiting on a recompute
+  private static final long CONTENDED_MARK_AGE_FACTOR = 4;
   /**
    * On-disk record of the highest assigned transaction id, written on close and whenever a runtime
    * WAL rotation drops log files (issue #5277), read on open. Lets {@link #getLastTransactionId()}
@@ -876,7 +880,9 @@ public class TransactionManager {
    * the fold, so a recompute that overlapped the apply is never cached (see
    * {@link LocalBucket#invalidateCachedRecordCountForUnlockedApply()}). The bucket is then marked contended, and the
    * entries that follow only TRY its lock instead of each waiting the full timeout behind the same long scan: the
-   * catch-up pays one timeout per recompute, not one per entry. The first apply that gets the lock clears the mark.
+   * catch-up pays one timeout per recompute, not one per entry. The first apply that gets the lock clears the mark. A
+   * mark that grows old turns the applies patient instead, so a recompute gets a quiet window (issue #8649, see
+   * {@link #lockBuckets}).
    * <p>
    * The unknown-counter check and the lock are not atomic. Known to unknown between the two (a {@code CHECK DATABASE
    * FIX} or a corrupted-slot repair invalidating the counter while this entry is being applied) leaves this one entry
@@ -921,22 +927,61 @@ public class TransactionManager {
     return result;
   }
 
+  /**
+   * Takes the lock of each bucket, in order, with a wait that depends on the bucket's apply-lock state:
+   * <ul>
+   * <li>not contended: {@link GlobalConfiguration#COMMIT_LOCK_TIMEOUT};</li>
+   * <li>contended (an earlier apply timed out behind a recompute, issue #8640): 1ms, so the catch-up does not pay one
+   * timeout per entry behind the same long scan;</li>
+   * <li>patient (issue #8649): the contended mark is older than {@link #contendedMarkAgeLimitMs}. While contended,
+   * every apply writes without the lock and refuses whatever recompute it overlaps, so under sustained replication the
+   * counter could stay unknown forever and every {@code count(*)} would be a full scan. A patient apply waits for a
+   * running recompute again, for up to {@link #patientWaitMs} - twice the last scan on top of the commit timeout - so
+   * the next recompute scans with no unlocked apply under it and publishes. The patient state holds until a publish
+   * clears it, or a patient wait still times out (the scan grew past the bound): the bucket is then contended again
+   * with a fresh mark, and the next patient phase is sized on the longer scan.</li>
+   * </ul>
+   * A patient phase stalls the apply thread for about one scan, once per age limit, which is at least
+   * {@link #CONTENDED_MARK_AGE_FACTOR} scans: the replication spends at most about a fifth of its time waiting, and only
+   * while the counter is unknown - once a recompute publishes, the applies skip the lock altogether.
+   */
   private void lockBuckets(final LocalBucket[] buckets, final int count, final long timeout, final Object requester,
       final BucketLocks result) {
     for (int i = 0; i < count; i++) {
       final LocalBucket bucket = buckets[i];
       final int fileId = bucket.getFileId();
       final boolean contended = bucket.isApplyLockContended();
+      boolean patient = bucket.isApplyLockPatient();
+      if (!patient && contended
+          && System.nanoTime() - bucket.getApplyLockContendedSinceNanos() >= TimeUnit.MILLISECONDS.toNanos(contendedMarkAgeLimitMs(bucket, timeout))) {
+        patient = true;
+        bucket.setApplyLockPatient(true);
+        LogManager.instance().log(this, Level.INFO,
+            "Bucket '%s' has had an unknown record counter for too long under replication: replicated transactions wait up"
+                + " to %dms for a running record count recompute again, so the recompute can cache its result", null,
+            bucket.getName(), patientWaitMs(bucket, timeout));
+      }
+
       // 1ms, not 0: LockManager reads a zero timeout as "wait forever"
-      final LockManager.LOCK_STATUS status = tryLockFile(fileId, contended ? 1L : timeout, requester);
+      final long waitMs = patient ? patientWaitMs(bucket, timeout) : contended ? 1L : timeout;
+      final LockManager.LOCK_STATUS status = tryLockFile(fileId, waitMs, requester);
       if (status == LockManager.LOCK_STATUS.YES) {
         result.locked[result.lockedCount++] = fileId;
-        if (contended)
+        // A patient bucket stays patient until a recompute publishes: dropping back to the plain timeout here would
+        // let the next long scan time an apply out again and refuse itself
+        if (contended && !patient)
           bucket.setApplyLockContended(false);
       } else if (status == LockManager.LOCK_STATUS.NO) {
         bucket.invalidateCachedRecordCountForUnlockedApply();
         result.timedOut[result.timedOutCount++] = bucket;
-        if (!contended) {
+        if (patient) {
+          bucket.setApplyLockPatient(false);
+          bucket.setApplyLockContended(true);
+          LogManager.instance().log(this, Level.WARNING,
+              "Cannot lock bucket '%s' within %dms (last record count scan took %dms) while applying a replicated"
+                  + " transaction: its record counter stays unknown and every count() on it scans the bucket", null,
+              bucket.getName(), waitMs, bucket.getLastRecountScanMs());
+        } else if (!contended) {
           bucket.setApplyLockContended(true);
           LogManager.instance().log(this, Level.WARNING,
               "Cannot lock bucket '%s' within %dms while applying a replicated transaction: its record counter is left"
@@ -947,6 +992,16 @@ public class TransactionManager {
               "Bucket '%s' is still locked by a record count recompute: applying without the lock", null, bucket.getName());
       }
     }
+  }
+
+  /** How long a contended mark lasts before the applies turn patient: {@link #CONTENDED_MARK_AGE_FACTOR} scans. */
+  static long contendedMarkAgeLimitMs(final LocalBucket bucket, final long timeout) {
+    return Math.max(timeout, CONTENDED_MARK_AGE_FACTOR * bucket.getLastRecountScanMs());
+  }
+
+  /** How long a patient apply waits for a running recompute: the commit timeout plus twice the last scan. */
+  static long patientWaitMs(final LocalBucket bucket, final long timeout) {
+    return timeout + 2 * bucket.getLastRecountScanMs();
   }
 
   /**
