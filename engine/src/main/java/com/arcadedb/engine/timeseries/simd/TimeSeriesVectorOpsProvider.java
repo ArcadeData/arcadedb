@@ -57,14 +57,21 @@ public final class TimeSeriesVectorOpsProvider {
   private static void startWarmUp(final TimeSeriesVectorOps ops) {
     // The Vector API runs through its own Java lane loops until C2 compiles the calls (hundreds of ms on a couple of
     // cores): doing it here, off the query path, keeps the first aggregate of a process from paying for it (#9171)
-    final Thread thread = new Thread(() -> warmUp(ops, WARM_UP_ITERATIONS), "ArcadeDB-TimeSeriesSimdWarmUp");
+    final Thread thread = new Thread(() -> {
+      try {
+        warmUp(ops, WARM_UP_ITERATIONS);
+      } catch (final Throwable t) {
+        // BEST EFFORT: THE WARM-UP ONLY SPEEDS UP THE FIRST QUERY
+        LogManager.instance().log(TimeSeriesVectorOpsProvider.class, Level.FINE, "TimeSeries SIMD warm-up failed: %s", t.getMessage());
+      }
+    }, "ArcadeDB-TimeSeriesSimdWarmUp");
     thread.setDaemon(true);
     thread.setPriority(Thread.MIN_PRIORITY);
     thread.start();
   }
 
   /**
-   * Exercises the hot aggregation operations of {@code ops} on a block-sized array so the JIT compiles them.
+   * Exercises the hot aggregation operations (double and long columns) of {@code ops} on a block-sized array so the JIT compiles them.
    *
    * @return a checksum of the results, only meant to keep the calls from being eliminated
    */
@@ -72,7 +79,12 @@ public final class TimeSeriesVectorOpsProvider {
     final double[] data = new double[WARM_UP_VALUES];
     for (int i = 0; i < data.length; i++)
       data[i] = i % 17 == 0 ? Double.NaN : i;
+    final long[] longs = new long[WARM_UP_VALUES];
+    for (int i = 0; i < longs.length; i++)
+      longs[i] = i;
     double sink = 0;
+    for (int i = 0; i < iterations; i++)
+      sink += ops.sumLong(longs, 0, longs.length) + ops.minLong(longs, 0, longs.length) + ops.maxLong(longs, 0, longs.length);
     for (int i = 0; i < iterations; i++)
       sink += ops.sum(data, 0, data.length) + ops.countPresent(data, 0, data.length) + ops.min(data, 0, data.length) + ops.max(data, 0,
           data.length);

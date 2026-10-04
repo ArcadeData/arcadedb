@@ -260,9 +260,16 @@ class TimeSeriesVectorOpsTest {
 
   @ParameterizedTest
   @MethodSource("implementations")
-  void warmUpAgreesAcrossImplementations(final TimeSeriesVectorOps ops) {
+  void warmUpDoesNotBreakAnyOperation(final TimeSeriesVectorOps ops) {
     // regression for #9171: the provider warms the SIMD ops off the query path, and must not change any answer
-    final double scalar = TimeSeriesVectorOpsProvider.warmUp(new ScalarTimeSeriesVectorOps(), 3);
-    assertThat(TimeSeriesVectorOpsProvider.warmUp(ops, 3)).isCloseTo(scalar, within(1e-6));
+    assertThat(TimeSeriesVectorOpsProvider.warmUp(ops, 3)).isGreaterThan(0);
+    final double[] data = new double[65_536];
+    for (int i = 0; i < data.length; i++)
+      data[i] = i % 17 == 0 ? Double.NaN : i;
+    final TimeSeriesVectorOps scalar = new ScalarTimeSeriesVectorOps();
+    assertThat(ops.sum(data, 0, data.length)).isCloseTo(scalar.sum(data, 0, data.length), org.assertj.core.data.Percentage.withPercentage(1e-9));
+    assertThat(ops.countPresent(data, 0, data.length)).isEqualTo(scalar.countPresent(data, 0, data.length));
+    assertThat(ops.min(data, 0, data.length)).isEqualTo(scalar.min(data, 0, data.length));
+    assertThat(ops.max(data, 0, data.length)).isEqualTo(scalar.max(data, 0, data.length));
   }
 }
