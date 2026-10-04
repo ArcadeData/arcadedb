@@ -986,8 +986,9 @@ public enum GlobalConfiguration {
       """
       Maximum nesting depth allowed for a single Cypher expression, for example parentheses, list/map literals, \
       function arguments, pattern parentheses or CALL/EXISTS/COUNT/COLLECT subqueries nested inside one another, \
-      and the depth of a chain of AND/OR/string-concatenation terms in the resulting expression tree. The ANTLR-generated parser re-enters its expression grammar rule \
-      roughly ten Java stack frames per nesting level, so a few thousand levels is enough to exhaust the default \
+      and the depth of a chain of AND/OR/string-concatenation terms in the resulting expression tree. The levels of \
+      all these kinds add up: they are counted cumulatively against this one limit. The ANTLR-generated parser \
+      re-enters its expression grammar rule roughly ten Java stack frames per nesting level, so a few thousand levels is enough to exhaust the default \
       JVM thread stack with a payload of only a few KB; a query past this limit is rejected as a normal parse \
       error instead of crashing the worker thread with a StackOverflowError. Real-world queries rarely nest \
       more than a handful of levels, so the default is deliberately generous while staying far below the point \
@@ -996,7 +997,8 @@ public enum GlobalConfiguration {
 
   CYPHER_MAX_CLAUSES("arcadedb.cypher.maxClauses", SCOPE.DATABASE,
       """
-      Maximum number of clauses (MATCH, WITH, CREATE, ...) in one query or subquery body. The clauses of a query \
+      Maximum number of clauses (MATCH, WITH, CREATE, RETURN, ...) in one query or subquery body; each branch of a \
+      UNION is counted on its own, not the UNION as a whole. The clauses of a query \
       execute as a pull pipeline in which every step asks the previous one for its next row, so the Java stack is \
       as deep as the clause chain is long; a query of a few thousand clauses is parsed but then exhausts the JVM \
       thread stack while its rows are fetched. A query past this limit is rejected as a normal parse error. \
