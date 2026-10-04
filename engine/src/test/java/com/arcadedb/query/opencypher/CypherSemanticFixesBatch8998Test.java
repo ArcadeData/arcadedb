@@ -84,12 +84,12 @@ class CypherSemanticFixesBatch8998Test extends TestHelper {
   @Test
   void substringAndNegativeLengthsOnSeveralSupplementaryCharacters() {
     final String s = GRIN + GRIN + "b" + GRIN + "c";
-    assertThat(column("RETURN substring(\$s, 1, 3) AS v", "v", "s", s)).containsExactly(GRIN + "b" + GRIN);
-    assertThat(column("RETURN substring(\$s, 3) AS v", "v", "s", s)).containsExactly(GRIN + "c");
-    assertThat(column("RETURN left(\$s, 3) AS v", "v", "s", s)).containsExactly(GRIN + GRIN + "b");
-    assertThat(column("RETURN right(\$s, 3) AS v", "v", "s", s)).containsExactly("b" + GRIN + "c");
-    assertThatThrownBy(() -> column("RETURN left(\$s, -1) AS v", "v", "s", s)).isInstanceOf(CommandSemanticException.class);
-    assertThatThrownBy(() -> column("RETURN right(\$s, -1) AS v", "v", "s", s)).isInstanceOf(CommandSemanticException.class);
+    assertThat(column("RETURN substring($s, 1, 3) AS v", "v", "s", s)).containsExactly(GRIN + "b" + GRIN);
+    assertThat(column("RETURN substring($s, 3) AS v", "v", "s", s)).containsExactly(GRIN + "c");
+    assertThat(column("RETURN left($s, 3) AS v", "v", "s", s)).containsExactly(GRIN + GRIN + "b");
+    assertThat(column("RETURN right($s, 3) AS v", "v", "s", s)).containsExactly("b" + GRIN + "c");
+    assertThatThrownBy(() -> column("RETURN left($s, -1) AS v", "v", "s", s)).isInstanceOf(CommandSemanticException.class);
+    assertThatThrownBy(() -> column("RETURN right($s, -1) AS v", "v", "s", s)).isInstanceOf(CommandSemanticException.class);
   }
 
   // ---- #8996
