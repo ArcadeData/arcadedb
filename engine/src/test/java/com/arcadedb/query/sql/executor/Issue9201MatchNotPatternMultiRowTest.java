@@ -19,11 +19,15 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.RID;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Random;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -57,11 +61,20 @@ class Issue9201MatchNotPatternMultiRowTest extends TestHelper {
   }
 
   @Test
-  void randomGraphMatchesApiLoop() {
+  void twoHopNotPatternAndFilteredNotBranchAlsoResetPerRow() {
+    // P0->P1->P2->P3 chain plus 0->1 reciprocal; NOT of a two-hop path back to x keeps only rows without a 2-hop return
+    assertThat(pairs("MATCH {type: P, as: x}.out('K'){as: y}, NOT {as: y}.out('K'){as: z}.out('K'){as: x} RETURN x.id AS x, y.id AS y"))
+        .containsExactly("(0,1)", "(1,0)", "(1,2)", "(2,3)");
+    assertThat(pairs("MATCH {type: P, as: x}.out('K'){as: y}, NOT {as: y}.out('K'){as: x, where: (id < 2)} RETURN x.id AS x, y.id AS y"))
+        .containsExactly("(1,2)", "(2,3)");
+  }
+
+  @Test
+  void randomGraphMatchesReciprocalEdgeCount() {
     database.transaction(() -> database.command("sql", "DELETE FROM P"));
     final int n = 60;
-    final java.util.Random r = new java.util.Random(7);
-    final java.util.Set<Long> seen = new java.util.HashSet<>();
+    final Random r = new Random(7);
+    final Set<Long> seen = new HashSet<>();
     final List<int[]> edges = new ArrayList<>();
     while (edges.size() < 240) {
       final int a = r.nextInt(n), b = r.nextInt(n);
@@ -69,7 +82,7 @@ class Issue9201MatchNotPatternMultiRowTest extends TestHelper {
         edges.add(new int[] { a, b });
     }
     database.transaction(() -> {
-      final com.arcadedb.database.RID[] v = new com.arcadedb.database.RID[n];
+      final RID[] v = new RID[n];
       for (int i = 0; i < n; i++)
         v[i] = database.newVertex("P").set("id", (long) i).save().getIdentity();
       for (final int[] e : edges)

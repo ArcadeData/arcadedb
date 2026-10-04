@@ -81,6 +81,22 @@ class Issue9207DmlSourcePlanCacheTest extends TestHelper {
     assertThat(stock(1L)).isEqualTo(2);
   }
 
+  @Test
+  void halloweenGuardStillMaterializesOnACacheHit() {
+    // the second execution takes the source plan from the cache: rows moved ahead of the index walk must not be revisited
+    for (int run = 0; run < 2; run++) {
+      database.transaction(() -> database.command("sql", "UPDATE Part SET p_partkey = p_partkey + 100 WHERE p_partkey >= 10"));
+      try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM Part")) {
+        assertThat(rs.next().<Long>getProperty("c")).isEqualTo(20L);
+      }
+    }
+    try (final ResultSet rs = database.query("sql", "SELECT min(p_partkey) AS lo, max(p_partkey) AS hi FROM Part WHERE p_partkey >= 10")) {
+      final Result r = rs.next();
+      assertThat(r.<Long>getProperty("lo")).isEqualTo(210L);
+      assertThat(r.<Long>getProperty("hi")).isEqualTo(219L);
+    }
+  }
+
   private int stock(final long key) {
     try (final ResultSet rs = database.query("sql", "SELECT stock FROM Part WHERE p_partkey = ?", key)) {
       return rs.next().<Integer>getProperty("stock");

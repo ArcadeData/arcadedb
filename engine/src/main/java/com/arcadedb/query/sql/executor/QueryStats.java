@@ -32,6 +32,7 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public class QueryStats {
 
+  /** Only an instance made with {@code new QueryStats()} records; never write into the shared instance of {@link #get}. */
   public final Map<String, Long> stats = new ConcurrentHashMap<>();
 
   /**
