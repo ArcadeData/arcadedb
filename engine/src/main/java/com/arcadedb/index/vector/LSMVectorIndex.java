@@ -10668,6 +10668,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // Track bytes written for chunking
     final AtomicLong bytesInCurrentChunk = new AtomicLong(0);
 
+    // scanBucket() logs and swallows whatever its callback throws, so a failed chunk commit is parked here, the scan
+    // is stopped, and the failure is rethrown below for build() to roll back and mark the index INVALID (issue #8906).
+    // Deliberately only the commit: a record that cannot be indexed is skipped and logged by design, while a failed
+    // commit leaves the transaction unusable and every later record failing for the same reason
+    final AtomicReference<RuntimeException> chunkCommitFailure = new AtomicReference<>();
+
     // Scan the bucket and index all documents
     db.scanBucket(db.getSchema().getBucketById(metadata.associatedBucketId).getName(), record -> {
       // Add to index
@@ -10698,10 +10704,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
             "Committing chunk: %.1fMB written, %d vectors...",
             bytesInCurrentChunk.get() / (1024.0 * 1024.0), total.get());
 
-        db.getWrappedDatabaseInstance().commit();
-        db.getWrappedDatabaseInstance().begin();
-        db.getTransaction().setUseWALForThisTransaction(false); // Re-disable WAL for new transaction
-        db.getTransaction().setCommitLockTimeout(getGraphPersistCommitLockTimeout()); // and re-apply the bulk lock budget
+        try {
+          db.getWrappedDatabaseInstance().commit();
+          db.getWrappedDatabaseInstance().begin();
+          db.getTransaction().setUseWALForThisTransaction(false); // Re-disable WAL for new transaction
+          db.getTransaction().setCommitLockTimeout(getGraphPersistCommitLockTimeout()); // and re-apply the bulk lock budget
+        } catch (final RuntimeException e) {
+          chunkCommitFailure.set(e);
+          return false;
+        }
 
         bytesInCurrentChunk.set(0);
       }
@@ -10711,6 +10722,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       return true;
     });
+
+    final RuntimeException failure = chunkCommitFailure.get();
+    if (failure != null)
+      throw new IndexException("Cannot build vector index '" + indexName
+          + "': a chunk commit or the restart of its transaction failed after " + total.get() + " records were indexed", failure);
 
     final long elapsed = System.currentTimeMillis() - startTime;
     LogManager.instance().log(this, Level.INFO,

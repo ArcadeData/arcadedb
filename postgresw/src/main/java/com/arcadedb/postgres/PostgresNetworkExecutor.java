@@ -96,6 +96,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -576,9 +577,10 @@ public class PostgresNetworkExecutor extends Thread {
           // looking like a drained one.
           portal.fullResultSet = browseAndCacheBoundedResultSet(resultSet);
           portal.executed = true;
-          resolvePortalColumns(portal);
+          resolvePortalColumns(portal, true);
           answerWithColumns(portal);
           portal.rowsDescribed = true;
+          rememberDescribedLayout(portal);
         } catch (final CommandParsingException e) {
           // The one reply Describe is owed is an ErrorResponse here; the client discards everything up to its
           // Sync, exactly as after a failed Execute. Without it the refusal (or any other failure of the query)
@@ -649,6 +651,22 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   /**
+   * A client that describes a NAMED statement through a portal may keep that description for the statement and apply
+   * it to every later Bind/Execute without describing again, which is what pgjdbc does from its prepareThreshold-th
+   * execution on (issue #9009). The layout just announced is therefore recorded as the statement's own, so the later
+   * portals serialize their rows under it instead of under the columns of whichever rows they return.
+   */
+  private static void rememberDescribedLayout(final PostgresPortal portal) {
+    final PostgresPortal statement = portal.statement;
+    if (statement == null || !statement.namedStatement || statement.columnsDescribed || portal.catalogQuery
+        || portal.columns == null || portal.columns.isEmpty())
+      return;
+    // a copy: the portal keeps adjusting its own map, the statement's layout is a promise that must not move
+    statement.columns = new LinkedHashMap<>(portal.columns);
+    statement.columnsDescribed = true;
+  }
+
+  /**
    * Answers a {@code Describe('P')} on a portal whose result is already materialized, under the columns
    * {@link #resolvePortalColumns} named for it.
    * <p>
@@ -701,15 +719,45 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   /**
+   * A projection ({@code SELECT u FROM T}) returns rows that are not elements, so {@code getColumns} cannot tell an
+   * undeclared property from a computed value by the row alone. The statement can: a projected plain property that the
+   * target type does not declare is held to the text layout like the same property of a whole record (issue #9009).
+   */
+  private static void stabilizeProjectedUndeclaredColumns(final Statement statement, final DocumentType targetType,
+      final Map<String, PostgresType> columns) {
+    if (targetType == null || columns == null || !(statement instanceof SelectStatement select) || select.getProjection() == null
+        || select.getProjection().getItems() == null)
+      return;
+
+    for (final ProjectionItem item : select.getProjection().getItems()) {
+      final Expression expression = item.getExpression();
+      if (item.isAll() || item.exclude || expression == null || !expression.isBaseIdentifier())
+        continue;
+      final String alias = item.getProjectionAliasAsString();
+      final PostgresType type = alias != null ? columns.get(alias) : null;
+      if (type != null && targetType.getPolymorphicPropertyIfExists(expression.getDefaultAlias().getStringValue()) == null)
+        columns.put(alias, PostgresType.stableTypeForUndeclared(type));
+    }
+  }
+
+  /**
    * Resolves the columns a materialized portal must be announced under, from the rows it actually produced.
    * A catalog answer keeps its own columns, which are fixed by the catalog table being emulated rather than
    * by whichever rows happened to match; a query that came back empty falls back to the schema, so a client
    * probing a shape with {@code WHERE 1=0} or {@code LIMIT 0} still gets a typed result set.
+   *
+   * @param announced true when these columns are about to be sent to the client in a RowDescription (Describe 'P'),
+   *                  which a client may keep for the statement: only then are the undeclared properties of a named
+   *                  statement held to the layout every record fits (issue #9009). Execute announces nothing, so
+   *                  it types the columns from the rows themselves.
    */
-  private void resolvePortalColumns(final PostgresPortal portal) {
+  private void resolvePortalColumns(final PostgresPortal portal, final boolean announced) {
     final List<Result> rows = portal.fullResultSet != null ? portal.fullResultSet : Collections.emptyList();
     if (!portal.catalogQuery || portal.columns == null)
-      portal.columns = getColumns(rows, resolveQueryTargetType(portal), resolveAliasToSourceProperty(portal));
+      portal.columns = getColumns(rows, resolveQueryTargetType(portal), resolveAliasToSourceProperty(portal),
+          announced && portal.statement != null && portal.statement.namedStatement);
+    if (announced && portal.statement != null && portal.statement.namedStatement && !portal.catalogQuery)
+      stabilizeProjectedUndeclaredColumns(portal.sqlStatement, resolveQueryTargetType(portal), portal.columns);
     if (portal.columns.isEmpty() && rows.isEmpty()) {
       final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(portal.query, portal.language,
           getParams(portal), portal.sqlStatement);
@@ -825,7 +873,7 @@ public class PostgresNetworkExecutor extends Thread {
             // differently-typed one here (issue #6725): keep the promised columns.
             if (!portal.columnsDescribed) {
               final long serStart = System.nanoTime();
-              resolvePortalColumns(portal);
+              resolvePortalColumns(portal, false);
               profile.addSerializationNanos(System.nanoTime() - serStart);
             }
           } else {
@@ -1392,7 +1440,23 @@ public class PostgresNetworkExecutor extends Thread {
    */
   private Map<String, PostgresType> getColumns(final List<Result> resultSet, final DocumentType queryTargetType,
       final Map<String, String> aliasToSourceProperty) {
+    return getColumns(resultSet, queryTargetType, aliasToSourceProperty, false);
+  }
+
+  /**
+   * @param stableLayout true when the columns are a layout the client will keep and apply to rows that are not these
+   *                     ones (a statement a client described once and re-executes, issue #9009): a property of a
+   *                     whole record that the schema does not declare is then announced as text, the one type
+   *                     every record's value fits, instead of the type of the rows seen. Otherwise a column is typed
+   *                     from ALL the rows (issue #9009), widened where they differ, not from the first.
+   */
+  private Map<String, PostgresType> getColumns(final List<Result> resultSet, final DocumentType queryTargetType,
+      final Map<String, String> aliasToSourceProperty, final boolean stableLayout) {
     final Map<String, PostgresType> columns = new LinkedHashMap<>();
+    // properties whose type is still the placeholder of a null value: the first non-null one replaces it
+    Set<String> nullOnly = null;
+    // the class of the last scalar seen per column: another value of it cannot change the merged type
+    final Map<String, Class<?>> lastScalarClass = new HashMap<>();
 
     boolean atLeastOneElement = false;
     for (final Result row : resultSet) {
@@ -1400,37 +1464,63 @@ public class PostgresNetworkExecutor extends Thread {
         atLeastOneElement = true;
 
       for (final String p : columnNamesOf(row)) {
-        if (!columns.containsKey(p)) {
-          // Determine the PostgreSQL type based on the actual value.
-          // Arrays/collections use proper array type codes; native scalar types (numeric, boolean,
-          // temporal) are advertised with their native OID so Postgres clients (psycopg, JDBC, ...)
-          // deserialize them as native values instead of strings. Without this, typed scalars
-          // round-trip through clients as strings and parameter comparisons fail silently.
-          // EMBEDDED documents and MAP values (issue #5253) are advertised as JSON so clients parse
-          // the nested object instead of re-escaping it as an opaque VARCHAR string.
-          final Object value = row.getProperty(p);
-          PostgresType pgType = PostgresType.getTypeForValue(value);
-
-          // An empty list carries no element to infer the type from, so getTypeForValue falls back to text[].
-          // Prefer the declared "LIST OF <type>" (issue #5289) so a column's OID does not depend on whether
-          // the first row's list happens to be empty.
-          if (value instanceof Collection<?> collection && collection.isEmpty()) {
-            final PostgresType declaredType = getDeclaredListType(row, p, queryTargetType, aliasToSourceProperty);
-            if (declaredType != null)
-              pgType = declaredType;
-          } else if (pgType == PostgresType.DATE && isDeclaredAsDatetime(row, p, queryTargetType, aliasToSourceProperty)) {
-            // java.util.Date is the default Java runtime type of both Type.DATE and Type.DATETIME* (issue
-            // #6447), so getTypeForValue cannot tell them apart from the value alone and always answers DATE.
-            // Prefer the schema's declared type when it can be found, the same way the empty-list case above
-            // prefers the declared "LIST OF" over a value-based guess.
-            pgType = PostgresType.TIMESTAMP;
-          }
-
-          if (pgType.isArrayType() || pgType.isNativeScalarType() || pgType == PostgresType.JSON)
-            columns.put(p, pgType);
-          else
+        // Determine the PostgreSQL type based on the actual value.
+        // Arrays/collections use proper array type codes; native scalar types (numeric, boolean,
+        // temporal) are advertised with their native OID so Postgres clients (psycopg, JDBC, ...)
+        // deserialize them as native values instead of strings. Without this, typed scalars
+        // round-trip through clients as strings and parameter comparisons fail silently.
+        // EMBEDDED documents and MAP values (issue #5253) are advertised as JSON so clients parse
+        // the nested object instead of re-escaping it as an opaque VARCHAR string.
+        final Object value = row.getProperty(p);
+        final boolean known = columns.containsKey(p);
+        if (value == null) {
+          if (!known) {
             columns.put(p, PostgresType.VARCHAR);
+            if (nullOnly == null)
+              nullOnly = new HashSet<>();
+            nullOnly.add(p);
+          }
+          continue;
         }
+
+        // Invariant: a column is varchar-final unless it is still a null placeholder. varchar holds every value and
+        // absorbs every other type: nothing left to widen, so skip the inspection
+        if (known && columns.get(p) == PostgresType.VARCHAR && (nullOnly == null || !nullOnly.contains(p)))
+          continue;
+
+        final boolean scalar = !(value instanceof Collection) && !value.getClass().isArray() && !(value instanceof Iterable);
+        if (scalar && known && lastScalarClass.get(p) == value.getClass() && (nullOnly == null || !nullOnly.contains(p)))
+          continue;
+        if (scalar)
+          lastScalarClass.put(p, value.getClass());
+
+        PostgresType pgType = PostgresType.getTypeForValue(value);
+
+        // An empty list carries no element to infer the type from, so getTypeForValue falls back to text[].
+        // Prefer the declared "LIST OF <type>" (issue #5289) so a column's OID does not depend on whether
+        // the first row's list happens to be empty.
+        if (value instanceof Collection<?> collection && collection.isEmpty()) {
+          final PostgresType declaredType = getDeclaredListType(row, p, queryTargetType, aliasToSourceProperty);
+          if (declaredType != null)
+            pgType = declaredType;
+        } else if (pgType == PostgresType.DATE && isDeclaredAsDatetime(row, p, queryTargetType, aliasToSourceProperty)) {
+          // java.util.Date is the default Java runtime type of both Type.DATE and Type.DATETIME* (issue
+          // #6447), so getTypeForValue cannot tell them apart from the value alone and always answers DATE.
+          // Prefer the schema's declared type when it can be found, the same way the empty-list case above
+          // prefers the declared "LIST OF" over a value-based guess.
+          pgType = PostgresType.TIMESTAMP;
+        }
+
+        if (stableLayout && row.isElement() && !isSystemColumn(p)
+            && getDeclaredProperty(row, p, queryTargetType, aliasToSourceProperty) == null)
+          pgType = PostgresType.stableTypeForUndeclared(pgType);
+
+        if (!(pgType.isArrayType() || pgType.isNativeScalarType() || pgType == PostgresType.JSON))
+          pgType = PostgresType.VARCHAR;
+
+        if (known && (nullOnly == null || !nullOnly.remove(p)))
+          pgType = PostgresType.mergeTypes(columns.get(p), pgType, false);
+        columns.put(p, pgType);
       }
     }
 
@@ -1854,7 +1944,7 @@ public class PostgresNetworkExecutor extends Thread {
 
       if (!sampleRows.isEmpty()) {
         // Use the sample row to discover columns
-        final Map<String, PostgresType> cols = getColumns(sampleRows, docType, Map.of());
+        final Map<String, PostgresType> cols = getColumns(sampleRows, docType, Map.of(), true);
         // A property the type DECLARES but the one sampled row happens not to carry is part of the type's shape
         // all the same, so the sample is WIDENED with the schema rather than trusted on its own (issue #7470):
         // sampling alone dropped such a column from every row of the answer - silently, and for COPY ... TO STDOUT
@@ -1892,6 +1982,13 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   private static final String[] SYSTEM_COLUMNS = { RID_PROPERTY, TYPE_PROPERTY, CAT_PROPERTY };
+
+  private static boolean isSystemColumn(final String name) {
+    for (final String systemColumn : SYSTEM_COLUMNS)
+      if (systemColumn.equals(name))
+        return true;
+    return false;
+  }
 
   /**
    * Re-appends the {@code @rid}/{@code @type}/{@code @cat} columns at the end of the map, where
@@ -2281,7 +2378,7 @@ public class PostgresNetworkExecutor extends Thread {
 
       final ResultSet resultSet = sample.execute(database, parameters != null ? parameters : NO_PARAMETERS, context);
       final List<Result> sampleRows = browseSample(resultSet, 1);
-      return sampleRows.isEmpty() ? null : getColumns(sampleRows, resolveQueryTargetType(select), resolveAliasToSourceProperty(select));
+      return sampleRows.isEmpty() ? null : getColumns(sampleRows, resolveQueryTargetType(select), resolveAliasToSourceProperty(select), true);
     } catch (final Exception e) {
       if (DEBUG)
         LogManager.instance().log(this, Level.WARNING, "PSQL: cannot replay the schema probe '%s': %s", parsed, e.getMessage());
@@ -3246,6 +3343,7 @@ public class PostgresNetworkExecutor extends Thread {
         }
       }
 
+      portal.namedStatement = !portalName.isEmpty();
       preparedStatements.put(portalName, portal);
 
       // ParseComplete
