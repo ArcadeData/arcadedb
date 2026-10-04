@@ -519,7 +519,6 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
       // Push skip/limit into the query itself - @rid is enough to count a row, no need to materialize the record.
       final Map<String, Object> params = new HashMap<>();
       final StringBuilder sql = new StringBuilder("select @rid from ").append(Identifier.quote(collectionName));
-      filter.appendWhere(sql, params);
       if (skip > 0)
         sql.append(" SKIP ").append(skip);
       if (limit > 0)

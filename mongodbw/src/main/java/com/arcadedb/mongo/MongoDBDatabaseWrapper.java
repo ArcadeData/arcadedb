@@ -628,13 +628,12 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
           if (filter.isEmpty()) {
             final Map<String, Object> params = new HashMap<>();
             final StringBuilder sql = new StringBuilder("DELETE FROM ").append(Identifier.quote(collectionName));
-            filter.appendWhere(sql, params);
             if (single)
               sql.append(" LIMIT 1");
 
             n += executeCount(sql.toString(), params);
           } else
-            n += deleteRecords(filter.select(database, collectionName, single ? 1 : 0));
+            n += deleteRecords(filter.select(database, collectionName, single ? 1 : 0), filter);
         }
         database.commit();
       } catch (final RuntimeException e) {
@@ -787,7 +786,6 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     final Map<String, Object> params = new HashMap<>();
     final StringBuilder sql = new StringBuilder("UPDATE ").append(Identifier.quote(collectionName));
     appendUpdateOperations(sql, params, u);
-    filter.appendWhere(sql, params);
     if (!multi)
       sql.append(" LIMIT 1");
 
@@ -844,6 +842,11 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         record = rid.asDocument().modify();
       } catch (final RecordNotFoundException e) {
         // deleted since the select: it no longer matches, like a single statement would not have touched it
+        ++vanished;
+        continue;
+      }
+      // the filter is tested again on the record as it is now: one that stopped matching since the selection is left alone
+      if (!filter.isEmpty() && !filter.matches(record)) {
         ++vanished;
         continue;
       }
@@ -1203,12 +1206,16 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     return true;
   }
 
-  private int deleteRecords(final List<RID> rids) {
+  private int deleteRecords(final List<RID> rids, final MongoFilter filter) {
     int deleted = 0;
     for (final RID rid : rids)
       try {
-        rid.asDocument().delete();
-        deleted++;
+        final com.arcadedb.database.Document record = rid.asDocument();
+        // the filter is tested again on the record as it is now: one that stopped matching since the selection is left alone
+        if (filter.matches(record)) {
+          record.delete();
+          deleted++;
+        }
       } catch (final RecordNotFoundException e) {
         // deleted since the selection: it is not this command's to count
       }
