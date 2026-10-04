@@ -68,7 +68,7 @@ import java.util.logging.Level;
 import static de.bwaldvogel.mongo.backend.Utils.markOkay;
 
 public class MongoDBDatabaseWrapper implements MongoDatabase {
-  // how many times a command on a single record selects again when its candidate stopped matching in between
+  // how many times a command on a single record selects again when its candidate was changed or deleted by a concurrent commit in between
   private static final int SINGLE_RECORD_ATTEMPTS = 3;
 
   /**
