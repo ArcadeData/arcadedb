@@ -227,6 +227,10 @@ final class MongoFilter {
     return true;
   }
 
+  private static boolean isRangeOverNull(final Map.Entry<String, Object> operator) {
+    return operator.getValue() == null && !"$eq".equals(operator.getKey()) && !"$in".equals(operator.getKey());
+  }
+
   /**
    * A regular expression operand (alone or in a list) is a pattern only the matcher evaluates: SQL compares it as a value.
    */
@@ -246,7 +250,8 @@ final class MongoFilter {
         // a document _id, compared as a whole
         return false;
       for (final Map.Entry<String, Object> entry : operators.entrySet())
-        if (!NARROWING_OPERATORS.contains(entry.getKey()) || holdsRegex(entry.getValue()))
+        // a null bound of a range matches a stored null in MongoDB, which the SQL comparison never does
+        if (!NARROWING_OPERATORS.contains(entry.getKey()) || holdsRegex(entry.getValue()) || isRangeOverNull(entry))
           return false;
       return true;
     }
