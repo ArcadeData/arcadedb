@@ -84,6 +84,16 @@ public class SQLQueryEngine implements QueryEngine {
     return ENGINE_NAME;
   }
 
+  /**
+   * A statement that parsed but is chained or nested so deeply that building its plan overflows the thread stack
+   * (a 10,000 element chain of property accesses, array selectors or method calls): refuse it with an ArcadeDB
+   * exception that says why instead of letting the raw Error leave the query call (#9050).
+   */
+  private static CommandSQLParsingException tooDeep(final StackOverflowError e) {
+    return new CommandSQLParsingException(
+        "The statement is nested or chained too deeply to be executed (the thread stack overflowed while building the plan)", e);
+  }
+
   @Override
   public ResultSet query(final String query, ContextConfiguration configuration, final Map<String, Object> parameters) {
     final Statement statement = parse(query, database);
@@ -91,7 +101,11 @@ public class SQLQueryEngine implements QueryEngine {
       throw new QueryNotIdempotentException("Query '" + query + "' is not idempotent");
 
     statement.setLimit(new Limit().setValue((int) database.getResultSetLimit()));
-    return statement.execute(database, parameters);
+    try {
+      return statement.execute(database, parameters);
+    } catch (final StackOverflowError e) {
+      throw tooDeep(e);
+    }
   }
 
   @Override
@@ -101,7 +115,11 @@ public class SQLQueryEngine implements QueryEngine {
       throw new QueryNotIdempotentException("Query '" + query + "' is not idempotent");
 
     statement.setLimit(new Limit().setValue((int) database.getResultSetLimit()));
-    return statement.execute(database, parameters);
+    try {
+      return statement.execute(database, parameters);
+    } catch (final StackOverflowError e) {
+      throw tooDeep(e);
+    }
   }
 
   @Override
@@ -113,7 +131,11 @@ public class SQLQueryEngine implements QueryEngine {
     context.setInputParameters(parameters);
     context.setConfiguration(configuration);
 
-    return statement.execute(executionDatabase(), parameters, context);
+    try {
+      return statement.execute(executionDatabase(), parameters, context);
+    } catch (final StackOverflowError e) {
+      throw tooDeep(e);
+    }
   }
 
   /**
@@ -137,7 +159,11 @@ public class SQLQueryEngine implements QueryEngine {
       for (final Map.Entry<String, Object> entry : variables.entrySet())
         context.setVariable(entry.getKey(), entry.getValue());
 
-    return statement.execute(executionDatabase(), parameters, context);
+    try {
+      return statement.execute(executionDatabase(), parameters, context);
+    } catch (final StackOverflowError e) {
+      throw tooDeep(e);
+    }
   }
 
   @Override
@@ -146,7 +172,11 @@ public class SQLQueryEngine implements QueryEngine {
     statement.setLimit(new Limit().setValue((int) database.getResultSetLimit()));
     final CommandContext context = new BasicCommandContext();
     context.setConfiguration(configuration);
-    return statement.execute(executionDatabase(), parameters, context);
+    try {
+      return statement.execute(executionDatabase(), parameters, context);
+    } catch (final StackOverflowError e) {
+      throw tooDeep(e);
+    }
   }
 
   /**
@@ -221,7 +251,11 @@ public class SQLQueryEngine implements QueryEngine {
         final String databaseName = database.getName();
         final long start = QueryMetricsRecorder.Holder.startNanos();
         try (final QueryTracer.Span span = QueryTracer.Holder.begin(databaseName, ENGINE_NAME, type, query)) {
-          return statement.execute(executionDatabase(), parameters);
+          try {
+            return statement.execute(executionDatabase(), parameters);
+          } catch (final StackOverflowError e) {
+            throw tooDeep(e);
+          }
         } finally {
           QueryMetricsRecorder.Holder.record(start, databaseName, ENGINE_NAME, type);
         }

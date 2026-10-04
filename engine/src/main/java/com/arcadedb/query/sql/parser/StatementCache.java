@@ -76,6 +76,10 @@ public class StatementCache {
       return result;
     } catch (final CommandSQLParsingException e) {
       throw e;
+    } catch (final StackOverflowError e) {
+      // the Error carries no message (#9050): say what happened
+      throw new CommandSQLParsingException(
+          "The statement is nested or chained too deeply to be parsed (the thread stack overflowed)", e, statement);
     } catch (final Throwable e) {
       throwParsingException(e, statement);
     }
