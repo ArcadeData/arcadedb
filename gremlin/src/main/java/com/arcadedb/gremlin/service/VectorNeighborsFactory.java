@@ -82,6 +82,9 @@ public class VectorNeighborsFactory extends ArcadeServiceRegistry.ArcadeServiceF
       throw new IllegalArgumentException("Parameter 'vector' is required by " + NAME);
     if (!(limitParam instanceof Number limit))
       throw new IllegalArgumentException("Parameter 'limit' is required by " + NAME + " and must be a number");
+    // A LONG BEYOND THE int RANGE MUST NOT WRAP TO A NEGATIVE LIMIT ON ITS WAY TO SQL
+    if (limit.longValue() < 0 || limit.longValue() > Integer.MAX_VALUE)
+      throw new IllegalArgumentException("Parameter 'limit' of " + NAME + " must be between 0 and " + Integer.MAX_VALUE + ", got " + limit);
 
     // THE SQL FUNCTION IS THE SINGLE IMPLEMENTATION OF THE SEARCH: IT SPANS EVERY BUCKET (AND SUB-TYPE) INDEX OF THE TYPE,
     // MERGES THEIR RESULTS AND ACCEPTS THE SAME VECTOR AND LIMIT SHAPES (#9143)
@@ -94,6 +97,7 @@ public class VectorNeighborsFactory extends ArcadeServiceRegistry.ArcadeServiceF
           for (final Map<String, Object> n : neighbors) {
             final Object distance = n.get("distance");
             result.add(Map.of("record", graph.getVertexFromRecord(((Document) n.get("record")).getIdentity()), "distance",
+                // A NEIGHBOR ALWAYS CARRIES ITS DISTANCE; NaN ONLY KEEPS Map.of() FROM THROWING IF THAT EVER CHANGES
                 distance != null ? distance : Float.NaN));
           }
       }

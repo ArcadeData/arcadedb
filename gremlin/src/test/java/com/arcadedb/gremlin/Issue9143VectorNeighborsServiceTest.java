@@ -19,6 +19,7 @@
 package com.arcadedb.gremlin;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -79,7 +80,7 @@ class Issue9143VectorNeighborsServiceTest {
     try (final ResultSet rs = db.query("sql", "select vectorNeighbors('Doc[emb]', ?, ?) as neighbors", vector, k)) {
       while (rs.hasNext())
         for (final Map<String, Object> n : rs.next().<List<Map<String, Object>>>getProperty("neighbors"))
-          out.add(((com.arcadedb.database.Document) n.get("record")).getIdentity());
+          out.add(((Document) n.get("record")).getIdentity());
     }
     return out;
   }
@@ -120,6 +121,20 @@ class Issue9143VectorNeighborsServiceTest {
     assertThat(new HashSet<>(gremlin(Map.of("indexName", "Doc[emb]", "vector", asDoubles, "limit", 5)))).isEqualTo(expected);
     assertThat(new HashSet<>(gremlin(Map.of("indexName", "Doc[emb]", "vector", doubles, "limit", 5)))).isEqualTo(expected);
     assertThat(new HashSet<>(gremlin(Map.of("indexName", "Doc[emb]", "vector", f, "limit", 5L)))).isEqualTo(expected);
+  }
+
+  @Test
+  void aLimitOutsideTheIntRangeIsRefused() {
+    assertThatThrownBy(() -> gremlin(Map.of("indexName", "Doc[emb]", "vector", vectors[0], "limit", 4_294_967_297L)))
+        .hasStackTraceContaining("must be between 0 and");
+    assertThatThrownBy(() -> gremlin(Map.of("indexName", "Doc[emb]", "vector", vectors[0], "limit", -1)))
+        .hasStackTraceContaining("must be between 0 and");
+  }
+
+  @Test
+  void theBoundariesOfTheLimitAreAccepted() {
+    assertThat(gremlin(Map.of("indexName", "Doc[emb]", "vector", vectors[0], "limit", 0))).isEmpty();
+    assertThat(gremlin(Map.of("indexName", "Doc[emb]", "vector", vectors[0], "limit", Integer.MAX_VALUE))).hasSize(vectors.length);
   }
 
   @Test
