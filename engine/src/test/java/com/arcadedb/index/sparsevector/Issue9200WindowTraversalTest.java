@@ -28,6 +28,7 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Random;
 import java.util.logging.Level;
@@ -71,6 +72,39 @@ class Issue9200WindowTraversalTest extends TestHelper {
 
         assertSameAnswer(classic, windowed, "window " + window + ", query " + q);
       }
+    }
+  }
+
+  @Test
+  void anOversizedWindowSettingIsClamped() throws Exception {
+    final LSMSparseVectorIndex index = buildCorpus(600);
+    GlobalConfiguration.SPARSE_VECTOR_SCORING_WINDOW.setValue(Integer.MAX_VALUE);
+    assertThat(index.topK(new int[] { 1, 2, 3 }, new float[] { 1f, 1f, 1f }, 5, null)).isNotEmpty();
+  }
+
+  @Test
+  void partitionedWindowTraversalAnswersLikeDocumentAtATime() throws Exception {
+    final LSMSparseVectorIndex index = buildCorpus(6_000);
+    final Random random = new Random(9201);
+    GlobalConfiguration.SPARSE_VECTOR_SCORING_MIN_POSTINGS_FOR_PARTITIONING.setValue(1);
+    GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.setValue(4);
+    try {
+      for (int q = 0; q < 40; q++) {
+        final int[] query = random.ints(0, DIMS).distinct().limit(5 + random.nextInt(40)).toArray();
+        final float[] weights = new float[query.length];
+        for (int i = 0; i < weights.length; i++)
+          weights[i] = (float) (0.1 + 2 * random.nextDouble());
+        final int k = 1 + random.nextInt(25);
+
+        GlobalConfiguration.SPARSE_VECTOR_SCORING_WINDOW.setValue(0);
+        final List<RidScore> classic = index.topK(query, weights, k, null);
+        GlobalConfiguration.SPARSE_VECTOR_SCORING_WINDOW.setValue(256);
+        final List<RidScore> windowed = index.topK(query, weights, k, null);
+        assertSameAnswer(classic, windowed, "partitioned query " + q);
+      }
+    } finally {
+      GlobalConfiguration.SPARSE_VECTOR_SCORING_MIN_POSTINGS_FOR_PARTITIONING.reset();
+      GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.reset();
     }
   }
 
@@ -139,7 +173,7 @@ class Issue9200WindowTraversalTest extends TestHelper {
             final double u = random.nextDouble();
             tokens[j] = (int) (DIMS * u * u); // skewed: a few dims are very frequent
           }
-          final int[] distinct = java.util.Arrays.stream(tokens).distinct().sorted().toArray();
+          final int[] distinct = Arrays.stream(tokens).distinct().sorted().toArray();
           final float[] weights = new float[distinct.length];
           for (int j = 0; j < weights.length; j++)
             weights[j] = (float) (0.05 + 3 * random.nextDouble());
