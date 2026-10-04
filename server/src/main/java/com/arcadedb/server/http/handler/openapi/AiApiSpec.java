@@ -425,6 +425,10 @@ public class AiApiSpec implements OpenApiContributor {
         SpecBuilders.ref("AiCommand"),
         "SQL commands the assistant proposed with this reply. Present only on an assistant message "
             + "that proposed at least one."));
+    message.addProperty("charts", SpecBuilders.arrayOf(SpecBuilders.freeFormObject(
+        "{type, title, language, query, x, y[]}: Studio runs the read-only query itself and draws the rows"),
+        "Charts the assistant asked Studio to draw with this reply (at most 3, validated by this server). Present only on an "
+            + "assistant message that asked for at least one."));
     message.setRequired(List.of("role", "content", "timestamp"));
 
     final Schema<Object> schema = SpecBuilders.object(

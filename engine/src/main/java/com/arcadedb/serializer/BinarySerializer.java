@@ -1541,6 +1541,14 @@ public class BinarySerializer {
     return dateTimeImplementation;
   }
 
+  /**
+   * The class a {@code DATETIME_MICROS} / {@code DATETIME_NANOS} value is read back as: the configured datetime
+   * implementation, or {@code LocalDateTime} when that one stops at the millisecond (issue #8158).
+   */
+  public Class<?> getSubMillisDateTimeImplementation() {
+    return subMillisDateTimeImplementation;
+  }
+
   /** See {@link #setDateImplementation(Object)}. */
   public void setDateTimeImplementation(final Object dateTimeImplementation) {
     this.dateTimeImplementation = toClass(dateTimeImplementation);

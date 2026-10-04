@@ -251,7 +251,10 @@ class Issue741InOperatorEdgeCompositeIndexTest extends TestHelper {
       assertThat(ids).containsExactly(2L, 9L, 10L, 15L);
     });
 
-    // A case-insensitive key: 'b' < 'a' as bytes would put "B" first, the index folds both and answers "a" first.
+    // A case-insensitive key: the index still answers the IN (the folded seeks find "Beta" through 'beta' and "Delta"
+    // through 'DELTA'), but it iterates its FOLDED keys, which is not the order of the values ORDER BY sorts on. Since
+    // issue #8766 (#8700) a folded index never stands in for the sort, so the ORDER BY step stays and the rows come
+    // back in value order - "Beta" and "Delta" before "alpha" - exactly as on an unindexed type.
     database.transaction(() -> {
       database.getSchema().createVertexType("Product").createProperty("name", Type.STRING);
       database.command("sql", "CREATE INDEX ON Product (name COLLATE CI) NOTUNIQUE");
@@ -261,9 +264,9 @@ class Issue741InOperatorEdgeCompositeIndexTest extends TestHelper {
     database.transaction(() -> {
       final String query = "SELECT name FROM Product WHERE name IN ('DELTA', 'B', 'beta', 'alpha') ORDER BY name";
       assertThat(database.query("sql", "EXPLAIN " + query).getExecutionPlan().get().prettyPrint(0, 3))
-          .contains("FETCH FROM INDEX").doesNotContain("ORDER BY");
+          .contains("FETCH FROM INDEX").contains("ORDER BY");
       final List<String> names = database.query("sql", query).stream().map(r -> r.<String>getProperty("name")).toList();
-      assertThat(names).containsExactly("alpha", "Beta", "Delta");
+      assertThat(names).containsExactly("Beta", "Delta", "alpha");
     });
   }
 }

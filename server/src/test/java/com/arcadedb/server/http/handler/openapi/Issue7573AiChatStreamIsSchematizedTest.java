@@ -91,8 +91,9 @@ class Issue7573AiChatStreamIsSchematizedTest {
     final List<Object> kinds = new ArrayList<>(
         ((Schema<?>) eventSchema().getProperties().get("type")).getEnum());
 
-    // 'error' ends a stream cut short after it started (issue #8642).
-    assertThat(kinds).containsExactly("tool_start", "tool_end", "done", "error");
+    // 'error' ends a stream cut short after it started (issue #8642). 'delta' and 'reset' are the incremental reply
+    // AiPortalChat relays when the answer comes through the customer portal.
+    assertThat(kinds).containsExactly("tool_start", "tool_end", "delta", "reset", "done", "error");
     assertThat(kinds)
         .as("'session' and 'tool_call' are the gateway's events: AiChatHandler consumes both and they never "
             + "reach the caller, so naming them here sends a client author waiting for events that never arrive")
@@ -102,12 +103,15 @@ class Issue7573AiChatStreamIsSchematizedTest {
   /**
    * Every member each kind carries is declared. The list is what the handler writes: {@code tool_start} and
    * {@code tool_end} are built from {@code tool} and {@code args} with {@code error} added only on a failure,
-   * and {@code done} is the gateway's event with {@code chatId} injected.
+   * and {@code done} is the gateway's event with {@code chatId} injected. Through the customer portal,
+   * {@code delta} carries {@code text}, {@code done} adds {@code charts} and {@code usage}, and a plan refusal's
+   * {@code error} adds {@code upgrade}.
    */
   @Test
   void everyFieldTheHandlerWritesIsDeclared() {
     assertThat(eventSchema().getProperties().keySet())
-        .containsExactlyInAnyOrder("type", "tool", "args", "error", "response", "commands", "chatId", "code");
+        .containsExactlyInAnyOrder("type", "tool", "args", "error", "response", "commands", "chatId", "code", "text", "upgrade",
+            "usage", "charts");
   }
 
   /**
