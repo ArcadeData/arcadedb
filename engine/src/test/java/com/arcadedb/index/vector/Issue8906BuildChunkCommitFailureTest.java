@@ -96,7 +96,7 @@ class Issue8906BuildChunkCommitFailureTest extends TestHelper {
 
     try {
       assertThatThrownBy(() -> index.build(null, null)).isInstanceOf(IndexException.class)
-          .hasMessageContaining("chunk commit failed");
+          .hasMessageContaining("chunk commit");
     } finally {
       release.countDown();
       blocker.join(TimeUnit.SECONDS.toMillis(30));

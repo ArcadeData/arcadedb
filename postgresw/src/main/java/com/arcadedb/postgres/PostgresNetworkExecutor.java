@@ -1430,6 +1430,8 @@ public class PostgresNetworkExecutor extends Thread {
     final Map<String, PostgresType> columns = new LinkedHashMap<>();
     // properties whose type is still the placeholder of a null value: the first non-null one replaces it
     Set<String> nullOnly = null;
+    // the class of the last scalar seen per column: another value of it cannot change the merged type
+    final Map<String, Class<?>> lastScalarClass = new HashMap<>();
 
     boolean atLeastOneElement = false;
     for (final Result row : resultSet) {
@@ -1459,6 +1461,12 @@ public class PostgresNetworkExecutor extends Thread {
         // varchar holds every value and absorbs every other type: nothing left to widen, so skip the inspection
         if (known && columns.get(p) == PostgresType.VARCHAR && (nullOnly == null || !nullOnly.contains(p)))
           continue;
+
+        final boolean scalar = !(value instanceof Collection) && !value.getClass().isArray() && !(value instanceof Iterable);
+        if (scalar && known && lastScalarClass.get(p) == value.getClass() && (nullOnly == null || !nullOnly.contains(p)))
+          continue;
+        if (scalar)
+          lastScalarClass.put(p, value.getClass());
 
         PostgresType pgType = PostgresType.getTypeForValue(value);
 

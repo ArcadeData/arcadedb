@@ -47,6 +47,7 @@ import java.io.UncheckedIOException;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.nio.BufferUnderflowException;
 import java.nio.channels.FileChannel;
 import java.nio.channels.OverlappingFileLockException;
 import java.nio.charset.StandardCharsets;
@@ -1784,8 +1785,13 @@ public final class SnapshotInstaller {
    */
   private static boolean snapshotOpens(final Path dbDir) throws IOException {
     final Predicate<Path> override = snapshotOpensForTesting;
-    if (override != null)
-      return override.test(dbDir);
+    if (override != null) {
+      try {
+        return override.test(dbDir);
+      } catch (final UncheckedIOException e) {
+        throw new IOException(e.getMessage(), e);
+      }
+    }
 
     final Path normalized = dbDir.toAbsolutePath().normalize();
     for (final Database active : DatabaseFactory.getActiveDatabaseInstances())
@@ -1799,14 +1805,18 @@ public final class SnapshotInstaller {
       factory.open().close();
       return true;
     } catch (final Exception e) {
+      // Only a failure that says the FILES are unusable proves the snapshot does not open: a component that cannot be
+      // registered, a malformed structure. Anything else (an I/O error, a lock, a missing plugin, a limit of this bare
+      // open) may be a limit of the proof rather than of the snapshot, and costs nothing to retry with both copies kept.
       for (Throwable cause = e; cause != null; cause = cause.getCause())
-        if (cause instanceof IOException || cause instanceof UncheckedIOException || cause instanceof OverlappingFileLockException
-            || cause instanceof LockTimeoutException)
-          throw new IOException("Cannot tell whether the snapshot in " + dbDir + " opens (" + e.getMessage()
-              + "); retaining the pending marker and both copies", e);
-      LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE, "The snapshot in %s failed to open: %s", e, dbDir,
-          e.getMessage());
-      return false;
+        if (cause instanceof IllegalArgumentException || cause instanceof IllegalStateException
+            || cause instanceof IndexOutOfBoundsException || cause instanceof BufferUnderflowException) {
+          LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE, "The snapshot in %s failed to open: %s", e, dbDir,
+              e.getMessage());
+          return false;
+        }
+      throw new IOException("Cannot tell whether the snapshot in " + dbDir + " opens (" + e.getMessage()
+          + "); retaining the pending marker and both copies", e);
     }
   }
 
