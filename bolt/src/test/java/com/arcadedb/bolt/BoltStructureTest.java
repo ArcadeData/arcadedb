@@ -28,6 +28,8 @@ import com.arcadedb.bolt.structure.BoltStructureMapper;
 import com.arcadedb.bolt.structure.BoltTemporalStructure;
 import com.arcadedb.bolt.structure.BoltUnboundRelationship;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.function.graph.IdFunction;
 
 import org.junit.jupiter.api.Test;
 
@@ -562,8 +564,9 @@ class BoltStructureTest {
   void ridToIdBasic() {
     final RID rid = new RID(1, 100);
     final long id = BoltStructureMapper.ridToId(rid);
-    // Bucket 1 in high 16 bits, position 100 in low 48 bits
-    assertThat(id).isEqualTo((1L << 48) | 100L);
+    // the id(n) encoding: bucket 1 in the high bits above the 47 position bits (#9010)
+    assertThat(id).isEqualTo((1L << 47) | 100L);
+    assertThat(id).isEqualTo(IdFunction.encodeRidAsLong(rid));
   }
 
   @Test
@@ -573,37 +576,29 @@ class BoltStructureTest {
 
   @Test
   void ridToIdMaxValues() {
-    // Maximum valid bucket ID (16 bits)
     final RID ridMaxBucket = new RID(0xFFFF, 0);
-    assertThat(BoltStructureMapper.ridToId(ridMaxBucket)).isEqualTo(0xFFFF_0000_0000_0000L);
+    assertThat(BoltStructureMapper.ridToId(ridMaxBucket)).isEqualTo(0xFFFFL << 47);
 
-    // Maximum valid position (48 bits)
-    final RID ridMaxPosition = new RID(0, 0xFFFF_FFFF_FFFFL);
-    assertThat(BoltStructureMapper.ridToId(ridMaxPosition)).isEqualTo(0xFFFF_FFFF_FFFFL);
+    final RID ridMaxPosition = new RID(0, (1L << 47) - 1);
+    assertThat(BoltStructureMapper.ridToId(ridMaxPosition)).isEqualTo((1L << 47) - 1);
   }
 
   @Test
   void ridToIdInvalidBucketNegative() {
     final RID rid = new RID(-1, 100);
-    assertThatThrownBy(() -> BoltStructureMapper.ridToId(rid))
-        .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("Bucket ID out of range");
+    assertThatThrownBy(() -> BoltStructureMapper.ridToId(rid)).isInstanceOf(CommandExecutionException.class);
   }
 
   @Test
   void ridToIdInvalidBucketTooLarge() {
-    final RID rid = new RID(0x10000, 100); // 65536, exceeds 16-bit limit
-    assertThatThrownBy(() -> BoltStructureMapper.ridToId(rid))
-        .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("Bucket ID out of range");
+    final RID rid = new RID(0x10000, 100); // 65536, exceeds the 16-bit limit
+    assertThatThrownBy(() -> BoltStructureMapper.ridToId(rid)).isInstanceOf(CommandExecutionException.class);
   }
 
   @Test
   void ridToIdInvalidPositionNegative() {
     final RID rid = new RID(1, -1);
-    assertThatThrownBy(() -> BoltStructureMapper.ridToId(rid))
-        .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("Position out of range");
+    assertThatThrownBy(() -> BoltStructureMapper.ridToId(rid)).isInstanceOf(CommandExecutionException.class);
   }
 
   // ============ Nested collection tests ============
