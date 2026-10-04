@@ -113,6 +113,19 @@ public final class TimeBoundRegex {
   }
 
   /**
+   * Looks for {@code pattern} anywhere in {@code input} ({@link java.util.regex.Matcher#find()}, as opposed to the full
+   * match of {@link #matchesUntil(Pattern, CharSequence, long)}), aborting if {@code System.nanoTime()} passes
+   * {@code deadlineNanos}.
+   *
+   * @return {@code true} if {@code pattern} is found in {@code input}
+   *
+   * @throws TimeoutException if the search does not complete before {@code deadlineNanos}
+   */
+  public static boolean findUntil(final Pattern pattern, final CharSequence input, final long deadlineNanos) {
+    return run(pattern, input, deadlineNanos, bounded -> pattern.matcher(bounded).find());
+  }
+
+  /**
    * Replaces every match of {@code pattern} in {@code input} with {@code replacement}, aborting if it runs past
    * {@code timeoutMillis}. Same rationale as {@link #matches(Pattern, CharSequence, long)}: {@code replaceAll()}
    * backtracks through the same {@code java.util.regex} machinery and is just as exposed to a pathological

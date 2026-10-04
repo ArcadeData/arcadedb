@@ -527,6 +527,21 @@ public class MongoDBToSqlTranslator {
     return result;
   }
 
+  /**
+   * A stored record as the filter matcher sees it: the {@code _id} stays in its stored form (an ObjectId is its hex string), the
+   * form {@link MongoBsonValues#idFilter} gives the operand of a filter on it.
+   */
+  static Document toMatchDocument(final Map<String, Object> map, final Set<String> properties) {
+    final Document result = new Document();
+    for (final Map.Entry<String, Object> entry : map.entrySet()) {
+      final String p = entry.getKey();
+      // only the properties the filter reads are converted: the rest of a wide record never reaches the matcher
+      if (properties.contains(p) && !isRecordMetadata(p))
+        result.put(p, toBsonValue(entry.getValue()));
+    }
+    return result;
+  }
+
   static boolean isRecordMetadata(final String property) {
     return "@rid".equals(property) || "@type".equals(property) || "@cat".equals(property);
   }
