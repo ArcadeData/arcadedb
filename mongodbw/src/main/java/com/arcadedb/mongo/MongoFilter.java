@@ -448,6 +448,68 @@ final class MongoFilter {
     return rest;
   }
 
+  /**
+   * Bounds the regular expressions of an aggregation pipeline: the mongo-java-server aggregation filters a {@code $match} stage with
+   * its own matcher, whose expressions run with no deadline. Each {@code $match} query (also the ones of {@code $facet} branches,
+   * {@code $lookup} and {@code $unionWith} sub-pipelines, and {@code $graphLookup.restrictSearchWithMatch}) is prepared as a find
+   * filter is, so every regular expression of the pipeline draws on one budget. The stages are copied, the pipeline of the request is
+   * left as it is.
+   */
+  static List<Document> boundPipeline(final List<Document> pipeline, final RegexBudget budget) {
+    final List<Document> bounded = new ArrayList<>(pipeline.size());
+    for (final Document stage : pipeline)
+      bounded.add(boundStage(stage, budget));
+    return bounded;
+  }
+
+  private static Document boundStage(final Document stage, final RegexBudget budget) {
+    final Document result = new Document();
+    for (final Map.Entry<String, Object> entry : stage.entrySet()) {
+      final String name = entry.getKey();
+      final Object value = entry.getValue();
+      switch (name) {
+      // inside a pipeline the _id is the one the previous stage produced, not the stored identity of a record: never the "top" form
+      case "$match" -> result.put(name, value instanceof Document query ? normalizeQuery(query, budget, false) : value);
+      case "$facet" -> {
+        if (value instanceof Document branches) {
+          final Document converted = new Document();
+          for (final Map.Entry<String, Object> branch : branches.entrySet())
+            converted.put(branch.getKey(), boundStages(branch.getValue(), budget));
+          result.put(name, converted);
+        } else
+          result.put(name, value);
+      }
+      case "$lookup", "$unionWith" -> {
+        if (value instanceof Document options && options.containsKey("pipeline")) {
+          final Document converted = new Document(options);
+          converted.put("pipeline", boundStages(options.get("pipeline"), budget));
+          result.put(name, converted);
+        } else
+          result.put(name, value);
+      }
+      case "$graphLookup" -> {
+        if (value instanceof Document options && options.get("restrictSearchWithMatch") instanceof Document query) {
+          final Document converted = new Document(options);
+          converted.put("restrictSearchWithMatch", normalizeQuery(query, budget, false));
+          result.put(name, converted);
+        } else
+          result.put(name, value);
+      }
+      default -> result.put(name, value);
+      }
+    }
+    return result;
+  }
+
+  private static Object boundStages(final Object stages, final RegexBudget budget) {
+    if (!(stages instanceof List<?> list))
+      return stages;
+    final List<Object> converted = new ArrayList<>(list.size());
+    for (final Object stage : list)
+      converted.add(stage instanceof Document document ? boundStage(document, budget) : stage);
+    return converted;
+  }
+
   private static boolean isOperatorDocument(final Document document) {
     return !document.isEmpty() && document.keySet().iterator().next().startsWith("$");
   }

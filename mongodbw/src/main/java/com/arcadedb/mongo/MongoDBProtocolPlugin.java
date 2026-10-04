@@ -22,16 +22,21 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerPlugin;
+import com.arcadedb.server.network.MultiAddressServerSocket;
 import de.bwaldvogel.mongo.MongoDatabase;
 import de.bwaldvogel.mongo.MongoServer;
 import de.bwaldvogel.mongo.backend.DatabaseResolver;
 
 import java.net.InetSocketAddress;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class MongoDBProtocolPlugin implements ServerPlugin, DatabaseResolver {
   private volatile MongoServer                mongoDBServer;
+  /** The listeners on the other local addresses of the host, when it resolves to several (issue #9224). */
+  private final List<MongoServer>             additionalServers = new ArrayList<>();
   private MongoDBBackend                      mongoDBBackend;
   private ArcadeDBServer                      server;
   private String                              host;
@@ -56,11 +61,29 @@ public class MongoDBProtocolPlugin implements ServerPlugin, DatabaseResolver {
   public void startService() {
     mongoDBBackend = new MongoDBBackend(server, this);
     mongoDBServer = new MongoServer(mongoDBBackend);
-    mongoDBServer.bind(host, port);
+
+    // Every local address the host resolves to, not only the first one: a port held on [::1] must not look free for "localhost"
+    // (issue #9224). The library binds one address per server, so each further address gets a server of its own on the same port
+    final List<String> hosts = MultiAddressServerSocket.resolveListenHosts(host);
+    try {
+      mongoDBServer.bind(hosts.getFirst(), port);
+      final int boundPort = getPort();
+      for (final String address : hosts.subList(1, hosts.size())) {
+        final MongoServer additional = new MongoServer(mongoDBBackend);
+        additionalServers.add(additional);
+        additional.bind(address, boundPort);
+      }
+    } catch (final RuntimeException e) {
+      stopService();
+      throw e;
+    }
   }
 
   @Override
   public void stopService() {
+    for (final MongoServer additional : additionalServers)
+      additional.shutdown();
+    additionalServers.clear();
     mongoDBServer.shutdown();
   }
 
