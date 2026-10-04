@@ -183,6 +183,36 @@ class Issue8868StripeDirectoryHashVersionTest extends TestHelper {
     });
   }
 
+  /**
+   * {@code BaseRecord.size()} lazily loads through {@code reload()} without going through the accessors. It must
+   * validate too: otherwise it leaves the rejected content loaded and the next accessor skips the check.
+   */
+  @Test
+  void sizeOnALazyPlaceholderDoesNotLeaveUnvalidatedContentBehind() {
+    final RID created = createPromotedHub();
+    final RID dirRID = reopen(writeFutureHashVersion(created));
+
+    database.transaction(() -> {
+      final StripeDirectory lazy = (StripeDirectory) ((DatabaseInternal) database).getRecordFactory()
+          .newImmutableRecord(database, null, dirRID, StripeDirectory.RECORD_TYPE);
+      assertThatThrownBy(lazy::size)
+          .isInstanceOf(DatabaseMetadataException.class)
+          .hasMessageContaining("hash version " + FUTURE_HASH);
+      assertThatThrownBy(() -> lazy.getHead(1, 0))
+          .isInstanceOf(DatabaseMetadataException.class)
+          .hasMessageContaining("hash version " + FUTURE_HASH);
+    });
+  }
+
+  @Test
+  void truncatedDirectoryIsRejectedWithAClearMessage() {
+    final Binary truncated = new Binary(1);
+    truncated.putByte(0, StripeDirectory.RECORD_TYPE);
+    assertThatThrownBy(() -> new StripeDirectory(database, new RID(1, 0), truncated))
+        .isInstanceOf(DatabaseMetadataException.class)
+        .hasMessageContaining("is corrupt");
+  }
+
   /** Bit pattern {@code 0xFF}: a negative byte, so the check must be an equality, not a "greater than". */
   @Test
   void corruptNegativeHashVersionIsRejectedToo() {

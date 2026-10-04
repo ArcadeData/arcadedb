@@ -145,33 +145,45 @@ public class StripeDirectory extends BaseRecord implements RecordInternal {
    * the loaded fast path is a thin lock, negligible next to the page access that follows.
    */
   private synchronized void checkForLoading() {
-    if (buffer == null) {
+    if (buffer == null)
       reload();
-      if (buffer != null) {
-        try {
-          checkHashVersion();
-        } catch (final DatabaseMetadataException e) {
-          // DROP THE REJECTED CONTENT: a second access must fail again, not find a loaded buffer and read it with
-          // the wrong placement hash.
-          buffer = null;
-          throw e;
-        }
-        buffer.setAutoResizable(false);
-        bufferSize = buffer.size();
+  }
+
+  /**
+   * Re-reads the content from its bucket and validates it ({@link #checkHashVersion()}). Every lazy load funnels
+   * through here - {@link #checkForLoading()} and {@code BaseRecord.size()} alike - so no caller can leave unvalidated
+   * content behind for the next accessor to read with the wrong placement hash. A rejected content is DROPPED before
+   * the exception is rethrown: a second access must fail again, not find a loaded buffer.
+   */
+  @Override
+  public synchronized void reload() {
+    super.reload();
+    if (buffer != null) {
+      try {
+        checkHashVersion();
+      } catch (final DatabaseMetadataException e) {
+        buffer = null;
+        throw e;
       }
+      buffer.setAutoResizable(false);
+      bufferSize = buffer.size();
     }
   }
 
   /**
-   * Rejects a directory whose placement hash version is not the one this release implements. Absolute read of
-   * header byte 1: does not move the buffer position the record factory left behind.
+   * Rejects a directory whose placement hash version is not the one this release implements, or whose header is
+   * truncated. Absolute read of header byte 1: does not move the buffer position the record factory left behind.
    */
   private void checkHashVersion() {
+    if (buffer.size() < HEADER_SIZE)
+      throw new DatabaseMetadataException(
+          "Stripe directory " + rid + " is corrupt: " + buffer.size() + " bytes, shorter than its " + HEADER_SIZE + "-byte header");
     final byte version = buffer.getByte(1);
     if (version != HASH_VERSION)
       throw new DatabaseMetadataException(
           "Stripe directory " + rid + " uses placement hash version " + version + ", but this release only supports version "
-              + HASH_VERSION + ". The database was written by a newer ArcadeDB release: open it with that release or a later one");
+              + HASH_VERSION + ". Either the database was written by a newer ArcadeDB release (open it with that release or a "
+              + "later one) or the record is corrupt");
   }
 
   /** Bounded by the single-byte header field: at most 127 generations (a growth event is rare - promotion adds
