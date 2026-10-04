@@ -579,9 +579,9 @@ public class GraphBatch implements AutoCloseable {
     }
 
     vertex.save();
+    evictStaleChunkCache(vertex.getIdentity());
 
     if (preAllocateEdgeChunks) {
-      evictStaleChunkCache(vertex.getIdentity());
       getOrCreateOutEdgeChunk(vertex);
       if (bidirectional)
         getOrCreateInEdgeChunk(vertex);
