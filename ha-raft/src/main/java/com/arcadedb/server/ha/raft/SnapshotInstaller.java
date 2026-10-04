@@ -1814,7 +1814,7 @@ public final class SnapshotInstaller {
       // registered, a malformed structure. Anything else (an I/O error, a lock, a missing plugin, a limit of this bare
       // open) may be a limit of the proof rather than of the snapshot, and costs nothing to retry with both copies kept.
       for (Throwable cause = e; cause != null; cause = cause.getCause())
-        if (cause instanceof IllegalArgumentException || cause instanceof IllegalStateException
+        if (cause instanceof IllegalArgumentException
             || cause instanceof IndexOutOfBoundsException || cause instanceof BufferUnderflowException) {
           LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE, "The snapshot in %s failed to open: %s", e, dbDir,
               e.getMessage());
