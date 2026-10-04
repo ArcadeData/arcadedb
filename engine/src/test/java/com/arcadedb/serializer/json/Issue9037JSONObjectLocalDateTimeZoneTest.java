@@ -19,6 +19,8 @@
 package com.arcadedb.serializer.json;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.parallel.ResourceLock;
+import org.junit.jupiter.api.parallel.Resources;
 
 import java.time.LocalDate;
 import java.time.ZoneOffset;
@@ -37,6 +39,7 @@ class Issue9037JSONObjectLocalDateTimeZoneTest {
   private static final long UTC_MIDNIGHT = LocalDate.of(2024, 1, 2).atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli();
 
   @Test
+  @ResourceLock(Resources.TIME_ZONE)
   void localDateIsTheSameNumberInEveryZone() {
     final TimeZone previous = TimeZone.getDefault();
     try {

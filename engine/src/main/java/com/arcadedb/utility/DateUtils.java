@@ -917,7 +917,8 @@ public class DateUtils {
   }
 
   public static LocalDate millisToLocalDate(final long millis) {
-    return LocalDate.ofInstant(Instant.ofEpochMilli(millis), ZoneId.systemDefault());
+    // THE INVERSE OF HOW JSONObject WRITES A DATE: UTC MIDNIGHT, INDEPENDENT OF THE JVM TIME ZONE
+    return LocalDate.ofInstant(Instant.ofEpochMilli(millis), ZoneOffset.UTC);
   }
 
   public static String format(final Object obj, final String format) {

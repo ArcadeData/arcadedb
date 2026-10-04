@@ -97,4 +97,23 @@ class Issue9032InWithNullThroughIndexTest extends TestHelper {
   void compositeInWithNullInSecondSlot() {
     assertThat(ids("C", "x = 1 AND z IN ?", Arrays.asList(5, null))).containsExactly(1);
   }
+
+  @Test
+  void notInWithNullIsNeverTrue() {
+    for (final String t : new String[] { "I", "C", "S" })
+      assertThat(ids(t, "x NOT IN ?", Arrays.asList(1, null))).as(t).isEmpty();
+  }
+
+  @Test
+  void uniqueIndexInWithNull() {
+    database.command("sql", "CREATE DOCUMENT TYPE U");
+    database.command("sql", "CREATE PROPERTY U.id INTEGER");
+    database.command("sql", "CREATE PROPERTY U.x INTEGER");
+    database.command("sql", "CREATE INDEX ON U (x) UNIQUE NULL_STRATEGY INDEX");
+    database.transaction(() -> {
+      database.newDocument("U").set("id", 1, "x", 1).save();
+      database.newDocument("U").set("id", 2, "x", null).save();
+    });
+    assertThat(ids("U", "x IN ?", Arrays.asList(1, null))).containsExactly(1);
+  }
 }

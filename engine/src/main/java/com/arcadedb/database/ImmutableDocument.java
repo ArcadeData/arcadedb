@@ -93,7 +93,7 @@ public class ImmutableDocument extends BaseDocument {
       return database.getSerializer()
           .deserializeProperty(database, content, new EmbeddedModifierProperty(this, propertyName), propertyName, rid);
     } catch (final DatabaseIsClosedException e) {
-      // A CLOSED DATABASE IS NOT A DAMAGED RECORD: LET THE CALLER SEE IT (#9038)
+      // A CLOSED DATABASE IS NOT A DAMAGED RECORD: LET THE CALLER SEE IT, AS db.query() DOES (SAME AT EVERY CATCH BELOW)
       throw e;
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on loading property '%s' from record %s", e, propertyName, rid);
@@ -116,7 +116,6 @@ public class ImmutableDocument extends BaseDocument {
           .deserializeProperty(database, content, new EmbeddedModifierProperty(this, propertyName), propertyName, rid,
               absentValue);
     } catch (final DatabaseIsClosedException e) {
-      // A CLOSED DATABASE IS NOT A DAMAGED RECORD: LET THE CALLER SEE IT (#9038)
       throw e;
     } catch (Exception e) {
       // deserializeProperty() ALREADY CATCHES EVERYTHING ITSELF (SAME "Possible corrupted record" LOG) AND ANSWERS

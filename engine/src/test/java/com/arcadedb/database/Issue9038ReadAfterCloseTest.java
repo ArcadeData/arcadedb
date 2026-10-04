@@ -48,24 +48,33 @@ class Issue9038ReadAfterCloseTest {
       }
 
       final Database db = factory.open();
-      final Result sorted = db.query("sql", "SELECT FROM Person ORDER BY name").next();
-      final Result projected = db.query("sql", "SELECT name FROM Person").next();
-      final Document ann = db.query("sql", "SELECT FROM Person WHERE name = 'Ann'").next().getElement().get();
-      assertThat(ann.get("name")).isEqualTo("Ann");
-      db.close();
-
-      assertThatThrownBy(() -> sorted.getProperty("name")).isInstanceOf(DatabaseIsClosedException.class);
-      assertThatThrownBy(sorted::getPropertyNames).isInstanceOf(DatabaseIsClosedException.class);
-      assertThatThrownBy(sorted::toJSON).isInstanceOf(DatabaseIsClosedException.class);
-      assertThatThrownBy(() -> ann.get("name")).isInstanceOf(DatabaseIsClosedException.class);
-      assertThatThrownBy(() -> ann.has("name")).isInstanceOf(DatabaseIsClosedException.class);
-      assertThatThrownBy(ann::getPropertyNames).isInstanceOf(DatabaseIsClosedException.class);
-      assertThatThrownBy(ann::toMap).isInstanceOf(DatabaseIsClosedException.class);
-      assertThatThrownBy(ann::toJSON).isInstanceOf(DatabaseIsClosedException.class);
-      // A PROJECTION COPIED ITS VALUES WHEN THE ROW WAS MADE
-      assertThat((String) projected.getProperty("name")).isEqualTo("Ann");
+      try {
+        runAssertions(db);
+      } finally {
+        if (db.isOpen())
+          db.close();
+      }
     } finally {
       FileUtils.deleteRecursively(new File(PATH));
     }
+  }
+
+  private static void runAssertions(final Database db) {
+    final Result sorted = db.query("sql", "SELECT FROM Person ORDER BY name").next();
+    final Result projected = db.query("sql", "SELECT name FROM Person").next();
+    final Document ann = db.query("sql", "SELECT FROM Person WHERE name = 'Ann'").next().getElement().get();
+    assertThat(ann.get("name")).isEqualTo("Ann");
+    db.close();
+
+    assertThatThrownBy(() -> sorted.getProperty("name")).isInstanceOf(DatabaseIsClosedException.class);
+    assertThatThrownBy(sorted::getPropertyNames).isInstanceOf(DatabaseIsClosedException.class);
+    assertThatThrownBy(sorted::toJSON).isInstanceOf(DatabaseIsClosedException.class);
+    assertThatThrownBy(() -> ann.get("name")).isInstanceOf(DatabaseIsClosedException.class);
+    assertThatThrownBy(() -> ann.has("name")).isInstanceOf(DatabaseIsClosedException.class);
+    assertThatThrownBy(ann::getPropertyNames).isInstanceOf(DatabaseIsClosedException.class);
+    assertThatThrownBy(ann::toMap).isInstanceOf(DatabaseIsClosedException.class);
+    assertThatThrownBy(ann::toJSON).isInstanceOf(DatabaseIsClosedException.class);
+    // A PROJECTION COPIED ITS VALUES WHEN THE ROW WAS MADE
+    assertThat((String) projected.getProperty("name")).isEqualTo("Ann");
   }
 }
