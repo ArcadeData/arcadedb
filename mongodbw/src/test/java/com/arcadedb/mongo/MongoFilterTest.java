@@ -199,4 +199,15 @@ class MongoFilterTest {
     for (final String operator : List.of("$eq", "$ne", "$gt", "$gte", "$lt", "$lte"))
       new MongoFilter(null, new Document("s", new Document(operator, pathological))).matches(record);
   }
+
+  @Test
+  void onlyThePropertiesTheFilterReadsAreConsidered() {
+    final Map<String, Object> record = Map.of("a", Map.of("b", 1), "tags", List.of("x"), "n", 5, "unrelated", Map.of("deep", List.of(1, 2, 3)));
+    assertThat(new MongoFilter(null, parse("{'a.b': 1}")).matches(record)).isTrue();
+    assertThat(new MongoFilter(null, parse("{$or: [{tags: 'x'}, {zzz: 1}]}")).matches(record)).isTrue();
+    assertThat(new MongoFilter(null, parse("{$and: [{n: {$gt: 1}}, {'a.b': {$exists: true}}]}")).matches(record)).isTrue();
+    assertThat(new MongoFilter(null, parse("{$nor: [{n: 6}]}")).matches(record)).isTrue();
+    assertThat(new MongoFilter(null, parse("{'a.c': {$exists: false}}")).matches(record)).isTrue();
+    assertThat(new MongoFilter(null, parse("{'unrelated.deep': 2}")).matches(record)).isTrue();
+  }
 }
