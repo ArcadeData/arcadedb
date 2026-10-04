@@ -19,6 +19,8 @@
 package com.arcadedb.graphql;
 
 import com.arcadedb.graphql.parser.GraphQLParser;
+import com.arcadedb.graphql.parser.ParseException;
+import com.arcadedb.graphql.parser.TokenMgrException;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -40,7 +42,7 @@ class Issue9066NonLatinStringTest {
         continue;
       try {
         GraphQLParser.parse("{ a(b: \"" + (char) cu + "\") { c } }");
-      } catch (final Throwable e) {
+      } catch (final ParseException | TokenMgrException e) {
         if (rejected.length() < 200)
           rejected.append(String.format("U+%04X ", cu));
       }

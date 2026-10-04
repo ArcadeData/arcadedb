@@ -45,7 +45,7 @@ public class BoltNetworkListener extends Thread {
   private final    ArcadeDBServer                      server;
   private final    ServerSocketFactory                 socketFactory;
   private final    BoltSslHelper                       sslHelper;
-  private volatile MultiAddressServerSocket              serverSocket;
+  private volatile MultiAddressServerSocket            serverSocket;
   private volatile boolean                             active = true;
   private final    Set<BoltNetworkExecutor>            activeConnections = ConcurrentHashMap.newKeySet();
   private final    int                                 maxConnections;
@@ -145,9 +145,8 @@ public class BoltNetworkListener extends Thread {
   public void close() {
     this.active = false;
 
-    if (serverSocket != null) {
+    if (serverSocket != null)
       serverSocket.close();
-    }
   }
 
   /**

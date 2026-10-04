@@ -33,7 +33,7 @@ import java.util.logging.Level;
 public class RedisNetworkListener extends Thread {
   private final        ArcadeDBServer      server;
   private final        ServerSocketFactory socketFactory;
-  private volatile     MultiAddressServerSocket        serverSocket;
+  private volatile     MultiAddressServerSocket serverSocket;
   private volatile     boolean             active          = true;
   private static final int                 protocolVersion = -1;
   private              ClientConnected     callback;

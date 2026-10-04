@@ -27,6 +27,7 @@ import java.net.ServerSocket;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.SocketException;
+import java.net.SocketTimeoutException;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -111,5 +112,23 @@ class MultiAddressServerSocketTest {
     assertThatThrownBy(socket::accept).isInstanceOf(SocketException.class);
     closer.join();
     assertThat(socket.isClosed()).isTrue();
+  }
+
+  @Test
+  void connectionsAcceptedButNeverHandedOutAreClosedOnClose() throws Exception {
+    assumeThat(MultiAddressServerSocket.resolveListenHosts("localhost").size()).isGreaterThan(1);
+    final MultiAddressServerSocket socket = MultiAddressServerSocket.bind(FACTORY, "localhost", 0);
+    try (final Socket client = new Socket(InetAddress.getByName(MultiAddressServerSocket.resolveListenHosts("localhost").getFirst()),
+        socket.getLocalPort())) {
+      Thread.sleep(300); // the acceptor thread has queued it, nobody calls accept()
+      socket.close();
+      client.setSoTimeout(5000);
+      // the server side was closed: end of stream (or a reset), never a timeout
+      try {
+        assertThat(client.getInputStream().read()).isEqualTo(-1);
+      } catch (final IOException e) {
+        assertThat(e).isNotInstanceOf(SocketTimeoutException.class);
+      }
+    }
   }
 }
