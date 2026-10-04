@@ -79,7 +79,12 @@ public class GeoUtils {
       return new double[] { getDoubleValue(list.get(0)), getDoubleValue(list.get(1)) };
     }
     if (point instanceof String || point instanceof Map<?, ?>) {
-      final Shape shape = parseGeometry(point);
+      final Shape shape;
+      try {
+        shape = parseGeometry(point);
+      } catch (final IllegalArgumentException e) {
+        throw new IllegalArgumentException("Invalid point element: " + point, e);
+      }
       if (shape instanceof Point p)
         return new double[] { p.getX(), p.getY() };
     }

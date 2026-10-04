@@ -136,6 +136,16 @@ class CartesianProductStepResultCacheTest extends TestHelper {
   }
 
   @Test
+  void aWhileConditionReadingAnotherAliasGivesTheLevelTheWholeTuple() {
+    final ResultSet rs = database.query("sql",
+        "MATCH {type: MB, as: b}, {type: MA, as: a}, {type: MC, as: c, where: (k = $matched.a.k)}"
+            + "-NoSuchEdge->{as: d, while: ($matched.b.w >= 0 AND $depth < 1)} RETURN a.name AS a, b.name AS b, c.name AS c");
+    drain(rs);
+    assertThat(levelCache(rs)).isNull();
+    rs.close();
+  }
+
+  @Test
   void disabledByConfiguration() {
     final int previous = GlobalConfiguration.SQL_LET_SUBQUERY_CACHE_SIZE.getValueAsInteger();
     GlobalConfiguration.SQL_LET_SUBQUERY_CACHE_SIZE.setValue(0);
