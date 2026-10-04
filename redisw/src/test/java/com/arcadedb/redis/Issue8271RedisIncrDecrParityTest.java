@@ -108,7 +108,7 @@ public class Issue8271RedisIncrDecrParityTest extends BaseRedisServerTest {
 
     executeCommand(0, "redis", "SET issue8271query4 3.3");
     final JSONObject response = executeCommand(0, "redis", "INCRBYFLOAT issue8271query4 0.1");
-    assertThat(((Number) getResultValue(response)).doubleValue()).isEqualTo(3.4);
+    assertThat(getResultValue(response).toString()).isEqualTo("3.4");
   }
 
   @Test
