@@ -61,14 +61,12 @@ public class CypherSubstringFunction implements StatelessFunction {
     // otherwise null propagation silently stops once start reaches the length of the string.
     if (CypherFunctionHelper.isExplicitNull(args, 2))
       return null;
-    if (start >= str.length())
-      return "";
     if (args.length == 3) {
       final int length = CypherFunctionHelper.requireNumberArgument(args[2], getName()).intValue();
       if (length < 0)
         throw new CommandSemanticException("substring(): negative length is not supported: " + length);
-      return str.substring(start, Math.min(start + length, str.length()));
+      return CypherFunctionHelper.substringCodePoints(str, start, length);
     }
-    return str.substring(start);
+    return CypherFunctionHelper.substringCodePoints(str, start, Long.MAX_VALUE);
   }
 }

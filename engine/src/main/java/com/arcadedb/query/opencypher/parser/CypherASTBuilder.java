@@ -1454,7 +1454,8 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       // "friendINinactive_nodes" and spuriously matches the bare-identifier regex, getting
       // misparsed as an invalid single-node pattern (issue #5138).
       final String innerText = getOriginalText(parenExpr.expression()).trim();
-      if (innerText.matches("^[a-zA-Z_`][a-zA-Z0-9_`]*$")) {
+      // true/false/null are literals, not variables: "(true)" is a parenthesized boolean (issue #8994).
+      if (innerText.matches("^[a-zA-Z_`][a-zA-Z0-9_`]*$") && !isBooleanOrNullKeyword(innerText)) {
         final NodePattern nodePattern = new NodePattern(innerText, null, null);
         final PathPattern singleNodePath = new PathPattern(List.of(nodePattern), List.of(), null);
         return new PatternPredicateExpression(singleNodePath, false);
@@ -2276,5 +2277,9 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
    */
   static String decodeStringLiteral(final String input) {
     return ParserUtils.decodeStringLiteral(input);
+  }
+
+  private static boolean isBooleanOrNullKeyword(final String text) {
+    return "true".equalsIgnoreCase(text) || "false".equalsIgnoreCase(text) || "null".equalsIgnoreCase(text);
   }
 }

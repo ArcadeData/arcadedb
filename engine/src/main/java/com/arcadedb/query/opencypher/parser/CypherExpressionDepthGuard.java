@@ -65,23 +65,42 @@ import org.antlr.v4.runtime.tree.TerminalNode;
 final class CypherExpressionDepthGuard implements ParseTreeListener {
 
   private final int maxDepth;
+  private final int maxClauses;
   private int        depth;
 
-  CypherExpressionDepthGuard(final int maxDepth) {
+  CypherExpressionDepthGuard(final int maxDepth, final int maxClauses) {
     this.maxDepth = maxDepth;
+    this.maxClauses = maxClauses;
   }
 
   @Override
   public void enterEveryRule(final ParserRuleContext ctx) {
-    if (ctx.getRuleIndex() == Cypher25Parser.RULE_expression && ++depth > maxDepth)
-      throw tooDeep("nested (parentheses, list/map literals and function arguments nested inside one another)");
+    if (isNestingLevel(ctx) && ++depth > maxDepth)
+      throw tooDeep("nested (parentheses, list/map literals, function arguments, pattern parentheses and subqueries "
+          + "nested inside one another)");
   }
 
   @Override
   public void exitEveryRule(final ParserRuleContext ctx) {
-    if (ctx.getRuleIndex() == Cypher25Parser.RULE_expression)
+    if (isNestingLevel(ctx))
       --depth;
     checkChainLength(ctx); // no-op for any rule index not covered below
+    checkClauseCount(ctx); // no-op unless this is a singleQuery
+  }
+
+  /**
+   * Whether entering this rule adds one level of recursion the guard has to bound: an {@code expression}, a
+   * parenthesized path pattern ({@code ((a)-->(b))}) or the body of a nested subquery ({@code CALL { }}, {@code EXISTS
+   * { }}, {@code COUNT { }}, {@code COLLECT { }}). The query body of the statement itself is level zero, not a
+   * nesting level, so the limit keeps meaning "levels below the top" (issue #9051).
+   */
+  private static boolean isNestingLevel(final ParserRuleContext ctx) {
+    return switch (ctx.getRuleIndex()) {
+      case Cypher25Parser.RULE_expression, Cypher25Parser.RULE_parenthesizedPath -> true;
+      case Cypher25Parser.RULE_queryWithLocalDefinitions -> ctx.getParent() instanceof ParserRuleContext parent
+          && parent.getRuleIndex() != Cypher25Parser.RULE_statement;
+      default -> false;
+    };
   }
 
   /**
@@ -106,6 +125,18 @@ final class CypherExpressionDepthGuard implements ParseTreeListener {
     };
     if (termCount - 1 > maxDepth)
       throw tooDeep("chained (a run of AND/OR/XOR/NOT/comparison/arithmetic terms)");
+  }
+
+  /**
+   * A query's clauses run as a pull pipeline where every step asks the previous one for its next row, so the
+   * Java stack at execution time is as deep as the clause chain is long, however shallow the text is: 10,000
+   * {@code WITH n} or {@code MATCH} clauses parse fine and then overflow the stack while the rows are fetched.
+   */
+  private void checkClauseCount(final ParserRuleContext ctx) {
+    if (ctx.getRuleIndex() == Cypher25Parser.RULE_singleQuery && countChildRules(ctx, Cypher25Parser.RULE_clause) > maxClauses)
+      throw new CommandParsingException("Query has too many clauses - exceeds the maximum allowed of " + maxClauses + ". "
+          + "This protects the server against a stack overflow while the clauses execute; raise "
+          + "'arcadedb.cypher.maxClauses' if this is a legitimate query.");
   }
 
   /**

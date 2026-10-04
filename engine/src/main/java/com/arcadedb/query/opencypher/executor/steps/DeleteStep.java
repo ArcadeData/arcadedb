@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.executor.steps;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
@@ -42,6 +43,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -70,6 +72,24 @@ public class DeleteStep extends AbstractExecutionStep {
    * Records equal by RID (see BaseRecord.equals), so different instances of the same edge collapse.
    */
   private final Set<Object> deleted = new HashSet<>();
+
+  /**
+   * Vertices of a non-DETACH DELETE that still had a relationship when their row was processed. Another row of the
+   * same statement can delete that relationship (a node bound to several relationships by {@code MATCH (n)-[r]-()
+   * DELETE r, n}), so the {@code DeleteConnectedNode} check runs once every row is processed, not per row (#8997). Only
+   * the RIDs are kept: a vertex is reloaded when it is checked. A consumer that stops pulling before the last row (a
+   * LIMIT downstream) leaves the pending vertices undeleted, as it leaves the rows it never pulled unprocessed.
+   */
+  private final Set<RID> pendingVertices = new LinkedHashSet<>();
+
+  /**
+   * True while the transaction this step opened itself (no outer one) is kept open across rows, because a vertex is
+   * pending: the rows deleting its relationships and the final check are one unit, so a vertex still connected at the
+   * end rolls them all back instead of leaving the relationships deleted (#8997). Rows processed before the first pending
+   * vertex are committed one by one, as before. Every exit from {@code fetchMore} while this is true either commits at the
+   * end of the statement or leaves the rollback to {@code close()}.
+   */
+  private boolean holdingTransaction = false;
 
   /**
    * When true, the whole upstream row set is read to completion before the first DELETE is applied.
@@ -135,7 +155,13 @@ public class DeleteStep extends AbstractExecutionStep {
         }
 
         // Fetch more results
-        fetchMore(nRecords);
+        try {
+          fetchMore(nRecords);
+        } catch (final RuntimeException e) {
+          // a failure from the upstream (or a row) must not leave the step's own transaction open
+          abortHeldTransaction();
+          throw e;
+        }
         return bufferIndex < buffer.size();
       }
 
@@ -226,6 +252,8 @@ public class DeleteStep extends AbstractExecutionStep {
 
         if (!hasMoreInput()) {
           finished = true;
+          // THE ROWS ARE ALL PROCESSED: THE VERTICES LEFT PENDING MUST BE FREE OF RELATIONSHIPS BY NOW
+          flushPendingVertices();
           // EVERY INPUT ROW WAS PROCESSED: THE MATERIALIZED INPUT IS NOT NEEDED ANYMORE (THE UPSTREAM IS DRAINED)
           if (materializedInput != null) {
             materializedInput = null;
@@ -261,10 +289,11 @@ public class DeleteStep extends AbstractExecutionStep {
     final List<DeferredDeleteTarget> deferredBatch =
         (List<DeferredDeleteTarget>) context.getVariable(DEFERRED_DELETE_BATCH_VAR);
 
-    final boolean wasInTransaction = context.getDatabase().isTransactionActive();
+    // the transaction kept open by an earlier row of this statement is this step's own, not an outer one
+    final boolean wasInTransaction = context.getDatabase().isTransactionActive() && !holdingTransaction;
 
     try {
-      if (deferredBatch == null && !wasInTransaction)
+      if (deferredBatch == null && !context.getDatabase().isTransactionActive())
         context.getDatabase().begin();
 
       // Collect all delete targets first, then delete edges before vertices
@@ -306,11 +335,17 @@ public class DeleteStep extends AbstractExecutionStep {
       for (final Object other : allOther)
         deleteObject(other, deleted);
 
-      if (!wasInTransaction)
-        context.getDatabase().commit();
+      if (!wasInTransaction) {
+        // a pending vertex keeps the transaction open until the statement ends
+        holdingTransaction = !pendingVertices.isEmpty();
+        if (!holdingTransaction)
+          context.getDatabase().commit();
+      }
     } catch (final Exception e) {
       if (deferredBatch == null && !wasInTransaction && context.getDatabase().isTransactionActive())
         context.getDatabase().rollback();
+      holdingTransaction = false;
+      pendingVertices.clear();
       throw e;
     }
   }
@@ -527,10 +562,16 @@ public class DeleteStep extends AbstractExecutionStep {
     if (obj == null || deleted.contains(obj))
       return;
 
-    if (obj instanceof Vertex) {
+    if (obj instanceof Vertex vertex) {
+      if (!deleteClause.isDetach() && hasEdges(vertex)) {
+        // a later row of the statement can still delete the relationships: checked when every row is processed (#8997)
+        pendingVertices.add(vertex.getIdentity());
+        return;
+      }
       deleted.add(obj);
       try {
-        deleteVertex((Vertex) obj, deleted);
+        // the relationships were just looked up above: not asked again
+        deleteVertex(vertex, deleted, true);
       } catch (final RecordNotFoundException e) {
         // Already deleted - skip
       }
@@ -570,6 +611,52 @@ public class DeleteStep extends AbstractExecutionStep {
     }
   }
 
+  private static boolean hasEdges(final Vertex vertex) {
+    return vertex.getEdges(Vertex.DIRECTION.OUT).iterator().hasNext() || vertex.getEdges(Vertex.DIRECTION.IN).iterator().hasNext()
+        || !incomingUnidirectionalEdges(vertex).isEmpty();
+  }
+
+  /**
+   * Deletes the vertices left pending by the rows of a non-DETACH DELETE. One that still has a relationship after every
+   * row was processed fails with {@code DeleteConnectedNode}.
+   */
+  private void flushPendingVertices() {
+    if (pendingVertices.isEmpty())
+      return;
+
+    final List<RID> pending = new ArrayList<>(pendingVertices);
+    pendingVertices.clear();
+
+    final DatabaseInternal database = (DatabaseInternal) context.getDatabase();
+    final boolean wasInTransaction = database.isTransactionActive() && !holdingTransaction;
+    try {
+      if (!database.isTransactionActive())
+        database.begin();
+      for (final RID rid : pending) {
+        final Vertex current;
+        try {
+          current = rid.asVertex();
+        } catch (final RecordNotFoundException e) {
+          // already deleted
+          continue;
+        }
+        // records equal by RID (see BaseRecord.equals), so a freshly loaded vertex matches the ones stored earlier
+        if (deleted.contains(current))
+          continue;
+        deleted.add(current);
+        deleteVertex(current, deleted, false);
+      }
+      if (!wasInTransaction)
+        database.commit();
+      holdingTransaction = false;
+    } catch (final RuntimeException e) {
+      if (!wasInTransaction && database.isTransactionActive())
+        database.rollback();
+      holdingTransaction = false;
+      throw e;
+    }
+  }
+
   /**
    * Deletes a vertex from the graph.
    * If detach is true, deletes all connected relationships first.
@@ -577,15 +664,15 @@ public class DeleteStep extends AbstractExecutionStep {
    * @param vertex  vertex to delete
    * @param deleted shared set of already-deleted objects, so a relationship removed both by DETACH
    *                and by an explicit edge delete in the same statement is counted only once
+   * @param edgesChecked true when the caller just verified the vertex has no relationship (non-DETACH)
    */
-  private void deleteVertex(final Vertex vertex, final Set<Object> deleted) {
+  private void deleteVertex(final Vertex vertex, final Set<Object> deleted, final boolean edgesChecked) {
     if (deleteClause.isDetach()) {
       // DETACH DELETE: Remove all connected relationships first
       deleteAllEdges(vertex, deleted);
-    } else {
+    } else if (!edgesChecked) {
       // Non-DETACH DELETE: check for connected edges
-      if (vertex.getEdges(Vertex.DIRECTION.OUT).iterator().hasNext() ||
-          vertex.getEdges(Vertex.DIRECTION.IN).iterator().hasNext() || !incomingUnidirectionalEdges(vertex).isEmpty())
+      if (hasEdges(vertex))
         throw new CommandExecutionException("DeleteConnectedNode: Cannot delete node " + vertex.getIdentity() +
             " because it still has relationships. To delete this node, you must first delete its relationships, or use DETACH DELETE");
     }
@@ -646,6 +733,22 @@ public class DeleteStep extends AbstractExecutionStep {
     deleted.add(edge);
   }
 
+  /**
+   * Rolls back the transaction this step kept open for a pending vertex. A consumer that stops pulling before the last
+   * row (a LIMIT downstream over more rows than one batch) never reaches the final check, so the statement did not
+   * complete: the rows already applied from the first pending vertex onwards are rolled back with it, and the statistics
+   * counters still show them.
+   */
+  private void abortHeldTransaction() {
+    if (!holdingTransaction)
+      return;
+    holdingTransaction = false;
+    pendingVertices.clear();
+    final Database database = context.getDatabase();
+    if (database.isTransactionActive())
+      database.rollback();
+  }
+
   private void releaseHeap() {
     if (heapLimit != null)
       heapLimit.release();
@@ -653,6 +756,7 @@ public class DeleteStep extends AbstractExecutionStep {
 
   @Override
   public void close() {
+    abortHeldTransaction();
     releaseHeap();
     super.close();
   }
