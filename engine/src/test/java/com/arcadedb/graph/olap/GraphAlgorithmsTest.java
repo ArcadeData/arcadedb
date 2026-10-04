@@ -273,7 +273,7 @@ class GraphAlgorithmsTest extends TestHelper {
     // a few satellite-only pairs and chains, away from the giant
     for (int s = 0; s + 1 < 200; s += 2)
       edges.add(new int[] { giant + satellites + s, giant + satellites + s + 1 });
-    assertMatchesReference(giant + satellites + 200, edges.toArray(new int[0][]));
+    assertKernelMatchesReference(giant + satellites + 200, edges.toArray(new int[0][]));
   }
 
   /** #9133: the lowest-id vertex is an incoming-only satellite, so phase 3 re-hooks the giant's root under it. */
@@ -288,7 +288,75 @@ class GraphAlgorithmsTest extends TestHelper {
       edges.add(new int[] { 1 + rnd.nextInt(giant), 1 + rnd.nextInt(giant) });
     }
     edges.add(new int[] { 1 + rnd.nextInt(giant), 0 });
-    assertMatchesReference(giant + 1, edges.toArray(new int[0][]));
+    assertKernelMatchesReference(giant + 1, edges.toArray(new int[0][]));
+  }
+
+  /** #9133: above the parallel threshold with no dominant component (disjoint pairs and short chains): the sampled "giant" is arbitrary. */
+  @Test
+  void connectedComponentsManySmallComponentsAboveParallelThreshold() {
+    final int n = 24_000;
+    final List<int[]> edges = new ArrayList<>();
+    for (int i = 0; i + 1 < n; i += 3) {
+      edges.add(new int[] { i + 1, i });
+      if (i % 2 == 0)
+        edges.add(new int[] { i + 1, i + 2 });
+    }
+    assertKernelMatchesReference(n, edges.toArray(new int[0][]));
+  }
+
+  /**
+   * Drives the kernel with hand-built CSR arrays so node ids are exactly the indexes used in {@code edges} (a GAV assigns
+   * dense ids in scan order, which is not creation order). Edges alternate between two edge types.
+   */
+  private static void assertKernelMatchesReference(final int n, final int[][] edges) {
+    final int types = 2;
+    final int[][] fwdOff = new int[types][n + 1];
+    final int[][] bwdOff = new int[types][n + 1];
+    for (int i = 0; i < edges.length; i++) {
+      fwdOff[i % types][edges[i][0] + 1]++;
+      bwdOff[i % types][edges[i][1] + 1]++;
+    }
+    final int[][] fwdNb = new int[types][];
+    final int[][] bwdNb = new int[types][];
+    for (int t = 0; t < types; t++) {
+      for (int v = 0; v < n; v++) {
+        fwdOff[t][v + 1] += fwdOff[t][v];
+        bwdOff[t][v + 1] += bwdOff[t][v];
+      }
+      fwdNb[t] = new int[fwdOff[t][n]];
+      bwdNb[t] = new int[bwdOff[t][n]];
+    }
+    final int[][] fwdPos = new int[types][];
+    final int[][] bwdPos = new int[types][];
+    for (int t = 0; t < types; t++) {
+      fwdPos[t] = Arrays.copyOf(fwdOff[t], n);
+      bwdPos[t] = Arrays.copyOf(bwdOff[t], n);
+    }
+    final int[] ref = new int[n];
+    for (int i = 0; i < n; i++)
+      ref[i] = i;
+    for (int i = 0; i < edges.length; i++) {
+      final int t = i % types;
+      fwdNb[t][fwdPos[t][edges[i][0]]++] = edges[i][1];
+      bwdNb[t][bwdPos[t][edges[i][1]]++] = edges[i][0];
+      int ra = edges[i][0];
+      while (ref[ra] != ra)
+        ra = ref[ra];
+      int rb = edges[i][1];
+      while (ref[rb] != rb)
+        rb = ref[rb];
+      if (ra != rb)
+        ref[Math.max(ra, rb)] = Math.min(ra, rb);
+    }
+
+    final int[] components = GraphAlgorithms.connectedComponents(n, fwdOff, fwdNb, bwdOff, bwdNb);
+    assertThat(components).hasSize(n);
+    for (int i = 0; i < n; i++) {
+      int r = i;
+      while (ref[r] != r)
+        r = ref[r];
+      assertThat(components[i]).as("component of node %d", i).isEqualTo(r);
+    }
   }
 
   // creates the schema types, so it can be called once per test
@@ -333,7 +401,6 @@ class GraphAlgorithmsTest extends TestHelper {
 
     final int[] components = GraphAlgorithms.connectedComponents(gav, "LINK", "OTHER");
     assertThat(components).hasSize(n);
-
     // component id is the min dense node id of the component; map reference roots to dense ids
     final int[] minDense = new int[n];
     Arrays.fill(minDense, Integer.MAX_VALUE);

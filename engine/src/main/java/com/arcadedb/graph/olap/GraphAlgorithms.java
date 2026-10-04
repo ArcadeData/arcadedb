@@ -507,9 +507,9 @@ public final class GraphAlgorithms {
    *   source would otherwise leave a target that is only reachable through an incoming edge disconnected.</li>
    * </ol>
    * Roots are always hooked larger-under-smaller by CAS, so the final root of a component is its minimum node id
-   * and the output contract (component id = min node id) is unchanged. Each edge is visited at most about twice (forward and
-   * backward, only for edges between nodes outside the dominant component), against
-   * once per pass (and the pass count grows with the diameter) for the previous label propagation. Memory is a
+   * and the output contract (component id = min node id) is unchanged. Each edge is visited at most twice (once per direction,
+   * and only for nodes outside the dominant component), versus once per pass for label propagation, whose pass count grows
+   * with the diameter. Memory is a
    * single {@code int[n]}.
    *
    * @param view      the analytical view (must be built)
@@ -520,10 +520,6 @@ public final class GraphAlgorithms {
     final int n = view.getNodeMapping().size();
     if (n == 0)
       return new int[0];
-
-    final int[] parent = new int[n];
-    for (int i = 0; i < n; i++)
-      parent[i] = i;
 
     final String[] types = resolveEdgeTypes(view, edgeTypes);
 
@@ -542,6 +538,19 @@ public final class GraphAlgorithms {
       allBwdOffsets[t] = csr.getBackwardOffsets();
       allBwdNeighbors[t] = csr.getBackwardNeighbors();
     }
+    return connectedComponents(n, allFwdOffsets, allFwdNeighbors, allBwdOffsets, allBwdNeighbors);
+  }
+
+  /**
+   * Union-find kernel over raw CSR arrays (one entry per edge type, a null entry means the type has no CSR).
+   * Package-private so tests can drive it with hand-built adjacency and exact node ids.
+   */
+  static int[] connectedComponents(final int n, final int[][] allFwdOffsets, final int[][] allFwdNeighbors,
+      final int[][] allBwdOffsets, final int[][] allBwdNeighbors) {
+    final int typeCount = allFwdOffsets.length;
+    final int[] parent = new int[n];
+    for (int i = 0; i < n; i++)
+      parent[i] = i;
 
     // Phase 1: sampling, forward edges only
     for (int round = 0; round < WCC_SAMPLE_ROUNDS; round++) {
