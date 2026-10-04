@@ -55,6 +55,6 @@ public class RightFunction implements StatelessFunction {
       // Invalid user-supplied argument value: surface as a client error (HTTP 400), matching Neo4j/Memgraph.
       // CommandSemanticException extends CommandParsingException, which the HTTP handler maps to 400. See issue #5296.
       throw new CommandSemanticException("right(): negative length is not supported: " + length);
-    return str.substring(Math.max(0, str.length() - length));
+    return CypherFunctionHelper.rightCodePoints(str, length);
   }
 }
