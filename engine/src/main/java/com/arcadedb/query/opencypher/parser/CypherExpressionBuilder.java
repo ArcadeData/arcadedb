@@ -1980,12 +1980,17 @@ class CypherExpressionBuilder {
 
     // Parse each WHEN...THEN alternative
     for (final Cypher25Parser.ExtendedCaseAlternativeContext altCtx : ctx.extendedCaseAlternative()) {
-      // In extended form, WHEN contains value(s) to match against
-      // Use the first extendedWhen's text to create an expression
-      final String whenText = altCtx.extendedWhen(0).getText();
-      final Expression whenExpr = parseExpressionText(whenText);
+      // In extended form, WHEN contains one or more comma-separated values to match against: each one becomes its own
+      // alternative sharing the same THEN expression (evaluated lazily, so only the matching branch runs).
       final Expression thenExpr = parseExpression(altCtx.expression());
-      alternatives.add(new CaseAlternative(whenExpr, thenExpr));
+      for (final Cypher25Parser.ExtendedWhenContext whenCtx : altCtx.extendedWhen()) {
+        // A plain value is parsed from its parse tree: re-parsing its whitespace-less text turned a list or map literal
+        // into something that never equals the operand (issue #8996). Comparison forms (WHEN > 5) keep the text path.
+        final Expression whenExpr = whenCtx instanceof Cypher25Parser.WhenEqualsContext equalsCtx
+            ? parseExpression(equalsCtx.expression())
+            : parseExpressionText(whenCtx.getText());
+        alternatives.add(new CaseAlternative(whenExpr, thenExpr));
+      }
     }
 
     // Parse optional ELSE clause

@@ -985,7 +985,7 @@ public enum GlobalConfiguration {
   CYPHER_MAX_EXPRESSION_DEPTH("arcadedb.cypher.maxExpressionDepth", SCOPE.DATABASE,
       """
       Maximum nesting depth allowed for a single Cypher expression, for example parentheses, list/map literals \
-      or function arguments nested inside one another, and the depth of a chain of AND/OR/string-concatenation \
+      function arguments, pattern parentheses or CALL/EXISTS/COUNT/COLLECT subqueries nested inside one another, and the depth of a chain of AND/OR/string-concatenation \
       terms in the resulting expression tree. The ANTLR-generated parser re-enters its expression grammar rule \
       roughly ten Java stack frames per nesting level, so a few thousand levels is enough to exhaust the default \
       JVM thread stack with a payload of only a few KB; a query past this limit is rejected as a normal parse \
@@ -993,6 +993,15 @@ public enum GlobalConfiguration {
       more than a handful of levels, so the default is deliberately generous while staying far below the point \
       where the stack is at risk. Raise it only if a legitimate, deeply-nested or very long generated query needs it.""",
       Integer.class, 200),
+
+  CYPHER_MAX_CLAUSES("arcadedb.cypher.maxClauses", SCOPE.DATABASE,
+      """
+      Maximum number of clauses (MATCH, WITH, CREATE, ...) in one query or subquery body. The clauses of a query \
+      execute as a pull pipeline in which every step asks the previous one for its next row, so the Java stack is \
+      as deep as the clause chain is long; a query of a few thousand clauses is parsed but then exhausts the JVM \
+      thread stack while its rows are fetched. A query past this limit is rejected as a normal parse error. \
+      Raise it only if a legitimate, very long generated query needs it.""",
+      Integer.class, 500),
 
   CYPHER_ALGO_MAX_WORKING_MEMORY("arcadedb.cypher.algoMaxWorkingMemory", SCOPE.DATABASE,
       """

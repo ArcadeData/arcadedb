@@ -18,13 +18,14 @@
  */
 package com.arcadedb.query.opencypher.parser;
 
-import com.arcadedb.utility.StringUtils;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.grammar.Cypher25Lexer;
 import com.arcadedb.query.opencypher.grammar.Cypher25Parser;
 import com.arcadedb.query.opencypher.rewriter.ExpressionRewriter;
+import com.arcadedb.utility.StringUtils;
 import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.Token;
@@ -109,6 +110,9 @@ public class Cypher25AntlrParser {
     // ALTER DATABASE just as inert as reading the enum did.
     final int maxExpressionDepth = ExpressionRewriter.maxExpressionDepth(database);
     final Integer previousMaxDepth = ExpressionRewriter.bindMaxExpressionDepth(maxExpressionDepth);
+    final int maxClauses = database == null ?
+        GlobalConfiguration.CYPHER_MAX_CLAUSES.getValueAsInteger() :
+        database.getConfiguration().getValueAsInteger(GlobalConfiguration.CYPHER_MAX_CLAUSES);
 
     try {
       final Cypher25Lexer lexer = new Cypher25Lexer(CharStreams.fromString(query));
@@ -139,7 +143,7 @@ public class Cypher25AntlrParser {
 
       // Bound expression nesting depth so a pathologically nested/long query fails with a normal parse
       // error instead of a StackOverflowError (issue #5851)
-      parser.addParseListener(new CypherExpressionDepthGuard(maxExpressionDepth));
+      parser.addParseListener(new CypherExpressionDepthGuard(maxExpressionDepth, maxClauses));
 
       // Parse the statement
       final Cypher25Parser.StatementContext statementContext = parser.statement();
@@ -177,6 +181,9 @@ public class Cypher25AntlrParser {
       // semantic-validation and explicit parse errors already carry a clear, actionable message
       // (e.g. AmbiguousAggregationExpression, UndefinedVariable, "Unexpected input ...") - surface it
       throw e;
+    } catch (final StackOverflowError e) {
+      // Safety net for a nesting the guard does not count: a client error, never a raw Error out of db.query() (issue #9051)
+      throw new CommandParsingException("Query is too deeply nested to be parsed (stack exhausted); simplify the query", e);
     } catch (final Exception e) {
       throw new CommandParsingException("Failed to parse Cypher query: " + query, e);
     } finally {
