@@ -119,10 +119,49 @@ class GraphTraversalProviderRegistryAwaitRestoringTest {
     register(new StubProvider("b", true, true)).restoring.set(true);
 
     final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
-    GraphTraversalProviderRegistry.awaitRestoring(database, null, 400L, () -> {
+    GraphTraversalProviderRegistry.awaitRestoring(database, null, 1_000L, () -> {
     });
 
-    stopwatch.assertStayedUnder(750L, "one deadline shared by both providers, not one 400 ms wait per provider");
+    stopwatch.assertStayedUnder(1_500L, "one deadline shared by both providers, not one 1000 ms wait per provider");
+  }
+
+  @Test
+  void aNullAbortCheckStillWaitsAndStillEnds() throws Exception {
+    final StubProvider restoring = register(new StubProvider("restoring", true, true));
+    restoring.restoring.set(true);
+    final Thread finisher = new Thread(() -> {
+      try {
+        Thread.sleep(100L);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+      restoring.restoring.set(false);
+    });
+    finisher.start();
+
+    final boolean waited = GraphTraversalProviderRegistry.awaitRestoring(database, null, 600_000L, null);
+    finisher.join();
+
+    assertThat(waited).isTrue();
+    assertThat(restoring.restoring.get()).isFalse();
+  }
+
+  @Test
+  void aThreadInterruptEndsTheWaitWithoutSpinningAndStaysSet() {
+    register(new StubProvider("stuck", true, true)).restoring.set(true);
+
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
+    Thread.currentThread().interrupt();
+    try {
+      final boolean waited = GraphTraversalProviderRegistry.awaitRestoring(database, null, 600_000L, () -> {
+      });
+
+      assertThat(waited).isTrue();
+      assertThat(Thread.currentThread().isInterrupted()).as("the interrupt is left for the caller to see").isTrue();
+    } finally {
+      Thread.interrupted();
+    }
+    stopwatch.assertGaveUpWithin(10_000L, "an interrupted wait versus the 10 minute budget it was given");
   }
 
   @Test

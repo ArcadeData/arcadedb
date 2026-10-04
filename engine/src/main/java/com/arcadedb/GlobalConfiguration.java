@@ -3051,10 +3051,12 @@ public enum GlobalConfiguration {
       finishes, and it also ends when the command's own timeout expires. A view that is only rebuilding after a commit is \
       never waited for. 0 does not wait: the call takes the record path, as it did before this setting existed. A command \
       without a timeout of its own (see arcadedb.command.timeout) can block for this whole budget when a restore never \
-      ends, for example while it is stuck waiting for a build permit, so lower it if such commands must answer quickly. \
+      ends, for example while it is stuck waiting for a build permit behind another large build, so lower it if such \
+      commands must answer quickly. The default of 60 seconds suits a restore or rebuild that is much cheaper than the \
+      record-by-record scan it replaces; raise it for databases large enough that the scan would take many minutes. \
       This is separate from arcadedb.gavRestoreAwaitTimeout, which makes database open() itself block (default 0 = do \
       not block)""",
-      Long.class, 600_000L),
+      Long.class, 60_000L),
 
   GAV_PERSIST_CSR("arcadedb.gavPersistCsr", SCOPE.DATABASE,
       """

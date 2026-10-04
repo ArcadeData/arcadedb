@@ -21,6 +21,7 @@ package com.arcadedb.graph.olap;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.exception.PartialResultTimeoutException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoWCC;
@@ -166,7 +167,7 @@ class AlgoRestoreAwaitTest {
       GraphAnalyticalView.releaseAllBuildPermitsForTest();
     }
 
-    stopwatch.assertGaveUpWithin(30_000L, "a 300 ms budget versus the 10 minute default");
+    stopwatch.assertGaveUpWithin(30_000L, "a 300 ms budget versus the 600 s it is lifted to by default setting changes");
     assertThat(stopwatch.elapsedMs()).as("it did wait for its budget").isGreaterThanOrEqualTo(250L);
     assertThat(context.getVariable(CommandContext.CSR_ACCELERATED_VAR))
         .as("the stalled restore never became usable, so the call took the record path")
@@ -190,7 +191,27 @@ class AlgoRestoreAwaitTest {
       GraphAnalyticalView.releaseAllBuildPermitsForTest();
     }
 
-    stopwatch.assertGaveUpWithin(30_000L, "a 200 ms command deadline versus the 10 minute wait budget");
+    stopwatch.assertGaveUpWithin(30_000L, "a 200 ms command deadline versus the 600 s wait budget");
+  }
+
+  /**
+   * A SQL {@code TIMEOUT n RETURN} clause pins a deadline that asks for "the rows so far". The wait runs inside the
+   * procedure's {@code execute()}, before any row exists, and what it throws must be the partial-result timeout the
+   * owning step recognises (and turns into an empty result set), not some other exception.
+   */
+  @Test
+  void aReturnClauseDeadlineSurfacesAsAPartialResultTimeout() {
+    persistThenReopen(GraphAnalyticalView.UpdateMode.OFF);
+    database.getConfiguration().setValue(GlobalConfiguration.GAV_ALGO_RESTORE_AWAIT_TIMEOUT, 600_000L);
+
+    final BasicCommandContext context = newContext();
+    context.setCommandDeadline(System.currentTimeMillis() + 200L, "test TIMEOUT RETURN clause", true);
+    GraphAnalyticalView.acquireAllBuildPermitsForTest();
+    try {
+      assertThatThrownBy(() -> runWcc(context)).isInstanceOf(PartialResultTimeoutException.class);
+    } finally {
+      GraphAnalyticalView.releaseAllBuildPermitsForTest();
+    }
   }
 
   @Test
@@ -204,7 +225,7 @@ class AlgoRestoreAwaitTest {
     try {
       final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
       rows = runWcc(context);
-      stopwatch.assertGaveUpWithin(30_000L, "no waiting versus the 10 minute default");
+      stopwatch.assertGaveUpWithin(30_000L, "no waiting versus a stalled restore that never ends");
     } finally {
       GraphAnalyticalView.releaseAllBuildPermitsForTest();
     }
