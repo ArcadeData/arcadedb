@@ -50,6 +50,8 @@ class Issue9200WindowTraversalTest extends TestHelper {
   @AfterEach
   void restoreWindow() {
     GlobalConfiguration.SPARSE_VECTOR_SCORING_WINDOW.reset();
+    GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.reset();
+    GlobalConfiguration.SPARSE_VECTOR_SCORING_MIN_POSTINGS_FOR_PARTITIONING.reset();
   }
 
   @Test

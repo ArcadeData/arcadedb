@@ -333,7 +333,8 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * memtable cost into a few sealed segments instead of growing unbounded toward OOM.
    */
   public void maybeFlush() {
-    if (memtable.get().totalPostings() >= memtableFlushThreshold)
+    // A sealed memtable is one a failed flush left behind: retry it, or its postings stay in memory unbounded.
+    if (memtable.get().totalPostings() >= memtableFlushThreshold || sealedMemtable.get() != null)
       flush();
   }
 
@@ -911,9 +912,10 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       final Memtable retained = sealedMemtable.get();
       final Memtable old = retained != null ? retained : memtable.get();
       if (retained != null)
-        LogManager.instance().log(this, Level.WARNING, "Retrying the flush of %d postings of sparse vector engine '%s' left by a failed flush",
-            null, retained.totalPostings(), indexName);
-      if (retained == null) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Retrying the flush of %d postings of sparse vector engine '%s' left by a failed flush", null,
+            retained.totalPostings(), indexName);
+      else {
         if (old.isEmpty())
           return -1L;
         // Readers capture the live memtable, then the sealed one, then the segments. Exposing the sealed memtable BEFORE
@@ -1396,7 +1398,8 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   // --- introspection --------------------------------------------------------
 
   public long memtablePostings() {
-    return memtable.get().totalPostings();
+    final Memtable sealed = sealedMemtable.get();
+    return memtable.get().totalPostings() + (sealed != null ? sealed.totalPostings() : 0L);
   }
 
   /**
@@ -1407,7 +1410,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * the latter; this stays the cheap upper bound the compaction triggers are sized against.
    */
   public long totalPostings() {
-    long total = memtable.get().totalPostings();
+    long total = memtablePostings();
     for (final PaginatedSegmentReader r : segments.get())
       total += r.totalPostings();
     return total;
@@ -1499,7 +1502,8 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * aggregated in the segment header.
    */
   public long memtableTombstones() {
-    return memtable.get().tombstoneCount();
+    final Memtable sealed = sealedMemtable.get();
+    return memtable.get().tombstoneCount() + (sealed != null ? sealed.tombstoneCount() : 0L);
   }
 
   public int segmentCount() {
