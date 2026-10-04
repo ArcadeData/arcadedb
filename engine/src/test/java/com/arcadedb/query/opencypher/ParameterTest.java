@@ -249,7 +249,7 @@ class ParameterTest {
     }
   }
 
-  // Issue #3864: JSON params arriving over HTTP must parse vector arrays as primitive float[] and flow through OpenCypher into ARRAY_OF_FLOATS properties.
+  // Issue #3864: JSON params arriving over HTTP must parse vector arrays as primitive double[] and flow through OpenCypher into ARRAY_OF_FLOATS properties.
   @Test
   @Tag("slow")
   void httpStyleJsonRequestProducesPrimitiveDoubleArrays() {
@@ -320,8 +320,8 @@ class ParameterTest {
       final List<Map<String, Object>> batch = (List<Map<String, Object>>) params.get("batch");
       assertThat(batch).hasSize(batchSize);
       assertThat(batch.get(0).get("vector"))
-          .as("the optimization must yield primitive float[] for the vector field")
-          .isInstanceOf(float[].class);
+          .as("the optimization must yield primitive double[] for the vector field")
+          .isInstanceOf(double[].class);
 
       final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
       database.transaction(() -> database.command("opencypher",
@@ -353,7 +353,7 @@ class ParameterTest {
       });
 
       stopwatch.assertStayedUnder(maxElapsedMs,
-          "a primitive float[] batch of " + batchSize + " entries x dim " + vectorDim + ", not a boxed List<Double> one");
+          "a primitive double[] batch of " + batchSize + " entries x dim " + vectorDim + ", not a boxed List<Double> one");
     } finally {
       database.drop();
       FileUtils.deleteRecursively(new File(databasePath));

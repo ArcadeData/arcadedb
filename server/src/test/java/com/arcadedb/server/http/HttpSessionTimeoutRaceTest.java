@@ -19,6 +19,7 @@
 package com.arcadedb.server.http;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.TransactionContext;
@@ -157,7 +158,10 @@ class HttpSessionTimeoutRaceTest {
       // ReentrantLock.lockInterruptibly() throws immediately if the calling thread is interrupted, even on
       // its own reentrant fast path, so routing this rollback through cancel() (which re-acquires the lock)
       // would silently swallow it.
+      // The command has written something, so the failure discards work (issue #9006): the session ends up rolled back, not restarted.
       assertThatThrownBy(() -> session.execute(user, () -> {
+        DatabaseContext.INSTANCE.init(database, tx);
+        database.newDocument("Doc").set("a", 1).save();
         Thread.currentThread().interrupt();
         throw new RuntimeException("simulated command failure");
       })).isInstanceOf(RuntimeException.class).hasMessage("simulated command failure");
@@ -166,6 +170,28 @@ class HttpSessionTimeoutRaceTest {
     }
 
     assertThat(tx.isActive()).as("transaction rolled back despite interrupt flag being set").isFalse();
+    assertThat(session.isRolledBackByFailure()).isTrue();
+  }
+
+  @Test
+  void failureThatLostNothingRestartsTheTransaction() throws Exception {
+    database = createDatabase();
+    sessionManager = new HttpSessionManager(TIMEOUT_MS);
+
+    final TransactionContext tx = new TransactionContext(database);
+    tx.begin(Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED);
+
+    final ServerSecurityUser user = createUser("testuser");
+    final HttpSession session = sessionManager.createSession(user, tx);
+
+    assertThatThrownBy(() -> session.execute(user, () -> {
+      throw new RuntimeException("simulated read failure");
+    })).isInstanceOf(RuntimeException.class);
+
+    // nothing was written: the session goes on in a fresh transaction instead of falling back to autocommit
+    assertThat(tx.isActive()).isTrue();
+    assertThat(tx.hasChanges()).isFalse();
+    assertThat(session.isRolledBackByFailure()).isFalse();
   }
 
   @Test

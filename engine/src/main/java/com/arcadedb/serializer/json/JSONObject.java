@@ -452,10 +452,9 @@ public class JSONObject implements Map<String, Object> {
    * Converts the object to a Java {@link Map}.
    *
    * @param optimizeNumericArrays when {@code true}, homogeneous numeric arrays found anywhere in
-   *                              the tree are returned as primitive {@code float[]} instead of
-   *                              {@code List<Number>}. This avoids per-element boxing and the
-   *                              downstream double-to-float narrowing for large vector payloads
-   *                              (issue #3864 follow-up). Used by the HTTP command handler when
+   *                              the tree are returned as primitive {@code long[]}/{@code double[]} instead of
+   *                              {@code List<Number>}. This avoids per-element boxing for large vector payloads
+   *                              (issue #3864 follow-up), see {@link JSONArray#toPrimitiveNumericArrayOrNull()}. Used by the HTTP command handler when
    *                              parsing {@code params}.
    */
   public Map<String, Object> toMap(final boolean optimizeNumericArrays) {
@@ -631,20 +630,28 @@ public class JSONObject implements Map<String, Object> {
 
         // Efficient check to determine the appropriate type
         if (strValue.contains(".") || strValue.contains("e") || strValue.contains("E")) {
-          // Contains decimal point or scientific notation - definitely a double
-          return primitive.getAsDouble();
+          // Contains decimal point or scientific notation: a double, unless it carries more digits than a double holds
+          final double doubleVal = primitive.getAsDouble();
+          if (mayLoseDigits(strValue, doubleVal) && !isExactDouble(strValue, doubleVal)) {
+            if (!isSafeBigNumber(strValue))
+              throw new JSONException("Number token too large: " + strValue.length() + " characters or an exponent beyond " + MAX_BIG_NUMBER_EXPONENT);
+            return new BigDecimal(strValue);
+          }
+          return doubleVal;
         } else {
-
-          // Check if it fits in an Integer
+          // Check if it fits in an Integer or a Long. LazilyParsedNumber.longValue() would silently keep the low 64 bits of a
+          // bigger number, so the value is parsed from its text (issue #9004)
           try {
-            final long longVal = primitive.getAsLong();
+            final long longVal = Long.parseLong(strValue);
             if (longVal >= Integer.MIN_VALUE && longVal <= Integer.MAX_VALUE)
               return (int) longVal;
             return longVal;
 
           } catch (NumberFormatException e) {
-            // It could be a very large number, use double as fallback
-            return primitive.getAsDouble();
+            // beyond the long range: keep every digit, unless the token is one only a hostile payload writes
+            if (!isSafeBigNumber(strValue))
+              throw new JSONException("Number token too large: " + strValue.length() + " characters");
+            return new BigDecimal(strValue);
           }
         }
       } else if (primitive.isString())
@@ -658,6 +665,127 @@ public class JSONObject implements Map<String, Object> {
       return new JSONArray(element.getAsJsonArray());
 
     throw new IllegalArgumentException("Element " + element + " not supported");
+  }
+
+  // 17 significant digits identify one double (what %.17g and the C family print), so a token up to there is a double, not a BigDecimal
+  private static final int MAX_DOUBLE_DIGITS             = 17;
+  private static final int MAX_BIG_NUMBER_TOKEN_LENGTH = 1000;
+  private static final int MAX_BIG_NUMBER_EXPONENT     = 1000;
+
+  /**
+   * Whether a token that no long or double holds may become a {@link BigDecimal}. A {@code 1e999999999} token is a few bytes that
+   * a later {@code toBigInteger()}, {@code toPlainString()} or integer conversion would expand into gigabytes, and a token of
+   * thousands of digits costs superlinear time to parse: beyond these limits the token is refused (a {@link JSONException}, HTTP 400)
+   * rather than stored as an {@code Infinity} that the writers turn into {@code null}.
+   */
+  static boolean isSafeBigNumber(final String token) {
+    if (token.length() > MAX_BIG_NUMBER_TOKEN_LENGTH)
+      return false;
+    for (int i = 0; i < token.length(); i++) {
+      final char c = token.charAt(i);
+      if (c == 'e' || c == 'E') {
+        long exponent = 0;
+        for (int j = i + 1; j < token.length(); j++) {
+          final char d = token.charAt(j);
+          if (d >= '0' && d <= '9') {
+            exponent = exponent * 10 + (d - '0');
+            // STOP BEFORE A LONG EXPONENT WRAPS AROUND TO A SMALL ONE (1e18446744073709551617) AND REACHES new BigDecimal(), WHICH REFUSES IT
+            if (exponent > MAX_BIG_NUMBER_EXPONENT)
+              return false;
+          }
+        }
+        return true;
+      }
+    }
+    return true;
+  }
+
+  /** A token a double may not hold exactly: more digits than a double keeps, or a value that overflowed or underflowed. */
+  static boolean mayLoseDigits(final String token, final double value) {
+    if (!Double.isFinite(value))
+      return true;
+    final boolean tiny = Math.abs(value) < Double.MIN_NORMAL;
+    if (!tiny && token.length() <= MAX_DOUBLE_DIGITS)
+      return false;
+    // THE SIGN, THE POINT AND THE EXPONENT MAKE A TOKEN LONG WITHOUT MAKING IT HOLD MORE THAN 15 DIGITS, WHICH A double ALWAYS HOLDS
+    int digits = 0;
+    boolean nonZero = false;
+    for (int i = 0, n = token.length(); i < n; i++) {
+      final char c = token.charAt(i);
+      if (c == 'e' || c == 'E')
+        break;
+      if (c >= '0' && c <= '9') {
+        if (c != '0')
+          nonZero = true;
+        // LEADING ZEROS (0.000123) ARE NOT SIGNIFICANT DIGITS
+        if (nonZero)
+          digits++;
+      }
+    }
+    // A DIGIT-LESS ZERO IS EXACT; A NON-ZERO MANTISSA THAT BECAME (SUB)NORMAL-LESS HAS UNDERFLOWED
+    return tiny ? nonZero : digits > MAX_DOUBLE_DIGITS;
+  }
+
+  /**
+   * Whether a decimal token holds nothing the double parsed from it loses: it has the same significant digits (sign, decimal point,
+   * exponent and the zeros around the digits ignored) as {@link Double#toString(double)}, the shortest rendering that parses back to
+   * the double (guaranteed from JDK 19; an older JDK may render a longer string, which only sends more tokens to {@link BigDecimal}).
+   * Compared in place, so the common long token of an embedding (a double written with 17 digits) costs no extra object
+   * besides that string, and no {@link BigDecimal}.
+   */
+  static boolean isExactDouble(final String token, final double value) {
+    if (!Double.isFinite(value))
+      return false;
+    final String shortest = Double.toString(value);
+    final int tokenEnd = endOfDigits(token);
+    final int shortestEnd = endOfDigits(shortest);
+    int i = 0;
+    int j = 0;
+    boolean started = false;
+    while (true) {
+      i = nextDigit(token, i, tokenEnd, started);
+      j = nextDigit(shortest, j, shortestEnd, started);
+      if (i < 0 && j < 0)
+        return true;
+      // ONE SIDE ENDED: THE OTHER MAY ONLY HAVE TRAILING ZEROS LEFT
+      if (i < 0)
+        return onlyZerosFrom(shortest, j, shortestEnd);
+      if (j < 0)
+        return onlyZerosFrom(token, i, tokenEnd);
+      if (token.charAt(i) != shortest.charAt(j))
+        return false;
+      started = true;
+      i++;
+      j++;
+    }
+  }
+
+  private static int endOfDigits(final String number) {
+    for (int i = 0; i < number.length(); i++) {
+      final char c = number.charAt(i);
+      if (c == 'e' || c == 'E')
+        return i;
+    }
+    return number.length();
+  }
+
+  /** Index of the next digit at or after {@code from}, leading zeros skipped until the first significant digit, or -1. */
+  private static int nextDigit(final String number, final int from, final int end, final boolean started) {
+    for (int i = from; i < end; i++) {
+      final char c = number.charAt(i);
+      if (c >= '0' && c <= '9' && (started || c != '0'))
+        return i;
+    }
+    return -1;
+  }
+
+  private static boolean onlyZerosFrom(final String number, final int from, final int end) {
+    for (int i = from; i < end; i++) {
+      final char c = number.charAt(i);
+      if (c >= '1' && c <= '9')
+        return false;
+    }
+    return true;
   }
 
   /**
