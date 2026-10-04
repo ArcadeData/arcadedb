@@ -112,8 +112,8 @@ final class MongoFilter {
   }
 
   /**
-   * @return true when SQL answers the filter exactly (no filter, or a filter on the {@code _id} alone), false when the stored
-   * documents have to be tested one by one
+   * @return true only for an empty filter, which SQL answers alone; any other filter is verified on the stored documents by the
+   * matcher, with SQL at most narrowing the candidates through the {@code _id} index (see {@link #narrowsById()})
    */
   boolean isSql() {
     return sql;
