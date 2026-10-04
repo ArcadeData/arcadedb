@@ -71,6 +71,27 @@ class Issue9125DeleteFromIndexInexactBoundTest extends TestHelper {
   }
 
   @Test
+  void aNonNumericBoundNeverSurfacesAsAClassCastException() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE TNonNum9125");
+      database.command("sql", "CREATE PROPERTY TNonNum9125.k INTEGER");
+      database.command("sql", "CREATE INDEX ON TNonNum9125 (k) NOTUNIQUE");
+      database.command("sql", "INSERT INTO TNonNum9125 SET k = 1");
+    });
+    final Index index = database.getSchema().getType("TNonNum9125").getAllIndexes(false).iterator().next().getIndexesOnBuckets()[0];
+    try {
+      database.transaction(() -> {
+        try (final ResultSet resultSet = database.command("sql", "DELETE FROM INDEX:`" + index.getName() + "` WHERE key BETWEEN 11.5 AND 'x'")) {
+          while (resultSet.hasNext())
+            resultSet.next();
+        }
+      });
+    } catch (final RuntimeException e) {
+      assertThat(e).isNotInstanceOf(ClassCastException.class);
+    }
+  }
+
+  @Test
   void equalityWithAnExactBoundRemovesTheKey() {
     for (final String keyType : KEY_TYPES)
       assertThat(deleteAndGetRemaining(keyType, "key = 12")).as(keyType).containsExactly(9, 10, 11, 13, 14);

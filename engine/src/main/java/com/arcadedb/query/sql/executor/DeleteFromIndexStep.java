@@ -227,7 +227,7 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
     if (upperInexact)
       thirdValue = IntegralKeyBound.floor(keyType, (Number) thirdValue);
     if ((lowerInexact || upperInexact) && (secondValue == null || thirdValue == null
-        || ((Number) secondValue).longValue() > ((Number) thirdValue).longValue())) {
+        || (secondValue instanceof Number lower && thirdValue instanceof Number upper && lower.longValue() > upper.longValue()))) {
       // no key lies between the bounds
       cursor = new EmptyIndexCursor();
       return;
@@ -265,6 +265,7 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
         return new EmptyIndexCursor();
     }
 
+    // The scan direction is irrelevant to a delete, so the order the step was built with is not consulted here.
     // Each operator is bounded on the side it needs: the cursor of a one-sided scan has no upper end, so = used to remove every
     // key from the value upwards and <, <= every key from the value in the scan direction instead of the ones below it
     if (operator instanceof EqualsCompareOperator) {
