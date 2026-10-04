@@ -557,4 +557,18 @@ class MongoDBFilterSemanticsTest extends BaseMongoServerTest {
     assertThat(c.deleteMany(Document.parse("{_id:2}")).getDeletedCount()).isEqualTo(1);
     assertThat(ids(c, "{hit:true}")).containsExactly("1");
   }
+
+  @Test
+  void commonPipelineStagesOverAMissingCollectionAnswerEmpty() {
+    final MongoCollection<Document> missing = client.getDatabase(getDatabaseName()).getCollection("missing_for_stages");
+    final List<List<Document>> pipelines = List.of(
+        List.of(Document.parse("{$sort:{k:1}}"), Document.parse("{$limit:5}")),
+        List.of(Document.parse("{$group:{_id:'$k', n:{$sum:1}}}")),
+        List.of(Document.parse("{$project:{k:1}}"), Document.parse("{$skip:1}")),
+        List.of(Document.parse("{$lookup:{from:'other', localField:'k', foreignField:'k', as:'o'}}")),
+        List.of(Document.parse("{$facet:{a:[{$match:{k:1}}], b:[{$count:'n'}]}}")),
+        List.of(Document.parse("{$unwind:'$tags'}")));
+    for (final List<Document> pipeline : pipelines)
+      assertThat(missing.aggregate(pipeline).into(new ArrayList<>())).as(pipeline.toString()).isEmpty();
+  }
 }
