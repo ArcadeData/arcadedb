@@ -137,7 +137,7 @@ class Issue9247ScriptPositionalPlanCacheTest extends TestHelper {
       assertThat(script("SELECT FROM K WHERE sku = ?; SELECT FROM K WHERE sku = ?;", "S1", "S2")).isEqualTo("S2:b2");
     // the keys are stable: both statements are in the plan cache, each under its own parameter numbers
     assertThat(((DatabaseInternal) database).getExecutionPlanCache().contains("SELECT FROM K WHERE sku = ?")).isTrue();
-    assertThat(((DatabaseInternal) database).getExecutionPlanCache().size()).isGreaterThanOrEqualTo(2);
+    assertThat(((DatabaseInternal) database).getExecutionPlanCache().contains("SELECT FROM K WHERE sku = ? /*params:1*/")).isTrue();
   }
 
   @Test
@@ -170,10 +170,11 @@ class Issue9247ScriptPositionalPlanCacheTest extends TestHelper {
       database.transaction(() -> database.command("sqlscript",
           "UPDATE L SET brand = 'x' WHERE sku = ?; UPDATE L SET brand = 'y' WHERE sku = ?;", "S1", "S2").close());
       assertThat(query("SELECT FROM L ORDER BY sku")).isEqualTo("S1:x S2:y S3:b3");
-      database.transaction(() -> database.command("sql", "UPDATE L SET brand = 'b'").close());
+      database.transaction(() -> database.command("sqlscript",
+          "UPDATE L SET brand = 'b1' WHERE sku = 'S1'; UPDATE L SET brand = 'b2' WHERE sku = 'S2';").close());
     }
     database.transaction(() -> database.command("sqlscript", "DELETE FROM L WHERE sku = ?; DELETE FROM L WHERE sku = ?;", "S1", "S2").close());
-    assertThat(query("SELECT FROM L")).isEqualTo("S3:b");
+    assertThat(query("SELECT FROM L")).isEqualTo("S3:b3");
   }
 
   @Test
@@ -195,5 +196,16 @@ class Issue9247ScriptPositionalPlanCacheTest extends TestHelper {
   void literalWithColonOrQuestionMarkHasNoSuffix() {
     setup("O");
     assertThat(script("SELECT FROM O WHERE brand = 'a:b?'; SELECT FROM O WHERE sku = 'S2';")).isEqualTo("S2:b2");
+  }
+
+  @Test
+  void firstScriptStatementSharesTheEntryOfTheSameStatementRunAlone() {
+    setup("P");
+    script("SELECT FROM P WHERE sku = ?; SELECT FROM P WHERE brand = ?;", "S1", "b2");
+    final DatabaseInternal db = (DatabaseInternal) database;
+    // numbered from 0 like a statement parsed alone: no suffix, so it is the key a standalone run uses too
+    assertThat(db.getExecutionPlanCache().contains("SELECT FROM P WHERE sku = ?")).isTrue();
+    assertThat(db.getExecutionPlanCache().contains("SELECT FROM P WHERE brand = ? /*params:1*/")).isTrue();
+    assertThat(db.getExecutionPlanCache().contains("SELECT FROM P WHERE brand = ?")).isFalse();
   }
 }

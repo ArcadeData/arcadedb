@@ -184,7 +184,7 @@ public class InCondition extends BooleanExpression {
   }
 
   protected static Object executeQuery(final SelectStatement rightStatement, final CommandContext context) {
-    // THE ENCLOSING CONTEXT IS THE PARENT, SO A VARIABLE OF IT ($matched, $parent...) IS VISIBLE TO THE SUBQUERY (ISSUE #9249)
+    // THE ENCLOSING CONTEXT IS THE PARENT, SO A VARIABLE OF IT ($matched, $parent...) IS VISIBLE TO THE SUBQUERY
     try (final ResultSet result = rightStatement.execute(context.getDatabase(), context.getInputParameters(), context)) {
       return result.stream()
           .map(r -> {
