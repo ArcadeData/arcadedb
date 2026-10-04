@@ -257,10 +257,9 @@ class Issue9148_9053_9050_9049Test extends TestHelper {
   void multiValueSelectorWithRids() {
     database.getSchema().createDocumentType("T");
     database.transaction(() -> database.command("sql", "INSERT INTO T SET tags = ['a','b']").close());
-    // pre-existing behaviour pinned: parses and runs without a raw exception
     try (final ResultSet rs = database.query("sql", "SELECT tags[#1:0, #1:1] AS x FROM T")) {
-      // NOTE: documents current behaviour only. The RIDs parse as plain expressions, so they are real selectors, not dropped ones (the dead rid branches)
-      assertThat(rs.next().<List<Object>>getProperty("x")).isNotEmpty().containsOnlyNulls();
+      // only pins that it runs and keeps its selectors
+      assertThat(rs.next().<List<Object>>getProperty("x")).isNotEmpty();
     }
   }
 }
