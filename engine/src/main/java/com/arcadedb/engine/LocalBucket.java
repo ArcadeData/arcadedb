@@ -22,8 +22,8 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.RecordEventsRegistry;
@@ -216,18 +216,20 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   // #8640: set when a replicated apply timed out on this bucket's lock, so the following ones do not wait again for the
   // same long recompute; cleared by the first apply that gets the lock
   private volatile       boolean                   applyLockContended;
-  // #8649: when the contended mark was last set (System.nanoTime), so an apply can tell a stale mark from a fresh one
-  private volatile       long                      applyLockContendedSinceNanos;
-  // #8649: set once a contended mark grew old: the applies then wait for a running recompute again, bounded by the
-  // length of the last scan, so the next recompute gets the quiet window it needs to publish. Cleared by a publish,
-  // or by a patient wait that still timed out (the bucket is then contended again, with a fresh mark)
+  // #8649: set once recomputes keep being refused: the applies then wait for a running recompute again, bounded by the
+  // length of the last scan, so the next recompute gets the quiet window it needs to publish. Cleared by a publish (or
+  // any known counter), or by a patient wait that still timed out, which also starts a back-off (below)
   private volatile       boolean                   applyLockPatient;
+  // #8649: System.nanoTime() before which the applies do not turn patient again, set when a patient wait timed out so
+  // the apply thread is not stalled behind every scan of a bucket whose scans outgrew the bound
+  private volatile       long                      applyLockPatientBackoffUntilNanos;
+  private volatile       boolean                   applyLockPatientBackoff;
   // #8649: wall time of the last count() recompute scan that ran under the bucket lock, in ms. Sizes the patient wait
   private volatile       long                      lastRecountScanMs;
   // #8649: recomputes refused because an unlocked apply overlapped their scan, in total and since the last publish.
-  // Guarded by this bucket's monitor, like unlockedApplyStamp
+  // Written under this bucket's monitor, like unlockedApplyStamp; the run is volatile so the applies read it lock-free
   private                long                      recountPublishesRefused;
-  private                long                      consecutiveRecountPublishesRefused;
+  private volatile       long                      consecutiveRecountPublishesRefused;
 
   /**
    * Bucket purpose tag. Declared up here (next to the {@link #purpose} field that uses it) so the enum is the
@@ -1357,8 +1359,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           // #8649: one refusal is the expected cost of a catch-up, so it stays at FINE. A run of them means the
           // replication never leaves this bucket a quiet window and every count(*) is a full scan: WARNING on 4, 8,
           // 16... refusals in a row, so the condition is visible without one line per count()
-          final boolean stuck = refusedInARow >= 4 && Long.bitCount(refusedInARow) == 1;
-          LogManager.instance().log(this, stuck ? Level.WARNING : Level.FINE,
+          LogManager.instance().log(this, isRefusalRunWorthAWarning(refusedInARow) ? Level.WARNING : Level.FINE,
               "count() recompute on bucket '%s' overlapped a replicated apply that could not take the bucket lock; result not"
                   + " cached (%d refused in a row, %d in total, last scan %dms)", null, componentName, refusedInARow,
               getRecountPublishesRefused(), lastRecountScanMs);
@@ -2493,6 +2494,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
   public void setCachedRecordCount(final long count) {
     cachedRecordCount.set(count);
+    // #8649: a counter made known some other way (statistics load, CHECK DATABASE) ends the episode too, or the next -1
+    // would start out patient. Two volatile reads on the commit fold, and the reset itself only once per episode
+    if (count > -1 && (applyLockPatient || applyLockContended || consecutiveRecountPublishesRefused != 0))
+      resetApplyLockState();
   }
 
   /**
@@ -2515,19 +2520,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   void setApplyLockContended(final boolean contended) {
-    if (contended)
-      applyLockContendedSinceNanos = System.nanoTime();
     applyLockContended = contended;
-  }
-
-  /** {@link System#nanoTime()} of the last time the contended mark was set; meaningless while it is not set. */
-  long getApplyLockContendedSinceNanos() {
-    return applyLockContendedSinceNanos;
-  }
-
-  /** Test seam: backdates the contended mark, so an apply sees it as old without the test sleeping (#8649). */
-  void setApplyLockContendedSinceNanos(final long sinceNanos) {
-    applyLockContendedSinceNanos = sinceNanos;
   }
 
   boolean isApplyLockPatient() {
@@ -2536,6 +2529,19 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
   void setApplyLockPatient(final boolean patient) {
     applyLockPatient = patient;
+  }
+
+  /**
+   * Whether a patient wait timed out less than a back-off ago, so the applies must not turn patient yet (issue #8649).
+   */
+  boolean isApplyLockPatientBackingOff(final long nowNanos) {
+    return applyLockPatientBackoff && nowNanos - applyLockPatientBackoffUntilNanos < 0;
+  }
+
+  /** Starts the back-off after a patient wait that timed out: no patient wait for {@code backoffMs} (issue #8649). */
+  void startApplyLockPatientBackoff(final long backoffMs) {
+    applyLockPatientBackoffUntilNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(backoffMs);
+    applyLockPatientBackoff = true;
   }
 
   /** Wall time of the last {@code count()} recompute scan that ran under the bucket lock, in ms (issue #8649). */
@@ -2558,8 +2564,27 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /** The refused recomputes since the last one that published; 0 once a recompute is cached (issue #8649). */
-  public synchronized long getConsecutiveRecountPublishesRefused() {
+  public long getConsecutiveRecountPublishesRefused() {
     return consecutiveRecountPublishesRefused;
+  }
+
+  /**
+   * Whether a run of refused recomputes is long enough to log at WARNING: 4, 8, 16... in a row (issue #8649). One or two
+   * are the expected cost of a catch-up; logging every one past that would add a line per {@code count()}.
+   */
+  static boolean isRefusalRunWorthAWarning(final long refusedInARow) {
+    return refusedInARow >= 4 && Long.bitCount(refusedInARow) == 1;
+  }
+
+  /**
+   * Forgets the apply-lock state of the last unknown-counter episode (issue #8649), so a later one starts clean.
+   * Synchronized with the refusal counting in {@link #publishRecomputedCount}.
+   */
+  private synchronized void resetApplyLockState() {
+    consecutiveRecountPublishesRefused = 0;
+    applyLockContended = false;
+    applyLockPatient = false;
+    applyLockPatientBackoff = false;
   }
 
   /**
@@ -2575,10 +2600,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       return false;
     }
     cachedRecordCount.set(count);
-    consecutiveRecountPublishesRefused = 0;
     // A known counter makes the applies skip the lock, so nothing else would clear the marks before the next -1
-    applyLockContended = false;
-    applyLockPatient = false;
+    resetApplyLockState();
     return true;
   }
 

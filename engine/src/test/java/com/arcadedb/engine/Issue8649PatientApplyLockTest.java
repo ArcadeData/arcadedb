@@ -44,7 +44,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * was refused, the counter stayed unknown and every {@code count(*)} on the follower was a full scan, with nothing but
  * a FINE log line to show for it.
  * <p>
- * A contended mark that grew old now turns the applies patient: they wait for a running recompute again, bounded by
+ * Two refused recomputes in a row now turn the applies patient: they wait for a running recompute again, bounded by
  * the length of the last scan, so the next recompute gets a quiet window and publishes. Refused publishes are counted
  * per bucket and per database.
  */
@@ -64,53 +64,86 @@ class Issue8649PatientApplyLockTest extends TestHelper {
   }
 
   @Test
-  void anOldContendedMarkMakesTheApplyWaitSoTheRecomputeIsCached() throws Exception {
+  void realTrafficTurnsTheAppliesPatientAndTheRecomputeIsCached() throws Exception {
     final DatabaseInternal db = (DatabaseInternal) database;
     final LocalBucket bucket = bucket();
     final int fileId = bucket.getFileId();
 
     bucket.setCachedRecordCount(-1);
     final Object previousTimeout = db.getConfiguration().setValue(GlobalConfiguration.COMMIT_LOCK_TIMEOUT, 200L);
-    // Contended an hour ago, behind a scan long enough that the patient wait cannot run out while the test parks it
-    bucket.setApplyLockContended(true);
-    bucket.setApplyLockContendedSinceNanos(System.nanoTime() - TimeUnit.HOURS.toNanos(1));
-    bucket.setLastRecountScanMs(30_000);
-
-    final CountDownLatch scanning = new CountDownLatch(1);
-    final CountDownLatch resume = new CountDownLatch(1);
-    LocalBucket.recountScanHookForTesting = parkingHook(scanning, resume);
-
     final ExecutorService counter = Executors.newSingleThreadExecutor();
-    final ExecutorService applier = Executors.newSingleThreadExecutor();
     try {
-      // A real recompute holds the bucket lock and has read its stamp
-      final Future<Long> count = counter.submit(bucket::count);
-      assertThat(scanning.await(30, TimeUnit.SECONDS)).isTrue();
+      // Two rounds of what #8649 describes, with no planted state: a recompute outlasts the commit timeout, the entries
+      // that land meanwhile apply without the lock, and the recompute is refused. Between the two rounds an entry gets
+      // the lock and clears the contended mark, which is why the trigger cannot be the age of that mark.
+      long txId = 8649;
+      for (int round = 1; round <= 2; round++) {
+        final ParkedRecompute recompute = parkRecompute(counter, bucket);
+        try {
+          applyInBackground(db, fileId, 5, txId++); // waits out the commit timeout, then applies unlocked
+          applyInBackground(db, fileId, 5, txId++); // 1ms try, unlocked
+          assertThat(bucket.isApplyLockPatient()).isFalse();
+        } finally {
+          recompute.resume.countDown();
+        }
+        assertThat(recompute.count.get(30, TimeUnit.SECONDS)).isEqualTo(10);
+        assertThat(bucket.getCachedRecordCount()).isEqualTo(-1);
+        assertThat(bucket.getConsecutiveRecountPublishesRefused()).isEqualTo(round);
 
-      final Future<Boolean> apply = applier.submit(() -> db.getTransactionManager()
-          .applyChanges(buildWalTransaction(db, fileId, currentVersion(db, fileId) + 1, 8649), Map.of(fileId, 5), false));
-
-      // A short wait expected to TIME OUT: the patient apply is parked on the lock instead of writing under the scan
-      assertThatThrownBy(() -> apply.get(500, TimeUnit.MILLISECONDS)).isInstanceOf(TimeoutException.class);
+        // The scan is gone: the next entry takes the lock. After one refusal that clears the contended mark; after the
+        // second one the entry turns patient instead
+        applyInBackground(db, fileId, 5, txId++);
+        if (round == 1)
+          assertThat(bucket.isApplyLockContended()).isFalse();
+      }
       assertThat(bucket.isApplyLockPatient()).isTrue();
 
-      resume.countDown();
-      assertThat(count.get(30, TimeUnit.SECONDS)).isEqualTo(10);
-      assertThat(apply.get(30, TimeUnit.SECONDS)).isTrue();
+      // Third round. A commit timeout the parked scan cannot outlast, so the wait below can only end by the scan ending
+      db.getConfiguration().setValue(GlobalConfiguration.COMMIT_LOCK_TIMEOUT, 60_000L);
+      final ParkedRecompute recompute = parkRecompute(counter, bucket);
+      final ExecutorService applier = Executors.newSingleThreadExecutor();
+      try {
+        final Future<Boolean> apply = applier.submit(() -> db.getTransactionManager()
+            .applyChanges(buildWalTransaction(db, fileId, currentVersion(db, fileId) + 1, 8660), Map.of(fileId, 5), false));
+
+        // A short wait expected to TIME OUT: the patient apply is parked on the lock instead of writing under the scan
+        assertThatThrownBy(() -> apply.get(500, TimeUnit.MILLISECONDS)).isInstanceOf(TimeoutException.class);
+        assertThat(bucket.isApplyLockPatient()).isTrue();
+
+        recompute.resume.countDown();
+        assertThat(recompute.count.get(30, TimeUnit.SECONDS)).isEqualTo(10);
+        assertThat(apply.get(30, TimeUnit.SECONDS)).isTrue();
+      } finally {
+        recompute.resume.countDown();
+        applier.shutdownNow();
+      }
 
       // Nothing wrote under the scan, so it was cached, and the apply folded on top of it
       assertThat(bucket.getCachedRecordCount()).isEqualTo(15);
-      assertThat(bucket.getRecountPublishesRefused()).isZero();
+      assertThat(bucket.getRecountPublishesRefused()).isEqualTo(2);
+      assertThat(bucket.getConsecutiveRecountPublishesRefused()).isZero();
       // The publish ends the patient phase: with a known counter the applies skip the lock again
       assertThat(bucket.isApplyLockPatient()).isFalse();
       assertThat(bucket.isApplyLockContended()).isFalse();
     } finally {
       LocalBucket.recountScanHookForTesting = null;
-      resume.countDown();
       counter.shutdownNow();
-      applier.shutdownNow();
       db.getConfiguration().setValue(GlobalConfiguration.COMMIT_LOCK_TIMEOUT, previousTimeout);
     }
+  }
+
+  @Test
+  void aSingleRefusalDoesNotMakeTheAppliesPatient() throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final LocalBucket bucket = bucket();
+    bucket.setCachedRecordCount(-1);
+
+    // One refused recompute is the normal cost of a catch-up
+    bucket.invalidateCachedRecordCountForUnlockedApply();
+    assertThat(bucket.publishRecomputedCount(10, bucket.getUnlockedApplyStamp() - 1)).isFalse();
+
+    applyInBackground(db, bucket.getFileId(), 5, 8661);
+    assertThat(bucket.isApplyLockPatient()).isFalse();
   }
 
   @Test
@@ -174,15 +207,63 @@ class Issue8649PatientApplyLockTest extends TestHelper {
       final long before = System.nanoTime();
       applyInBackground(db, fileId, 5, 8651);
 
-      // Applied anyway and counted as unlocked, and back to 1ms tries behind a fresh mark
+      // Applied anyway and counted as unlocked, and back to 1ms tries
       assertThat(bucket.getUnlockedApplyStamp()).isGreaterThan(stampBefore);
       assertThat(bucket.isApplyLockPatient()).isFalse();
       assertThat(bucket.isApplyLockContended()).isTrue();
-      assertThat(bucket.getApplyLockContendedSinceNanos() - before).isGreaterThanOrEqualTo(0L);
+      // The timeout started a back-off, which runs past the moment the apply began whatever the scheduler did since
+      assertThat(bucket.isApplyLockPatientBackingOff(before)).isTrue();
+
+      // While backing off (planted long, so it cannot run out under the test) refusals keep piling up, but the next
+      // entry does not stall behind the same scan again
+      bucket.startApplyLockPatientBackoff(600_000);
+      bucket.invalidateCachedRecordCountForUnlockedApply();
+      final long stale = bucket.getUnlockedApplyStamp() - 1;
+      bucket.publishRecomputedCount(10, stale);
+      bucket.publishRecomputedCount(10, stale);
+      applyInBackground(db, fileId, 5, 8653);
+      assertThat(bucket.isApplyLockPatient()).isFalse();
     } finally {
       txManager.unlockFile(fileId, recompute);
       db.getConfiguration().setValue(GlobalConfiguration.COMMIT_LOCK_TIMEOUT, previousTimeout);
     }
+
+    // The back-off ends: past it, the refusals make the applies patient again
+    assertThat(bucket.isApplyLockPatientBackingOff(System.nanoTime() + TimeUnit.HOURS.toNanos(1))).isFalse();
+  }
+
+  @Test
+  void aCounterMadeKnownAnotherWayEndsTheEpisode() {
+    final LocalBucket bucket = bucket();
+    bucket.setCachedRecordCount(-1);
+    bucket.setApplyLockContended(true);
+    bucket.setApplyLockPatient(true);
+    bucket.startApplyLockPatientBackoff(600_000);
+    bucket.invalidateCachedRecordCountForUnlockedApply();
+    bucket.publishRecomputedCount(10, bucket.getUnlockedApplyStamp() - 1);
+
+    // A statistics load or a CHECK DATABASE reconcile, not a recompute
+    bucket.setCachedRecordCount(10);
+
+    // So the next unknown counter does not start out patient, contended or backing off
+    assertThat(bucket.isApplyLockPatient()).isFalse();
+    assertThat(bucket.isApplyLockContended()).isFalse();
+    assertThat(bucket.isApplyLockPatientBackingOff(System.nanoTime())).isFalse();
+    assertThat(bucket.getConsecutiveRecountPublishesRefused()).isZero();
+    assertThat(bucket.getRecountPublishesRefused()).isEqualTo(1);
+  }
+
+  @Test
+  void aRunOfRefusalsIsLoggedAtWarningOnlyOnPowersOfTwoFromFour() {
+    assertThat(LocalBucket.isRefusalRunWorthAWarning(1)).isFalse();
+    assertThat(LocalBucket.isRefusalRunWorthAWarning(2)).isFalse();
+    assertThat(LocalBucket.isRefusalRunWorthAWarning(3)).isFalse();
+    assertThat(LocalBucket.isRefusalRunWorthAWarning(4)).isTrue();
+    assertThat(LocalBucket.isRefusalRunWorthAWarning(5)).isFalse();
+    assertThat(LocalBucket.isRefusalRunWorthAWarning(7)).isFalse();
+    assertThat(LocalBucket.isRefusalRunWorthAWarning(8)).isTrue();
+    assertThat(LocalBucket.isRefusalRunWorthAWarning(12)).isFalse();
+    assertThat(LocalBucket.isRefusalRunWorthAWarning(1024)).isTrue();
   }
 
   @Test
@@ -220,12 +301,12 @@ class Issue8649PatientApplyLockTest extends TestHelper {
 
     // No scan measured yet: the commit timeout bounds both
     bucket.setLastRecountScanMs(0);
-    assertThat(TransactionManager.contendedMarkAgeLimitMs(bucket, 5_000)).isEqualTo(5_000);
+    assertThat(TransactionManager.patientBackoffMs(bucket, 5_000)).isEqualTo(5_000);
     assertThat(TransactionManager.patientWaitMs(bucket, 5_000)).isEqualTo(5_000);
 
-    // A 10s scan: the mark lasts four scans, and a patient apply outwaits two of them on top of the timeout
+    // A 10s scan: the back-off lasts four scans, and a patient apply outwaits two of them on top of the timeout
     bucket.setLastRecountScanMs(10_000);
-    assertThat(TransactionManager.contendedMarkAgeLimitMs(bucket, 5_000)).isEqualTo(40_000);
+    assertThat(TransactionManager.patientBackoffMs(bucket, 5_000)).isEqualTo(40_000);
     assertThat(TransactionManager.patientWaitMs(bucket, 5_000)).isEqualTo(25_000);
   }
 
@@ -248,6 +329,19 @@ class Issue8649PatientApplyLockTest extends TestHelper {
     final PageId pageId = new PageId(db, fileId, 0);
     db.getPageManager().removePageFromCache(pageId);
     return (int) db.getPageManager().getImmutablePage(pageId, file.getPageSize(), false, true).getVersion();
+  }
+
+  private record ParkedRecompute(Future<Long> count, CountDownLatch resume) {
+  }
+
+  /** Starts a real count() recompute and returns once it holds the bucket lock and has read its stamp. */
+  private static ParkedRecompute parkRecompute(final ExecutorService counter, final LocalBucket bucket) throws Exception {
+    final CountDownLatch scanning = new CountDownLatch(1);
+    final CountDownLatch resume = new CountDownLatch(1);
+    LocalBucket.recountScanHookForTesting = parkingHook(scanning, resume);
+    final Future<Long> count = counter.submit(bucket::count);
+    assertThat(scanning.await(30, TimeUnit.SECONDS)).isTrue();
+    return new ParkedRecompute(count, resume);
   }
 
   private static Runnable parkingHook(final CountDownLatch scanning, final CountDownLatch resume) {
