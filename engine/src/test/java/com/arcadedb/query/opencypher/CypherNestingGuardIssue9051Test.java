@@ -100,7 +100,7 @@ class CypherNestingGuardIssue9051Test extends TestHelper {
     // each nested subquery body carries its own clause budget: 10 levels of 450 clauses must still be safe to execute
     String q = "RETURN 1 AS x";
     for (int i = 0; i < 10; i++)
-      q = "CALL { " + q.replace("RETURN 1 AS x", "WITH 1 AS x " + "WITH x ".repeat(450) + "RETURN x") + " } RETURN x";
+      q = "WITH 1 AS a " + "WITH a ".repeat(450) + "CALL { " + q + " } RETURN x";
     drain(q);
   }
 
