@@ -46,10 +46,8 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Objects;
 import java.util.function.Function;
 import java.util.stream.Collectors;
-import java.util.stream.StreamSupport;
 
 /**
  * Represents PostgreSQL data types and provides serialization/deserialization functionality.
@@ -1147,8 +1145,7 @@ public enum PostgresType {
    * The narrowest type that holds every value of both {@code a} and {@code b}, used to type a column over all the rows
    * of a result and a list over all its elements (issue #9008, #9009). Integers widen to long, integers and floats to
    * double (a long beyond 2^53 is then rounded, which numeric could avoid only by failing on NaN and infinity), and
-   * anything meeting a BigDecimal to numeric. Whatever else that
-   * differs falls back to the one type every value can be written under: varchar for a column, text[] for a list.
+   * anything meeting a BigDecimal to numeric. Whatever else differs falls back to the one type every value can be written under: varchar for a column, text[] for a list.
    *
    * <p>A column mixing a BigDecimal row with a NaN or infinite double row is announced numeric and cannot carry the
    * double; that combination is accepted as too rare to give up numeric for.
