@@ -153,4 +153,30 @@ class CypherDeleteNodeAndAllItsRelationshipsIssue8997Test extends TestHelper {
         "MATCH (n:N {id: 1})-[r]-() WITH n, collect(r) AS rs FOREACH (x IN rs | DELETE x) DELETE n").close());
     assertThat(remaining()).containsExactly("2:0", "3:0", "4:1", "5:0");
   }
+
+  @Test
+  void limitOverManyRowsStillAppliesTheWholeDelete() {
+    database.transaction(() -> database.command("opencypher",
+        "CREATE (h:H {id: 1}) WITH h UNWIND range(1, 500) AS i CREATE (h)-[:R]->(:Leaf {id: i})").close());
+
+    // 500 rows, far more than one batch: the DELETE still consumes its input before the LIMIT can stop it
+    database.command("opencypher", "MATCH (n:H)-[r:R]-() DELETE r, n RETURN 1 AS one LIMIT 1").close();
+
+    try (final ResultSet rs = database.query("opencypher", "MATCH (:H)-[r:R]->() RETURN count(r) AS c")) {
+      assertThat(rs.next().<Number>getProperty("c").longValue()).isZero();
+    }
+  }
+
+  @Test
+  void booleanAndStringScalarsIntoTypedListsStayConsistent() {
+    database.command("sql", "CREATE VERTEX TYPE Flags");
+    database.command("sql", "CREATE PROPERTY Flags.bools LIST OF BOOLEAN");
+    database.command("sql", "CREATE PROPERTY Flags.strs LIST OF STRING");
+    database.transaction(() -> database.command("opencypher", "CREATE (:Flags {bools: true, strs: 'x'})").close());
+    try (final ResultSet rs = database.query("sql", "SELECT bools, strs FROM Flags")) {
+      final var r = rs.next();
+      assertThat(r.<List<Object>>getProperty("bools")).containsExactly(true);
+      assertThat(r.<List<Object>>getProperty("strs")).containsExactly("x");
+    }
+  }
 }
