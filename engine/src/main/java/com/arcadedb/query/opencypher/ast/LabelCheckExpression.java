@@ -23,6 +23,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.schema.DocumentType;
 
 import java.util.List;
 
@@ -91,10 +92,11 @@ public class LabelCheckExpression implements BooleanExpression {
       // labels, the OR operator (e.g. r:KNOWS|LIKES) checks if the edge is one
       // of the listed types; a bare conjunction of type names cannot match an
       // edge (which has exactly one type), so it evaluates to false.
-      final String edgeType = edge.getTypeName();
+      // Polymorphic like the pattern [r:Type]: an edge of a type that extends the label matches (issue #9124).
       if (operator == LabelOperator.OR || labels.size() == 1) {
+        final DocumentType edgeType = edge.getType();
         for (final String label : labels) {
-          if (label.equals(edgeType))
+          if (edgeType.instanceOf(label))
             return true;
         }
         return false;

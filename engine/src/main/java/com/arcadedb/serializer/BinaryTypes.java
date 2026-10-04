@@ -30,6 +30,7 @@ import com.arcadedb.utility.DateUtils;
 import org.locationtech.spatial4j.shape.Shape;
 
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -241,6 +242,9 @@ public class BinaryTypes {
       type = TYPE_LIST;
     else if (isGeoSpatialShape(value))
       type = TYPE_COMPRESSED_GEOMETRY; // Shapes are serialized as binary geometry
+    else if (value instanceof BigInteger bigInteger && bigInteger.bitLength() > 63)
+      // OUTSIDE THE LONG RANGE: A DOUBLE WOULD SILENTLY DROP DIGITS, SO IT IS KEPT EXACT AS A DECIMAL (ISSUE #9146)
+      type = TYPE_DECIMAL;
     else if (value instanceof Number) {
       // GENERIC NUMBER IMPLEMENTATION. THIS HAPPENS WITH JSON NUMBERS
       byte t;
