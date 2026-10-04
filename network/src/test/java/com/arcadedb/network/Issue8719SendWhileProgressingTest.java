@@ -19,6 +19,7 @@
 package com.arcadedb.network;
 
 import com.arcadedb.utility.StallAwareStopwatch;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -60,6 +61,7 @@ class Issue8719SendWhileProgressingTest {
 
   /** As long as the counter moves the wait goes on, however long in total; once it stops, it ends one deadline later. */
   @Test
+  @Tag("slow")
   void aCounterThatKeepsMovingKeepsTheExchangeAliveUntilItStops() throws Exception {
     final AtomicLong progress = new AtomicLong();
     final long movingForMs = BUDGET_MS * 3;
@@ -159,7 +161,8 @@ class Issue8719SendWhileProgressingTest {
     final         CountDownLatch          connectionClosed = new CountDownLatch(1);
 
     SilentPeer() throws IOException {
-      // Bound to a port the OS picks and read back, as Issue8473RemoteStalledAnswerTest's scripted server is.
+      // Bound to a port the OS picks and read back: the shared allocator (StaticBaseServerTest.allocateFreePorts) lives
+      // in the server module's test sources, which this module cannot depend on. Nothing addresses a hand-picked port.
       serverSocket = new ServerSocket(0, 16, InetAddress.getByName("127.0.0.1"));
       final Thread acceptor = new Thread(() -> {
         try (final Socket socket = serverSocket.accept()) {

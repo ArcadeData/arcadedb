@@ -31,6 +31,7 @@ import io.undertow.Undertow;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.server.handlers.BlockingHandler;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.BufferedReader;
@@ -101,6 +102,7 @@ class Issue8719StreamedForwardUploadDeadlineTest {
    * once and finishes when the upload ends. It used to be answered 504 after one budget.
    */
   @Test
+  @Tag("slow")
   void aStreamedUploadLongerThanTheBudgetButNeverStillIsRelayedWhole() throws Exception {
     try (final UploadDrainingLeader leader = new UploadDrainingLeader(true)) {
       startFollowerRelayingTo(leader.address(), new TricklingUpload(UPLOAD_RECORDS, BUDGET_MS / 4, null));

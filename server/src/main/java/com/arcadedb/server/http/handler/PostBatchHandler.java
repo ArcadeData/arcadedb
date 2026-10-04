@@ -1639,6 +1639,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       return BufferedDrain.BUDGET_SPENT;
     }
 
+    /** Plain read, for the thread reading the body; another thread samples {@link #progress()} instead. */
     long getBytesRead() {
       return bytesRead;
     }
@@ -2050,6 +2051,10 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
         // moving is never cut off, one that stands still that long with no answer is, and once the upload has ended
         // the same budget bounds the wait for the answer. Restoring the acknowledgements DURING the upload needs a
         // transport that delivers the response while the request body is still being sent (issue #9216).
+        //
+        // The counter is the bytes read from the CLIENT, not those the leader accepted. It stands for both because the
+        // JDK publisher is flow-controlled: it reads the body only on demand from the connection, so a leader that
+        // stops taking the upload stops the counter too, within one flow-control window.
         //
         // A leader that refused instead of streaming is relayed as a buffered answer, and an unnamed "not the leader"
         // among those is held until this node's view moves, as on the buffered encoding below (issue #8486).
