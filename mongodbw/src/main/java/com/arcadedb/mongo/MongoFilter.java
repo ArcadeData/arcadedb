@@ -151,16 +151,16 @@ final class MongoFilter {
   }
 
   /**
-   * @return true when the filter is not answered by SQL as a whole but has an {@code _id} conjunct that SQL answers exactly, to
-   * read the candidates through the index of the {@code _id} instead of the whole type
+   * @return true when the filter has a part on the {@code _id} that SQL can only answer wider than the matcher, so the candidates are
+   * read through the index of the {@code _id} instead of the whole type (the matcher still tests the whole filter on them)
    */
   boolean narrowsById() {
     return idPart != null;
   }
 
   /**
-   * Appends the {@code WHERE} clause that selects the candidates of the filter: all of it for a filter answered by SQL, its
-   * {@code _id} conjunct for one that {@link #narrowsById() narrows by _id}, nothing for any other.
+   * Appends the {@code WHERE} clause that selects the candidates of the filter: its part on the {@code _id} for a filter that
+   * {@link #narrowsById() narrows by _id}, nothing for any other (every record of the type is a candidate).
    */
   void appendCandidateWhere(final StringBuilder sqlText, final Map<String, Object> params) {
     if (idPart != null) {
@@ -170,7 +170,7 @@ final class MongoFilter {
   }
 
   /**
-   * Visits the identity of every record that matches a filter not answered by SQL, until the visitor answers {@code false}.
+   * Visits the identity of every record that matches the (non-empty) filter, until the visitor answers {@code false}.
    */
   void scanMatches(final Database database, final String collectionName, final Predicate<RID> visitor) {
     // always a SQL query, narrowed by the _id when the filter has a part on it: it is how the query is counted by the metrics of the
