@@ -1812,6 +1812,16 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     return s == Status.STALE && isUseWhenStale();
   }
 
+  /**
+   * True from the moment the deferred restore-from-disk is dispatched until it has fully settled, including the
+   * rebuild it falls back to when the persisted file turns out to be unusable. A rebuild started by a commit
+   * ({@link UpdateMode#ASYNCHRONOUS}) is not a restore and does not raise it.
+   */
+  @Override
+  public boolean isRestoring() {
+    return deferredRestoreInFlight;
+  }
+
   @Override
   public boolean isStale() {
     return status == Status.STALE;

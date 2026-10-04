@@ -617,8 +617,29 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
    *
    * @param db       the database
    * @param relTypes edge types to filter by (null = any provider)
+   * @param context  the command context whose timeout bounds the wait for a restoring view; may be null
    */
-  protected GraphTraversalProvider findProvider(final Database db, final String[] relTypes) {
+  protected GraphTraversalProvider findProvider(final Database db, final String[] relTypes, final CommandContext context) {
+    final GraphTraversalProvider provider = findReadyProvider(db, relTypes);
+    if (provider != null)
+      return provider;
+    // The first isReady() above dispatches a view's deferred restore-from-disk and answers false for that call (#6641),
+    // so the first whole-graph call after a reopen would take the record-by-record scan, which costs far more than the
+    // restore it did not wait for (#9220). Wait for the views that cover the request and are restoring, within the
+    // configured budget and the command's own timeout, then ask again. A view that is only rebuilding after a commit is
+    // not a restore and is never waited for.
+    final long awaitMs = db.getConfiguration().getValueAsLong(GlobalConfiguration.GAV_ALGO_RESTORE_AWAIT_TIMEOUT);
+    if (awaitMs <= 0)
+      return null;
+    final WorkGuard guard = WorkGuard.forCommand(context, getName() + "()");
+    GraphTraversalProviderRegistry.awaitRestoring(db, relTypes, awaitMs, guard::check);
+    // Ask again whatever the wait reported: the restore runs on another thread and can finish between the first lookup
+    // and the moment the wait samples it. It then has nothing to wait for, yet the view is ready, and answering null
+    // here would send this call down the record-by-record path anyway. The lookup is a few volatile reads.
+    return findReadyProvider(db, relTypes);
+  }
+
+  private GraphTraversalProvider findReadyProvider(final Database db, final String[] relTypes) {
     // Try exact match first (covers all requested types)
     final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(db, relTypes);
     if (provider != null && provider.coversVertexType(null))
@@ -684,7 +705,7 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
       final CommandContext context) {
     final MemoryBudget memory = newMemoryBudget(db);
     if (nodeLabels == null || nodeLabels.length == 0) {
-      final GraphTraversalProvider provider = findProvider(db, relTypes);
+      final GraphTraversalProvider provider = findProvider(db, relTypes, context);
       if (provider != null) {
         if (context != null)
           context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);

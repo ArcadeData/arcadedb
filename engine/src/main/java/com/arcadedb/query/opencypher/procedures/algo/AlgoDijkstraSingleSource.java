@@ -111,7 +111,7 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
     final Database db = context.getDatabase();
 
     // Try CSR-accelerated path: requires a provider with edge properties
-    final GraphTraversalProvider provider = findProvider(db, relTypes);
+    final GraphTraversalProvider provider = findProvider(db, relTypes, context);
     // Not the coarser hasEdgeProperties(): the CSR kernel below reads the weight column directly and falls back
     // to a unit weight when it is missing, so a view materialising some OTHER property would silently answer an
     // unweighted shortest path to a weighted question (issue #6301).
