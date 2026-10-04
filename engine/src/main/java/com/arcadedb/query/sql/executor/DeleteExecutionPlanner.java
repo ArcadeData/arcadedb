@@ -41,8 +41,10 @@ public class DeleteExecutionPlanner {
   private final Limit       limit;
   private final Batch       batch;
   private final boolean     unsafe;
+  private final DmlSourcePlanKey sourcePlanKey;
 
   public DeleteExecutionPlanner(final DeleteStatement stm) {
+    this.sourcePlanKey = stm.getSourcePlanKey();
     this.fromClause = stm.getFromClause() == null ? null : stm.getFromClause().copy();
     this.whereClause = stm.getWhereClause() == null ? null : stm.getWhereClause().copy();
     this.returnBefore = stm.isReturnBefore();
@@ -179,7 +181,7 @@ public class DeleteExecutionPlanner {
       final CommandContext context,
       final FromClause fromClause,
       final WhereClause whereClause) {
-    result.chain(new SubQueryStep(SelectExecutionPlanner.createSourcePlan(fromClause, whereClause, null, context), context, context));
+    result.chain(new SubQueryStep(SelectExecutionPlanner.createSourcePlan(fromClause, whereClause, null, sourcePlanKey, context), context, context));
   }
 
   private BooleanExpression getKeyCondition(final AndBlock andBlock) {

@@ -21,6 +21,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.query.sql.executor.DmlSourcePlanKey;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -34,6 +35,8 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 public class UpdateStatement extends Statement {
+
+  private final DmlSourcePlanKey sourcePlanKey = new DmlSourcePlanKey();
   public FromClause             target;
   public List<UpdateOperations> operations     = new ArrayList<UpdateOperations>();
   public boolean                upsert         = false;
@@ -94,6 +97,10 @@ public class UpdateStatement extends Statement {
 
   protected String getStatementType() {
     return "UPDATE ";
+  }
+
+  public DmlSourcePlanKey getSourcePlanKey() {
+    return sourcePlanKey;
   }
 
   @Override

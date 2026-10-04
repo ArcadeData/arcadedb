@@ -22,7 +22,12 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -49,7 +54,7 @@ class Issue9207DmlSourcePlanCacheTest extends TestHelper {
 
   @Test
   void updateReusesTheCachedSourcePlanWithTheRightParameters() {
-    for (long k = 0; k < 5; k++)
+    for (int run = 0; run < 5; run++)
       database.transaction(() -> database.command("sql", "UPDATE Part SET stock = stock - 1 WHERE p_partkey = :k", Map.of("k", 0L)));
     assertThat(((DatabaseInternal) database).getExecutionPlanCache().contains(SOURCE)).isTrue();
 
@@ -95,6 +100,53 @@ class Issue9207DmlSourcePlanCacheTest extends TestHelper {
       assertThat(r.<Long>getProperty("lo")).isEqualTo(210L);
       assertThat(r.<Long>getProperty("hi")).isEqualTo(219L);
     }
+  }
+
+  @Test
+  void limitAndTimeoutAreNotLeakedThroughTheCache() {
+    for (int run = 0; run < 2; run++) {
+      database.transaction(() -> database.command("sql", "UPDATE Part SET stock = 0 WHERE p_partkey >= 10 LIMIT 3 TIMEOUT 60000"));
+      try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM Part WHERE stock = 0")) {
+        assertThat(rs.next().<Long>getProperty("c")).isEqualTo(3L);
+      }
+    }
+    database.transaction(() -> database.command("sql", "UPDATE Part SET stock = 7 WHERE p_partkey >= 10"));
+    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM Part WHERE stock = 7")) {
+      assertThat(rs.next().<Long>getProperty("c")).isEqualTo(10L);
+    }
+  }
+
+  @Test
+  void parameterDependentWhereStaysCorrectAcrossRuns() {
+    for (long k = 0; k < 4; k++) {
+      final long key = k;
+      database.transaction(() -> database.command("sql", "UPDATE Part SET stock = 1 WHERE p_partkey IN [:a, :b]", Map.of("a", key, "b", key + 10)));
+    }
+    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM Part WHERE stock = 1")) {
+      assertThat(rs.next().<Long>getProperty("c")).isEqualTo(8L);
+    }
+  }
+
+  @Test
+  void sameCachedUpdateRunConcurrently() throws Exception {
+    final int threads = 4;
+    final ExecutorService pool = Executors.newFixedThreadPool(threads);
+    try {
+      final List<Future<?>> futures = new ArrayList<>();
+      for (int t = 0; t < threads; t++) {
+        final long key = t;
+        futures.add(pool.submit(() -> {
+          for (int i = 0; i < 25; i++)
+            database.transaction(() -> database.command("sql", "UPDATE Part SET stock = stock - 1 WHERE p_partkey = :k", Map.of("k", key)));
+        }));
+      }
+      for (final Future<?> f : futures)
+        f.get();
+    } finally {
+      pool.shutdown();
+    }
+    for (long k = 0; k < threads; k++)
+      assertThat(stock(k)).isEqualTo(75);
   }
 
   private int stock(final long key) {

@@ -53,9 +53,11 @@ public class UpdateExecutionPlanner {
   public final    Limit                  limit;
   public final    Batch                  batch;
   public final    Timeout                timeout;
+  private final   DmlSourcePlanKey       sourcePlanKey;
 
   public UpdateExecutionPlanner(final UpdateStatement oUpdateStatement) {
 
+    this.sourcePlanKey = oUpdateStatement.getSourcePlanKey();
     this.target = oUpdateStatement.getTarget().copy();
     this.whereClause = oUpdateStatement.getWhereClause() == null ? null : oUpdateStatement.getWhereClause().copy();
     this.operations =
@@ -220,7 +222,7 @@ public class UpdateExecutionPlanner {
 
   private void handleTarget(final UpdateExecutionPlan result, final CommandContext context, final FromClause target,
       final WhereClause whereClause, final Timeout timeout, final int limitValue) {
-    final InternalExecutionPlan sourcePlan = SelectExecutionPlanner.createSourcePlan(target, whereClause, timeout, context);
+    final InternalExecutionPlan sourcePlan = SelectExecutionPlanner.createSourcePlan(target, whereClause, timeout, sourcePlanKey, context);
     result.chain(new SubQueryStep(sourcePlan, context, context));
 
     // #8814 (Halloween problem): a statement that rewrites a key it walks must not read its own output, so the addresses

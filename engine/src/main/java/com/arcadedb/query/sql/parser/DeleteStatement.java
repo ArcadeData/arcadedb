@@ -21,6 +21,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.query.sql.executor.DmlSourcePlanKey;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.DeleteExecutionPlan;
@@ -34,6 +35,8 @@ import java.util.Map;
 import java.util.Set;
 
 public class DeleteStatement extends Statement {
+
+  private final DmlSourcePlanKey sourcePlanKey = new DmlSourcePlanKey();
 
   public FromClause  fromClause;
   public WhereClause whereClause;
@@ -63,6 +66,10 @@ public class DeleteStatement extends Statement {
     if (unsafe) {
       builder.append(" UNSAFE");
     }
+  }
+
+  public DmlSourcePlanKey getSourcePlanKey() {
+    return sourcePlanKey;
   }
 
   @Override
