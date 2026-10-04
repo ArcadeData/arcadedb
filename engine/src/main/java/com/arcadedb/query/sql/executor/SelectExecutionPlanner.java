@@ -211,15 +211,20 @@ public class SelectExecutionPlanner {
    */
   static InternalExecutionPlan createSourcePlan(final FromClause target, final WhereClause whereClause, final Timeout timeout,
       final DmlSourcePlanKey keyHolder, final CommandContext context) {
-    if (!context.isProfiling()) {
-      final String key = keyHolder.resolve(target, whereClause, timeout);
-      if (key != null) {
-        final ExecutionPlan cached = context.getDatabase().getExecutionPlanCache().get(key, context);
-        if (cached != null)
-          return (InternalExecutionPlan) cached;
-      }
-    }
-    return new SelectExecutionPlanner(DmlSourcePlanKey.newSource(target, whereClause, timeout)).createExecutionPlan(context, true);
+    final String key = context.isProfiling() ? null : keyHolder.resolve(target, whereClause, timeout);
+    if (key == null)
+      return new SelectExecutionPlanner(DmlSourcePlanKey.newSource(target, whereClause, timeout, false)).createExecutionPlan(context,
+          false);
+
+    final DatabaseInternal db = context.getDatabase();
+    final ExecutionPlan cached = db.getExecutionPlanCache().get(key, context);
+    if (cached != null)
+      return (InternalExecutionPlan) cached;
+
+    final InternalExecutionPlan plan = new SelectExecutionPlanner(DmlSourcePlanKey.newSource(target, whereClause, timeout, true))
+        .createExecutionPlan(context, true);
+    keyHolder.planned(db.getExecutionPlanCache().contains(key));
+    return plan;
   }
 
   public InternalExecutionPlan createExecutionPlan(final CommandContext context, final boolean useCache) {

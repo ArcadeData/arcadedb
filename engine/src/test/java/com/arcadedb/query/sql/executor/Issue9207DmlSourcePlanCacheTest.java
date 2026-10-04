@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -87,6 +88,41 @@ class Issue9207DmlSourcePlanCacheTest extends TestHelper {
   }
 
   @Test
+  void cachedFullScanSourcePlanBecomesAnIndexPlanAfterCreateIndex() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Tmp");
+      database.command("sql", "CREATE PROPERTY Tmp.k LONG");
+      for (long k = 0; k < 10; k++)
+        database.command("sql", "INSERT INTO Tmp SET k = ?, v = 0", k);
+    });
+    for (int run = 0; run < 2; run++)
+      database.transaction(() -> database.command("sql", "UPDATE Tmp SET v = v + 1 WHERE k = :k", Map.of("k", 3L)));
+    final String source = "SELECT FROM Tmp WHERE k = :k";
+    assertThat(((DatabaseInternal) database).getExecutionPlanCache().contains(source)).isTrue();
+    database.command("sql", "CREATE INDEX ON Tmp (k) NOTUNIQUE");
+    assertThat(((DatabaseInternal) database).getExecutionPlanCache().contains(source)).isFalse();
+    database.transaction(() -> database.command("sql", "UPDATE Tmp SET v = v + 1 WHERE k = :k", Map.of("k", 3L)));
+    try (final ResultSet rs = database.query("sql", "SELECT v FROM Tmp WHERE k = 3")) {
+      assertThat(rs.next().<Integer>getProperty("v")).isEqualTo(3);
+    }
+  }
+
+  @Test
+  void typeDropAndRecreateDoesNotServeAStaleSourcePlan() {
+    database.transaction(() -> database.command("sql", "DELETE FROM Part WHERE p_partkey = :k", Map.of("k", 1L)));
+    database.transaction(() -> database.command("sql", "DELETE FROM Part WHERE p_partkey = :k", Map.of("k", 2L)));
+    database.command("sql", "DROP TYPE Part UNSAFE");
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Part");
+      database.command("sql", "INSERT INTO Part SET p_partkey = 2, stock = 5");
+    });
+    database.transaction(() -> database.command("sql", "DELETE FROM Part WHERE p_partkey = :k", Map.of("k", 2L)));
+    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM Part")) {
+      assertThat(rs.next().<Long>getProperty("c")).isEqualTo(0L);
+    }
+  }
+
+  @Test
   void halloweenGuardStillMaterializesOnACacheHit() {
     // the second execution takes the source plan from the cache: rows moved ahead of the index walk must not be revisited
     for (int run = 0; run < 2; run++) {
@@ -128,6 +164,7 @@ class Issue9207DmlSourcePlanCacheTest extends TestHelper {
   }
 
   @Test
+  @Timeout(120)
   void sameCachedUpdateRunConcurrently() throws Exception {
     final int threads = 4;
     final ExecutorService pool = Executors.newFixedThreadPool(threads);

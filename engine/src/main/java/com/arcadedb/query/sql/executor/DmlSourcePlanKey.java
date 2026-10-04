@@ -31,29 +31,46 @@ import com.arcadedb.query.sql.parser.WhereClause;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class DmlSourcePlanKey {
+  /** Consecutive plannings that left nothing in the cache before the statement stops trying (e.g. a parameter dependent plan) */
+  private static final int MAX_UNSTORED_PLANS = 3;
+
   private volatile boolean resolved;
   private volatile String  key;
+  private volatile int     unstoredPlans;
 
   /**
-   * @return the plan-cache key, or null when the source SELECT cannot be cached
+   * The key is memoized, so the target and the WHERE of the statement must not change after it is parsed (the statement
+   * cache hands out the same instance to every execution).
+   *
+   * @return the plan-cache key, or null when the source SELECT cannot be cached or has repeatedly not been stored
    */
   String resolve(final FromClause target, final WhereClause whereClause, final Timeout timeout) {
     if (!resolved) {
-      final SelectStatement source = newSource(target, whereClause, timeout);
+      final SelectStatement source = newSource(target, whereClause, timeout, true);
       key = source.executionPlanCanBeCached() ? source.getOriginalStatement() : null;
       resolved = true;
     }
-    return key;
+    return unstoredPlans >= MAX_UNSTORED_PLANS ? null : key;
   }
 
-  static SelectStatement newSource(final FromClause target, final WhereClause whereClause, final Timeout timeout) {
+  /**
+   * Called after the source plan of a cache miss was built: a statement whose plans never reach the cache stops paying the
+   * lookup and the statement copy on every execution.
+   */
+  void planned(final boolean stored) {
+    unstoredPlans = stored ? 0 : unstoredPlans + 1;
+  }
+
+  static SelectStatement newSource(final FromClause target, final WhereClause whereClause, final Timeout timeout,
+      final boolean cacheable) {
     final SelectStatement source = new SelectStatement();
     source.setTarget(target);
     source.setWhereClause(whereClause);
     if (timeout != null)
       source.setTimeout(timeout.copy());
-    // the planner works on this statement, the cache key is the text of an untouched copy
-    source.setOriginalStatement(source.copy());
+    if (cacheable)
+      // the planner works on this statement, the cache key is the text of an untouched copy
+      source.setOriginalStatement(source.copy());
     return source;
   }
 }
