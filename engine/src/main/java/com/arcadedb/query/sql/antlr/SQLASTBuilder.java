@@ -3040,7 +3040,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
   /**
    * Map entry visitor - handles key: value.
-   * Grammar: mapEntry : (identifier | STRING_LITERAL) COLON expression
+   * Grammar: mapEntry : (identifier | MAXDEPTH | STRING_LITERAL) COLON expression
    */
   @Override
   public JsonItem visitMapEntry(final SQLParser.MapEntryContext ctx) {

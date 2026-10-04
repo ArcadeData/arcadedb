@@ -19,10 +19,10 @@
 package com.arcadedb.query.sql;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
-import com.arcadedb.database.RID;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -31,6 +31,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -172,6 +173,7 @@ class Issue9148_9053_9050_9049Test extends TestHelper {
         "SELECT tags" + rep("[0]", 20000) + " AS x FROM T", //
         "SELECT name" + rep(".toLowerCase()", 20000) + " AS x FROM T" };
     final AtomicInteger refused = new AtomicInteger();
+    final List<Throwable> unexpected = new CopyOnWriteArrayList<>();
     final Thread t = new Thread(null, () -> {
       for (final String sql : statements) {
         try (final ResultSet rs = database.query("sql", sql)) {
@@ -180,8 +182,9 @@ class Issue9148_9053_9050_9049Test extends TestHelper {
         } catch (final CommandSQLParsingException e) {
           assertThat(e.getMessage()).isNotNull();
           refused.incrementAndGet();
-        } catch (final ArcadeDBException e) {
-          // any ArcadeDB exception is acceptable, a raw Error is not
+        } catch (final Throwable e) {
+          // anything but a parsing exception (a raw Error included) is a failure
+          unexpected.add(e);
         }
       }
     }, "small-stack", 256 * 1024);
@@ -194,6 +197,7 @@ class Issue9148_9053_9050_9049Test extends TestHelper {
       Thread.currentThread().interrupt();
     }
     assertThat(failure[0]).isNull();
+    assertThat(unexpected).isEmpty();
     assertThat(refused.get()).as("the 20000 element chains cannot be executed on a default stack").isPositive();
   }
 
@@ -255,7 +259,7 @@ class Issue9148_9053_9050_9049Test extends TestHelper {
     database.transaction(() -> database.command("sql", "INSERT INTO T SET tags = ['a','b']").close());
     // pre-existing behaviour pinned: parses and runs without a raw exception
     try (final ResultSet rs = database.query("sql", "SELECT tags[#1:0, #1:1] AS x FROM T")) {
-      // the RIDs parse as plain expressions, so they are real selectors, not dropped ones (the dead rid branches)
+      // NOTE: documents current behaviour only. The RIDs parse as plain expressions, so they are real selectors, not dropped ones (the dead rid branches)
       assertThat(rs.next().<List<Object>>getProperty("x")).isNotEmpty().containsOnlyNulls();
     }
   }
