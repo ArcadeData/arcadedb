@@ -276,7 +276,9 @@ class GraphAlgorithmsTest extends TestHelper {
     assertKernelMatchesReference(giant + satellites + 200, edges.toArray(new int[0][]));
   }
 
-  /** #9133: the lowest-id vertex is an incoming-only satellite, so phase 3 re-hooks the giant's root under it. */
+  /** #9133: the lowest-id vertex is an incoming-only satellite, so phase 3 re-hooks the giant's root under it. The 20k-node
+   *  giant dominates the deterministic 1024-node sample, so it is the one picked as dominant; keep that in mind if the sampling
+   *  constants or hash change. */
   @Test
   void connectedComponentsGiantRootRehookedByLowestIdSatellite() {
     final int giant = 20_000;

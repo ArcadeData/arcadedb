@@ -507,10 +507,9 @@ public final class GraphAlgorithms {
    *   source would otherwise leave a target that is only reachable through an incoming edge disconnected.</li>
    * </ol>
    * Roots are always hooked larger-under-smaller by CAS, so the final root of a component is its minimum node id
-   * and the output contract (component id = min node id) is unchanged. Each edge is visited at most twice (once per direction,
-   * and only for nodes outside the dominant component), versus once per pass for label propagation, whose pass count grows
-   * with the diameter. Memory is a
-   * single {@code int[n]}.
+   * and the output contract (component id = min node id) is unchanged. Each edge is visited at most twice (once per
+   * direction, and only for nodes outside the dominant component), versus once per pass for label propagation, whose
+   * pass count grows with the diameter. Memory is a single {@code int[n]}.
    *
    * @param view      the analytical view (must be built)
    * @param edgeTypes edge types to consider (null or empty = all)
@@ -543,7 +542,8 @@ public final class GraphAlgorithms {
 
   /**
    * Union-find kernel over raw CSR arrays (one entry per edge type, a null entry means the type has no CSR).
-   * Package-private so tests can drive it with hand-built adjacency and exact node ids.
+   * The four arrays must all have one entry per edge type. Package-private so tests can drive it with hand-built
+   * adjacency and exact node ids.
    */
   static int[] connectedComponents(final int n, final int[][] allFwdOffsets, final int[][] allFwdNeighbors,
       final int[][] allBwdOffsets, final int[][] allBwdNeighbors) {
