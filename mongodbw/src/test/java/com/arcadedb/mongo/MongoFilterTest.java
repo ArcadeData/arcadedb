@@ -97,6 +97,7 @@ class MongoFilterTest {
     assertThat(new MongoFilter(null, parse("{_id: {$in: [{a: 1}, {b: 2}]}, k: 1}")).narrowsById()).isFalse();
     assertThat(new MongoFilter(null, parse("{_id: {$in: [[1, 2]]}}")).narrowsById()).isFalse();
     assertThat(new MongoFilter(null, parse("{_id: {a: 1, b: 2}}")).narrowsById()).isFalse();
+    assertThat(new MongoFilter(null, parse("{_id: [1, 2]}")).narrowsById()).isFalse();
   }
 
   @Test
