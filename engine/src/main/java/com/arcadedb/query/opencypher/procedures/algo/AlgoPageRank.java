@@ -117,7 +117,7 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
     final WorkGuard guard = newWorkGuard(context);
 
     // Try CSR-accelerated path (only for unweighted PageRank)
-    final GraphTraversalProvider provider = weightProperty == null ? findProvider(db, null) : null;
+    final GraphTraversalProvider provider = weightProperty == null ? findProvider(db, null, context) : null;
     // Only while the view is not serving pending changes: the GraphAlgorithms kernel below reads its base CSR
     // arrays directly and sizes its result from the base node mapping, which is neither the current graph nor
     // as wide as the id space the view now reports - see GraphTraversalProvider#hasPendingChanges (issue #6792).

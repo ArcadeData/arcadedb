@@ -108,6 +108,17 @@ public interface GraphTraversalProvider {
   boolean isReady();
 
   /**
+   * Whether this provider is, right now, restoring itself from persisted state on behalf of the first query that
+   * touched it. {@link #isReady()} answers false for that very call, so a caller that would rather wait for an
+   * accelerated first query than fall back (see {@link GraphTraversalProviderRegistry#awaitRestoring}) uses this to
+   * tell a restore in flight from a provider that is simply stale or still being rebuilt after a commit.
+   * Defaults to false: a provider that is always built eagerly never restores.
+   */
+  default boolean isRestoring() {
+    return false;
+  }
+
+  /**
    * Returns the name of this provider.
    */
   String getName();
