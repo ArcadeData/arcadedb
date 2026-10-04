@@ -715,8 +715,8 @@ public enum PostgresType {
       // Not a scalar: the list holds embedded documents of a schema type.
       return JSON;
 
-    // Every branch must agree with getArrayTypeForElementType, which types a populated list from its first
-    // element: a mismatch would make a column's OID depend on whether the list is empty.
+    // Every branch must agree with getArrayTypeForElementType, which types each element of a populated list: a
+    // mismatch would make a column's OID depend on whether the list is empty.
     return switch (elementType) {
       case BOOLEAN -> ARRAY_BOOLEAN;
       case INTEGER, SHORT, BYTE -> ARRAY_INT;
@@ -1147,7 +1147,7 @@ public enum PostgresType {
    * The narrowest type that holds every value of both {@code a} and {@code b}, used to type a column over all the rows
    * of a result and a list over all its elements (issue #9008, #9009). Integers widen to long, integers and floats to
    * double (a long beyond 2^53 is then rounded, which numeric could avoid only by failing on NaN and infinity), and
-   * anything meeting a BigDecimal to numeric. Anything else that
+   * anything meeting a BigDecimal to numeric. Whatever else that
    * differs falls back to the one type every value can be written under: varchar for a column, text[] for a list.
    *
    * <p>A column mixing a BigDecimal row with a NaN or infinite double row is announced numeric and cannot carry the

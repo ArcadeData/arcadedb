@@ -380,6 +380,9 @@ class DateUtilsTest {
     assertThat(DateUtils.dateTime(null, -1L, ChronoUnit.MICROS, LocalDateTime.class, ChronoUnit.MICROS))
         .isEqualTo(LocalDateTime.parse("1969-12-31T23:59:59.999999"));
 
+    assertThat(DateUtils.dateTime(null, -1_000_001L, ChronoUnit.MICROS, LocalDateTime.class, ChronoUnit.MICROS))
+        .isEqualTo(LocalDateTime.parse("1969-12-31T23:59:58.999999"));
+
     final LocalDateTime written = LocalDateTime.parse("1960-06-15T12:30:45.123456");
     final long micros = ChronoUnit.MICROS.between(Instant.EPOCH, written.toInstant(ZoneOffset.UTC));
     assertThat(DateUtils.dateTime(null, micros, ChronoUnit.MICROS, LocalDateTime.class, ChronoUnit.MICROS)).isEqualTo(written);
