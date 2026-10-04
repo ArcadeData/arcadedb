@@ -665,6 +665,8 @@ public class GraphBatch implements AutoCloseable {
     int attempt = 0;
     while (true) {
       final RID[] rids = new RID[count];
+      // A TRANSACTION THE CALLER OPENED IS JOINED, NOT OWNED: ONLY ONE THIS METHOD BEGAN IS ROLLED BACK ON A NON-RETRYABLE FAILURE (#9040)
+      final boolean ownsTx = !database.isTransactionActive();
       try {
         beginTx();
         filler.accept(rids);
@@ -696,8 +698,13 @@ public class GraphBatch implements AutoCloseable {
         backoffBeforeRetry(attempt);
       } catch (final RuntimeException e) {
         // NOT RETRYABLE: DO NOT LEAVE THE TRANSACTION THIS METHOD BEGAN OPEN (#9040)
-        if (database.isTransactionActive())
-          database.rollback();
+        if (ownsTx && database.isTransactionActive()) {
+          try {
+            database.rollback();
+          } catch (final RuntimeException rollbackError) {
+            e.addSuppressed(rollbackError);
+          }
+        }
         throw e;
       }
     }
