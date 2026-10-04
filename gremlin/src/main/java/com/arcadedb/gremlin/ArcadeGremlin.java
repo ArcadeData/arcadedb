@@ -205,7 +205,7 @@ public class ArcadeGremlin extends ArcadeQuery {
    * would keep only the last of them and silently lose the others (#9141), so the entries are returned as a list of
    * {@code {key, value}} maps under {@code result} instead, the shape a non-map value has.
    */
-  public static ResultInternal mapToResult(final Map<Object, Object> originalMap) {
+  private static ResultInternal mapToResult(final Map<Object, Object> originalMap) {
     final Map<String, Object> stringMap = getStringObjectMap(originalMap);
     if (stringMap != null)
       return new ResultInternal(stringMap);
@@ -224,7 +224,7 @@ public class ArcadeGremlin extends ArcadeQuery {
    * Transforms a map to one with strings as keys (a null key is named "null"), or returns null when two keys print alike
    * and the transformation would lose an entry.
    */
-  public static Map<String, Object> getStringObjectMap(final Map<Object, Object> originalMap) {
+  private static Map<String, Object> getStringObjectMap(final Map<Object, Object> originalMap) {
     final Map<String, Object> stringMap = new LinkedHashMap<>(originalMap.size());
 
     for (final Map.Entry<Object, Object> entry : originalMap.entrySet()) {

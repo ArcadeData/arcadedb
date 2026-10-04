@@ -20,15 +20,13 @@ package com.arcadedb.gremlin;
 
 import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.graph.Edge;
-import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
+import org.apache.tinkerpop.gremlin.structure.util.CloseableIterator;
 
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Iterator;
 import java.util.List;
 import java.util.NoSuchElementException;
 
@@ -50,9 +48,8 @@ final class LightweightEdges {
   }
 
   /** Every edge of the type, polymorphically: its records first, then its lightweight edges. Close the iterator if not drained. */
-  static Iterator<Edge> ofType(final BasicDatabase database, final String typeName) {
-    final ResultSet resultSet = database.query("sql", "select from " + Identifier.quote(typeName));
-    return new ClosingEdgeIterator(resultSet);
+  static CloseableIterator<Edge> ofType(final BasicDatabase database, final String typeName) {
+    return new ClosingEdgeIterator(database, typeName);
   }
 
   /** The number of edges of the type, polymorphically, lightweight ones included. */
@@ -63,84 +60,115 @@ final class LightweightEdges {
     }
   }
 
-  /**
-   * Every lightweight edge of the database, each exactly once: an edge is taken from the scan of its own concrete type only, so a
-   * hierarchy of lightweight types does not repeat the edges of its sub-types.
-   */
-  static Iterator<Edge> all(final BasicDatabase database) {
-    final List<Iterator<Edge>> scans = new ArrayList<>();
+  /** The edge types that declare LIGHTWEIGHT: the only ones whose own edges have no record. */
+  private static List<String> lightweightTypeNames(final BasicDatabase database) {
+    final List<String> names = new ArrayList<>();
     for (final DocumentType type : database.getSchema().getTypes())
-      if (type instanceof EdgeType && isHeldBy(type)) {
-        final String typeName = type.getName();
-        final Iterator<Edge> scan = ofType(database, typeName);
-        scans.add(new Iterator<>() {
-          private Edge next;
+      if (type instanceof EdgeType edgeType && edgeType.isLightweight())
+        names.add(type.getName());
+    return names;
+  }
 
-          @Override
-          public boolean hasNext() {
-            while (next == null && scan.hasNext()) {
-              final Edge edge = scan.next();
-              if (edge.getIdentity() != null && edge.getIdentity().getPosition() < 0 && typeName.equals(edge.getTypeName()))
-                next = edge;
-            }
-            return next != null;
-          }
+  /**
+   * Every lightweight edge of the database, each exactly once: an edge is taken from the scan of its own concrete type only, and
+   * only the types that declare LIGHTWEIGHT are scanned, so a hierarchy does not repeat the edges of its sub-types nor read the
+   * records of a regular super type. A scan is opened when the previous one is drained, and the open one is released on close().
+   */
+  static CloseableIterator<Edge> all(final BasicDatabase database) {
+    final List<String> typeNames = lightweightTypeNames(database);
 
-          @Override
-          public Edge next() {
-            if (!hasNext())
-              throw new NoSuchElementException();
-            final Edge result = next;
-            next = null;
-            return result;
-          }
-        });
-      }
-
-    if (scans.isEmpty())
-      return Collections.emptyIterator();
-
-    return new Iterator<>() {
-      private int index = 0;
+    return new CloseableIterator<>() {
+      private int                    index = 0;
+      private CloseableIterator<Edge> scan;
+      private Edge                   next;
 
       @Override
       public boolean hasNext() {
-        while (index < scans.size()) {
-          if (scans.get(index).hasNext())
-            return true;
-          ++index;
+        while (next == null) {
+          if (scan == null) {
+            if (index >= typeNames.size())
+              return false;
+            scan = ofType(database, typeNames.get(index));
+          }
+          if (scan.hasNext()) {
+            final Edge edge = scan.next();
+            if (edge.getIdentity() != null && edge.getIdentity().getPosition() < 0 && typeNames.get(index).equals(edge.getTypeName()))
+              next = edge;
+          } else {
+            scan.close();
+            scan = null;
+            ++index;
+          }
         }
-        return false;
+        return true;
       }
 
       @Override
       public Edge next() {
         if (!hasNext())
           throw new NoSuchElementException();
-        return scans.get(index).next();
+        final Edge result = next;
+        next = null;
+        return result;
+      }
+
+      @Override
+      public void close() {
+        if (scan != null) {
+          scan.close();
+          scan = null;
+        }
+        index = typeNames.size();
       }
     };
   }
 
-  private static final class ClosingEdgeIterator implements Iterator<Edge> {
-    private final ResultSet resultSet;
+  /** Whether any edge type declares LIGHTWEIGHT, which a schema walk answers without opening a query. */
+  static boolean exist(final BasicDatabase database) {
+    for (final DocumentType type : database.getSchema().getTypes())
+      if (type instanceof EdgeType edgeType && edgeType.isLightweight())
+        return true;
+    return false;
+  }
 
-    private ClosingEdgeIterator(final ResultSet resultSet) {
-      this.resultSet = resultSet;
+  /** The SQL scan of a type, opened on the first read and released when drained or closed. */
+  private static final class ClosingEdgeIterator implements CloseableIterator<Edge> {
+    private final BasicDatabase database;
+    private final String        typeName;
+    private       ResultSet     resultSet;
+    private       boolean       closed;
+
+    private ClosingEdgeIterator(final BasicDatabase database, final String typeName) {
+      this.database = database;
+      this.typeName = typeName;
     }
 
     @Override
     public boolean hasNext() {
+      if (closed)
+        return false;
+      if (resultSet == null)
+        resultSet = database.query("sql", "select from " + Identifier.quote(typeName));
       if (resultSet.hasNext())
         return true;
-      resultSet.close();
+      close();
       return false;
     }
 
     @Override
     public Edge next() {
-      final Result result = resultSet.next();
-      return (Edge) result.toElement();
+      if (!hasNext())
+        throw new NoSuchElementException();
+      return (Edge) resultSet.next().toElement();
+    }
+
+    @Override
+    public void close() {
+      closed = true;
+      if (resultSet != null) {
+        resultSet.close();
+        resultSet = null;
+      }
     }
   }
 }

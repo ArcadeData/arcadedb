@@ -91,9 +91,11 @@ public class VectorNeighborsFactory extends ArcadeServiceRegistry.ArcadeServiceF
       if (resultSet.hasNext()) {
         final List<Map<String, Object>> neighbors = resultSet.next().getProperty("neighbors");
         if (neighbors != null)
-          for (final Map<String, Object> n : neighbors)
+          for (final Map<String, Object> n : neighbors) {
+            final Object distance = n.get("distance");
             result.add(Map.of("record", graph.getVertexFromRecord(((Document) n.get("record")).getIdentity()), "distance",
-                n.get("distance")));
+                distance != null ? distance : Float.NaN));
+          }
       }
     }
     return CloseableIterator.of(List.of(result).iterator());

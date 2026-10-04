@@ -119,7 +119,12 @@ public class ArcadeFilterByTypeStep<S, E extends Element> extends AbstractStep<S
         final Iterator<? extends Record> rawIterator = lightweight ?
             LightweightEdges.ofType(database, this.typeName) :
             bucketName == null ? database.iterateType(this.typeName, true) : database.iterateBucket(bucketName);
-        return new Iterator<>() {
+        return new CloseableIterator<E>() {
+          @Override
+          public void close() {
+            CloseableIterator.closeIterator(rawIterator);
+          }
+
           @Override
           public boolean hasNext() {
             return rawIterator.hasNext();

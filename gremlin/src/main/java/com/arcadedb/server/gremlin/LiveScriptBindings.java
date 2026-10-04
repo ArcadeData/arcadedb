@@ -50,13 +50,13 @@ final class LiveScriptBindings extends AbstractMap<String, Object> implements Bi
 
   @Override
   public Object get(final Object key) {
-    final Object live = graphManager.getAsBindings().get(key);
+    final Object live = key instanceof String name ? graphManager.getScriptBinding(name) : null;
     return live != null ? live : base.get(key);
   }
 
   @Override
   public boolean containsKey(final Object key) {
-    return graphManager.getAsBindings().containsKey(key) || base.containsKey(key);
+    return get(key) != null || base.containsKey(key);
   }
 
   @Override
@@ -74,6 +74,7 @@ final class LiveScriptBindings extends AbstractMap<String, Object> implements Bi
     base.clear();
   }
 
+  /** A snapshot: {@code setValue()} on one of its entries is not written back, use {@link #put}. */
   @Override
   public Set<Entry<String, Object>> entrySet() {
     final Map<String, Object> merged = new LinkedHashMap<>(base);

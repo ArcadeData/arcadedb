@@ -132,4 +132,23 @@ class Issue9142LightweightEdgeTest {
     assertThat(g.V().has("n", 3).outE("Light").count().next()).isEqualTo(1L);
     assertThat(g.E().hasLabel("Light").count().next()).isEqualTo(4L);
   }
+
+  @Test
+  void anAbandonedScanLeavesNothingBehind() {
+    final GraphTraversalSource g = graph.traversal();
+    assertThat(g.E().limit(1).toList()).hasSize(1);
+    assertThat(g.E().hasLabel("Light").limit(1).toList()).hasSize(1);
+    assertThat(g.E().hasLabel("Light").count().next()).isEqualTo(3L);
+  }
+
+  @Test
+  void aRegularSuperTypeOfALightweightTypeIsNotReadTwice() {
+    db.command("sql", "CREATE EDGE TYPE Base").close();
+    db.command("sql", "CREATE EDGE TYPE SubLight EXTENDS Base LIGHTWEIGHT").close();
+    db.transaction(() -> db.command("sql", "CREATE EDGE SubLight FROM (SELECT FROM P WHERE n = 1) TO (SELECT FROM P WHERE n = 2)").close());
+    final GraphTraversalSource g = graph.traversal();
+    assertThat(g.E().count().next()).isEqualTo(7L);
+    assertThat(g.E().hasLabel("Base").count().next()).isEqualTo(1L);
+    assertThat(g.E().hasLabel("SubLight").count().next()).isEqualTo(1L);
+  }
 }
