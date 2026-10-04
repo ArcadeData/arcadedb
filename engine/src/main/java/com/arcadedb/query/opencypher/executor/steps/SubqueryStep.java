@@ -514,7 +514,7 @@ public class SubqueryStep extends AbstractExecutionStep {
 
   /**
    * Returns a seed row exposing only the outer variables that the subquery is allowed to
-   * see. For {@code CALL (*)} the whole outer row is passed through; for explicit or
+   * see. For {@code CALL (*)} the whole outer row is passed through minus the generated (internal) bindings; for explicit or
    * implicit imports only the declared variables are retained; otherwise an empty row is
    * returned so inner MATCH variables sharing a name with an outer variable are not
    * silently bound to the outer value (issue #3959).
@@ -551,7 +551,8 @@ public class SubqueryStep extends AbstractExecutionStep {
 
   /**
    * Merges the outer row and inner row into a single output row.
-   * The outer row's properties are preserved, and inner row's properties are added.
+   * The outer row's properties are preserved, and inner row's properties are added, except the inner plan's generated
+   * (internal) bindings, which must not replace the outer ones.
    */
   private ResultInternal mergeResults(final Result outerRow, final Result innerRow) {
     final ResultInternal merged = new ResultInternal();
