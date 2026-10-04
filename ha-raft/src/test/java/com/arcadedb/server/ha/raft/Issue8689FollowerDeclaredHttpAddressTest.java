@@ -24,6 +24,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ha.raft.PostSecuritySeedHandler.DeclaredPeerHttpAddress;
 import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -264,8 +265,14 @@ class Issue8689FollowerDeclaredHttpAddressTest {
           () -> seeder.seedNowAndReport("the membership change", 10_000L, false), caller);
       assertThat(seed.started.await(10, TimeUnit.SECONDS)).isTrue();
 
-      final CompletableFuture<List<String>> answer = CompletableFuture.supplyAsync(
-          () -> seeder.seedAfterInFlightAndReport("the admission", 10_000L));
+      final CompletableFuture<List<String>> answer = new CompletableFuture<>();
+      final Thread admission = new Thread(() -> answer.complete(seeder.seedAfterInFlightAndReport("the admission", 10_000L)));
+      admission.start();
+      // Released only once the admission is parked on the in-flight seed, so the wait-out path is what is exercised -
+      // released earlier, the in-flight seed would already be done and a plain fresh seed would pass this test too.
+      Awaitility.await().atMost(10, TimeUnit.SECONDS).pollInterval(10, TimeUnit.MILLISECONDS)
+          .until(() -> admission.getState() == Thread.State.TIMED_WAITING);
+      assertThat(seed.calls.get()).as("nothing ran for the admission while the in-flight seed was running").isEqualTo(1);
       seed.release.countDown();
 
       assertThat(membershipSeed.get(10, TimeUnit.SECONDS)).containsExactly("groups", "API tokens");
@@ -314,9 +321,9 @@ class Issue8689FollowerDeclaredHttpAddressTest {
     }
 
     @Override
-    Optional<List<String>> seedSecurityStateForAdmission(final String admittedPeer, final String admittedPeerId,
-        final String declaredHttpAddress) throws IOException {
-      seeds.add(admittedPeer + " declaring " + admittedPeerId + " at " + declaredHttpAddress);
+    Optional<List<String>> seedSecurityStateForAdmission(final String admittedPeer,
+        final DeclaredPeerHttpAddress declared) throws IOException {
+      seeds.add(admittedPeer + " declaring " + declared.peerId() + " at " + declared.httpAddress());
       return Optional.of(List.of());
     }
   }

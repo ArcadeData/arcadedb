@@ -184,7 +184,7 @@ public final class ClusterSecuritySeedQuery {
    */
   public static List<String> seedForAdmission(final ArcadeDBServer server, final RaftHAPlugin plugin,
       final String admittedPeer) throws IOException {
-    return seedForAdmission(server, plugin, admittedPeer, null, null);
+    return seedForAdmission(server, plugin, admittedPeer, null);
   }
 
   /**
@@ -194,14 +194,10 @@ public final class ClusterSecuritySeedQuery {
    * When this node is the leader there is nothing to send: {@code RaftClusterManager.addPeer} wrote it here before
    * the membership change committed (issue #8330).
    *
-   * @param admittedPeerId      the Raft id of the admitted peer, or {@code null} when no address is declared
-   * @param declaredHttpAddress the {@code host:port} declared for its HTTP listener, or {@code null}
+   * @param declared the admitted peer's id and declared HTTP address, or {@code null} when the admission declared none
    */
-  public static List<String> seedForAdmission(final ArcadeDBServer server, final RaftHAPlugin plugin,
-      final String admittedPeer, final String admittedPeerId, final String declaredHttpAddress) throws IOException {
-    final DeclaredPeerHttpAddress declared = admittedPeerId != null && declaredHttpAddress != null
-        ? new DeclaredPeerHttpAddress(admittedPeerId, declaredHttpAddress)
-        : null;
+  static List<String> seedForAdmission(final ArcadeDBServer server, final RaftHAPlugin plugin,
+      final String admittedPeer, final DeclaredPeerHttpAddress declared) throws IOException {
     return seed(server, plugin, "the admission of peer '" + admittedPeer + "'", null, false, declared).failedSeeds();
   }
 

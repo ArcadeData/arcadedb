@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.server.ha.raft.PostSecuritySeedHandler.DeclaredPeerHttpAddress;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.ServerControlPlane;
@@ -566,10 +567,9 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
    * declaration is a Raft detail, and the {@code HAServerPlugin} contract has no field for it.
    */
   // @VisibleForTesting
-  Optional<List<String>> seedSecurityStateForAdmission(final String admittedPeer, final String admittedPeerId,
-      final String declaredHttpAddress) throws IOException {
-    return Optional.of(ClusterSecuritySeedQuery.seedForAdmission(server, this, admittedPeer, admittedPeerId,
-        declaredHttpAddress));
+  Optional<List<String>> seedSecurityStateForAdmission(final String admittedPeer,
+      final DeclaredPeerHttpAddress declared) throws IOException {
+    return Optional.of(ClusterSecuritySeedQuery.seedForAdmission(server, this, admittedPeer, declared));
   }
 
   @Override
@@ -1146,7 +1146,8 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     // node's map only, and when this node is a follower the leader's seed would otherwise probe a derived address.
     final RaftPeerAddressResolver.JoinTarget target = declaredJoinTarget(serverAddress);
     return Optional.of(target != null
-        ? seedReportForAdmission(serverAddress, target.peer().getId().toString(), target.httpAddress())
+        ? seedReportForAdmission(serverAddress,
+            new DeclaredPeerHttpAddress(target.peer().getId().toString(), target.httpAddress()))
         : seedReportForAdmission(serverAddress));
   }
 
@@ -1263,21 +1264,20 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
    * to seed three documents.
    */
   private List<String> seedReportForAdmission(final String admittedPeer) {
-    return seedReportForAdmission(admittedPeer, null, null);
+    return seedReportForAdmission(admittedPeer, null);
   }
 
   /**
    * {@link #seedReportForAdmission(String)} for a {@code connect cluster} that declared the admitted peer's HTTP
    * address, which is sent to the leader with the request (issue #8689). Same contract: never throws.
    */
-  private List<String> seedReportForAdmission(final String admittedPeer, final String admittedPeerId,
-      final String declaredHttpAddress) {
+  private List<String> seedReportForAdmission(final String admittedPeer, final DeclaredPeerHttpAddress declared) {
     try {
       // The orElseGet is the interface's contract for an HA implementation with no leader-side seeder. It is
       // unreachable from here - this IS the Raft implementation, whose override never answers empty - but
       // stating it keeps all three admission call sites written the same way.
-      return (declaredHttpAddress != null
-          ? seedSecurityStateForAdmission(admittedPeer, admittedPeerId, declaredHttpAddress)
+      return (declared != null
+          ? seedSecurityStateForAdmission(admittedPeer, declared)
           : seedSecurityStateForAdmission(admittedPeer))
           .orElseGet(() -> server.getSecurity().seedSecurityStateClusterWide(
               configuration.getValueAsLong(GlobalConfiguration.HA_SECURITY_SEED_RETRY_TIMEOUT)));

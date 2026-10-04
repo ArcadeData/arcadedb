@@ -3889,6 +3889,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * no wider than what the token already grants (the same caller can run {@code connect cluster} on this node, which
    * writes the same map), and the address is refused unless it is a plain authority. The host is deliberately not
    * required to equal the peer's Raft host: a node may serve HTTP on a different interface than Raft.
+   * <p>
+   * A node that has just become leader and not yet applied the configuration entry that added the peer refuses, as for
+   * any non-member: the request then degrades to the pre-#8689 behaviour - an ordinary admission seed - rather than
+   * failing, and a re-issued admission records the address once the entry is applied.
    *
    * @return {@code true} when the map now holds {@code httpAddress} for the peer and did not before, which is what
    * tells the caller that a seed run earlier probed a different address
