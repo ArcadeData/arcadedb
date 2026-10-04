@@ -37,6 +37,7 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Predicate;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
@@ -66,6 +67,7 @@ final class MongoFilter {
   private final Document     original;
   private final boolean      empty;
   private final boolean      sql;
+  private final Document     idPart;
   private final Document     normalized;
   private final QueryMatcher matcher;
 
@@ -81,6 +83,9 @@ final class MongoFilter {
     this.original = filter;
     this.empty = filter == null || filter.isEmpty();
     this.sql = empty || onlyId(filter);
+    // the _id conjunct of a filter the SQL cannot answer as a whole narrows the candidates through the unique index: an _id is never
+    // an array, so the SQL is exact for it, and the matcher still tests the whole filter on what it returns
+    this.idPart = !sql && filter.containsKey("_id") ? new Document("_id", filter.get("_id")) : null;
     if (sql) {
       this.normalized = null;
       this.matcher = null;
@@ -134,6 +139,50 @@ final class MongoFilter {
   }
 
   /**
+   * @return true when the filter is not answered by SQL as a whole but has an {@code _id} conjunct that SQL answers exactly, to
+   * read the candidates through the index of the {@code _id} instead of the whole type
+   */
+  boolean narrowsById() {
+    return idPart != null;
+  }
+
+  /**
+   * Appends the {@code WHERE} clause that selects the candidates of the filter: all of it for a filter answered by SQL, its
+   * {@code _id} conjunct for one that {@link #narrowsById() narrows by _id}, nothing for any other.
+   */
+  void appendCandidateWhere(final StringBuilder sqlText, final Map<String, Object> params) {
+    if (sql)
+      appendWhere(sqlText, params);
+    else if (idPart != null) {
+      sqlText.append(" WHERE ");
+      MongoDBToSqlTranslator.buildExpression(sqlText, params, idPart);
+    }
+  }
+
+  /**
+   * Visits the identity of every record that matches a filter not answered by SQL, until the visitor answers {@code false}.
+   */
+  void scanMatches(final Database database, final String collectionName, final Predicate<RID> visitor) {
+    if (idPart != null) {
+      final Map<String, Object> params = new HashMap<>();
+      final StringBuilder text = new StringBuilder("SELECT FROM ").append(Identifier.quote(collectionName));
+      appendCandidateWhere(text, params);
+      try (final ResultSet rs = database.query("sql", text.toString(), params)) {
+        while (rs.hasNext()) {
+          final Result row = rs.next();
+          if (matchesRow(row) && row.getIdentity().isPresent() && !visitor.test(row.getIdentity().get()))
+            return;
+        }
+      }
+    } else
+      for (final Iterator<Record> it = database.iterateType(collectionName, false); it.hasNext(); ) {
+        final Record record = it.next();
+        if (record instanceof com.arcadedb.database.Document document && matches(document.toMap(false)) && !visitor.test(record.getIdentity()))
+          return;
+      }
+  }
+
+  /**
    * The identities of the records matching the filter, up to {@code limit} of them (0 for no limit). The selection is a snapshot:
    * the caller applies its change to these records without evaluating the filter again, and skips the ones deleted meanwhile. Both
    * steps run in the caller's transaction, which is what keeps a concurrent change from being applied half way.
@@ -150,16 +199,11 @@ final class MongoFilter {
         while (rs.hasNext())
           rs.next().getIdentity().ifPresent(rids::add);
       }
-    } else {
-      for (final Iterator<Record> it = database.iterateType(collectionName, false); it.hasNext(); ) {
-        final Record record = it.next();
-        if (record instanceof com.arcadedb.database.Document document && matches(document.toMap(false))) {
-          rids.add(record.getIdentity());
-          if (limit > 0 && rids.size() >= limit)
-            break;
-        }
-      }
-    }
+    } else
+      scanMatches(database, collectionName, rid -> {
+        rids.add(rid);
+        return limit <= 0 || rids.size() < limit;
+      });
     return rids;
   }
 

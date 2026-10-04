@@ -543,18 +543,16 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
       }
     } else {
       // the documents are tested one by one: the skipped matches are not counted, the scan stops at the limit
-      int skipped = 0;
-      for (final Iterator<Record> it = database.iterateType(collectionName, false); it.hasNext(); ) {
-        if (!(it.next() instanceof com.arcadedb.database.Document stored) || !filter.matches(stored))
-          continue;
-        if (skipped < skip) {
-          skipped++;
-          continue;
+      final int[] seen = { 0, 0 };
+      filter.scanMatches(database, collectionName, rid -> {
+        if (seen[0] < skip) {
+          seen[0]++;
+          return true;
         }
-        counted++;
-        if (limit > 0 && counted >= limit)
-          break;
-      }
+        seen[1]++;
+        return limit <= 0 || seen[1] < limit;
+      });
+      counted = seen[1];
     }
 
     return counted;
@@ -595,7 +593,7 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
     if (filter.isEmpty() && !hasOrderBy) {
       // SCAN
       MongoDBToSqlTranslator.fillResultSet(numberToSkip, numberToReturn, result, database.iterateType(collectionName, false));
-    } else if (!filter.isSql() && !hasOrderBy) {
+    } else if (!filter.isSql() && !filter.narrowsById() && !hasOrderBy) {
       // no order to honor: the type is read directly, without the SQL executor in between
       MongoDBToSqlTranslator.fillResultSet(numberToSkip, numberToReturn, result,
           new FilteredIterator(database.iterateType(collectionName, false), filter));
@@ -606,10 +604,10 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
       final Map<String, Object> params = new HashMap<>();
       final StringBuilder sql = new StringBuilder("select from ").append(Identifier.quote(collectionName));
 
-      if (filter.isSql())
-        filter.appendWhere(sql, params);
+      filter.appendCandidateWhere(sql, params);
 
-      // known cost: with a filter the SQL cannot answer, every row of the type is sorted before the filter discards most of them
+      // known cost: with a filter the SQL cannot answer and no _id to narrow it, every row of the type is sorted before the filter
+      // discards most of them
       if (hasOrderBy) {
         sql.append(" order by ");
         int i = 0;
