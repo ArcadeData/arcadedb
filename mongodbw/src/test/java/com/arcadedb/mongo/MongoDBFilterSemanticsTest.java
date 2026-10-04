@@ -505,4 +505,12 @@ class MongoDBFilterSemanticsTest extends BaseMongoServerTest {
     assertThat(c.deleteOne(Document.parse("{t:'b'}")).getDeletedCount()).isEqualTo(1);
     assertThat(c.countDocuments()).isEqualTo(2);
   }
+
+  @Test
+  void aMalformedPipelineOverAMissingCollectionIsStillAnError() {
+    final MongoCollection<Document> missing = client.getDatabase(getDatabaseName()).getCollection("never_there_either");
+    assertThatThrownBy(() -> missing.aggregate(List.of(Document.parse("{$nosuchstage:{}}"))).into(new ArrayList<>())).isInstanceOf(
+        MongoException.class);
+    assertThat(missing.aggregate(List.of(Document.parse("{$match:{k:1}}"), Document.parse("{$count:'n'}"))).into(new ArrayList<>())).isEmpty();
+  }
 }
