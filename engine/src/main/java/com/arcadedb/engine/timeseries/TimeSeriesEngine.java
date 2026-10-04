@@ -19,6 +19,7 @@
 package com.arcadedb.engine.timeseries;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.timeseries.simd.TimeSeriesVectorOpsProvider;
 import com.arcadedb.schema.LocalSchema;
 
 import java.io.IOException;
@@ -87,6 +88,8 @@ public class TimeSeriesEngine implements AutoCloseable {
   public TimeSeriesEngine(final DatabaseInternal database, final String typeName,
       final List<ColumnDefinition> columns, final int shardCount,
       final long compactionBucketIntervalMs, final int mutableFormatVersion) throws IOException {
+    // LOADS THE SIMD OPS (AND STARTS THEIR WARM-UP) WHEN THE TYPE IS OPENED, NOT AT THE FIRST AGGREGATE (#9171)
+    TimeSeriesVectorOpsProvider.getInstance();
     this.database = database;
     this.typeName = typeName;
     this.columns = columns;
