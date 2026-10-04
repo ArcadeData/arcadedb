@@ -627,10 +627,10 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
     return result;
   }
 
+  // com.arcadedb.database.Document is spelled out in full below: its simple name is the one of the MongoDB Document imported here
   /**
    * The rows (or records) of an iterator that match a filter.
    */
-  // com.arcadedb.database.Document is spelled out in full: its simple name is the one of the MongoDB Document imported in this class
   private static final class FilteredIterator implements Iterator<Object> {
     private final Iterator<?> rows;
     private final MongoFilter filter;
@@ -651,7 +651,7 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
         else if (candidate instanceof com.arcadedb.database.Document document)
           matches = filter.matches(document);
         else
-          throw new IllegalArgumentException("Object not supported: " + candidate.getClass().getName());
+          throw new IllegalArgumentException("Object not supported: " + (candidate != null ? candidate.getClass().getName() : null));
         if (matches)
           next = candidate;
       }

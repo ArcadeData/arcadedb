@@ -539,4 +539,22 @@ class MongoDBFilterSemanticsTest extends BaseMongoServerTest {
     // the first entry would have deleted _id 2: the whole command rolled back
     assertThat(ids(c, "{}")).containsExactly(1, 2);
   }
+
+  @Test
+  void unsupportedTopLevelOperatorsFailInsteadOfMatchingAnEmptyDocument() {
+    final MongoCollection<Document> c = collection("toplevel", "{_id:1, k:1}", "{_id:2, k:2}");
+    assertThatThrownBy(() -> ids(c, "{k:1, $where:'this.k == 1'}")).isInstanceOf(MongoException.class);
+    assertThatThrownBy(() -> ids(c, "{k:1, $jsonSchema:{required:['k']}}")).isInstanceOf(MongoException.class);
+    assertThatThrownBy(() -> ids(c, "{k:1, $text:{$search:'x'}}")).isInstanceOf(MongoException.class);
+  }
+
+  @Test
+  void updateAndDeleteByIdOnAMixedTypeIdCollectionTouchOnlyTheMatchingType() {
+    final MongoCollection<Document> c = collection("mixedwrites", "{_id:'1', k:'string'}", "{_id:2, k:'number'}");
+    assertThat(c.updateOne(Document.parse("{_id:1}"), Document.parse("{$set:{hit:true}}")).getMatchedCount()).isZero();
+    assertThat(c.deleteOne(Document.parse("{_id:1}")).getDeletedCount()).isZero();
+    assertThat(c.updateOne(Document.parse("{_id:'1'}"), Document.parse("{$set:{hit:true}}")).getModifiedCount()).isEqualTo(1);
+    assertThat(c.deleteMany(Document.parse("{_id:2}")).getDeletedCount()).isEqualTo(1);
+    assertThat(ids(c, "{hit:true}")).containsExactly("1");
+  }
 }

@@ -778,8 +778,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     if (!database.getSchema().existsType(collectionName) || u == null)
       return 0;
 
-    // A replacement must keep the stored _id and $set on a dotted path must reach into the embedded document: neither can be
-    // expressed as a single SQL UPDATE, so those are applied to each matching record. Everything else stays one SQL UPDATE.
+    // Every filtered update is applied to each record the filter selects (the matcher verifies the candidates, so the answer is exact
+    // for any shape of data). Only an update without a filter stays one SQL UPDATE.
     // a filter the SQL cannot answer exactly (see MongoFilter) also selects the records itself
     if (isReplacement(u) || setsDottedPath(u) || touchesId(u) || !filter.isEmpty())
       return executeUpdateOnRecords(collectionName, filter, u, multi);
