@@ -368,4 +368,24 @@ class MongoDBFilterSemanticsTest extends BaseMongoServerTest {
     }
     assertThat(ids(c, "{arr:{$elemMatch:{$or:[{name:{$regex:'^a'}}]}}}")).containsExactly(1);
   }
+
+  @Test
+  void idPlusAnotherFieldFiltersLikeOptimisticLocking() {
+    final MongoCollection<Document> c = collection("locking", "{_id:1, version:1, tags:['a']}", "{_id:2, version:1, tags:['b']}",
+        "{_id:3, version:2, tags:['a','b']}");
+    assertThat(ids(c, "{_id:1, version:1}")).containsExactly(1);
+    assertThat(ids(c, "{_id:1, version:2}")).isEmpty();
+    assertThat(ids(c, "{_id:{$in:[1,2,3]}, tags:'a'}")).containsExactly(1, 3);
+    assertThat(c.countDocuments(Document.parse("{_id:{$in:[1,2,3]}, tags:'b'}"))).isEqualTo(2);
+
+    assertThat(c.updateOne(Document.parse("{_id:1, version:2}"), Document.parse("{$set:{x:1}}")).getMatchedCount()).isZero();
+    assertThat(c.updateOne(Document.parse("{_id:1, version:1}"), Document.parse("{$set:{version:2}}")).getModifiedCount()).isEqualTo(1);
+    assertThat(c.deleteOne(Document.parse("{_id:2, tags:'a'}")).getDeletedCount()).isZero();
+    assertThat(c.deleteOne(Document.parse("{_id:2, tags:'b'}")).getDeletedCount()).isEqualTo(1);
+    assertThat(ids(c, "{}")).containsExactly(1, 3);
+    final List<Object> sorted = new ArrayList<>();
+    for (final Document d : c.find(Document.parse("{_id:{$in:[1,3]}, tags:'a'}")).sort(Document.parse("{version:-1}")))
+      sorted.add(d.get("_id"));
+    assertThat(sorted).containsExactly(3, 1);
+  }
 }

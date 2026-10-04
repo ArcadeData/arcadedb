@@ -113,4 +113,13 @@ class MongoFilterTest {
       GlobalConfiguration.COMMAND_REGEX_TIMEOUT.setValue(previous);
     }
   }
+
+  @Test
+  void anIdConjunctNarrowsTheCandidatesOfAMixedFilter() {
+    assertThat(new MongoFilter(null, parse("{_id: 1, k: 1}")).narrowsById()).isTrue();
+    assertThat(new MongoFilter(null, parse("{_id: {$in: [1, 2]}, tags: 'a'}")).narrowsById()).isTrue();
+    assertThat(new MongoFilter(null, parse("{k: 1}")).narrowsById()).isFalse();
+    assertThat(new MongoFilter(null, parse("{$or: [{_id: 1}, {_id: 2}]}")).narrowsById()).isFalse();
+    assertThat(new MongoFilter(null, parse("{_id: 1}")).narrowsById()).isFalse();
+  }
 }
