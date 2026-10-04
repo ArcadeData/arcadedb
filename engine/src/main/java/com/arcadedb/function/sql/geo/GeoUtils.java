@@ -27,10 +27,12 @@ import org.locationtech.spatial4j.context.SpatialContextFactory;
 import org.locationtech.spatial4j.context.jts.JtsSpatialContext;
 import org.locationtech.spatial4j.context.jts.JtsSpatialContextFactory;
 import org.locationtech.spatial4j.io.ShapeIO;
+import org.locationtech.spatial4j.shape.Point;
 import org.locationtech.spatial4j.shape.Rectangle;
 import org.locationtech.spatial4j.shape.Shape;
 import org.locationtech.spatial4j.shape.jts.JtsGeometry;
 
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
@@ -59,6 +61,38 @@ public class GeoUtils {
     if (!(param instanceof Number))
       throw new IllegalArgumentException("Expected a numeric value, got: " + (param == null ? "null" : param.getClass().getSimpleName()));
     return ((Number) param).doubleValue();
+  }
+
+  /**
+   * Reads the x/y of one vertex given to a geometry constructor ({@code geo.lineString()}, {@code geo.polygon()}): a
+   * Spatial4j point, an {@code [x, y]} pair, or whatever a {@code point()} call returns (the WKT string {@code POINT (x y)})
+   * or a Cypher point map.
+   *
+   * @throws IllegalArgumentException if the value is not a point
+   */
+  public static double[] pointXY(final Object point) {
+    if (point instanceof Point p)
+      return new double[] { p.getX(), p.getY() };
+    if (point instanceof List<?> list) {
+      if (list.size() < 2)
+        throw new IllegalArgumentException("Invalid point element: " + point);
+      try {
+        return new double[] { getDoubleValue(list.get(0)), getDoubleValue(list.get(1)) };
+      } catch (final ClassCastException | IllegalArgumentException e) {
+        throw new IllegalArgumentException("Invalid point element: " + point, e);
+      }
+    }
+    if (point instanceof String || point instanceof Map<?, ?>) {
+      final Shape shape;
+      try {
+        shape = parseGeometry(point);
+      } catch (final IllegalArgumentException e) {
+        throw new IllegalArgumentException("Invalid point element: " + point, e);
+      }
+      if (shape instanceof Point p)
+        return new double[] { p.getX(), p.getY() };
+    }
+    throw new IllegalArgumentException("Invalid point element: " + point);
   }
 
   /**

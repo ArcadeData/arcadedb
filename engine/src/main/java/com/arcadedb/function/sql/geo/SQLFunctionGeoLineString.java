@@ -21,14 +21,13 @@ package com.arcadedb.function.sql.geo;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.query.sql.executor.CommandContext;
-import org.locationtech.spatial4j.shape.Point;
 
 import java.util.List;
 
 /**
  * SQL function geo.lineString: constructs a WKT LINESTRING string from a list of coordinate pairs.
  *
- * <p>Usage: {@code geo.lineString([[x1,y1],[x2,y2],...])}</p>
+ * <p>Usage: {@code geo.lineString([[x1,y1],[x2,y2],...] | [point1, point2, ...])}</p>
  * <p>Returns: WKT string {@code "LINESTRING (x1 y1, x2 y2, ...)"}</p>
  */
 public class SQLFunctionGeoLineString extends SQLFunctionAbstract {
@@ -70,15 +69,8 @@ public class SQLFunctionGeoLineString extends SQLFunctionAbstract {
   }
 
   private void appendCoord(final StringBuilder sb, final Object point) {
-    if (point instanceof Point p) {
-      sb.append(GeoUtils.formatCoord(p.getX())).append(" ").append(GeoUtils.formatCoord(p.getY()));
-    } else if (point instanceof List<?> list) {
-      sb.append(GeoUtils.formatCoord(GeoUtils.getDoubleValue(list.get(0))))
-          .append(" ")
-          .append(GeoUtils.formatCoord(GeoUtils.getDoubleValue(list.get(1))));
-    } else {
-      throw new IllegalArgumentException("Invalid point element: " + point);
-    }
+    final double[] xy = GeoUtils.pointXY(point);
+    sb.append(GeoUtils.formatCoord(xy[0])).append(" ").append(GeoUtils.formatCoord(xy[1]));
   }
 
   @Override
@@ -88,6 +80,6 @@ public class SQLFunctionGeoLineString extends SQLFunctionAbstract {
 
   @Override
   public String getSyntax() {
-    return "geo.lineString([[x1,y1],[x2,y2],...])";
+    return "geo.lineString([[x1,y1],[x2,y2],...] | [point1, point2, ...])";
   }
 }

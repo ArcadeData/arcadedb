@@ -73,7 +73,7 @@ public class SQLMethodAsDateTime extends AbstractSQLMethod {
     // asked for inside a query is an ordinary miss.
     final Object date;
     try {
-      date = params.length > 0 ?
+      date = params.length > 0 && params[0] != null ?
           DateUtils.parse(value.toString(), params[0].toString()) :
           DateUtils.parseDateTimeKeepingWallClock(context.getDatabase(), value.toString());
     } catch (final DateTimeParseException e) {
