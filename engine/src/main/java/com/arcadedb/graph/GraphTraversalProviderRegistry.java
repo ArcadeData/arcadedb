@@ -198,7 +198,8 @@ public class GraphTraversalProviderRegistry {
    *
    * @param edgeTypes  the edge types the request needs; {@code null} or empty for the whole graph
    * @param timeoutMs  the total time to wait, in milliseconds; zero or less does not wait
-   * @param abortCheck called between polls; throws to abort the wait
+   * @param abortCheck called between polls; throws to abort the wait; may be null for a wait nothing can abort
+   * except its own budget and a thread interrupt (which ends it and is left set for the caller)
    *
    * @return true if at least one covering provider was restoring when the call started; false if there was nothing to
    * wait for. Informational: a restore can end between the caller's first lookup and this call, so callers look
@@ -221,11 +222,15 @@ public class GraphTraversalProviderRegistry {
 
     final long deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
     while (anyRestoring(restoring)) {
-      abortCheck.run();
+      if (abortCheck != null)
+        abortCheck.run();
       final long remainingNanos = deadlineNanos - System.nanoTime();
       if (remainingNanos <= 0)
         break;
       LockSupport.parkNanos(Math.min(remainingNanos, RESTORE_POLL_NANOS));
+      // parkNanos returns at once while the interrupt flag is set. A WorkGuard abort hook consumes the flag and throws,
+      // so with it this line is never reached; a hook that leaves the flag alone (or none) would otherwise make the loop
+      // spin until the deadline. The flag stays set: the caller sees the interrupt at its next check.
       if (Thread.currentThread().isInterrupted())
         break;
     }
