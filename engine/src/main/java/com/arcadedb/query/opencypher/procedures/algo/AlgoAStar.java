@@ -19,7 +19,6 @@
 package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.RID;
-import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -88,6 +87,8 @@ public class AlgoAStar extends AbstractAlgoProcedure {
     // Build options map for A*
     final Map<String, Object> options = new HashMap<>();
     options.put("emptyIfMaxDepth", true);
+    // Same default as algo.dijkstra: without the geographic properties A* behaves identically to it
+    options.put("direction", "BOTH");
 
     if (relType != null && !relType.isEmpty())
       options.put("edgeTypeNames", new String[] { relType });
@@ -109,22 +110,10 @@ public class AlgoAStar extends AbstractAlgoProcedure {
       return Stream.empty();
     }
 
-    // Calculate total weight
-    double totalWeight = 0.0;
-    for (int i = 0; i < pathRids.size() - 1; i++) {
-      final RID current = pathRids.get(i);
-      final var currentDoc = context.getDatabase().lookupByRID(current, true);
-
-      if (currentDoc.getRecord() instanceof Edge edge) {
-        final Object weight = edge.get(weightProperty);
-        if (weight instanceof Number num) {
-          totalWeight += num.doubleValue();
-        }
-      }
-    }
-
-    // Build path representation
-    final Map<String, Object> path = buildPath(pathRids, context.getDatabase());
+    // The A* function returns vertex RIDs only: rebuild the edges between them for the weight and the relationships
+    final WeightedPath weighted = attachEdges(pathRids, relType, Vertex.DIRECTION.BOTH, weightProperty);
+    final Map<String, Object> path = buildPath(weighted.ridsWithEdges(), context.getDatabase());
+    final double totalWeight = weighted.weight();
 
     final ResultInternal result = new ResultInternal();
     result.setProperty("path", path);

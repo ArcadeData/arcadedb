@@ -393,6 +393,12 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
                 targetNodePattern.getLabels(), targetNodePattern.isLabelDisjunction()))
               continue;
 
+            // Inline property map: the properties live on the record, so the vertex is loaded only when the pattern
+            // actually carries a map (#8991)
+            if (targetNodePattern != null && targetNodePattern.hasProperties()
+                && !matchesTargetProperties(db.lookupByRID(targetRid, true).asVertex(), lastResult))
+              continue;
+
             // Bound variable identity check (no vertex load)
             // Compare bucket+offset only — RIDs from GAV may lack the database reference
             if (boundVariableNames != null && boundVariableNames.contains(targetVariable)) {

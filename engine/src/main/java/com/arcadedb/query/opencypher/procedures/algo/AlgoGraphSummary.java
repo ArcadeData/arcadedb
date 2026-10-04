@@ -102,21 +102,26 @@ public class AlgoGraphSummary extends AbstractAlgoProcedure {
     }
     final int[][] adjOut = graph.adjacency(Vertex.DIRECTION.OUT, relTypes);
 
-    long edgeCount    = 0L;
-    long selfLoops    = 0L;
-    long isolatedNodes = 0L;
-    long maxDegree    = 0L;
-    long minDegree    = Long.MAX_VALUE;
-
+    // Degree is undirected (out + in), the same convention density already uses. OUT adjacency lists each edge once,
+    // so the in-degree is accumulated from the targets (a self loop adds 2, as in MATCH (n)-[r]-())
+    final int[] degree = new int[n];
+    long edgeCount = 0L;
+    long selfLoops = 0L;
     for (int i = 0; i < n; i++) {
-      final int deg = adjOut[i].length;
-      long selfLoopCount = 0L;
+      degree[i] += adjOut[i].length;
+      edgeCount += adjOut[i].length;
       for (final int j : adjOut[i]) {
+        degree[j]++;
         if (j == i)
-          selfLoopCount++;
+          selfLoops++;
       }
-      selfLoops += selfLoopCount;
-      edgeCount += deg;
+    }
+
+    long isolatedNodes = 0L;
+    long maxDegree = 0L;
+    long minDegree = Long.MAX_VALUE;
+    for (int i = 0; i < n; i++) {
+      final int deg = degree[i];
       if (deg > maxDegree)
         maxDegree = deg;
       if (deg < minDegree)
@@ -128,7 +133,7 @@ public class AlgoGraphSummary extends AbstractAlgoProcedure {
     if (minDegree == Long.MAX_VALUE)
       minDegree = 0L;
 
-    final double avgDegree = n > 0 ? (double) edgeCount / n : 0.0;
+    final double avgDegree = n > 0 ? (2.0 * edgeCount) / n : 0.0;
     final double density   = n > 1 ? (2.0 * edgeCount) / ((long) n * (n - 1)) : 0.0;
 
     final ResultInternal result = new ResultInternal();

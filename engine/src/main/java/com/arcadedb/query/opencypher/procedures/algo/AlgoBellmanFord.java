@@ -26,7 +26,6 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.WorkGuard;
 
-import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
@@ -221,7 +220,8 @@ public class AlgoBellmanFord extends AbstractAlgoProcedure {
       }
     }
 
-    final Map<String, Object> path = buildPath(new ArrayList<>(pathRids), db);
+    // The vertex walk lost its edges: put them back so the path exposes its relationships
+    final Map<String, Object> path = buildPath(attachEdges(pathRids, relType, Vertex.DIRECTION.OUT, weightProperty).ridsWithEdges(), db);
 
     final ResultInternal result = new ResultInternal();
     result.setProperty("path", path);

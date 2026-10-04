@@ -106,9 +106,8 @@ class AlgoGraphSummaryTest {
     assertThat(rs.hasNext()).isTrue();
     final Result result = rs.next();
     final Object val = result.getProperty("isolatedNodes");
-    // D has no OUT edges, C has no OUT edges, B has 1 OUT edge, A has 2 OUT edges
-    // So isolatedNodes (out-degree == 0) = D and C = 2
-    assertThat(((Number) val).longValue()).isEqualTo(2L);
+    // Degree is out + in (#9151): only D has degree 0, C is the target of two edges
+    assertThat(((Number) val).longValue()).isEqualTo(1L);
   }
 
   @Test
@@ -119,7 +118,7 @@ class AlgoGraphSummaryTest {
     assertThat(rs.hasNext()).isTrue();
     final Result result = rs.next();
     final Object val = result.getProperty("maxDegree");
-    // A has out-degree 2 (max)
+    // A, B and C all have degree 2 (out + in)
     assertThat(((Number) val).longValue()).isEqualTo(2L);
   }
 
