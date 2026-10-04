@@ -19,12 +19,16 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.MutableDocument;
 import com.arcadedb.query.sql.executor.Result;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * A scalar written to a LIST OF &lt;number&gt; property is wrapped as one element and converted like the elements of a list are (#9028).
@@ -74,30 +78,56 @@ class Issue9028ScalarIntoTypedListTest extends TestHelper {
   }
 
   @Test
-  void primitiveArrayAndOtherElementTypes() {
+  void primitiveArrayIsConvertedElementByElement() {
     database.command("sql", "CREATE DOCUMENT TYPE P");
     database.command("sql", "CREATE PROPERTY P.longs LIST OF LONG");
-    database.command("sql", "CREATE PROPERTY P.strs LIST OF STRING");
-    database.command("sql", "CREATE PROPERTY P.ints LIST OF INTEGER");
     database.transaction(() -> {
-      final var doc = database.newDocument("P");
+      final MutableDocument doc = database.newDocument("P");
       doc.set("longs", new int[] { 1, 2 });
-      doc.set("strs", 7);
       doc.save();
       assertThat((List<Object>) doc.get("longs")).containsExactly(1L, 2L);
+    });
+  }
+
+  @Test
+  void scalarIntoListOfString() {
+    database.command("sql", "CREATE DOCUMENT TYPE S");
+    database.command("sql", "CREATE PROPERTY S.strs LIST OF STRING");
+    database.transaction(() -> {
+      final MutableDocument doc = database.newDocument("S");
+      doc.set("strs", 7);
+      doc.save();
       assertThat((List<Object>) doc.get("strs")).containsExactly("7");
     });
-    org.assertj.core.api.Assertions.assertThatThrownBy(
-        () -> database.transaction(() -> database.command("sql", "INSERT INTO P SET ints = 'abc'"))).isNotNull();
+  }
+
+  @Test
+  void scalarIntoListOfDate() {
+    database.command("sql", "CREATE DOCUMENT TYPE D");
+    database.command("sql", "CREATE PROPERTY D.days LIST OF DATE");
+    database.transaction(() -> {
+      final MutableDocument doc = database.newDocument("D");
+      doc.set("days", LocalDate.of(2026, 10, 3));
+      doc.save();
+      assertThat((List<Object>) doc.get("days")).hasSize(1);
+    });
+  }
+
+  @Test
+  void unconvertibleTextIntoListOfIntegerIsRefused() {
+    database.command("sql", "CREATE DOCUMENT TYPE B");
+    database.command("sql", "CREATE PROPERTY B.ints LIST OF INTEGER");
+    assertThatThrownBy(() -> database.transaction(() -> database.command("sql", "INSERT INTO B SET ints = 'abc'")))
+        .isInstanceOf(RuntimeException.class).hasMessageContaining("ints");
   }
 
   @Test
   void outOfRangeScalarIsRefusedNotClamped() {
     database.command("sql", "CREATE DOCUMENT TYPE R");
     database.command("sql", "CREATE PROPERTY R.longs LIST OF LONG");
-    org.assertj.core.api.Assertions.assertThatThrownBy(() -> database.transaction(() -> {
+    assertThatThrownBy(() -> database.transaction(() -> {
       final var doc = database.newDocument("R");
-      doc.set("longs", new java.math.BigDecimal("9223372036854775808"));
+      doc.set("longs", new BigDecimal("9223372036854775808"));
       doc.save();
     })).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("longs");
   }

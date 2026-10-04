@@ -114,4 +114,22 @@ class CypherDeleteNodeAndAllItsRelationshipsIssue8997Test extends TestHelper {
     database.commit();
     assertThat(remaining()).containsExactly("2:0", "3:0", "4:1", "5:0");
   }
+
+  @Test
+  void failingStatementWithoutAnOuterTransactionDeletesNothing() {
+    // node 1 also has an edge of another type that the pattern does not match, so it is still connected at the end
+    database.getSchema().createEdgeType("OTHER");
+    database.transaction(() -> database.command("opencypher", "MATCH (a:N {id: 1}), (b:N {id: 5}) CREATE (a)-[:OTHER]->(b)").close());
+
+    assertThatThrownBy(() -> database.command("opencypher", "MATCH (n:N {id: 1})-[r:R]->() DELETE r, n").close())
+        .isInstanceOf(CommandExecutionException.class).hasMessageContaining("DeleteConnectedNode");
+    assertThat(remaining()).containsExactly("1:3", "2:0", "3:0", "4:1", "5:0");
+  }
+
+  @Test
+  void limitDownstreamStillAppliesTheWholeDelete() {
+    database.command("opencypher", "MATCH (n:N {id: 1})-[r]-() DELETE r, n RETURN 1 AS one LIMIT 1").close();
+    // the DELETE consumes its whole input before a downstream LIMIT can stop it
+    assertThat(remaining()).containsExactly("2:0", "3:0", "4:1", "5:0");
+  }
 }
