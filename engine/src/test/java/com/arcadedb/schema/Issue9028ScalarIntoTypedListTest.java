@@ -131,4 +131,15 @@ class Issue9028ScalarIntoTypedListTest extends TestHelper {
       doc.save();
     })).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("longs");
   }
+
+  @Test
+  void outOfRangeListElementIsRefusedNotClamped() {
+    database.command("sql", "CREATE DOCUMENT TYPE E");
+    database.command("sql", "CREATE PROPERTY E.longs LIST OF LONG");
+    assertThatThrownBy(() -> database.transaction(() -> {
+      final MutableDocument doc = database.newDocument("E");
+      doc.set("longs", List.of(new BigDecimal("9223372036854775808")));
+      doc.save();
+    })).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("longs");
+  }
 }
