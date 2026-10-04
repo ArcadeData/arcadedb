@@ -32,7 +32,7 @@ import java.util.Random;
 /**
  * Low-cardinality NOTUNIQUE_HASH against LSM, to check the page size default of issue #5712 where one key holds thousands
  * of RIDs: a bigger share of the entries then lives in overflow chains, which a smaller page makes longer. Prints insert
- * time and lookup time of hot keys per page size.
+ * time and lookup time of hot keys per page size. The printing is the output of this benchmark, not leftover debugging.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
