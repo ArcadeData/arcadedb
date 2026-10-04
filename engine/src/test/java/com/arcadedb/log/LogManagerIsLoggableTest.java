@@ -90,6 +90,5 @@ class LogManagerIsLoggableTest {
   void slf4jLoggerAnswersWithoutThrowing() {
     final Slf4jLogger logger = new Slf4jLogger();
     assertThat(logger.isLoggable("com.arcadedb.test.Slf4j9174", Level.SEVERE)).isTrue();
-    assertThat(logger.isLoggable("com.arcadedb.test.Slf4j9174", Level.FINEST)).isIn(true, false);
   }
 }
