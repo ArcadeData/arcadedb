@@ -351,4 +351,21 @@ class MongoDBFilterSemanticsTest extends BaseMongoServerTest {
     assertThatThrownBy(() -> ids(c, "{$expr:{$regexMatch:{input:'$s', regex:'a'}}}")).isInstanceOf(MongoQueryException.class);
     assertThat(ids(c, "{s:{$all:[{$elemMatch:{k:'x'}},{$elemMatch:{k:'y'}}]}}")).containsExactly(1);
   }
+
+  @Test
+  void aCatastrophicRegexUnderElemMatchAndLogicalOperatorsIsBoundedToo() {
+    final MongoCollection<Document> c = collection("redosnested",
+        "{_id:1, arr:[{name:'" + "a".repeat(40) + "!'}]}");
+    final long previous = GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong();
+    GlobalConfiguration.COMMAND_REGEX_TIMEOUT.setValue(200);
+    try {
+      assertThatThrownBy(() -> ids(c, "{arr:{$elemMatch:{$or:[{name:{$regex:'(.*a){20}$'}}]}}}")).isInstanceOf(MongoException.class)
+          .satisfies(e -> assertThat(((MongoException) e).getCode()).isEqualTo(50));
+      assertThatThrownBy(() -> ids(c, "{arr:{$elemMatch:{$and:[{name:{$regex:'(.*a){20}$'}}, {name:{$exists:true}}]}}}"))
+          .isInstanceOf(MongoException.class).satisfies(e -> assertThat(((MongoException) e).getCode()).isEqualTo(50));
+    } finally {
+      GlobalConfiguration.COMMAND_REGEX_TIMEOUT.setValue(previous);
+    }
+    assertThat(ids(c, "{arr:{$elemMatch:{$or:[{name:{$regex:'^a'}}]}}}")).containsExactly(1);
+  }
 }
