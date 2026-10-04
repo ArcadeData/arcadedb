@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.Identifier;
@@ -72,14 +73,14 @@ final class MongoFilter {
   private final QueryMatcher matcher;
 
   MongoFilter(final Database database, final Document filter) {
-    this(filter, null, database);
+    this(database, filter, null);
   }
 
   /**
    * @param budget the regex budget of the whole command, shared by the filters of its entries (a bulk update or delete holds one
    *               filter per entry), or {@code null} for one of its own
    */
-  MongoFilter(final Document filter, final RegexBudget budget, final Database database) {
+  MongoFilter(final Database database, final Document filter, final RegexBudget budget) {
     this.original = filter;
     this.empty = filter == null || filter.isEmpty();
     this.sql = empty || onlyId(filter);
@@ -243,7 +244,7 @@ final class MongoFilter {
           throw new IllegalArgumentException("Operator " + key + " requires an array");
         final List<Object> converted = new ArrayList<>(list.size());
         for (final Object item : list)
-          converted.add(item instanceof Document document ? normalizeQuery(document, deadline, top) : item);
+          converted.add(logicalOperand(key, item, deadline, top));
         result.put(key, converted);
         continue;
       }
@@ -287,6 +288,12 @@ final class MongoFilter {
     all.add(result);
     all.addAll(lifted);
     return new Document("$and", all);
+  }
+
+  private static Document logicalOperand(final String operator, final Object item, final RegexBudget deadline, final boolean top) {
+    if (!(item instanceof Document document))
+      throw new IllegalArgumentException("Operator " + operator + " requires an array of documents");
+    return normalizeQuery(document, deadline, top);
   }
 
   /**
@@ -345,7 +352,7 @@ final class MongoFilter {
         if (operand instanceof List<?> list) {
           final List<Object> converted = new ArrayList<>(list.size());
           for (final Object item : list)
-            converted.add(item instanceof Document document ? normalizeQuery(document, deadline, false) : item);
+            converted.add(logicalOperand(operator, item, deadline, false));
           result.put(operator, converted);
         } else
           result.put(operator, operand);
@@ -401,6 +408,7 @@ final class MongoFilter {
   static final class RegexBudget {
     private final long timeoutNanos;
     private       long remainingNanos;
+    private       boolean exhausted;
 
     static RegexBudget of(final Database database) {
       return new RegexBudget(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(database));
@@ -414,11 +422,14 @@ final class MongoFilter {
     boolean find(final Pattern pattern, final String input) {
       if (timeoutNanos <= 0)
         return TimeBoundRegex.findUntil(pattern, input, Long.MAX_VALUE);
+      if (exhausted)
+        throw new TimeoutException("Regular expression time of the command exhausted (arcadedb.command.regexTimeout)");
       final long start = System.nanoTime();
       try {
         return TimeBoundRegex.findUntil(pattern, input, start + remainingNanos);
       } finally {
-        remainingNanos = Math.max(1, remainingNanos - (System.nanoTime() - start));
+        remainingNanos -= System.nanoTime() - start;
+        exhausted = remainingNanos <= 0;
       }
     }
   }

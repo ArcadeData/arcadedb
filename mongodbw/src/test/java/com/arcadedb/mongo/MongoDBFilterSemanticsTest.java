@@ -398,4 +398,14 @@ class MongoDBFilterSemanticsTest extends BaseMongoServerTest {
     assertThat(c.deleteMany(Document.parse("{$or:[{_id:2},{_id:4}]}")).getDeletedCount()).isEqualTo(2);
     assertThat(ids(c, "{}")).containsExactly(1, 3);
   }
+
+  @Test
+  void countOfAFilterOnAnArrayHonorsSkipAndLimitAtTheEdges() {
+    final MongoCollection<Document> c = collection("countedges", "{_id:1, t:['x']}", "{_id:2, t:['x']}", "{_id:3, t:['x']}", "{_id:4, t:['y']}");
+    final Document filter = Document.parse("{t:'x'}");
+    assertThat(c.countDocuments(filter, new CountOptions().limit(2))).isEqualTo(2);
+    assertThat(c.countDocuments(filter, new CountOptions().limit(10))).isEqualTo(3);
+    assertThat(c.countDocuments(filter, new CountOptions().skip(5))).isZero();
+    assertThat(c.countDocuments(filter, new CountOptions().skip(2).limit(5))).isEqualTo(1);
+  }
 }

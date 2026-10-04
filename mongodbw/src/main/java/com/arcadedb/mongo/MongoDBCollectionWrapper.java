@@ -547,16 +547,17 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
       }
     } else {
       // the documents are tested one by one: the skipped matches are not counted, the scan stops at the limit
-      final int[] seen = { 0, 0 };
+      final int[] skipped = { 0 };
+      final int[] matched = { 0 };
       filter.scanMatches(database, collectionName, rid -> {
-        if (seen[0] < skip) {
-          seen[0]++;
+        if (skipped[0] < skip) {
+          skipped[0]++;
           return true;
         }
-        seen[1]++;
-        return limit <= 0 || seen[1] < limit;
+        matched[0]++;
+        return limit <= 0 || matched[0] < limit;
       });
-      counted = seen[1];
+      counted = matched[0];
     }
 
     return counted;
