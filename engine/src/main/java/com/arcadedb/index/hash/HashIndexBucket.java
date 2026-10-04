@@ -415,6 +415,7 @@ public class HashIndexBucket extends PaginatedComponent {
 
       if (unique) {
         result.add(readCompressedRID(page, offset));
+        // callers pass limit 1 for a non-null unique key (HashIndex.getDiskResult)
         // a unique key holds one entry, but an all-null key is exempt from uniqueness (issue #9237): the caller asks for all of them
         if (limit > 0 && result.size() >= limit)
           return;
@@ -522,6 +523,7 @@ public class HashIndexBucket extends PaginatedComponent {
    * Removes all entries for the given key.
    */
   void remove(final Object[] keys) throws IOException {
+    // removes every entry of the key, an all-null one included: the commit path removes one record's entry by RID, below
     final byte[] serializedKey = serializeKeys(keys);
     final long hash = murmurHash64(serializedKey);
     final BasePage metaPage = metaPage();
