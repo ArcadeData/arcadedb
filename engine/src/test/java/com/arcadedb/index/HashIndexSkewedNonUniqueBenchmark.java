@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.schema.TypeIndexBuilder;
 
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -56,7 +57,7 @@ class HashIndexSkewedNonUniqueBenchmark {
     try {
       database.transaction(() -> {
         database.getSchema().createDocumentType("Entry").createProperty("k", Type.LONG);
-        final var builder = database.getSchema().buildTypeIndex("Entry", new String[] { "k" });
+        final TypeIndexBuilder builder = database.getSchema().buildTypeIndex("Entry", new String[] { "k" });
         if (pageSize == 0)
           builder.withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(false).create();
         else
