@@ -21,7 +21,6 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
-import com.arcadedb.engine.Component;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
@@ -86,7 +85,7 @@ class Issue8728FollowerSchemaEntryKeepsCountIT extends BaseRaftHATest {
     leaderDb.transaction(() -> createCountedType(leaderDb));
 
     final int followerIndex = restartFollowerAfterInsertsAndInsertMore(leaderIndex);
-    final Component bucketBefore = followerBucket(followerIndex);
+    final LocalBucket bucketBefore = followerBucket(followerIndex);
 
     // Idempotent DDL: a leadership transfer mid-commit makes LocalDatabase.transaction() re-run the lambda.
     leaderDb.transaction(() -> leaderDb.getSchema().getOrCreateDocumentType("Issue8728Trigger"));
@@ -119,7 +118,7 @@ class Issue8728FollowerSchemaEntryKeepsCountIT extends BaseRaftHATest {
     });
 
     final int followerIndex = restartFollowerAfterInsertsAndInsertMore(leaderIndex);
-    final Component bucketBefore = followerBucket(followerIndex);
+    final LocalBucket bucketBefore = followerBucket(followerIndex);
 
     leaderDb.getSchema().dropType(DROPPED);
     waitForReplicationOnAllServers();
@@ -148,14 +147,16 @@ class Issue8728FollowerSchemaEntryKeepsCountIT extends BaseRaftHATest {
 
     LogManager.instance().log(this, Level.INFO, "TEST: gracefully restarting follower %d", followerIndex);
     restartServer(followerIndex);
+    assertLeaderUnchanged(leaderIndex);
 
     // The precondition the bug needs: the restarted follower took its counter from statistics.json. An unknown
     // counter (-1) would be recomputed from the pages and the test could not tell the fix from its absence.
-    assertThat(followerBucketInstance(followerIndex).getCachedRecordCount())
+    assertThat(followerBucket(followerIndex).getCachedRecordCount())
         .as("follower %d must start with the counter its graceful close stored", followerIndex).isEqualTo(INITIAL);
 
     insert(leaderDb, INSERTED);
     waitForReplicationOnAllServers();
+    assertLeaderUnchanged(leaderIndex);
     assertThat(getServerDatabase(followerIndex, getDatabaseName()).countType(TYPE, false))
         .as("follower %d must count the replicated inserts before any schema entry", followerIndex).isEqualTo(TOTAL);
     return followerIndex;
@@ -192,12 +193,17 @@ class Issue8728FollowerSchemaEntryKeepsCountIT extends BaseRaftHATest {
     });
   }
 
-  private Component followerBucket(final int followerIndex) {
+  private LocalBucket followerBucket(final int followerIndex) {
     final LocalSchema schema = getServerDatabase(followerIndex, getDatabaseName()).getSchema().getEmbedded();
-    return schema.getFileByIdIfExists(schema.getType(TYPE).getBuckets(false).getFirst().getFileId());
+    return (LocalBucket) schema.getFileByIdIfExists(schema.getType(TYPE).getBuckets(false).getFirst().getFileId());
   }
 
-  private LocalBucket followerBucketInstance(final int followerIndex) {
-    return (LocalBucket) followerBucket(followerIndex);
+  /**
+   * The test writes through one leader handle and computes {@link #TOTAL} up front: a leadership move would re-run an
+   * insert lambda or leave the handle on a follower, so it is reported as such rather than as a wrong count.
+   */
+  private void assertLeaderUnchanged(final int leaderIndex) {
+    assertThat(findLeaderIndex()).as("leadership must stay on server %d for the expected counts to hold", leaderIndex)
+        .isEqualTo(leaderIndex);
   }
 }
