@@ -371,13 +371,22 @@ class GraphAlgorithmsTest extends TestHelper {
         ref[Math.max(ra, rb)] = Math.min(ra, rb);
     }
 
-    final int[] components = GraphAlgorithms.connectedComponents(n, fwdOff, fwdNb, bwdOff, bwdNb);
-    assertThat(components).hasSize(n);
-    for (int i = 0; i < n; i++) {
-      int r = i;
-      while (ref[r] != r)
-        r = ref[r];
-      assertThat(components[i]).as("component of node %d", i).isEqualTo(r);
+    // a trailing edge type with no CSR (null entries) must be skipped by every phase
+    final int[][] fwdOffN = Arrays.copyOf(fwdOff, types + 1);
+    final int[][] fwdNbN = Arrays.copyOf(fwdNb, types + 1);
+    final int[][] bwdOffN = Arrays.copyOf(bwdOff, types + 1);
+    final int[][] bwdNbN = Arrays.copyOf(bwdNb, types + 1);
+
+    // the kernel is racy by design: repeat the run, every schedule must produce the same exact result
+    for (int run = 0; run < 5; run++) {
+      final int[] components = GraphAlgorithms.connectedComponents(n, fwdOffN, fwdNbN, bwdOffN, bwdNbN);
+      assertThat(components).hasSize(n);
+      for (int i = 0; i < n; i++) {
+        int r = i;
+        while (ref[r] != r)
+          r = ref[r];
+        assertThat(components[i]).as("run %d, component of node %d", run, i).isEqualTo(r);
+      }
     }
   }
 
