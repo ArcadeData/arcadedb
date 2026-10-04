@@ -83,6 +83,11 @@ public class Issue9058And9059And9056RedisParityTest extends BaseRedisServerTest 
       // a hostile exponent is refused instead of allocating a gigantic number
       assertThatThrownBy(() -> text(jedis, "INCRBYFLOAT", "f9", "1e999999999")).isInstanceOf(JedisDataException.class)
           .hasMessageContaining("increment would produce NaN or Infinity");
+
+      // a tiny exponent must not make the exact addition align gigantic numbers (increment and stored-value paths)
+      assertThat(text(jedis, "INCRBYFLOAT", "t1", "1e-999999999")).isEqualTo("0");
+      jedis.set("t2", "1e-999999999");
+      assertThat(text(jedis, "INCRBYFLOAT", "t2", "1")).isEqualTo("1");
     }
   }
 
@@ -141,6 +146,12 @@ public class Issue9058And9059And9056RedisParityTest extends BaseRedisServerTest 
 
       // already gone: nothing deleted, nothing raised
       assertThat(jedis.hdel(bucket, rid[0])).isEqualTo(0L);
+
+      // a malformed RID is refused before anything is deleted, variables included
+      jedis.set("keep", "x");
+      refused(jedis, "invalid RID", "HDEL", bucket, "keep", "#abc");
+      assertThat(jedis.get("keep")).isEqualTo("x");
+      assertThat(count(db)).isEqualTo(3L);
 
       // several RIDs in one call, mixed with a global variable name
       jedis.set("var", "x");
