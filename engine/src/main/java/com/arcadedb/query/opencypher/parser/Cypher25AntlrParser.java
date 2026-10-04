@@ -190,9 +190,11 @@ public class Cypher25AntlrParser {
   }
 
   private static int maxClauses(final Database database) {
-    return database == null ?
+    final int configured = database == null ?
         GlobalConfiguration.CYPHER_MAX_CLAUSES.getValueAsInteger() :
         database.getConfiguration().getValueAsInteger(GlobalConfiguration.CYPHER_MAX_CLAUSES);
+    // A limit below 1 would reject every query: fall back to the default instead
+    return configured < 1 ? (Integer) GlobalConfiguration.CYPHER_MAX_CLAUSES.getDefValue() : configured;
   }
 
   /**

@@ -91,6 +91,18 @@ class CypherNestingGuardIssue9051Test extends TestHelper {
   }
 
   @Test
+  void nonPositiveMaxClausesFallsBackToTheDefault() {
+    final Object previous = GlobalConfiguration.CYPHER_MAX_CLAUSES.getValue();
+    GlobalConfiguration.CYPHER_MAX_CLAUSES.setValue(0);
+    try {
+      database.getSchema().createVertexType("Person");
+      drain("MATCH (n:Person) RETURN n");
+    } finally {
+      GlobalConfiguration.CYPHER_MAX_CLAUSES.setValue(previous);
+    }
+  }
+
+  @Test
   void moderateNestingStillWorks() {
     database.getSchema().createVertexType("Person");
     database.transaction(() -> database.newVertex("Person").set("id", 1).save());
