@@ -264,7 +264,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     // pipeline that writes ($out, $merge) is not read-only: it keeps failing on the missing collection, as it always did
     if (!database.getSchema().existsType(collectionName)) {
       if (writesTo(document.get("pipeline")))
-        database.countType(collectionName, false);
+        throw new MongoServerError(26, "NamespaceNotFound", "ns does not exist: " + getFullCollectionNamespace(collectionName));
       return firstBatchCursorResponse(collectionName, "firstBatch", new ArrayList<>(), 0);
     }
 
@@ -616,7 +616,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
           final boolean single = limit != null && limit.intValue() == 1;
 
           final MongoFilter filter = new MongoFilter(database, q, budget);
-          if (filter.isSql()) {
+          if (filter.isEmpty()) {
             final Map<String, Object> params = new HashMap<>();
             final StringBuilder sql = new StringBuilder("DELETE FROM ").append(Identifier.quote(collectionName));
             filter.appendWhere(sql, params);
@@ -766,7 +766,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     // expressed as a single SQL UPDATE, so those are applied to each matching record. Everything else stays one SQL UPDATE.
     final MongoFilter filter = new MongoFilter(database, q, budget);
     // a filter the SQL cannot answer exactly (see MongoFilter) also selects the records itself
-    if (isReplacement(u) || setsDottedPath(u) || touchesId(u) || !filter.isSql())
+    if (isReplacement(u) || setsDottedPath(u) || touchesId(u) || !filter.isEmpty())
       return executeUpdateOnRecords(collectionName, filter, u, multi);
 
     final Map<String, Object> params = new HashMap<>();

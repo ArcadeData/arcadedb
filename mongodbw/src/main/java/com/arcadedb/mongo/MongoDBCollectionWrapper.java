@@ -515,16 +515,7 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
 
     int counted = 0;
 
-    if (filter.isSql() && skip <= 0 && limit <= 0) {
-      // No pagination to apply: let the engine aggregate instead of materializing every matching row.
-      final Map<String, Object> params = new HashMap<>();
-      final StringBuilder sql = new StringBuilder("select count(*) as count from ").append(Identifier.quote(collectionName));
-      filter.appendWhere(sql, params);
-
-      try (final ResultSet rs = database.query("SQL", sql.toString(), params)) {
-        counted = rs.hasNext() ? ((Number) rs.next().getProperty("count")).intValue() : 0;
-      }
-    } else if (filter.isSql()) {
+    if (filter.isEmpty()) {
       // Push skip/limit into the query itself - @rid is enough to count a row, no need to materialize the record.
       final Map<String, Object> params = new HashMap<>();
       final StringBuilder sql = new StringBuilder("select @rid from ").append(Identifier.quote(collectionName));
@@ -593,7 +584,7 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
     if (filter.isEmpty() && !hasOrderBy) {
       // SCAN
       MongoDBToSqlTranslator.fillResultSet(numberToSkip, numberToReturn, result, database.iterateType(collectionName, false));
-    } else if (!filter.isSql() && !filter.narrowsById() && !hasOrderBy) {
+    } else if (!filter.isEmpty() && !filter.narrowsById() && !hasOrderBy) {
       // no order to honor: the type is read directly, without the SQL executor in between
       MongoDBToSqlTranslator.fillResultSet(numberToSkip, numberToReturn, result,
           new FilteredIterator(database.iterateType(collectionName, false), filter));
@@ -622,7 +613,7 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
       }
 
       try (final ResultSet rs = database.query("SQL", sql.toString(), params)) {
-        if (filter.isSql())
+        if (filter.isEmpty())
           MongoDBToSqlTranslator.fillResultSet(numberToSkip, numberToReturn, result, rs);
         else
           MongoDBToSqlTranslator.fillResultSet(numberToSkip, numberToReturn, result, new FilteredIterator(rs, filter));
