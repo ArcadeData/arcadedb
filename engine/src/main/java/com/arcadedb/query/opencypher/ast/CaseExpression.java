@@ -50,6 +50,8 @@ public class CaseExpression implements Expression {
   // (numeric type folding, temporal, list, RID interop) instead of strict Object.equals(). Built once
   // per CASE AST node, not per evaluated row.
   private final ComparisonExpression whenEquality;
+  // Extended form only: binds the evaluated operand for the comparison-form WHEN predicates; null when there are none
+  private final CaseOperandExpression operandHolder;
 
   /**
    * Constructor for simple CASE form (no case expression).
@@ -63,6 +65,12 @@ public class CaseExpression implements Expression {
    */
   public CaseExpression(final Expression caseExpression, final List<CaseAlternative> alternatives,
                         final Expression elseExpression) {
+    this(caseExpression, alternatives, elseExpression, null);
+  }
+
+  public CaseExpression(final Expression caseExpression, final List<CaseAlternative> alternatives,
+                        final Expression elseExpression, final CaseOperandExpression operandHolder) {
+    this.operandHolder = operandHolder;
     this.caseExpression = caseExpression;
     this.alternatives = alternatives;
     this.elseExpression = elseExpression;
@@ -85,16 +93,25 @@ public class CaseExpression implements Expression {
     // Extended form: CASE expr WHEN value THEN result
     if (caseExpression != null) {
       final Object caseValue = subEvaluator.evaluate(caseExpression);
+      if (operandHolder != null)
+        operandHolder.bind(caseValue);
+      try {
+        for (final CaseAlternative alternative : alternatives) {
+          final Object whenValue = subEvaluator.evaluate(alternative.getWhenExpression());
 
-      for (final CaseAlternative alternative : alternatives) {
-        final Object whenValue = subEvaluator.evaluate(alternative.getWhenExpression());
-
-        // A comparison-form WHEN (WHEN > 5) is a predicate already; a plain value is checked for equality using
-        // Cypher '=' semantics (numeric folding, temporal, list, RID interop)
-        if (alternative.isPredicate() ? isTrue(whenValue)
-            : Boolean.TRUE.equals(whenEquality.evaluateWithValues(caseValue, whenValue))) {
-          return subEvaluator.evaluate(alternative.getThenExpression());
+          // A comparison-form WHEN (WHEN > 5) is a predicate over the bound operand; a plain value is checked for
+          // equality using Cypher '=' semantics (numeric folding, temporal, list, RID interop)
+          if (alternative.isPredicate() ? isTrue(whenValue)
+              : Boolean.TRUE.equals(whenEquality.evaluateWithValues(caseValue, whenValue))) {
+            // the THEN branch may evaluate this very CASE again (nested rows), so release the operand first
+            if (operandHolder != null)
+              operandHolder.unbind();
+            return subEvaluator.evaluate(alternative.getThenExpression());
+          }
         }
+      } finally {
+        if (operandHolder != null)
+          operandHolder.unbind();
       }
     }
     // Simple form: CASE WHEN condition THEN result
@@ -170,7 +187,7 @@ public class CaseExpression implements Expression {
     if (caseExpression != null)
       sb.append(' ').append(caseExpression.getText());
     for (final CaseAlternative alternative : alternatives)
-      sb.append(" WHEN ").append(alternative.getWhenExpression().getText())
+      sb.append(" WHEN ").append(alternative.getWhenText())
           .append(" THEN ").append(alternative.getThenExpression().getText());
     if (elseExpression != null)
       sb.append(" ELSE ").append(elseExpression.getText());

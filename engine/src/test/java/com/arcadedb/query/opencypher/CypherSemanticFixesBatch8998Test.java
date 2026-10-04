@@ -125,6 +125,18 @@ class CypherSemanticFixesBatch8998Test extends TestHelper {
         .containsExactly("hit", "end", "miss");
   }
 
+  @Test
+  void comparisonFormCaseEvaluatesItsOperandOnce() {
+    // a non-deterministic operand must be one value for every WHEN: with three re-evaluations the three
+    // thresholds below would not partition [0,1) and some rows would fall through to 'none'
+    assertThat(column("UNWIND range(1, 300) AS i RETURN CASE rand() WHEN < 0.3 THEN 'a' WHEN >= 0.3 THEN 'b' ELSE 'none' END AS r", "r"))
+        .doesNotContain("none");
+    // an aggregate operand is computed once and compared by every WHEN
+    assertThat(column("UNWIND range(1, 10) AS i RETURN CASE count(*) WHEN > 20 THEN 'big' WHEN > 5 THEN 'mid' ELSE 'small' END AS r", "r"))
+        .containsExactly("mid");
+    assertThat(column("UNWIND [1, 2] AS v WITH v RETURN CASE v WHEN > 1 THEN 'x' ELSE 'y' END AS r", "r")).containsExactly("y", "x");
+  }
+
   // ---- #8994
 
   @Test

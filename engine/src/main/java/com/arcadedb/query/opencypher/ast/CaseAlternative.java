@@ -28,15 +28,22 @@ public class CaseAlternative {
   // Extended CASE only: the WHEN expression is already a boolean predicate over the operand (WHEN > 5, WHEN IS NULL)
   // rather than a value to compare it with
   private final boolean    predicate;
+  // The WHEN as the user wrote it, for getText(); only set when the expression is a rewritten predicate
+  private final String     whenText;
 
   public CaseAlternative(final Expression whenExpression, final Expression thenExpression) {
-    this(whenExpression, thenExpression, false);
+    this(whenExpression, thenExpression, null);
   }
 
-  public CaseAlternative(final Expression whenExpression, final Expression thenExpression, final boolean predicate) {
+  public CaseAlternative(final Expression whenExpression, final Expression thenExpression, final String whenText) {
     this.whenExpression = whenExpression;
     this.thenExpression = thenExpression;
-    this.predicate = predicate;
+    this.predicate = whenText != null;
+    this.whenText = whenText;
+  }
+
+  public String getWhenText() {
+    return whenText != null ? whenText : whenExpression.getText();
   }
 
   public boolean isPredicate() {
