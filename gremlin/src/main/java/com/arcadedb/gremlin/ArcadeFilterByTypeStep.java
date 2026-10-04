@@ -112,11 +112,19 @@ public class ArcadeFilterByTypeStep<S, E extends Element> extends AbstractStep<S
       if (!(type instanceof EdgeType))
         return;
 
+      // A LIGHTWEIGHT EDGE HAS NO RECORD, SO THE BUCKET SCAN OF ITS TYPE IS EMPTY BY CONSTRUCTION (#9142)
+      final boolean lightweight = bucketName == null && LightweightEdges.isHeldBy(type);
+
       iteratorSupplier = () -> {
-        final Iterator<Record> rawIterator = bucketName == null ?
-            database.iterateType(this.typeName, true) :
-            database.iterateBucket(bucketName);
-        return new Iterator<>() {
+        final Iterator<? extends Record> rawIterator = lightweight ?
+            LightweightEdges.ofType(database, this.typeName) :
+            bucketName == null ? database.iterateType(this.typeName, true) : database.iterateBucket(bucketName);
+        return new CloseableIterator<E>() {
+          @Override
+          public void close() {
+            CloseableIterator.closeIterator(rawIterator);
+          }
+
           @Override
           public boolean hasNext() {
             return rawIterator.hasNext();

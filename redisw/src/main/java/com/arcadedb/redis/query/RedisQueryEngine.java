@@ -540,17 +540,17 @@ public class RedisQueryEngine implements QueryEngine {
    * primitive #8248 gave the wire path, because a read followed by a write lets two concurrent INCR calls read the
    * same starting value - applied once per {@link RamSlot}.
    */
-  private Number computeRamVariable(final String key, final UnaryOperator<Object> remapping, final RamSlot slot) {
+  private Object computeRamVariable(final String key, final UnaryOperator<Object> remapping, final RamSlot slot) {
     if (slot != null && slot.reserved)
-      return (Number) slot.value;
+      return slot.value;
     final RamOverlay overlay = ramOverlay();
     if (overlay != null && overlay.hasKey(key)) {
       final Object newValue = remapping.apply(overlay.get(key));
       overlay.set(key, newValue);
-      return (Number) newValue;
+      return newValue;
     }
     final Object newValue = database.computeGlobalVariable(key, remapping);
-    return (Number) (slot != null ? slot.reserve(newValue) : newValue);
+    return slot != null ? slot.reserve(newValue) : newValue;
   }
 
   private String set(final List<String> parts) {
@@ -614,19 +614,19 @@ public class RedisQueryEngine implements QueryEngine {
    * add that refuses to overflow silently, and real Redis' own error text. See {@link #computeRamVariable} for
    * atomicity.
    */
-  private Number incrBy(final List<String> parts, final boolean decimal, final RamSlot slot) {
+  private Object incrBy(final List<String> parts, final boolean decimal, final RamSlot slot) {
     if (parts.size() < 2) {
       throw new CommandParsingException("INCR/INCRBY requires a key: INCR <key> [increment]");
     }
     final String key = normalizeRamKey(parts.get(1));
 
     if (decimal) {
-      final double increment = parts.size() > 2 ? Double.parseDouble(parts.get(2)) : 1D;
-      return computeRamVariable(key, RedisCounterOperations.incrementByFloat(increment), slot);
+      // the decimal TEXT, as on the wire (#9058): a Double would lose digits and turn a huge result into Infinity
+      return computeRamVariable(key, RedisCounterOperations.incrementByFloat(parts.size() > 2 ? parts.get(2) : "1"), slot);
     }
 
-    final long increment = parts.size() > 2 ? Long.parseLong(parts.get(2)) : 1L;
-    return computeRamVariable(key, RedisCounterOperations.incrementBy(increment), slot);
+    final long increment = parts.size() > 2 ? RedisCounterOperations.parseInteger(parts.get(2)) : 1L;
+    return (Number) computeRamVariable(key, RedisCounterOperations.incrementBy(increment), slot);
   }
 
   /** See {@link #incrBy}. */
@@ -635,9 +635,9 @@ public class RedisQueryEngine implements QueryEngine {
       throw new CommandParsingException("DECR/DECRBY requires a key: DECR <key> [decrement]");
     }
     final String key = normalizeRamKey(parts.get(1));
-    final long decrement = parts.size() > 2 ? Long.parseLong(parts.get(2)) : 1L;
+    final long decrement = parts.size() > 2 ? RedisCounterOperations.parseInteger(parts.get(2)) : 1L;
 
-    return computeRamVariable(key, RedisCounterOperations.decrementBy(decrement), slot);
+    return (Number) computeRamVariable(key, RedisCounterOperations.decrementBy(decrement), slot);
   }
 
   // --- Persistent Commands (database operations) ---

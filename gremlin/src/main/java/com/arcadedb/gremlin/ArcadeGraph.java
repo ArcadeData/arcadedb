@@ -24,6 +24,7 @@ import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.graph.LightEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.gremlin.io.ArcadeIoRegistry;
 import com.arcadedb.gremlin.service.ArcadeServiceRegistry;
@@ -419,8 +420,10 @@ public class ArcadeGraph implements Graph, Closeable {
         if (t instanceof EdgeType)
           buckets.addAll(t.getBuckets(true));
 
-      if (buckets.isEmpty())
-        return EMPTY_EDGES;
+      if (buckets.isEmpty()) {
+        final CloseableIterator<Edge> lightweight = lightweightEdges();
+        return lightweight != null ? lightweight : EMPTY_EDGES;
+      }
 
       // BUILD THE QUERY
       final StringBuilder query = new StringBuilder("select from bucket:[");
@@ -438,7 +441,7 @@ public class ArcadeGraph implements Graph, Closeable {
           .filter(a -> a.getIdentity().isEmpty() || database.existsRecord(a.getIdentity().get()))
           .map(result -> (Edge) new ArcadeEdge(this, (com.arcadedb.graph.Edge) result.toElement()))
           .iterator();
-      return closingIterator(base, resultSet);
+      return concat(closingIterator(base, resultSet), lightweightEdges());
 
     }
 
@@ -615,7 +618,57 @@ public class ArcadeGraph implements Graph, Closeable {
   }
 
   protected void deleteElement(final ArcadeElement element) {
-    database.deleteRecord(element.getBaseElement().getRecord());
+    // A LIGHTWEIGHT EDGE HAS NO RECORD TO DELETE: IT IS REMOVED FROM THE TWO VERTICES THAT LIST IT (#9142)
+    if (element.getBaseElement() instanceof LightEdge edge)
+      edge.delete();
+    else
+      database.deleteRecord(element.getBaseElement().getRecord());
+  }
+
+  /** The LIGHTWEIGHT edges of the database, which no bucket holds (#9142). The scans open as the iterator is read. */
+  private CloseableIterator<Edge> lightweightEdges() {
+    if (!LightweightEdges.exist(database))
+      return null;
+
+    final CloseableIterator<com.arcadedb.graph.Edge> edges = LightweightEdges.all(database);
+    return new CloseableIterator<>() {
+      @Override
+      public boolean hasNext() {
+        return edges.hasNext();
+      }
+
+      @Override
+      public Edge next() {
+        return new ArcadeEdge(ArcadeGraph.this, edges.next());
+      }
+
+      @Override
+      public void close() {
+        edges.close();
+      }
+    };
+  }
+
+  private static <T> Iterator<T> concat(final CloseableIterator<T> first, final CloseableIterator<T> second) {
+    if (second == null)
+      return first;
+    return new CloseableIterator<>() {
+      @Override
+      public boolean hasNext() {
+        return first.hasNext() || second.hasNext();
+      }
+
+      @Override
+      public T next() {
+        return first.hasNext() ? first.next() : second.next();
+      }
+
+      @Override
+      public void close() {
+        first.close();
+        second.close();
+      }
+    };
   }
 
   public BasicDatabase getDatabase() {
