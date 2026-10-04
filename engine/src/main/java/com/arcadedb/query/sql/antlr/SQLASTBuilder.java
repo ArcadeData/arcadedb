@@ -3040,7 +3040,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
   /**
    * Map entry visitor - handles key: value.
-   * Grammar: mapEntry : (identifier | STRING_LITERAL) COLON expression
+   * Grammar: mapEntry : (identifier | MAXDEPTH | STRING_LITERAL) COLON expression
    */
   @Override
   public JsonItem visitMapEntry(final SQLParser.MapEntryContext ctx) {
@@ -3050,6 +3050,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       // Left side (key) can be identifier or string literal
       if (ctx.identifier() != null) {
         item.leftIdentifier = (Identifier) visit(ctx.identifier());
+      } else if (ctx.MAXDEPTH() != null) {
+        // the keyword is case-insensitive but the option consumers look the key up as spelled: normalise it
+        item.leftIdentifier = new Identifier("maxDepth");
       } else if (ctx.STRING_LITERAL() != null) {
         // Remove quotes from string literal
         String str = ctx.STRING_LITERAL().getText();
@@ -8072,17 +8075,11 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       final ArraySingleValuesSelector multiSelector = new ArraySingleValuesSelector();
 
       // Add all selectors (first one plus the ones after commas)
-      for (int i = 0; i < ctx.expression().size(); i++) {
+      // the generated accessor rescans all the children on every call: fetch the list once (#9053)
+      final List<SQLParser.ExpressionContext> expressions = ctx.expression();
+      for (int i = 0; i < expressions.size(); i++) {
         final ArraySelector selector = new ArraySelector();
-
-        if (ctx.expression(i) != null) {
-          selector.expression = (Expression) visit(ctx.expression(i));
-        } else if (ctx.rid(i) != null) {
-          selector.rid = (Rid) visit(ctx.rid(i));
-        } else if (ctx.inputParameter(i) != null) {
-          selector.inputParam = (InputParameter) visit(ctx.inputParameter(i));
-        }
-
+        selector.expression = (Expression) visit(expressions.get(i));
         multiSelector.items.add(selector);
       }
 
