@@ -36,7 +36,7 @@ import java.util.stream.Collectors;
 
 public class UpdateStatement extends Statement {
 
-  private final DmlSourcePlanKey sourcePlanKey = new DmlSourcePlanKey();
+  private final DmlSourcePlanKey sourcePlanKey = new DmlSourcePlanKey(this);
   public FromClause             target;
   public List<UpdateOperations> operations     = new ArrayList<UpdateOperations>();
   public boolean                upsert         = false;
