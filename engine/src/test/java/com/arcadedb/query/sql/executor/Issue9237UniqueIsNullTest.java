@@ -81,6 +81,28 @@ class Issue9237UniqueIsNullTest extends TestHelper {
   }
 
   @Test
+  void isNullAfterAPendingRemovalOfOneNullRecord() {
+    for (final String[] t : TYPES)
+      database.transaction(() -> {
+        database.command("sql", "DELETE FROM " + t[0] + " WHERE id = 2");
+        assertThat(ids("SELECT id FROM " + t[0] + " WHERE p IS NULL")).as(t[0]).containsExactly(3L, 4L);
+      });
+  }
+
+  @Test
+  void manyNullRecordsSpanningOverflowPages() {
+    for (final String[] t : TYPES) {
+      database.transaction(() -> {
+        for (int i = 100; i < 3100; i++)
+          database.newVertex(t[0]).set("id", i).save();
+      });
+      assertThat(ids("SELECT count(*) AS id FROM " + t[0] + " WHERE p IS NULL")).as(t[0]).containsExactly(3003L);
+      database.transaction(() -> database.command("sql", "DELETE FROM " + t[0] + " WHERE id >= 100 AND id < 105"));
+      assertThat(ids("SELECT count(*) AS id FROM " + t[0] + " WHERE p IS NULL")).as(t[0]).containsExactly(2998L);
+    }
+  }
+
+  @Test
   void isNullAfterAReopen() {
     reopenDatabase();
     for (final String[] t : TYPES)

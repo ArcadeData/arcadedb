@@ -529,7 +529,7 @@ public class HashIndexBucket extends PaginatedComponent {
     final int dirIndex = directoryIndex(hash, metaPage.readInt(META_GLOBAL_DEPTH));
     final int bucketPageNum = readDirectoryEntry(metaPage.readInt(metaTailOffset), dirIndex);
 
-    removeFromBucket(bucketPageNum, serializedKey, tagOf(hash), null, false);
+    removeFromBucket(bucketPageNum, serializedKey, tagOf(hash), null, TypeIndex.isAllNull(keys));
   }
 
   /**
@@ -596,7 +596,8 @@ public class HashIndexBucket extends PaginatedComponent {
             // look again from p
             p = findNextEntry(page, entryCount, serializedKey, tag, p);
           }
-          if (unique) {
+          // the one entry of a unique key is gone; an all-null key can have more of them on the overflow pages
+          if (unique && !nullKey) {
             updateTotalEntries(-totalRemoved);
             return;
           }
