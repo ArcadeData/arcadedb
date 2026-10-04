@@ -281,6 +281,20 @@ class Issue8649PatientApplyLockTest extends TestHelper {
   }
 
   @Test
+  void theRefusalRunIsReportedByTheStepThatCountedIt() {
+    final LocalBucket bucket = bucket();
+    bucket.setCachedRecordCount(-1);
+    bucket.invalidateCachedRecordCountForUnlockedApply();
+    final long stale = bucket.getUnlockedApplyStamp() - 1;
+
+    // The log decides on these values, not on a later read a concurrent recompute could have moved
+    assertThat(bucket.publishRecomputedCountOrRefusalRun(10, stale)).isEqualTo(1);
+    assertThat(bucket.publishRecomputedCountOrRefusalRun(10, stale)).isEqualTo(2);
+    assertThat(bucket.publishRecomputedCountOrRefusalRun(10, bucket.getUnlockedApplyStamp())).isZero();
+    assertThat(bucket.getCachedRecordCount()).isEqualTo(10);
+  }
+
+  @Test
   void aRunOfRefusalsIsLoggedAtWarningOnlyOnPowersOfTwoFromFour() {
     assertThat(LocalBucket.isRefusalRunWorthAWarning(1)).isFalse();
     assertThat(LocalBucket.isRefusalRunWorthAWarning(2)).isFalse();

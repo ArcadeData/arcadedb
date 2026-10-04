@@ -1353,8 +1353,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // transaction-visible `total` below.
         // #8649: the scan ran under the lock, so its length is what a replicated apply has to wait out to leave it alone
         lastRecountScanMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - scanStartNanos);
-        if (!publishRecomputedCount(transaction != null ? total - transaction.getBucketRecordDelta(fileId) : total, stampAtScanStart)) {
-          final long refusedInARow = getConsecutiveRecountPublishesRefused();
+        final long refusedInARow = publishRecomputedCountOrRefusalRun(
+            transaction != null ? total - transaction.getBucketRecordDelta(fileId) : total, stampAtScanStart);
+        if (refusedInARow > 0) {
           // #8649: one refusal is the expected cost of a catch-up, so it stays at FINE. A run of them means the
           // replication never leaves this bucket a quiet window and every count(*) is a full scan: WARNING on 4, 8,
           // 16... refusals in a row, so the condition is visible without one line per count()
@@ -2592,18 +2593,27 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * Publishes a recomputed counter unless an unlocked apply ran since {@code stampAtScanStart} was read (issue #8640).
    * Synchronized with {@link #invalidateCachedRecordCountForUnlockedApply()} so the check and the publish are one step.
    */
-  synchronized boolean publishRecomputedCount(final long count, final long stampAtScanStart) {
+  boolean publishRecomputedCount(final long count, final long stampAtScanStart) {
+    return publishRecomputedCountOrRefusalRun(count, stampAtScanStart) == 0;
+  }
+
+  /**
+   * {@link #publishRecomputedCount} that tells a refusal by the run of refusals it brought the bucket to, read in the
+   * same step as the increment, so the log of a concurrent recompute cannot report this one's run (issue #8649).
+   *
+   * @return 0 when published, otherwise the refused recomputes in a row including this one
+   */
+  synchronized long publishRecomputedCountOrRefusalRun(final long count, final long stampAtScanStart) {
     if (unlockedApplyStamp != stampAtScanStart) {
       ++recountPublishesRefused;
-      ++consecutiveRecountPublishesRefused;
       if (database.getEmbedded() instanceof LocalDatabase local)
         local.recountPublishesRefused.incrementAndGet();
-      return false;
+      return ++consecutiveRecountPublishesRefused;
     }
     cachedRecordCount.set(count);
     // A known counter makes the applies skip the lock, so nothing else would clear the marks before the next -1
     resetApplyLockState();
-    return true;
+    return 0;
   }
 
   private RID createRecordInternal(final Record record, final boolean isPlaceHolder, final boolean discardRecordAfter) {
