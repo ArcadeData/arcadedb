@@ -160,11 +160,12 @@ public class Issue9058And9059And9056RedisParityTest extends BaseRedisServerTest 
       assertThat(count(db)).isEqualTo(3L);
 
       // several RIDs in one call, mixed with a global variable name
-      jedis.set("var", "x");
-      assertThat(jedis.hdel(bucket, rid[1], rid[2], "#999:99", "var")).isEqualTo(2L);
+      jedis.sendCommand(() -> "HSET".getBytes(), bucket, "{\"id\":\"var\"}");
+      assertThat(jedis.hexists(bucket, "var")).isTrue();
+      // two records and the variable are counted, the RID of a bucket that does not exist is 0
+      assertThat(jedis.hdel(bucket, rid[1], rid[2], "#999:99", "var")).isEqualTo(3L);
       assertThat(count(db)).isEqualTo(1L);
-      // the variable was deleted too, and it is the only thing besides the two records that was counted
-      assertThat(jedis.get("var")).isNull();
+      assertThat(jedis.hexists(bucket, "var")).isFalse();
 
       // the dotted form deletes the bucket RID and every RID among the keys
       assertThat(jedis.hdel(bucket + "." + rid[3], rid[3])).isEqualTo(1L);
