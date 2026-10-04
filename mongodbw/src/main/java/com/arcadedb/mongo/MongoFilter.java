@@ -120,12 +120,13 @@ final class MongoFilter {
     return sql || matches(record.toMap());
   }
 
-  boolean matches(final Result result) {
+  boolean matchesRow(final Result result) {
     return sql || matches(result.toMap());
   }
 
   /**
-   * The identities of the records matching the filter, up to {@code limit} of them (0 for no limit).
+   * The identities of the records matching the filter, up to {@code limit} of them (0 for no limit). The selection is a snapshot:
+   * the caller applies its change to these records without evaluating the filter again, and skips the ones deleted meanwhile.
    */
   List<RID> select(final Database database, final String collectionName, final int limit) {
     final List<RID> rids = new ArrayList<>();
@@ -222,7 +223,8 @@ final class MongoFilter {
 
   /**
    * An ObjectId stored outside the {@code _id} is tagged, but data written before the tagging holds the bare hex string: both forms
-   * are the same value.
+   * are the same value. Only for the operands that compare one value ({@code $eq}, {@code $ne}, {@code $in}, {@code $nin}, a plain
+   * equality): an array operand ({@code {refs: [oid]}}) and {@code $all} match the tagged form only.
    */
   private static List<Object> bothForms(final ObjectId objectId) {
     return List.of(objectId, objectId.getHexData());
@@ -312,7 +314,8 @@ final class MongoFilter {
   /**
    * The time a filter may spend in regular expressions, shared by every search of the filter: {@code arcadedb.command.regexTimeout}
    * counts the time inside the expressions only, not the reading of the documents around them, so a long scan with a harmless
-   * expression is not cut short while a pathological one still is.
+   * expression is not cut short while a pathological one still is. Not thread-safe: a filter is built per command and evaluated by
+   * one thread.
    */
   private static final class RegexBudget {
     private final long timeoutNanos;
@@ -351,8 +354,12 @@ final class MongoFilter {
     }
 
     static BoundedRegex of(final Document operators, final RegexBudget deadline) {
+      final Object regex = operators.get("$regex");
       final Object options = operators.get("$options");
-      return new BoundedRegex(String.valueOf(operators.get("$regex")), options != null ? options.toString() : null, deadline);
+      // {$regex: /abc/i}: the literal brings its own flags, an explicit $options wins
+      if (regex instanceof BsonRegularExpression literal)
+        return new BoundedRegex(literal.getPattern(), options != null ? options.toString() : literal.getOptions(), deadline);
+      return new BoundedRegex(String.valueOf(regex), options != null ? options.toString() : null, deadline);
     }
 
     private static Pattern compile(final String regex, final String options) {

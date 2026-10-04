@@ -599,6 +599,10 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
     if (filter.isEmpty() && !hasOrderBy) {
       // SCAN
       MongoDBToSqlTranslator.fillResultSet(numberToSkip, numberToReturn, result, database.iterateType(collectionName, false));
+    } else if (!filter.isSql() && !hasOrderBy) {
+      // no order to honor: the type is read directly, without the SQL executor in between
+      MongoDBToSqlTranslator.fillResultSet(numberToSkip, numberToReturn, result,
+          new FilteredIterator(database.iterateType(collectionName, false), filter));
     } else {
       // EXECUTE A SQL QUERY. A sort-only find() (no filter) still has to reach here rather than the scan above,
       // otherwise the order-by would be silently dropped. A filter the SQL cannot answer exactly (see MongoFilter) is applied to
@@ -634,14 +638,14 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
   }
 
   /**
-   * The rows of a result set that match a filter.
+   * The rows (or records) of an iterator that match a filter.
    */
-  private static final class FilteredIterator implements Iterator<Result> {
-    private final ResultSet   rows;
+  private static final class FilteredIterator implements Iterator<Object> {
+    private final Iterator<?> rows;
     private final MongoFilter filter;
-    private       Result      next;
+    private       Object      next;
 
-    FilteredIterator(final ResultSet rows, final MongoFilter filter) {
+    FilteredIterator(final Iterator<?> rows, final MongoFilter filter) {
       this.rows = rows;
       this.filter = filter;
     }
@@ -649,18 +653,19 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
     @Override
     public boolean hasNext() {
       while (next == null && rows.hasNext()) {
-        final Result candidate = rows.next();
-        if (filter.matches(candidate))
+        final Object candidate = rows.next();
+        if (candidate instanceof Result row ? filter.matchesRow(row) :
+            candidate instanceof com.arcadedb.database.Document document && filter.matches(document))
           next = candidate;
       }
       return next != null;
     }
 
     @Override
-    public Result next() {
+    public Object next() {
       if (!hasNext())
         throw new NoSuchElementException();
-      final Result result = next;
+      final Object result = next;
       next = null;
       return result;
     }

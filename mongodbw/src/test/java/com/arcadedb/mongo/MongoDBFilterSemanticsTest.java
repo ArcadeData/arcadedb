@@ -26,6 +26,7 @@ import com.mongodb.ServerAddress;
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.model.CountOptions;
 import com.mongodb.client.model.UpdateOptions;
+import com.mongodb.MongoException;
 import com.mongodb.MongoQueryException;
 import org.bson.Document;
 import org.bson.types.ObjectId;
@@ -36,6 +37,7 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
+import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -272,5 +274,24 @@ class MongoDBFilterSemanticsTest extends BaseMongoServerTest {
     for (final Document d : c.find(new Document("refs", oid)))
       found.add(d.get("_id"));
     assertThat(found).containsExactly(3);
+  }
+
+  @Test
+  void regexLiteralInsideAnOperatorDocumentKeepsItsFlags() {
+    final MongoCollection<Document> c = collection("literal", "{_id:1, s:'Hello'}", "{_id:2, s:'world'}");
+    assertThat(c.find(new Document("s", new Document("$regex", Pattern.compile("^hel", Pattern.CASE_INSENSITIVE)))).into(new ArrayList<>()))
+        .hasSize(1);
+  }
+
+  @Test
+  void invalidFiltersOnTheWritePathAreCleanErrorsAndLeaveNothingOpen() {
+    final MongoCollection<Document> c = collection("badwrites", "{_id:1, s:'a'}", "{_id:2, s:'b'}");
+    assertThatThrownBy(() -> c.deleteMany(Document.parse("{s:{$regex:'a)|(b'}}"))).isInstanceOf(MongoException.class);
+    assertThatThrownBy(() -> c.updateMany(Document.parse("{$not:{s:'a'}}"), Document.parse("{$set:{x:1}}"))).isInstanceOf(MongoException.class);
+    assertThatThrownBy(() -> c.updateOne(Document.parse("{s:{$regex:'(', $options:'i'}}"), Document.parse("{$set:{x:1}}"),
+        new UpdateOptions().upsert(true))).isInstanceOf(MongoException.class);
+
+    assertThat(c.countDocuments()).isEqualTo(2);
+    assertThat(c.deleteOne(Document.parse("{s:'b'}")).getDeletedCount()).isEqualTo(1);
   }
 }
