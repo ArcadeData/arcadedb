@@ -25,6 +25,7 @@ import com.mongodb.MongoCredential;
 import com.mongodb.ServerAddress;
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.model.CountOptions;
+import com.mongodb.client.model.DeleteManyModel;
 import com.mongodb.client.model.UpdateOptions;
 import com.mongodb.MongoException;
 import com.mongodb.MongoQueryException;
@@ -512,5 +513,30 @@ class MongoDBFilterSemanticsTest extends BaseMongoServerTest {
     assertThatThrownBy(() -> missing.aggregate(List.of(Document.parse("{$nosuchstage:{}}"))).into(new ArrayList<>())).isInstanceOf(
         MongoException.class);
     assertThat(missing.aggregate(List.of(Document.parse("{$match:{k:1}}"), Document.parse("{$count:'n'}"))).into(new ArrayList<>())).isEmpty();
+  }
+
+  @Test
+  void invalidFiltersAnswerBadValueOverTheWire() {
+    final MongoCollection<Document> c = collection("badvalue", "{_id:1, s:'a'}");
+    // 2 is BadValue
+    assertThatThrownBy(() -> ids(c, "{$expr:{$eq:[1,1]}}")).isInstanceOf(MongoException.class)
+        .satisfies(e -> assertThat(((MongoException) e).getCode()).isEqualTo(2));
+    assertThatThrownBy(() -> ids(c, "{s:{$regex:'a', $options:'z'}}")).isInstanceOf(MongoException.class)
+        .satisfies(e -> assertThat(((MongoException) e).getCode()).isEqualTo(2));
+  }
+
+  @Test
+  void aRegexTimeoutMidwayThroughAMultiEntryDeleteLeavesNothingChanged() {
+    final MongoCollection<Document> c = collection("rollback", "{_id:1, k:1, s:'" + "a".repeat(40) + "!'}", "{_id:2, k:2, s:'b'}");
+    final long previous = GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong();
+    GlobalConfiguration.COMMAND_REGEX_TIMEOUT.setValue(200);
+    try {
+      assertThatThrownBy(() -> c.bulkWrite(List.of(new DeleteManyModel<Document>(Document.parse("{_id:2, k:2}")),
+          new DeleteManyModel<Document>(Document.parse("{s:{$regex:'(.*a){20}$'}}"))))).isInstanceOf(MongoException.class);
+    } finally {
+      GlobalConfiguration.COMMAND_REGEX_TIMEOUT.setValue(previous);
+    }
+    // the first entry would have deleted _id 2: the whole command rolled back
+    assertThat(ids(c, "{}")).containsExactly(1, 2);
   }
 }

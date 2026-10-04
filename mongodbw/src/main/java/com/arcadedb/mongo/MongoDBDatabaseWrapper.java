@@ -265,6 +265,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     if (!database.getSchema().existsType(collectionName)) {
       if (writesTo(document.get("pipeline")) || startsWithChangeStream(document.get("pipeline")))
         throw new MongoServerError(26, "NamespaceNotFound", "ns does not exist: " + getFullCollectionNamespace(collectionName));
+      // accepted deviation: a stage that needs no input collection ($documents, $collStats) answers empty here
       // the pipeline is still validated: a malformed stage is an error whether or not the collection exists
       final List<Document> missingPipeline = Aggregation.parse(Aggregation.parse(document.get("pipeline")));
       Aggregation.fromPipeline(missingPipeline, plugin, this, null, oplog).validate(document);
@@ -290,7 +291,6 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     return firstBatchCursorResponse(collectionName, "firstBatch", aggregation.computeResult(), 0);
   }
 
-  // accepted deviation: a stage that needs no input collection ($documents, $collStats) answers empty on a missing collection here
   private static boolean startsWithChangeStream(final Object pipeline) {
     return pipeline instanceof List<?> stages && !stages.isEmpty() && stages.getFirst() instanceof Document first
         && first.containsKey("$changeStream");
