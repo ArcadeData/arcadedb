@@ -113,6 +113,7 @@ import java.util.NoSuchElementException;
 import java.util.PrimitiveIterator;
 import java.util.PriorityQueue;
 import java.util.Set;
+import java.util.WeakHashMap;
 import java.util.Timer;
 import java.util.TimerTask;
 import java.util.concurrent.CancellationException;
@@ -236,12 +237,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private volatile boolean                       persistedGraphUnresolved = true;
   private volatile ImmutableGraphIndex           graphIndex;        // Current graph (OnHeap or OnDisk)
   private volatile int[]                         ordinalToVectorId; // Maps graph ordinals to vector IDs
-  // The ordinal map a renumbering compaction translated while the old graph was resident, when it holds -1 for ordinals whose
-  // vector is gone: not sorted any more, so a lookup by vector id cannot binary search it (issue #9241). Identity compared.
-  private volatile OrdinalLookup                 ordinalMapWithDeadEntries;
+  // The lookups of the ordinal maps a renumbering compaction translated while the old graph was resident: such a map holds -1 for
+  // the ordinals whose vector is gone, so it is not sorted and a lookup by vector id cannot binary search it (issue #9241). Keyed
+  // by the identity of the map, so a query holding a map always finds the lookup that belongs to it, and the entry goes with the map.
+  private final Map<int[], OrdinalLookup> renumberedLookups = Collections.synchronizedMap(new WeakHashMap<>());
 
   /** The live ids of an ordinal map holding -1 entries, ascending, and the ordinal of each: a binary search over primitives */
-  private record OrdinalLookup(int[] map, int[] vectorIds, int[] ordinals) {
+  private record OrdinalLookup(int[] vectorIds, int[] ordinals) {
     int ordinalOf(final int vectorId) {
       final int position = Arrays.binarySearch(vectorIds, vectorId);
       return position < 0 ? -1 : ordinals[position];
@@ -918,7 +920,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         vectorIds[i] = map[ordinal];
         ordinals[i++] = ordinal;
       }
-    return new OrdinalLookup(map, vectorIds, ordinals);
+    return new OrdinalLookup(vectorIds, ordinals);
   }
 
   private void renumberResidentIds(final int[] oldVectorIds) {
@@ -926,12 +928,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (oldOrdinalMap != null && oldOrdinalMap.length > 0) {
       final int[] renumbered = new int[oldOrdinalMap.length];
       boolean anyDead = false;
-      for (int ordinal = 0; ordinal < renumbered.length; ordinal++) {
-        final int newId = Arrays.binarySearch(oldVectorIds, oldOrdinalMap[ordinal]);
-        renumbered[ordinal] = newId < 0 ? -1 : newId;
-        anyDead |= newId < 0;
+      // both are ascending: one pass over the two
+      for (int ordinal = 0, next = 0; ordinal < renumbered.length; ordinal++) {
+        final int oldId = oldOrdinalMap[ordinal];
+        while (next < oldVectorIds.length && oldVectorIds[next] < oldId)
+          next++;
+        final boolean live = next < oldVectorIds.length && oldVectorIds[next] == oldId;
+        renumbered[ordinal] = live ? next : -1;
+        anyDead |= !live;
       }
-      ordinalMapWithDeadEntries = anyDead ? lookupOf(renumbered) : null;
+      if (anyDead)
+        renumberedLookups.put(renumbered, lookupOf(renumbered));
       ordinalToVectorId = renumbered;
     }
 
@@ -4005,7 +4012,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
       try {
         // The ordinal map and the graph it describes change together (issue #8862).
         this.ordinalToVectorId = finalActiveVectorIds;
-        this.ordinalMapWithDeadEntries = null;
         this.graphIndex = builtGraph;
         // Published together with the graph they describe, and unconditionally - an empty set is the answer for
         // almost every build, and leaving a previous build's set in place would make the manifest below vouch for
@@ -7207,11 +7213,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
     final VectorLocationIndex locations = vectorIndex();
     // A map translated by a renumbering compaction holds -1 for the vectors that are gone and is not sorted: it is resolved
     // through its lookup for as long as that graph is the resident one
-    final OrdinalLookup deadEntriesLookup = ordinalMapWithDeadEntries;
-    final OrdinalLookup lookup = deadEntriesLookup != null && deadEntriesLookup.map() == ordinalMap ? deadEntriesLookup : null;
+    final OrdinalLookup lookup = renumberedLookups.get(ordinalMap);
     for (final RID rid : allowedRIDs) {
       for (final int vectorId : locations.getVectorIdsForRid(rid)) {
-        final int ordinal = lookup != null ? lookup.ordinalOf(vectorId) : Arrays.binarySearch(ordinalMap, vectorId);
+        final int ordinal =
+            lookup != null ? lookup.ordinalOf(vectorId) : Arrays.binarySearch(ordinalMap, vectorId);
         if (ordinal < 0)
           continue;
         if (count == ordinals.length)
