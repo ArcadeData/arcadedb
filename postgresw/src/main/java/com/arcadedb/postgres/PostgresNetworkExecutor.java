@@ -661,7 +661,8 @@ public class PostgresNetworkExecutor extends Thread {
     if (statement == null || !statement.namedStatement || statement.columnsDescribed || portal.catalogQuery
         || portal.columns == null || portal.columns.isEmpty())
       return;
-    statement.columns = portal.columns;
+    // a copy: the portal keeps adjusting its own map, the statement's layout is a promise that must not move
+    statement.columns = new LinkedHashMap<>(portal.columns);
     statement.columnsDescribed = true;
   }
 
