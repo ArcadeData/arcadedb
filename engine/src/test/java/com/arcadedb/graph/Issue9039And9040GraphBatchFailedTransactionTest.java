@@ -100,4 +100,17 @@ class Issue9039And9040GraphBatchFailedTransactionTest extends TestHelper {
         .isInstanceOf(TransactionException.class);
     assertThat(database.countType("Person", true)).isEqualTo(2);
   }
+
+  @Test
+  void failedCreateVerticesLeavesACallerOwnedTransactionToTheCaller() {
+    try (final GraphBatch batch = GraphBatch.builder(database).build()) {
+      database.begin();
+      assertThatThrownBy(() -> batch.createVertices("Person", new Object[][] { { "id", 2 }, { "id", 2 } }))
+          .isInstanceOf(DuplicatedKeyException.class);
+      // THE TRANSACTION WAS OPENED BY THE CALLER, WHO RESOLVES IT
+      assertThat(database.isTransactionActive()).isTrue();
+      database.rollback();
+    }
+    assertThat(database.countType("Person", true)).isEqualTo(0);
+  }
 }
