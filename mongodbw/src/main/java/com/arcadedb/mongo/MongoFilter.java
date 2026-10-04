@@ -52,8 +52,9 @@ import java.util.regex.PatternSyntaxException;
  * those is therefore evaluated on the document, by the matcher of the MongoDB emulation the plugin is built on, which implements
  * MongoDB's own rules: type brackets, array traversal, {@code $elemMatch}, {@code $all}, {@code $size}, dotted paths, ordering.
  * <p>
- * Only a filter on the {@code _id} alone stays in SQL: an {@code _id} is never an array, so the SQL answers are exact and the
- * unique index on it keeps serving the lookup. Every other filter reads the documents of the type, which is what makes the answers
+ * Only a filter on the {@code _id} alone stays in SQL: an {@code _id} is never an array, so the SQL answers are exact for the
+ * shapes of data an {@code _id} takes and the unique index on it keeps serving the lookup. (SQL still coerces across the types of an
+ * {@code _id}, such as a number and its string, which share one index key: a collection mixing those is the one case it is not exact.) Every other filter reads the documents of the type, which is what makes the answers
  * exact for any shape of stored data.
  * <p>
  * Regular expressions are searched through {@link TimeBoundRegex}, bounded by {@code arcadedb.command.regexTimeout} with one
@@ -62,6 +63,7 @@ import java.util.regex.PatternSyntaxException;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 final class MongoFilter {
+  // com.arcadedb.database.Document is spelled out in full below: its simple name is the one of the MongoDB Document imported here
   private static final Pattern ALWAYS = Pattern.compile("");
   private static final Pattern NEVER  = Pattern.compile("(?!)");
 
@@ -178,7 +180,7 @@ final class MongoFilter {
     } else
       for (final Iterator<Record> it = database.iterateType(collectionName, false); it.hasNext(); ) {
         final Record record = it.next();
-        if (record instanceof com.arcadedb.database.Document document && matches(document.toMap(false)) && !visitor.test(record.getIdentity()))
+        if (record instanceof com.arcadedb.database.Document document && matches(document) && !visitor.test(record.getIdentity()))
           return;
       }
   }
