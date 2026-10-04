@@ -116,7 +116,7 @@ public class AlgoModularityScore extends AbstractAlgoProcedure {
     }
 
     // L_c[c] = number of edges within community c (directed: both endpoints in c)
-    // d_c[c] = sum of out-degrees of nodes in community c
+    // d_c[c] = sum of the degrees (out + in) of nodes in community c, so the score does not depend on edge direction
     final long[] internalEdges = new long[numCommunities];
     final long[] totalDegree   = new long[numCommunities];
     long totalEdges = 0L;
@@ -127,12 +127,13 @@ public class AlgoModularityScore extends AbstractAlgoProcedure {
       totalDegree[ci] += deg;
       totalEdges += deg;
       for (final int j : adjOut[i]) {
+        totalDegree[vertexCommunity[j]]++;
         if (vertexCommunity[j] == ci)
           internalEdges[ci]++;
       }
     }
 
-    // m = total edges (directed count)
+    // m = total number of edges (each stored edge once; the degrees above count both of its ends)
     final long m = totalEdges;
     if (m == 0) {
       final ResultInternal r = new ResultInternal();
