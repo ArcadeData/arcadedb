@@ -118,14 +118,24 @@ class Issue9200WindowTraversalTest extends TestHelper {
 
   @Test
   @Tag("benchmark")
-  void windowTraversalIsNotSlowerOnAWideCorpus() throws Exception {
+  void windowTraversalOnAWideCorpus() throws Exception {
+    benchmark(30, 70);
+  }
+
+  @Test
+  @Tag("benchmark")
+  void windowTraversalOnSelectiveQueries() throws Exception {
+    benchmark(1, 4);
+  }
+
+  private void benchmark(final int minTerms, final int extraTerms) throws Exception {
     final LSMSparseVectorIndex index = buildCorpus(60_000);
     final Random random = new Random(1);
     final int rounds = 6, queries = 150;
     final int[][] qs = new int[queries][];
     final float[][] ws = new float[queries][];
     for (int q = 0; q < queries; q++) {
-      qs[q] = random.ints(0, DIMS).distinct().limit(30 + random.nextInt(70)).toArray();
+      qs[q] = random.ints(0, DIMS).distinct().limit(minTerms + random.nextInt(extraTerms)).toArray();
       ws[q] = new float[qs[q].length];
       for (int i = 0; i < ws[q].length; i++)
         ws[q][i] = (float) (0.5 + random.nextDouble());
@@ -142,8 +152,8 @@ class Issue9200WindowTraversalTest extends TestHelper {
           nanos[mode] += System.nanoTime() - t0;
       }
     GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.reset();
-    LogManager.instance().log(this, Level.INFO, "Sparse top-10 on 60k docs: classic %.3f ms/query, window %.3f ms/query",
-        nanos[0] / 1e6 / ((rounds - 1) * queries), nanos[1] / 1e6 / ((rounds - 1) * queries));
+    LogManager.instance().log(this, Level.INFO, "Sparse top-10 on 60k docs, %d to %d terms: classic %.3f ms/query, window %.3f ms/query",
+        minTerms, minTerms + extraTerms - 1, nanos[0] / 1e6 / ((rounds - 1) * queries), nanos[1] / 1e6 / ((rounds - 1) * queries));
     assertThat(nanos[0]).isPositive();
   }
 
