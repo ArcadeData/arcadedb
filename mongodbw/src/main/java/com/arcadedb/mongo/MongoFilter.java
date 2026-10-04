@@ -71,7 +71,7 @@ import java.util.regex.PatternSyntaxException;
  */
 final class MongoFilter {
   // com.arcadedb.database.Document is spelled out in full below: its simple name is the one of the MongoDB Document imported here
-  private static final Pattern ALWAYS = Pattern.compile("");
+  private static final Pattern ALWAYS = Pattern.compile("(?s).*");
   private static final Pattern NEVER  = Pattern.compile("(?!)");
   private static final Set<String> NARROWING_OPERATORS = Set.of("$eq", "$in");
 
