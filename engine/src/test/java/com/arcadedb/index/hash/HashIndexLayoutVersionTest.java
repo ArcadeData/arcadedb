@@ -1,0 +1,222 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.index.hash;
+
+import com.arcadedb.TestHelper;
+import com.arcadedb.index.TypeIndex;
+import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.Schema;
+
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Random;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * Issue #5712: the buckets of a hash index are no longer kept sorted (version 2: append + 1-byte slot tags), while the
+ * indexes created before keep the sorted layout (version 1) and must still open and work. Every scenario runs on both
+ * layouts, with a tiny page so that splits and overflow chains are exercised.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+class HashIndexLayoutVersionTest extends TestHelper {
+  private static final int PAGE_SIZE = 1_024;
+
+  @AfterEach
+  void restoreLayout() {
+    HashIndex.HashIndexFactoryHandler.layoutVersion = HashIndexBucket.CURRENT_VERSION;
+  }
+
+  @ParameterizedTest
+  @ValueSource(ints = { HashIndexBucket.LEGACY_SORTED_VERSION, HashIndexBucket.CURRENT_VERSION })
+  void uniqueIndexInsertLookupRemove(final int layout) {
+    final Map<String, Integer> expected = createAndFill("UNIQUE_HASH", layout, 4_000, 4_000);
+    assertThat(layoutOf("U")).isEqualTo(layout);
+    verify(expected, 4_000);
+
+    // remove one key out of three, then put them back with another value
+    final Random random = new Random(7);
+    database.transaction(() -> {
+      for (final String key : expected.keySet().toArray(new String[0]))
+        if (random.nextInt(3) == 0) {
+          database.command("sql", "DELETE FROM U WHERE k = ?", key).close();
+          expected.remove(key);
+        }
+    });
+    verify(expected, 4_000);
+
+    database.transaction(() -> {
+      for (int i = 0; i < 4_000; i += 3) {
+        final String key = "key-" + i;
+        if (!expected.containsKey(key)) {
+          database.command("sql", "INSERT INTO U SET k = ?, v = ?", key, -i).close();
+          expected.put(key, -i);
+        }
+      }
+    });
+    verify(expected, 4_000);
+  }
+
+  @ParameterizedTest
+  @ValueSource(ints = { HashIndexBucket.LEGACY_SORTED_VERSION, HashIndexBucket.CURRENT_VERSION })
+  void notUniqueIndexKeepsEveryRidAndRemovesOne(final int layout) {
+    // 40 keys with 150 records each: the entries outgrow the page and spill into extra entries and overflow pages
+    createAndFill("NOTUNIQUE_HASH", layout, 6_000, 40);
+    assertThat(layoutOf("U")).isEqualTo(layout);
+    assertThat(count("SELECT count(*) AS c FROM U WHERE k = 'key-5'")).isEqualTo(150);
+
+    database.transaction(() -> database.command("sql", "DELETE FROM U WHERE k = 'key-5' AND v < 3000").close());
+    assertThat(count("SELECT count(*) AS c FROM U WHERE k = 'key-5'")).isEqualTo(75);
+    assertThat(count("SELECT count(*) AS c FROM U WHERE k = 'key-6'")).isEqualTo(150);
+
+    database.transaction(() -> database.command("sql", "DELETE FROM U WHERE k = 'key-7'").close());
+    assertThat(count("SELECT count(*) AS c FROM U WHERE k = 'key-7'")).isEqualTo(0);
+    assertThat(count("SELECT count(*) AS c FROM U")).isEqualTo(6_000 - 75 - 150);
+  }
+
+  @ParameterizedTest
+  @ValueSource(ints = { HashIndexBucket.LEGACY_SORTED_VERSION, HashIndexBucket.CURRENT_VERSION })
+  void indexSurvivesReopen(final int layout) {
+    final Map<String, Integer> expected = createAndFill("UNIQUE_HASH", layout, 3_000, 3_000);
+    HashIndex.HashIndexFactoryHandler.layoutVersion = HashIndexBucket.CURRENT_VERSION;
+
+    reopenDatabase();
+
+    // a file keeps the layout it was created with: the version is part of its name
+    assertThat(layoutOf("U")).isEqualTo(layout);
+    verify(expected, 3_000);
+
+    database.transaction(() -> database.command("sql", "INSERT INTO U SET k = 'after-reopen', v = 1").close());
+    assertThat(count("SELECT count(*) AS c FROM U WHERE k = 'after-reopen'")).isEqualTo(1);
+  }
+
+  @Test
+  void rebuildMovesALegacyIndexToTheCurrentLayout() {
+    final Map<String, Integer> expected = createAndFill("UNIQUE_HASH", HashIndexBucket.LEGACY_SORTED_VERSION, 3_000, 3_000);
+    HashIndex.HashIndexFactoryHandler.layoutVersion = HashIndexBucket.CURRENT_VERSION;
+    assertThat(layoutOf("U")).isEqualTo(HashIndexBucket.LEGACY_SORTED_VERSION);
+
+    database.command("sql", "REBUILD INDEX *").close();
+
+    assertThat(layoutOf("U")).isEqualTo(HashIndexBucket.CURRENT_VERSION);
+    verify(expected, 3_000);
+  }
+
+  @Test
+  void defaultPageSizeFollowsTheKeyWidth() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE W");
+      database.command("sql", "CREATE PROPERTY W.n LONG");
+      database.command("sql", "CREATE PROPERTY W.s STRING");
+      database.command("sql", "CREATE INDEX ON W (n) UNIQUE_HASH").close();
+      database.command("sql", "CREATE INDEX ON W (s) UNIQUE_HASH").close();
+      database.command("sql", "CREATE INDEX ON W (n, s) NOTUNIQUE_HASH").close();
+    });
+    for (final TypeIndex index : database.getSchema().getType("W").getAllIndexes(false)) {
+      final int expected = index.getPropertyNames().equals(List.of("n")) ?
+          HashIndexBucket.DEF_PAGE_SIZE :
+          HashIndexBucket.DEF_VARIABLE_KEY_PAGE_SIZE;
+      assertThat(index.getSubIndexes().get(0).getPageSize()).as(index.getPropertyNames().toString()).isEqualTo(expected);
+    }
+  }
+
+  /** A legacy index built with the old 64 KB default takes the new default when rebuilt, any other size is kept. */
+  @Test
+  void rebuildOfALegacyIndexReplacesTheOldDefaultPageSizeOnly() {
+    HashIndex.HashIndexFactoryHandler.layoutVersion = HashIndexBucket.LEGACY_SORTED_VERSION;
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE A");
+      database.command("sql", "CREATE PROPERTY A.k STRING");
+      database.command("sql", "CREATE DOCUMENT TYPE B");
+      database.command("sql", "CREATE PROPERTY B.k STRING");
+      database.getSchema().buildTypeIndex("A", new String[] { "k" }).withType(Schema.INDEX_TYPE.HASH).withUnique(true)
+          .withPageSize(HashIndexBucket.LEGACY_DEF_PAGE_SIZE).create();
+      database.getSchema().buildTypeIndex("B", new String[] { "k" }).withType(Schema.INDEX_TYPE.HASH).withUnique(true)
+          .withPageSize(8_192).create();
+    });
+    HashIndex.HashIndexFactoryHandler.layoutVersion = HashIndexBucket.CURRENT_VERSION;
+
+    database.command("sql", "REBUILD INDEX *").close();
+
+    assertThat(database.getSchema().getType("A").getAllIndexes(false).iterator().next().getSubIndexes().get(0).getPageSize())
+        .isEqualTo(HashIndexBucket.DEF_VARIABLE_KEY_PAGE_SIZE);
+    assertThat(database.getSchema().getType("B").getAllIndexes(false).iterator().next().getSubIndexes().get(0).getPageSize())
+        .isEqualTo(8_192);
+  }
+
+  /** Slots of different keys sharing a tag must not be mistaken for each other. */
+  @ParameterizedTest
+  @ValueSource(ints = { HashIndexBucket.LEGACY_SORTED_VERSION, HashIndexBucket.CURRENT_VERSION })
+  void aMissNeverMatches(final int layout) {
+    createAndFill("UNIQUE_HASH", layout, 5_000, 5_000);
+    for (int i = 0; i < 5_000; i++)
+      assertThat(count("SELECT count(*) AS c FROM U WHERE k = 'missing-" + i + "'")).isZero();
+  }
+
+  private Map<String, Integer> createAndFill(final String indexType, final int layout, final int records, final int distinctKeys) {
+    HashIndex.HashIndexFactoryHandler.layoutVersion = layout;
+    final Map<String, Integer> expected = new HashMap<>();
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE U");
+      database.command("sql", "CREATE PROPERTY U.k STRING");
+      database.getSchema().buildTypeIndex("U", new String[] { "k" }).withType(Schema.INDEX_TYPE.HASH)
+          .withUnique(indexType.startsWith("UNIQUE")).withPageSize(PAGE_SIZE).create();
+    });
+    database.transaction(() -> {
+      for (int i = 0; i < records; i++) {
+        final String key = "key-" + (i % distinctKeys);
+        database.command("sql", "INSERT INTO U SET k = ?, v = ?", key, i).close();
+        if (indexType.startsWith("UNIQUE"))
+          expected.put(key, i);
+      }
+    });
+    return expected;
+  }
+
+  private void verify(final Map<String, Integer> expected, final int universe) {
+    for (final Map.Entry<String, Integer> e : expected.entrySet())
+      try (final ResultSet rs = database.query("sql", "SELECT v FROM U WHERE k = ?", e.getKey())) {
+        assertThat(rs.hasNext()).as(e.getKey()).isTrue();
+        assertThat(rs.next().<Integer>getProperty("v")).as(e.getKey()).isEqualTo(e.getValue());
+        assertThat(rs.hasNext()).isFalse();
+      }
+    assertThat(count("SELECT count(*) AS c FROM U")).isEqualTo(expected.size());
+    for (int i = 0; i < universe; i++)
+      if (!expected.containsKey("key-" + i))
+        assertThat(count("SELECT count(*) AS c FROM U WHERE k = 'key-" + i + "'")).isZero();
+  }
+
+  private long count(final String sql) {
+    try (final ResultSet rs = database.query("sql", sql)) {
+      return rs.next().<Long>getProperty("c");
+    }
+  }
+
+  private int layoutOf(final String typeName) {
+    final TypeIndex typeIndex = database.getSchema().getType(typeName).getAllIndexes(false).iterator().next();
+    return typeIndex.getSubIndexes().get(0).getComponent().getVersion();
+  }
+}

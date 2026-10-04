@@ -135,7 +135,8 @@ class Issue5713HashIndexPageSizeTest extends TestHelper {
       final Index index = database.getSchema().buildTypeIndex(TYPE_NAME, new String[] { "k" })
           .withType(Schema.INDEX_TYPE.HASH).withUnique(true).create();
 
-      assertThat(((IndexInternal) index).getPageSize()).isEqualTo(HashIndexBucket.DEF_PAGE_SIZE);
+      // the key is a STRING: a variable-width key gets the larger default (#5712)
+      assertThat(((IndexInternal) index).getPageSize()).isEqualTo(HashIndexBucket.DEF_VARIABLE_KEY_PAGE_SIZE);
     });
   }
 
@@ -153,7 +154,7 @@ class Issue5713HashIndexPageSizeTest extends TestHelper {
 
     final IndexInternal index = hashIndexOf(database);
     assertThat(index.getType()).isEqualTo(Schema.INDEX_TYPE.HASH);
-    assertThat(index.getPageSize()).isEqualTo(HashIndexBucket.DEF_PAGE_SIZE);
+    assertThat(index.getPageSize()).isEqualTo(HashIndexBucket.DEF_VARIABLE_KEY_PAGE_SIZE);
 
     database.transaction(() -> {
       final MutableDocument doc = database.newDocument(TYPE_NAME);
@@ -335,7 +336,7 @@ class Issue5713HashIndexPageSizeTest extends TestHelper {
 
       final IndexInternal rebuilt = hashIndexOf(db);
       assertThat(rebuilt.getPageSize()).as("the rebuild must pick a legal page size")
-          .isEqualTo(HashIndexBucket.DEF_PAGE_SIZE);
+          .isEqualTo(HashIndexBucket.DEF_VARIABLE_KEY_PAGE_SIZE);
       assertThat(rebuilt.checkIntegrity()).isEmpty();
       assertThat(rebuilt.countEntries()).isEqualTo(entries);
 
@@ -388,7 +389,7 @@ class Issue5713HashIndexPageSizeTest extends TestHelper {
 
       final IndexInternal recreated = hashIndexOf(db);
       assertThat(recreated.getPageSize()).as("TRUNCATE TYPE must recreate the index with a legal page size")
-          .isEqualTo(HashIndexBucket.DEF_PAGE_SIZE);
+          .isEqualTo(HashIndexBucket.DEF_VARIABLE_KEY_PAGE_SIZE);
       assertThat(recreated.checkIntegrity()).isEmpty();
       assertThat(recreated.countEntries()).isZero();
 
@@ -414,7 +415,7 @@ class Issue5713HashIndexPageSizeTest extends TestHelper {
 
       final IndexInternal repaired = hashIndexOf(db);
       assertThat(repaired.getPageSize()).as("CHECK DATABASE FIX must not leave the index it flagged behind")
-          .isEqualTo(HashIndexBucket.DEF_PAGE_SIZE);
+          .isEqualTo(HashIndexBucket.DEF_VARIABLE_KEY_PAGE_SIZE);
       assertThat(repaired.checkIntegrity()).isEmpty();
 
       db.transaction(() -> {
