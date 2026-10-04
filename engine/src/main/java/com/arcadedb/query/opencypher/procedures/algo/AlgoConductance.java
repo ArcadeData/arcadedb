@@ -171,7 +171,9 @@ public class AlgoConductance extends AbstractAlgoProcedure {
     final List<Result> results = new ArrayList<>(numCommunities);
     for (int c = 0; c < numCommunities; c++) {
       // cut(C) = boundary edges from C (each undirected cut edge counted once from each side)
-      final long cut = boundaryEdges[c] / 2;
+      // BOTH adjacency lists a crossing edge once under each of its two endpoints, and each endpoint sits in a different
+      // community, so boundaryEdges[c] already counts every edge leaving c exactly once
+      final long cut = boundaryEdges[c];
       final long volC = totalDegree[c];
       final long volComplement = totalAllDegree - volC;
       final long minVol = Math.min(volC, volComplement);
