@@ -427,4 +427,23 @@ class MongoDBFilterSemanticsTest extends BaseMongoServerTest {
     assertThat(ids(c, "{_id:2, k:'number'}")).containsExactly(2);
     assertThat(ids(c, "{_id:'2', k:'number'}")).isEmpty();
   }
+
+  @Test
+  void negationsOnAMixedTypeIdAreNotNarrowedAway() {
+    final MongoCollection<Document> c = collection("mixedneg", "{_id:'1', k:'x'}", "{_id:2, k:'x'}", "{_id:3, k:'y'}");
+    // MongoDB: the string '1' is not the number 1, so $ne:1 keeps it
+    assertThat(ids(c, "{_id:{$ne:1}, k:'x'}")).containsExactly("1", 2);
+    assertThat(ids(c, "{_id:{$nin:[1]}, k:'x'}")).containsExactly("1", 2);
+    assertThat(ids(c, "{_id:{$not:{$gt:2}}, k:'x'}")).containsExactly("1", 2);
+  }
+
+  @Test
+  void idPlusFilterWithSortSkipAndLimit() {
+    final MongoCollection<Document> c = collection("idpaged", "{_id:1, t:['a'], n:5}", "{_id:2, t:['a'], n:3}", "{_id:3, t:['a'], n:9}",
+        "{_id:4, t:['b'], n:1}", "{_id:5, t:['a'], n:7}");
+    final List<Object> page = new ArrayList<>();
+    for (final Document d : c.find(Document.parse("{_id:{$gte:1}, t:'a'}")).sort(Document.parse("{n:1}")).skip(1).limit(2))
+      page.add(d.get("_id"));
+    assertThat(page).containsExactly(1, 5);
+  }
 }
