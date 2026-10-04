@@ -588,10 +588,6 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
     if (filter.isEmpty() && !hasOrderBy) {
       // SCAN
       MongoDBToSqlTranslator.fillResultSet(numberToSkip, numberToReturn, result, database.iterateType(collectionName, false));
-    } else if (!filter.isEmpty() && !filter.narrowsById() && !hasOrderBy) {
-      // no order to honor: the type is read directly, without the SQL executor in between
-      MongoDBToSqlTranslator.fillResultSet(numberToSkip, numberToReturn, result,
-          new FilteredIterator(database.iterateType(collectionName, false), filter));
     } else {
       // EXECUTE A SQL QUERY. A sort-only find() (no filter) still has to reach here rather than the scan above,
       // otherwise the order-by would be silently dropped. A filter the SQL cannot answer exactly (see MongoFilter) is applied to
