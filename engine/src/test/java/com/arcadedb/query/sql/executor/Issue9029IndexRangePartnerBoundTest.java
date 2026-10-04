@@ -98,7 +98,44 @@ class Issue9029IndexRangePartnerBoundTest extends TestHelper {
     final String plan = plan("SELECT id FROM I WHERE u > 9 AND u <= id");
     assertThat(plan).contains("FETCH FROM INDEX I[u]");
     assertThat(plan).doesNotContain("u > 9 and u <= id");
-    assertThat(plan).contains("FILTER ITEMS WHERE");
+    // the condition is moved to the filter, not dropped
+    assertThat(plan.substring(plan.indexOf("FILTER ITEMS WHERE"))).contains("u <= id");
+  }
+
+  @Test
+  void recordDependentPartnerOnACaseInsensitiveIndexStaysInTheFilter() {
+    // the field.toLowerCase() range of #8560 on a COLLATE ci index: its partner must be early calculated too
+    for (final String type : new String[] { "CI", "CS" }) {
+      database.command("sql", "CREATE DOCUMENT TYPE " + type);
+      database.command("sql", "CREATE PROPERTY " + type + ".name STRING");
+      database.command("sql", "CREATE PROPERTY " + type + ".upTo STRING");
+    }
+    database.command("sql", "CREATE INDEX ON CI (name COLLATE ci) NOTUNIQUE");
+    database.transaction(() -> {
+      for (final String type : new String[] { "CI", "CS" }) {
+        database.newDocument(type).set("name", "Anne", "upTo", "b").save();
+        database.newDocument(type).set("name", "John", "upTo", "c").save();
+        database.newDocument(type).set("name", "mary", "upTo", "z").save();
+      }
+    });
+
+    for (final String where : new String[] { "name.toLowerCase() >= 'a' AND name.toLowerCase() <= upTo",
+        "name.toLowerCase() <= upTo AND name.toLowerCase() >= 'a'",
+        "name.toLowerCase() >= 'a' AND name.toLowerCase() <= upTo AND name.toLowerCase() < 'n'" }) {
+      final List<String> indexed = names("SELECT name FROM CI WHERE " + where + " ORDER BY name");
+      assertThat(indexed).as(where).isEqualTo(names("SELECT name FROM CS WHERE " + where + " ORDER BY name"));
+      assertThat(indexed).as(where).containsExactly("Anne", "mary");
+    }
+    assertThat(plan("SELECT name FROM CI WHERE name.toLowerCase() >= 'a' AND name.toLowerCase() <= upTo"))
+        .contains("FETCH FROM INDEX CI[name]");
+  }
+
+  private List<String> names(final String query) {
+    final List<String> names = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", query)) {
+      rs.forEachRemaining(r -> names.add(r.getProperty("name")));
+    }
+    return names;
   }
 
   @Test
