@@ -68,7 +68,6 @@ import java.util.regex.PatternSyntaxException;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 final class MongoFilter {
-  // com.arcadedb.database.Document is spelled out in full below: its simple name is the one of the MongoDB Document imported here
   private static final Pattern ALWAYS = Pattern.compile("(?s).*");
   private static final Pattern NEVER  = Pattern.compile("(?!)");
   private static final Set<String> NARROWING_OPERATORS = Set.of("$eq", "$in");
@@ -135,16 +134,6 @@ final class MongoFilter {
   }
 
   /**
-   * Appends the {@code WHERE} clause that selects the candidates of the filter, nothing for an empty one.
-   */
-  void appendWhere(final StringBuilder sqlText, final Map<String, Object> params) {
-    if (!empty) {
-      sqlText.append(" WHERE ");
-      MongoDBToSqlTranslator.buildExpression(sqlText, params, original);
-    }
-  }
-
-  /**
    * Whether a stored record matches the filter. Only meaningful for a filter that is not empty, because an empty one
    * has no clause left to test.
    */
@@ -154,6 +143,7 @@ final class MongoFilter {
     return matcher.matches(MongoDBToSqlTranslator.toMatchDocument(storedProperties, properties), normalized);
   }
 
+  // com.arcadedb.database.Document is spelled out in full: its simple name is the one of the MongoDB Document imported here
   boolean matches(final com.arcadedb.database.Document record) {
     return matches(record.toMap(false));
   }
@@ -175,9 +165,7 @@ final class MongoFilter {
    * {@code _id} conjunct for one that {@link #narrowsById() narrows by _id}, nothing for any other.
    */
   void appendCandidateWhere(final StringBuilder sqlText, final Map<String, Object> params) {
-    if (empty)
-      appendWhere(sqlText, params);
-    else if (idPart != null) {
+    if (idPart != null) {
       sqlText.append(" WHERE ");
       MongoDBToSqlTranslator.buildExpression(sqlText, params, idPart);
     }
@@ -211,7 +199,6 @@ final class MongoFilter {
     if (empty) {
       final Map<String, Object> params = new HashMap<>();
       final StringBuilder text = new StringBuilder("SELECT @rid FROM ").append(Identifier.quote(collectionName));
-      appendWhere(text, params);
       if (limit > 0)
         text.append(" LIMIT ").append(limit);
       try (final ResultSet rs = database.query("sql", text.toString(), params)) {
