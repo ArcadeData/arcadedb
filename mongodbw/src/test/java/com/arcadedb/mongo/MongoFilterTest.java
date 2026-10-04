@@ -19,12 +19,14 @@
 package com.arcadedb.mongo;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.exception.TimeoutException;
 import de.bwaldvogel.mongo.bson.BsonRegularExpression;
 import de.bwaldvogel.mongo.bson.Document;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -135,5 +137,22 @@ class MongoFilterTest {
         .matches(hit)).isFalse();
     assertThat(new MongoFilter(null, new Document("$nor", List.of(new Document("s", new Document("$regex", "^zz"))))).matches(hit)).isTrue();
     assertThat(new MongoFilter(null, new Document("$nor", List.of(new Document("s", new Document("$regex", "^al"))))).matches(hit)).isFalse();
+  }
+
+  @Test
+  void anOversizedRegexTimeoutNeverExpires() {
+    final MongoFilter.RegexBudget budget = MongoFilter.RegexBudget.ofMillis(Long.MAX_VALUE);
+    for (int i = 0; i < 1000; i++)
+      assertThat(budget.find(Pattern.compile("^al"), "alpha")).isTrue();
+  }
+
+  @Test
+  void aSpentRegexBudgetRefusesTheNextSearch() {
+    final MongoFilter.RegexBudget budget = MongoFilter.RegexBudget.ofMillis(1);
+    final Pattern pathological = Pattern.compile("(.*a){20}$");
+    final String input = "a".repeat(40) + "!";
+    assertThatThrownBy(() -> budget.find(pathological, input)).isInstanceOf(TimeoutException.class);
+    assertThatThrownBy(() -> budget.find(Pattern.compile("^al"), "alpha")).isInstanceOf(
+        TimeoutException.class);
   }
 }

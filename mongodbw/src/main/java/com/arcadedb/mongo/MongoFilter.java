@@ -406,6 +406,10 @@ final class MongoFilter {
    * short value never trips it. Not thread-safe: a filter is built per command and evaluated by one thread.
    */
   static final class RegexBudget {
+    static RegexBudget ofMillis(final long timeoutMillis) {
+      return new RegexBudget(timeoutMillis);
+    }
+
     private final long timeoutNanos;
     private       long remainingNanos;
     private       boolean exhausted;
@@ -415,8 +419,16 @@ final class MongoFilter {
     }
 
     private RegexBudget(final long timeoutMillis) {
-      this.timeoutNanos = timeoutMillis > 0 ? timeoutMillis * 1_000_000L : 0;
-      this.remainingNanos = timeoutNanos;
+      // an oversized timeout saturates (it never expires) instead of wrapping around into a deadline in the past
+      long nanos = 0;
+      if (timeoutMillis > 0)
+        try {
+          nanos = Math.multiplyExact(timeoutMillis, 1_000_000L);
+        } catch (final ArithmeticException e) {
+          nanos = Long.MAX_VALUE;
+        }
+      this.timeoutNanos = nanos;
+      this.remainingNanos = nanos;
     }
 
     boolean find(final Pattern pattern, final String input) {
@@ -426,10 +438,14 @@ final class MongoFilter {
         throw new TimeoutException("Regular expression time of the command exhausted (arcadedb.command.regexTimeout)");
       final long start = System.nanoTime();
       try {
-        return TimeBoundRegex.findUntil(pattern, input, start + remainingNanos);
+        final long now = start + remainingNanos;
+        // a deadline that wraps around (a budget that is effectively endless) is no deadline
+        return TimeBoundRegex.findUntil(pattern, input, now < start ? Long.MAX_VALUE : now);
       } finally {
-        remainingNanos -= System.nanoTime() - start;
-        exhausted = remainingNanos <= 0;
+        if (remainingNanos != Long.MAX_VALUE) {
+          remainingNanos -= System.nanoTime() - start;
+          exhausted = remainingNanos <= 0;
+        }
       }
     }
   }
