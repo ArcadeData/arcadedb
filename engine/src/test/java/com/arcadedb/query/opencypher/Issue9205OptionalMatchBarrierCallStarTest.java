@@ -20,10 +20,14 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -75,6 +79,7 @@ class Issue9205OptionalMatchBarrierCallStarTest {
       }
       RETURN alias0""";
 
+  /** Control: this shape already passed before the fix. */
   @Test
   void withoutBarrier() {
     assertThat(count("CREATE (alias0:Person) " + CALL)).isEqualTo(2);
@@ -83,5 +88,44 @@ class Issue9205OptionalMatchBarrierCallStarTest {
   @Test
   void withOptionalMatchBarrier() {
     assertThat(count("CREATE (alias0:Person) OPTIONAL MATCH (:NoMatch) WHERE false WITH * " + CALL)).isEqualTo(2);
+  }
+
+  @Test
+  void returnsTheCreatedNodeAndKeepsUserVariablesVisibleInsideTheBody() {
+    database.begin();
+    final List<Object[]> rows = new ArrayList<>();
+    try (final ResultSet rs = database.command("opencypher", """
+        CREATE (alias0:Person {name: 'p'})
+        OPTIONAL MATCH (:NoMatch) WHERE false
+        WITH *
+        CALL (*) {
+          OPTIONAL MATCH () WHERE EXISTS { MATCH (m) }
+          RETURN alias0.name AS seen
+        }
+        RETURN alias0.name AS name, seen""")) {
+      while (rs.hasNext()) {
+        final Result r = rs.next();
+        rows.add(new Object[] { r.getProperty("name"), r.getProperty("seen") });
+      }
+    }
+    database.commit();
+    assertThat(rows).hasSize(2);
+    for (final Object[] row : rows) {
+      assertThat(row[0]).isEqualTo("p");
+      assertThat(row[1]).isEqualTo("p");
+    }
+  }
+
+  @Test
+  void generatedBindingsOfTheBodyDoNotReplaceTheOuterOnes() {
+    // the outer MATCH () and the inner MATCH () both use generated names; the outer rows must survive the call
+    assertThat(count("MATCH () WITH * CALL (*) { MATCH () RETURN 1 AS x } RETURN x")).isEqualTo(1);
+    assertThat(count("MATCH () OPTIONAL MATCH (:NoMatch) WHERE false WITH * CALL (*) { MATCH () RETURN 1 AS x } MATCH () RETURN x")).isEqualTo(1);
+  }
+
+  @Test
+  void theGraphIsLeftUntouched() {
+    count("CREATE (alias0:Person) OPTIONAL MATCH (:NoMatch) WHERE false WITH * " + CALL);
+    assertThat(database.countType("Person", true) + database.countType("Seed", true)).isEqualTo(2);
   }
 }
