@@ -68,9 +68,11 @@ class AiApiSpecTest {
 
   @Test
   void configReportsProtocolNegotiationFields() {
+    // AiConfiguration.toJSON writes the first four; AiConfigHandler adds 'source' and 'portal' when the server has the
+    // customer portal client.
     final Schema<?> schema = openAPI.getComponents().getSchemas().get("AiConfig");
     assertThat(schema.getProperties().keySet()).containsExactlyInAnyOrder(
-        "configured", "gatewayUrl", "currentProtocolVersion", "supportedProtocolVersions");
+        "configured", "gatewayUrl", "currentProtocolVersion", "supportedProtocolVersions", "source", "portal");
   }
 
   @Test
@@ -91,7 +93,7 @@ class AiApiSpecTest {
   void chatResponseCarriesChatIdAndOptionalCommands() {
     final Schema<?> schema = openAPI.getComponents().getSchemas().get("AiChatResponse");
     assertThat(schema.getProperties().keySet()).containsExactlyInAnyOrder(
-        "chatId", "response", "commands", "toolCalls");
+        "chatId", "response", "commands", "charts", "toolCalls");
   }
 
   @Test
@@ -178,6 +180,17 @@ class AiApiSpecTest {
     final Schema<?> messages = chat.getProperties().get("messages");
     final Schema<?> message = messages.getItems();
     assertThat(message.getProperties().keySet()).contains("commands");
+  }
+
+  @Test
+  void chatMessagesDeclareEveryMemberTheHandlerStores() {
+    // AiChatHandler stores role, content and timestamp on every message, and commands and charts (AiCharts.clean) on an
+    // assistant message that has any: buildResponse and the portal streaming path both persist the charts, so a
+    // GET /api/v1/ai/chats/{id} returns them.
+    final Schema<?> chat = openAPI.getComponents().getSchemas().get("AiChat");
+    final Schema<?> messages = chat.getProperties().get("messages");
+    final Schema<?> message = messages.getItems();
+    assertThat(message.getProperties().keySet()).containsExactlyInAnyOrder("role", "content", "timestamp", "commands", "charts");
   }
 
   @Test

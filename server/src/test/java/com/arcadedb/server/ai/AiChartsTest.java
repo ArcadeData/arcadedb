@@ -22,6 +22,8 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
+import java.util.Locale;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** The charts the model asks for are checked again before they reach the browser or the saved chat. */
@@ -51,6 +53,23 @@ class AiChartsTest {
   void anUnknownTypeOrLanguageIsDropped() {
     assertThat(AiCharts.clean(new JSONArray().put(valid().put("type", "radar"))).length()).isZero();
     assertThat(AiCharts.clean(new JSONArray().put(valid().put("language", "python"))).length()).isZero();
+  }
+
+  /**
+   * The language is folded with {@link Locale#ROOT}: under a Turkish default locale the plain {@code toLowerCase()} turned
+   * "GREMLIN" into "gremlın" (dotless i), which is no known language, so a valid chart was silently dropped.
+   */
+  @Test
+  void anUpperCaseLanguageIsFoldedTheSameWayOnATurkishServer() {
+    final Locale saved = Locale.getDefault();
+    try {
+      Locale.setDefault(Locale.forLanguageTag("tr-TR"));
+      final JSONArray out = AiCharts.clean(new JSONArray().put(valid().put("language", "GREMLIN")));
+      assertThat(out.length()).isEqualTo(1);
+      assertThat(out.getJSONObject(0).getString("language")).isEqualTo("gremlin");
+    } finally {
+      Locale.setDefault(saved);
+    }
   }
 
   @Test
