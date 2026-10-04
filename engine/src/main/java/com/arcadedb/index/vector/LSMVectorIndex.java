@@ -238,7 +238,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private volatile int[]                         ordinalToVectorId; // Maps graph ordinals to vector IDs
   // The ordinal map a renumbering compaction translated while the old graph was resident, when it holds -1 for ordinals whose
   // vector is gone: not sorted any more, so a lookup by vector id cannot binary search it (issue #9241). Identity compared.
-  private volatile int[]                         ordinalMapWithDeadEntries;
+  private volatile OrdinalLookup                 ordinalMapWithDeadEntries;
+
+  /** The live ids of an ordinal map holding -1 entries, ascending, and the ordinal of each: a binary search over primitives */
+  private record OrdinalLookup(int[] map, int[] vectorIds, int[] ordinals) {
+    int ordinalOf(final int vectorId) {
+      final int position = Arrays.binarySearch(vectorIds, vectorId);
+      return position < 0 ? -1 : ordinals[position];
+    }
+  }
   // Lightweight pointer index. Volatile and swapped as a whole (never cleared and refilled in place) so the
   // readers that take no lock - countEntries() and getStats() - always see a complete location set instead of a
   // rebuild in progress (issue #5568). Everything else reaches it through lock.readLock().
@@ -897,6 +905,22 @@ public class LSMVectorIndex implements Index, IndexInternal {
    *
    * @param oldVectorIds the ids of the live set before the renumbering, ascending; the position of an id is its new id
    */
+  private static OrdinalLookup lookupOf(final int[] map) {
+    int live = 0;
+    for (final int vectorId : map)
+      if (vectorId >= 0)
+        live++;
+    final int[] vectorIds = new int[live];
+    final int[] ordinals = new int[live];
+    // the live ids are ascending, as in the map this one was translated from
+    for (int ordinal = 0, i = 0; ordinal < map.length; ordinal++)
+      if (map[ordinal] >= 0) {
+        vectorIds[i] = map[ordinal];
+        ordinals[i++] = ordinal;
+      }
+    return new OrdinalLookup(map, vectorIds, ordinals);
+  }
+
   private void renumberResidentIds(final int[] oldVectorIds) {
     final int[] oldOrdinalMap = ordinalToVectorId;
     if (oldOrdinalMap != null && oldOrdinalMap.length > 0) {
@@ -907,7 +931,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         renumbered[ordinal] = newId < 0 ? -1 : newId;
         anyDead |= newId < 0;
       }
-      ordinalMapWithDeadEntries = anyDead ? renumbered : null;
+      ordinalMapWithDeadEntries = anyDead ? lookupOf(renumbered) : null;
       ordinalToVectorId = renumbered;
     }
 
@@ -7165,9 +7189,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
   /**
    * Resolve an allow-list to the ordinals it occupies in {@code ordinalMap}, ascending.
    * <p>
-   * {@code ordinalMap} is always sorted ascending - every producer of {@code ordinalToVectorId} builds it with
+   * {@code ordinalMap} is sorted ascending - every producer of {@code ordinalToVectorId} builds it with
    * {@code sorted()} because the ordinal order has to match the order the graph was persisted in - so the reverse
-   * lookup is a binary search and needs no per-query map. A RID with no live vector id, or one whose vector was
+   * lookup is a binary search and needs no per-query map. The exception is the map a renumbering compaction translated
+   * while the old graph is resident, which holds -1 entries: it is resolved through {@link OrdinalLookup} (issue #9241). A RID with no live vector id, or one whose vector was
    * ingested after the last rebuild and is therefore only in the delta buffer, simply contributes no ordinal.
    * <p>
    * The result is sorted so the caller scores in ordinal order, exactly the order the full scan uses. Distance ties
@@ -7180,19 +7205,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
     int[] ordinals = new int[Math.min(allowedRIDs.size(), 256)];
     int count = 0;
     final VectorLocationIndex locations = vectorIndex();
-    // A map translated by a renumbering compaction holds -1 for the vectors that are gone and is not sorted: it is resolved by
-    // a scan instead of a binary search, for as long as that graph is the resident one
-    final Map<Integer, Integer> ordinalOfVectorId;
-    if (ordinalMap == ordinalMapWithDeadEntries) {
-      ordinalOfVectorId = new HashMap<>(ordinalMap.length * 2);
-      for (int ordinal = 0; ordinal < ordinalMap.length; ordinal++)
-        if (ordinalMap[ordinal] >= 0)
-          ordinalOfVectorId.put(ordinalMap[ordinal], ordinal);
-    } else
-      ordinalOfVectorId = null;
+    // A map translated by a renumbering compaction holds -1 for the vectors that are gone and is not sorted: it is resolved
+    // through its lookup for as long as that graph is the resident one
+    final OrdinalLookup deadEntriesLookup = ordinalMapWithDeadEntries;
+    final OrdinalLookup lookup = deadEntriesLookup != null && deadEntriesLookup.map() == ordinalMap ? deadEntriesLookup : null;
     for (final RID rid : allowedRIDs) {
       for (final int vectorId : locations.getVectorIdsForRid(rid)) {
-        final int ordinal = ordinalOfVectorId != null ? ordinalOfVectorId.getOrDefault(vectorId, -1) : Arrays.binarySearch(ordinalMap, vectorId);
+        final int ordinal = lookup != null ? lookup.ordinalOf(vectorId) : Arrays.binarySearch(ordinalMap, vectorId);
         if (ordinal < 0)
           continue;
         if (count == ordinals.length)
