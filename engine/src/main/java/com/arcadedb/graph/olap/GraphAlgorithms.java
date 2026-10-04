@@ -507,7 +507,8 @@ public final class GraphAlgorithms {
    *   source would otherwise leave a target that is only reachable through an incoming edge disconnected.</li>
    * </ol>
    * Roots are always hooked larger-under-smaller by CAS, so the final root of a component is its minimum node id
-   * and the output contract (component id = min node id) is unchanged. Each edge is visited about once, against
+   * and the output contract (component id = min node id) is unchanged. Each edge is visited at most about twice (forward and
+   * backward, only for edges between nodes outside the dominant component), against
    * once per pass (and the pass count grows with the diameter) for the previous label propagation. Memory is a
    * single {@code int[n]}.
    *
