@@ -989,9 +989,8 @@ public enum GlobalConfiguration {
       and the depth of a chain of AND/OR/string-concatenation terms in the resulting expression tree. The levels of \
       all these kinds add up: they are counted cumulatively against this one limit. The ANTLR-generated parser \
       re-enters its expression grammar rule roughly ten Java stack frames per nesting level, so a few thousand \
-      levels is enough to exhaust the default \
-      JVM thread stack with a payload of only a few KB; a query past this limit is rejected as a normal parse \
-      error instead of crashing the worker thread with a StackOverflowError. Real-world queries rarely nest \
+      levels is enough to exhaust the default JVM thread stack with a payload of only a few KB; a query past this \
+      limit is rejected as a normal parse error instead of crashing the worker thread with a StackOverflowError. Real-world queries rarely nest \
       more than a handful of levels, so the default is deliberately generous while staying far below the point \
       where the stack is at risk. Raise it only if a legitimate, deeply-nested or very long generated query needs it.""",
       Integer.class, 200),
