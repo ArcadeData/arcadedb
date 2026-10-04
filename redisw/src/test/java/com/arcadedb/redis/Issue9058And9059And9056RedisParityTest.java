@@ -21,6 +21,8 @@ package com.arcadedb.redis;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.exceptions.JedisDataException;
@@ -179,6 +181,42 @@ public class Issue9058And9059And9056RedisParityTest extends BaseRedisServerTest 
       // the dotted form deletes the bucket RID and every RID among the keys
       assertThat(jedis.hdel(bucket + "." + rid[3], rid[3])).isEqualTo(1L);
       assertThat(count(db)).isEqualTo(0L);
+    }
+  }
+
+  @Test
+  void otherCommandsRefuseAWrongArgumentCount() {
+    try (final Jedis jedis = connect()) {
+      refused(jedis, "wrong number of arguments for 'hdel' command", "HDEL", "db");
+      refused(jedis, "wrong number of arguments for 'hget' command", "HGET", "db");
+      refused(jedis, "wrong number of arguments for 'hget' command", "HGET", "db", "k", "extra");
+      refused(jedis, "wrong number of arguments for 'hexists' command", "HEXISTS", "db", "k", "extra");
+      refused(jedis, "wrong number of arguments for 'hmget' command", "HMGET", "db");
+      refused(jedis, "wrong number of arguments for 'hset' command", "HSET", "db");
+      refused(jedis, "wrong number of arguments for 'hset' command", "HSET", "db", "Item");
+      refused(jedis, "wrong number of arguments for 'hmset' command", "HMSET", "db");
+      refused(jedis, "wrong number of arguments for 'exists' command", "EXISTS");
+      refused(jedis, "wrong number of arguments for 'getdel' command", "GETDEL");
+    }
+  }
+
+  @Test
+  void hdelByRidIsRefusedForAUserWithoutAccessToTheDatabase() {
+    final Database db = getServer(0).getDatabase(getDatabaseName());
+    db.getSchema().createDocumentType("Item");
+    final String[] rid = new String[1];
+    db.transaction(() -> rid[0] = db.newDocument("Item").set("n", 1).save().getIdentity().toString());
+
+    final var security = getServer(0).getSecurity();
+    security.createUser(new JSONObject().put("name", "nodb").put("password", security.encodePassword("noDbPassword1"))
+        .put("databases", new JSONObject().put("otherdb", new JSONArray().put("admin"))));
+    try (final Jedis jedis = new Jedis("localhost", getServerRedisPort())) {
+      jedis.auth("nodb", "noDbPassword1");
+      refused(jedis, "NOPERM", "HDEL", getDatabaseName(), rid[0]);
+      refused(jedis, "NOPERM", "HDEL", getDatabaseName() + "." + rid[0], rid[0]);
+      assertThat(db.existsRecord(new RID(rid[0]))).isTrue();
+    } finally {
+      security.dropUser("nodb");
     }
   }
 
