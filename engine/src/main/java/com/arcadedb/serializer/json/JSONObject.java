@@ -667,6 +667,8 @@ public class JSONObject implements Map<String, Object> {
     throw new IllegalArgumentException("Element " + element + " not supported");
   }
 
+  // 17 significant digits identify one double (what %.17g and the C family print), so a token up to there is a double, not a BigDecimal
+  private static final int MAX_DOUBLE_DIGITS             = 17;
   private static final int MAX_BIG_NUMBER_TOKEN_LENGTH = 1000;
   private static final int MAX_BIG_NUMBER_EXPONENT     = 1000;
 
@@ -703,7 +705,7 @@ public class JSONObject implements Map<String, Object> {
     if (!Double.isFinite(value))
       return true;
     final boolean tiny = Math.abs(value) < Double.MIN_NORMAL;
-    if (!tiny && token.length() <= 15)
+    if (!tiny && token.length() <= MAX_DOUBLE_DIGITS)
       return false;
     // THE SIGN, THE POINT AND THE EXPONENT MAKE A TOKEN LONG WITHOUT MAKING IT HOLD MORE THAN 15 DIGITS, WHICH A double ALWAYS HOLDS
     int digits = 0;
@@ -713,13 +715,15 @@ public class JSONObject implements Map<String, Object> {
       if (c == 'e' || c == 'E')
         break;
       if (c >= '0' && c <= '9') {
-        digits++;
         if (c != '0')
           nonZero = true;
+        // LEADING ZEROS (0.000123) ARE NOT SIGNIFICANT DIGITS
+        if (nonZero)
+          digits++;
       }
     }
     // A DIGIT-LESS ZERO IS EXACT; A NON-ZERO MANTISSA THAT BECAME (SUB)NORMAL-LESS HAS UNDERFLOWED
-    return tiny ? nonZero : digits > 15;
+    return tiny ? nonZero : digits > MAX_DOUBLE_DIGITS;
   }
 
   /**
