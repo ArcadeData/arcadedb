@@ -67,8 +67,8 @@ import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
 public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   public enum NULL_STRATEGY {ERROR, SKIP, INDEX}
 
-  public static final    int    DEF_PAGE_SIZE = 262_144;
-  public final           RID    REMOVED_ENTRY_RID;
+  public static final int DEF_PAGE_SIZE = 262_144;
+  public final        RID REMOVED_ENTRY_RID;
 
   protected static final LSMTreeIndexCompacted.LookupResult LOWER     = new LSMTreeIndexCompacted.LookupResult(false, true, 0,
       null);
@@ -87,8 +87,6 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
    * {@link #storageKeyTypes} for anything that touches the bytes on a page.
    */
   protected       byte[]           binaryKeyTypes;
-  // 0 = NOT COMPUTED YET, 1 = NO DECIMAL KEY PART, 2 = AT LEAST ONE DECIMAL KEY PART
-  private         byte             decimalKeyState = 0;
   /**
    * Binary type actually WRITTEN on the page for each key column. It differs from {@link #binaryKeyTypes} only for
    * LINK columns - see {@link BinaryTypes#getIndexStorageType(byte)} - and is persisted in the page-0 header, so each
@@ -260,24 +258,6 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
 
   public boolean isDeletedEntry(final RID rid) {
     return rid.getBucketId() < 0;
-  }
-
-  public void removeTempSuffix() {
-    final String fileName = file.getFilePath();
-
-    final int extPos = fileName.lastIndexOf('.');
-    if (fileName.substring(extPos + 1).startsWith(TEMP_EXT)) {
-      final String newFileName = fileName.substring(0, extPos) + "." + fileName.substring(extPos + TEMP_EXT.length() + 1);
-
-      try {
-        file.rename(newFileName);
-        database.getFileManager().renameFile(fileName, newFileName);
-      } catch (final IOException e) {
-        throw new IndexException(
-            "Cannot rename index file '" + file.getFilePath() + "' into temp file '" + newFileName + "' (exists=" + (new File(
-                file.getFilePath()).exists()) + ")", e);
-      }
-    }
   }
 
   /**
@@ -543,39 +523,6 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     } while (true);
 
     return values.length;
-  }
-
-  /**
-   * Returns, for the run of entries [firstKeyPos, lastKeyPos] that compare equal to the searched key, the page position of each entry's
-   * value. Keys that compare equal can serialize to different sizes only when a key part is a DECIMAL (5.00 and 5), so the size is
-   * measured per entry only then and once for the whole run otherwise (#8972). Side effect: the buffer is left positioned after the last
-   * measured key.
-   */
-  protected int[] getValuePositionsOfRun(final Binary currentPageBuffer, final int startIndexArray, final int keyLength,
-      final int firstKeyPos, final int lastKeyPos) {
-    if (decimalKeyState == 0) {
-      // THE KEY TYPES NEVER CHANGE FOR THE LIFE OF THE INDEX: SCAN ONCE (A RACE JUST REPEATS THE SAME SCAN)
-      byte state = 1;
-      for (final byte type : storageKeyTypes)
-        if (type == BinaryTypes.TYPE_DECIMAL) {
-          state = 2;
-          break;
-        }
-      decimalKeyState = state;
-    }
-    final boolean variableSizeWhenEqual = decimalKeyState == 2;
-
-    final int[] positions = new int[lastKeyPos - firstKeyPos + 1];
-    int keySerializedSize = 0;
-    for (int i = firstKeyPos; i <= lastKeyPos; ++i) {
-      final int entryPos = currentPageBuffer.getInt(startIndexArray + (i * INT_SERIALIZED_SIZE));
-      if (variableSizeWhenEqual || i == firstKeyPos) {
-        currentPageBuffer.position(entryPos);
-        keySerializedSize = getSerializedKeySize(currentPageBuffer, keyLength);
-      }
-      positions[i - firstKeyPos] = entryPos + keySerializedSize;
-    }
-    return positions;
   }
 
   /**
@@ -1034,6 +981,14 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   }
 
   protected void checkForNulls(final Object[] keys) {
+    checkForNulls(nullStrategy, mainIndex.getTypeName(), mainIndex.getPropertyNames(), keys);
+  }
+
+  /**
+   * Refuses a key with a null component when the strategy is ERROR. Shared with the hash index so both report the same message.
+   */
+  public static void checkForNulls(final NULL_STRATEGY nullStrategy, final String typeName, final List<String> propertyNames,
+      final Object[] keys) {
     if (nullStrategy != NULL_STRATEGY.ERROR)
       return;
 
@@ -1041,8 +996,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
       for (int i = 0; i < keys.length; ++i)
         if (keys[i] == null)
           throw new IllegalArgumentException(
-              "Indexed key " + mainIndex.getTypeName() + mainIndex.getPropertyNames() + " cannot be NULL (" + Arrays.toString(keys)
-                  + ")");
+              "Indexed key " + typeName + propertyNames + " cannot be NULL (" + Arrays.toString(keys) + ")");
   }
 
   protected boolean lookupInPageAndAddInResultset(final BasePage currentPage, final Binary currentPageBuffer, final int count,

@@ -560,7 +560,8 @@ public class HashIndexBucket extends PaginatedComponent {
       final int pos = findNextEntry(page, entryCount, serializedKey, tag, 0);
       if (pos >= 0) {
         if (specificRID != null && !unique) {
-          // Search all matching entries on this page (entries for the same key may be split)
+          // Search all matching entries on this page (entries for the same key may be split). No re-scan is needed after a
+          // removal: the loop returns on the first one.
           for (int p = pos; p >= 0; p = findNextEntry(page, entryCount, serializedKey, tag, p + 1)) {
             final int removed = removeRIDFromEntry(page, entryCount, p, specificRID);
             if (removed > 0) {

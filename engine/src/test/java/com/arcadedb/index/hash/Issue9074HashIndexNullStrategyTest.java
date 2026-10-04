@@ -103,6 +103,20 @@ class Issue9074HashIndexNullStrategyTest extends TestHelper {
         .hasMessageContaining("cannot be NULL");
   }
 
+  /** Building an ERROR index over rows that already hold nulls fails the same way for a hash and for an LSM index. */
+  @ParameterizedTest
+  @ValueSource(strings = { "NOTUNIQUE_HASH", "NOTUNIQUE" })
+  void buildingOverExistingNullsFailsLikeLsm(final String indexType) {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE T");
+      database.command("sql", "CREATE PROPERTY T.a STRING");
+      database.command("sql", "INSERT INTO T SET b = 1").close();
+    });
+
+    assertThatThrownBy(() -> database.command("sql", "CREATE INDEX ON T (a) " + indexType + " NULL_STRATEGY ERROR").close())
+        .hasStackTraceContaining("cannot be NULL");
+  }
+
   private void createType(final String indexType, final String nullStrategy) {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE T");
