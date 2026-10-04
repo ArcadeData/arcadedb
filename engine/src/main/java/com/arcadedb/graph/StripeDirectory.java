@@ -65,6 +65,10 @@ public class StripeDirectory extends BaseRecord implements RecordInternal {
    * this release does not know FAILS CLOSED with a {@link DatabaseMetadataException}, the same way an unknown record
    * type does in the {@code RecordFactory}. Reading it with the version-0 hash would look in the wrong stripe and
    * silently answer "not connected" or miss a removal (#8868).
+   * <p>
+   * Releases older than the one that added this check do NOT validate the byte, and read any version with the
+   * version-0 hash. A new placement version is therefore only safe once those releases are out of support; until
+   * then a layout that changes placement needs a new record type, which they reject in the {@code RecordFactory}.
    */
   public static final byte HASH_VERSION = 0;
 

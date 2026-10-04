@@ -30,6 +30,8 @@ import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -149,18 +151,51 @@ class Issue8868StripeDirectoryHashVersionTest extends TestHelper {
   }
 
   @Test
-  void checkDatabaseReportsTheDirectoryAndDoesNotReclaimItsSegments() {
+  void checkDatabaseReportsTheVertexAndLeavesTheDirectoryAndItsChainsUntouched() {
     final RID created = createPromotedHub();
+    final List<RID> chainHeads = new ArrayList<>();
+    database.transaction(() -> {
+      final StripeDirectory directory = loadDirectory(created);
+      for (int g = 0; g < directory.getGenerationCount(); g++)
+        for (int s = 0; s < directory.getStripes(g); s++) {
+          final RID head = directory.getHead(g, s);
+          if (head != null)
+            chainHeads.add(head);
+        }
+    });
+    assertThat(chainHeads).isNotEmpty();
+
     writeFutureHashVersion(created);
     final RID hub = reopen(created);
 
     final Map<String, Object> result = new DatabaseChecker(database).setVerboseLevel(0).check();
     assertThat(result.get("warnings").toString()).contains(hub.toString());
 
-    // Without FIX nothing changes: the directory is still there, still in the future format.
+    // Without FIX nothing changes: the directory is still there, still in the future format, and every stripe
+    // chain it points to still exists.
     database.transaction(() -> {
       final RID dirRID = inHead(hub);
       assertThat(bucketOf(dirRID).getRecord(dirRID).getByte(1)).isEqualTo(FUTURE_HASH);
+      for (final RID head : chainHeads) {
+        final RID rebound = new RID(head.getBucketId(), head.getPosition());
+        assertThat(bucketOf(rebound).existsRecord(rebound)).as("stripe chain head " + rebound).isTrue();
+      }
+    });
+  }
+
+  /** Bit pattern {@code 0xFF}: a negative byte, so the check must be an equality, not a "greater than". */
+  @Test
+  void corruptNegativeHashVersionIsRejectedToo() {
+    final RID hub = createPromotedHub();
+
+    database.transaction(() -> {
+      final RID dirRID = inHead(hub);
+      final Binary content = bucketOf(dirRID).getRecord(dirRID).copyOfContent();
+      content.putByte(1, (byte) 0xFF);
+
+      assertThatThrownBy(() -> new StripeDirectory(database, dirRID, content))
+          .isInstanceOf(DatabaseMetadataException.class)
+          .hasMessageContaining("hash version -1");
     });
   }
 
@@ -218,8 +253,9 @@ class Issue8868StripeDirectoryHashVersionTest extends TestHelper {
   }
 
   /**
-   * Closes and reopens the database the first time it is called for a test (drops every cached record, so the next
-   * read comes from the stored bytes), and rebinds {@code rid} to the open instance.
+   * Closes and reopens the database the FIRST time it is called in a test (drops every cached record, so the next
+   * read comes from the stored bytes), and rebinds {@code rid} to the open instance. Later calls in the same test
+   * only rebind, so every RID a test needs after the reopen goes through this method, after the last write.
    */
   private RID reopen(final RID rid) {
     if (!reopened) {
