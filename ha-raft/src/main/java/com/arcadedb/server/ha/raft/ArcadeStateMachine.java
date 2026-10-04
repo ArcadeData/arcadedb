@@ -2550,7 +2550,6 @@ public class ArcadeStateMachine extends BaseStateMachine {
     return membershipSecuritySeeder.seedAfterInFlightAndReport(reason, timeoutMs);
   }
 
-  /** Package-private test seam (issue #7531): substitutes the seeder the configuration callback drives. */
   /** Installs the detector {@link RaftHAServer} owns, so it outlives this state machine (issue #7819). */
   void setRuntimeJoinDetector(final RuntimeJoinDetector detector) {
     this.runtimeJoinDetector = detector;
@@ -2561,6 +2560,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     return runtimeJoinDetector;
   }
 
+  /** Package-private test seam (issue #7531): substitutes the seeder the configuration callback drives. */
   void setMembershipSecuritySeederForTesting(final MembershipSecuritySeeder seeder) {
     final MembershipSecuritySeeder previous = this.membershipSecuritySeeder;
     this.membershipSecuritySeeder = seeder;

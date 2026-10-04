@@ -140,6 +140,18 @@ public final class ClusterSecuritySeedQuery {
   }
 
   /**
+   * The deadline of an admission request that DECLARED the admitted peer's HTTP address (issue #8689): room for two
+   * whole seeds plus the margin, because the leader that records the address answers only after the seed already in
+   * flight - which was probing the old address and may spend its whole retry budget doing so - and then a fresh one.
+   * The leader waits this long and the admitting node's request is given the same, so the operator reads the leader's
+   * answer rather than a client-side timeout that lands at the same instant.
+   */
+  public static long declaredAdmissionReportTimeoutMs(final ContextConfiguration configuration) {
+    return 2 * Math.max(0L, configuration.getValueAsLong(GlobalConfiguration.HA_SECURITY_SEED_RETRY_TIMEOUT))
+        + SEED_REPORT_MARGIN_MS;
+  }
+
+  /**
    * How long to wait for an election to name a new leader before re-resolving, taken from the cluster's own
    * {@code arcadedb.ha.electionTimeoutMax} so the two cannot drift apart: a deployment that widens its election
    * timeout for a WAN link or a bulk-load workload widens this with it, without a second setting to remember.
@@ -302,7 +314,8 @@ public final class ClusterSecuritySeedQuery {
       body.put(PostSecuritySeedHandler.ADMITTED_PEER_ID, declared.peerId())
           .put(PostSecuritySeedHandler.DECLARED_HTTP_ADDRESS, declared.httpAddress());
 
-    final long timeoutMs = Math.max(reportTimeoutMs(server.getConfiguration()), LeaderDial.MIN_FORWARD_TIMEOUT_MS);
+    final long timeoutMs = Math.max(declared != null ? declaredAdmissionReportTimeoutMs(server.getConfiguration())
+        : reportTimeoutMs(server.getConfiguration()), LeaderDial.MIN_FORWARD_TIMEOUT_MS);
     final HttpRequest.Builder builder = HttpRequest.newBuilder()
         .uri(URI.create(dial.url(PostSecuritySeedHandler.ROUTE)))
         .timeout(Duration.ofMillis(timeoutMs))

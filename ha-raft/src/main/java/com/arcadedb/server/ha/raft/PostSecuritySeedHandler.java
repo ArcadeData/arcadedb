@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -186,7 +187,8 @@ public class PostSecuritySeedHandler extends AbstractServerHttpHandler {
       // Nor may an admission whose declared address was only recorded just now: the seed the membership change
       // started probed the derived address and is the failure being repaired (issue #8689).
       failedSeeds = addressRecorded
-          ? raftHAServer.getStateMachine().seedSecurityAfterInFlightAndReport(reason, seedReportTimeoutMs())
+          ? raftHAServer.getStateMachine().seedSecurityAfterInFlightAndReport(reason,
+              ClusterSecuritySeedQuery.declaredAdmissionReportTimeoutMs(httpServer.getServer().getConfiguration()))
           : raftHAServer.getStateMachine().seedSecurityNowAndReport(reason, seedReportTimeoutMs(), !catchUp);
     } catch (final IllegalStateException e) {
       // The seed could not be run or its outcome could not be read. Reported as a failure of the REPORT, with
@@ -288,19 +290,25 @@ public class PostSecuritySeedHandler extends AbstractServerHttpHandler {
       throw new IllegalArgumentException(
           "'" + ADMITTED_PEER_ID + "' and '" + DECLARED_HTTP_ADDRESS + "' must be sent together");
 
-    final int colon = address.lastIndexOf(':');
-    if (colon <= 0 || colon == address.length() - 1)
-      throw new IllegalArgumentException("'" + DECLARED_HTTP_ADDRESS + "' must be host:port, got '" + address + "'");
-    final int port;
     try {
-      port = Integer.parseInt(address.substring(colon + 1));
-    } catch (final NumberFormatException e) {
-      throw new IllegalArgumentException("'" + DECLARED_HTTP_ADDRESS + "' must end with a numeric port, got '"
-          + address + "'", e);
+      // The same host:port / [ipv6]:port rules every other peer address in this module is held to.
+      RaftPeerAddressResolver.validatePeerAddress(address);
+    } catch (final ConfigurationException e) {
+      throw new IllegalArgumentException("'" + DECLARED_HTTP_ADDRESS + "' is not a peer address: " + e.getMessage(), e);
     }
-    if (port < 1 || port > 65535)
-      throw new IllegalArgumentException("'" + DECLARED_HTTP_ADDRESS + "' port out of range: " + port);
+    // And nothing a URL could read as more than an authority: the address is stored and later dialled with the
+    // cluster token attached, so a '/', '@', '?' or whitespace must not get the chance to redirect that dial.
+    for (int i = 0; i < address.length(); i++)
+      if (!isAddressCharacter(address.charAt(i)))
+        throw new IllegalArgumentException("'" + DECLARED_HTTP_ADDRESS + "' contains '" + address.charAt(i)
+            + "', which no host:port does: '" + address + "'");
     return new DeclaredPeerHttpAddress(peerId, address);
+  }
+
+  /** A host name, an IPv4 or bracketed IPv6 literal with an optional zone, and the port separator. */
+  private static boolean isAddressCharacter(final char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '-'
+        || c == '_' || c == ':' || c == '[' || c == ']' || c == '%';
   }
 
   /**

@@ -1171,6 +1171,9 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
       final RaftPeerAddressResolver.JoinTarget target = parseJoinTarget(serverAddress);
       return target.httpAddress() != null ? target : null;
     } catch (final RuntimeException e) {
+      LogManager.instance().log(this, Level.FINE,
+          "'%s' joined, but could not be parsed again to send its declared HTTP port to the leader: %s", serverAddress,
+          e.getMessage());
       return null;
     }
   }

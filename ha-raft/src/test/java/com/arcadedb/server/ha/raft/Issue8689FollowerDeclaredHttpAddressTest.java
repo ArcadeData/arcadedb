@@ -19,6 +19,7 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ha.raft.PostSecuritySeedHandler.DeclaredPeerHttpAddress;
 import org.apache.ratis.protocol.RaftPeer;
@@ -158,9 +159,36 @@ class Issue8689FollowerDeclaredHttpAddressTest {
         declaration(":2482"),
         declaration("localhost:http"),
         declaration("localhost:0"),
-        declaration("localhost:65536")))
+        declaration("localhost:65536"),
+        declaration("evil.example/x:80"),
+        declaration("root@evil.example:80"),
+        declaration("evil.example?x:80"),
+        declaration("local host:80"),
+        declaration("[::1:2480")))
       assertThatThrownBy(() -> PostSecuritySeedHandler.readDeclaredPeerHttpAddress(bad)).as("%s", bad)
           .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  /** The forms a real peer address takes are accepted, a bracketed IPv6 literal included. */
+  @Test
+  void everyPeerAddressFormIsAccepted() {
+    for (final String address : List.of("localhost:2482", "10.0.0.7:2480", "arcadedb-2.arcadedb.default.svc:2480",
+        "[::1]:2480", "[fe80::1%eth0]:2480"))
+      assertThat(PostSecuritySeedHandler.readDeclaredPeerHttpAddress(declaration(address)).httpAddress()).as(address)
+          .isEqualTo(address);
+  }
+
+  /**
+   * The leader answers only after the seed in flight and then a fresh one, so the deadline has room for two whole
+   * retry budgets; anything less lets the fresh seed time out behind one that spent its budget on the stale address.
+   */
+  @Test
+  void aDeclaredAdmissionIsGivenRoomForTwoSeeds() {
+    final ContextConfiguration configuration = new ContextConfiguration();
+    configuration.setValue(GlobalConfiguration.HA_SECURITY_SEED_RETRY_TIMEOUT, 7_000L);
+
+    assertThat(ClusterSecuritySeedQuery.declaredAdmissionReportTimeoutMs(configuration) - 2 * 7_000L)
+        .isEqualTo(ClusterSecuritySeedQuery.reportTimeoutMs(configuration) - 7_000L);
   }
 
   private static JSONObject declaration(final String address) {
