@@ -236,10 +236,8 @@ class CypherAllShortestPathsParallelEdgesIssue8995Test extends TestHelper {
   @Test
   @Timeout(120)
   void theCommandTimeoutStopsThePathEnumerationNotOnlyTheSearch() {
-    // 12 hops of 4 parallel relationships: the BFS touches 13 vertices, the enumeration 4^12 = 16.7M paths. The MATCH
-    // form streams them (issue #9123), so the step's per-row check stops it; the RETURN expression has to build the whole
-    // list, so only a check inside the back-tracking walk can stop that one. Without them the query runs out of memory or
-    // never returns.
+    // 12 hops of 4 parallel relationships: the BFS touches 13 vertices, the enumeration 4^12 = 16.7M paths. Only a
+    // check inside the back-tracking walk can stop it; without one the query runs out of memory or never returns.
     final int hops = 12;
     database.getSchema().createVertexType("Chain");
     database.getSchema().createEdgeType("P");
@@ -254,20 +252,20 @@ class CypherAllShortestPathsParallelEdgesIssue8995Test extends TestHelper {
     });
 
     // 100 ms: generous enough that a cold JIT or a GC pause cannot spend it inside the 13-vertex BFS or planning, and
-    // still orders of magnitude short of enumerating 16.7M paths. The stack-trace assertions naming the enumeration
-    // ARE the point of the test: they tell this guard apart from the BFS one right before it.
+    // still orders of magnitude short of enumerating 16.7M paths. The stack-trace assertions naming the back-tracking
+    // methods ARE the point of the test: they tell this guard apart from the BFS one right before it.
     database.getConfiguration().setValue(GlobalConfiguration.COMMAND_TIMEOUT, 100L);
     try {
       final String target = "MATCH (a:Chain {id: 0}), (b:Chain {id: " + hops + "}) ";
       assertThatThrownBy(() -> countRows(target + "MATCH p = allShortestPaths((a)-[:P*]->(b)) RETURN p"))
           .hasStackTraceContaining(GlobalConfiguration.COMMAND_TIMEOUT.getKey())
-          .hasStackTraceContaining("ShortestPathStep$1.fetchMore");
+          .hasStackTraceContaining("buildAllPaths");
       assertThatThrownBy(() -> countRows(target + "MATCH p = allShortestPaths((a)-[r:P* WHERE r.w > 0]->(b)) RETURN p"))
           .hasStackTraceContaining(GlobalConfiguration.COMMAND_TIMEOUT.getKey())
-          .hasStackTraceContaining("ShortestPathStep$1.fetchMore");
+          .hasStackTraceContaining("buildAllFilteredPaths");
       assertThatThrownBy(() -> countRows(target + "RETURN size(allShortestPaths((a)-[:P*]->(b))) AS n"))
           .hasStackTraceContaining(GlobalConfiguration.COMMAND_TIMEOUT.getKey())
-          .hasStackTraceContaining("PathEnumerator");
+          .hasStackTraceContaining("buildAllPaths");
     } finally {
       database.getConfiguration().setValue(GlobalConfiguration.COMMAND_TIMEOUT, 0L);
     }
