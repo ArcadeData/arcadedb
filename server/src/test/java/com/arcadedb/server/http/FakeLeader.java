@@ -87,6 +87,7 @@ public final class FakeLeader implements AutoCloseable {
   private final    CountDownLatch answered                 = new CountDownLatch(1);
   private final    CountDownLatch connectionClosedByClient = new CountDownLatch(1);
   private volatile boolean        closing;
+  private volatile RuntimeException scriptFailure;
 
   private FakeLeader(final Mode mode, final Script script) throws IOException {
     this.mode = mode;
@@ -114,7 +115,8 @@ public final class FakeLeader implements AutoCloseable {
 
   /**
    * A leader that reads each request's headers, answers with {@code script}, and then keeps the connection open,
-   * draining whatever else the client sends, until the client closes it.
+   * draining whatever else the client sends, until the client closes it. Every accepted connection gets the script;
+   * the {@code await*} methods report the first such event across all of them.
    */
   public static FakeLeader scripted(final Script script) throws IOException {
     if (script == null)
@@ -145,12 +147,22 @@ public final class FakeLeader implements AutoCloseable {
 
   /** {@link Mode#SCRIPTED} only: whether a request's headers had been read in full within the bound. */
   public boolean awaitRequestReceived(final long timeout, final TimeUnit unit) throws InterruptedException {
+    requireMode("awaitRequestReceived", Mode.SCRIPTED);
     return requestReceived.await(timeout, unit);
   }
 
-  /** {@link Mode#SCRIPTED} only: whether the script had written its answer within the bound. */
+  /**
+   * {@link Mode#SCRIPTED} only: whether the script had written its answer within the bound. A script that threw a
+   * runtime exception fails this call with that exception as the cause, rather than reading as a plain timeout.
+   */
   public boolean awaitAnswered(final long timeout, final TimeUnit unit) throws InterruptedException {
-    return answered.await(timeout, unit);
+    requireMode("awaitAnswered", Mode.SCRIPTED);
+    if (!answered.await(timeout, unit))
+      return false;
+    final RuntimeException failure = scriptFailure;
+    if (failure != null)
+      throw new IllegalStateException("the leader's script threw instead of answering", failure);
+    return true;
   }
 
   /**
@@ -159,6 +171,7 @@ public final class FakeLeader implements AutoCloseable {
    * that did.
    */
   public boolean awaitConnectionClosedByClient(final long timeout, final TimeUnit unit) throws InterruptedException {
+    requireMode("awaitConnectionClosedByClient", Mode.DRAIN, Mode.SCRIPTED);
     return connectionClosedByClient.await(timeout, unit);
   }
 
@@ -168,27 +181,35 @@ public final class FakeLeader implements AutoCloseable {
    * reader thread already owns the input stream.
    */
   public boolean firstConnectionClosedByClientWithin(final long boundMs) throws IOException {
-    if (mode != Mode.SILENT)
-      throw new IllegalStateException("only a SILENT leader leaves the connection's input to the caller, this one is " + mode);
+    requireMode("firstConnectionClosedByClientWithin", Mode.SILENT);
     final Socket socket;
     synchronized (accepted) {
-      if (accepted.isEmpty())
+      if (closing || accepted.isEmpty())
         return false;
       socket = accepted.getFirst();
     }
-    socket.setSoTimeout((int) boundMs);
+    // setSoTimeout(0) would block forever: a bound of zero or less is the shortest wait instead
     final byte[] drain = new byte[4096];
     try {
+      socket.setSoTimeout((int) Math.max(1L, Math.min(boundMs, Integer.MAX_VALUE)));
       while (socket.getInputStream().read(drain) != -1) {
         // discard: only the end of the stream answers the question
       }
-      return true;
+      return !closing;
     } catch (final SocketTimeoutException e) {
       return false;
     } catch (final SocketException e) {
-      // "connection reset" is the client tearing it down just as abruptly, which is the same answer
-      return true;
+      // "connection reset" is the client tearing it down just as abruptly, which is the same answer - unless the
+      // socket was closed by this leader's own teardown
+      return !closing;
     }
+  }
+
+  private void requireMode(final String method, final Mode... allowed) {
+    for (final Mode m : allowed)
+      if (mode == m)
+        return;
+    throw new IllegalStateException(method + "() never fires on a " + mode + " leader");
   }
 
   private void acceptLoop() {
@@ -200,12 +221,12 @@ public final class FakeLeader implements AutoCloseable {
         return; // the listener was closed by teardown
       }
       synchronized (accepted) {
-        accepted.add(socket);
         if (closing) {
           // accepted while close() was tearing down, after it had walked the list
           closeQuietly(socket);
           return;
         }
+        accepted.add(socket);
       }
       firstConnection.countDown();
       switch (mode) {
@@ -239,6 +260,11 @@ public final class FakeLeader implements AutoCloseable {
     } catch (final IOException e) {
       // a reset, or the client closing before its request was complete: either way the client let go of it, unless
       // this is the leader's own teardown, which the check below tells apart
+    } catch (final RuntimeException e) {
+      // a broken script: surfaced by awaitAnswered() instead of dying silently with this thread
+      scriptFailure = e;
+      answered.countDown();
+      return;
     }
     if (!closing)
       connectionClosedByClient.countDown();

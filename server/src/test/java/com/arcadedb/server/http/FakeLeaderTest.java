@@ -22,10 +22,12 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.UncheckedIOException;
 import java.net.Socket;
 import java.net.SocketException;
 import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -156,9 +158,48 @@ class FakeLeaderTest {
   }
 
   @Test
-  void firstConnectionClosedByClientIsOnlyMeaningfulForASilentLeader() throws Exception {
+  void aWaitThatCanNeverFireForTheModeIsRefused() throws Exception {
     try (final FakeLeader leader = FakeLeader.draining()) {
       assertThatThrownBy(() -> leader.firstConnectionClosedByClientWithin(10L)).isInstanceOf(IllegalStateException.class);
+      assertThatThrownBy(() -> leader.awaitAnswered(10, TimeUnit.MILLISECONDS)).isInstanceOf(IllegalStateException.class);
+      assertThatThrownBy(() -> leader.awaitRequestReceived(10, TimeUnit.MILLISECONDS)).isInstanceOf(IllegalStateException.class);
+    }
+    try (final FakeLeader leader = FakeLeader.dropping()) {
+      assertThatThrownBy(() -> leader.awaitConnectionClosedByClient(10, TimeUnit.MILLISECONDS))
+          .isInstanceOf(IllegalStateException.class);
+    }
+  }
+
+  @Test
+  void aScriptThatThrowsIsReportedRatherThanReadAsATimeout() throws Exception {
+    try (final FakeLeader leader = FakeLeader.scripted(out -> {
+      throw new IllegalArgumentException("broken script");
+    }); final Socket client = connect(leader)) {
+      client.getOutputStream().write(REQUEST);
+      assertThat(leader.awaitRequestReceived(5, TimeUnit.SECONDS)).isTrue();
+      assertThatThrownBy(() -> leader.awaitAnswered(5, TimeUnit.SECONDS)).isInstanceOf(IllegalStateException.class)
+          .hasRootCauseMessage("broken script");
+    }
+  }
+
+  @Test
+  void aSilentLeaderDoesNotReportItsOwnTeardownAsTheClientClosing() throws Exception {
+    final FakeLeader leader = FakeLeader.silent();
+    try (final Socket ignored = connect(leader)) {
+      assertThat(leader.awaitFirstConnection(5, TimeUnit.SECONDS)).isTrue();
+      // The caller is (most likely) parked in the read when teardown closes the socket under it; if it has not got
+      // there yet the answer must be the same
+      final CompletableFuture<Boolean> closedByClient = CompletableFuture.supplyAsync(() -> {
+        try {
+          return leader.firstConnectionClosedByClientWithin(30_000L);
+        } catch (final IOException e) {
+          throw new UncheckedIOException(e);
+        }
+      });
+      Thread.sleep(200);
+      leader.close();
+      assertThat(closedByClient.get(30, TimeUnit.SECONDS)).isFalse();
+      assertThat(leader.firstConnectionClosedByClientWithin(10L)).isFalse();
     }
   }
 
