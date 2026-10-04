@@ -161,9 +161,10 @@ class Issue8643RecountDuringSnapshotCatchUpIT extends BaseRaftHATest {
     assertClusterConsistency();
 
     final long expected = scanCount(leaderIndex);
-    for (int i = 0; i < getServerCount(); i++) {
-      final int serverIndex = i;
-      final long stored = withResyncRetry(serverIndex, db -> storedCount(db));
+    // Every delete matched a record: a drained type would have left the catch-up nothing to race with
+    assertThat(expected).as("every insert minus every delete the load issued").isEqualTo(nextId.get() - nextDeleteId.get());
+    for (int serverIndex = 0; serverIndex < getServerCount(); serverIndex++) {
+      final long stored = withResyncRetry(serverIndex, Issue8643RecountDuringSnapshotCatchUpIT::storedCount);
       final long scanned = scanCount(serverIndex);
       assertThat(scanned).as("scan count on server %d must match the leader's", serverIndex).isEqualTo(expected);
       assertThat(stored).as("stored count(*) on server %d must match a scan of the same type (issue #8640)", serverIndex)
@@ -286,8 +287,8 @@ class Issue8643RecountDuringSnapshotCatchUpIT extends BaseRaftHATest {
         // The installed copy is taken from the leader's live files, so it already holds the pages of some entries past
         // its snapshot index: replaying those advances no page version, folds nothing and cannot race. Wait until the
         // follower is past everything the leader had applied when the catch-up started, so the entries applied during
-        // the recount are ones the copy did not have
-        // A second install inside the round (its boundary at or past the latch) has a copied prefix of its own
+        // the recount are ones the copy did not have. A second install inside the round (its boundary at or past the
+        // latch) has a copied prefix of its own, so it re-latches
         if (copiedPrefixEnd < 0 || stateMachine.isBelowInstalledRaftBoundary(copiedPrefixEnd))
           copiedPrefixEnd = appliedIndex(leaderIndex);
         if (appliedIndex(followerIndex) <= copiedPrefixEnd) {
