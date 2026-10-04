@@ -88,8 +88,10 @@ public class SQLQueryEngine implements QueryEngine {
    * A statement that parsed but is chained or nested so deeply that building its plan overflows the thread stack
    * (a 10,000 element chain of property accesses, array selectors or method calls): refuse it with an ArcadeDB
    * exception that says why instead of letting the raw Error leave the query call (#9050). The catch sits at the top of
-   * the stack, after every {@code finally} block of the execution has unwound, so building the exception is safe. It is
-   * written at each call site rather than through a lambda-taking helper to keep the query hot path allocation free.
+   * the stack, after every {@code finally} block of the execution has unwound, so building the exception is safe.
+   * It covers building the plan only: {@code execute} returns a lazy result set, so an overflow raised later while
+   * iterating it is not converted. It is written at each call site rather than through a lambda-taking helper to keep
+   * the query hot path allocation free.
    */
   private static CommandSQLParsingException tooDeep(final StackOverflowError e) {
     return new CommandSQLParsingException(
