@@ -408,4 +408,12 @@ class MongoDBFilterSemanticsTest extends BaseMongoServerTest {
     assertThat(c.countDocuments(filter, new CountOptions().skip(5))).isZero();
     assertThat(c.countDocuments(filter, new CountOptions().skip(2).limit(5))).isEqualTo(1);
   }
+
+  @Test
+  void aggregateOverAMissingCollectionIsEmptyButAWritingPipelineStillFails() {
+    final MongoCollection<Document> missing = client.getDatabase(getDatabaseName()).getCollection("never_there");
+    assertThat(missing.aggregate(List.of(Document.parse("{$match:{k:1}}"))).into(new ArrayList<>())).isEmpty();
+    assertThatThrownBy(() -> missing.aggregate(List.of(Document.parse("{$out:'target'}"))).into(new ArrayList<>())).isInstanceOf(
+        MongoException.class);
+  }
 }

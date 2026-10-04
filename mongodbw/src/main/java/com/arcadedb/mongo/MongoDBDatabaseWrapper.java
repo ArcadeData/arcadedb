@@ -260,9 +260,13 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   private Document aggregateCollection(final String command, final Document document, final Oplog oplog)
       throws MongoServerException {
     final String collectionName = document.get("aggregate").toString();
-    // like MongoDB, a pipeline over a collection that does not exist is answered with no documents (countDocuments is one)
-    if (!database.getSchema().existsType(collectionName))
+    // like MongoDB, a pipeline over a collection that does not exist is answered with no documents (countDocuments is one). A
+    // pipeline that writes ($out, $merge) is not read-only: it keeps failing on the missing collection, as it always did
+    if (!database.getSchema().existsType(collectionName)) {
+      if (writesTo(document.get("pipeline")))
+        database.countType(collectionName, false);
       return firstBatchCursorResponse(collectionName, "firstBatch", new ArrayList<>(), 0);
+    }
 
     final MongoCollection<Long> collection = getCollection(collectionName);
 
@@ -281,6 +285,14 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     aggregation.validate(document);
 
     return firstBatchCursorResponse(collectionName, "firstBatch", aggregation.computeResult(), 0);
+  }
+
+  private static boolean writesTo(final Object pipeline) {
+    if (pipeline instanceof List<?> stages)
+      for (final Object stage : stages)
+        if (stage instanceof Document document && (document.containsKey("$out") || document.containsKey("$merge")))
+          return true;
+    return false;
   }
 
   private Document firstBatchCursorResponse(final String ns, final String key, final List<Document> documents,
