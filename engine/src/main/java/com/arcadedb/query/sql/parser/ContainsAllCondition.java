@@ -33,7 +33,7 @@ import java.util.*;
 public class ContainsAllCondition extends BooleanExpression {
   public Expression left;
   public Expression right;
-  public OrBlock    rightBlock;
+  public BooleanExpression rightBlock;
 
   public ContainsAllCondition() {
   }
@@ -108,18 +108,8 @@ public class ContainsAllCondition extends BooleanExpression {
 
       final Iterator<?> iter = MultiValue.getMultiValueIterator(leftValue);
       while (iter.hasNext()) {
-        final Object item = iter.next();
-        if (item instanceof Identifiable identifiable) {
-          if (!isTrue(rightBlock.evaluate(identifiable, context)))
-            return false;
-
-        } else if (item instanceof Result result) {
-          if (!isTrue(rightBlock.evaluate(result, context)))
-            return false;
-
-        } else if (!isTrue(rightBlock.evaluate(new ResultInternal(item), context)))
+        if (!isTrue(evaluateItem(iter.next(), context)))
           return false;
-
       }
       return true;
     }
@@ -137,20 +127,28 @@ public class ContainsAllCondition extends BooleanExpression {
 
       final Iterator<?> iter = MultiValue.getMultiValueIterator(leftValue);
       while (iter.hasNext()) {
-        final Object item = iter.next();
-        if (item instanceof Identifiable identifiable) {
-          if (!isTrue(rightBlock.evaluate(identifiable, context)))
-            return false;
-        } else if (item instanceof Result result) {
-          if (!isTrue(rightBlock.evaluate(result, context)))
-            return false;
-        } else if (!isTrue(rightBlock.evaluate(new ResultInternal(item), context)))
+        if (!isTrue(evaluateItem(iter.next(), context)))
           return false;
-
       }
       return true;
     }
 
+  }
+
+  /**
+   * Evaluates the parenthesised condition against one element of the collection: a record or result as it is, an
+   * embedded map as a row of its fields (so {@code items CONTAINSALL (name IS NOT NULL)} reads {@code name}), any
+   * other value as a value row that {@code @this} answers.
+   */
+  @SuppressWarnings("unchecked")
+  private Boolean evaluateItem(final Object item, final CommandContext context) {
+    if (item instanceof Identifiable identifiable)
+      return rightBlock.evaluate(identifiable, context);
+    if (item instanceof Result result)
+      return rightBlock.evaluate(result, context);
+    if (item instanceof Map<?, ?> map)
+      return rightBlock.evaluate(new ResultInternal((Map<String, Object>) map), context);
+    return rightBlock.evaluate(new ResultInternal(item), context);
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {

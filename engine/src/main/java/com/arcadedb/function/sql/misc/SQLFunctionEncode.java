@@ -60,6 +60,9 @@ public class SQLFunctionEncode extends SQLFunctionAbstract {
       final CommandContext context) {
 
     final Object candidate = params[0];
+    if (params[1] == null)
+      return null;
+
     final String format = params[1].toString();
 
     byte[] data = null;

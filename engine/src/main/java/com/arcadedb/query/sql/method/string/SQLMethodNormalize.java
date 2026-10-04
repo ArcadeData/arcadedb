@@ -47,12 +47,12 @@ public class SQLMethodNormalize extends AbstractSQLMethod {
 
     if (value != null) {
       final Normalizer.Form form =
-          params != null && params.length > 0 ?
+          params != null && params.length > 0 && params[0] != null ?
               Normalizer.Form.valueOf(FileUtils.getStringContent(params[0].toString())) :
               Normalizer.Form.NFD;
 
       final String normalized = Normalizer.normalize(value.toString(), form);
-      if (params != null && params.length > 1) {
+      if (params != null && params.length > 1 && params[1] != null) {
         // The 2nd argument is a caller-supplied regex, not a literal (issue #5886) - bounded the same way as
         // every other user-controlled regex entry point, and sharing one deadline across every row this method
         // runs against within the same query (same rationale as TextRegexReplace - otherwise a pathological

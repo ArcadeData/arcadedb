@@ -376,7 +376,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    * a namespace name and then calling a method of that namespace on it ({@code SELECT FROM Foo map WHERE
    * map.get('x') = 1}) still parses as the namespaced function {@code map.get}. That ambiguity predates aliases -
    * it applies to any property named {@code map}, {@code ts}, {@code geo}, ... - and is left as is; backtick-quote
-   * the alias, or pick another one, to address the record instead.
+   * the alias (or the property, as in {@code `map`.values()}), or pick another name, to address the record instead.
    *
    * @return {@code expr}, rewritten in place when it was alias-qualified
    */
@@ -2574,7 +2574,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       if (ctx.whereClause() != null) {
         // Form: expression CONTAINSALL (whereClause)
         final WhereClause whereClause = (WhereClause) visit(ctx.whereClause());
-        condition.rightBlock = (OrBlock) whereClause.baseExpression;
+        condition.rightBlock = whereClause.baseExpression;
       } else {
         // Form: expression CONTAINSALL expression
         final Expression right = (Expression) visit(ctx.expression(1));
@@ -2602,7 +2602,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       if (ctx.whereClause() != null) {
         // Form: expression CONTAINSANY (whereClause)
         final WhereClause whereClause = (WhereClause) visit(ctx.whereClause());
-        condition.rightBlock = (OrBlock) whereClause.baseExpression;
+        condition.rightBlock = whereClause.baseExpression;
       } else {
         // Form: expression CONTAINSANY expression
         final Expression right = (Expression) visit(ctx.expression(1));

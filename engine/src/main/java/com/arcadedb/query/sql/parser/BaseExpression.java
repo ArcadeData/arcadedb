@@ -299,6 +299,9 @@ public class BaseExpression extends MathExpression {
     if (identifier.levelZero != null || identifier.suffix == null || identifier.suffix.identifier == null
         || identifier.suffix.recordAttribute != null || identifier.suffix.star)
       return null;
+    // A back-ticked name is a property, never a namespace: `map`.values() reads the property called map (issue #9076)
+    if (identifier.suffix.identifier.quoted)
+      return null;
 
     final String namespace = identifier.suffix.identifier.getValue();
     if (namespace == null || namespace.isEmpty() || namespace.charAt(0) == '$')
