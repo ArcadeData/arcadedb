@@ -91,7 +91,7 @@ class IndexDefaultPageSizeTest extends TestHelper {
       database.transaction(() -> database.newDocument("Articles").set("body", "hello page size world").save());
       assertThat(database.query("sql", "SELECT FROM Articles WHERE SEARCH_INDEX('Articles[body]', 'hello') = true").stream().count())
           .isEqualTo(1L);
-      assertThat(pageSizeOf("Articles")).isNotEqualTo(8_192);
+      assertThat(pageSizeOf("Articles")).isEqualTo(LSMTreeIndexAbstract.DEF_PAGE_SIZE);
     } finally {
       database.getConfiguration().setValue(GlobalConfiguration.INDEX_DEFAULT_PAGE_SIZE,
           GlobalConfiguration.INDEX_DEFAULT_PAGE_SIZE.getDefValue());
