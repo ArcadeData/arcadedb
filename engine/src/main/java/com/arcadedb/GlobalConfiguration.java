@@ -711,9 +711,8 @@ public enum GlobalConfiguration {
       """
       Maximum nesting depth allowed for parentheses, brackets, braces (map/JSON literals) and CASE expressions in a \
       single SQL statement (WHERE conditions, sub-expressions, nested function/statement calls, ...). The \
-      ANTLR-generated SQL parser resolves ambiguity between several grammar \
-      rules that all start with '(' (a parenthesized expression, condition, or sub-statement) by first \
-      trying a fast SLL prediction and falling back to full ALL(*) prediction on failure; for a query with enough \
+      ANTLR-generated SQL parser resolves ambiguity between several grammar rules that all start with '(' (a \
+      parenthesized expression, condition, or sub-statement) by first trying a fast SLL prediction and falling back to full ALL(*) prediction on failure; for a query with enough \
       nested parentheses that fallback's cost grows so steeply that a query of only a few KB can tie up a worker \
       thread for minutes without ever crashing, which is worse than a fast failure since it is not distinguishable \
       from a slow legitimate query. This is checked on the token stream before any parse is attempted, so a query \
