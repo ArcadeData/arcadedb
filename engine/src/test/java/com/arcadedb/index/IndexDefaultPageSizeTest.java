@@ -81,6 +81,23 @@ class IndexDefaultPageSizeTest extends TestHelper {
     }
   }
 
+  @Test
+  void settingDoesNotChangeFullTextIndexes() {
+    database.command("sql", "CREATE DOCUMENT TYPE Articles");
+    database.command("sql", "CREATE PROPERTY Articles.body STRING");
+    database.getConfiguration().setValue(GlobalConfiguration.INDEX_DEFAULT_PAGE_SIZE, 8_192);
+    try {
+      database.command("sql", "CREATE INDEX ON Articles (body) FULL_TEXT");
+      database.transaction(() -> database.newDocument("Articles").set("body", "hello page size world").save());
+      assertThat(database.query("sql", "SELECT FROM Articles WHERE SEARCH_INDEX('Articles[body]', 'hello') = true").stream().count())
+          .isEqualTo(1L);
+      assertThat(pageSizeOf("Articles")).isNotEqualTo(8_192);
+    } finally {
+      database.getConfiguration().setValue(GlobalConfiguration.INDEX_DEFAULT_PAGE_SIZE,
+          GlobalConfiguration.INDEX_DEFAULT_PAGE_SIZE.getDefValue());
+    }
+  }
+
   private int pageSizeOf(final String type) {
     return database.getSchema().getType(type).getAllIndexes(false).iterator().next().getIndexesOnBuckets()[0].getPageSize();
   }

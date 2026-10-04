@@ -100,7 +100,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     @Override
     public IndexInternal create(final IndexBuilder<?> builder) {
       return new LSMTreeIndex(builder.getDatabase(), builder.getIndexName(), builder.isUnique(), builder.getFilePath(),
-          ComponentFile.MODE.READ_WRITE, builder.getKeyTypes(), builder.getPageSize(), builder.getNullStrategy());
+          ComponentFile.MODE.READ_WRITE, builder.getKeyTypes(), builder.getLsmTreePageSize(), builder.getNullStrategy());
     }
   }
 

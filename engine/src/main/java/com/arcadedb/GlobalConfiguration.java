@@ -234,7 +234,7 @@ public enum GlobalConfiguration {
       "Default page size in bytes for buckets. Default is 64KB", Integer.class, 65_536),
 
   INDEX_DEFAULT_PAGE_SIZE("arcadedb.indexDefaultPageSize", SCOPE.DATABASE,
-      "Default page size in bytes for new LSM-tree indexes created without an explicit page size (SQL CREATE INDEX has no page-size clause). A transaction that changes an index page works on a private copy of the whole page, so a smaller page makes small write transactions cheaper while a larger one makes lookups slightly faster. Existing indexes keep their page size. Minimum is 8KB. Default is 256KB",
+      "Default page size in bytes for new plain LSM-tree indexes (not full-text, geo or vector ones) created without an explicit page size (SQL CREATE INDEX has no page-size clause). A transaction that changes an index page works on a private copy of the whole page, so a smaller page makes small write transactions cheaper while a larger one makes lookups slightly faster. Existing indexes keep their page size. Minimum is 8KB. Default is 256KB",
       Integer.class, 262_144),
 
   EXTERNAL_PROPERTY_BUCKET_DEFAULT_PAGE_SIZE("arcadedb.externalPropertyBucketDefaultPageSize", SCOPE.DATABASE,
