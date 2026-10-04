@@ -20,6 +20,7 @@ package com.arcadedb.query.sql;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.ArcadeDBException;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.database.RID;
@@ -29,6 +30,8 @@ import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -71,7 +74,7 @@ class Issue9148_9053_9050_9049Test extends TestHelper {
   void maxDepthIsUsableAsAnUnquotedMapKey() {
     final RID[] r = chain();
     try (final ResultSet rs = database.query("sql", "SELECT { maxDepth: 1 } AS m")) {
-      assertThat(rs.next().<Object>getProperty("m")).isNotNull();
+      assertThat(rs.next().<Map<String, Object>>getProperty("m")).containsEntry("maxDepth", 1);
     }
     try (final ResultSet rs = database.query("sql",
         "SELECT dijkstra(" + r[0] + ", " + r[3] + ", 'weight', { direction: 'OUT', maxDepth: 20 }) AS path")) {
@@ -86,6 +89,9 @@ class Issue9148_9053_9050_9049Test extends TestHelper {
       assertThat(rs.next().<List<?>>getProperty("path")).hasSize(4);
     }
     try (final ResultSet rs = database.query("sql", "SELECT shortestPath(" + r[0] + ", " + r[3] + ", { maxDepth: 1 }) AS path")) {
+      assertThat(rs.next().<List<?>>getProperty("path")).isEmpty();
+    }
+    try (final ResultSet rs = database.query("sql", "SELECT shortestPath(" + r[0] + ", " + r[3] + ", { MAXDEPTH: 1 }) AS path")) {
       assertThat(rs.next().<List<?>>getProperty("path")).isEmpty();
     }
   }
@@ -165,6 +171,7 @@ class Issue9148_9053_9050_9049Test extends TestHelper {
         "SELECT m" + rep(".k", 20000) + " AS x FROM T", //
         "SELECT tags" + rep("[0]", 20000) + " AS x FROM T", //
         "SELECT name" + rep(".toLowerCase()", 20000) + " AS x FROM T" };
+    final AtomicInteger refused = new AtomicInteger();
     final Thread t = new Thread(null, () -> {
       for (final String sql : statements) {
         try (final ResultSet rs = database.query("sql", sql)) {
@@ -172,6 +179,7 @@ class Issue9148_9053_9050_9049Test extends TestHelper {
             rs.next();
         } catch (final CommandSQLParsingException e) {
           assertThat(e.getMessage()).isNotNull();
+          refused.incrementAndGet();
         } catch (final ArcadeDBException e) {
           // any ArcadeDB exception is acceptable, a raw Error is not
         }
@@ -186,6 +194,7 @@ class Issue9148_9053_9050_9049Test extends TestHelper {
       Thread.currentThread().interrupt();
     }
     assertThat(failure[0]).isNull();
+    assertThat(refused.get()).as("the 20000 element chains cannot be executed on a default stack").isPositive();
   }
 
   // ---- #9049
@@ -201,29 +210,26 @@ class Issue9148_9053_9050_9049Test extends TestHelper {
 
   @Test
   void unknownSchemaMetadataIsAnArcadeDBException() {
-    assertNotARawJdkException("SELECT FROM schema:material");
+    assertThatThrownBy(() -> database.query("sql", "SELECT FROM schema:material").hasNext())
+        .isInstanceOf(CommandExecutionException.class).hasMessageContaining("Invalid metadata: material");
   }
 
   @Test
   void emptyDistinctIsAParsingException() {
     database.getSchema().createVertexType("Person");
     assertThatThrownBy(() -> database.query("sql", "SELECT distinct() FROM Person")).isInstanceOf(CommandSQLParsingException.class)
-        .satisfies(e -> assertThat(e.getMessage()).isNotNull());
+        .hasMessageContaining("distinct() requires one argument");
   }
 
   @Test
-  void parentAsTargetDoesNotNpe() {
+  void parentAsTargetReturnsNoRows() {
     database.getSchema().createVertexType("Person");
     database.transaction(() -> database.command("sql", "INSERT INTO Person SET name = 'a'").close());
-    for (final String sql : new String[] { "SELECT @rid FROM $parent WHERE name = 'a'", "SELECT count(*) AS cnt FROM $parent Person" }) {
-      try (final ResultSet rs = database.query("sql", sql)) {
-        while (rs.hasNext()) {
-          final Result r = rs.next();
-          assertThat(r).isNotNull();
-        }
-      } catch (final ArcadeDBException e) {
-        assertThat(e.getMessage()).isNotNull();
-      }
+    try (final ResultSet rs = database.query("sql", "SELECT @rid FROM $parent WHERE name = 'a'")) {
+      assertThat(rs.hasNext()).isFalse();
+    }
+    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS cnt FROM $parent Person")) {
+      assertThat(rs.next().<Number>getProperty("cnt").intValue()).isZero();
     }
   }
 
@@ -232,11 +238,36 @@ class Issue9148_9053_9050_9049Test extends TestHelper {
     try (final ResultSet rs = database.query("sql", "SELECT $x LET $x = {\"a\": 1}")) {
       assertThat(rs.hasNext()).isTrue();
     }
+    // must not be the raw UnsupportedOperationException of Statement.refersToParent()
     try (final ResultSet rs = database.query("sql", "SELECT $x LET $x = LET $x = {\"a\": 1}")) {
       while (rs.hasNext())
         rs.next();
     } catch (final ArcadeDBException e) {
       assertThat(e.getMessage()).isNotNull();
+    }
+  }
+
+  // ---- the guard must not refuse realistic nesting
+
+  @Test
+  void realisticNestingStaysUnderTheGuard() {
+    database.getSchema().createDocumentType("Doc");
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO Doc CONTENT " + rep("{\"a\":", 20) + "1" + rep("}", 20)).close();
+      database.command("sqlscript", "LET $i = 0;\nWHILE ($i < 1) {\n  IF ($i = 0) {\n    INSERT INTO Doc SET n = 1;\n  }\n  LET $i = $i + 1;\n}").close();
+    });
+    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM Doc")) {
+      assertThat(rs.next().<Number>getProperty("c").intValue()).isEqualTo(2);
+    }
+  }
+
+  @Test
+  void multiValueSelectorWithRids() {
+    database.getSchema().createDocumentType("T");
+    database.transaction(() -> database.command("sql", "INSERT INTO T SET tags = ['a','b']").close());
+    // pre-existing behaviour pinned: parses and runs without a raw exception
+    try (final ResultSet rs = database.query("sql", "SELECT tags[#1:0, #1:1] AS x FROM T")) {
+      assertThat(rs.hasNext()).isTrue();
     }
   }
 }

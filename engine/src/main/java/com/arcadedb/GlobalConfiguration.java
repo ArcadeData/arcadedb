@@ -709,8 +709,8 @@ public enum GlobalConfiguration {
 
   SQL_MAX_EXPRESSION_DEPTH("arcadedb.sql.maxExpressionDepth", SCOPE.DATABASE,
       """
-      Maximum nesting depth allowed for parentheses in a single SQL statement (WHERE conditions, sub-expressions, \
-      nested function/statement calls, ...). The ANTLR-generated SQL parser resolves ambiguity between several \
+      Maximum nesting depth allowed for parentheses, brackets, braces (map/JSON literals) and CASE expressions in a \
+      single SQL statement (WHERE conditions, sub-expressions, nested function/statement calls, ...). The ANTLR-generated SQL parser resolves ambiguity between several \
       grammar rules that all start with '(' (a parenthesized expression, condition, or sub-statement) by first \
       trying a fast SLL prediction and falling back to full ALL(*) prediction on failure; for a query with enough \
       nested parentheses that fallback's cost grows so steeply that a query of only a few KB can tie up a worker \
