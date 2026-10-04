@@ -10725,8 +10725,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     final RuntimeException failure = chunkCommitFailure.get();
     if (failure != null)
-      throw new IndexException("Cannot build vector index '" + indexName + "': a chunk commit or the restart of its transaction failed after " + total.get() + " records were indexed",
-          failure);
+      throw new IndexException("Cannot build vector index '" + indexName
+          + "': a chunk commit or the restart of its transaction failed after " + total.get() + " records were indexed", failure);
 
     final long elapsed = System.currentTimeMillis() - startTime;
     LogManager.instance().log(this, Level.INFO,
