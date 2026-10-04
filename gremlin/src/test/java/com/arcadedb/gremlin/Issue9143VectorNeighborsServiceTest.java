@@ -132,6 +132,12 @@ class Issue9143VectorNeighborsServiceTest {
   }
 
   @Test
+  void theBoundariesOfTheLimitAreAccepted() {
+    assertThat(gremlin(Map.of("indexName", "Doc[emb]", "vector", vectors[0], "limit", 0))).isEmpty();
+    assertThat(gremlin(Map.of("indexName", "Doc[emb]", "vector", vectors[0], "limit", Integer.MAX_VALUE))).hasSize(vectors.length);
+  }
+
+  @Test
   void missingLimitIsAClearError() {
     assertThatThrownBy(() -> gremlin(Map.of("indexName", "Doc[emb]", "vector", vectors[0])))
         .hasStackTraceContaining("'limit' is required");
