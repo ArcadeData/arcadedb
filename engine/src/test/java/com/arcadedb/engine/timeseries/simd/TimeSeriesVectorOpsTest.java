@@ -257,4 +257,12 @@ class TimeSeriesVectorOpsTest {
     // Smoke test
     assertThat(ops.sum(new double[] { 1.0, 2.0, 3.0 }, 0, 3)).isCloseTo(6.0, within(1e-10));
   }
+
+  @ParameterizedTest
+  @MethodSource("implementations")
+  void warmUpAgreesAcrossImplementations(final TimeSeriesVectorOps ops) {
+    // regression for #9171: the provider warms the SIMD ops off the query path, and must not change any answer
+    final double scalar = TimeSeriesVectorOpsProvider.warmUp(new ScalarTimeSeriesVectorOps(), 3);
+    assertThat(TimeSeriesVectorOpsProvider.warmUp(ops, 3)).isCloseTo(scalar, within(1e-6));
+  }
 }
