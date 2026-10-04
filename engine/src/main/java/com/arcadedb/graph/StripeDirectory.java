@@ -24,6 +24,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.RecordInternal;
+import com.arcadedb.exception.DatabaseMetadataException;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
@@ -59,6 +60,11 @@ public class StripeDirectory extends BaseRecord implements RecordInternal {
    * Version of the {@link #stripeOf(RID, int)} placement function used by this record. The hash is part of the
    * on-disk contract (entries are found by re-hashing), so it can never change silently: a new algorithm must
    * use a new version number and keep the old one readable.
+   * <p>
+   * Every directory built from stored bytes is checked against this value ({@link #checkHashVersion()}): a version
+   * this release does not know FAILS CLOSED with a {@link DatabaseMetadataException}, the same way an unknown record
+   * type does in the {@code RecordFactory}. Reading it with the version-0 hash would look in the wrong stripe and
+   * silently answer "not connected" or miss a removal (#8868).
    */
   public static final byte HASH_VERSION = 0;
 
@@ -76,6 +82,7 @@ public class StripeDirectory extends BaseRecord implements RecordInternal {
   public StripeDirectory(final Database database, final RID rid, final Binary buffer) {
     super(database, rid, buffer);
     if (buffer != null) {
+      checkHashVersion();
       this.buffer.setAutoResizable(false);
       this.bufferSize = buffer.size();
     } else
@@ -137,10 +144,30 @@ public class StripeDirectory extends BaseRecord implements RecordInternal {
     if (buffer == null) {
       reload();
       if (buffer != null) {
+        try {
+          checkHashVersion();
+        } catch (final DatabaseMetadataException e) {
+          // DROP THE REJECTED CONTENT: a second access must fail again, not find a loaded buffer and read it with
+          // the wrong placement hash.
+          buffer = null;
+          throw e;
+        }
         buffer.setAutoResizable(false);
         bufferSize = buffer.size();
       }
     }
+  }
+
+  /**
+   * Rejects a directory whose placement hash version is not the one this release implements. Absolute read of
+   * header byte 1: does not move the buffer position the record factory left behind.
+   */
+  private void checkHashVersion() {
+    final byte version = buffer.getByte(1);
+    if (version != HASH_VERSION)
+      throw new DatabaseMetadataException(
+          "Stripe directory " + rid + " uses placement hash version " + version + ", but this release only supports version "
+              + HASH_VERSION + ". The database was written by a newer ArcadeDB release: open it with that release or a later one");
   }
 
   /** Bounded by the single-byte header field: at most 127 generations (a growth event is rare - promotion adds
