@@ -568,8 +568,9 @@ public class BinarySerializer {
       serializeDateTime(database, content, value, type);
       break;
     case BinaryTypes.TYPE_DECIMAL:
-      content.putNumber(((BigDecimal) value).scale());
-      content.putBytes(((BigDecimal) value).unscaledValue().toByteArray());
+      final BigDecimal decimal = value instanceof BigInteger bigInteger ? new BigDecimal(bigInteger) : (BigDecimal) value;
+      content.putNumber(decimal.scale());
+      content.putBytes(decimal.unscaledValue().toByteArray());
       break;
     case BinaryTypes.TYPE_COMPRESSED_RID: {
       final RID rid = ((Identifiable) value).getIdentity();
