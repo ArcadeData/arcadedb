@@ -120,7 +120,7 @@ class Issue9028ScalarIntoTypedListTest extends TestHelper {
     database.command("sql", "CREATE DOCUMENT TYPE B");
     database.command("sql", "CREATE PROPERTY B.ints LIST OF INTEGER");
     assertThatThrownBy(() -> database.transaction(() -> database.command("sql", "INSERT INTO B SET ints = 'abc'")))
-        .isInstanceOf(RuntimeException.class).hasMessageContaining("ints");
+        .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("ints");
   }
 
   @Test
@@ -143,5 +143,33 @@ class Issue9028ScalarIntoTypedListTest extends TestHelper {
       doc.set("longs", List.of(new BigDecimal("9223372036854775808")));
       doc.save();
     })).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("longs");
+  }
+
+  @Test
+  void longAboveIntegerRangeIsRefusedInListOfInteger() {
+    database.command("sql", "CREATE DOCUMENT TYPE G");
+    database.command("sql", "CREATE PROPERTY G.ints LIST OF INTEGER");
+    assertThatThrownBy(() -> database.transaction(() -> {
+      final MutableDocument doc = database.newDocument("G");
+      doc.set("ints", Integer.MAX_VALUE + 1L);
+      doc.save();
+    })).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("ints");
+  }
+
+  @Test
+  void mapOfLongConvertsAndRefusesLikeAList() {
+    database.command("sql", "CREATE DOCUMENT TYPE M");
+    database.command("sql", "CREATE PROPERTY M.values MAP OF LONG");
+    database.transaction(() -> {
+      final MutableDocument doc = database.newDocument("M");
+      doc.set("values", java.util.Map.of("a", 5));
+      doc.save();
+      assertThat(((java.util.Map<String, Object>) doc.get("values")).get("a")).isEqualTo(5L);
+    });
+    assertThatThrownBy(() -> database.transaction(() -> {
+      final MutableDocument doc = database.newDocument("M");
+      doc.set("values", java.util.Map.of("a", new BigDecimal("9223372036854775808")));
+      doc.save();
+    })).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("values");
   }
 }
