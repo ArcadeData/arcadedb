@@ -25,21 +25,18 @@ import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.http.FakeLeader;
 import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.net.InetAddress;
 import java.net.ServerSocket;
-import java.net.Socket;
 import java.net.http.HttpClient;
 import java.time.Duration;
 import java.util.Map;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
 
 import static com.arcadedb.utility.SubclassMocks.mock;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -107,7 +104,7 @@ class Issue7527RaftReplicatedDatabaseForwardTimeoutTest {
 
   @Test
   void aLeaderThatAcceptsAndNeverAnswersIsGivenUpOnWithANonRetryableException() throws Exception {
-    try (final StalledLeader leader = new StalledLeader()) {
+    try (final FakeLeader leader = FakeLeader.silent()) {
       final ContextConfiguration cfg = new ContextConfiguration();
       cfg.setValue(GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT, 5_000L);
       cfg.setValue(GlobalConfiguration.HA_PROXY_COMMAND_TIMEOUT, 1_000L);
@@ -160,7 +157,7 @@ class Issue7527RaftReplicatedDatabaseForwardTimeoutTest {
    */
   @Test
   void theCommandsOwnTimeoutTakesPrecedenceOverTheFallback() throws Exception {
-    try (final StalledLeader leader = new StalledLeader()) {
+    try (final FakeLeader leader = FakeLeader.silent()) {
       final ContextConfiguration cfg = new ContextConfiguration();
       cfg.setValue(GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT, 5_000L);
       cfg.setValue(GlobalConfiguration.COMMAND_TIMEOUT, 1_000L);
@@ -190,49 +187,5 @@ class Issue7527RaftReplicatedDatabaseForwardTimeoutTest {
     final HttpClient client = (HttpClient) field.get(db);
 
     assertThat(client.connectTimeout()).contains(Duration.ofMillis(2_500L));
-  }
-
-  /** A server socket that accepts connections and answers nothing at all. */
-  private static final class StalledLeader implements AutoCloseable {
-    private final ServerSocket serverSocket;
-    private final Thread       acceptor;
-    private final CountDownLatch started = new CountDownLatch(1);
-    private volatile int       accepted  = 0;
-
-    StalledLeader() throws IOException, InterruptedException {
-      serverSocket = new ServerSocket(0, 16, InetAddress.getLoopbackAddress());
-      acceptor = new Thread(() -> {
-        started.countDown();
-        while (!serverSocket.isClosed()) {
-          try {
-            final Socket socket = serverSocket.accept();
-            accepted++;
-            // never answers: the socket stays open until close() tears it down
-          } catch (final IOException e) {
-            return;
-          }
-        }
-      }, "issue7527-stalled-leader");
-      acceptor.setDaemon(true);
-      acceptor.start();
-      started.await(10, TimeUnit.SECONDS);
-    }
-
-    String address() {
-      return serverSocket.getInetAddress().getHostAddress() + ":" + serverSocket.getLocalPort();
-    }
-
-    int acceptedConnections() {
-      return accepted;
-    }
-
-    @Override
-    public void close() {
-      try {
-        serverSocket.close();
-      } catch (final IOException ignored) {
-        // best effort
-      }
-    }
   }
 }
