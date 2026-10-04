@@ -274,6 +274,43 @@ public final class CypherFunctionHelper {
    *                 {@code getMinArgs() == 0} that was called with no arguments at all
    * @param position the zero-based index of the optional argument
    */
+  /**
+   * Number of Unicode characters (code points) of a string, as Cypher counts them: a character outside the BMP is one
+   * character even though it takes two UTF-16 code units (issue #8998).
+   */
+  public static int codePointLength(final CharSequence text) {
+    return Character.codePointCount(text, 0, text.length());
+  }
+
+  /**
+   * The first {@code length} code points of the string; never splits a surrogate pair.
+   */
+  public static String leftCodePoints(final String str, final int length) {
+    if (length >= str.length())
+      return str;
+    return str.substring(0, str.offsetByCodePoints(0, Math.min(length, codePointLength(str))));
+  }
+
+  /**
+   * The last {@code length} code points of the string; never splits a surrogate pair.
+   */
+  public static String rightCodePoints(final String str, final int length) {
+    final int codePoints = codePointLength(str);
+    if (length >= codePoints)
+      return str;
+    return str.substring(str.offsetByCodePoints(0, codePoints - length));
+  }
+
+  /**
+   * The code points in {@code [startCodePoint, endCodePoint)}, both clamped to the string; never splits a surrogate pair.
+   */
+  public static String substringCodePoints(final String str, final int startCodePoint, final int endCodePoint) {
+    if (startCodePoint == 0 && endCodePoint >= str.length())
+      return str;
+    final int begin = str.offsetByCodePoints(0, startCodePoint);
+    return str.substring(begin, str.offsetByCodePoints(begin, endCodePoint - startCodePoint));
+  }
+
   public static boolean isExplicitNull(final Object[] args, final int position) {
     return args != null && args.length > position && args[position] == null;
   }

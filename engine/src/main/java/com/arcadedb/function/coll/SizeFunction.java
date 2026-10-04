@@ -53,7 +53,7 @@ public class SizeFunction implements StatelessFunction {
     if (args[0] == null)
       return null;
     if (args[0] instanceof CharSequence text)
-      return (long) text.length();
+      return (long) CypherFunctionHelper.codePointLength(text);
     if (args[0] instanceof Map<?, ?> map)
       return (long) map.size();
     // Accept List/Collection/array (incl. primitive arrays from numeric-array parameters, issue #4284).
