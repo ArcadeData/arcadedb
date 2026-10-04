@@ -39,6 +39,7 @@ class Issue9247ScriptPositionalPlanCacheTest extends TestHelper {
     database.command("sql", "CREATE DOCUMENT TYPE " + type);
     database.command("sql", "CREATE PROPERTY " + type + ".sku STRING");
     database.command("sql", "CREATE PROPERTY " + type + ".brand STRING");
+    database.command("sql", "CREATE PROPERTY " + type + ".n INTEGER");
     database.transaction(() -> {
       database.newDocument(type).set("sku", "S1").set("brand", "b1").set("n", 1).save();
       database.newDocument(type).set("sku", "S2").set("brand", "b2").set("n", 2).save();
@@ -156,5 +157,26 @@ class Issue9247ScriptPositionalPlanCacheTest extends TestHelper {
     setupRef("JR");
     queryNamed("SELECT FROM J WHERE n > :lo AND sku IN (SELECT sku FROM JR WHERE ref = :r)", Map.of("lo", 0, "r", "r1"));
     assertThat(queryNamed("SELECT FROM J WHERE sku IN (SELECT sku FROM JR WHERE ref = :r)", Map.of("r", "r2"))).isEqualTo("S2:b2");
+  }
+
+  @Test
+  void dmlInScriptWithOffsetParameter() {
+    setup("L");
+    for (int i = 0; i < 2; i++) {
+      database.transaction(() -> database.command("sqlscript",
+          "UPDATE L SET brand = 'x' WHERE sku = ?; UPDATE L SET brand = 'y' WHERE sku = ?;", "S1", "S2").close());
+      assertThat(query("SELECT FROM L ORDER BY sku")).isEqualTo("S1:x S2:y S3:b3");
+      database.transaction(() -> database.command("sql", "UPDATE L SET brand = 'b'").close());
+    }
+    database.transaction(() -> database.command("sqlscript", "DELETE FROM L WHERE sku = ?; DELETE FROM L WHERE sku = ?;", "S1", "S2").close());
+    assertThat(query("SELECT FROM L")).isEqualTo("S3:b");
+  }
+
+  @Test
+  void uncorrelatedAndParentInSubqueryUnchanged() {
+    setup("M");
+    setupRef("MR");
+    assertThat(query("SELECT FROM M WHERE sku IN (SELECT sku FROM MR WHERE ref = 'r2')")).isEqualTo("S2:b2");
+    assertThat(query("SELECT FROM M WHERE sku IN (SELECT sku FROM MR WHERE ref = 'r' + $parent.$current.n)")).isEqualTo("S1:b1 S2:b2 S3:b3");
   }
 }

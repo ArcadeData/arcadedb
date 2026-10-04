@@ -118,7 +118,9 @@ public final class SqlAstInspector {
    * A positional parameter prints as {@code ?} whatever its number and a named one prints its name, while the plan reads
    * the value by the number fixed at parse time (positional parameters, and named ones bound by position), and a script
    * numbers its parameters across all its statements: without the suffix two statements that print the same but read
-   * different positions would share one plan (issue #9247).
+   * different positions would share one plan (issue #9247). The numbers are listed in walk order, which follows the field
+   * order of the node classes: stable within a JVM run, which is all a cache key needs, and equal printed texts have equal
+   * trees, so equal keys mean equal text and equal numbers.
    */
   public static String parameterNumbersSuffix(final Object root) {
     final int[][] holder = { new int[4] };
