@@ -6217,7 +6217,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       // already dropped by the time a peer lands in here (issue #7331); what this map defers is the REPORT, so a
       // peer that identifies itself in the second pass is never also WARNED ABOUT for the refusal that sent us
       // looking for it.
-      final Map<String, String> unanswered = new LinkedHashMap<>();
+      final Map<String, PeerCapabilityRegistry.Unknown> unanswered = new LinkedHashMap<>();
       final Set<PeerDialAddress.SharedEndpoint> sharedEndpoints = new LinkedHashSet<>();
 
       for (final RaftPeer peer : peers) {
@@ -6232,8 +6232,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         if (dial.refused()) {
           // Same rule as the probe failure below (issue #7331): an address that cannot be dialled is a peer this
           // round has no answer from, so whatever it said last is dropped now rather than after pass 2.
-          peerCapabilities.suspend(generation, peerId.toString(), dial.refusal());
-          unanswered.put(peerId.toString(), dial.refusal());
+          // ADDRESS_REFUSED, not UNREACHABLE (issue #8655): the reason is this node's configuration, so it says
+          // nothing about the peer and nothing about what another node's probe will get.
+          suspendPeer(generation, unanswered, peerId.toString(), dial.refusal(),
+              PeerCapabilityRegistry.UnknownKind.ADDRESS_REFUSED);
           // A SET of the whole endpoint, so N peers collapsed onto one cost one probe and not N identical ones -
           // and two peers whose HTTP halves collide while their declared HTTPS halves do not still get a probe
           // each. Deduplicating on the HTTP address alone would have dropped the second peer's HTTPS endpoint,
@@ -6248,9 +6250,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
               dial.httpAddress(), dial.httpsAddress(), clusterToken));
         } catch (final InterruptedException e) {
           Thread.currentThread().interrupt();
-          final String reason = "the capability query was interrupted";
-          peerCapabilities.suspend(generation, peerId.toString(), reason);
-          unanswered.put(peerId.toString(), reason);
+          suspendPeer(generation, unanswered, peerId.toString(), "the capability query was interrupted",
+              PeerCapabilityRegistry.UnknownKind.UNREACHABLE);
           forgetUnanswered(generation, unanswered);
           return;
         } catch (final Exception e) {
@@ -6265,9 +6266,14 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
           // long as the second pass took. What stays buffered is only the REPORT: suspend() moves the belief
           // without settling what was last logged, so a peer the second pass identifies at a shared address is
           // neither warned about nor re-announced, which is the log churn the buffering was protecting against.
-          final String reason = describeProbeFailure(e);
-          peerCapabilities.suspend(generation, peerId.toString(), reason);
-          unanswered.put(peerId.toString(), reason);
+          //
+          // The 404 is kept apart from every other failure (issue #8655): it is the peer's own answer, so the
+          // leader's probe gets it too, and a follower reporting it can say so without its client matching the
+          // message text. Anything else is this node's view of the path to the peer.
+          suspendPeer(generation, unanswered, peerId.toString(), describeProbeFailure(e),
+              e instanceof PeerCapabilityQuery.RouteMissingException
+                  ? PeerCapabilityRegistry.UnknownKind.ROUTE_MISSING
+                  : PeerCapabilityRegistry.UnknownKind.UNREACHABLE);
         }
       }
 
@@ -6294,7 +6300,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   private boolean probeSharedEndpoints(final long generation,
       final Set<PeerDialAddress.SharedEndpoint> sharedEndpoints, final List<String> peerIds,
-      final Map<String, String> unanswered, final String clusterToken) {
+      final Map<String, PeerCapabilityRegistry.Unknown> unanswered, final String clusterToken) {
     for (final PeerDialAddress.SharedEndpoint endpoint : sharedEndpoints) {
       try {
         final PeerCapabilityQuery.Advertisement advertisement = capabilityProber.probe(null, endpoint.httpAddress(),
@@ -6344,9 +6350,16 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * into one log line rather than one per refresh period - {@link #forgetPeerCapabilities} answers on the
    * transition only.
    */
-  private void forgetUnanswered(final long generation, final Map<String, String> unanswered) {
-    for (final Map.Entry<String, String> entry : unanswered.entrySet())
+  private void forgetUnanswered(final long generation, final Map<String, PeerCapabilityRegistry.Unknown> unanswered) {
+    for (final Map.Entry<String, PeerCapabilityRegistry.Unknown> entry : unanswered.entrySet())
       forgetPeerCapabilities(generation, entry.getKey(), entry.getValue());
+  }
+
+  /** Drops the belief in {@code peerId} now and defers its report to the end of the round (issue #7331). */
+  private void suspendPeer(final long generation, final Map<String, PeerCapabilityRegistry.Unknown> unanswered,
+      final String peerId, final String reason, final PeerCapabilityRegistry.UnknownKind kind) {
+    peerCapabilities.suspend(generation, peerId, reason, kind);
+    unanswered.put(peerId, new PeerCapabilityRegistry.Unknown(reason, kind));
   }
 
   private void recordPeerCapabilities(final long generation, final String peerId,
@@ -6358,7 +6371,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
           new TreeSet<>(advertisement.capabilities()));
   }
 
-  private void forgetPeerCapabilities(final long generation, final String peerId, final String reason) {
+  private void forgetPeerCapabilities(final long generation, final String peerId,
+      final PeerCapabilityRegistry.Unknown unknown) {
+    final String reason = unknown.reason();
     // Reported on the TRANSITION into the failed state and not once per refresh period: a peer that is
     // permanently on an older build is the steady state of a half-finished rolling upgrade, and a line every five
     // seconds about it would be noise. It is reported the FIRST time as well as on a regression from a known-good
@@ -6368,7 +6383,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // The registry answers that question, because the shadow map deciding it has to be pruned by whatever prunes
     // the entry it shadows - held here, nothing pruned it, and a re-added peer's first advertisement was
     // suppressed against what it said before it left (issue #7301).
-    if (peerCapabilities.forget(generation, peerId, reason))
+    if (peerCapabilities.forget(generation, peerId, reason, unknown.kind()))
       LogManager.instance().log(this, Level.WARNING,
           "Peer '%s' does not advertise any cluster capability (%s); optional wire-format sections will not be "
               + "written to this cluster until it answers again", peerId, reason);

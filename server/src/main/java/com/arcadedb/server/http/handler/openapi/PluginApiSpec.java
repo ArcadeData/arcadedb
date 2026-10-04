@@ -534,6 +534,16 @@ public class PluginApiSpec implements OpenApiContributor {
         never asked because its address identifies no single peer, and the two have nothing alike as remedies \
         (issue #7256). Written by any node since issue #7549; absent while the answering node has not finished \
         its first probe round."""));
+    final Schema<String> unknownKind = SpecBuilders.string("""
+        What kind of unknown 'capabilitiesUnknownReason' describes, present exactly when it is (issue #8655): \
+        ROUTE_MISSING (the peer answered HTTP 404 on the capability route, so its build predates it - every node's \
+        probe gets that answer, the leader's included), UNREACHABLE (the answering node got no usable answer - a \
+        transport failure, a timeout, another status, or an answer naming another peer - which says nothing about \
+        what another node's probe gets), ADDRESS_REFUSED (the answering node has no address it may dial for this \
+        peer) or STALE (the last answer aged out with no failed probe behind it). Lets a client on a follower gate \
+        on ROUTE_MISSING without matching the reason's text.""");
+    unknownKind.setEnum(List.of("ROUTE_MISSING", "UNREACHABLE", "ADDRESS_REFUSED", "STALE"));
+    peer.addProperty("capabilitiesUnknownKind", unknownKind);
     // Only these three are written for every peer; every other member above is conditional on a health sample,
     // on a resolvable endpoint, or on this node being the leader (issue #7578).
     peer.setRequired(List.of("id", "address", "role"));
