@@ -395,7 +395,7 @@ public enum GlobalConfiguration {
       heap; each document of the window that can still beat the top-K threshold then probes the non-essential terms. \
       On learned-sparse corpora, where most queries touch most documents, this measured about 1.8x faster at the \
       median and 2.4x at p99 than the document-at-a-time traversal on the same cursors. Scores can differ from it in \
-      the last bit, so the rank among exact ties is not guaranteed to match. 0 selects the classic \
+      the last bit, so the rank among exact ties is not guaranteed to match. 0 (or a negative value) selects the classic \
       document-at-a-time Block-Max MaxScore traversal. The value is rounded up to a multiple of 64 and capped at \
       1048576. Re-read on every query.""",
       Integer.class, 16384),

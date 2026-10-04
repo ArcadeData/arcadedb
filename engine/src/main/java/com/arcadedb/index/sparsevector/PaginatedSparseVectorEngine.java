@@ -333,8 +333,9 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * memtable cost into a few sealed segments instead of growing unbounded toward OOM.
    */
   public void maybeFlush() {
-    // A sealed memtable is one a failed flush left behind: retry it, or its postings stay in memory unbounded.
-    if (memtable.get().totalPostings() >= memtableFlushThreshold || sealedMemtable.get() != null)
+    // Only the live memtable decides: a sealed one is present during every normal flush, and a failed flush's leftover is
+    // retried by the next flush this threshold triggers.
+    if (memtable.get().totalPostings() >= memtableFlushThreshold)
       flush();
   }
 
@@ -979,6 +980,9 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       // segment up a tier and tiers are bounded by the corpus size.
       while (compactSizeTiered() != -1L)
         ;
+      // A retried memtable is older than the live one; callers that ask for a flush expect the live one sealed too.
+      if (retained != null && !memtable.get().isEmpty())
+        flush();
       return segmentId;
     } finally {
       // A flush that threw leaves the sealed memtable in place: it is still read, and the next flush or the close

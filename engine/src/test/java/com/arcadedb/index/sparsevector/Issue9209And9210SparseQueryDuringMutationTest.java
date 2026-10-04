@@ -124,8 +124,29 @@ class Issue9209And9210SparseQueryDuringMutationTest extends TestHelper {
       assertThat(query(engine, 1000)).hasSize(70);
       assertThat(engine.flush()).isGreaterThan(0L);
       assertThat(query(engine, 1000)).hasSize(70);
-      assertThat(engine.flush()).isGreaterThan(0L); // the postings written since
+      assertThat(engine.flush()).as("the retry also sealed the live memtable").isEqualTo(-1L);
       assertThat(query(engine, 1000)).hasSize(70);
+    }
+  }
+
+  @Test
+  void maybeFlushDoesNotQueueBehindAFlushInFlight() throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) database;
+    try (final PaginatedSparseVectorEngine engine = newEngine(db, "Issue9209MaybeFlush")) {
+      put(engine, 0, 50);
+      final FrozenMutation frozen = new FrozenMutation();
+      engine.setMutationHookForTest(frozen::hook);
+      frozen.result = CompletableFuture.supplyAsync(engine::flush);
+      try {
+        assertThat(frozen.inside.await(30, TimeUnit.SECONDS)).as("the flush reached the hook").isTrue();
+        put(engine, 50, 55); // far below the threshold: a commit's after-commit callback must not flush it
+        final CompletableFuture<Void> callback = CompletableFuture.runAsync(engine::maybeFlush);
+        callback.get(20, TimeUnit.SECONDS);
+      } finally {
+        frozen.release.countDown();
+      }
+      frozen.result.get(30, TimeUnit.SECONDS);
+      assertThat(engine.memtablePostings()).as("the small live memtable was left alone").isEqualTo(5L);
     }
   }
 
