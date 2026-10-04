@@ -90,8 +90,16 @@ class Issue9209And9210SparseQueryDuringMutationTest extends TestHelper {
           frozen.result.get(1, TimeUnit.SECONDS); // surfaces why the flush never got there
         assertThat(frozen.inside.getCount()).as("the flush reached the hook").isZero();
 
-        // The memtable is swapped out and its segment is not published yet: the answer must still hold all 100.
-        assertThat(query(engine, 1000)).hasSize(100);
+        // The memtable is swapped out and its segment is not published yet: the answer must still hold all 100, and it
+        // must come back while the flush is frozen rather than after it.
+        final CompletableFuture<List<RidScore>> q = CompletableFuture.supplyAsync(() -> {
+          try {
+            return query(engine, 1000);
+          } catch (final Exception e) {
+            throw new IllegalStateException(e);
+          }
+        });
+        assertThat(q.get(20, TimeUnit.SECONDS)).hasSize(100);
       } finally {
         frozen.release.countDown();
       }
@@ -101,7 +109,7 @@ class Issue9209And9210SparseQueryDuringMutationTest extends TestHelper {
   }
 
   @Test
-  void aFlushThatFailsLeavesNothingSealed() throws Exception {
+  void aFlushThatFailsKeepsItsPostingsForTheNextFlush() throws Exception {
     final DatabaseInternal db = (DatabaseInternal) database;
     try (final PaginatedSparseVectorEngine engine = newEngine(db, "Issue9209Failure")) {
       put(engine, 0, 50);
@@ -111,11 +119,13 @@ class Issue9209And9210SparseQueryDuringMutationTest extends TestHelper {
       assertThatThrownBy(engine::flush).isInstanceOf(IllegalStateException.class);
       engine.setMutationHookForTest(null);
 
-      // The sealed memtable must not be read for ever, and the engine must keep working.
+      // The postings of the failed flush stay readable, and the next flush persists them.
       put(engine, 100, 120);
-      assertThat(query(engine, 1000)).hasSize(20);
+      assertThat(query(engine, 1000)).hasSize(70);
       assertThat(engine.flush()).isGreaterThan(0L);
-      assertThat(query(engine, 1000)).hasSize(20);
+      assertThat(query(engine, 1000)).hasSize(70);
+      assertThat(engine.flush()).isGreaterThan(0L); // the postings written since
+      assertThat(query(engine, 1000)).hasSize(70);
     }
   }
 
