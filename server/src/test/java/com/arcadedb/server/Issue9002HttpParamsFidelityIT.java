@@ -21,9 +21,11 @@ package com.arcadedb.server;
 import com.arcadedb.database.Database;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.IdempotencyCache;
+import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -61,6 +63,10 @@ class Issue9002HttpParamsFidelityIT extends BaseGraphServerTest {
       t.createProperty("i", Type.INTEGER);
       t.createProperty("d", Type.DOUBLE);
       db.getSchema().createDocumentType("S9006");
+      final DocumentType u = db.getSchema().createDocumentType("U9006");
+      u.createProperty("k", Type.INTEGER);
+      db.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "U9006", "k");
+      t.createProperty("emb", Type.ARRAY_OF_FLOATS);
     });
   }
 
@@ -166,6 +172,29 @@ class Issue9002HttpParamsFidelityIT extends BaseGraphServerTest {
     assertThat(count("S9006")).isZero();
     assertThat(post("commit", session, null, null).statusCode()).isEqualTo(204);
     assertThat(count("S9006")).isEqualTo(1);
+  }
+
+  @Test
+  void aRuntimeFailureAfterAWriteAbortsTheSession() throws Exception {
+    final HttpResponse<String> begin = post("begin", null, null, null);
+    final String session = begin.headers().firstValue("arcadedb-session-id").orElseThrow();
+    assertThat(post("command", session, "INSERT INTO U9006 SET k = 1", null).statusCode()).isEqualTo(200);
+    // a duplicated key: a runtime error, not a parse error
+    assertThat(post("command", session, "INSERT INTO U9006 SET k = 1", null).statusCode()).isGreaterThanOrEqualTo(400);
+
+    assertThat(post("command", session, "INSERT INTO U9006 SET k = 2", null).statusCode()).isEqualTo(404);
+    assertThat(post("commit", session, null, null).statusCode()).isNotEqualTo(204);
+    assertThat(count("U9006")).isZero();
+  }
+
+  @Test
+  void aTopLevelVectorParameterReachesTheVectorFunctionsAndAVectorProperty() throws Exception {
+    assertThat(post("command", null, "INSERT INTO T9002 SET id = 7, emb = :v", "{\"v\":[0.25,0.5,1]}").statusCode()).isEqualTo(200);
+    final HttpResponse<String> similarity = post("query", null,
+        "SELECT vectorCosineSimilarity(emb, :q) AS s FROM T9002 WHERE id = 7", "{\"q\":[0.25,0.5,1]}");
+    assertThat(similarity.statusCode()).isEqualTo(200);
+    assertThat(new JSONObject(similarity.body()).getJSONArray("result").getJSONObject(0).getDouble("s")).isCloseTo(1.0,
+        Offset.offset(1e-6));
   }
 
   @Test
