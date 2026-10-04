@@ -78,7 +78,14 @@ final class LiveScriptBindings extends AbstractMap<String, Object> implements Bi
   @Override
   public Set<Entry<String, Object>> entrySet() {
     final Map<String, Object> merged = new LinkedHashMap<>(base);
-    merged.putAll(graphManager.getAsBindings());
+    // THE SAME VIEW get() ANSWERS: A GRAPH WHOSE DATABASE IS NO LONGER OPEN IS NOT LISTED
+    for (final String name : graphManager.getAsBindings().keySet()) {
+      final Object live = graphManager.getScriptBinding(name);
+      if (live != null)
+        merged.put(name, live);
+      else
+        merged.remove(name);
+    }
     return merged.entrySet();
   }
 }
