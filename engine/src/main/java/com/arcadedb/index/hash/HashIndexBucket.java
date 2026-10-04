@@ -415,8 +415,8 @@ public class HashIndexBucket extends PaginatedComponent {
 
       if (unique) {
         result.add(readCompressedRID(page, offset));
-        // callers pass limit 1 for a non-null unique key (HashIndex.getDiskResult)
-        // a unique key holds one entry, but an all-null key is exempt from uniqueness (issue #9237): the caller asks for all of them
+        // a unique key holds one entry and callers pass limit 1 for it (HashIndex.getDiskResult), but an all-null key is exempt
+        // from uniqueness (issue #9237): the caller asks for all of its entries
         if (limit > 0 && result.size() >= limit)
           return;
       } else {

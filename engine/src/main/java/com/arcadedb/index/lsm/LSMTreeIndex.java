@@ -610,7 +610,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
       // the disk rows that a pending removal hides do not count towards the limit: each pending entry hides at most one row, so
       // that many more are read and the limit is applied to the merged rows below. A key-wide removal hides every row
-      final int diskLimit = removals == null || removals.isKeyWide() || limit < 0 ? limit : limit + pendingEntries;
+      final int diskLimit = removals == null || removals.isKeyWide() || limit < 0 ? limit : (int) Math.min(Integer.MAX_VALUE, (long) limit + pendingEntries);
       final IndexCursor result = lock.executeInReadLock(() -> mutable.get(convertedKeys, diskLimit));
 
       if (txChanges != null || removals != null) {
