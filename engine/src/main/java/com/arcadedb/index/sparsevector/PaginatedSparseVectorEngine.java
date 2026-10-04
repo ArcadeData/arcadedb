@@ -910,6 +910,9 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       // still readable, and dropping them would lose them for good.
       final Memtable retained = sealedMemtable.get();
       final Memtable old = retained != null ? retained : memtable.get();
+      if (retained != null)
+        LogManager.instance().log(this, Level.WARNING, "Retrying the flush of %d postings of sparse vector engine '%s' left by a failed flush",
+            null, retained.totalPostings(), indexName);
       if (retained == null) {
         if (old.isEmpty())
           return -1L;
@@ -1450,7 +1453,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     final PaginatedSegmentReader[] segSnapshot;
     mutatorLock.lock();
     try {
-      mtSnapshot = new MemSnapshot(memtable.get(), null);
+      mtSnapshot = captureMemtables(); // a flush that failed leaves its memtable sealed, and its postings count
       segSnapshot = segments.get();
     } finally {
       mutatorLock.unlock();
@@ -1461,6 +1464,9 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     final IntHashSet dims = new IntHashSet(mtSnapshot.active().dimCount() + 16);
     for (final int dim : mtSnapshot.active().sortedDims())
       dims.add(dim);
+    if (mtSnapshot.sealed() != null)
+      for (final int dim : mtSnapshot.sealed().sortedDims())
+        dims.add(dim);
     for (final PaginatedSegmentReader r : segSnapshot)
       for (final int dim : r.dims())
         dims.add(dim);

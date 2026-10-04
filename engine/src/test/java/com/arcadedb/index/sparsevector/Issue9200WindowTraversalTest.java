@@ -78,8 +78,14 @@ class Issue9200WindowTraversalTest extends TestHelper {
   @Test
   void anOversizedWindowSettingIsClamped() throws Exception {
     final LSMSparseVectorIndex index = buildCorpus(600);
+    final int[] query = { 1, 2, 3 };
+    final float[] weights = { 1f, 1f, 1f };
+    GlobalConfiguration.SPARSE_VECTOR_SCORING_WINDOW.setValue(0);
+    final List<RidScore> classic = index.topK(query, weights, 5, null);
     GlobalConfiguration.SPARSE_VECTOR_SCORING_WINDOW.setValue(Integer.MAX_VALUE);
-    assertThat(index.topK(new int[] { 1, 2, 3 }, new float[] { 1f, 1f, 1f }, 5, null)).isNotEmpty();
+    final List<RidScore> clamped = index.topK(query, weights, 5, null);
+    assertThat(clamped).isNotEmpty();
+    assertSameAnswer(classic, clamped, "clamped window");
   }
 
   @Test
