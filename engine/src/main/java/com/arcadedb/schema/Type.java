@@ -519,12 +519,12 @@ public enum Type {
     if (value instanceof Map<?, ?> sourceMap && Map.class.isAssignableFrom(targetClass)) {
       final Map<Object, Object> result = new LinkedHashMap<>(sourceMap.size());
       for (final Map.Entry<?, ?> entry : sourceMap.entrySet())
-        result.put(entry.getKey(), coerceScalarItem(database, entry.getValue(), ofClass, ofType));
+        result.put(entry.getKey(), coerceScalarItem(database, entry.getValue(), ofClass, ofType, property));
       return result;
     } else if (value instanceof Collection<?> sourceCollection && List.class.isAssignableFrom(targetClass)) {
       final List<Object> result = new ArrayList<>(sourceCollection.size());
       for (final Object item : sourceCollection)
-        result.add(coerceScalarItem(database, item, ofClass, ofType));
+        result.add(coerceScalarItem(database, item, ofClass, ofType, property));
       return result;
     } else if (List.class.isAssignableFrom(targetClass) && value.getClass().isArray() && value instanceof byte[] == false
         && value.getClass().getComponentType().isPrimitive()) {
@@ -532,12 +532,12 @@ public enum Type {
       final List<Object> items = primitiveArrayToList(value);
       final List<Object> result = new ArrayList<>(items.size());
       for (final Object item : items)
-        result.add(coerceScalarItem(database, item, ofClass, ofType));
+        result.add(coerceScalarItem(database, item, ofClass, ofType, property));
       return result;
     } else if (List.class.isAssignableFrom(targetClass) && isPlainScalar(value, ofType)) {
       // a scalar written to a LIST OF <type> is wrapped as one element, converted like the elements of a list are (#9028)
       final List<Object> result = new ArrayList<>(1);
-      result.add(coerceScalarItem(database, value, ofClass, ofType));
+      result.add(coerceScalarItem(database, value, ofClass, ofType, property));
       return result;
     }
 
@@ -566,7 +566,7 @@ public enum Type {
   }
 
   private static Object coerceScalarItem(final Database database, final Object item, final Class<?> ofClass,
-      final Type ofType) {
+      final Type ofType, final Property property) {
     if (item == null)
       return null;
 
@@ -574,7 +574,9 @@ public enum Type {
     // a date value is only coerced towards a date type: in a LIST OF STRING / INTEGER it stays what it is, for the
     // validator to refuse (#9111)
     if (isPlainScalar(item, ofType))
-      return convert(database, item, ofClass, null);
+      // the declared property is carried so a number out of the element range is refused instead of clamped; a date
+      // conversion expects a date property, not the collection one
+      return convert(database, item, ofClass, ofType.isDateOrDateTime() ? null : property);
 
     return item;
   }
