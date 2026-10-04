@@ -120,6 +120,15 @@ class Issue9205OptionalMatchBarrierCallStarTest {
   void generatedBindingsOfTheBodyDoNotReplaceTheOuterOnes() {
     // the outer MATCH () and the inner MATCH () both use generated names; the outer rows must survive the call
     assertThat(count("MATCH () WITH * CALL (*) { MATCH () RETURN 1 AS x } RETURN x")).isEqualTo(1);
+    database.begin();
+    try (final ResultSet rs = database.command("opencypher", "MATCH (a) WITH * CALL (*) { MATCH (b) RETURN b.id AS bid } RETURN a.id AS aid, bid")) {
+      assertThat(rs.hasNext()).isTrue();
+      final Result r = rs.next();
+      assertThat((Object) r.getProperty("aid")).isEqualTo(1);
+      assertThat((Object) r.getProperty("bid")).isEqualTo(1);
+    } finally {
+      database.commit();
+    }
     assertThat(count("MATCH () OPTIONAL MATCH (:NoMatch) WHERE false WITH * CALL (*) { MATCH () RETURN 1 AS x } MATCH () RETURN x")).isEqualTo(1);
   }
 
@@ -129,6 +138,11 @@ class Issue9205OptionalMatchBarrierCallStarTest {
         CREATE (alias0:Person) OPTIONAL MATCH (:NoMatch) WHERE false WITH *
         CALL (alias0) { OPTIONAL MATCH () WHERE EXISTS { MATCH (m) } RETURN 0 AS marker }
         RETURN alias0""")).isEqualTo(2);
+  }
+
+  @Test
+  void unitSubqueryAfterTheBarrierKeepsTheOuterRow() {
+    assertThat(count("CREATE (alias0:Person) OPTIONAL MATCH (:NoMatch) WHERE false WITH * CALL (*) { CREATE (:Seed) } RETURN alias0")).isEqualTo(1);
   }
 
   @Test
