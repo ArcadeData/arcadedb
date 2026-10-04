@@ -130,6 +130,26 @@ class Issue9209And9210SparseQueryDuringMutationTest extends TestHelper {
   }
 
   @Test
+  void aDeleteDuringAFlushHidesThePostingOfTheSealedMemtable() throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) database;
+    try (final PaginatedSparseVectorEngine engine = newEngine(db, "Issue9209Shadow")) {
+      put(engine, 0, 100);
+      final FrozenMutation frozen = new FrozenMutation();
+      engine.setMutationHookForTest(frozen::hook);
+      frozen.result = CompletableFuture.supplyAsync(engine::flush);
+      try {
+        assertThat(frozen.inside.await(30, TimeUnit.SECONDS)).as("the flush reached the hook").isTrue();
+        engine.remove(DIM, new RID(0, 10L)); // lands in the live memtable, newer than the sealed copy of the posting
+        assertThat(query(engine, 1000)).hasSize(99).noneMatch(r -> r.rid().equals(new RID(0, 10L)));
+      } finally {
+        frozen.release.countDown();
+      }
+      frozen.result.get(30, TimeUnit.SECONDS);
+      assertThat(query(engine, 1000)).hasSize(99).noneMatch(r -> r.rid().equals(new RID(0, 10L)));
+    }
+  }
+
+  @Test
   void maybeFlushDoesNotQueueBehindAFlushInFlight() throws Exception {
     final DatabaseInternal db = (DatabaseInternal) database;
     try (final PaginatedSparseVectorEngine engine = newEngine(db, "Issue9209MaybeFlush")) {
