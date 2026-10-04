@@ -906,14 +906,19 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     localMutations.incrementAndGet();
     mutatorLock.lock();
     try {
-      final Memtable old = memtable.get();
-      if (old.isEmpty())
-        return -1L;
-      // Readers capture the live memtable, then the sealed one, then the segments. Exposing the sealed memtable BEFORE
-      // the swap and clearing it only AFTER the segment is published means every posting is reachable from one of the
-      // three at every instant (issue #9209); a reader that sees a posting twice merges the copies by recency.
-      sealedMemtable.set(old);
-      memtable.set(new Memtable());
+      // A sealed memtable left by a flush that failed is retried before anything else: its postings are committed and
+      // still readable, and dropping them would lose them for good.
+      final Memtable retained = sealedMemtable.get();
+      final Memtable old = retained != null ? retained : memtable.get();
+      if (retained == null) {
+        if (old.isEmpty())
+          return -1L;
+        // Readers capture the live memtable, then the sealed one, then the segments. Exposing the sealed memtable BEFORE
+        // the swap and clearing it only AFTER the segment is published means every posting is reachable from one of the
+        // three at every instant (issue #9209); a reader that sees a posting twice merges the copies by recency.
+        sealedMemtable.set(old);
+        memtable.set(new Memtable());
+      }
       final long segmentId = nextSegmentId.getAndIncrement();
       final SparseSegmentComponent[] componentRef = new SparseSegmentComponent[1];
       final boolean ranOnLeader;
@@ -956,8 +961,11 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       } catch (final IOException e) {
         throw new IndexException("Failed to flush sparse vector engine '" + indexName + "'", e);
       }
-      if (!ranOnLeader)
+      if (!ranOnLeader) {
+        // A follower receives its segments from the leader and never keeps a memtable of its own to retry.
+        sealedMemtable.set(null);
         return -1L;
+      }
       // Size-tiered auto-compaction gate. Run synchronously under {@code mutatorLock} (which
       // {@link #compactInputs} reacquires reentrantly): a long bulk-load that fires back-to-back
       // flushes would otherwise leave the engine with one segment per flush, and BMW DAAT would
@@ -968,9 +976,8 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
         ;
       return segmentId;
     } finally {
-      // Also covers a flush that threw or ran on a follower: nothing was published, and a stale sealed memtable would
-      // be read as a source for ever.
-      sealedMemtable.set(null);
+      // A flush that threw leaves the sealed memtable in place: it is still read, and the next flush or the close
+      // retries it.
       mutatorLock.unlock();
       localMutations.decrementAndGet();
     }
@@ -1618,8 +1625,11 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       // log instead of letting it abort the close - the data in the unflushed memtable is
       // already lost from the engine's perspective, and an exception here would leave other
       // components' close() unrun.
-      final Memtable old = memtable.getAndSet(new Memtable());
-      if (!old.isEmpty()) {
+      final Memtable retained = sealedMemtable.getAndSet(null); // left by a flush that failed
+      final Memtable live = memtable.getAndSet(new Memtable());
+      for (final Memtable old : retained == null ? new Memtable[] { live } : new Memtable[] { retained, live }) {
+        if (old.isEmpty())
+          continue;
         try {
           final long segmentId = nextSegmentId.getAndIncrement();
           // close() does not need to publish a reader (the engine is being torn down) - we just
@@ -1672,6 +1682,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
         return;
       // Throw away unsealed memtable state - a drop voids any pending writes.
       memtable.set(new Memtable());
+      sealedMemtable.set(null);
       // Drop every active segment via the FileManager so the on-disk file is reclaimed and the
       // schema's files list no longer references the component.
       for (final PaginatedSegmentReader r : segments.get()) {
