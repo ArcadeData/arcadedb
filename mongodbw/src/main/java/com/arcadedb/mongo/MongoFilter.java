@@ -72,7 +72,6 @@ final class MongoFilter {
   private static final Pattern NEVER  = Pattern.compile("(?!)");
   private static final Set<String> NARROWING_OPERATORS = Set.of("$eq", "$in");
 
-  private final Document     original;
   private final boolean      empty;
   private final Document     idPart;
   private final Document     normalized;
@@ -88,7 +87,6 @@ final class MongoFilter {
    *               filter per entry), or {@code null} for one of its own
    */
   MongoFilter(final Database database, final Document filter, final RegexBudget budget) {
-    this.original = filter;
     this.empty = filter == null || filter.isEmpty();
     // the part of the filter on the _id narrows the candidates through the unique index (an _id is never an array, so the SQL cannot
     // miss a match there), and the matcher tests the whole filter on what it returns
