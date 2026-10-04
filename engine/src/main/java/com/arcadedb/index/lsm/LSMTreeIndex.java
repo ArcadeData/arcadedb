@@ -572,6 +572,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
       Set<IndexCursorEntry> txChanges = null;
       // what the pending entries of this key hide from the disk result, or null when they hide nothing (#6970)
       PendingIndexRemovals removals = null;
+      int pendingEntries = 0;
       // the entries of an all-null key belong to different records, so a pending removal of one never removes the key (issue #9237)
       final boolean unique = isUnique() && !LSMTreeIndexAbstract.isKeyNull(convertedKeys);
 
@@ -582,6 +583,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
         final Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey> values = indexChanges.get(
             new TransactionIndexContext.ComparableKey(convertedKeys));
         if (values != null) {
+          pendingEntries = values.size();
           for (final TransactionIndexContext.IndexKey value : values.values()) {
             if (value != null) {
               if (unique && PendingIndexRemovals.removesWholeKey(value, true))
@@ -606,9 +608,9 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
         }
       }
 
-      // the disk rows that a pending removal hides do not count towards the limit: with removals pending the whole key is read
-      // and the limit is applied to the merged rows below
-      final int diskLimit = removals != null ? -1 : limit;
+      // the disk rows that a pending removal hides do not count towards the limit: each pending entry hides at most one row, so
+      // that many more are read and the limit is applied to the merged rows below. A key-wide removal hides every row
+      final int diskLimit = removals == null || removals.isKeyWide() || limit < 0 ? limit : limit + pendingEntries;
       final IndexCursor result = lock.executeInReadLock(() -> mutable.get(convertedKeys, diskLimit));
 
       if (txChanges != null || removals != null) {
