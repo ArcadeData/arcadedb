@@ -600,13 +600,16 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
               if (limit > -1 && txChanges.size() > limit)
                 // LIMIT REACHED
-                return new TempIndexCursor(txChanges);
+                return new TempIndexCursor(TypeIndex.cappedTo(txChanges, limit));
             }
           }
         }
       }
 
-      final IndexCursor result = lock.executeInReadLock(() -> mutable.get(convertedKeys, limit));
+      // the disk rows that a pending removal hides do not count towards the limit: with removals pending the whole key is read
+      // and the limit is applied to the merged rows below
+      final int diskLimit = removals != null ? -1 : limit;
+      final IndexCursor result = lock.executeInReadLock(() -> mutable.get(convertedKeys, diskLimit));
 
       if (txChanges != null || removals != null) {
         if (txChanges == null)
@@ -619,7 +622,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
             continue;
           txChanges.add(new IndexCursorEntry(convertedKeys, next, 1));
         }
-        return new TempIndexCursor(txChanges);
+        return new TempIndexCursor(TypeIndex.cappedTo(txChanges, limit));
       }
 
       return result;

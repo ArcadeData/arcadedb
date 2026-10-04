@@ -246,6 +246,19 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     }
   }
 
+  /** The entries of the set, at most {@code limit} of them when the limit is set (-1 for none) */
+  public static Set<IndexCursorEntry> cappedTo(final Set<IndexCursorEntry> entries, final int limit) {
+    if (limit < 0 || entries.size() <= limit)
+      return entries;
+    final Set<IndexCursorEntry> capped = new HashSet<>(limit * 2);
+    for (final IndexCursorEntry entry : entries) {
+      if (capped.size() >= limit)
+        break;
+      capped.add(entry);
+    }
+    return capped;
+  }
+
   /**
    * #8153: an equality lookup answers with the key it was asked for and the key types and comparator of this index, like
    * every range cursor over it, so a {@link MultiIndexCursor} merging both kinds can compare them.
