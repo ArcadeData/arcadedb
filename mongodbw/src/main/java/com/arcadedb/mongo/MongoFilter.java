@@ -149,7 +149,7 @@ final class MongoFilter {
    */
   boolean matches(final Map<String, Object> storedProperties) {
     if (empty)
-      throw new IllegalStateException("A filter answered by SQL has no clause to test a record against");
+      throw new IllegalStateException("An empty filter has no clause to test a record against");
     return matcher.matches(MongoDBToSqlTranslator.toMatchDocument(storedProperties, properties), normalized);
   }
 
