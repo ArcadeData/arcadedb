@@ -90,4 +90,15 @@ class Issue9028ScalarIntoTypedListTest extends TestHelper {
     org.assertj.core.api.Assertions.assertThatThrownBy(
         () -> database.transaction(() -> database.command("sql", "INSERT INTO P SET ints = 'abc'"))).isNotNull();
   }
+
+  @Test
+  void outOfRangeScalarIsRefusedNotClamped() {
+    database.command("sql", "CREATE DOCUMENT TYPE R");
+    database.command("sql", "CREATE PROPERTY R.longs LIST OF LONG");
+    org.assertj.core.api.Assertions.assertThatThrownBy(() -> database.transaction(() -> {
+      final var doc = database.newDocument("R");
+      doc.set("longs", new java.math.BigDecimal("9223372036854775808"));
+      doc.save();
+    })).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("longs");
+  }
 }
