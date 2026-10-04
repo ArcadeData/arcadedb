@@ -58,6 +58,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
 import java.net.ConnectException;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -1397,6 +1399,16 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
   // Package-private, not private: PostBatchHandlerBodyFailureTest drives it directly, which is the only way to
   // reproduce a request body that fails on a probe and then offers bytes anyway (issue #6180).
   static class CountingInputStream extends FilterInputStream {
+    private static final VarHandle BYTES_READ;
+
+    static {
+      try {
+        BYTES_READ = MethodHandles.lookup().findVarHandle(CountingInputStream.class, "bytesRead", long.class);
+      } catch (final ReflectiveOperationException e) {
+        throw new ExceptionInInitializerError(e);
+      }
+    }
+
     private final HttpServerExchange exchange;
     /**
      * {@code arcadedb.server.httpBodyContentMaxSize}, or a value {@code <= 0} when the deployment turned the cap
@@ -1406,10 +1418,13 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
      */
     private final long              maxBodySize;
     /**
-     * Volatile: a forwarded body is read on the JDK client's publisher thread, and the handler thread waiting for the
-     * leader's answer samples it to tell an upload that is still moving from one that stopped (issue #8719).
+     * Written only by the thread reading the body, and stored with {@link #BYTES_READ} in opaque mode: a forwarded body
+     * is read on the JDK client's publisher thread while the handler thread waiting for the leader's answer samples
+     * {@link #progress()} to tell an upload that is still moving from one that stopped (issue #8719). Opaque rather
+     * than volatile, so the local load path, which reads the same stream, pays no barrier per read: the sampler needs
+     * a value that eventually changes, not one ordered with anything else.
      */
-    private volatile long           bytesRead;
+    private       long              bytesRead;
     private       boolean           endOfBody;
     /**
      * The failure that ended this body, or {@code null} while it is still readable. Volatile: a forwarded body is
@@ -1443,7 +1458,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
         throw e;
       }
       if (read >= 0) {
-        ++bytesRead;
+        BYTES_READ.setOpaque(this, bytesRead + 1);
         refuseIfOverCap();
       } else
         endOfBody = true;
@@ -1461,7 +1476,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
         throw e;
       }
       if (read > 0) {
-        bytesRead += read;
+        BYTES_READ.setOpaque(this, bytesRead + read);
         refuseIfOverCap();
       } else if (read < 0)
         endOfBody = true;
@@ -1626,6 +1641,14 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
 
     long getBytesRead() {
       return bytesRead;
+    }
+
+    /**
+     * {@link #getBytesRead()} for a thread other than the one reading the body: the leader forward samples it while the
+     * JDK client's publisher thread relays the upload (issue #8719).
+     */
+    long progress() {
+      return (long) BYTES_READ.getOpaque(this);
     }
 
     /** The cap this body enforces, {@code <= 0} when uncapped. */
@@ -2032,7 +2055,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
         // among those is held until this node's view moves, as on the buffered encoding below (issue #8486).
         return LeaderCommandForwarder.holdUnnamedNotTheLeaderRefusal(relayNdJsonFromLeader(exchange, databaseName, url,
                 LeaderDial.sendBoundedWhileProgressing(dial.client(), request, HttpResponse.BodyHandlers.ofInputStream(),
-                    deadlineMs, body::getBytesRead),
+                    deadlineMs, body::progress),
                 deadlineMs, body), ha, holdLeaderId, httpServer.getServer().getConfiguration());
 
       final HttpResponse<String> response = LeaderDial.sendBounded(dial.client(), request,
@@ -2087,10 +2110,12 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       rethrowIfRefusedOverCap(body, databaseName);
       LogManager.instance().log(this, Level.WARNING, "Leader at %s did not answer /batch forward within %,dms", url, deadlineMs);
       // On the streaming encoding the window restarts with every byte of the upload relayed (issue #8719), so the
-      // message says so: a stall of the client's own upload ends here too, unless its incoming read timeout fires first.
+      // message says so. Which side stopped cannot be told from here - the leader no longer taking the upload, or the
+      // client no longer sending it, when its incoming read timeout is longer than this budget - so both are named.
       return new ExecutionResponse(504, new JSONObject()
           .put("error", "The leader at " + url + " did not answer within " + deadlineMs + "ms" + (streaming ?
-              " of the last byte of the upload relayed to it" :
+              " of the last byte of the upload relayed to it: either the leader stopped taking the upload or the "
+                  + "client stopped sending it" :
               ""))
           .toString());
     } catch (final Exception e) {
@@ -2168,8 +2193,9 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    * leader that accepts the connection and never answers parks the Undertow worker thread serving
    * {@code POST /api/v1/batch} until the OS tears the socket down. The production forward
    * ({@link #forwardBatchToLeader}) supplies one on the buffered encoding only, and bounds the exchange itself through
-   * {@link LeaderDial#sendBounded} or {@link LeaderDial#sendBoundedWhileProgressing} (issues #8325, #8719); the shorter overloads above pass {@code null} for the tests
-   * that exercise the request shape without a deadline of their own.
+   * {@link LeaderDial#sendBounded} or {@link LeaderDial#sendBoundedWhileProgressing} (issues #8325, #8719); the
+   * shorter overloads above pass {@code null} for the tests that exercise the request shape without a deadline of
+   * their own.
    *
    * @param timeout the response deadline, or {@code null} for none
    */

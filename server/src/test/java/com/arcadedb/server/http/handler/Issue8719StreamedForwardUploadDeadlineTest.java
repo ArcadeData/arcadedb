@@ -20,7 +20,6 @@ package com.arcadedb.server.http.handler;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.network.BoundedHttpExchange;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
@@ -46,10 +45,6 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
@@ -59,11 +54,9 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -74,7 +67,8 @@ import static org.mockito.Mockito.when;
  * {@code Issue8674StreamedRelayBodyCapTerminalLineTest.theJdkClientHandsBackTheResponseOnlyOnceTheUploadIsPublished}),
  * so that deadline capped the length of the whole upload: a load whose upload outlasted it was answered 504 although
  * the leader was working and answering. The deadline now counts from the last byte of the upload relayed, so an upload
- * that keeps moving is never cut off, and one that stops moving with no answer is still given up on.
+ * that keeps moving is never cut off, and one that stops moving with no answer is still given up on. The bound itself is
+ * tested in {@code network}, by {@code Issue8719SendWhileProgressingTest}.
  */
 class Issue8719StreamedForwardUploadDeadlineTest {
 
@@ -138,49 +132,14 @@ class Issue8719StreamedForwardUploadDeadlineTest {
       watch.assertGaveUpWithin(GAVE_UP_BOUND_MS, "a 1s bound on an upload that stopped moving from an unbounded wait");
 
       assertThat(response.getCode()).isEqualTo(504);
-      assertThat(new JSONObject(response.getResponse()).getString("error")).contains(leader.address());
+      assertThat(new JSONObject(response.getResponse()).getString("error")).contains(leader.address())
+          .contains("last byte of the upload relayed");
       assertThat(body.getBytesRead()).as("the stall came after the upload had started moving")
           .isEqualTo(2L * RECORD.length());
+      assertThat(leader.connectionClosed.await(GAVE_UP_BOUND_MS, TimeUnit.MILLISECONDS))
+          .as("the forward is cancelled, its connection to the leader closed").isTrue();
     } finally {
       release.countDown();
-    }
-  }
-
-  // ------------------------------------------------------------------------------------------------------------
-  // The bound itself, BoundedHttpExchange.sendWhileProgressing
-  // ------------------------------------------------------------------------------------------------------------
-
-  /**
-   * As long as the progress counter moves, the wait is not given up on, however long it lasts in total; once it stops,
-   * the exchange is given up on one deadline later and cancelled.
-   */
-  @Test
-  void theDeadlineCountsFromTheLastProgressAndNotFromTheSend() throws Exception {
-    try (final UploadDrainingLeader leader = new UploadDrainingLeader(false);
-        final HttpClient client = HttpClient.newHttpClient()) {
-      final HttpRequest request = HttpRequest.newBuilder(URI.create("http://" + leader.address() + "/")).GET().build();
-      final AtomicLong progress = new AtomicLong();
-      final long movingForMs = BUDGET_MS * 3;
-      final Thread ticker = new Thread(() -> {
-        final long until = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(movingForMs);
-        while (System.nanoTime() < until) {
-          progress.incrementAndGet();
-          sleep(BUDGET_MS / 10);
-        }
-      }, "issue8719-progress");
-      ticker.setDaemon(true);
-
-      final StallAwareStopwatch watch = StallAwareStopwatch.start();
-      ticker.start();
-      assertThatThrownBy(() -> callWithin(() -> BoundedHttpExchange.sendWhileProgressing(client, request,
-          HttpResponse.BodyHandlers.ofString(), BUDGET_MS, progress::get, null), leader))
-          .isInstanceOf(HttpTimeoutException.class)
-          .hasMessageContaining(leader.address());
-      // A lower bound only: a stall can only make it more true.
-      assertThat(watch.elapsedMs()).as("not given up on while the counter was moving").isGreaterThanOrEqualTo(movingForMs);
-      watch.assertGaveUpWithin(GAVE_UP_BOUND_MS, "a bound from the last progress from an unbounded wait");
-      assertThat(leader.connectionClosed.await(GAVE_UP_BOUND_MS, TimeUnit.MILLISECONDS))
-          .as("the exchange is cancelled, not only abandoned by the calling thread").isTrue();
     }
   }
 

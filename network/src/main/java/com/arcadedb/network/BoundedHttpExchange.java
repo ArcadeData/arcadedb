@@ -109,8 +109,8 @@ public final class BoundedHttpExchange {
    * Once the upload has ended the counter stops, so the deadline then bounds the wait for the answer, as with
    * {@link #send}. It is never shorter than {@link #send}'s: the window only ever restarts.
    * <p>
-   * The counter is sampled every quarter of the deadline, at most once a second, so a stillness is given up on between
-   * one deadline and one deadline plus one sample after the last change.
+   * The counter is sampled every quarter of the deadline, and no less often than every second, so a stillness is given
+   * up on between one deadline and one deadline plus one sample interval after the last change.
    *
    * @param progress a counter that changes whenever the exchange moves forward - for an upload, the bytes read from the
    *                 body being published. Read from the calling thread while another thread advances it, so it must be
@@ -148,7 +148,8 @@ public final class BoundedHttpExchange {
           if (now != seen) {
             seen = now;
             stillSince = System.nanoTime();
-          } else if (System.nanoTime() - stillSince >= deadlineNanos)
+          } else if (left <= sampleNanos)
+            // This wait ran to the end of the window, and the counter did not move during it
             throw e;
         }
       }
