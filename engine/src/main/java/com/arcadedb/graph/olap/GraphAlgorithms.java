@@ -564,7 +564,9 @@ public final class GraphAlgorithms {
     // Phase 3: finish every node outside the dominant component
     parallelForRange(n, (start, end) -> {
       for (int u = start; u < end; u++) {
-        if (wccFind(parent, u) == giant)
+        // giant is only a member of the dominant component: its root can be re-hooked under a smaller id by this very
+        // phase, so compare against its current root rather than the id captured above
+        if (wccFind(parent, u) == wccFind(parent, giant))
           continue;
         for (int t = 0; t < typeCount; t++) {
           final int[] fwdOffsets = allFwdOffsets[t];

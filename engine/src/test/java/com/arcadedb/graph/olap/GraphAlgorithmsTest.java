@@ -221,6 +221,21 @@ class GraphAlgorithmsTest extends TestHelper {
     assertMatchesReference(giant + satellites + 200, edges.toArray(new int[0][]));
   }
 
+  /** #9133: the lowest-id vertex is an incoming-only satellite, so phase 3 re-hooks the giant's root under it. */
+  @Test
+  void connectedComponentsGiantRootRehookedByLowestIdSatellite() {
+    final int giant = 20_000;
+    final Random rnd = new Random(11);
+    final List<int[]> edges = new ArrayList<>();
+    // vertex 0 only receives an edge from the giant (vertices 1..giant)
+    for (int i = 2; i <= giant; i++) {
+      edges.add(new int[] { i, 1 + rnd.nextInt(i - 1) });
+      edges.add(new int[] { 1 + rnd.nextInt(giant), 1 + rnd.nextInt(giant) });
+    }
+    edges.add(new int[] { 1 + rnd.nextInt(giant), 0 });
+    assertMatchesReference(giant + 1, edges.toArray(new int[0][]));
+  }
+
   private void assertMatchesReference(final int n, final int[][] edges) {
     database.getSchema().createVertexType("Node");
     database.getSchema().createEdgeType("LINK");
