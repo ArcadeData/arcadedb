@@ -388,4 +388,14 @@ class MongoDBFilterSemanticsTest extends BaseMongoServerTest {
       sorted.add(d.get("_id"));
     assertThat(sorted).containsExactly(3, 1);
   }
+
+  @Test
+  void batchLookupByIdUnderLogicalOperators() {
+    final MongoCollection<Document> c = collection("batchids", "{_id:1, k:'a'}", "{_id:2, k:'b'}", "{_id:3, k:'c'}", "{_id:4, k:'d'}");
+    assertThat(ids(c, "{$or:[{_id:1},{_id:3}]}")).containsExactly(1, 3);
+    assertThat(ids(c, "{$and:[{_id:{$gt:1}},{_id:{$lt:4}}]}")).containsExactly(2, 3);
+    assertThat(ids(c, "{$or:[{_id:1},{k:'d'}]}")).containsExactly(1, 4);
+    assertThat(c.deleteMany(Document.parse("{$or:[{_id:2},{_id:4}]}")).getDeletedCount()).isEqualTo(2);
+    assertThat(ids(c, "{}")).containsExactly(1, 3);
+  }
 }
