@@ -245,6 +245,15 @@ public class ArcadeGraphManager implements GraphManager {
     return graph != null && !isStale(graph) ? graph : null;
   }
 
+  /** The names a script can see: every registered graph and traversal source, and {@code g} once a database exists. */
+  Set<String> getScriptBindingNames() {
+    final Set<String> names = new HashSet<>(graphs.keySet());
+    names.addAll(traversalSources.keySet());
+    if (getScriptBinding("g") != null)
+      names.add("g");
+    return names;
+  }
+
   /** Mirrors the registration state of a name into the executor's own copy of the global bindings, which lambda bytecode requests read. */
   private void syncScriptGlobal(final String name) {
     final Bindings copy = scriptGlobals;

@@ -182,11 +182,8 @@ public class SelectStatement extends Statement {
     context.setDatabase(db);
     final Map<String, Object> params = new HashMap<>();
     if (args != null) {
-      if (args.length == 1 && args[0] instanceof Map)
-        params.putAll((Map<? extends String, ?>) args[0]);
-      else
-        for (int i = 0; i < args.length; i++)
-          params.put(String.valueOf(i), args[i]);
+      for (int i = 0; i < args.length; i++)
+        params.put(String.valueOf(i), args[i]);
     }
 
     setProfilingConstraints((DatabaseInternal) db);

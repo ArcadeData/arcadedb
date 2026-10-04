@@ -151,4 +151,12 @@ class Issue9142LightweightEdgeTest {
     assertThat(g.E().hasLabel("Base").count().next()).isEqualTo(1L);
     assertThat(g.E().hasLabel("SubLight").count().next()).isEqualTo(1L);
   }
+
+  @Test
+  void midTraversalCountOfALightweightTypeCountsPerIncomingTraverser() {
+    final GraphTraversalSource g = graph.traversal();
+    // THREE P VERTICES, EACH SCANNING THE THREE LIGHTWEIGHT EDGES OF Light (#9140 AND #9142 TOGETHER)
+    assertThat(g.V().hasLabel("P").E().hasLabel("Light").count().next()).isEqualTo(9L);
+    assertThat(g.inject(1, 2).E().hasLabel("Light").count().next()).isEqualTo(6L);
+  }
 }

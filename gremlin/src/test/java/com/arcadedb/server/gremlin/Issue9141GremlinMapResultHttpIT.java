@@ -49,6 +49,21 @@ class Issue9141GremlinMapResultHttpIT extends BaseGraphServerTest {
       final JSONObject json = executeGremlin(serverIndex, "g.V().hasLabel('Map9141').elementMap()");
       final String result = json.getJSONArray("result").toString();
       assertThat(result).contains("user-42").contains("VIP").contains("Map9141");
+
+      // THE T.id AND T.label TOKENS ARE SERIALIZED AS TEXT, NEXT TO THE PROPERTIES NAMED THE SAME
+      final JSONArray entries = json.getJSONArray("result").getJSONObject(0).getJSONArray("result");
+      int idKeys = 0;
+      int labelKeys = 0;
+      for (int i = 0; i < entries.length(); i++) {
+        final Object key = entries.getJSONObject(i).get("key");
+        assertThat(key).isInstanceOf(String.class);
+        if ("id".equals(key))
+          ++idKeys;
+        else if ("label".equals(key))
+          ++labelKeys;
+      }
+      assertThat(idKeys).isEqualTo(2);
+      assertThat(labelKeys).isEqualTo(2);
     });
   }
 
@@ -59,7 +74,6 @@ class Issue9141GremlinMapResultHttpIT extends BaseGraphServerTest {
       executeGremlin(serverIndex, "g.addV('Cnt9141').property('val', 1L).iterate()");
       executeGremlin(serverIndex, "g.addV('Cnt9141').property('val', '1').iterate()");
       final JSONArray rows = executeGremlin(serverIndex, "g.V().hasLabel('Cnt9141').groupCount().by('val')").getJSONArray("result");
-      assertThat(rows.toString()).as("three distinct keys, three counts").isNotEmpty();
       final JSONArray entries = rows.getJSONObject(0).getJSONArray("result");
       assertThat(entries.length()).isEqualTo(3);
     });
