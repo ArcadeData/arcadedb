@@ -728,11 +728,35 @@ public class PostgresNetworkExecutor extends Thread {
    *                  statement held to the layout every record fits (issue #9009). Execute announces nothing, so
    *                  it types the columns from the rows themselves.
    */
+  /**
+   * A projection ({@code SELECT u FROM T}) returns rows that are not elements, so {@code getColumns} cannot tell an
+   * undeclared property from a computed value by the row alone. The statement can: a projected plain property that the
+   * target type does not declare is held to the text layout like the same property of a whole record (issue #9009).
+   */
+  private static void stabilizeProjectedUndeclaredColumns(final Statement statement, final DocumentType targetType,
+      final Map<String, PostgresType> columns) {
+    if (targetType == null || columns == null || !(statement instanceof SelectStatement select) || select.getProjection() == null
+        || select.getProjection().getItems() == null)
+      return;
+
+    for (final ProjectionItem item : select.getProjection().getItems()) {
+      final Expression expression = item.getExpression();
+      if (item.isAll() || item.exclude || expression == null || !expression.isBaseIdentifier())
+        continue;
+      final String alias = item.getProjectionAliasAsString();
+      final PostgresType type = alias != null ? columns.get(alias) : null;
+      if (type != null && targetType.getPolymorphicPropertyIfExists(expression.getDefaultAlias().getStringValue()) == null)
+        columns.put(alias, PostgresType.stableTypeForUndeclared(type));
+    }
+  }
+
   private void resolvePortalColumns(final PostgresPortal portal, final boolean announced) {
     final List<Result> rows = portal.fullResultSet != null ? portal.fullResultSet : Collections.emptyList();
     if (!portal.catalogQuery || portal.columns == null)
       portal.columns = getColumns(rows, resolveQueryTargetType(portal), resolveAliasToSourceProperty(portal),
           announced && portal.statement != null && portal.statement.namedStatement);
+    if (announced && portal.statement != null && portal.statement.namedStatement && !portal.catalogQuery)
+      stabilizeProjectedUndeclaredColumns(portal.sqlStatement, resolveQueryTargetType(portal), portal.columns);
     if (portal.columns.isEmpty() && rows.isEmpty()) {
       final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(portal.query, portal.language,
           getParams(portal), portal.sqlStatement);
