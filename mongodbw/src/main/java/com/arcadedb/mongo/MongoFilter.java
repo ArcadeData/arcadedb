@@ -35,6 +35,7 @@ import de.bwaldvogel.mongo.bson.ObjectId;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -76,6 +77,7 @@ final class MongoFilter {
   private final Document     idPart;
   private final Document     normalized;
   private final QueryMatcher matcher;
+  private final Set<String>  properties;
 
   MongoFilter(final Database database, final Document filter) {
     this(database, filter, null);
@@ -96,9 +98,31 @@ final class MongoFilter {
     if (empty) {
       this.normalized = null;
       this.matcher = null;
+      this.properties = Set.of();
     } else {
       this.normalized = normalizeQuery(filter, budget != null ? budget : RegexBudget.of(database), true);
       this.matcher = new DefaultQueryMatcher();
+      this.properties = new HashSet<>();
+      collectProperties(normalized, properties);
+    }
+  }
+
+  /**
+   * The properties of a record a filter reads: its top-level field names (the first segment of a dotted path), through the logical
+   * operators, which hold queries of their own. What an {@code $elemMatch} or an operator reads lies inside those properties.
+   */
+  private static void collectProperties(final Document query, final Set<String> properties) {
+    for (final Map.Entry<String, Object> entry : query.entrySet()) {
+      final String key = entry.getKey();
+      if ("$and".equals(key) || "$or".equals(key) || "$nor".equals(key)) {
+        if (entry.getValue() instanceof List<?> list)
+          for (final Object item : list)
+            if (item instanceof Document document)
+              collectProperties(document, properties);
+      } else if (!key.startsWith("$")) {
+        final int dot = key.indexOf('.');
+        properties.add(dot < 0 ? key : key.substring(0, dot));
+      }
     }
   }
 
@@ -110,7 +134,7 @@ final class MongoFilter {
   }
 
   /**
-   * Appends the {@code WHERE} clause of a filter {@link empty filter}, nothing for an empty one.
+   * Appends the {@code WHERE} clause of a filter an empty filter, nothing for an empty one.
    */
   void appendWhere(final StringBuilder sqlText, final Map<String, Object> params) {
     if (!empty) {
@@ -120,13 +144,13 @@ final class MongoFilter {
   }
 
   /**
-   * Whether a stored record matches the filter. Only meaningful for a filter that is not {@link empty filter}, which
+   * Whether a stored record matches the filter. Only meaningful for a filter that is not an empty filter, which
    * has no clause left to test.
    */
   boolean matches(final Map<String, Object> storedProperties) {
     if (empty)
       throw new IllegalStateException("A filter answered by SQL has no clause to test a record against");
-    return matcher.matches(MongoDBToSqlTranslator.toMatchDocument(storedProperties), normalized);
+    return matcher.matches(MongoDBToSqlTranslator.toMatchDocument(storedProperties, properties), normalized);
   }
 
   boolean matches(final com.arcadedb.database.Document record) {
