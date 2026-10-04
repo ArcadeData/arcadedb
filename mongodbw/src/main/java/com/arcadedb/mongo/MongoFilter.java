@@ -126,7 +126,8 @@ final class MongoFilter {
 
   /**
    * The identities of the records matching the filter, up to {@code limit} of them (0 for no limit). The selection is a snapshot:
-   * the caller applies its change to these records without evaluating the filter again, and skips the ones deleted meanwhile.
+   * the caller applies its change to these records without evaluating the filter again, and skips the ones deleted meanwhile. Both
+   * steps run in the caller's transaction, which is what keeps a concurrent change from being applied half way.
    */
   List<RID> select(final Database database, final String collectionName, final int limit) {
     final List<RID> rids = new ArrayList<>();
@@ -318,7 +319,8 @@ final class MongoFilter {
   /**
    * The time a filter may spend in regular expressions, shared by every search of the filter: {@code arcadedb.command.regexTimeout}
    * counts the time inside the expressions only, not the reading of the documents around them, so a long scan with a harmless
-   * expression is not cut short while a pathological one still is (the clock is read every few hundred steps of a search, so a very short value never trips it). Not thread-safe: a filter is built per command and evaluated by
+   * expression is not cut short while a pathological one still is. The clock is read every few hundred steps of a search, so a very
+   * short value never trips it. Not thread-safe: a filter is built per command and evaluated by one thread.
    * one thread.
    */
   private static final class RegexBudget {
