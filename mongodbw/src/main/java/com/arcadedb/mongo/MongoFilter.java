@@ -113,15 +113,17 @@ final class MongoFilter {
    * has no clause left to test.
    */
   boolean matches(final Map<String, Object> storedProperties) {
+    if (sql)
+      throw new IllegalStateException("A filter answered by SQL has no clause to test a record against");
     return matcher.matches(MongoDBToSqlTranslator.toMatchDocument(storedProperties), normalized);
   }
 
   boolean matches(final com.arcadedb.database.Document record) {
-    return sql || matches(record.toMap(false));
+    return matches(record.toMap(false));
   }
 
   boolean matchesRow(final Result result) {
-    return sql || matches(result.toMap());
+    return matches(result.toMap());
   }
 
   /**
@@ -321,7 +323,6 @@ final class MongoFilter {
    * counts the time inside the expressions only, not the reading of the documents around them, so a long scan with a harmless
    * expression is not cut short while a pathological one still is. The clock is read every few hundred steps of a search, so a very
    * short value never trips it. Not thread-safe: a filter is built per command and evaluated by one thread.
-   * one thread.
    */
   private static final class RegexBudget {
     private final long timeoutNanos;

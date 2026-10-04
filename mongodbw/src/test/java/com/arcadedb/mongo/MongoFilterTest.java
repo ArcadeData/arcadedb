@@ -18,6 +18,8 @@
  */
 package com.arcadedb.mongo;
 
+import com.arcadedb.GlobalConfiguration;
+import de.bwaldvogel.mongo.bson.BsonRegularExpression;
 import de.bwaldvogel.mongo.bson.Document;
 import org.junit.jupiter.api.Test;
 
@@ -69,9 +71,9 @@ class MongoFilterTest {
   @Test
   void matchesFollowsMongoDBRules() {
     final MongoFilter filter = new MongoFilter(null, parse("{tags: 'a', n: {$gt: 1}}"));
-    assertThat(filter.matches(Map.<String, Object>of("tags", java.util.List.of("a", "b"), "n", 2))).isTrue();
-    assertThat(filter.matches(Map.<String, Object>of("tags", java.util.List.of("b"), "n", 2))).isFalse();
-    assertThat(filter.matches(Map.<String, Object>of("tags", java.util.List.of("a"), "n", "5"))).isFalse();
+    assertThat(filter.matches(Map.<String, Object>of("tags", List.of("a", "b"), "n", 2))).isTrue();
+    assertThat(filter.matches(Map.<String, Object>of("tags", List.of("b"), "n", 2))).isFalse();
+    assertThat(filter.matches(Map.<String, Object>of("tags", List.of("a"), "n", "5"))).isFalse();
   }
 
   @Test
@@ -79,5 +81,36 @@ class MongoFilterTest {
     assertThatThrownBy(() -> new MongoFilter(null, parse("{$expr: {$eq: [1, 1]}}"))).isInstanceOf(IllegalArgumentException.class);
     assertThatThrownBy(() -> new MongoFilter(null, new Document("s", new Document("$regex", "a").append("$options", "z")))).isInstanceOf(
         IllegalArgumentException.class);
+  }
+
+  @Test
+  void aFilterAnsweredBySqlRefusesToTestARecord() {
+    final MongoFilter filter = new MongoFilter(null, parse("{_id: 1}"));
+    assertThatThrownBy(() -> filter.matches(Map.<String, Object>of("_id", 1))).isInstanceOf(IllegalStateException.class);
+  }
+
+  @Test
+  void regexesInsideLogicalOperatorsAndElemMatchFieldsMatchLikeMongoDB() {
+    final Map<String, Object> hit = Map.of("s", "Alpha", "items", List.of(Map.of("name", "beta"), Map.of("name", "gamma")));
+    assertThat(new MongoFilter(null, new Document("$or", List.of(new Document("s", new BsonRegularExpression("^al", "i")),
+        new Document("n", 1)))).matches(hit)).isTrue();
+    assertThat(new MongoFilter(null, new Document("$nor", List.of(new Document("s", new BsonRegularExpression("^zz"))))).matches(hit)).isTrue();
+    assertThat(new MongoFilter(null, new Document("items", new Document("$elemMatch", new Document("name", new Document("$regex", "^ga"))))).matches(hit))
+        .isTrue();
+    assertThat(new MongoFilter(null, new Document("items", new Document("$elemMatch", new Document("name", new Document("$regex", "^zz"))))).matches(hit))
+        .isFalse();
+  }
+
+  @Test
+  void aDisabledRegexTimeoutStillMatches() {
+    final long previous = GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong();
+    GlobalConfiguration.COMMAND_REGEX_TIMEOUT.setValue(0);
+    try {
+      final MongoFilter filter = new MongoFilter(null, new Document("s", new Document("$regex", "^al").append("$options", "i")));
+      assertThat(filter.matches(Map.<String, Object>of("s", "Alpha"))).isTrue();
+      assertThat(filter.matches(Map.<String, Object>of("s", "beta"))).isFalse();
+    } finally {
+      GlobalConfiguration.COMMAND_REGEX_TIMEOUT.setValue(previous);
+    }
   }
 }
