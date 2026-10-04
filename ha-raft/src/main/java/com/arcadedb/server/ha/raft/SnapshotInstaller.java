@@ -1805,8 +1805,11 @@ public final class SnapshotInstaller {
     LogManager.instance().log(SnapshotInstaller.class, Level.INFO,
         "Opening the rolled-forward snapshot in %s to prove it before the retained backup is deleted (can take long on a large database)",
         null, dbDir);
+    final long start = System.currentTimeMillis();
     try (final DatabaseFactory factory = new DatabaseFactory(dbDir.toString())) {
       factory.open().close();
+      LogManager.instance().log(SnapshotInstaller.class, Level.INFO, "The snapshot in %s opened in %dms", null, dbDir,
+          System.currentTimeMillis() - start);
       return true;
     } catch (final Exception e) {
       // Only a failure that says the FILES are unusable proves the snapshot does not open: a component that cannot be
