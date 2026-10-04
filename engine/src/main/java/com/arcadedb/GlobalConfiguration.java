@@ -828,7 +828,9 @@ public enum GlobalConfiguration {
       (0), which is the default. Every entry point reached through a command context - MATCHES, =~, PromQL's matchers \
       and the text.regexReplace()/.normalize() functions - shares ONE deadline for the whole command: not one per row, \
       not one per function, and not one per worker of a parallel type scan. Full-text search and REGEXP property \
-      validation run outside a command context and share one deadline across an entire scan (not per item). A large, \
+      validation run outside a command context and share one deadline across an entire scan (not per item). The MongoDB \
+      wire protocol plugin applies a regex filter the same way: one budget per command, counting only the time spent \
+      inside the regular expressions. A large, \
       legitimately slow (non-catastrophic) operation can hit this bound too, so raise it for workloads that need more \
       than 1s. Set to 0 to disable (not recommended).""",
       Long.class, 1000),
