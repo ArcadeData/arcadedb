@@ -212,18 +212,18 @@ final class MongoFilter {
    * emits for a batch lookup by key).
    */
   private static boolean onlyId(final Document filter) {
-    for (final Map.Entry<String, Object> entry : filter.entrySet()) {
-      final String key = entry.getKey();
-      if ("_id".equals(key))
-        continue;
-      if (("$and".equals(key) || "$or".equals(key)) && entry.getValue() instanceof List<?> list && !list.isEmpty()) {
-        for (final Object item : list)
-          if (!(item instanceof Document document) || document.isEmpty() || !onlyId(document))
-            return false;
-        continue;
-      }
+    for (final Map.Entry<String, Object> entry : filter.entrySet())
+      if (!"_id".equals(entry.getKey()) && !isLogicalOverId(entry.getKey(), entry.getValue()))
+        return false;
+    return true;
+  }
+
+  private static boolean isLogicalOverId(final String key, final Object operand) {
+    if (!("$and".equals(key) || "$or".equals(key)) || !(operand instanceof List<?> list) || list.isEmpty())
       return false;
-    }
+    for (final Object item : list)
+      if (!(item instanceof Document document) || document.isEmpty() || !onlyId(document))
+        return false;
     return true;
   }
 
