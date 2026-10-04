@@ -770,12 +770,37 @@ public class MatchExecutionPlanner {
     if (!SqlAstInspector.allNodesMatch(matchExpressions, MatchExecutionPlanner::hasNoMatchedInWhile))
       return null;
 
+    // matchedDependencies() DOES NOT SEE A $matched INSIDE A FUNCTION ARGUMENT OR A NESTED STATEMENT, SO THE ALIASES ARE COLLECTED
+    // BY WALKING EVERY NODE OF THE FILTERS. IF THE FILTERS DO NOT ACCOUNT FOR EVERY $matched OF THE MATCH EXPRESSIONS, ONE SITS
+    // SOMEWHERE ELSE (A PATH ITEM, ...) AND THE LEVEL HAS TO BE GIVEN THE WHOLE TUPLE
+    final Set<String> all = new TreeSet<>();
+    final int total = collectMatchedAliases(matchExpressions, all);
+    int inFilters = 0;
+    for (final WhereClause filter : aliasFilters.values())
+      inFilters += collectMatchedAliases(filter, new TreeSet<>());
+    if (total != inFilters)
+      return null;
+
     final Set<String> aliases = new TreeSet<>();
     for (final PatternNode node : subPattern.aliasToNode.values())
-      for (final String dependency : matchedDependencies(aliasFilters.get(node.alias)))
-        if (!subPattern.aliasToNode.containsKey(dependency))
-          aliases.add(dependency);
+      collectMatchedAliases(aliasFilters.get(node.alias), aliases);
+    aliases.removeAll(subPattern.aliasToNode.keySet());
     return aliases.toArray(new String[0]);
+  }
+
+  /** Adds the alias of every {@code $matched.<alias>} under {@code root} to {@code aliases}; returns how many there were. */
+  private static int collectMatchedAliases(final Object root, final Set<String> aliases) {
+    final int[] count = { 0 };
+    SqlAstInspector.allNodesMatch(root, node -> {
+      if (node instanceof BaseExpression expression && expression.identifier != null
+          && "$matched".equalsIgnoreCase(expression.identifier.toString())) {
+        count[0]++;
+        if (expression.modifier != null && expression.modifier.suffix != null && expression.modifier.suffix.identifier != null)
+          aliases.add(expression.modifier.suffix.identifier.toString());
+      }
+      return true;
+    });
+    return count[0];
   }
 
   private static boolean hasNoMatchedInWhile(final SimpleNode node) {
