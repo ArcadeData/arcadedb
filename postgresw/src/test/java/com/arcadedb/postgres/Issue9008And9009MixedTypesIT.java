@@ -68,6 +68,39 @@ class Issue9008And9009MixedTypesIT extends PostgresWireProtocolTestBase {
   }
 
   @Test
+  void aNumericListRoundTripsOverTheWire() throws Exception {
+    // default settings only: an array column described before its first execution is read as binary by pgjdbc on
+    // the later executions whatever the format announced, an array limitation that predates this change
+    for (final String options : new String[] { "" }) {
+      try (final Connection connection = openJdbcConnection(options)) {
+        final Database database = getServerDatabase(0, getDatabaseName());
+        database.transaction(() -> {
+          if (!database.getSchema().existsType("Numeric9008")) {
+            database.getSchema().createDocumentType("Numeric9008");
+            database.newDocument("Numeric9008").set("id", 1)
+                .set("lst", java.util.List.of(new java.math.BigDecimal("1.25"), 2, new java.math.BigDecimal("10000000000"))).save();
+          }
+        });
+        try (final PreparedStatement select = connection.prepareStatement("SELECT lst FROM Numeric9008 WHERE id = ?")) {
+          for (int i = 0; i < 3; i++) {
+            select.setInt(1, 1);
+            try (final ResultSet resultSet = select.executeQuery()) {
+              assertThat(resultSet.next()).isTrue();
+              assertThat(resultSet.getMetaData().getColumnTypeName(1)).isIn("_numeric", "_text");
+              final String text = resultSet.getString(1);
+              assertThat(text).as("options=" + options).isNotNull();
+              final String[] values = text.replaceAll("[{}\"]", "").split(",");
+              assertThat(values).hasSize(3);
+              assertThat(new java.math.BigDecimal(values[0]).compareTo(new java.math.BigDecimal("1.25"))).isZero();
+              assertThat(new java.math.BigDecimal(values[2]).compareTo(new java.math.BigDecimal("10000000000"))).isZero();
+            }
+          }
+        }
+      }
+    }
+  }
+
+  @Test
   void aPreparedStatementKeepsOneLayoutForRowsOfDifferentTypes() throws Exception {
     // default pgjdbc settings: executions 1-4 are unnamed, the 5th is described and prepared on the server, 6+ reuse it
     verifyRows("", new int[] { 1, 1, 1, 1, 1, 2, 3, 1 });
