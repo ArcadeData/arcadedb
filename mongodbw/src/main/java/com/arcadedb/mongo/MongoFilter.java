@@ -279,8 +279,8 @@ final class MongoFilter {
           return false;
       return true;
     }
-    // a plain value is an equality, but not a regular expression, which only the matcher evaluates like MongoDB
-    return !(operand instanceof BsonRegularExpression);
+    // a plain value is an equality, but not a regular expression nor a list, which only the matcher evaluates like MongoDB
+    return !(operand instanceof BsonRegularExpression) && !(operand instanceof List);
   }
 
   /**
