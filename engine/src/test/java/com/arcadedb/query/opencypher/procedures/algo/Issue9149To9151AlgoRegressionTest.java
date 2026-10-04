@@ -41,7 +41,7 @@ import static org.assertj.core.api.Assertions.within;
  */
 class Issue9149To9151AlgoRegressionTest extends TestHelper {
   // two K4 cliques {0..3} and {4..7}, a triangle {8,9,10}, and the bridges 3-4 and 7-8
-  private static final int[]   COMM  = { 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2 };
+  private static final int[]   COMM    = { 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2 };
   private static final int[][] CLIQUES = { { 0, 1, 2, 3 }, { 4, 5, 6, 7 }, { 8, 9, 10 } };
 
   @Override
@@ -115,7 +115,16 @@ class Issue9149To9151AlgoRegressionTest extends TestHelper {
 
   @Test
   void conductanceCountsEachBoundaryEdgeOnce() {
-    buildCommunityGraph(false);
+    assertConductance(false);
+  }
+
+  @Test
+  void conductanceIgnoresEdgeDirection() {
+    assertConductance(true);
+  }
+
+  private void assertConductance(final boolean reversed) {
+    buildCommunityGraph(reversed);
     final Map<Number, double[]> byCommunity = new HashMap<>();
     try (final ResultSet rs = database.query("opencypher",
         "CALL algo.conductance('community', 'KNOWS') YIELD community, conductance, boundaryEdges RETURN *")) {
@@ -178,5 +187,61 @@ class Issue9149To9151AlgoRegressionTest extends TestHelper {
         "MATCH (src:City {name:'Paris'}), (dst:City {name:'Rome'}) CALL algo.astar(src, dst, 'ROAD', 'km') YIELD weight RETURN weight")) {
       assertThat(rs.next().<Number>getProperty("weight").doubleValue()).isEqualTo(1330.0);
     }
+  }
+
+  @Test
+  void graphSummaryCountsSelfLoopTwiceInDegree() {
+    database.transaction(() -> {
+      final MutableVertex a = database.newVertex("Person").set("name", "A").save();
+      a.newEdge("KNOWS", a).save();
+      database.newVertex("Person").set("name", "B").save();
+    });
+    try (final ResultSet rs = database.query("opencypher",
+        "CALL algo.graphSummary('KNOWS', 'Person') YIELD maxDegree, isolatedNodes, selfLoops, edgeCount RETURN *")) {
+      final Result r = rs.next();
+      assertThat(r.<Number>getProperty("maxDegree").longValue()).isEqualTo(2L);
+      assertThat(r.<Number>getProperty("isolatedNodes").longValue()).isEqualTo(1L);
+      assertThat(r.<Number>getProperty("selfLoops").longValue()).isEqualTo(1L);
+      assertThat(r.<Number>getProperty("edgeCount").longValue()).isEqualTo(1L);
+    }
+  }
+
+  @Test
+  void pathWeightPicksTheLightestParallelEdge() {
+    database.transaction(() -> {
+      final MutableVertex a = database.newVertex("City").set("name", "A").save();
+      final MutableVertex b = database.newVertex("City").set("name", "B").save();
+      a.newEdge("ROAD", b, "km", 90.0).save();
+      a.newEdge("ROAD", b, "km", 10.0).save();
+    });
+    for (final String call : new String[] { "algo.astar(src, dst, 'ROAD', 'km')", "algo.bellmanford(src, dst, 'ROAD', 'km')",
+        "algo.dijkstra(src, dst, 'ROAD', 'km')" }) {
+      try (final ResultSet rs = database.query("opencypher",
+          "MATCH (src:City {name:'A'}), (dst:City {name:'B'}) CALL " + call + " YIELD weight RETURN weight")) {
+        assertThat(rs.next().<Number>getProperty("weight").doubleValue()).as(call).isEqualTo(10.0);
+      }
+    }
+  }
+
+  @Test
+  void weightedModularityScoreAndLouvainAgree() {
+    buildCommunityGraph(false);
+    database.transaction(() -> database.command("sql", "UPDATE KNOWS SET w = 2"));
+    final Map<RID, Integer> partition = new HashMap<>();
+    double reported = Double.NaN;
+    try (final ResultSet rs = database.query("opencypher",
+        "CALL algo.louvain({weightProperty: 'w'}) YIELD node, communityId, modularity RETURN *")) {
+      while (rs.hasNext()) {
+        final Result r = rs.next();
+        partition.put(r.<RID>getProperty("node"), r.<Number>getProperty("communityId").intValue());
+        reported = r.<Number>getProperty("modularity").doubleValue();
+      }
+    }
+    // a uniform weight leaves the modularity of any partition unchanged: compare with the unweighted score of it
+    database.transaction(() -> {
+      for (final Map.Entry<RID, Integer> e : partition.entrySet())
+        database.lookupByRID(e.getKey(), true).asVertex().modify().set("community", e.getValue()).save();
+    });
+    assertThat(reported).isCloseTo(modularityScore(), within(1e-9));
   }
 }

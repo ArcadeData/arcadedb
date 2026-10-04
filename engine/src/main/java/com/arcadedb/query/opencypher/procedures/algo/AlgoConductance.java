@@ -132,10 +132,9 @@ public class AlgoConductance extends AbstractAlgoProcedure {
     }
 
     // Count edges: internal vs boundary
-    // Use BOTH adjacency — each undirected edge is counted twice (once from each end)
-    // To avoid double-counting for internal edges, we count directed edges and divide by 2
-    // For boundary edges, each directed crossing counts once at each side, also divide by 2
-    // Simpler: iterate all directed edges, classify as internal or boundary
+    // BOTH adjacency lists every edge under each of its two endpoints. An internal edge is therefore seen twice by its
+    // community (halved below); a crossing edge is seen once by each of its two communities, so boundaryEdges[c]
+    // already holds the cut of c.
     for (int u = 0; u < n; u++) {
       final int cu = vertexCommunity[u];
       if (cu < 0)
@@ -156,7 +155,7 @@ public class AlgoConductance extends AbstractAlgoProcedure {
       internalEdges[c] /= 2;
 
     // conductance(C) = cut(C, V\C) / min(vol(C), vol(V\C))
-    // cut(C, V\C) = boundaryEdges[c] (each directed edge from C to outside counted once per direction — halve)
+    // cut(C, V\C) = boundaryEdges[c]
     // vol(V\C) = totalEdges - vol(C)  (we don't track this separately)
     // Compute total degree across all communities
     long totalAllDegree = 0;
