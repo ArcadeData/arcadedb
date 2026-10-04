@@ -39,6 +39,7 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -169,6 +170,42 @@ class Issue8738SealedStoreReplacedAfterT0Test {
     }
   }
 
+  /**
+   * The time-only path: the SAME file - same inode, same size, same bytes - touched after t0. Nothing but the
+   * last-modified time moved, and that alone must make the read report the store as not what was listed, because an
+   * in-place rewrite between the listing and the read looks exactly like this from the outside.
+   */
+  @Test
+  void verifyReportsAStoreTouchedInPlaceAfterT0AsNotCovered() throws Exception {
+    GlobalConfiguration.PAGE_SNAPSHOT_ENABLED.setValue(true);
+
+    try (final Database database = createDatabase()) {
+      final DatabaseInternal db = (DatabaseInternal) database;
+      final File[] sealed = TimeSeriesSealedStore.listSealedFiles(new File(db.getDatabasePath()));
+      assertThat(sealed).isNotEmpty();
+      final Object fileKeyAtT0 = Files.readAttributes(sealed[0].toPath(), BasicFileAttributes.class).fileKey();
+
+      final AtomicReference<IOException> touchFailure = new AtomicReference<>();
+      PostVerifyDatabaseHandler.whileChecksummingForTesting = snapshot -> {
+        try {
+          final FileTime mtime = Files.getLastModifiedTime(sealed[0].toPath());
+          Files.setLastModifiedTime(sealed[0].toPath(), FileTime.fromMillis(mtime.toMillis() + 60_000L));
+        } catch (final IOException e) {
+          touchFailure.set(e);
+        }
+      };
+
+      final JSONObject checksums = new JSONObject();
+      final boolean covered = handler.computeLocalChecksums(db, checksums, new JSONArray());
+
+      assertThat(touchFailure.get()).isNull();
+      assertThat(Files.readAttributes(sealed[0].toPath(), BasicFileAttributes.class).fileKey())
+          .as("the touch must have left the same file in place, or this is not the time-only path").isEqualTo(fileKeyAtT0);
+      assertThat(covered).isFalse();
+      assertThat(checksums.keySet()).doesNotContain(sealed[0].getName());
+    }
+  }
+
   /** The counterweight: with nothing replaced, the same verify still reports full coverage of the same stores. */
   @Test
   void verifyOfAnUndisturbedDatabaseStillCoversEverySealedStore() throws Exception {
@@ -284,7 +321,7 @@ class Issue8738SealedStoreReplacedAfterT0Test {
   /**
    * A store that vanished between the directory listing and the identity capture, and is still gone, is reported as
    * GONE rather than as unidentifiable, so the ship keeps its "went away after the snapshot's point in time" wording
-   * for it (code review on PR #9212).
+   * for it.
    */
   @Test
   void aStoreThatVanishedBeforeItsIdentityWasTakenIsReportedAsGone() throws Exception {

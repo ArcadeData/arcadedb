@@ -44,7 +44,10 @@ import java.util.Objects;
  * The identity is the {@link BasicFileAttributes#fileKey()} (device and inode on POSIX), the size, the last-modified
  * time and the creation time. The file key alone is not enough: an inode freed by the drop can be handed straight to
  * the recreated file, and on Windows there is no file key at all. Together they make a replacement that matches on
- * every one of them require a file of the same size written at the same instant into a recycled inode - the check is
+ * every one of them require a file of the same size written at the same instant into a recycled inode. The creation
+ * time adds nothing where the platform cannot report one: Linux reports the birth time only through {@code statx},
+ * and otherwise {@code creationTime()} falls back to the last-modified time, so the effective identity there is file
+ * key, size and last-modified time. The check is
  * deliberately conservative, so any doubt reads as "changed", which costs a retried ship or a verify reporting
  * incomplete coverage or a failed backup, never a silent "covered".
  * <p>
@@ -146,7 +149,7 @@ public record ListedSealedStore(File file, BasicFileAttributes identity) {
   public void verifyUnchanged(final long bytesRead) throws IOException {
     if (identity == null) {
       // GONE BEFORE ITS IDENTITY COULD BE TAKEN, AND STILL GONE: REPORTED AS THE VANISHED STORE IT IS, SO EVERY CALLER
-      // KEEPS ITS OWN "WENT AWAY" WORDING FOR IT (code review on PR #9212)
+      // KEEPS ITS OWN "WENT AWAY" WORDING FOR IT
       if (!file.exists())
         throw new FileNotFoundException(file.getPath() + " (no such file)");
       throw new ChangedException("TimeSeries sealed store '" + name()
