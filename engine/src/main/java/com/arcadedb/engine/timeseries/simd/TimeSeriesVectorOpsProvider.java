@@ -57,10 +57,19 @@ public final class TimeSeriesVectorOpsProvider {
   private static void startWarmUp(final TimeSeriesVectorOps ops) {
     // The Vector API runs through its own Java lane loops until C2 compiles the calls (hundreds of ms on a couple of
     // cores): doing it here, off the query path, keeps the first aggregate of a process from paying for it (#9171)
+    try {
+      startWarmUpThread(ops);
+    } catch (final Exception | OutOfMemoryError t) {
+      // BEST EFFORT: A THREAD THAT CANNOT BE CREATED MUST NOT FAIL THE CLASS INIT AND LOSE THE SELECTED SIMD OPS
+      LogManager.instance().log(TimeSeriesVectorOpsProvider.class, Level.FINE, "TimeSeries SIMD warm-up not started: %s", t.getMessage());
+    }
+  }
+
+  private static void startWarmUpThread(final TimeSeriesVectorOps ops) {
     final Thread thread = new Thread(() -> {
       try {
         warmUp(ops, WARM_UP_ITERATIONS);
-      } catch (final Exception | LinkageError t) {
+      } catch (final Exception | LinkageError | OutOfMemoryError t) {
         // BEST EFFORT: THE WARM-UP ONLY SPEEDS UP THE FIRST QUERY
         LogManager.instance().log(TimeSeriesVectorOpsProvider.class, Level.FINE, "TimeSeries SIMD warm-up failed: %s", t.getMessage());
       }
