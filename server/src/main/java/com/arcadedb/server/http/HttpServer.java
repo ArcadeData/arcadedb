@@ -252,7 +252,8 @@ public class HttpServer implements ServerPlugin {
         if (conflict == null && httpsPortListening > 0 && configuration.getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL))
           conflict = portConflict(listenHosts, httpsPortListening);
         if (conflict != null) {
-          LogManager.instance().log(this, Level.WARNING, "- HTTP Port %s skipped: a port it needs is not available on every address of '%s' (%s)",
+          // The conflict names the port actually taken: the HTTPS one when that is the culprit
+          LogManager.instance().log(this, Level.WARNING, "- HTTP Port %s skipped, '%s' cannot listen on every address: %s",
               httpPortListening, host, conflict);
           continue;
         }
@@ -452,7 +453,9 @@ public class HttpServer implements ServerPlugin {
    * depending on the family the client's resolver tried first. A name resolving to several addresses is therefore
    * bound on each LOCAL one of them. Addresses no interface carries are left out ({@code /etc/hosts} commonly maps
    * {@code localhost} to {@code ::1} where IPv6 is disabled, and binding it would fail on every port). A literal, a
-   * single-address name and an unresolvable name are passed through unchanged, so the listener behaves as before.
+   * single-address name and an unresolvable name are passed through unchanged, so the listener behaves as before. A
+   * name with exactly one LOCAL address among several is returned as that address's literal, so the listener binds
+   * the address it can actually take rather than whichever one the resolver lists first.
    */
   static List<String> resolveListenHosts(final String host) {
     if (host == null || host.isEmpty())
