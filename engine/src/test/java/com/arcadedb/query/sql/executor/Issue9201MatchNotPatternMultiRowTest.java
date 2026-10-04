@@ -70,6 +70,14 @@ class Issue9201MatchNotPatternMultiRowTest extends TestHelper {
   }
 
   @Test
+  void bothDirectionAndWhileTraversalsInsideNotPatternResetPerRow() {
+    // 'both' sees every neighbour, so every x with at least one edge has some y: NOT of the same pattern keeps none
+    assertThat(pairs("MATCH {type: P, as: x}.out('K'){as: y}, NOT {as: y}.both('K'){as: x} RETURN x.id AS x, y.id AS y")).isEmpty();
+    assertThat(pairs("MATCH {type: P, as: x}.out('K'){as: y}, NOT {as: y}.out('K'){as: x, while: (true), maxDepth: 2} RETURN x.id AS x, y.id AS y"))
+        .containsExactly("(1,2)", "(2,3)");
+  }
+
+  @Test
   void randomGraphMatchesReciprocalEdgeCount() {
     database.transaction(() -> database.command("sql", "DELETE FROM P"));
     final int n = 60;
