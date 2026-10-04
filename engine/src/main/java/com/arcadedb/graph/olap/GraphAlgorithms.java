@@ -49,7 +49,7 @@ import java.util.function.BiConsumer;
  * Algorithms:
  * <ul>
  *   <li>{@link #pageRank} — pull-based parallel PageRank with configurable damping and iterations</li>
- *   <li>{@link #connectedComponents} — parallel min-label propagation for weakly connected components</li>
+ *   <li>{@link #connectedComponents} — parallel union-find (Afforest) for weakly connected components</li>
  *   <li>{@link #shortestPath} — BFS-based unweighted shortest path (returns hop count)</li>
  *   <li>{@link #shortestPathAll} — parallel BFS for single-source shortest paths to all nodes</li>
  *   <li>{@link #labelPropagation} — synchronous parallel community detection via label propagation</li>
@@ -96,6 +96,10 @@ public final class GraphAlgorithms {
 
   // VarHandle for lock-free CAS on long[] bitmap in parallel push mode
   private static final VarHandle LONG_ARRAY_VH = MethodHandles.arrayElementVarHandle(long[].class);
+  // VarHandle for the parallel union-find parent[] used by connectedComponents
+  private static final VarHandle PARENT_ARRAY_VH = MethodHandles.arrayElementVarHandle(int[].class);
+  private static final int WCC_SAMPLE_ROUNDS = 2;
+  private static final int WCC_DOMINANT_SAMPLES = 1024;
 
   private GraphAlgorithms() {
   }
@@ -490,14 +494,22 @@ public final class GraphAlgorithms {
     return pageRank(view, 0.85, 20, DIRECTION.OUT, edgeTypes);
   }
 
-  // --- Connected Components (Parallel Min-Label Propagation) ---
+  // --- Connected Components (Parallel Union-Find with neighbour sampling) ---
 
   /**
-   * Computes weakly connected components using synchronous min-label propagation.
-   * Each node starts with its own ID as label; in each iteration, each node takes the
-   * minimum label among itself and all its neighbors (both directions).
-   * Converges in O(diameter) iterations. Each iteration is fully parallelizable since
-   * threads write to disjoint ranges of newLabel[].
+   * Computes weakly connected components with a lock-free parallel union-find (Afforest, Sutton et al. 2018).
+   * <ol>
+   *   <li>Sampling: every node is unioned with its first {@link #WCC_SAMPLE_ROUNDS} forward neighbours per edge
+   *   type. On graphs with one giant component this already connects most of it.</li>
+   *   <li>The most frequent root among a fixed random sample of nodes is taken as the giant component.</li>
+   *   <li>Finish: every node still outside that component unions with all of its remaining forward edges and all
+   *   of its backward edges. The backward direction is required because an edge skipped from a giant-component
+   *   source would otherwise leave a target that is only reachable through an incoming edge disconnected.</li>
+   * </ol>
+   * Roots are always hooked larger-under-smaller by CAS, so the final root of a component is its minimum node id
+   * and the output contract (component id = min node id) is unchanged. Each edge is visited at most twice (once per
+   * direction, and only for nodes outside the dominant component), versus once per pass for label propagation, whose
+   * pass count grows with the diameter. Memory is a single {@code int[n]}.
    *
    * @param view      the analytical view (must be built)
    * @param edgeTypes edge types to consider (null or empty = all)
@@ -508,14 +520,9 @@ public final class GraphAlgorithms {
     if (n == 0)
       return new int[0];
 
-    final int[] label = new int[n];
-    final int[] newLabel = new int[n];
-    for (int i = 0; i < n; i++)
-      label[i] = i;
-
     final String[] types = resolveEdgeTypes(view, edgeTypes);
 
-    // Pre-hoist CSR arrays outside the convergence loop to avoid repeated HashMap lookups
+    // Pre-hoist CSR arrays to avoid repeated HashMap lookups
     final int typeCount = types.length;
     final int[][] allFwdOffsets = new int[typeCount][];
     final int[][] allFwdNeighbors = new int[typeCount][];
@@ -530,49 +537,125 @@ public final class GraphAlgorithms {
       allBwdOffsets[t] = csr.getBackwardOffsets();
       allBwdNeighbors[t] = csr.getBackwardNeighbors();
     }
+    return connectedComponents(n, allFwdOffsets, allFwdNeighbors, allBwdOffsets, allBwdNeighbors);
+  }
 
-    boolean changed = true;
-    while (changed) {
-      System.arraycopy(label, 0, newLabel, 0, n);
+  /**
+   * Union-find kernel over raw CSR arrays (one entry per edge type, a null entry means the type has no CSR).
+   * The four arrays must all have one entry per edge type. Package-private so tests can drive it with hand-built
+   * adjacency and exact node ids.
+   */
+  static int[] connectedComponents(final int n, final int[][] allFwdOffsets, final int[][] allFwdNeighbors,
+      final int[][] allBwdOffsets, final int[][] allBwdNeighbors) {
+    final int typeCount = allFwdOffsets.length;
+    final int[] parent = new int[n];
+    for (int i = 0; i < n; i++)
+      parent[i] = i;
 
-      final AtomicBoolean anyChanged = new AtomicBoolean(false);
+    // Phase 1: sampling, forward edges only
+    for (int round = 0; round < WCC_SAMPLE_ROUNDS; round++) {
+      final int r = round;
       parallelForRange(n, (start, end) -> {
-        boolean localChanged = false;
-        for (int u = start; u < end; u++) {
-          int minLabel = label[u];
+        for (int u = start; u < end; u++)
           for (int t = 0; t < typeCount; t++) {
-            if (allFwdOffsets[t] != null) {
-              final int[] fwdOffsets = allFwdOffsets[t];
-              final int[] fwdNeighbors = allFwdNeighbors[t];
-              for (int j = fwdOffsets[u]; j < fwdOffsets[u + 1]; j++) {
-                final int nl = label[fwdNeighbors[j]];
-                if (nl < minLabel)
-                  minLabel = nl;
-              }
-            }
-            if (allBwdOffsets[t] != null) {
-              final int[] bwdOffsets = allBwdOffsets[t];
-              final int[] bwdNeighbors = allBwdNeighbors[t];
-              for (int j = bwdOffsets[u]; j < bwdOffsets[u + 1]; j++) {
-                final int nl = label[bwdNeighbors[j]];
-                if (nl < minLabel)
-                  minLabel = nl;
-              }
+            final int[] fwdOffsets = allFwdOffsets[t];
+            if (fwdOffsets != null) {
+              final int j = fwdOffsets[u] + r;
+              if (j < fwdOffsets[u + 1])
+                wccUnion(parent, u, allFwdNeighbors[t][j]);
             }
           }
-          newLabel[u] = minLabel;
-          if (minLabel != label[u])
-            localChanged = true;
-        }
-        if (localChanged)
-          anyChanged.set(true);
       });
-
-      System.arraycopy(newLabel, 0, label, 0, n);
-      changed = anyChanged.get();
     }
 
-    return label;
+    // Phase 2: find the dominant component from a deterministic sample of roots
+    final int giant = wccDominantRoot(parent);
+
+    // Phase 3: finish every node outside the dominant component
+    parallelForRange(n, (start, end) -> {
+      for (int u = start; u < end; u++) {
+        // giant is only a member of the dominant component: its root can be re-hooked under a smaller id by this very
+        // phase, so compare against its current root rather than the id captured above
+        if (wccFind(parent, u) == wccFind(parent, giant))
+          continue;
+        for (int t = 0; t < typeCount; t++) {
+          final int[] fwdOffsets = allFwdOffsets[t];
+          if (fwdOffsets != null) {
+            final int[] fwdNeighbors = allFwdNeighbors[t];
+            // the first WCC_SAMPLE_ROUNDS forward neighbours were already unioned in phase 1
+            for (int j = fwdOffsets[u] + WCC_SAMPLE_ROUNDS; j < fwdOffsets[u + 1]; j++)
+              wccUnion(parent, u, fwdNeighbors[j]);
+          }
+          final int[] bwdOffsets = allBwdOffsets[t];
+          if (bwdOffsets != null) {
+            final int[] bwdNeighbors = allBwdNeighbors[t];
+            for (int j = bwdOffsets[u]; j < bwdOffsets[u + 1]; j++)
+              wccUnion(parent, u, bwdNeighbors[j]);
+          }
+        }
+      }
+    });
+
+    // Phase 4: flatten, so every entry holds its final root (= min node id of the component)
+    parallelForRange(n, (start, end) -> {
+      for (int u = start; u < end; u++)
+        PARENT_ARRAY_VH.setOpaque(parent, u, wccFind(parent, u));
+    });
+
+    return parent;
+  }
+
+  /** Root of {@code x} with path halving. Concurrent halving only ever re-points a node to one of its own ancestors. */
+  private static int wccFind(final int[] parent, final int x) {
+    int cur = x;
+    int p = (int) PARENT_ARRAY_VH.getOpaque(parent, cur);
+    while (p != cur) {
+      final int gp = (int) PARENT_ARRAY_VH.getOpaque(parent, p);
+      if (gp != p)
+        PARENT_ARRAY_VH.setOpaque(parent, cur, gp);
+      cur = gp;
+      p = (int) PARENT_ARRAY_VH.getOpaque(parent, cur);
+    }
+    return cur;
+  }
+
+  /** Links the components of {@code a} and {@code b}, always hooking the larger root under the smaller one. */
+  private static void wccUnion(final int[] parent, final int a, final int b) {
+    int ra = wccFind(parent, a);
+    int rb = wccFind(parent, b);
+    while (ra != rb) {
+      final int hi = Math.max(ra, rb);
+      final int lo = Math.min(ra, rb);
+      // hi can only be hooked while it is still a root; on a lost race re-resolve both roots and retry
+      if (PARENT_ARRAY_VH.compareAndSet(parent, hi, hi, lo))
+        return;
+      ra = wccFind(parent, hi);
+      rb = wccFind(parent, lo);
+    }
+  }
+
+  /** Most frequent root among {@link #WCC_DOMINANT_SAMPLES} deterministically chosen nodes. */
+  private static int wccDominantRoot(final int[] parent) {
+    final int n = parent.length;
+    final int samples = Math.min(WCC_DOMINANT_SAMPLES, n);
+    final int[] roots = new int[samples];
+    long seed = 0x9E3779B97F4A7C15L;
+    for (int i = 0; i < samples; i++) {
+      seed = seed * 6364136223846793005L + 1442695040888963407L;
+      roots[i] = wccFind(parent, (int) ((seed >>> 33) % n));
+    }
+    Arrays.sort(roots);
+    int best = roots[0];
+    int bestCount = 0;
+    int run = 0;
+    for (int i = 0; i < samples; i++) {
+      run = i > 0 && roots[i] == roots[i - 1] ? run + 1 : 1;
+      if (run > bestCount) {
+        bestCount = run;
+        best = roots[i];
+      }
+    }
+    return best;
   }
 
   /**
