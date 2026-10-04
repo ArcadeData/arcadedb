@@ -125,4 +125,15 @@ class MongoFilterTest {
     assertThat(new MongoFilter(null, parse("{$or: [{_id: 1}, {k: 2}]}")).narrowsById()).isFalse();
     assertThat(new MongoFilter(null, parse("{_id: 1}")).narrowsById()).isFalse();
   }
+
+  @Test
+  void regexElementsOfAllAndNorMatchLikeMongoDB() {
+    final Map<String, Object> hit = Map.of("s", List.of("alpha", "beta"));
+    assertThat(new MongoFilter(null, new Document("s", new Document("$all", List.of(new BsonRegularExpression("^al"), new BsonRegularExpression("^be")))))
+        .matches(hit)).isTrue();
+    assertThat(new MongoFilter(null, new Document("s", new Document("$all", List.of(new BsonRegularExpression("^al"), new BsonRegularExpression("^zz")))))
+        .matches(hit)).isFalse();
+    assertThat(new MongoFilter(null, new Document("$nor", List.of(new Document("s", new Document("$regex", "^zz"))))).matches(hit)).isTrue();
+    assertThat(new MongoFilter(null, new Document("$nor", List.of(new Document("s", new Document("$regex", "^al"))))).matches(hit)).isFalse();
+  }
 }
