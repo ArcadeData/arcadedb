@@ -53,7 +53,6 @@ import com.arcadedb.utility.RWLockContext;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -339,17 +338,8 @@ public class HashIndex implements IndexInternal {
     }
   }
 
-  /**
-   * Refuses a key with a null component when the index was created with NULL_STRATEGY ERROR, as the LSM index does.
-   */
   private void checkForNulls(final Object[] keys) {
-    if (bucket.nullStrategy != LSMTreeIndexAbstract.NULL_STRATEGY.ERROR || keys == null)
-      return;
-
-    for (final Object key : keys)
-      if (key == null)
-        throw new IllegalArgumentException(
-            "Indexed key " + getTypeName() + getPropertyNames() + " cannot be NULL (" + Arrays.toString(keys) + ")");
+    LSMTreeIndexAbstract.checkForNulls(bucket.nullStrategy, getTypeName(), getPropertyNames(), keys);
   }
 
   @Override

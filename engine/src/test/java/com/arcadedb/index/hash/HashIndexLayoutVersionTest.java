@@ -172,6 +172,64 @@ class HashIndexLayoutVersionTest extends TestHelper {
         .isEqualTo(8_192);
   }
 
+  /** Two different keys filed under the same tag must be told apart by the full key comparison. */
+  @ParameterizedTest
+  @ValueSource(ints = { HashIndexBucket.LEGACY_SORTED_VERSION, HashIndexBucket.CURRENT_VERSION })
+  void keysSharingATagAreNotConfused(final int layout) {
+    HashIndex.HashIndexFactoryHandler.layoutVersion = layout;
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE C");
+      database.command("sql", "CREATE PROPERTY C.n LONG");
+      database.command("sql", "CREATE INDEX ON C (n) UNIQUE_HASH").close();
+    });
+    final HashIndex index = (HashIndex) database.getSchema().getType("C").getAllIndexes(false).iterator().next().getSubIndexes()
+        .get(0);
+
+    // two keys with the same tag
+    long first = 1;
+    long second = -1;
+    for (long candidate = 2; second < 0; candidate++)
+      if (HashIndexBucket.tagOf(index.bucket.hashKeys(new Object[] { candidate })) == HashIndexBucket.tagOf(
+          index.bucket.hashKeys(new Object[] { first })))
+        second = candidate;
+
+    final long a = first;
+    final long b = second;
+    database.transaction(() -> database.command("sql", "INSERT INTO C SET n = ?, v = 'a'", a).close());
+    assertThat(count("SELECT count(*) AS c FROM C WHERE n = " + b)).isZero();
+
+    database.transaction(() -> database.command("sql", "INSERT INTO C SET n = ?, v = 'b'", b).close());
+    assertThat(count("SELECT count(*) AS c FROM C WHERE n = " + a)).isEqualTo(1);
+    assertThat(count("SELECT count(*) AS c FROM C WHERE n = " + b)).isEqualTo(1);
+
+    database.transaction(() -> database.command("sql", "DELETE FROM C WHERE n = ?", a).close());
+    assertThat(count("SELECT count(*) AS c FROM C WHERE n = " + a)).isZero();
+    assertThat(count("SELECT count(*) AS c FROM C WHERE n = " + b)).isEqualTo(1);
+  }
+
+  /** Delete and re-insert on the same pages again and again: the last slot keeps swapping into the freed ones. */
+  @ParameterizedTest
+  @ValueSource(ints = { HashIndexBucket.LEGACY_SORTED_VERSION, HashIndexBucket.CURRENT_VERSION })
+  void deleteAndReinsertChurn(final int layout) {
+    final Map<String, Integer> expected = createAndFill("UNIQUE_HASH", layout, 1_500, 1_500);
+    final Random random = new Random(11);
+    for (int round = 0; round < 15; round++) {
+      final int r = round;
+      database.transaction(() -> {
+        for (int i = 0; i < 400; i++) {
+          final String key = "key-" + random.nextInt(1_500);
+          if (expected.remove(key) != null)
+            database.command("sql", "DELETE FROM U WHERE k = ?", key).close();
+          else {
+            database.command("sql", "INSERT INTO U SET k = ?, v = ?", key, r).close();
+            expected.put(key, r);
+          }
+        }
+      });
+      verify(expected, 1_500);
+    }
+  }
+
   /** Readers without the file lock run while a writer appends: the write order of an insert must never show a half entry. */
   @Test
   void concurrentReadsDuringInsertsOnTheCurrentLayout() throws Exception {
