@@ -36,7 +36,9 @@ public class DmlSourcePlanKey {
 
   private volatile boolean resolved;
   private volatile String  key;
+  // heuristics: a lost update of these counters only delays or advances the give-up by one planning
   private volatile int     unstoredPlans;
+  private volatile long    giveUpEpoch;
 
   /**
    * The key is memoized, so the target and the WHERE of the statement must not change after it is parsed (the statement
@@ -44,21 +46,33 @@ public class DmlSourcePlanKey {
    *
    * @return the plan-cache key, or null when the source SELECT cannot be cached or has repeatedly not been stored
    */
-  String resolve(final FromClause target, final WhereClause whereClause, final Timeout timeout) {
+  String resolve(final FromClause target, final WhereClause whereClause, final Timeout timeout, final long cacheEpoch) {
     if (!resolved) {
       final SelectStatement source = newSource(target, whereClause, timeout, true);
       key = source.executionPlanCanBeCached() ? source.getOriginalStatement() : null;
       resolved = true;
     }
-    return unstoredPlans >= MAX_UNSTORED_PLANS ? null : key;
+    if (unstoredPlans >= MAX_UNSTORED_PLANS) {
+      if (cacheEpoch == giveUpEpoch)
+        return null;
+      // a schema change invalidated the cache since the statement gave up: try again
+      unstoredPlans = 0;
+    }
+    return key;
   }
 
   /**
    * Called after the source plan of a cache miss was built: a statement whose plans never reach the cache stops paying the
    * lookup and the statement copy on every execution.
    */
-  void planned(final boolean stored) {
-    unstoredPlans = stored ? 0 : unstoredPlans + 1;
+  void planned(final boolean stored, final long epochBeforePlanning, final long epochAfterPlanning) {
+    if (stored)
+      unstoredPlans = 0;
+    else if (epochBeforePlanning == epochAfterPlanning) {
+      // a plan discarded because a DDL ran meanwhile says nothing about the statement
+      unstoredPlans++;
+      giveUpEpoch = epochAfterPlanning;
+    }
   }
 
   static SelectStatement newSource(final FromClause target, final WhereClause whereClause, final Timeout timeout,
