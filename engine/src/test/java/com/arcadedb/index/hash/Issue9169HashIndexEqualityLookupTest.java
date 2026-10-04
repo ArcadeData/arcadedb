@@ -19,9 +19,12 @@
 package com.arcadedb.index.hash;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import org.junit.jupiter.api.Test;
+
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -48,12 +51,12 @@ class Issue9169HashIndexEqualityLookupTest extends TestHelper {
     assertThat(plan("sql", "EXPLAIN SELECT ckey, pkey, qty FROM Crud WHERE ckey = 42")).contains("FETCH FROM INDEX Crud[ckey]");
     assertThat(plan("sql", "EXPLAIN DELETE FROM Crud WHERE ckey = 42")).contains("FETCH FROM INDEX Crud[ckey]");
 
-    try (final ResultSet rs = database.query("sql", "SELECT ckey, pkey, qty FROM Crud WHERE ckey = :c", java.util.Map.of("c", 42))) {
+    try (final ResultSet rs = database.query("sql", "SELECT ckey, pkey, qty FROM Crud WHERE ckey = :c", Map.of("c", 42))) {
       assertThat(rs.next().<Integer>getProperty("pkey")).isEqualTo(84);
       assertThat(rs.hasNext()).isFalse();
     }
 
-    database.transaction(() -> database.command("sql", "DELETE FROM Crud WHERE ckey = :c", java.util.Map.of("c", 42)).close());
+    database.transaction(() -> database.command("sql", "DELETE FROM Crud WHERE ckey = :c", Map.of("c", 42)).close());
     try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM Crud WHERE ckey = 42")) {
       assertThat(rs.next().<Long>getProperty("c")).isZero();
     }
@@ -70,7 +73,7 @@ class Issue9169HashIndexEqualityLookupTest extends TestHelper {
       database.command("sql", "CREATE INDEX ON Person (id) UNIQUE_HASH").close();
       for (int i = 0; i < ROWS; i++)
         database.command("opencypher", "CREATE (:Person {id: $id, name: 'n' + $id, age: $age})",
-            java.util.Map.of("id", i, "age", i % 90)).close();
+            Map.of("id", i, "age", i % 90)).close();
     });
 
     try (final ResultSet rs = database.query("opencypher", "PROFILE MATCH (p:Person) WHERE p.id = 42 RETURN p.name AS name")) {
@@ -80,14 +83,14 @@ class Issue9169HashIndexEqualityLookupTest extends TestHelper {
     }
 
     try (final ResultSet rs = database.query("opencypher", "MATCH (p:Person) WHERE p.id = $id RETURN p.name AS name, p.age AS age",
-        java.util.Map.of("id", 42))) {
-      final var row = rs.next();
+        Map.of("id", 42))) {
+      final Result row = rs.next();
       assertThat(row.<String>getProperty("name")).isEqualTo("n42");
       assertThat(rs.hasNext()).isFalse();
     }
 
     database.transaction(() -> database.command("opencypher", "MATCH (q:Person) WHERE q.id = $id DETACH DELETE q",
-        java.util.Map.of("id", 42)).close());
+        Map.of("id", 42)).close());
     try (final ResultSet rs = database.query("opencypher", "MATCH (p:Person) WHERE p.id = 42 RETURN count(p) AS c")) {
       assertThat(rs.next().<Long>getProperty("c")).isZero();
     }
@@ -100,7 +103,7 @@ class Issue9169HashIndexEqualityLookupTest extends TestHelper {
     try (final ResultSet rs = database.command(language, statement)) {
       final StringBuilder sb = new StringBuilder();
       while (rs.hasNext()) {
-        final var r = rs.next();
+        final Result r = rs.next();
         sb.append(r.toJSON());
       }
       return sb.toString();

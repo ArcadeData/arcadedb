@@ -24,11 +24,15 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.HashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
@@ -42,6 +46,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
+@Execution(ExecutionMode.SAME_THREAD)
 class HashIndexLayoutVersionTest extends TestHelper {
   private static final int PAGE_SIZE = 1_024;
 
@@ -165,6 +170,39 @@ class HashIndexLayoutVersionTest extends TestHelper {
         .isEqualTo(HashIndexBucket.DEF_VARIABLE_KEY_PAGE_SIZE);
     assertThat(database.getSchema().getType("B").getAllIndexes(false).iterator().next().getSubIndexes().get(0).getPageSize())
         .isEqualTo(8_192);
+  }
+
+  /** Readers without the file lock run while a writer appends: the write order of an insert must never show a half entry. */
+  @Test
+  void concurrentReadsDuringInsertsOnTheCurrentLayout() throws Exception {
+    createAndFill("UNIQUE_HASH", HashIndexBucket.CURRENT_VERSION, 1_000, 1_000);
+    final AtomicBoolean stop = new AtomicBoolean();
+    final AtomicReference<Throwable> failure = new AtomicReference<>();
+    final Thread reader = new Thread(() -> {
+      try {
+        while (!stop.get())
+          for (int i = 0; i < 1_000 && !stop.get(); i += 7)
+            if (count("SELECT count(*) AS c FROM U WHERE k = 'key-" + i + "'") != 1)
+              throw new AssertionError("key-" + i + " not found while inserting");
+      } catch (final Throwable t) {
+        failure.set(t);
+      }
+    });
+    reader.start();
+    try {
+      for (int batch = 0; batch < 20; batch++) {
+        final int from = 1_000 + batch * 100;
+        database.transaction(() -> {
+          for (int i = from; i < from + 100; i++)
+            database.command("sql", "INSERT INTO U SET k = ?, v = ?", "key-" + i, i).close();
+        });
+      }
+    } finally {
+      stop.set(true);
+      reader.join();
+    }
+    assertThat(failure.get()).isNull();
+    assertThat(count("SELECT count(*) AS c FROM U")).isEqualTo(3_000);
   }
 
   /** Slots of different keys sharing a tag must not be mistaken for each other. */

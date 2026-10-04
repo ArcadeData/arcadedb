@@ -19,7 +19,9 @@
 package com.arcadedb.index.hash;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.index.IndexInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import org.junit.jupiter.params.ParameterizedTest;
@@ -85,6 +87,20 @@ class Issue9074HashIndexNullStrategyTest extends TestHelper {
     });
     assertThat(count("SELECT count(*) AS c FROM T")).isEqualTo(2);
     assertThat(count("SELECT count(*) AS c FROM T WHERE a IS NULL")).isEqualTo(1);
+  }
+
+  /** The non transactional put and remove of the index API: the one branch the SQL statements do not reach. */
+  @ParameterizedTest
+  @ValueSource(strings = { "NOTUNIQUE_HASH", "UNIQUE_HASH" })
+  void errorStrategyRejectsADirectPutAndRemoveOfANullKey(final String indexType) {
+    createType(indexType, "ERROR");
+    final IndexInternal index = database.getSchema().getType("T").getAllIndexes(false).iterator().next().getSubIndexes().get(0);
+    final RID rid = new RID(1, 0);
+
+    assertThatThrownBy(() -> index.put(new Object[] { null }, new RID[] { rid })).isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("cannot be NULL");
+    assertThatThrownBy(() -> index.remove(new Object[] { null }, rid)).isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("cannot be NULL");
   }
 
   private void createType(final String indexType, final String nullStrategy) {
