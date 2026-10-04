@@ -36,7 +36,7 @@ import java.util.Set;
 
 public class DeleteStatement extends Statement {
 
-  private final DmlSourcePlanKey sourcePlanKey = new DmlSourcePlanKey();
+  private final DmlSourcePlanKey sourcePlanKey = new DmlSourcePlanKey(this);
 
   public FromClause  fromClause;
   public WhereClause whereClause;

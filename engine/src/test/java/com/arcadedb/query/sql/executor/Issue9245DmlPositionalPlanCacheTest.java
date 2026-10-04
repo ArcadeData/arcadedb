@@ -19,6 +19,8 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.query.sql.parser.StatementCache;
+import com.arcadedb.query.sql.parser.UpdateStatement;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -121,5 +123,21 @@ class Issue9245DmlPositionalPlanCacheTest extends TestHelper {
     select("SELECT FROM I WHERE sku = ? AND brand = ?", "S1", "b1");
     assertThat(command("UPDATE I SET brand = ? WHERE sku = ? AND brand = ?", "NEW", "S2", "b2")).isEqualTo(1L);
     assertThat(rows("I")).isEqualTo("NEW:b3 S1:b1 S2:NEW");
+  }
+
+  @Test
+  void reparsedStatementsOfTheSameTextShareOneKeyAndDifferentPositionsDoNot() {
+    final String sql = "UPDATE K SET brand = ? WHERE sku = ?";
+    // two parses of the same text are two statement objects, as after an eviction from the statement cache
+    final UpdateStatement first = (UpdateStatement) new StatementCache(database, 0).get(sql);
+    final UpdateStatement second = (UpdateStatement) new StatementCache(database, 0).get(sql);
+    final UpdateStatement other = (UpdateStatement) new StatementCache(database, 0).get("UPDATE K SET brand = ?, category = ? WHERE sku = ?");
+    assertThat(first).isNotSameAs(second);
+
+    assertThat(keyOf(first)).isNotNull().isEqualTo(keyOf(second)).isNotEqualTo(keyOf(other));
+  }
+
+  private static String keyOf(final UpdateStatement statement) {
+    return statement.getSourcePlanKey().resolve(statement.getTarget(), statement.getWhereClause(), null, 0L);
   }
 }
