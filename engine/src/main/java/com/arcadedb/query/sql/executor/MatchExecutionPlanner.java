@@ -766,6 +766,9 @@ public class MatchExecutionPlanner {
   private String[] outerAliasesRead(final Pattern subPattern) {
     if (!SqlAstInspector.allNodesMatch(matchExpressions, MatchExecutionPlanner::isAliasQualifiedMatchedRead))
       return null;
+    // A while: IS NOT IN aliasFilters, SO AN ALIAS IT READS WOULD BE MISSING FROM THE SET BELOW: GIVE THE LEVEL THE WHOLE TUPLE
+    if (!SqlAstInspector.allNodesMatch(matchExpressions, MatchExecutionPlanner::hasNoMatchedInWhile))
+      return null;
 
     final Set<String> aliases = new TreeSet<>();
     for (final PatternNode node : subPattern.aliasToNode.values())
@@ -773,6 +776,14 @@ public class MatchExecutionPlanner {
         if (!subPattern.aliasToNode.containsKey(dependency))
           aliases.add(dependency);
     return aliases.toArray(new String[0]);
+  }
+
+  private static boolean hasNoMatchedInWhile(final SimpleNode node) {
+    if (node instanceof MatchFilter filter && filter.getWhileCondition() != null)
+      return SqlAstInspector.allNodesMatch(filter.getWhileCondition(),
+          n -> !(n instanceof BaseExpression expression && expression.identifier != null
+              && "$matched".equalsIgnoreCase(expression.identifier.toString())));
+    return true;
   }
 
   private static boolean isAliasQualifiedMatchedRead(final SimpleNode node) {

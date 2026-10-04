@@ -19,10 +19,15 @@
 package com.arcadedb.query.sql;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Database;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.util.Collection;
+
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression tests for the SQL examples printed in the documentation (issues #9094, #9076, #9048).
@@ -66,7 +71,9 @@ class SqlDocumentedExamplesRegressionTest {
       try (final ResultSet rs = db.query("sql", "SELECT geo.lineString([[0, 0], geo.point(10, 10)]) AS line")) {
         assertThat((String) rs.next().getProperty("line")).isEqualTo("LINESTRING (0 0, 10 10)");
       }
-      org.assertj.core.api.Assertions.assertThatThrownBy(() -> db.query("sql", "SELECT geo.lineString(['LINESTRING (0 0, 1 1)', [1, 1]]) AS line").next())
+      assertThatThrownBy(() -> db.query("sql", "SELECT geo.lineString(['LINESTRING (0 0, 1 1)', [1, 1]]) AS line").next())
+          .hasMessageContaining("Invalid point element");
+      assertThatThrownBy(() -> db.query("sql", "SELECT geo.lineString(['foo', [1, 1]]) AS line").next())
           .hasMessageContaining("Invalid point element");
     });
   }
@@ -126,9 +133,19 @@ class SqlDocumentedExamplesRegressionTest {
       db.command("sql", "CREATE DOCUMENT TYPE Clients");
       db.transaction(() -> db.command("sql", "INSERT INTO Clients SET map = {\"x\": 1, \"y\": 2}"));
       try (final ResultSet rs = db.query("sql", "SELECT `map`.values() AS v FROM Clients")) {
-        assertThat(rs.next().<java.util.Collection<Object>>getProperty("v")).containsExactlyInAnyOrder(1, 2);
+        assertThat(rs.next().<Collection<Object>>getProperty("v")).containsExactlyInAnyOrder(1, 2);
       }
       assertThat(count(db, "SELECT FROM Clients WHERE `map`.values() CONTAINSALL [1, 2]")).isEqualTo(1);
+    });
+  }
+
+  @Test
+  void containsAllOverAnEmptyListIsVacuouslyTrue() throws Exception {
+    TestHelper.executeInNewDatabase("Issue9076Empty", db -> {
+      db.command("sql", "CREATE DOCUMENT TYPE Bag");
+      db.transaction(() -> db.command("sql", "INSERT INTO Bag SET l = []"));
+      assertThat(count(db, "SELECT FROM Bag WHERE l CONTAINSALL (@this > 0)")).isEqualTo(1);
+      assertThat(count(db, "SELECT FROM Bag WHERE l CONTAINSANY (@this > 0)")).isEqualTo(0);
     });
   }
 
@@ -144,13 +161,13 @@ class SqlDocumentedExamplesRegressionTest {
       assertThat(scalar(db, "SELECT '2024-01-15'.asDate(null) AS r")).isEqualTo(scalar(db, "SELECT '2024-01-15'.asDate() AS r"));
       assertThat(scalar(db, "SELECT '2024-01-15 10:00:00'.asDateTime(null) AS r"))
           .isEqualTo(scalar(db, "SELECT '2024-01-15 10:00:00'.asDateTime() AS r"));
-      org.assertj.core.api.Assertions.assertThatThrownBy(() -> scalar(db, "SELECT vectorNeighbors(null, null, 3) AS r"))
-          .isNotInstanceOf(NullPointerException.class)
-          .hasNoCause();
+      assertThatThrownBy(() -> scalar(db, "SELECT vectorNeighbors(null, null, 3) AS r"))
+          .isInstanceOf(CommandSQLParsingException.class)
+          .hasMessageContaining("index name is null");
     });
   }
 
-  private static long count(final com.arcadedb.database.Database db, final String sql) {
+  private static long count(final Database db, final String sql) {
     try (final ResultSet rs = db.query("sql", sql)) {
       long n = 0;
       while (rs.hasNext()) {
@@ -161,7 +178,7 @@ class SqlDocumentedExamplesRegressionTest {
     }
   }
 
-  private static Object scalar(final com.arcadedb.database.Database db, final String sql) {
+  private static Object scalar(final Database db, final String sql) {
     try (final ResultSet rs = db.query("sql", sql)) {
       return rs.next().getProperty("r");
     }
