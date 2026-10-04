@@ -255,29 +255,6 @@ public final class CypherFunctionHelper {
   }
 
   /**
-   * Answers whether an optional argument was written as an explicit {@code null} rather than left out, so that a
-   * function can propagate it instead of falling back on its default.
-   * <p>
-   * The two are not the same thing. Omitting a trailing argument asks for the function's default; writing {@code null}
-   * there is subject to the usual null-in/null-out rule, exactly as the first argument already is. Reading an explicit
-   * {@code null} as "argument omitted" let {@code normalize('x', null)} normalize as NFC while {@code normalize(null)}
-   * answered {@code null}, so the same absent value meant two different things depending on the position it landed in
-   * (issue #5629).
-   * <p>
-   * Neo4j documents the propagating reading for every optional argument it defines one for: {@code round()} "returns
-   * null if any of its input parameters are null", and the same is said of {@code replace()}'s limit and
-   * {@code btrim()}'s trim character. It is also what {@code CypherSubstringFunction} already did, decided the same way
-   * for the same reason in issue #5193.
-   * <p>
-   * Call this rather than re-deciding per function: settling it one function at a time is how the arity declarations
-   * drifted in issue #5484, and how {@code normalize()} and {@code isNormalized()} came to disagree about their input
-   * domain in issue #5602.
-   *
-   * @param args     the argument array as received by {@code execute}, which is {@code null} for a function declaring
-   *                 {@code getMinArgs() == 0} that was called with no arguments at all
-   * @param position the zero-based index of the optional argument
-   */
-  /**
    * Number of Unicode characters (code points) of a string, as Cypher counts them: a character outside the BMP is one
    * character even though it takes two UTF-16 code units (issue #8998).
    */
@@ -314,6 +291,29 @@ public final class CypherFunctionHelper {
     return str.substring(begin, str.offsetByCodePoints(begin, endCodePoint - startCodePoint));
   }
 
+  /**
+   * Answers whether an optional argument was written as an explicit {@code null} rather than left out, so that a
+   * function can propagate it instead of falling back on its default.
+   * <p>
+   * The two are not the same thing. Omitting a trailing argument asks for the function's default; writing {@code null}
+   * there is subject to the usual null-in/null-out rule, exactly as the first argument already is. Reading an explicit
+   * {@code null} as "argument omitted" let {@code normalize('x', null)} normalize as NFC while {@code normalize(null)}
+   * answered {@code null}, so the same absent value meant two different things depending on the position it landed in
+   * (issue #5629).
+   * <p>
+   * Neo4j documents the propagating reading for every optional argument it defines one for: {@code round()} "returns
+   * null if any of its input parameters are null", and the same is said of {@code replace()}'s limit and
+   * {@code btrim()}'s trim character. It is also what {@code CypherSubstringFunction} already did, decided the same way
+   * for the same reason in issue #5193.
+   * <p>
+   * Call this rather than re-deciding per function: settling it one function at a time is how the arity declarations
+   * drifted in issue #5484, and how {@code normalize()} and {@code isNormalized()} came to disagree about their input
+   * domain in issue #5602.
+   *
+   * @param args     the argument array as received by {@code execute}, which is {@code null} for a function declaring
+   *                 {@code getMinArgs() == 0} that was called with no arguments at all
+   * @param position the zero-based index of the optional argument
+   */
   public static boolean isExplicitNull(final Object[] args, final int position) {
     return args != null && args.length > position && args[position] == null;
   }

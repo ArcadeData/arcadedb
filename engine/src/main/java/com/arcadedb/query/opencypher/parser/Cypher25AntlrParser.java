@@ -110,9 +110,7 @@ public class Cypher25AntlrParser {
     // ALTER DATABASE just as inert as reading the enum did.
     final int maxExpressionDepth = ExpressionRewriter.maxExpressionDepth(database);
     final Integer previousMaxDepth = ExpressionRewriter.bindMaxExpressionDepth(maxExpressionDepth);
-    final int maxClauses = database == null ?
-        GlobalConfiguration.CYPHER_MAX_CLAUSES.getValueAsInteger() :
-        database.getConfiguration().getValueAsInteger(GlobalConfiguration.CYPHER_MAX_CLAUSES);
+    final int maxClauses = maxClauses(database);
 
     try {
       final Cypher25Lexer lexer = new Cypher25Lexer(CharStreams.fromString(query));
@@ -189,6 +187,12 @@ public class Cypher25AntlrParser {
     } finally {
       ExpressionRewriter.restoreMaxExpressionDepth(previousMaxDepth);
     }
+  }
+
+  private static int maxClauses(final Database database) {
+    return database == null ?
+        GlobalConfiguration.CYPHER_MAX_CLAUSES.getValueAsInteger() :
+        database.getConfiguration().getValueAsInteger(GlobalConfiguration.CYPHER_MAX_CLAUSES);
   }
 
   /**

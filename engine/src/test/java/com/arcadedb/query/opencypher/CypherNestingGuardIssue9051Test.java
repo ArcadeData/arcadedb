@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -73,6 +74,20 @@ class CypherNestingGuardIssue9051Test extends TestHelper {
     assertRejected("MATCH (n) " + "WITH n ".repeat(10000) + "RETURN n");
     assertRejected("MATCH (n) " + "OPTIONAL MATCH (n)-[:R]->(m) ".repeat(10000) + "RETURN n");
     assertRejected("MATCH (n) ".repeat(10000) + "RETURN n");
+  }
+
+  @Test
+  void maxClausesSettingIsHonoured() {
+    final Object previous = GlobalConfiguration.CYPHER_MAX_CLAUSES.getValue();
+    GlobalConfiguration.CYPHER_MAX_CLAUSES.setValue(5);
+    try {
+      database.getSchema().createVertexType("Person");
+      drain("MATCH (n:Person) WITH n WITH n RETURN n");
+      drain("MATCH (n:Person) WITH n WITH n WITH n RETURN n");
+      assertRejected("MATCH (n:Person) " + "WITH n ".repeat(5) + "RETURN n");
+    } finally {
+      GlobalConfiguration.CYPHER_MAX_CLAUSES.setValue(previous);
+    }
   }
 
   @Test
