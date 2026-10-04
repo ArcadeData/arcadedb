@@ -252,8 +252,8 @@ public class HttpServer implements ServerPlugin {
         if (conflict == null && httpsPortListening > 0 && configuration.getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL))
           conflict = portConflict(listenHosts, httpsPortListening);
         if (conflict != null) {
-          LogManager.instance().log(this, Level.WARNING, "- HTTP Port %s not available on every address of '%s': %s", httpPortListening,
-              host, conflict);
+          LogManager.instance().log(this, Level.WARNING, "- HTTP Port %s skipped: a port it needs is not available on every address of '%s' (%s)",
+              httpPortListening, host, conflict);
           continue;
         }
       }
@@ -494,8 +494,7 @@ public class HttpServer implements ServerPlugin {
       } catch (final BindException e) {
         return host + ":" + port + ": " + e.getMessage();
       } catch (final IOException e) {
-        // Not a bind failure: leave it to the listener, which reports it exactly as before
-        return null;
+        // Not a bind failure: leave this address to the listener, which reports it exactly as before, and probe the rest
       }
     }
     return null;

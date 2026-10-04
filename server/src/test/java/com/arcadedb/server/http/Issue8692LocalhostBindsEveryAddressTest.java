@@ -152,7 +152,8 @@ class Issue8692LocalhostBindsEveryAddressTest {
         assertThat(readyStatus("127.0.0.1", bound)).as("localhost:%d over IPv4 reaches this server", bound).isEqualTo(204);
         assertThat(readyStatus("[::1]", bound)).as("localhost:%d over IPv6 reaches this server", bound).isEqualTo(204);
 
-        // The attempt on the held port opened 127.0.0.1:<first> before [::1]:<first> failed: it must be released.
+        // Skipping <first> must leave nothing of this server on it. Without the pre-start probe, Undertow would have bound
+        // 127.0.0.1:<first> before [::1]:<first> failed and kept it open (and stop() on that half-started server hangs).
         try (final ServerSocket probe = new ServerSocket()) {
           probe.bind(new InetSocketAddress(InetAddress.getByName("127.0.0.1"), first));
           assertThat(probe.isBound()).as("the abandoned attempt released 127.0.0.1:%d", first).isTrue();
