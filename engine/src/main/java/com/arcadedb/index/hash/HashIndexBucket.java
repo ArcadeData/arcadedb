@@ -209,7 +209,7 @@ public class HashIndexBucket extends PaginatedComponent {
     this.serializer = database.getSerializer();
     this.comparator = serializer.getComparator();
     this.unique = unique;
-    this.tagged = layoutVersion >= CURRENT_VERSION;
+    this.tagged = isTaggedLayout(name, layoutVersion);
     this.slotSize = tagged ? TAGGED_SLOT_SIZE : SLOT_SIZE;
     this.keyTypes = checkSupportedKeyTypes(name, keyTypes);
     this.declaredKeyTypes = new byte[keyTypes.length];
@@ -236,7 +236,7 @@ public class HashIndexBucket extends PaginatedComponent {
     this.serializer = database.getSerializer();
     this.comparator = serializer.getComparator();
     this.unique = unique;
-    this.tagged = version >= CURRENT_VERSION;
+    this.tagged = isTaggedLayout(name, version);
     this.slotSize = tagged ? TAGGED_SLOT_SIZE : SLOT_SIZE;
 
     // Read metadata from page 0 (called during construction, like LSMTreeIndexMutable.onAfterLoad)
@@ -978,6 +978,20 @@ public class HashIndexBucket extends PaginatedComponent {
     return isPageSizeDamaging(pageSize) ?
         "bucket pages address entries with 16-bit offsets, so this index is damaged" :
         "below the minimum required for the metadata page, though the index may still be working";
+  }
+
+  /**
+   * Whether a file version uses the tagged layout. Only the two layouts this class knows are accepted: reading a file of a
+   * later version as the current one would misread its pages without any sign of it.
+   */
+  static boolean isTaggedLayout(final String indexName, final int version) {
+    if (version == CURRENT_VERSION)
+      return true;
+    if (version == LEGACY_SORTED_VERSION)
+      return false;
+    throw new IndexException("Hash index '" + indexName + "' has the page layout version " + version + ", which this server does not "
+        + "support (it knows " + LEGACY_SORTED_VERSION + " and " + CURRENT_VERSION + "). It was created by a newer version: open "
+        + "the database with that version, or drop and recreate the index.");
   }
 
   /**

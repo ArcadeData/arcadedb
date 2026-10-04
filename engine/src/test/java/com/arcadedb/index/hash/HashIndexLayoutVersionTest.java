@@ -19,6 +19,7 @@
 package com.arcadedb.index.hash;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
@@ -32,6 +33,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.io.File;
 import java.util.HashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
@@ -40,6 +42,7 @@ import java.util.Map;
 import java.util.Random;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #5712: the buckets of a hash index are no longer kept sorted (version 2: append + 1-byte slot tags), while the
@@ -177,6 +180,26 @@ class HashIndexLayoutVersionTest extends TestHelper {
         .isEqualTo(HashIndexBucket.DEF_VARIABLE_KEY_PAGE_SIZE);
     assertThat(database.getSchema().getType("B").getAllIndexes(false).iterator().next().getSubIndexes().get(0).getPageSize())
         .isEqualTo(8_192);
+  }
+
+  /** A file of a layout version this server does not know is refused with a clear message, not read as the current one. */
+  @Test
+  void aFileOfAnUnknownLayoutVersionIsRefused() {
+    createAndFill("UNIQUE_HASH", HashIndexBucket.CURRENT_VERSION, 100, 100);
+    final String databasePath = database.getDatabasePath();
+    database.close();
+
+    final File[] files = new File(databasePath).listFiles((dir, name) -> name.endsWith(".uhashidx"));
+    assertThat(files).hasSize(1);
+    final File original = files[0];
+    final File future = new File(original.getParentFile(), original.getName().replace(".v2.", ".v3."));
+    assertThat(original.renameTo(future)).isTrue();
+
+    assertThatThrownBy(() -> new DatabaseFactory(databasePath).open()).hasStackTraceContaining("page layout version 3");
+
+    // put the file back so the fixture can close and drop the database
+    assertThat(future.renameTo(original)).isTrue();
+    database = new DatabaseFactory(databasePath).open();
   }
 
   /** Two different keys filed under the same tag must be told apart by the full key comparison. */
