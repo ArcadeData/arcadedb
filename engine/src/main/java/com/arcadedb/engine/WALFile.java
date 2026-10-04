@@ -673,9 +673,10 @@ public class WALFile extends LockContext {
               "Invalid modified range for page " + newPage.getPageId() + " v" + newPage.version + ": deltaRange=[" + rangeFrom
                   + "," + rangeTo + "] deltaSize=" + deltaSize + " pageSize=" + newPage.getPhysicalSize());
 
-        LogManager.instance()
-            .log(WALFile.class, Level.FINE, "Writing page %s v%d range %d-%d into buffer (txId=%d threadId=%d)", null,
-                newPage.getPageId(), newPage.version + 1, rangeFrom, rangeTo, txId, Thread.currentThread().threadId());
+        if (LogManager.instance().isDebugEnabled())
+          LogManager.instance()
+              .log(WALFile.class, Level.FINE, "Writing page %s v%d range %d-%d into buffer (txId=%d threadId=%d)", null,
+                  newPage.getPageId(), newPage.version + 1, rangeFrom, rangeTo, txId, Thread.currentThread().threadId());
 
         bufferChanges.putInt(newPage.getPageId().getFileId());
         bufferChanges.putInt(newPage.getPageId().getPageNumber());

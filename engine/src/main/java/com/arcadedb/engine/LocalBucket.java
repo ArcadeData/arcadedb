@@ -2562,9 +2562,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       } else
         selectedPage = database.getTransaction().getPageToModify(foundPage);
 
-      LogManager.instance()
-              .log(this, Level.FINE, "Creating record (%s records=%d threadId=%d)", selectedPage, availablePositionIndex,
-                      Thread.currentThread().threadId());
+      if (LogManager.instance().isDebugEnabled())
+        LogManager.instance()
+                .log(this, Level.FINE, "Creating record (%s records=%d threadId=%d)", selectedPage, availablePositionIndex,
+                        Thread.currentThread().threadId());
       final RID rid = new RID(file.getFileId(),
               ((long) selectedPage.getPageId().getPageNumber()) * maxRecordsInPage + availablePositionIndex);
 
@@ -2618,9 +2619,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         selectedPage.endCoveredWrite(previousCoverage);
       }
 
-      LogManager.instance()
-              .log(this, Level.FINE, "Created record %s (%s records=%d threadId=%d)", rid, selectedPage, recordCountInPage,
-                      Thread.currentThread().threadId());
+      if (LogManager.instance().isDebugEnabled())
+        LogManager.instance()
+                .log(this, Level.FINE, "Created record %s (%s records=%d threadId=%d)", rid, selectedPage, recordCountInPage,
+                        Thread.currentThread().threadId());
 
       // DISJOINT-SLOT MERGE (#5381): a brand-new record inserted into a FREE slot of an EXISTING (reused) page
       // commutes with concurrent writes to other slots of that page. Track it so a commit-time page-version
@@ -3766,9 +3768,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
               slotTx.poisonSlotRebasePage(fileId, pageId);
           }
 
-          LogManager.instance()
-                  .log(this, Level.FINE, "Updated record %s by allocating new space on the same page (%s threadId=%d)", null, rid, page,
-                          Thread.currentThread().threadId());
+          if (LogManager.instance().isDebugEnabled())
+            LogManager.instance()
+                    .log(this, Level.FINE, "Updated record %s by allocating new space on the same page (%s threadId=%d)", null, rid, page,
+                            Thread.currentThread().threadId());
 
         } else {
           // THE RECORD MUST SPILL OUT OF THE PAGE.
@@ -3812,9 +3815,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             final RID realRID = createRecordInternal(record, true, false);
             page.writeLong(recordPositionInPage + bytesWritten, realRID.getPosition());
 
-            LogManager.instance()
-                    .log(this, Level.FINE, "Updated record %s by allocating new space with a placeholder (%s threadId=%d)", null, rid,
-                            page, Thread.currentThread().threadId());
+            if (LogManager.instance().isDebugEnabled())
+              LogManager.instance()
+                      .log(this, Level.FINE, "Updated record %s by allocating new space with a placeholder (%s threadId=%d)", null, rid,
+                              page, Thread.currentThread().threadId());
           } else {
             // SPLIT THE RECORD IN CHUNKS AS LINKED LIST AND STORE THE FIRST PART ON CURRENT PAGE ISSUE https://github.com/ArcadeData/arcadedb/issues/332
             //
@@ -3930,9 +3934,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         if (bufferSize + recordSize[1] < footprintBefore)
           freedWithoutClaiming(page);
 
-        LogManager.instance()
-                .log(this, Level.FINE, "Updated record %s with the same size or less as before (%s threadId=%d)", null, rid, page,
-                        Thread.currentThread().threadId());
+        if (LogManager.instance().isDebugEnabled())
+          LogManager.instance()
+                  .log(this, Level.FINE, "Updated record %s with the same size or less as before (%s threadId=%d)", null, rid, page,
+                          Thread.currentThread().threadId());
       }
 
       if (!discardRecordAfter)
@@ -4395,8 +4400,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         freedWithoutClaiming(page);
       }
 
-      LogManager.instance()
-              .log(this, Level.FINE, "Deleted record %s (%s threadId=%d)", null, rid, page, Thread.currentThread().threadId());
+      if (LogManager.instance().isDebugEnabled())
+        LogManager.instance()
+                .log(this, Level.FINE, "Deleted record %s (%s threadId=%d)", null, rid, page, Thread.currentThread().threadId());
 
     } catch (final RecordNotFoundException e) {
       throw e;
@@ -4482,7 +4488,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       if (recordCountInPage > 0) {
         // RESET RECORD COUNTER TO 0
         page.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) 0);
-        LogManager.instance().log(this, Level.FINE, "Update record count from %d to 0 in page %s", recordCountInPage, page.pageId);
+        if (LogManager.instance().isDebugEnabled())
+          LogManager.instance().log(this, Level.FINE, "Update record count from %d to 0 in page %s", recordCountInPage, page.pageId);
         wipeOutFreeSpace(page, (short) 0);
       }
       accountCompressedPage(page, contentHeaderSize);
@@ -4494,7 +4501,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     defragPage(page, holes, recordCountInPage);
 
     if (!holes.isEmpty()) {
-      LogManager.instance().log(this, Level.FINE, "Compressed page %s removed %d holes", page.pageId, holes.size());
+      if (LogManager.instance().isDebugEnabled())
+        LogManager.instance().log(this, Level.FINE, "Compressed page %s removed %d holes", page.pageId, holes.size());
 
       // UPDATE THE RECORD COUNT
       // LAST POSITION IN THE PAGE, UPDATE THE TOTAL RECORDS IN THE PAGE GOING BACK FROM THE CURRENT RECORD
@@ -4510,8 +4518,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       if (newRecordCount > -1) {
         // UPDATE TOTAL RECORDS IN THE PAGE
-        LogManager.instance()
-                .log(this, Level.FINE, "Update record count from %d to %d in page %s", recordCountInPage, newRecordCount, page.pageId);
+        if (LogManager.instance().isDebugEnabled())
+          LogManager.instance()
+                  .log(this, Level.FINE, "Update record count from %d to %d in page %s", recordCountInPage, newRecordCount, page.pageId);
         page.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) newRecordCount);
       }
 
@@ -4704,7 +4713,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       if (length < 1)
         LogManager.instance().log(this, Level.SEVERE, "Error on reusing hole in page %s, invalid length %d", page.pageId, length);
 
-      LogManager.instance().log(this, Level.FINE, "Moving segment page %s %d-(%d)->%d...", page.pageId, from, length, to);
+      if (LogManager.instance().isDebugEnabled())
+        LogManager.instance().log(this, Level.FINE, "Moving segment page %s %d-(%d)->%d...", page.pageId, from, length, to);
       page.move(from, to, length);
 
       // SHIFT ALL THE POINTERS FROM THE HOLE TO THE LAST
@@ -4718,8 +4728,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         if (recordPositionInPage >= from && recordPositionInPage <= from + length) {
           page.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE,
                   recordPositionInPage - hole[1] - gap);
-          LogManager.instance().log(this, Level.FINE, "- record %d %d->%d", positionInPage, recordPositionInPage,
-                  recordPositionInPage - hole[1] - gap);
+          if (LogManager.instance().isDebugEnabled())
+            LogManager.instance().log(this, Level.FINE, "- record %d %d->%d", positionInPage, recordPositionInPage,
+                    recordPositionInPage - hole[1] - gap);
         }
       }
 
