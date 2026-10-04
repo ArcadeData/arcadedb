@@ -89,8 +89,10 @@ public class CaseExpression implements Expression {
       for (final CaseAlternative alternative : alternatives) {
         final Object whenValue = subEvaluator.evaluate(alternative.getWhenExpression());
 
-        // Check equality using Cypher '=' semantics (numeric folding, temporal, list, RID interop)
-        if (Boolean.TRUE.equals(whenEquality.evaluateWithValues(caseValue, whenValue))) {
+        // A comparison-form WHEN (WHEN > 5) is a predicate already; a plain value is checked for equality using
+        // Cypher '=' semantics (numeric folding, temporal, list, RID interop)
+        if (alternative.isPredicate() ? isTrue(whenValue)
+            : Boolean.TRUE.equals(whenEquality.evaluateWithValues(caseValue, whenValue))) {
           return subEvaluator.evaluate(alternative.getThenExpression());
         }
       }

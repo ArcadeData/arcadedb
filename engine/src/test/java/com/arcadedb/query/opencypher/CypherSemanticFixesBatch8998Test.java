@@ -111,6 +111,20 @@ class CypherSemanticFixesBatch8998Test extends TestHelper {
         .containsExactly("low", "low", "three", "other");
   }
 
+  @Test
+  void simpleCaseComparisonForms() {
+    assertThat(column("UNWIND [1, null] AS v RETURN CASE v WHEN IS NULL THEN 'n' ELSE 'v' END AS r", "r")).containsExactly("v", "n");
+    assertThat(column("UNWIND [1, null] AS v RETURN CASE v WHEN IS NOT NULL THEN 'v' ELSE 'n' END AS r", "r")).containsExactly("v", "n");
+    assertThat(column("UNWIND [1, 7, -3] AS v RETURN CASE v WHEN > 5 THEN 'big' WHEN < 0 THEN 'neg' ELSE 'mid' END AS r", "r"))
+        .containsExactly("mid", "big", "neg");
+    assertThat(column("UNWIND [1, 7, -3] AS v RETURN CASE v WHEN > 5, < 0 THEN 'out' ELSE 'in' END AS r", "r"))
+        .containsExactly("in", "out", "out");
+    assertThat(column("UNWIND ['a b', 'x'] AS v RETURN CASE v WHEN = 'a b' THEN 'hit' ELSE 'miss' END AS r", "r"))
+        .containsExactly("hit", "miss");
+    assertThat(column("UNWIND ['a bc', 'xbc', 'zz'] AS v RETURN CASE v WHEN STARTS WITH 'a b' THEN 'hit' WHEN ENDS WITH 'bc' THEN 'end' ELSE 'miss' END AS r", "r"))
+        .containsExactly("hit", "end", "miss");
+  }
+
   // ---- #8994
 
   @Test
