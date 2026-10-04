@@ -147,6 +147,39 @@ class CartesianProductStepResultCacheTest extends TestHelper {
   }
 
   @Test
+  void aMatchedReadInsideAFunctionArgumentIsSeenByTheLevel() {
+    final String query = "MATCH {type: MB, as: b}, {type: MA, as: a}, {type: MC, as: c, where: (k = $matched.a.k AND abs($matched.b.w) > 0)} "
+        + "RETURN a.name AS a, b.name AS b, c.name AS c";
+    final List<String> rows = drain(database.query("sql", query));
+    // ONLY b1 AND b3 HAVE w = 1
+    assertThat(rows).hasSize(KEYS * 2 * C_PER_KEY);
+    assertThat(rows).allSatisfy(row -> assertThat(row).matches("a\\d\\|b[13]\\|c\\d_\\d"));
+    assertSameRowsWithCacheOff(query, rows);
+  }
+
+  @Test
+  void aMatchedReadInsideASubqueryIsSeenByTheLevel() {
+    final String query = "MATCH {type: MB, as: b}, {type: MA, as: a}, {type: MC, as: c, "
+        + "where: (k = $matched.a.k AND (SELECT FROM MB WHERE w = $matched.b.w AND name = $matched.b.name).size() > 0)} "
+        + "RETURN a.name AS a, b.name AS b, c.name AS c";
+    final List<String> rows = drain(database.query("sql", query));
+    assertThat(rows).hasSize(EXPECTED_TUPLES);
+    assertSameRowsWithCacheOff(query, rows);
+  }
+
+  private void assertSameRowsWithCacheOff(final String query, final List<String> cached) {
+    final int previous = GlobalConfiguration.SQL_LET_SUBQUERY_CACHE_SIZE.getValueAsInteger();
+    GlobalConfiguration.SQL_LET_SUBQUERY_CACHE_SIZE.setValue(0);
+    try {
+      final List<String> plain = drain(database.query("sql", query));
+      assertThat(new TreeSet<>(cached)).isEqualTo(new TreeSet<>(plain));
+      assertThat(cached).hasSameSizeAs(plain);
+    } finally {
+      GlobalConfiguration.SQL_LET_SUBQUERY_CACHE_SIZE.setValue(previous);
+    }
+  }
+
+  @Test
   void anIndexedMatchedReadGivesTheLevelTheWholeTuple() {
     final ResultSet rs = database.query("sql",
         "MATCH {type: MB, as: b}, {type: MA, as: a}, {type: MC, as: c, where: (k = $matched.a.k AND $matched['b'] IS NOT NULL)} "
