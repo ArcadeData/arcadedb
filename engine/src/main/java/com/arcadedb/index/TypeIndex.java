@@ -246,7 +246,11 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     }
   }
 
-  private static boolean isAllNull(final Object[] keys) {
+  /**
+   * Whether every component of the key is null (an empty key counts too). An all-null key is exempt from uniqueness, so a
+   * unique index holds an entry per record that has it (issue #9237).
+   */
+  public static boolean isAllNull(final Object[] keys) {
     for (final Object key : keys)
       if (key != null)
         return false;

@@ -236,6 +236,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private volatile boolean                       persistedGraphUnresolved = true;
   private volatile ImmutableGraphIndex           graphIndex;        // Current graph (OnHeap or OnDisk)
   private volatile int[]                         ordinalToVectorId; // Maps graph ordinals to vector IDs
+  // The ordinal map a renumbering compaction translated while the old graph was resident, when it holds -1 for ordinals whose
+  // vector is gone: not sorted any more, so a lookup by vector id cannot binary search it (issue #9241). Identity compared.
+  private volatile int[]                         ordinalMapWithDeadEntries;
   // Lightweight pointer index. Volatile and swapped as a whole (never cleared and refilled in place) so the
   // readers that take no lock - countEntries() and getStats() - always see a complete location set instead of a
   // rebuild in progress (issue #5568). Everything else reaches it through lock.readLock().
@@ -888,6 +891,37 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * Translates the ids the resident graph's ordinal map and the delta buffer hold into the ids a renumbering compaction
+   * handed out. Called with the write lock held, in the section that swaps the data file and publishes the new location
+   * index, so no reader sees one generation of ids through the other (issue #9241).
+   *
+   * @param oldVectorIds the ids of the live set before the renumbering, ascending; the position of an id is its new id
+   */
+  private void renumberResidentIds(final int[] oldVectorIds) {
+    final int[] oldOrdinalMap = ordinalToVectorId;
+    if (oldOrdinalMap != null && oldOrdinalMap.length > 0) {
+      final int[] renumbered = new int[oldOrdinalMap.length];
+      boolean anyDead = false;
+      for (int ordinal = 0; ordinal < renumbered.length; ordinal++) {
+        final int newId = Arrays.binarySearch(oldVectorIds, oldOrdinalMap[ordinal]);
+        renumbered[ordinal] = newId < 0 ? -1 : newId;
+        anyDead |= newId < 0;
+      }
+      ordinalMapWithDeadEntries = anyDead ? renumbered : null;
+      ordinalToVectorId = renumbered;
+    }
+
+    final List<DeltaVectorEntry> renumberedDelta = new ArrayList<>(deltaVectors.size());
+    for (final DeltaVectorEntry entry : deltaVectors) {
+      final int newId = Arrays.binarySearch(oldVectorIds, entry.vectorId);
+      if (newId >= 0)
+        renumberedDelta.add(new DeltaVectorEntry(newId, entry.rid, entry.vector));
+    }
+    deltaVectors = renumberedDelta;
+    recountDeltaResidentPayloads();
+  }
+
+  /**
    * Replace the location index with one holding exactly {@code liveEntries}, published by a single reference
    * assignment to the volatile field (issue #5568).
    * <p>
@@ -921,34 +955,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
    *
    * @param liveEntries the live set the index must hold, already pointing at the file that is current now
    */
-  /**
-   * Translates the ids the resident graph's ordinal map and the delta buffer hold into the ids a renumbering compaction
-   * handed out. Called with the write lock held, in the section that swaps the data file and publishes the new location
-   * index, so no reader sees one generation of ids through the other (issue #9241).
-   *
-   * @param oldVectorIds the ids of the live set before the renumbering, ascending; the position of an id is its new id
-   */
-  private void renumberResidentIds(final int[] oldVectorIds) {
-    final int[] oldOrdinalMap = ordinalToVectorId;
-    if (oldOrdinalMap != null && oldOrdinalMap.length > 0) {
-      final int[] renumbered = new int[oldOrdinalMap.length];
-      for (int ordinal = 0; ordinal < renumbered.length; ordinal++) {
-        final int newId = Arrays.binarySearch(oldVectorIds, oldOrdinalMap[ordinal]);
-        renumbered[ordinal] = newId < 0 ? -1 : newId;
-      }
-      ordinalToVectorId = renumbered;
-    }
-
-    final List<DeltaVectorEntry> renumberedDelta = new ArrayList<>(deltaVectors.size());
-    for (final DeltaVectorEntry entry : deltaVectors) {
-      final int newId = Arrays.binarySearch(oldVectorIds, entry.vectorId);
-      if (newId >= 0)
-        renumberedDelta.add(new DeltaVectorEntry(newId, entry.rid, entry.vector));
-    }
-    deltaVectors = renumberedDelta;
-    recountDeltaResidentPayloads();
-  }
-
   private void publishLocationIndex(final Collection<VectorEntryForGraphBuild> liveEntries) {
     // The location index never evicts, so it will hold every live entry and is sized for exactly that: the hint is
     // the live count itself, NOT the classic size*4/3 load-factor pre-adjustment. ConcurrentHashMap's constructor
@@ -3975,6 +3981,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       try {
         // The ordinal map and the graph it describes change together (issue #8862).
         this.ordinalToVectorId = finalActiveVectorIds;
+        this.ordinalMapWithDeadEntries = null;
         this.graphIndex = builtGraph;
         // Published together with the graph they describe, and unconditionally - an empty set is the answer for
         // almost every build, and leaving a previous build's set in place would make the manifest below vouch for
@@ -7173,9 +7180,19 @@ public class LSMVectorIndex implements Index, IndexInternal {
     int[] ordinals = new int[Math.min(allowedRIDs.size(), 256)];
     int count = 0;
     final VectorLocationIndex locations = vectorIndex();
+    // A map translated by a renumbering compaction holds -1 for the vectors that are gone and is not sorted: it is resolved by
+    // a scan instead of a binary search, for as long as that graph is the resident one
+    final Map<Integer, Integer> ordinalOfVectorId;
+    if (ordinalMap == ordinalMapWithDeadEntries) {
+      ordinalOfVectorId = new HashMap<>(ordinalMap.length * 2);
+      for (int ordinal = 0; ordinal < ordinalMap.length; ordinal++)
+        if (ordinalMap[ordinal] >= 0)
+          ordinalOfVectorId.put(ordinalMap[ordinal], ordinal);
+    } else
+      ordinalOfVectorId = null;
     for (final RID rid : allowedRIDs) {
       for (final int vectorId : locations.getVectorIdsForRid(rid)) {
-        final int ordinal = Arrays.binarySearch(ordinalMap, vectorId);
+        final int ordinal = ordinalOfVectorId != null ? ordinalOfVectorId.getOrDefault(vectorId, -1) : Arrays.binarySearch(ordinalMap, vectorId);
         if (ordinal < 0)
           continue;
         if (count == ordinals.length)

@@ -81,6 +81,13 @@ class Issue9237UniqueIsNullTest extends TestHelper {
   }
 
   @Test
+  void isNullAfterAReopen() {
+    reopenDatabase();
+    for (final String[] t : TYPES)
+      assertThat(ids("SELECT id FROM " + t[0] + " WHERE p IS NULL")).as(t[0]).containsExactly(2L, 3L, 4L);
+  }
+
+  @Test
   void isNullInsideTheTransactionThatWritesTheNulls() {
     for (final String[] t : TYPES) {
       database.transaction(() -> {

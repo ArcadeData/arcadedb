@@ -27,6 +27,7 @@ import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PaginatedComponent;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
@@ -541,15 +542,7 @@ public class HashIndexBucket extends PaginatedComponent {
     final int dirIndex = directoryIndex(hash, metaPage.readInt(META_GLOBAL_DEPTH));
     final int bucketPageNum = readDirectoryEntry(metaPage.readInt(metaTailOffset), dirIndex);
 
-    removeFromBucket(bucketPageNum, serializedKey, tagOf(hash), rid, isAllNull(keys));
-  }
-
-  /** An all-null key is exempt from uniqueness, so a unique bucket can hold an entry per record for it (issue #9237) */
-  private static boolean isAllNull(final Object[] keys) {
-    for (final Object key : keys)
-      if (key != null)
-        return false;
-    return true;
+    removeFromBucket(bucketPageNum, serializedKey, tagOf(hash), rid, TypeIndex.isAllNull(keys));
   }
 
   private void removeFromBucket(final int bucketPageNum, final byte[] serializedKey, final int tag, final RID specificRID,

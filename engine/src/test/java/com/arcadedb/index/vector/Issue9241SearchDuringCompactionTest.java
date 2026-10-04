@@ -27,6 +27,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -127,6 +128,9 @@ class Issue9241SearchDuringCompactionTest extends TestHelper {
       for (int i = 0; i < probes.size(); i++)
         if (!found(probeIds[i], probes.get(i)))
           missing.add("id=" + probeIds[i]);
+        else if (!found(probeIds[i], probes.get(i), probes))
+          // an allow-list (the ordinal map is read by vector id) holding the probes only
+          missing.add("filtered id=" + probeIds[i]);
       if (running && !done.get())
         passesDuringTheCompaction++;
     }
@@ -154,7 +158,15 @@ class Issue9241SearchDuringCompactionTest extends TestHelper {
   }
 
   private boolean found(final int id, final RID rid) {
-    try (final ResultSet rs = database.query("sql", "SELECT expand(vectorNeighbors('V[emb]', ?, 10, 200))", (Object) vector(id))) {
+    return found(id, rid, null);
+  }
+
+  private boolean found(final int id, final RID rid, final List<RID> allowed) {
+    final String sql = allowed == null ? "SELECT expand(vectorNeighbors('V[emb]', ?, 10, 200))" :
+        "SELECT expand(vectorNeighbors('V[emb]', ?, 10, ?))";
+    final Object[] args = allowed == null ? new Object[] { vector(id) } :
+        new Object[] { vector(id), Map.of("efSearch", 200, "filter", allowed) };
+    try (final ResultSet rs = database.query("sql", sql, args)) {
       while (rs.hasNext()) {
         final Result r = rs.next();
         if (r.getIdentity().isPresent() && r.getIdentity().get().equals(rid))

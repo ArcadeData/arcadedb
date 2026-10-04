@@ -79,6 +79,16 @@ class Issue9236CompositeHashPrefixTest extends TestHelper {
   }
 
   @Test
+  void nullParameterForTheSecondPropertyOfAUniqueHashIndexMatchesNothing() {
+    create("UniqueHashN", "UNIQUE_HASH");
+    final Map<String, Object> params = new HashMap<>();
+    params.put("p", 1);
+    params.put("q", null);
+    assertThat(ps("MATCH (n:UniqueHashN) WHERE n.p = $p AND n.q = $q RETURN n.p AS p", params)).isEmpty();
+    assertThat(ps("MATCH (n:UniqueHashN) WHERE n.p = $p RETURN n.p AS p", params)).containsExactly(1L);
+  }
+
+  @Test
   void orderedCompositeIndexStillAnswersAPrefix() {
     create("LsmT", "NOTUNIQUE");
     assertThat(ps("MATCH (n:LsmT) WHERE n.p = 1 RETURN n.p AS p", Map.of())).containsExactly(1L);
