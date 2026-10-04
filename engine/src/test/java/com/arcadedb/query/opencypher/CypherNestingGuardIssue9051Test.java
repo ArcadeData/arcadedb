@@ -78,28 +78,25 @@ class CypherNestingGuardIssue9051Test extends TestHelper {
 
   @Test
   void maxClausesSettingIsHonoured() {
-    final Object previous = GlobalConfiguration.CYPHER_MAX_CLAUSES.getValue();
-    GlobalConfiguration.CYPHER_MAX_CLAUSES.setValue(5);
-    try {
-      database.getSchema().createVertexType("Person");
-      drain("MATCH (n:Person) WITH n WITH n RETURN n");
-      drain("MATCH (n:Person) WITH n WITH n WITH n RETURN n");
-      assertRejected("MATCH (n:Person) " + "WITH n ".repeat(5) + "RETURN n");
-    } finally {
-      GlobalConfiguration.CYPHER_MAX_CLAUSES.setValue(previous);
-    }
+    database.getSchema().createVertexType("Person");
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_MAX_CLAUSES, 5);
+    drain("MATCH (n:Person) WITH n WITH n RETURN n");
+    drain("MATCH (n:Person) WITH n WITH n WITH n RETURN n");
+    assertRejected("MATCH (n:Person) " + "WITH n ".repeat(5) + "RETURN n");
+  }
+
+  @Test
+  void clauseLimitAppliesInsideNestedSubqueryBodies() {
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_MAX_CLAUSES, 5);
+    assertRejected("CALL { MATCH (n) " + "WITH n ".repeat(10) + "RETURN n } RETURN n");
   }
 
   @Test
   void nonPositiveMaxClausesFallsBackToTheDefault() {
-    final Object previous = GlobalConfiguration.CYPHER_MAX_CLAUSES.getValue();
-    GlobalConfiguration.CYPHER_MAX_CLAUSES.setValue(0);
-    try {
-      database.getSchema().createVertexType("Person");
-      drain("MATCH (n:Person) RETURN n");
-    } finally {
-      GlobalConfiguration.CYPHER_MAX_CLAUSES.setValue(previous);
-    }
+    database.getSchema().createVertexType("Person");
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_MAX_CLAUSES, 0);
+    drain("MATCH (n:Person) RETURN n");
+    assertRejected("MATCH (n:Person) " + "WITH n ".repeat(600) + "RETURN n");
   }
 
   @Test
