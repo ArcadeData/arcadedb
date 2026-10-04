@@ -27,6 +27,7 @@ import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.exception.DatabaseNotAvailableException;
+import com.arcadedb.exception.LockTimeoutException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.backup.BackupCoordinator;
@@ -42,10 +43,12 @@ import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.UncheckedIOException;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.channels.FileChannel;
+import java.nio.channels.OverlappingFileLockException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.DirectoryStream;
@@ -1771,6 +1774,9 @@ public final class SnapshotInstaller {
    * Opens the database in {@code dbDir} and closes it again, the way the server's own reopen would: a read-only open
    * does not register every component file, so it accepts a snapshot the server then refuses.
    * <p>
+   * The open is a real one, with its side effects: it replays the WAL and may rebuild indexes, exactly what the
+   * server's own reopen would do next.
+   * <p>
    * The answer is only trusted when it is certain. A directory that another instance of this JVM already holds open
    * proves nothing, so it is accepted, and a failure that points at the environment rather than at the files (an I/O
    * error, a lock held elsewhere) is refused as inconclusive with an {@link IOException}: recovery then keeps the marker
@@ -1783,16 +1789,19 @@ public final class SnapshotInstaller {
 
     final Path normalized = dbDir.toAbsolutePath().normalize();
     for (final Database active : DatabaseFactory.getActiveDatabaseInstances())
-      if (Path.of(((DatabaseInternal) active).getDatabasePath()).toAbsolutePath().normalize().equals(normalized))
+      if (Path.of(((DatabaseInternal) active).getDatabasePath()).toAbsolutePath().normalize().equals(normalized)) {
+        LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
+            "The snapshot in %s is held open by this JVM, so it cannot be proven to open here: accepting it", null, dbDir);
         return true;
+      }
 
     try (final DatabaseFactory factory = new DatabaseFactory(dbDir.toString())) {
       factory.open().close();
       return true;
     } catch (final Exception e) {
       for (Throwable cause = e; cause != null; cause = cause.getCause())
-        if (cause instanceof IOException || cause instanceof java.io.UncheckedIOException
-            || cause.getMessage() != null && cause.getMessage().toLowerCase().contains("lock"))
+        if (cause instanceof IOException || cause instanceof UncheckedIOException || cause instanceof OverlappingFileLockException
+            || cause instanceof LockTimeoutException)
           throw new IOException("Cannot tell whether the snapshot in " + dbDir + " opens (" + e.getMessage()
               + "); retaining the pending marker and both copies", e);
       LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE, "The snapshot in %s failed to open: %s", e, dbDir,

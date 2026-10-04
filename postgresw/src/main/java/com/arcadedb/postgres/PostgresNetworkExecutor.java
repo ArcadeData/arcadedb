@@ -577,7 +577,7 @@ public class PostgresNetworkExecutor extends Thread {
           // looking like a drained one.
           portal.fullResultSet = browseAndCacheBoundedResultSet(resultSet);
           portal.executed = true;
-          resolvePortalColumns(portal);
+          resolvePortalColumns(portal, true);
           answerWithColumns(portal);
           portal.rowsDescribed = true;
           rememberDescribedLayout(portal);
@@ -722,12 +722,17 @@ public class PostgresNetworkExecutor extends Thread {
    * A catalog answer keeps its own columns, which are fixed by the catalog table being emulated rather than
    * by whichever rows happened to match; a query that came back empty falls back to the schema, so a client
    * probing a shape with {@code WHERE 1=0} or {@code LIMIT 0} still gets a typed result set.
+   *
+   * @param announced true when these columns are about to be sent to the client in a RowDescription (Describe 'P'),
+   *                  which a client may keep for the statement: only then are the undeclared properties of a named
+   *                  statement held to the layout every record fits (issue #9009). Execute announces nothing, so
+   *                  it types the columns from the rows themselves.
    */
-  private void resolvePortalColumns(final PostgresPortal portal) {
+  private void resolvePortalColumns(final PostgresPortal portal, final boolean announced) {
     final List<Result> rows = portal.fullResultSet != null ? portal.fullResultSet : Collections.emptyList();
     if (!portal.catalogQuery || portal.columns == null)
       portal.columns = getColumns(rows, resolveQueryTargetType(portal), resolveAliasToSourceProperty(portal),
-          portal.statement != null && portal.statement.namedStatement);
+          announced && portal.statement != null && portal.statement.namedStatement);
     if (portal.columns.isEmpty() && rows.isEmpty()) {
       final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(portal.query, portal.language,
           getParams(portal), portal.sqlStatement);
@@ -843,7 +848,7 @@ public class PostgresNetworkExecutor extends Thread {
             // differently-typed one here (issue #6725): keep the promised columns.
             if (!portal.columnsDescribed) {
               final long serStart = System.nanoTime();
-              resolvePortalColumns(portal);
+              resolvePortalColumns(portal, false);
               profile.addSerializationNanos(System.nanoTime() - serStart);
             }
           } else {
