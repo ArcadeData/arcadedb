@@ -81,6 +81,8 @@ class Issue8643RecountDuringSnapshotCatchUpIT extends BaseRaftHATest {
   private static final long   ONLINE_LOAD_MS  = 6_000;
 
   private final AtomicLong nextId       = new AtomicLong();
+  // Deletes walk the ids from 0 up: INITIAL_RECORDS must stay well above what MAX_ROUNDS of load deletes, or the later
+  // deletes match nothing and the catch-up carries no bucket delta to race with
   private final AtomicLong nextDeleteId = new AtomicLong();
 
   @Override
@@ -207,8 +209,10 @@ class Issue8643RecountDuringSnapshotCatchUpIT extends BaseRaftHATest {
       LogManager.instance().log(this, Level.INFO, "TEST: round %d: restarting follower %d under load", round, followerIndex);
       restartServer(followerIndex);
       // restartServer() returns once the follower reached the leader's applied index, which is usually before the reader
-      // has seen it apply past the copied prefix: the load and the reader keep going so that window still comes
-      Thread.sleep(ONLINE_LOAD_MS);
+      // has seen it apply past the copied prefix: the load and the reader keep going until it has, or for ONLINE_LOAD_MS
+      final long loadDeadline = System.currentTimeMillis() + ONLINE_LOAD_MS;
+      while (overlappingRecounts.get() == 0 && System.currentTimeMillis() < loadDeadline)
+        Thread.sleep(50);
     } finally {
       loadRunning.set(false);
       load.join(60_000);
@@ -218,8 +222,8 @@ class Issue8643RecountDuringSnapshotCatchUpIT extends BaseRaftHATest {
     assertThat(loadError.get()).as("the leader load must not fail").isNull();
 
     if (overlappingRecounts.get() == 0 && readerLastError.get() != null)
-      LogManager.instance().log(this, Level.WARNING, "TEST: round %d: last error the follower reader skipped", readerLastError.get(),
-          round);
+      LogManager.instance().log(this, Level.WARNING, "TEST: round " + round + ": last error the follower reader skipped",
+          readerLastError.get());
 
     final ArcadeStateMachine stateMachine = stateMachineOrNull(followerIndex);
     final boolean installed = stateMachine != null && stateMachine.isBelowInstalledRaftBoundary(0);
@@ -295,12 +299,7 @@ class Issue8643RecountDuringSnapshotCatchUpIT extends BaseRaftHATest {
           Thread.sleep(5);
           continue;
         }
-        boolean unknown = false;
-        for (final Bucket bucket : db.getSchema().getType(TYPE_NAME).getBuckets(false))
-          if (bucket instanceof LocalBucket local && local.getCachedRecordCount() < 0) {
-            unknown = true;
-            break;
-          }
+        final boolean unknown = !allCountersKnown(db);
 
         final long appliedBefore = appliedIndex(followerIndex);
         final long startNs = System.nanoTime();
@@ -309,7 +308,9 @@ class Issue8643RecountDuringSnapshotCatchUpIT extends BaseRaftHATest {
         final long count = storedCount(((DatabaseInternal) db).getEmbedded());
         final long appliedAfter = appliedIndex(followerIndex);
 
-        if (unknown) {
+        // Counted only when this call is what published the counter: one published between the check above and the
+        // query would make it a cached read, not a recount
+        if (unknown && allCountersKnown(db)) {
           recounts.incrementAndGet();
           LogManager.instance().log(this, Level.INFO,
               "TEST: recount on an unknown counter answered %d in %d ms, applied index %d -> %d", count,
@@ -331,6 +332,13 @@ class Issue8643RecountDuringSnapshotCatchUpIT extends BaseRaftHATest {
         }
       }
     }
+  }
+
+  private static boolean allCountersKnown(final Database db) {
+    for (final Bucket bucket : db.getSchema().getType(TYPE_NAME).getBuckets(false))
+      if (bucket instanceof LocalBucket local && local.getCachedRecordCount() < 0)
+        return false;
+    return true;
   }
 
   private ArcadeStateMachine stateMachineOrNull(final int serverIndex) {
