@@ -114,6 +114,27 @@ class IndexDefaultPageSizeTest extends TestHelper {
     }
   }
 
+  @Test
+  void largeKeysStillWorkWithTheMinimumPageSize() {
+    database.getConfiguration().setValue(GlobalConfiguration.INDEX_DEFAULT_PAGE_SIZE, 8_192);
+    try {
+      database.command("sql", "CREATE DOCUMENT TYPE BigKeys");
+      database.command("sql", "CREATE PROPERTY BigKeys.k STRING");
+      database.command("sql", "CREATE INDEX ON BigKeys (k) UNIQUE");
+      assertThat(pageSizeOf("BigKeys")).isEqualTo(8_192);
+
+      final String key = "x".repeat(2_000);
+      database.transaction(() -> {
+        for (int i = 0; i < 50; i++)
+          database.newDocument("BigKeys").set("k", key + i).save();
+      });
+      assertThat(database.query("sql", "SELECT FROM BigKeys WHERE k = ?", key + 25).stream().count()).isEqualTo(1L);
+    } finally {
+      database.getConfiguration().setValue(GlobalConfiguration.INDEX_DEFAULT_PAGE_SIZE,
+          GlobalConfiguration.INDEX_DEFAULT_PAGE_SIZE.getDefValue());
+    }
+  }
+
   private int pageSizeOf(final String type) {
     return database.getSchema().getType(type).getAllIndexes(false).iterator().next().getIndexesOnBuckets()[0].getPageSize();
   }
