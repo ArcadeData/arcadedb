@@ -255,7 +255,8 @@ public class BinaryCondition extends BooleanExpression {
             if (vl instanceof Collection<?> collection) {
               return !collection.isEmpty();
             }
-            return true;
+            // An equality with null is never true, as in a scan: the index must not answer it with the records whose key is null (#9238)
+            return vl != null;
           } else if (operator instanceof ContainsKeyOperator
               && info.isMap()
               && info.isIndexByKey()) {

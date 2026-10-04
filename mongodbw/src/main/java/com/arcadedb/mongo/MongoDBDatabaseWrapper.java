@@ -270,15 +270,14 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         throw new MongoServerError(26, "NamespaceNotFound", "ns does not exist: " + getFullCollectionNamespace(collectionName));
       // accepted deviation: a stage that needs no input collection ($documents, $collStats) answers empty here
       // the pipeline is still validated: a malformed stage is an error whether or not the collection exists
-      final List<Document> missingPipeline = Aggregation.parse(Aggregation.parse(document.get("pipeline")));
+      final List<Document> missingPipeline = boundedPipeline(document.get("pipeline"));
       Aggregation.fromPipeline(missingPipeline, plugin, this, null, oplog).validate(document);
       return firstBatchCursorResponse(collectionName, "firstBatch", new ArrayList<>(), 0);
     }
 
     final MongoCollection<Long> collection = getCollection(collectionName);
 
-    final Object pipelineObject = Aggregation.parse(document.get("pipeline"));
-    final List<Document> pipeline = Aggregation.parse(pipelineObject);
+    final List<Document> pipeline = boundedPipeline(document.get("pipeline"));
     if (!pipeline.isEmpty()) {
       final Document changeStream = (Document) pipeline.getFirst().get("$changeStream");
       if (changeStream != null) {
@@ -292,6 +291,14 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     aggregation.validate(document);
 
     return firstBatchCursorResponse(collectionName, "firstBatch", aggregation.computeResult(), 0);
+  }
+
+  /**
+   * The pipeline of an aggregate command with its regular expressions bounded by {@code arcadedb.command.regexTimeout}, one budget
+   * for the whole command (#9164).
+   */
+  private List<Document> boundedPipeline(final Object pipeline) {
+    return MongoFilter.boundPipeline(Aggregation.parse(Aggregation.parse(pipeline)), MongoFilter.RegexBudget.of(database));
   }
 
   private static boolean startsWithChangeStream(final Object pipeline) {
