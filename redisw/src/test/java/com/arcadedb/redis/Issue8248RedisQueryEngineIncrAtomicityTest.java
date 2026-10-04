@@ -103,7 +103,8 @@ public class Issue8248RedisQueryEngineIncrAtomicityTest extends BaseRedisServerT
     final long total = runConcurrently(THREADS, PER_THREAD,
         () -> close(database.command("redis", "INCRBYFLOAT issue8248float 0.5")));
 
-    assertThat(((Number) database.command("redis", "GET issue8248float").next().getProperty("value")).doubleValue())
+    // INCRBYFLOAT stores its result as decimal text, like Redis (#9058)
+    assertThat(Double.parseDouble(database.command("redis", "GET issue8248float").next().getProperty("value").toString()))
         .isEqualTo(total * 0.5);
   }
 

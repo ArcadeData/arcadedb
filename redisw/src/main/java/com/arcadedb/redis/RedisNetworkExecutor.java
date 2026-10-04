@@ -46,6 +46,7 @@ import java.net.Socket;
 import java.net.SocketException;
 import java.net.SocketTimeoutException;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -317,6 +318,8 @@ public class RedisNetworkExecutor extends Thread {
           return;
         }
 
+        checkArity(cmdString, list.size());
+
         switch (cmdString) {
           case "DECR":
             decrBy(list);
@@ -401,6 +404,27 @@ public class RedisNetworkExecutor extends Thread {
   }
 
   /**
+   * Argument counts (command name included) real Redis enforces before it runs a command: {min, max}, max -1 = no upper
+   * bound. Without it a surplus argument was read as the INCR/DECR amount, a missing one defaulted to 1, and a missing
+   * argument of GET/SET/INCR surfaced as {@code Index 1 out of bounds for length 1} (#9059).
+   */
+  private static final Map<String, int[]> ARITY = Map.ofEntries(//
+      Map.entry("DECR", new int[] { 2, 2 }), Map.entry("DECRBY", new int[] { 3, 3 }),//
+      Map.entry("INCR", new int[] { 2, 2 }), Map.entry("INCRBY", new int[] { 3, 3 }),//
+      Map.entry("INCRBYFLOAT", new int[] { 3, 3 }),//
+      Map.entry("GET", new int[] { 2, 2 }), Map.entry("GETDEL", new int[] { 2, 2 }),//
+      Map.entry("EXISTS", new int[] { 2, -1 }), Map.entry("SET", new int[] { 3, -1 }),//
+      Map.entry("HDEL", new int[] { 3, -1 }), Map.entry("HEXISTS", new int[] { 3, 3 }),//
+      Map.entry("HGET", new int[] { 3, 3 }), Map.entry("HMGET", new int[] { 3, -1 }),//
+      Map.entry("HSET", new int[] { 3, -1 }), Map.entry("HMSET", new int[] { 3, -1 }));
+
+  private static void checkArity(final String cmdString, final int argumentCount) {
+    final int[] arity = ARITY.get(cmdString);
+    if (arity != null && (argumentCount < arity[0] || (arity[1] >= 0 && argumentCount > arity[1])))
+      throw new RedisException("wrong number of arguments for '" + cmdString.toLowerCase(Locale.ROOT) + "' command");
+  }
+
+  /**
    * The kind word a RESP error reply opens with (issue #5628). Errors used to go out as a bare {@code -<message>},
    * which carries no kind at all: a client had nothing to branch on, and an optimistic-concurrency conflict - the
    * one failure worth repeating the command for - looked exactly like a permanent one.
@@ -443,7 +467,7 @@ public class RedisNetworkExecutor extends Thread {
    */
   private void decrBy(final List<Object> list) {
     final String k = (String) list.get(1);
-    final long by = list.size() > 2 ? Long.parseLong((String) list.get(2)) : 1L;
+    final long by = list.size() > 2 ? RedisCounterOperations.parseInteger((String) list.get(2)) : 1L;
 
     final long newValue = ((Number) computeVariable(k, RedisCounterOperations.decrementBy(by))).longValue();
 
@@ -478,16 +502,17 @@ public class RedisNetworkExecutor extends Thread {
     final int[] deleted = {0};
 
     if (pos < 0) {
-      // Transient mode: delete from globalVariables atomically
+      // Transient mode: delete from globalVariables atomically. A key that is a RID deletes that record of the database
+      // named by the bucket, the shape HGET/HMGET/HEXISTS read it with (#9056).
       final DatabaseInternal database = getAuthorizedDatabase(bucketName);
       database.transaction(() -> {
         for (int i = 2; i < list.size(); i++) {
           final String key = (String) list.get(i);
-          // Use setGlobalVariable which atomically returns the previous value
-          final Object previous = database.setGlobalVariable(key, null);
-          if (previous != null) {
+          if (key.startsWith("#"))
+            deleted[0] += deleteByRid(database, key) ? 1 : 0;
+          else if (database.setGlobalVariable(key, null) != null)
+            // setGlobalVariable atomically returns the previous value
             deleted[0]++;
-          }
         }
       });
     } else {
@@ -498,8 +523,18 @@ public class RedisNetworkExecutor extends Thread {
       final Database database = getAuthorizedDatabase(databaseName);
 
       if (keyType.startsWith("#")) {
-        database.lookupByRID(new RID(keyType), true).delete();
-        deleted[0]++;
+        // The RID of the bucket argument, plus every RID among the keys: each record is deleted once (#9056)
+        final Set<String> rids = new LinkedHashSet<>();
+        rids.add(keyType);
+        for (int i = 2; i < list.size(); i++) {
+          final String key = (String) list.get(i);
+          if (key.startsWith("#"))
+            rids.add(key);
+        }
+        database.transaction(() -> {
+          for (final String rid : rids)
+            deleted[0] += deleteByRid(database, rid) ? 1 : 0;
+        });
       } else {
         final Index index = database.getSchema().getIndexByName(keyType);
 
@@ -516,6 +551,18 @@ public class RedisNetworkExecutor extends Thread {
     }
     value.append(":");
     value.append(deleted[0]);
+  }
+
+  /** Deletes the record at {@code rid}; false when there is none, so the reply counts only what was really deleted. */
+  private static boolean deleteByRid(final Database database, final String rid) {
+    final Record record;
+    try {
+      record = database.lookupByRID(new RID(rid), true);
+    } catch (final RecordNotFoundException e) {
+      return false;
+    }
+    record.delete();
+    return true;
   }
 
   private void hExists(final List<Object> list) {
@@ -654,27 +701,19 @@ public class RedisNetworkExecutor extends Thread {
   private void incrBy(final List<Object> list, final boolean decimal) {
     final String k = (String) list.get(1);
 
-    final Number by;
-    if (list.size() > 2) {
-      if (decimal)
-        by = Double.valueOf((String) list.get(2));
-      else
-        by = Long.valueOf((String) list.get(2));
-    } else
-      by = 1L;
-
     // The read, the addition and the write are ONE atomic operation on the key - see computeVariable() for why a
-    // get followed by a set is not good enough here (issue #7776).
-    final Number newValue = (Number) computeVariable(k,
-        decimal ? RedisCounterOperations.incrementByFloat(by.doubleValue()) : RedisCounterOperations.incrementBy(by.longValue()));
-
+    // get followed by a set is not good enough here (issue #7776). The arity check in executeCommand guarantees the
+    // amount of INCRBY/INCRBYFLOAT is present, and INCR has none.
+    final boolean hasAmount = list.size() > 2;
     if (decimal) {
-      final String text = newValue.toString();
+      final String text = (String) computeVariable(k, RedisCounterOperations.incrementByFloat((String) list.get(2)));
       value.append("$");
       value.append(RedisBinaryCodec.encodedLength(text));
       appendCrLf();
       value.append(text);
     } else {
+      final long by = hasAmount ? RedisCounterOperations.parseInteger((String) list.get(2)) : 1L;
+      final long newValue = ((Number) computeVariable(k, RedisCounterOperations.incrementBy(by))).longValue();
       value.append(":");
       value.append(newValue);
     }
