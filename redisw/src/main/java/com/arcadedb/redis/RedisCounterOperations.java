@@ -136,7 +136,8 @@ public final class RedisCounterOperations {
    * own "value is not a valid float". The sum is computed in {@link BigDecimal} and stored as TEXT, the way Redis stores
    * the reply it sends (#9058): {@code 0.1 + 0.2} is {@code 0.3} rather than {@code 0.30000000000000004}, an integral
    * result is {@code 3} rather than {@code 3.0}, and there is no exponent form, so INCR works on an integral result.
-   * Like Redis' {@code %.17Lf} the result keeps at most 17 decimals, with trailing zeros removed.
+   * Like Redis' {@code %.17Lf} the result keeps at most 17 decimals, with trailing zeros removed. Unlike Redis' {@code long double}
+   * the integer part is exact up to the magnitude cap, which is harmless and deliberate.
    * <p>
    * NaN/Infinity (as an increment, as the sum, or as a magnitude beyond what Redis' {@code long double} holds) are
    * refused with real Redis' own "increment would produce NaN or Infinity"; a stored non-finite text is "value is not a
