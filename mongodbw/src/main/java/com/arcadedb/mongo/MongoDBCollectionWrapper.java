@@ -20,7 +20,6 @@ package com.arcadedb.mongo;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.MutableDocument;
-import com.arcadedb.database.Record;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.index.TypeIndex;
