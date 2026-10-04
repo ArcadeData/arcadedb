@@ -473,11 +473,13 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
    * complete file, and it is covered by no window on either path.
    * <p>
    * A file that disappears between the listing and the read does not fail the verify, but it is REPORTED, which
-   * is the difference from how the page files above are treated. So is one whose path names a DIFFERENT file by the
-   * time it is read - a TimeSeries type dropped and recreated under the same name after t0 (issue #8738): its bytes
-   * read cleanly and describe nothing at t0, so they are left out and the answer says it is short of them. A missing page file is the same on every node; a
+   * is the difference from how the page files above are treated. A missing page file is the same on every node; a
    * sealed store this node could not read leaves its answer silently short of one, and a leader comparing only
    * its own checksum keys would report that as agreement.
+   * <p>
+   * The same goes for a store whose path names a DIFFERENT file by the time it is read - a TimeSeries type dropped
+   * and recreated under the same name after t0 (issue #8738): its bytes read cleanly but describe nothing at t0, so
+   * they are left out and the answer says it is short of them.
    *
    * <p>
    * The LISTING is a separate step, {@link #listSealedStores}, because on the window path it has to be taken in the

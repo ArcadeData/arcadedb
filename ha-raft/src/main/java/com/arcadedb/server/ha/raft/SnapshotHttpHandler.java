@@ -1026,7 +1026,9 @@ public class SnapshotHttpHandler implements HttpHandler {
   /**
    * Streams one sealed store into the ZIP, refusing a symlink and a file that is not the one listed at t0 (issues
    * #7671, #8738). The manifest entry is added only once the identity has been re-checked AFTER the read, so a store
-   * rewritten while it streamed fails the ship rather than being certified.
+   * rewritten while it streamed fails the ship rather than being certified. Its ZIP entry is already in the stream by
+   * then, which is acceptable only because the failure aborts the ship: the manifest is never written, so the follower
+   * rejects the whole download (#4831).
    */
   private static void addSealedStoreToZip(final ZipOutputStream zipOut, final ListedSealedStore sealedFile,
       final List<SnapshotManager.ManifestEntry> manifest) throws Exception {

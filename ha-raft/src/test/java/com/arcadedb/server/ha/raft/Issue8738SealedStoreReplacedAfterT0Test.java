@@ -35,6 +35,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
@@ -277,6 +278,26 @@ class Issue8738SealedStoreReplacedAfterT0Test {
       final ListedSealedStore unidentified = new ListedSealedStore(sealed[0], null);
       assertThatThrownBy(unidentified::open).isInstanceOf(ListedSealedStore.ChangedException.class);
       assertThatThrownBy(() -> unidentified.verifyUnchanged(-1L)).isInstanceOf(ListedSealedStore.ChangedException.class);
+    }
+  }
+
+  /**
+   * A store that vanished between the directory listing and the identity capture, and is still gone, is reported as
+   * GONE rather than as unidentifiable, so the ship keeps its "went away after the snapshot's point in time" wording
+   * for it (code review on PR #9212).
+   */
+  @Test
+  void aStoreThatVanishedBeforeItsIdentityWasTakenIsReportedAsGone() throws Exception {
+    try (final Database database = createDatabase()) {
+      final File missing = new File(((DatabaseInternal) database).getDatabasePath(), "Vanished_shard_0.ts.sealed");
+      final ListedSealedStore listed = ListedSealedStore.capture(missing);
+      assertThat(listed.identity()).as("nothing to identify, or this proves nothing").isNull();
+
+      assertThatThrownBy(() -> listed.verifyUnchanged(-1L)).isExactlyInstanceOf(FileNotFoundException.class);
+      assertThatThrownBy(() -> archiveSealedStores(List.of(listed), new ArrayList<>()))
+          .isExactlyInstanceOf(FileNotFoundException.class)
+          .hasMessageContaining("Vanished_shard_0.ts.sealed")
+          .hasMessageContaining("went away after the snapshot's point in time");
     }
   }
 

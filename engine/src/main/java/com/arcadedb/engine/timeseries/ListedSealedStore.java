@@ -48,9 +48,18 @@ import java.util.Objects;
  * deliberately conservative, so any doubt reads as "changed", which costs a retried ship or a verify reporting
  * incomplete coverage or a failed backup, never a silent "covered".
  * <p>
- * {@link #open()} checks the identity AFTER opening, so a swap before the open is seen, and a swap after it does not
- * matter: the open handle keeps reading the t0 file. {@link #verifyUnchanged(long)} checks again after the read, which
- * catches the file being rewritten in place while it was read.
+ * {@link #open()} checks the identity AFTER opening, so a swap before the open is seen. {@link #verifyUnchanged(long)}
+ * is called again after the read, which catches the file being rewritten in place while it was read - and, as a
+ * deliberate false positive, also a swap landing after the open: on POSIX the open handle kept reading the t0 bytes,
+ * but telling that apart from an in-place rewrite would need the identity of the handle rather than of the path, and
+ * Java exposes only the latter. Failing closed there costs a retry, never a wrong "covered".
+ * <p>
+ * Nothing legitimate writes a sealed store while any of the three callers reads it, on either of their paths: each
+ * holds the {@link TimeSeriesCompactionPause} until the last sealed byte is read, which excludes compaction,
+ * retention and downsampling (the shard compaction write lock), a follower's sealed install
+ * ({@link TimeSeriesSealedInstallLock}) and the header rewrite, which only follows a block append. The verify does
+ * not read the sealed stores at all when it could not take the pause. What is left - a hand-edited file, a
+ * {@code touch} - is exactly what a check like this should not pass silently.
  *
  * @param file     the listed path
  * @param identity the file's attributes at t0; {@code null} when they could not be read, in which case the store is
@@ -135,9 +144,14 @@ public record ListedSealedStore(File file, BasicFileAttributes identity) {
    * @throws ChangedException      when it names a different file, or one changed since t0
    */
   public void verifyUnchanged(final long bytesRead) throws IOException {
-    if (identity == null)
+    if (identity == null) {
+      // GONE BEFORE ITS IDENTITY COULD BE TAKEN, AND STILL GONE: REPORTED AS THE VANISHED STORE IT IS, SO EVERY CALLER
+      // KEEPS ITS OWN "WENT AWAY" WORDING FOR IT (code review on PR #9212)
+      if (!file.exists())
+        throw new FileNotFoundException(file.getPath() + " (no such file)");
       throw new ChangedException("TimeSeries sealed store '" + name()
           + "' could not be identified when it was listed, so what is read now cannot be tied to that point in time");
+    }
 
     final BasicFileAttributes now;
     try {
