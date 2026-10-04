@@ -144,10 +144,12 @@ class FakeLeaderTest {
 
   @Test
   void teardownIsNotMistakenForTheClientClosingTheConnection() throws Exception {
-    final FakeLeader leader = FakeLeader.draining();
+    // Scripted rather than draining so the test can wait until the reader is parked in the drain loop: closing the
+    // leader before the reader starts would pass without exercising the read that teardown makes throw
+    final FakeLeader leader = FakeLeader.scripted(out -> out.write("HTTP/1.1 200 OK\r\n\r\n".getBytes(StandardCharsets.US_ASCII)));
     try (final Socket client = connect(leader)) {
       client.getOutputStream().write(REQUEST);
-      assertThat(leader.awaitFirstConnection(5, TimeUnit.SECONDS)).isTrue();
+      assertThat(leader.awaitAnswered(5, TimeUnit.SECONDS)).isTrue();
       leader.close();
       assertThat(leader.awaitConnectionClosedByClient(300, TimeUnit.MILLISECONDS)).isFalse();
     }

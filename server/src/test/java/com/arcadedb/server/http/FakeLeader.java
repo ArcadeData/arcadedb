@@ -63,7 +63,10 @@ public final class FakeLeader implements AutoCloseable {
     DRAIN,
     /** Closes every connection as soon as it has accepted it. */
     DROP,
-    /** Reads the request headers, writes the {@link Script}'s answer, then drains until the client closes. */
+    /**
+     * Reads the request headers, writes the {@link Script}'s answer, then drains until the client closes. Every
+     * accepted connection gets the script, not only the first one.
+     */
     SCRIPTED
   }
 
@@ -128,6 +131,7 @@ public final class FakeLeader implements AutoCloseable {
     return listener.getLocalPort();
   }
 
+  /** How many connections were ever accepted, including the ones already closed by either side. */
   public int acceptedConnections() {
     synchronized (accepted) {
       return accepted.size();
@@ -175,10 +179,9 @@ public final class FakeLeader implements AutoCloseable {
     socket.setSoTimeout((int) boundMs);
     final byte[] drain = new byte[4096];
     try {
-      int read;
-      while ((read = socket.getInputStream().read(drain)) != -1)
-        if (read == 0)
-          break;
+      while (socket.getInputStream().read(drain) != -1) {
+        // discard: only the end of the stream answers the question
+      }
       return true;
     } catch (final SocketTimeoutException e) {
       return false;
