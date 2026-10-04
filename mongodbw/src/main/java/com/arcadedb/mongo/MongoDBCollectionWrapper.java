@@ -649,15 +649,17 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
     public boolean hasNext() {
       while (next == null && rows.hasNext()) {
         final Object candidate = rows.next();
-        if (candidate instanceof Result row ? filter.matchesRow(row) :
-            candidate instanceof com.arcadedb.database.Document document ? filter.matches(document) : unsupported(candidate))
+        final boolean matches;
+        if (candidate instanceof Result row)
+          matches = filter.matchesRow(row);
+        else if (candidate instanceof com.arcadedb.database.Document document)
+          matches = filter.matches(document);
+        else
+          throw new IllegalArgumentException("Object not supported: " + candidate.getClass().getName());
+        if (matches)
           next = candidate;
       }
       return next != null;
-    }
-
-    private static boolean unsupported(final Object candidate) {
-      throw new IllegalArgumentException("Object not supported: " + candidate.getClass().getName());
     }
 
     @Override
