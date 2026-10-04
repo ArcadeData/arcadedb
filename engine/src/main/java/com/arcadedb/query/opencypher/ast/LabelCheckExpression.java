@@ -23,6 +23,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.schema.DocumentType;
 
 import java.util.List;
 
@@ -41,6 +42,7 @@ public class LabelCheckExpression implements BooleanExpression {
   private final Expression variableExpression;
   private final List<String> labels;
   private final LabelOperator operator;
+  private final LabelPredicate predicate;
   private final String text;
 
   /**
@@ -54,7 +56,12 @@ public class LabelCheckExpression implements BooleanExpression {
     /**
      * Multiple labels with OR operator (like :Person|Developer).
      */
-    OR
+    OR,
+    /**
+     * Any other label expression - a negation, the {@code %} wildcard, a mix of {@code &} and {@code |} - evaluated
+     * through {@link #getPredicate()} (issue #8992). {@link #getLabels()} is empty for it.
+     */
+    EXPRESSION
   }
 
   public LabelCheckExpression(final Expression variableExpression, final List<String> labels,
@@ -62,6 +69,19 @@ public class LabelCheckExpression implements BooleanExpression {
     this.variableExpression = variableExpression;
     this.labels = labels;
     this.operator = operator;
+    this.predicate = null;
+    this.text = text;
+  }
+
+  /**
+   * A check against a full label expression ({@code n:!A}, {@code n:%}, {@code n:(A|C)&!B}), see
+   * {@link LabelPredicate}.
+   */
+  public LabelCheckExpression(final Expression variableExpression, final LabelPredicate predicate, final String text) {
+    this.variableExpression = variableExpression;
+    this.labels = List.of();
+    this.operator = LabelOperator.EXPRESSION;
+    this.predicate = predicate;
     this.text = text;
   }
 
@@ -82,6 +102,14 @@ public class LabelCheckExpression implements BooleanExpression {
     if (value == null)
       return null; // null:Label -> null in Cypher 3VL
 
+    if (predicate != null) {
+      if (value instanceof Vertex vertex)
+        return predicate.matchesVertexType(vertex.getType());
+      if (value instanceof Edge edge)
+        return predicate.matchesEdgeType(edge.getType());
+      return false;
+    }
+
     if (value instanceof Vertex vertex)
       // Same meaning a disjunction has when it is written on the pattern instead of in the WHERE (issue #6338).
       return Labels.matches(vertex, labels, operator == LabelOperator.OR);
@@ -91,10 +119,11 @@ public class LabelCheckExpression implements BooleanExpression {
       // labels, the OR operator (e.g. r:KNOWS|LIKES) checks if the edge is one
       // of the listed types; a bare conjunction of type names cannot match an
       // edge (which has exactly one type), so it evaluates to false.
-      final String edgeType = edge.getTypeName();
+      // Polymorphic like the pattern [r:Type]: an edge of a type that extends the label matches (issue #9124).
       if (operator == LabelOperator.OR || labels.size() == 1) {
+        final DocumentType edgeType = edge.getType();
         for (final String label : labels) {
-          if (label.equals(edgeType))
+          if (edgeType.instanceOf(label))
             return true;
         }
         return false;
@@ -120,5 +149,13 @@ public class LabelCheckExpression implements BooleanExpression {
 
   public LabelOperator getOperator() {
     return operator;
+  }
+
+  /**
+   * The label expression this check evaluates when {@link #getOperator()} is {@link LabelOperator#EXPRESSION},
+   * {@code null} otherwise.
+   */
+  public LabelPredicate getPredicate() {
+    return predicate;
   }
 }

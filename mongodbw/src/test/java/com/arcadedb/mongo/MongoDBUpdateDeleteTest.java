@@ -373,7 +373,7 @@ public class MongoDBUpdateDeleteTest extends BaseMongoServerTest {
    * fail to match a filter on that field the same way an un-normalized {@code _id} did.
    */
   @Test
-  void replaceOneUpsertNormalizesANonIdObjectIdFieldToo() {
+  void replaceOneUpsertKeepsANonIdObjectIdFieldAnObjectId() {
     final ObjectId ref = new ObjectId();
 
     final UpdateResult result = collection.replaceOne(eq("test", "no-such-value-3"),
@@ -384,10 +384,8 @@ public class MongoDBUpdateDeleteTest extends BaseMongoServerTest {
     final Document found = collection.find(eq("ref", ref)).first();
     assertThat(found).isNotNull();
     assertThat(found.get("replaced")).isEqualTo(true);
-    // Asserts on the stored value directly, not just that the filter round-trip happens to work: "ref" is not
-    // "_id", so it is never promoted back to an ObjectId on read (only "_id" gets that treatment in
-    // convertMapToMongoDB) - it must come back as the plain hex string it was normalized to on write.
-    assertThat(found.get("ref")).isEqualTo(ref.toHexString());
+    // "ref" is not "_id": it is stored as a tagged ObjectId and must come back as the same type (#9062)
+    assertThat(found.get("ref")).isEqualTo(ref);
   }
 
   /**

@@ -80,8 +80,8 @@ DEFINED: D E F I N E D;
 DEFINE: D E F I N E;
 
 // Ordering Keywords
-ORDER_BY: O R D E R WS+ B Y;
-GROUP_BY: G R O U P WS+ B Y;
+ORDER_BY: O R D E R GAP+ B Y;
+GROUP_BY: G R O U P GAP+ B Y;
 BY: B Y;
 COLLATE: C O L L A T E;
 ASC: A S C;
@@ -543,6 +543,15 @@ BLOCK_COMMENT
 
 WS
     : [ \t\r\n\f]+ -> channel(HIDDEN)
+    ;
+
+// Whitespace or a comment (keep in sync with LINE_COMMENT / BLOCK_COMMENT below). A line comment must be closed by its line terminator
+// inside the token, otherwise a 'by' in the comment text could end ORDER/GROUP BY early (FROM Order -- by customer).
+// The two-word keywords ORDER BY / GROUP BY are single tokens, so comments between the words must be part of the token
+fragment GAP
+    : [ \t\r\n\f]
+    | '--' ' ' ~[\r\n]* '\r'? '\n'
+    | '/*' (~'*' | '*'+ ~[*/])* '*'+ '/'
     ;
 
 // ============================================================================

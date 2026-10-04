@@ -25,10 +25,29 @@ package com.arcadedb.query.opencypher.ast;
 public class CaseAlternative {
   private final Expression whenExpression;
   private final Expression thenExpression;
+  // Extended CASE only: the WHEN expression is already a boolean predicate over the operand (WHEN > 5, WHEN IS NULL)
+  // rather than a value to compare it with
+  private final boolean    predicate;
+  // The WHEN as the user wrote it, for getText(); only set when the expression is a rewritten predicate
+  private final String     whenText;
 
   public CaseAlternative(final Expression whenExpression, final Expression thenExpression) {
+    this(whenExpression, thenExpression, null);
+  }
+
+  public CaseAlternative(final Expression whenExpression, final Expression thenExpression, final String whenText) {
     this.whenExpression = whenExpression;
     this.thenExpression = thenExpression;
+    this.predicate = whenText != null;
+    this.whenText = whenText;
+  }
+
+  public String getWhenText() {
+    return whenText != null ? whenText : whenExpression.getText();
+  }
+
+  public boolean isPredicate() {
+    return predicate;
   }
 
   public Expression getWhenExpression() {

@@ -57,16 +57,14 @@ public class SubstringFunction implements StatelessFunction {
       // Invalid user-supplied argument value: surface as a client error (HTTP 400), matching CypherSubstringFunction
       // (the executor Cypher's substring() actually resolves to) instead of silently returning "". See issue #6609.
       throw new CommandSemanticException("substring(): negative start index is not supported: " + start);
-    if (start > str.length())
-      return "";
     if (args.length == 3 && args[2] != null) {
       final int length = CypherFunctionHelper.requireNumberArgument(args[2], getName()).intValue();
       if (length < 0)
         // Invalid user-supplied argument value: surface as a client error (HTTP 400), matching CypherSubstringFunction
         // (the executor Cypher's substring() actually resolves to) and left()/right(). See issue #5296/#5793.
         throw new CommandSemanticException("substring(): negative length is not supported: " + length);
-      return str.substring(start, Math.min(start + length, str.length()));
+      return CypherFunctionHelper.substringCodePoints(str, start, length);
     }
-    return str.substring(start);
+    return CypherFunctionHelper.substringCodePoints(str, start, Long.MAX_VALUE);
   }
 }

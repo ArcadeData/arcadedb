@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSemanticException;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -98,6 +99,13 @@ class Issue8797CypherParallelAggregationTest extends TestHelper {
         assertThat(plan).as(query).contains("(parallel:");
       }
     }
+  }
+
+  /** Issue #9047: a wrong argument count on a parallel aggregate is a semantic error, not a raw exception from the worker. */
+  @Test
+  void wrongAggregateArityOnTheParallelPathIsASemanticError() {
+    for (final String query : new String[] { "MATCH (n:FourBuckets) RETURN sum() AS s", "MATCH (n:FourBuckets) WHERE n.x > 5000 RETURN sum() AS s", "MATCH (n:FourBuckets) RETURN n.grp AS grp, count(n.x, n.n) AS c" })
+      assertThatThrownBy(() -> rows(query)).as(query).isInstanceOf(CommandSemanticException.class);
   }
 
   /** What stays on the consuming thread - a DISTINCT aggregate, collect(), a function in an argument - still answers the same. */

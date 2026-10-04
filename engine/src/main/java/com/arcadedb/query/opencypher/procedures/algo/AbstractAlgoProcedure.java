@@ -1159,6 +1159,56 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     }
   }
 
+  /** A vertex path interleaved with the edges that connect consecutive vertices, and the sum of those edges' weights. */
+  protected record WeightedPath(List<RID> ridsWithEdges, double weight) {
+  }
+
+  /**
+   * Path finders that return vertex RIDs only (A*, Bellman-Ford) lose the edges that were walked. This rebuilds them: for
+   * every pair of consecutive vertices the lightest edge in the given direction (optionally restricted to one edge type)
+   * is picked (an edge without the weight property counts {@code missingWeight}), so the returned weight is the sum of the path's edge weights and the path exposes its relationships.
+   */
+  protected WeightedPath attachEdges(final List<RID> pathRids, final String relType, final Vertex.DIRECTION dir,
+      final String weightProperty, final double missingWeight) {
+    // callers hand a LinkedList: index it once as an array-backed list
+    final List<RID> vertexRids = new ArrayList<>(pathRids);
+    final String[] edgeTypeFilter = relType != null && !relType.isEmpty() ? new String[] { relType } : null;
+
+    final List<RID> pathWithEdges = new ArrayList<>(vertexRids.size() * 2 - 1);
+    pathWithEdges.add(vertexRids.get(0));
+
+    double totalWeight = 0.0;
+    for (int i = 0; i < vertexRids.size() - 1; i++) {
+      final Vertex from = vertexRids.get(i).asVertex();
+      final RID toRid = vertexRids.get(i + 1);
+
+      Edge bestEdge = null;
+      double bestWeight = Double.POSITIVE_INFINITY;
+      for (final Edge edge : edgeTypeFilter != null ? from.getEdges(dir, edgeTypeFilter) : from.getEdges(dir)) {
+        try {
+          final RID otherRid = edge.getOut().equals(from.getIdentity()) ? edge.getIn() : edge.getOut();
+          if (!toRid.equals(otherRid))
+            continue;
+          final Object w = weightProperty != null ? edge.get(weightProperty) : null;
+          final double edgeWeight = w instanceof Number num ? num.doubleValue() : missingWeight;
+          if (bestEdge == null || edgeWeight < bestWeight) {
+            bestWeight = edgeWeight;
+            bestEdge = edge;
+          }
+        } catch (final RecordNotFoundException e) {
+          GhostEdgeReporter.reportSkipped(e);
+        }
+      }
+
+      if (bestEdge != null) {
+        totalWeight += bestWeight;
+        pathWithEdges.add(bestEdge.getIdentity());
+      }
+      pathWithEdges.add(toRid);
+    }
+    return new WeightedPath(pathWithEdges, totalWeight);
+  }
+
   /**
    * Builds a path representation from a list of RIDs.
    */

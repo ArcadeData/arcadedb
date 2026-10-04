@@ -23,10 +23,10 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.ValidationException;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
-import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -58,7 +58,7 @@ class Issue9023ReadonlyArrayPropertyTest extends TestHelper {
 
   @ParameterizedTest
   @MethodSource("arrayTypes")
-  void updateOfOtherPropertyIsAcceptedThroughSql(final Type type, final Supplier<Object> value, final Supplier<Object> other) {
+  void updateOfOtherPropertyIsAcceptedThroughSql(final Type type, final Supplier<Object> value) {
     final RID rid = createRecord(type, value.get());
 
     database.transaction(() -> database.command("sql", "UPDATE " + rid + " SET note = 'b'").close());
@@ -68,7 +68,7 @@ class Issue9023ReadonlyArrayPropertyTest extends TestHelper {
 
   @ParameterizedTest
   @MethodSource("arrayTypes")
-  void updateOfOtherPropertyIsAcceptedThroughApi(final Type type, final Supplier<Object> value, final Supplier<Object> other) {
+  void updateOfOtherPropertyIsAcceptedThroughApi(final Type type, final Supplier<Object> value) {
     final RID rid = createRecord(type, value.get());
 
     database.transaction(() -> database.lookupByRID(rid, true).asDocument().modify().set("note", "c").save());
@@ -78,7 +78,7 @@ class Issue9023ReadonlyArrayPropertyTest extends TestHelper {
 
   @ParameterizedTest
   @MethodSource("arrayTypes")
-  void settingAContentEqualArrayIsAccepted(final Type type, final Supplier<Object> value, final Supplier<Object> other) {
+  void settingAContentEqualArrayIsAccepted(final Type type, final Supplier<Object> value) {
     final RID rid = createRecord(type, value.get());
 
     database.transaction(() -> database.lookupByRID(rid, true).asDocument().modify().set("p", value.get()).set("note", "d").save());
@@ -149,6 +149,29 @@ class Issue9023ReadonlyArrayPropertyTest extends TestHelper {
   }
 
   @Test
+  void refusalMessagePrintsAnArrayNestedInAListOrMap() {
+    final List<Object> list = new ArrayList<>();
+    list.add(new byte[] { 1, 2 });
+    final RID listRid = createRecord(Type.LIST, list);
+    final List<Object> changedList = new ArrayList<>();
+    changedList.add(new byte[] { 7, 8 });
+    assertThatThrownBy(
+        () -> database.transaction(() -> database.lookupByRID(listRid, true).asDocument().modify().set("p", changedList).save()))//
+        .isInstanceOf(ValidationException.class)//
+        .hasMessageContaining("[[7, 8]]");
+
+    final Map<String, Object> map = new HashMap<>();
+    map.put("k", new int[] { 1, 2 });
+    final RID mapRid = createRecord(Type.MAP, map);
+    final Map<String, Object> changedMap = new HashMap<>();
+    changedMap.put("k", new int[] { 7, 8 });
+    assertThatThrownBy(
+        () -> database.transaction(() -> database.lookupByRID(mapRid, true).asDocument().modify().set("p", changedMap).save()))//
+        .isInstanceOf(ValidationException.class)//
+        .hasMessageContaining("{k=[7, 8]}");
+  }
+
+  @Test
   void readonlyEmbeddedHoldingAnArrayDoesNotBlockOtherUpdates() {
     database.getSchema().createDocumentType("Inner");
     final DocumentType type = database.getSchema().createDocumentType("T_EMBEDDED");
@@ -167,6 +190,34 @@ class Issue9023ReadonlyArrayPropertyTest extends TestHelper {
 
     final Document reloaded = database.lookupByRID(rid[0], true).asDocument();
     assertThat(reloaded.getString("note")).isEqualTo("c");
+
+    // the same embedded type holding other bytes is a change
+    assertThatThrownBy(() -> database.transaction(() -> {
+      final MutableDocument doc = database.lookupByRID(rid[0], true).asDocument().modify();
+      doc.newEmbeddedDocument("Inner", "p").set("bytes", new byte[] { 9, 8, 6 });
+      doc.save();
+    }))//
+        .isInstanceOf(ValidationException.class)//
+        .hasMessageContaining("is immutable");
+
+    // and so is another embedded type holding the same bytes
+    database.getSchema().createDocumentType("OtherInner");
+    assertThatThrownBy(() -> database.transaction(() -> {
+      final MutableDocument doc = database.lookupByRID(rid[0], true).asDocument().modify();
+      doc.newEmbeddedDocument("OtherInner", "p").set("bytes", new byte[] { 9, 8, 7 });
+      doc.save();
+    }))//
+        .isInstanceOf(ValidationException.class)//
+        .hasMessageContaining("is immutable");
+
+    // while an equal embedded document rebuilt from scratch is not
+    database.transaction(() -> {
+      final MutableDocument doc = database.lookupByRID(rid[0], true).asDocument().modify();
+      doc.newEmbeddedDocument("Inner", "p").set("bytes", new byte[] { 9, 8, 7 });
+      doc.set("note", "d");
+      doc.save();
+    });
+    assertThat(database.lookupByRID(rid[0], true).asDocument().getString("note")).isEqualTo("d");
   }
 
   @Test

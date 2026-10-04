@@ -33,10 +33,12 @@ import java.io.FileInputStream;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Properties;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
@@ -139,6 +141,14 @@ public class GremlinServerPlugin implements ServerPlugin {
       throw new ServerException("Error on starting GremlinServer plugin", e);
     }
     boundPort = settings.port;
+
+    // SCRIPTS MUST SEE THE DATABASES CREATED AFTER THE START, NOT ONLY THE ONES THERE WHEN THE EXECUTOR WAS BUILT (#9147)
+    if (gremlinServer.getServerGremlinExecutor().getGraphManager() instanceof ArcadeGraphManager arcadeGraphManager) {
+      final Set<String> engineNames = new HashSet<>(Set.of("gremlin-groovy", "gremlin-lang"));
+      if (settings.scriptEngines != null)
+        engineNames.addAll(settings.scriptEngines.keySet());
+      arcadeGraphManager.bindScriptEnginesLive(gremlinServer.getServerGremlinExecutor().getGremlinExecutor(), engineNames);
+    }
   }
 
   /**

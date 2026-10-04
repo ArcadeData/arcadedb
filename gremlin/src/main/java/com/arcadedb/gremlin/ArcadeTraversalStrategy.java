@@ -157,6 +157,8 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
                 final TypeIndex index = graph.database.getSchema().getType(typeNameToMatch).getPolymorphicIndexByProperties(key);
                 if (index == null || !index.getType().isExactKeyLookup())
                   continue; // A FULL_TEXT INDEX ANSWERS BY TOKEN AND MISSES A VALUE WITH NONE (#8439)
+                if (c.getBiPredicate() != Compare.eq && !index.supportsOrderedIterations())
+                  continue; // A HASH INDEX ANSWERS EQUALITY ONLY: A RANGE FALLS BACK TO THE TYPE SCAN (#9144)
                 final int rank = c.getBiPredicate() == Compare.eq ? (index.isUnique() ? 0 : 1) : 2;
                 if (rank < chosenRank) {
                   chosenRank = rank;
@@ -174,7 +176,9 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
             // handled below) may survive, since that one names the traverser the count itself produces.
             boolean isCountRewrite = false;
             if (chosenIndex == null) {
-              if (((HasStep<?>) step).getHasContainers().isEmpty() &&
+              // #9140: only a count that starts the traversal can be answered from the type. Mid-traversal the
+              // GraphStep runs once per incoming traverser and the steps in front must stay in place and execute
+              if (prevStepGraph.isStartStep() && ((HasStep<?>) step).getHasContainers().isEmpty() &&
                   i + 1 < steps.size() && steps.get(i + 1) instanceof CountGlobalStep) {
                 // #8258: keep a handle on the CountGlobalStep so its own label (if any) survives the rewrite below
                 final Step countStep = steps.get(i + 1);

@@ -118,6 +118,13 @@ public class LetStatement extends SimpleExecStatement {
   }
 
   @Override
+  public boolean refersToParent() {
+    if (statement != null)
+      return statement.refersToParent();
+    return expression != null && expression.refersToParent();
+  }
+
+  @Override
   public boolean isIdempotent() {
     if (statement != null)
       return statement.isIdempotent();

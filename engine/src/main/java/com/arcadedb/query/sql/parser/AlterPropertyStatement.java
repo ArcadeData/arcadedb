@@ -22,11 +22,10 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.database.Document;
 import com.arcadedb.database.DocumentValidator;
-import com.arcadedb.database.DocumentValidator.ExistenceConstraint;
+import com.arcadedb.database.DocumentValidator.StoredValueConstraints;
+import com.arcadedb.database.ExistingRecordsCheck;
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
@@ -35,7 +34,6 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 
-import java.util.Iterator;
 import java.util.Locale;
 import java.util.Map;
 
@@ -104,12 +102,12 @@ public class AlterPropertyStatement extends DDLStatement {
       } else if ("mandatory".equalsIgnoreCase(setting)) {
         oldValue = property.isMandatory();
         if ((boolean) finalValue && !property.isMandatory())
-          requireExistingRecordsConform(db, typez, property, true);
+          ExistingRecordsCheck.requireExistence(db, typez, property.getName(), true, false);
         property.setMandatory((boolean) finalValue);
       } else if ("notnull".equalsIgnoreCase(setting)) {
         oldValue = property.isNotNull();
         if ((boolean) finalValue && !property.isNotNull())
-          requireExistingRecordsConform(db, typez, property, false);
+          ExistingRecordsCheck.requireExistence(db, typez, property.getName(), false, true);
         property.setNotNull((boolean) finalValue);
       } else if ("hidden".equalsIgnoreCase(setting)) {
         oldValue = property.isHidden();
@@ -122,9 +120,11 @@ public class AlterPropertyStatement extends DDLStatement {
         property.setCompression(String.valueOf(finalValue));
       } else if ("max".equalsIgnoreCase(setting)) {
         oldValue = property.getMax();
+        requireStoredValuesWithin(db, typez, property, finalValue, null, "" + finalValue, null, "MAX " + finalValue);
         property.setMax("" + finalValue);
       } else if ("min".equalsIgnoreCase(setting)) {
         oldValue = property.getMin();
+        requireStoredValuesWithin(db, typez, property, finalValue, "" + finalValue, null, null, "MIN " + finalValue);
         property.setMin("" + finalValue);
       } else if ("default".equalsIgnoreCase(setting)) {
         // Issue #6134: report the definition rather than evaluating the outgoing default. Evaluating it would make
@@ -134,6 +134,7 @@ public class AlterPropertyStatement extends DDLStatement {
         property.setDefaultValue("" + finalValue);
       } else if ("regexp".equalsIgnoreCase(setting)) {
         oldValue = property.getRegexp();
+        requireStoredValuesWithin(db, typez, property, finalValue, null, null, "" + finalValue, "REGEXP " + finalValue);
         property.setRegexp("" + finalValue);
       } else {
         throw new CommandExecutionException("Setting '" + setting + "' not supported");
@@ -152,27 +153,16 @@ public class AlterPropertyStatement extends DDLStatement {
   }
 
   /**
-   * Refuses to add an existence constraint over records that already violate it (#8943). A record written before the
-   * constraint that has no value for the property stays legal and stays out of any index on it, yet the planners trust
-   * MANDATORY + NOTNULL to mean "the index holds every record", so such a record would silently vanish from an
-   * index-ordered read. The scan stops at the first offender and names its RID.
-   * <p>
-   * Best effort: a full read of the type, not atomic with the schema change, so a writer racing the ALTER can still slip a
-   * record in, and the Java schema API ({@code Property.setMandatory()}) is not guarded at all.
+   * Refuses to add a MIN, MAX or REGEXP over records that already violate it (#9112). Clearing the bound
+   * ({@code null}) needs no scan.
    */
-  private static void requireExistingRecordsConform(final Database db, final DocumentType type, final Property property,
-      final boolean mandatory) {
-    final String name = property.getName();
-    final Iterator<Record> records = db.iterateType(type.getName(), true);
-    while (records.hasNext()) {
-      if (!(records.next() instanceof Document document))
-        continue;
-      final ExistenceConstraint unmet = DocumentValidator.unmetExistenceConstraint(document, name, mandatory, !mandatory);
-      if (unmet != null)
-        throw new CommandExecutionException("Cannot set " + (mandatory ? "MANDATORY" : "NOTNULL") + ": record "
-            + document.getIdentity() + " violates it, " + DocumentValidator.describeUnmetExistenceConstraint(document, name, unmet)
-            + ". Fix or delete the non-conforming records first");
-    }
+  private static void requireStoredValuesWithin(final Database db, final DocumentType type, final Property property,
+      final Object newValue, final String min, final String max, final String regexp, final String what) {
+    if (newValue == null)
+      return;
+    DocumentValidator.requireReadableBound(db, type, property, min, "MIN");
+    DocumentValidator.requireReadableBound(db, type, property, max, "MAX");
+    ExistingRecordsCheck.requireValues(db, type, property, StoredValueConstraints.of(db, false, min, max, regexp), what);
   }
 
   @Override
