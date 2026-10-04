@@ -142,6 +142,12 @@ class CypherSemanticFixesBatch8998Test extends TestHelper {
   }
 
   @Test
+  void backtickQuotedKeywordIsAVariableNotALiteral() {
+    // (`true`) is the node pattern of a variable named true, so it is refused as a predicate just like (n)
+    assertThatThrownBy(() -> column("MATCH (`true`) WHERE (`true`) RETURN 1 AS v", "v")).isInstanceOf(CommandParsingException.class);
+  }
+
+  @Test
   void parenthesizedVariableStartingWithKeywordIsStillAPattern() {
     assertThatThrownBy(() -> column("MATCH (trueish) WHERE (trueish) RETURN trueish", "trueish"))
         .isInstanceOf(CommandParsingException.class);

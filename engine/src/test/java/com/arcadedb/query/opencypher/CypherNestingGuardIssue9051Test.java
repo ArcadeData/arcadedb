@@ -43,7 +43,9 @@ class CypherNestingGuardIssue9051Test extends TestHelper {
   }
 
   private void assertRejected(final String query) {
-    assertThatThrownBy(() -> drain(query)).isInstanceOf(CommandParsingException.class);
+    // the message fragment keeps an unrelated parse error (a typo in the generated text) from satisfying the assertion
+    assertThatThrownBy(() -> drain(query)).isInstanceOf(CommandParsingException.class)
+        .hasMessageMatching("(?s).*(too many clauses|too deeply|too deeply nested).*");
   }
 
   @Test
@@ -100,6 +102,24 @@ class CypherNestingGuardIssue9051Test extends TestHelper {
     for (int i = 0; i < 10; i++)
       q = "CALL { " + q.replace("RETURN 1 AS x", "WITH 1 AS x " + "WITH x ".repeat(450) + "RETURN x") + " } RETURN x";
     drain(q);
+  }
+
+  @Test
+  void defaultClauseLimitIsExactlyFiveHundred() {
+    database.getSchema().createVertexType("Person");
+    // MATCH + 498 WITH + RETURN = 500 clauses
+    drain("MATCH (n:Person) " + "WITH n ".repeat(498) + "RETURN n");
+    assertRejected("MATCH (n:Person) " + "WITH n ".repeat(499) + "RETURN n");
+  }
+
+  @Test
+  void thirtyNestedExistsLevelsStillWork() {
+    database.getSchema().createVertexType("Person");
+    database.transaction(() -> database.newVertex("Person").set("id", 1).save());
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH (n:Person) WHERE " + "EXISTS { MATCH (n) WHERE ".repeat(30) + "true" + " }".repeat(30) + " RETURN n")) {
+      assertThat(rs.hasNext()).isTrue();
+    }
   }
 
   @Test
