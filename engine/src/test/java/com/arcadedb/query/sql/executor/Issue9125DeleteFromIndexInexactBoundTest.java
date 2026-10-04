@@ -153,4 +153,13 @@ class Issue9125DeleteFromIndexInexactBoundTest extends TestHelper {
       assertThat(deleteAndGetRemaining(keyType, "key >= 12.5")).as(keyType + " >=").containsExactly(9, 10, 11, 12);
     }
   }
+
+  @Test
+  void fractionalBoundsAtTheEdgesOfTheKeyRangeAreHandled() {
+    // Integer.MAX_VALUE + 0.5 is above every INTEGER key, -Integer.MAX_VALUE - 1.5 below every one
+    assertThat(deleteAndGetRemaining("INTEGER", "key > 2147483647.5")).as("> above the range").containsExactly(9, 10, 11, 12, 13, 14);
+    assertThat(deleteAndGetRemaining("INTEGER", "key < -2147483648.5")).as("< below the range").containsExactly(9, 10, 11, 12, 13, 14);
+    assertThat(deleteAndGetRemaining("INTEGER", "key >= -2147483648.5")).as(">= below the range").isEmpty();
+    assertThat(deleteAndGetRemaining("INTEGER", "key <= 2147483647.5")).as("<= above the range").isEmpty();
+  }
 }
