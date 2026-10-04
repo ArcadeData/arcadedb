@@ -207,10 +207,23 @@ final class MongoFilter {
     return rids;
   }
 
+  /**
+   * Whether every condition of the filter is on the {@code _id}, alone or under {@code $and} / {@code $or} (the shapes a driver
+   * emits for a batch lookup by key).
+   */
   private static boolean onlyId(final Document filter) {
-    for (final String key : filter.keySet())
-      if (!"_id".equals(key))
-        return false;
+    for (final Map.Entry<String, Object> entry : filter.entrySet()) {
+      final String key = entry.getKey();
+      if ("_id".equals(key))
+        continue;
+      if (("$and".equals(key) || "$or".equals(key)) && entry.getValue() instanceof List<?> list && !list.isEmpty()) {
+        for (final Object item : list)
+          if (!(item instanceof Document document) || document.isEmpty() || !onlyId(document))
+            return false;
+        continue;
+      }
+      return false;
+    }
     return true;
   }
 
