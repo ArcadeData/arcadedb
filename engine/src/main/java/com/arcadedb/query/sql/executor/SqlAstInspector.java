@@ -113,14 +113,9 @@ public final class SqlAstInspector {
   }
 
   /**
-   * The suffix that makes the printed text of a statement a plan-cache key: empty when the parameters of {@code root}, in
-   * the order the tree is walked, are numbered 0, 1, 2..., as in a statement parsed on its own, otherwise their numbers.
-   * A positional parameter prints as {@code ?} whatever its number and a named one prints its name, while the plan reads
-   * the value by the number fixed at parse time (positional parameters, and named ones bound by position), and a script
-   * numbers its parameters across all its statements: without the suffix two statements that print the same but read
-   * different positions would share one plan (issue #9247). The numbers are listed in walk order, which follows the field
-   * order of the node classes: stable within a JVM run, which is all a cache key needs, and equal printed texts have equal
-   * trees, so equal keys mean equal text and equal numbers.
+   * Suffix for a plan-cache key: empty when the parameters are numbered 0, 1, 2... as in a statement parsed alone, else their
+   * numbers, because the printed text hides them (issue #9247). Walk order is stable within a JVM only: never persist or
+   * compare the key across nodes.
    */
   public static String parameterNumbersSuffix(final Object root) {
     final int[][] holder = { new int[4] };

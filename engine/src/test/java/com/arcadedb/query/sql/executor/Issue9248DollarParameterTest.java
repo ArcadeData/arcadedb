@@ -54,12 +54,12 @@ class Issue9248DollarParameterTest extends TestHelper {
   @Test
   void createEdgeSet() {
     setup(false);
-    final Object[] from = new Object[3];
+    final Object[] params = new Object[3];
     database.transaction(() -> {
-      from[0] = database.query("sql", "SELECT FROM V WHERE name = 'B'").next().getIdentity().get();
-      from[1] = database.query("sql", "SELECT FROM V WHERE name = 'C'").next().getIdentity().get();
-      from[2] = 9;
-      try (final ResultSet rs = database.command("sql", "CREATE EDGE E FROM $1 TO $2 SET w = $3", from)) {
+      params[0] = database.query("sql", "SELECT FROM V WHERE name = 'B'").next().getIdentity().get();
+      params[1] = database.query("sql", "SELECT FROM V WHERE name = 'C'").next().getIdentity().get();
+      params[2] = 9;
+      try (final ResultSet rs = database.command("sql", "CREATE EDGE E FROM $1 TO $2 SET w = $3", params)) {
         final Edge e = rs.next().getEdge().get();
         assertThat(e.get("w")).isEqualTo(9);
       }
