@@ -246,10 +246,16 @@ public class HttpServer implements ServerPlugin {
 
     int httpsPortListening = httpsPortRange != null ? httpsPortRange[0] : 0;
     for (httpPortListening = httpPortRange[0]; httpPortListening <= httpPortRange[1]; ++httpPortListening) {
-      if (listenHosts.size() > 1 && !isPortFreeOnEveryHost(listenHosts, httpPortListening)) {
-        LogManager.instance().log(this, Level.WARNING, "- HTTP Port %s not available on every address of '%s' %s", httpPortListening,
-            host, listenHosts);
-        continue;
+      if (listenHosts.size() > 1) {
+        // Probe every port Undertow is about to bind, the HTTPS one included: a half-started Undertow cannot be cleaned up
+        String conflict = portConflict(listenHosts, httpPortListening);
+        if (conflict == null && httpsPortListening > 0 && configuration.getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL))
+          conflict = portConflict(listenHosts, httpsPortListening);
+        if (conflict != null) {
+          LogManager.instance().log(this, Level.WARNING, "- HTTP Port %s not available on every address of '%s': %s", httpPortListening,
+              host, conflict);
+          continue;
+        }
       }
 
       try {
@@ -441,18 +447,12 @@ public class HttpServer implements ServerPlugin {
   /**
    * The addresses the HTTP (and HTTPS) listeners bind for the configured {@code host} (issue #8692).
    * <p>
-   * Undertow binds the FIRST address a name resolves to. For {@code localhost} that is {@code 127.0.0.1} alone, so a
-   * port another process holds on {@code [::1]} (a JVM or a dev server on the IPv6 wildcard) looked free, the bind
-   * succeeded, and {@code localhost:<port>} then named two servers: which one a client reached depended on the family
-   * its resolver tried first. In HA a peer address declared as {@code localhost:<port>} reached the stranger, and the
-   * #7511 capability probe refused the security seed of an unrelated membership change.
-   * <p>
-   * A name that resolves to several addresses is therefore bound on each LOCAL one of them, so a port is taken only
-   * when it is free on all of them, and the name reaches this server whichever family the client picks. Addresses no
-   * local interface carries are left out: {@code /etc/hosts} commonly maps {@code localhost} to {@code ::1} on hosts
-   * where IPv6 is disabled, and binding it there fails on every port of the range. A literal, a name resolving to one
-   * address, and a name that does not resolve at all are passed through unchanged, so the listener behaves (and
-   * reports failures) exactly as before.
+   * Undertow binds only the FIRST address a name resolves to: for {@code localhost} that is {@code 127.0.0.1}, so a
+   * port another process held on {@code [::1]} looked free, and {@code localhost:<port>} then reached either server
+   * depending on the family the client's resolver tried first. A name resolving to several addresses is therefore
+   * bound on each LOCAL one of them. Addresses no interface carries are left out ({@code /etc/hosts} commonly maps
+   * {@code localhost} to {@code ::1} where IPv6 is disabled, and binding it would fail on every port). A literal, a
+   * single-address name and an unresolvable name are passed through unchanged, so the listener behaves as before.
    */
   static List<String> resolveListenHosts(final String host) {
     if (host == null || host.isEmpty())
@@ -479,29 +479,26 @@ public class HttpServer implements ServerPlugin {
   }
 
   /**
-   * Whether {@code port} can be bound on every one of {@code hosts}, asked before Undertow is started on it (issue #8692).
-   * <p>
-   * Undertow cannot be trusted to find this out by itself once it has more than one listener: {@code Undertow.start()}
-   * binds them in order and, when a later one fails, shuts its worker down but leaves the earlier channels open, and
-   * {@code Undertow.stop()} on that half-started server spins forever waiting for the dead worker to cancel their
-   * keys. So a port held on {@code [::1]} alone would leave {@code 127.0.0.1} of the same port bound by an abandoned
-   * server for the life of the JVM. The probe binds the same way the listener does ({@code SO_REUSEADDR} on, as XNIO
-   * sets it), so a port it calls free is one Undertow can take; only a stranger arriving between the probe and the
-   * bind can still make the start fail, and then the original single-listener handling applies.
+   * Why {@code port} cannot be bound on every one of {@code hosts} ({@code "<address>: <reason>"}), or {@code null} when
+   * it can. Asked before Undertow starts with more than one listener, because {@code Undertow.start()} binds them in
+   * order and, when a later one fails, shuts its worker down but leaves the earlier channels open, and
+   * {@code Undertow.stop()} on that half-started server spins forever waiting for the dead worker. The probe binds with
+   * {@code SO_REUSEADDR}, as XNIO does, so a port it calls free is one Undertow can take; only a stranger arriving
+   * between the probe and the bind can still fail the start.
    */
-  static boolean isPortFreeOnEveryHost(final List<String> hosts, final int port) {
+  static String portConflict(final List<String> hosts, final int port) {
     for (final String host : hosts) {
       try (final ServerSocket probe = new ServerSocket()) {
         probe.setReuseAddress(true);
         probe.bind(new InetSocketAddress(InetAddress.getByName(host), port));
       } catch (final BindException e) {
-        return false;
+        return host + ":" + port + ": " + e.getMessage();
       } catch (final IOException e) {
-        // Not a port conflict: leave it to the listener, which reports it exactly as before
-        return true;
+        // Not a bind failure: leave it to the listener, which reports it exactly as before
+        return null;
       }
     }
-    return true;
+    return null;
   }
 
   private static boolean isLocalAddress(final InetAddress address) {

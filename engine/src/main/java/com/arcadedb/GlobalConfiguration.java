@@ -1685,7 +1685,8 @@ public enum GlobalConfiguration {
       "List of server plugins to install. The format to load a plugin is: `<pluginName>:<pluginFullClass>`", String.class, ""),
 
   // SERVER HTTP
-  SERVER_HTTP_INCOMING_HOST("arcadedb.server.httpIncomingHost", SCOPE.SERVER, "TCP/IP host name used for incoming HTTP connections",
+  SERVER_HTTP_INCOMING_HOST("arcadedb.server.httpIncomingHost", SCOPE.SERVER,
+      "TCP/IP host name used for incoming HTTP connections. A name resolving to several local addresses (e.g. 'localhost' as 127.0.0.1 and ::1) is listened on every one of them, and a port is used only when it is free on all of them",
       String.class, "0.0.0.0"),
 
   SERVER_HTTP_INCOMING_PORT("arcadedb.server.httpIncomingPort", SCOPE.SERVER,

@@ -33,6 +33,7 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.NetworkInterface;
 import java.net.ServerSocket;
+import java.net.Socket;
 import java.net.SocketException;
 import java.net.URI;
 import java.net.UnknownHostException;
@@ -51,6 +52,11 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 class Issue8692LocalhostBindsEveryAddressTest {
 
   private static final String DATABASE_DIRECTORY = "./target/databases-issue8692";
+  /**
+   * Only {@code first} is drawn by {@code allocateFreePorts}; the test needs ONE more free port above it, which a
+   * range of ten in the 15000-32767 band all but guarantees. Should it ever flake, the startup log names every port it
+   * skipped and why.
+   */
   private static final int    RANGE_WIDTH        = 10;
 
   @Test
@@ -70,6 +76,55 @@ class Issue8692LocalhostBindsEveryAddressTest {
   }
 
   @Test
+  void theProbeReportsAPortHeldOnAnyOfTheAddresses() throws Exception {
+    assumeTrue(localhostResolvesToBothLoopbackFamilies(), "this host resolves 'localhost' to one address family only");
+
+    final List<String> hosts = HttpServer.resolveListenHosts("localhost");
+    final int port = StaticBaseServerTest.allocateFreePorts(1)[0];
+    assertThat(HttpServer.portConflict(hosts, port)).as("a free port has no conflict").isNull();
+
+    try (final ServerSocket stranger = new ServerSocket()) {
+      stranger.bind(new InetSocketAddress(InetAddress.getByName("::1"), port));
+      assertThat(HttpServer.portConflict(hosts, port))
+          .as("a port held on [::1] alone is a conflict, and the reason names the address")
+          .isNotNull()
+          .contains(InetAddress.getByName("::1").getHostAddress());
+    }
+  }
+
+  @Test
+  @Timeout(value = 120, unit = TimeUnit.SECONDS)
+  void theHttpsListenerIsBoundOnEveryAddressToo() throws Exception {
+    assumeTrue(localhostResolvesToBothLoopbackFamilies(), "this host resolves 'localhost' to one address family only");
+
+    final int[] ports = StaticBaseServerTest.allocateFreePorts(2);
+    final ContextConfiguration config = serverConfiguration(ports[0] + "-" + (ports[0] + RANGE_WIDTH - 1));
+    config.setValue(GlobalConfiguration.SERVER_HTTPS_INCOMING_PORT, String.valueOf(ports[1]));
+    config.setValue(GlobalConfiguration.NETWORK_USE_SSL, true);
+    config.setValue(GlobalConfiguration.NETWORK_SSL_KEYSTORE, "src/test/resources/keystore.pkcs12");
+    config.setValue(GlobalConfiguration.NETWORK_SSL_KEYSTORE_PASSWORD, "sos0nmzWniR0");
+    config.setValue(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE, "src/test/resources/truststore.jks");
+    config.setValue(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE_PASSWORD, "nphgDK7ugjGR");
+
+    FileUtils.deleteRecursively(new File(DATABASE_DIRECTORY));
+    final ArcadeDBServer server = new ArcadeDBServer(config);
+    try {
+      server.start();
+      final int httpsPort = server.getHttpServer().getHttpsPort();
+      assertThat(httpsPort).isEqualTo(ports[1]);
+
+      for (final String address : new String[] { "127.0.0.1", "::1" })
+        try (final Socket socket = new Socket()) {
+          socket.connect(new InetSocketAddress(InetAddress.getByName(address), httpsPort), 5_000);
+          assertThat(socket.isConnected()).as("the HTTPS listener answers on %s", address).isTrue();
+        }
+    } finally {
+      server.stop();
+      FileUtils.deleteRecursively(new File(DATABASE_DIRECTORY));
+    }
+  }
+
+  @Test
   @Timeout(value = 120, unit = TimeUnit.SECONDS)
   void aPortHeldOnTheIpv6LoopbackIsSkippedAndLocalhostReachesThisServerOnBothFamilies() throws Exception {
     assumeTrue(localhostResolvesToBothLoopbackFamilies(), "this host resolves 'localhost' to one address family only");
@@ -82,13 +137,7 @@ class Issue8692LocalhostBindsEveryAddressTest {
       // The stranger holds the first port of the range on [::1] ONLY, so a bind on 127.0.0.1 alone still succeeds.
       stranger.bind(new InetSocketAddress(ipv6Loopback, first));
 
-      final ContextConfiguration config = new ContextConfiguration();
-      config.setValue(GlobalConfiguration.SERVER_NAME, "ArcadeDB_issue8692");
-      config.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, DATABASE_DIRECTORY);
-      config.setValue(GlobalConfiguration.SERVER_ROOT_PATH, "./target");
-      config.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, "DefaultPasswordForTests123!");
-      config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_HOST, "localhost");
-      config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT, first + "-" + (first + RANGE_WIDTH - 1));
+      final ContextConfiguration config = serverConfiguration(first + "-" + (first + RANGE_WIDTH - 1));
 
       final ArcadeDBServer server = new ArcadeDBServer(config);
       try {
@@ -114,6 +163,22 @@ class Issue8692LocalhostBindsEveryAddressTest {
     } finally {
       FileUtils.deleteRecursively(new File(DATABASE_DIRECTORY));
     }
+  }
+
+  /**
+   * A bare {@code ArcadeDBServer} rather than a fixture base, as in {@code Issue7985StopServiceReleasesForwarderOnFailureTest}:
+   * the stranger must hold its port before the server starts, and the range starts at a port drawn by
+   * {@code allocateFreePorts}, never a hand-picked one. Every URL is built from the port the server reports.
+   */
+  private static ContextConfiguration serverConfiguration(final String httpPortRange) {
+    final ContextConfiguration config = new ContextConfiguration();
+    config.setValue(GlobalConfiguration.SERVER_NAME, "ArcadeDB_issue8692");
+    config.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, DATABASE_DIRECTORY);
+    config.setValue(GlobalConfiguration.SERVER_ROOT_PATH, "./target");
+    config.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, "DefaultPasswordForTests123!");
+    config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_HOST, "localhost");
+    config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT, httpPortRange);
+    return config;
   }
 
   private static int readyStatus(final String host, final int port) throws IOException {
