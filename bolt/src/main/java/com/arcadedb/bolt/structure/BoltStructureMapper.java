@@ -23,6 +23,7 @@ import com.arcadedb.bolt.packstream.PackStreamStructure;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
@@ -367,27 +368,14 @@ public class BoltStructureMapper {
   }
 
   /**
-   * Convert RID to a numeric ID.
-   * Uses a combination of bucket ID and position to create a unique long ID.
+   * Convert RID to the numeric ID {@code id(n)} returns for it, so a driver can pass the id of a returned node or
+   * relationship back as {@code WHERE id(n) = $id} (#9010). The bucket/position split follows
+   * {@code arcadedb.opencypher.idBucketBits}.
    */
   public static long ridToId(final RID rid) {
-    if (rid == null) {
+    if (rid == null)
       return -1;
-    }
-    final int bucketId = rid.getBucketId();
-    // Validate bucket ID to prevent overflow (max 16 bits)
-    if (bucketId < 0 || bucketId > 0xFFFF) {
-      throw new IllegalArgumentException("Bucket ID out of range for BOLT ID conversion: " + bucketId);
-    }
-
-    // Validate position to prevent overflow (max 48 bits)
-    final long position = rid.getPosition();
-    if (position < 0 || position > 0xFFFFFFFFFFFFL) {
-      throw new IllegalArgumentException("Position out of range for BOLT ID conversion: " + position);
-    }
-
-    // Combine bucket ID (high bits) and position (low bits)
-    return ((long) bucketId << 48) | position;
+    return IdFunction.encodeRidAsLong(rid);
   }
 
   // ---------------------------------------------------------------------------
