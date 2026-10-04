@@ -526,8 +526,7 @@ public enum Type {
       for (final Object item : sourceCollection)
         result.add(coerceScalarItem(database, item, ofClass, ofType, property));
       return result;
-    } else if (List.class.isAssignableFrom(targetClass) && value.getClass().isArray() && value instanceof byte[] == false
-        && value.getClass().getComponentType().isPrimitive()) {
+    } else if (List.class.isAssignableFrom(targetClass) && isPrimitiveNumberArray(value)) {
       // a primitive array (long[], int[]...) is the same list of numbers, converted element by element
       final List<Object> items = primitiveArrayToList(value);
       final List<Object> result = new ArrayList<>(items.size());
