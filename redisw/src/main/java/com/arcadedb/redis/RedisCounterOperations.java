@@ -155,7 +155,8 @@ public final class RedisCounterOperations {
         final double d = ((Number) stored).doubleValue();
         if (!Double.isFinite(d))
           throw new RedisException("value is not a valid float");
-        base = BigDecimal.valueOf(d);
+        // the Float's own shortest text, not its widened double (0.1f is 0.10000000149011612 as a double)
+        base = new BigDecimal(stored.toString());
       } else
         base = parseFloatOperand(stored.toString(), "value is not a valid float");
 
@@ -171,6 +172,10 @@ public final class RedisCounterOperations {
     // INCRBYFLOAT on the key parse and add them while the key's lock is held
     if (text.length() >= 5120)
       throw new RedisException("value is not a valid float");
+    // strtold reads ASCII only, BigDecimal also accepts the digits of other scripts
+    for (int i = 0; i < text.length(); i++)
+      if (text.charAt(i) > 127)
+        throw new RedisException("value is not a valid float");
 
     final BigDecimal number;
     try {

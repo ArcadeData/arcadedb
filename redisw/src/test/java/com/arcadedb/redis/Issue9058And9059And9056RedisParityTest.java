@@ -199,6 +199,7 @@ public class Issue9058And9059And9056RedisParityTest extends BaseRedisServerTest 
     try (final Jedis jedis = connect()) {
       refused(jedis, "wrong number of arguments for 'hdel' command", "HDEL", "db");
       refused(jedis, "wrong number of arguments for 'hdel' command", "HDEL", "db.notarid");
+      refused(jedis, "wrong number of arguments for 'hdel' command", "HDEL", "db.");
       refused(jedis, "wrong number of arguments for 'hget' command", "HGET", "db");
       refused(jedis, "wrong number of arguments for 'hget' command", "HGET", "db", "k", "extra");
       refused(jedis, "wrong number of arguments for 'hexists' command", "HEXISTS", "db", "k", "extra");

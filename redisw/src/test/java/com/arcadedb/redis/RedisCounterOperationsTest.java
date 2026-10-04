@@ -56,6 +56,14 @@ class RedisCounterOperationsTest {
   }
 
   @Test
+  void incrementByFloatReadsValuesLeftByTheOldImplementation() {
+    assertThat(RedisCounterOperations.incrementByFloat("1").apply(1.5d)).isEqualTo("2.5");
+    assertThat(RedisCounterOperations.incrementByFloat("0").apply(0.1f)).isEqualTo("0.1");
+    assertThatThrownBy(() -> RedisCounterOperations.incrementByFloat("1").apply(Double.NaN)).hasMessage("value is not a valid float");
+    assertThatThrownBy(() -> RedisCounterOperations.incrementByFloat("\u0661")).hasMessage("value is not a valid float");
+  }
+
+  @Test
   void incrementByFloatRefusesNonFiniteAndNonNumbers() {
     assertThatThrownBy(() -> RedisCounterOperations.incrementByFloat("inf")).hasMessage("increment would produce NaN or Infinity");
     assertThatThrownBy(() -> RedisCounterOperations.incrementByFloat("abc")).hasMessage("value is not a valid float");
