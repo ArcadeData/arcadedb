@@ -240,9 +240,11 @@ public class HttpSession implements QuerySession {
         // ITS REENTRANT FAST PATH - IF THIS THREAD'S INTERRUPT FLAG IS SET, cancel() WOULD THROW
         // InterruptedException AND SILENTLY SKIP THE ROLLBACK
         if (rollbackOnFailure) {
-          final boolean hadChanges = transaction != null && transaction.isActive() && transaction.hasChanges();
+          final boolean wasActive = transaction != null && transaction.isActive();
+          final boolean hadChanges = wasActive && transaction.hasChanges();
           final boolean rolledBack = rollbackIfActive();
-          if (hadChanges)
+          // A TRANSACTION THE ENGINE ALREADY ENDED BENEATH THE COMMAND TOOK ITS WORK WITH IT: NOTHING CAN BE SAID TO BE SAFE
+          if (!wasActive || hadChanges)
             // WORK THE CLIENT WROTE BEFORE THE FAILURE IS GONE (OR ITS ROLLBACK FAILED): THE SESSION MUST NOT PRETEND OTHERWISE (issue #9006)
             rolledBackByFailure = true;
           else if (rolledBack)
