@@ -78,6 +78,32 @@ class Issue9236CompositeHashPrefixTest extends TestHelper {
   }
 
   @Test
+  void inListAndOrOverAHashIndexKeepTheIndexSeek() {
+    database.command("sql", "CREATE VERTEX TYPE HashOne");
+    database.command("sql", "CREATE PROPERTY HashOne.p INTEGER");
+    database.command("sql", "CREATE INDEX ON HashOne (p) UNIQUE_HASH");
+    database.transaction(() -> {
+      database.newVertex("HashOne").set("p", 1).save();
+      database.newVertex("HashOne").set("p", 2).save();
+      database.newVertex("HashOne").set("p", 3).save();
+    });
+    for (final String where : new String[] { "n.p IN [1, 2]", "n.p = 1 OR n.p = 2" }) {
+      final String query = "MATCH (n:HashOne) WHERE " + where + " RETURN n.p AS p ORDER BY p";
+      assertThat(ps(query, Map.of())).as(where).containsExactly(1L, 2L);
+      try (final ResultSet rs = database.query("opencypher", "EXPLAIN " + query)) {
+        assertThat(rs.next().toJSON().toString()).as(where).contains("NodeIndexSeek");
+      }
+    }
+
+    create("HashPair", "NOTUNIQUE_HASH");
+    final String pair = "MATCH (n:HashPair) WHERE n.p IN [1, 2] AND n.q = 5 RETURN n.p AS p ORDER BY p";
+    assertThat(ps(pair, Map.of())).containsExactly(1L);
+    try (final ResultSet rs = database.query("opencypher", "EXPLAIN " + pair)) {
+      assertThat(rs.next().toJSON().toString()).contains("NodeIndexSeek");
+    }
+  }
+
+  @Test
   void nullParameterForTheSecondPropertyMatchesNothing() {
     create("HashN", "NOTUNIQUE_HASH");
     final Map<String, Object> params = new HashMap<>();
