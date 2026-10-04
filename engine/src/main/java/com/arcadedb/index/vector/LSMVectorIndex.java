@@ -900,13 +900,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
     }
   }
 
-  /**
-   * Translates the ids the resident graph's ordinal map and the delta buffer hold into the ids a renumbering compaction
-   * handed out. Called with the write lock held, in the section that swaps the data file and publishes the new location
-   * index, so no reader sees one generation of ids through the other (issue #9241).
-   *
-   * @param oldVectorIds the ids of the live set before the renumbering, ascending; the position of an id is its new id
-   */
   private static OrdinalLookup lookupOf(final int[] map) {
     int live = 0;
     for (final int vectorId : map)
@@ -923,6 +916,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
     return new OrdinalLookup(vectorIds, ordinals);
   }
 
+  /**
+   * Translates the ids the resident graph's ordinal map and the delta buffer hold into the ids a renumbering compaction
+   * handed out. Called with the write lock held, in the section that swaps the data file and publishes the new location
+   * index, so no reader sees one generation of ids through the other (issue #9241).
+   *
+   * @param oldVectorIds the ids of the live set before the renumbering, ascending; the position of an id is its new id
+   */
   private void renumberResidentIds(final int[] oldVectorIds) {
     final int[] oldOrdinalMap = ordinalToVectorId;
     if (oldOrdinalMap != null && oldOrdinalMap.length > 0) {
@@ -7198,7 +7198,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * {@code ordinalMap} is sorted ascending - every producer of {@code ordinalToVectorId} builds it with
    * {@code sorted()} because the ordinal order has to match the order the graph was persisted in - so the reverse
    * lookup is a binary search and needs no per-query map. The exception is the map a renumbering compaction translated
-   * while the old graph is resident, which holds -1 entries: it is resolved through {@link OrdinalLookup} (issue #9241). A RID with no live vector id, or one whose vector was
+   * while the old graph is resident, which holds -1 entries: it is resolved through its {@link OrdinalLookup}
+   * (issue #9241). A RID with no live vector id, or one whose vector was
    * ingested after the last rebuild and is therefore only in the delta buffer, simply contributes no ordinal.
    * <p>
    * The result is sorted so the caller scores in ordinal order, exactly the order the full scan uses. Distance ties
