@@ -56,21 +56,28 @@ class MongoFilterTest {
   }
 
   @Test
-  void emptyAndIdOnlyFiltersStayInSql() {
+  void onlyAnEmptyFilterIsAnsweredBySqlAlone() {
     assertThat(new MongoFilter(null, null).isSql()).isTrue();
     assertThat(new MongoFilter(null, new Document()).isEmpty()).isTrue();
-    assertThat(new MongoFilter(null, parse("{_id: 1}")).isSql()).isTrue();
-    assertThat(new MongoFilter(null, parse("{_id: {$in: [1, 2]}}")).isSql()).isTrue();
-    assertThat(new MongoFilter(null, parse("{$or: [{_id: 1}, {_id: 2}]}")).isSql()).isTrue();
-    assertThat(new MongoFilter(null, parse("{$and: [{$or: [{_id: 1}, {_id: 2}]}, {_id: {$gt: 0}}]}")).isSql()).isTrue();
+    assertThat(new MongoFilter(null, parse("{_id: 1}")).isSql()).isFalse();
+    assertThat(new MongoFilter(null, parse("{k: 1}")).isSql()).isFalse();
+  }
+
+  @Test
+  void aFilterOnTheIdReadsItsCandidatesThroughTheIndex() {
+    assertThat(new MongoFilter(null, parse("{_id: 1}")).narrowsById()).isTrue();
+    assertThat(new MongoFilter(null, parse("{_id: {$in: [1, 2]}}")).narrowsById()).isTrue();
+    assertThat(new MongoFilter(null, parse("{$or: [{_id: 1}, {_id: 2}]}")).narrowsById()).isTrue();
+    assertThat(new MongoFilter(null, parse("{$and: [{$or: [{_id: 1}, {_id: 2}]}, {_id: {$gt: 0}}]}")).narrowsById()).isTrue();
+    assertThat(new MongoFilter(null, parse("{_id: 1, k: 1}")).narrowsById()).isTrue();
+    assertThat(new MongoFilter(null, parse("{_id: {$in: [1, 2]}, tags: 'a'}")).narrowsById()).isTrue();
   }
 
   @Test
   void anyOtherFilterIsEvaluatedOnTheDocuments() {
-    assertThat(new MongoFilter(null, parse("{k: 1}")).isSql()).isFalse();
-    assertThat(new MongoFilter(null, parse("{_id: 1, k: 1}")).isSql()).isFalse();
-    assertThat(new MongoFilter(null, parse("{$or: [{_id: 1}, {k: 2}]}")).isSql()).isFalse();
-    assertThat(new MongoFilter(null, parse("{$nor: [{_id: 1}]}")).isSql()).isFalse();
+    assertThat(new MongoFilter(null, parse("{k: 1}")).narrowsById()).isFalse();
+    assertThat(new MongoFilter(null, parse("{$or: [{_id: 1}, {k: 2}]}")).narrowsById()).isFalse();
+    assertThat(new MongoFilter(null, parse("{$nor: [{_id: 1}]}")).narrowsById()).isFalse();
   }
 
   @Test
@@ -90,7 +97,7 @@ class MongoFilterTest {
 
   @Test
   void aFilterAnsweredBySqlRefusesToTestARecord() {
-    final MongoFilter filter = new MongoFilter(null, parse("{_id: 1}"));
+    final MongoFilter filter = new MongoFilter(null, new Document());
     assertThatThrownBy(() -> filter.matches(Map.<String, Object>of("_id", 1))).isInstanceOf(IllegalStateException.class);
   }
 
@@ -120,15 +127,6 @@ class MongoFilterTest {
   }
 
   @Test
-  void anIdConjunctNarrowsTheCandidatesOfAMixedFilter() {
-    assertThat(new MongoFilter(null, parse("{_id: 1, k: 1}")).narrowsById()).isTrue();
-    assertThat(new MongoFilter(null, parse("{_id: {$in: [1, 2]}, tags: 'a'}")).narrowsById()).isTrue();
-    assertThat(new MongoFilter(null, parse("{k: 1}")).narrowsById()).isFalse();
-    assertThat(new MongoFilter(null, parse("{$or: [{_id: 1}, {k: 2}]}")).narrowsById()).isFalse();
-    assertThat(new MongoFilter(null, parse("{_id: 1}")).narrowsById()).isFalse();
-  }
-
-  @Test
   void regexElementsOfAllAndNorMatchLikeMongoDB() {
     final Map<String, Object> hit = Map.of("s", List.of("alpha", "beta"));
     assertThat(new MongoFilter(null, new Document("s", new Document("$all", List.of(new BsonRegularExpression("^al"), new BsonRegularExpression("^be")))))
@@ -154,5 +152,13 @@ class MongoFilterTest {
     assertThatThrownBy(() -> budget.find(pathological, input)).isInstanceOf(TimeoutException.class);
     assertThatThrownBy(() -> budget.find(Pattern.compile("^al"), "alpha")).isInstanceOf(
         TimeoutException.class);
+  }
+
+  @Test
+  void aRegexMatchesStringsAndArraysOfStrings() {
+    final MongoFilter filter = new MongoFilter(null, new Document("n", new BsonRegularExpression("^1")));
+    // (MongoDB matches a regex against strings only, the library also tests the string form of a number: a known leniency)
+    assertThat(filter.matches(Map.<String, Object>of("n", "123"))).isTrue();
+    assertThat(filter.matches(Map.<String, Object>of("n", List.of(5, "1x")))).isTrue();
   }
 }

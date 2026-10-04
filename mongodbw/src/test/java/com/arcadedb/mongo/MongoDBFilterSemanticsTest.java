@@ -416,4 +416,15 @@ class MongoDBFilterSemanticsTest extends BaseMongoServerTest {
     assertThatThrownBy(() -> missing.aggregate(List.of(Document.parse("{$out:'target'}"))).into(new ArrayList<>())).isInstanceOf(
         MongoException.class);
   }
+
+  @Test
+  void idsOfDifferentTypesAreNotConfusedByAnIdFilter() {
+    final MongoCollection<Document> c = collection("mixedids", "{_id:'1', k:'string'}", "{_id:2, k:'number'}", "{_id:'abc', k:'text'}");
+    assertThat(ids(c, "{_id:'1'}")).containsExactly("1");
+    assertThat(ids(c, "{_id:1}")).isEmpty();
+    assertThat(ids(c, "{_id:{$gt:0}}")).containsExactly(2);
+    assertThat(ids(c, "{_id:{$in:[1,2]}}")).containsExactly(2);
+    assertThat(ids(c, "{_id:2, k:'number'}")).containsExactly(2);
+    assertThat(ids(c, "{_id:'2', k:'number'}")).isEmpty();
+  }
 }

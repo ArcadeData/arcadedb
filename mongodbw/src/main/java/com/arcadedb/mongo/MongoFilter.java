@@ -52,10 +52,12 @@ import java.util.regex.PatternSyntaxException;
  * those is therefore evaluated on the document, by the matcher of the MongoDB emulation the plugin is built on, which implements
  * MongoDB's own rules: type brackets, array traversal, {@code $elemMatch}, {@code $all}, {@code $size}, dotted paths, ordering.
  * <p>
- * Only a filter on the {@code _id} alone stays in SQL: an {@code _id} is never an array, so the SQL answers are exact for the
- * shapes of data an {@code _id} takes and the unique index on it keeps serving the lookup. (SQL still coerces across the types of an
- * {@code _id}, such as a number and its string, which share one index key: a collection mixing those is the one case it is not exact.) Every other filter reads the documents of the type, which is what makes the answers
- * exact for any shape of stored data.
+ * SQL still has a part: a filter that is on the {@code _id}, alone or under {@code $and} / {@code $or} (a batch lookup by key), or has
+ * an {@code _id} conjunct, reads its candidates through the unique index on the {@code _id}, and the matcher then tests the whole
+ * filter on them. SQL alone would not be exact even there: it coerces across the types of an {@code _id}, so {@code {_id: 1}} would
+ * answer a document whose {@code _id} is the string {@code "1"}. Only an empty filter is answered by SQL alone.
+ * <p>
+ * Known leniency of the matcher: a regular expression is also tested against the string form of a number, which MongoDB does not.
  * <p>
  * Regular expressions are searched through {@link TimeBoundRegex}, bounded by {@code arcadedb.command.regexTimeout} with one
  * deadline per filter, exactly like the SQL {@code MATCHES} the plugin used to rely on.
@@ -85,10 +87,10 @@ final class MongoFilter {
   MongoFilter(final Database database, final Document filter, final RegexBudget budget) {
     this.original = filter;
     this.empty = filter == null || filter.isEmpty();
-    this.sql = empty || onlyId(filter);
-    // the _id conjunct of a filter the SQL cannot answer as a whole narrows the candidates through the unique index: an _id is never
-    // an array, so the SQL is exact for it, and the matcher still tests the whole filter on what it returns
-    this.idPart = !sql && filter.containsKey("_id") ? new Document("_id", filter.get("_id")) : null;
+    this.sql = empty;
+    // the part of the filter on the _id narrows the candidates through the unique index (an _id is never an array, so the SQL cannot
+    // miss a match there), and the matcher tests the whole filter on what it returns
+    this.idPart = empty ? null : onlyId(filter) ? filter : filter.containsKey("_id") ? new Document("_id", filter.get("_id")) : null;
     if (sql) {
       this.normalized = null;
       this.matcher = null;
