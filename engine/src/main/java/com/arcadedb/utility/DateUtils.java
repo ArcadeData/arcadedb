@@ -51,6 +51,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 public class DateUtils {
+  private static final long MICROS_PER_SECOND = TimeUnit.SECONDS.toMicros(1);
+
   public static final  String                                       DATE_TIME_ISO_8601_FORMAT = "yyyy-MM-dd'T'HH:mm:ssZ";
   public static final  long                                         MS_IN_A_DAY               = 24 * 60 * 60 * 1000L; // 86_400_000
   /**
@@ -142,8 +144,8 @@ public class DateUtils {
       else if (destinationPrecision.equals(ChronoUnit.MILLIS))
         value = LocalDateTime.ofInstant(Instant.ofEpochMilli(convertedTimestamp), UTC_ZONE_ID);
       else if (destinationPrecision.equals(ChronoUnit.MICROS))
-        value = LocalDateTime.ofInstant(Instant.ofEpochSecond(Math.floorDiv(convertedTimestamp, TimeUnit.SECONDS.toMicros(1)),
-            TimeUnit.MICROSECONDS.toNanos(Math.floorMod(convertedTimestamp, TimeUnit.SECONDS.toMicros(1)))), UTC_ZONE_ID);
+        value = LocalDateTime.ofInstant(Instant.ofEpochSecond(Math.floorDiv(convertedTimestamp, MICROS_PER_SECOND),
+            TimeUnit.MICROSECONDS.toNanos(Math.floorMod(convertedTimestamp, MICROS_PER_SECOND))), UTC_ZONE_ID);
       else if (destinationPrecision.equals(ChronoUnit.NANOS))
         value = LocalDateTime.ofInstant(Instant.ofEpochSecond(0L, convertedTimestamp), UTC_ZONE_ID);
       else
@@ -154,8 +156,8 @@ public class DateUtils {
       else if (destinationPrecision.equals(ChronoUnit.MILLIS))
         value = ZonedDateTime.ofInstant(Instant.ofEpochMilli(convertedTimestamp), UTC_ZONE_ID);
       else if (destinationPrecision.equals(ChronoUnit.MICROS))
-        value = ZonedDateTime.ofInstant(Instant.ofEpochSecond(Math.floorDiv(convertedTimestamp, TimeUnit.SECONDS.toMicros(1)),
-            TimeUnit.MICROSECONDS.toNanos(Math.floorMod(convertedTimestamp, TimeUnit.SECONDS.toMicros(1)))), UTC_ZONE_ID);
+        value = ZonedDateTime.ofInstant(Instant.ofEpochSecond(Math.floorDiv(convertedTimestamp, MICROS_PER_SECOND),
+            TimeUnit.MICROSECONDS.toNanos(Math.floorMod(convertedTimestamp, MICROS_PER_SECOND))), UTC_ZONE_ID);
       else if (destinationPrecision.equals(ChronoUnit.NANOS))
         value = ZonedDateTime.ofInstant(Instant.ofEpochSecond(0L, convertedTimestamp), UTC_ZONE_ID);
       else
@@ -166,8 +168,8 @@ public class DateUtils {
       else if (destinationPrecision.equals(ChronoUnit.MILLIS))
         value = Instant.ofEpochMilli(convertedTimestamp);
       else if (destinationPrecision.equals(ChronoUnit.MICROS))
-        value = Instant.ofEpochSecond(Math.floorDiv(convertedTimestamp, TimeUnit.SECONDS.toMicros(1)),
-            TimeUnit.MICROSECONDS.toNanos(Math.floorMod(convertedTimestamp, TimeUnit.SECONDS.toMicros(1))));
+        value = Instant.ofEpochSecond(Math.floorDiv(convertedTimestamp, MICROS_PER_SECOND),
+            TimeUnit.MICROSECONDS.toNanos(Math.floorMod(convertedTimestamp, MICROS_PER_SECOND)));
       else if (destinationPrecision.equals(ChronoUnit.NANOS))
         value = Instant.ofEpochSecond(0L, convertedTimestamp);
       else

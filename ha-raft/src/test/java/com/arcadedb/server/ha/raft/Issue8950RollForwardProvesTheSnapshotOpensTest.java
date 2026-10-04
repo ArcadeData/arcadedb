@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Comparator;
@@ -82,6 +83,23 @@ class Issue8950RollForwardProvesTheSnapshotOpensTest {
 
     assertThat(live.resolve("schema.json")).exists();
     assertThat(live.resolve(SnapshotInstaller.SNAPSHOT_PENDING_FILE)).doesNotExist();
+  }
+
+  @Test
+  void anInconclusiveProofKeepsTheMarkerAndBothCopies() throws Exception {
+    final Path live = installedLayout("INSTALLED", false);
+    SnapshotInstaller.snapshotOpensForTesting = path -> {
+      throw new UncheckedIOException(new IOException("simulated I/O error"));
+    };
+    try {
+      SnapshotInstaller.recoverPendingSnapshotSwaps(root.resolve("databases"));
+    } finally {
+      SnapshotInstaller.snapshotOpensForTesting = null;
+    }
+
+    assertThat(live.resolve(SnapshotInstaller.SNAPSHOT_PENDING_FILE)).exists();
+    assertThat(live.resolve(SnapshotInstaller.SNAPSHOT_BACKUP_DIR)).exists();
+    assertThat(live.resolve("schema.json")).exists();
   }
 
   /** A live directory holding the installed snapshot, with the previous copy retained in {@code .snapshot-backup}. */
