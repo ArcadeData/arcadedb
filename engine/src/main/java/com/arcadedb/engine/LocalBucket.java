@@ -223,7 +223,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   // #8649: System.nanoTime() before which the applies do not turn patient again, set when a patient wait timed out so
   // the apply thread is not stalled behind every scan of a bucket whose scans outgrew the bound. 0 = no back-off
   private volatile       long                      applyLockPatientBackoffUntilNanos;
-  // #8649: wall time of the last count() recompute scan that ran under the bucket lock, in ms. Sizes the patient wait
+  // #8649: wall time of the last count() recompute scan that ran under the bucket lock, in ms. Sizes the patient wait.
+  // A lock-free recompute (lock timeout) leaves it alone; while it is still 0 a patient wait is just the commit timeout,
+  // and a timed-out one is corrected by the back-off, which the next locked scan sizes
   private volatile       long                      lastRecountScanMs;
   // #8649: recomputes refused because an unlocked apply overlapped their scan, in total and since the last publish.
   // Written under this bucket's monitor, like unlockedApplyStamp; the run is volatile so the applies read it lock-free
@@ -2529,6 +2531,21 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
   void setApplyLockPatient(final boolean patient) {
     applyLockPatient = patient;
+  }
+
+  /**
+   * Turns the applies patient if {@code minRefusals} recomputes in a row were refused, in one step with the publish
+   * that would reset the run, so a recompute publishing in between cannot leave a known counter with a patient flag
+   * that the next unknown-counter episode would inherit (issue #8649).
+   *
+   * @return the refusal run that made the bucket patient, or 0 when it did not
+   */
+  synchronized long turnApplyLockPatientIfRefused(final long minRefusals) {
+    final long run = consecutiveRecountPublishesRefused;
+    if (applyLockPatient || run < minRefusals)
+      return 0;
+    applyLockPatient = true;
+    return run;
   }
 
   /**

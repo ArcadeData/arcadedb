@@ -959,12 +959,14 @@ public class TransactionManager {
       boolean patient = bucket.isApplyLockPatient();
       if (!patient && bucket.getConsecutiveRecountPublishesRefused() >= PATIENT_AFTER_REFUSED_RECOMPUTES
           && !bucket.isApplyLockPatientBackingOff(System.nanoTime())) {
-        patient = true;
-        bucket.setApplyLockPatient(true);
-        LogManager.instance().log(this, Level.INFO,
-            "Bucket '%s' refused %d record count recomputes in a row under replication: replicated transactions wait up to"
-                + " %dms for a running recompute again, so it can cache its result", null, bucket.getName(),
-            bucket.getConsecutiveRecountPublishesRefused(), patientWaitMs(bucket, timeout));
+        final long refusedInARow = bucket.turnApplyLockPatientIfRefused(PATIENT_AFTER_REFUSED_RECOMPUTES);
+        if (refusedInARow > 0) {
+          patient = true;
+          LogManager.instance().log(this, Level.INFO,
+              "Bucket '%s' refused %d record count recomputes in a row under replication: replicated transactions wait up"
+                  + " to %dms for a running recompute again, so it can cache its result", null, bucket.getName(),
+              refusedInARow, patientWaitMs(bucket, timeout));
+        }
       }
 
       // 1ms, not 0: LockManager reads a zero timeout as "wait forever"

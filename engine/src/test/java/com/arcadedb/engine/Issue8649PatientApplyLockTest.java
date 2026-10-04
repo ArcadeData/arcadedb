@@ -295,6 +295,28 @@ class Issue8649PatientApplyLockTest extends TestHelper {
   }
 
   @Test
+  void aBucketTurnsPatientOnlyWhileTheRefusalRunStillHolds() {
+    final LocalBucket bucket = bucket();
+    bucket.setCachedRecordCount(-1);
+    bucket.invalidateCachedRecordCountForUnlockedApply();
+    final long stale = bucket.getUnlockedApplyStamp() - 1;
+    bucket.publishRecomputedCount(10, stale);
+    bucket.publishRecomputedCount(10, stale);
+
+    // A recompute publishes after an apply saw the run but before it turned the bucket patient: it must not turn
+    bucket.publishRecomputedCount(10, bucket.getUnlockedApplyStamp());
+    assertThat(bucket.turnApplyLockPatientIfRefused(TransactionManager.PATIENT_AFTER_REFUSED_RECOMPUTES)).isZero();
+    assertThat(bucket.isApplyLockPatient()).isFalse();
+
+    bucket.invalidateCachedRecordCountForUnlockedApply();
+    final long stale2 = bucket.getUnlockedApplyStamp() - 1;
+    bucket.publishRecomputedCount(10, stale2);
+    bucket.publishRecomputedCount(10, stale2);
+    assertThat(bucket.turnApplyLockPatientIfRefused(TransactionManager.PATIENT_AFTER_REFUSED_RECOMPUTES)).isEqualTo(2);
+    assertThat(bucket.isApplyLockPatient()).isTrue();
+  }
+
+  @Test
   void aRunOfRefusalsIsLoggedAtWarningOnlyOnPowersOfTwoFromFour() {
     assertThat(LocalBucket.isRefusalRunWorthAWarning(1)).isFalse();
     assertThat(LocalBucket.isRefusalRunWorthAWarning(2)).isFalse();
