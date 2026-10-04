@@ -25,6 +25,8 @@ import org.junit.jupiter.api.Test;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.exceptions.JedisDataException;
 
+import java.nio.charset.StandardCharsets;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -117,8 +119,10 @@ public class Issue9058And9059And9056RedisParityTest extends BaseRedisServerTest 
   void nonCanonicalIntegersAreRefused() {
     try (final Jedis jedis = connect()) {
       jedis.set("n1", "10");
-      for (final String amount : new String[] { "+5", "05", "abc", "-0", "1.5", " 5", "9223372036854775808", "" })
+      for (final String amount : new String[] { "+5", "05", "-05", "abc", "-0", "-", "1.5", " 5", "9223372036854775808", "" }) {
         refused(jedis, "value is not an integer or out of range", "INCRBY", "n1", amount);
+        refused(jedis, "value is not an integer or out of range", "DECRBY", "n1", amount);
+      }
       assertThat(jedis.get("n1")).isEqualTo("10");
 
       for (final String stored : new String[] { "+10", "007", "-0" }) {
@@ -153,17 +157,22 @@ public class Issue9058And9059And9056RedisParityTest extends BaseRedisServerTest 
       // already gone: nothing deleted, nothing raised
       assertThat(jedis.hdel(bucket, rid[0])).isEqualTo(0L);
 
-      // a malformed RID is refused before anything is deleted, variables included
-      jedis.set("keep", "x");
-      refused(jedis, "invalid RID", "HDEL", bucket, "keep", "#abc");
-      assertThat(jedis.get("keep")).isEqualTo("x");
+      // a malformed RID in the bucket argument is refused before anything is deleted
+      refused(jedis, "invalid RID", "HDEL", bucket + ".#abc", rid[1]);
       assertThat(count(db)).isEqualTo(3L);
 
+      // a duplicate RID is deleted once and counted once
+      assertThat(jedis.hdel(bucket, rid[1], rid[1])).isEqualTo(1L);
+      assertThat(count(db)).isEqualTo(2L);
+      // a key that only starts with '#' is a variable name, not a RID
+      jedis.sendCommand(() -> "HSET".getBytes(StandardCharsets.UTF_8), bucket, "{\"id\":\"#tag\"}");
+      assertThat(jedis.hdel(bucket, "#tag")).isEqualTo(1L);
+
       // several RIDs in one call, mixed with a global variable name
-      jedis.sendCommand(() -> "HSET".getBytes(), bucket, "{\"id\":\"var\"}");
+      jedis.sendCommand(() -> "HSET".getBytes(StandardCharsets.UTF_8), bucket, "{\"id\":\"var\"}");
       assertThat(jedis.hexists(bucket, "var")).isTrue();
-      // two records and the variable are counted, the RID of a bucket that does not exist is 0
-      assertThat(jedis.hdel(bucket, rid[1], rid[2], "#999:99", "var")).isEqualTo(3L);
+      // the record and the variable are counted, the RID of a bucket that does not exist is 0
+      assertThat(jedis.hdel(bucket, rid[2], "#999:99", "var")).isEqualTo(2L);
       assertThat(count(db)).isEqualTo(1L);
       assertThat(jedis.hexists(bucket, "var")).isFalse();
 
@@ -184,11 +193,11 @@ public class Issue9058And9059And9056RedisParityTest extends BaseRedisServerTest 
   }
 
   private static String text(final Jedis jedis, final String command, final String... args) {
-    return new String((byte[]) jedis.sendCommand(() -> command.getBytes(), args));
+    return new String((byte[]) jedis.sendCommand(() -> command.getBytes(StandardCharsets.UTF_8), args));
   }
 
   private static void refused(final Jedis jedis, final String message, final String command, final String... args) {
-    assertThatThrownBy(() -> jedis.sendCommand(() -> command.getBytes(), args)).isInstanceOf(JedisDataException.class)
+    assertThatThrownBy(() -> jedis.sendCommand(() -> command.getBytes(StandardCharsets.UTF_8), args)).isInstanceOf(JedisDataException.class)
         .hasMessageContaining(message);
   }
 

@@ -58,7 +58,10 @@ public final class RedisCounterOperations {
       throw new RedisException("value is not an integer or out of range");
 
     final char first = text.charAt(start);
-    if (first < '0' || first > '9' || (first == '0' && length > 1) || (start == 1 && first == '0'))
+    if (first < '0' || first > '9')
+      throw new RedisException("value is not an integer or out of range");
+    // no leading zero before more digits ("05", "-05"), and no negative zero ("-0")
+    if (first == '0' && (length - start > 1 || start == 1))
       throw new RedisException("value is not an integer or out of range");
 
     for (int i = start + 1; i < length; i++) {

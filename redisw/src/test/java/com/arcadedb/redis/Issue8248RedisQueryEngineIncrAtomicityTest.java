@@ -172,8 +172,8 @@ public class Issue8248RedisQueryEngineIncrAtomicityTest extends BaseRedisServerT
     close(database.command("redis", "SET issue8248string2 41"));
     assertThat(value(database, "DECR issue8248string2")).isEqualTo(40L);
 
-    assertThat(((Number) database.command("redis", "INCRBYFLOAT issue8248mixed 0.5").next().getProperty("value")).doubleValue())
-        .isEqualTo(6.5);
+    assertThat(database.command("redis", "INCRBYFLOAT issue8248mixed 0.5").next().getProperty("value").toString())
+        .isEqualTo("6.5");
   }
 
   private static long value(final Database database, final String command) {

@@ -614,15 +614,15 @@ public class RedisQueryEngine implements QueryEngine {
    * add that refuses to overflow silently, and real Redis' own error text. See {@link #computeRamVariable} for
    * atomicity.
    */
-  private Number incrBy(final List<String> parts, final boolean decimal, final RamSlot slot) {
+  private Object incrBy(final List<String> parts, final boolean decimal, final RamSlot slot) {
     if (parts.size() < 2) {
       throw new CommandParsingException("INCR/INCRBY requires a key: INCR <key> [increment]");
     }
     final String key = normalizeRamKey(parts.get(1));
 
     if (decimal) {
-      final Object text = computeRamVariable(key, RedisCounterOperations.incrementByFloat(parts.size() > 2 ? parts.get(2) : "1"), slot);
-      return text instanceof String string ? Double.valueOf(string) : (Number) text;
+      // the decimal TEXT, as on the wire (#9058): a Double would lose digits and turn a huge result into Infinity
+      return computeRamVariable(key, RedisCounterOperations.incrementByFloat(parts.size() > 2 ? parts.get(2) : "1"), slot);
     }
 
     final long increment = parts.size() > 2 ? RedisCounterOperations.parseInteger(parts.get(2)) : 1L;
