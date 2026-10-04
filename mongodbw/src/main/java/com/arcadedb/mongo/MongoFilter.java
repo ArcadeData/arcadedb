@@ -180,21 +180,22 @@ final class MongoFilter {
         result.put(key, converted);
         continue;
       }
+      if ("$expr".equals(key))
+        // an aggregation expression can carry a regular expression of its own, out of reach of the time bound
+        throw new IllegalArgumentException("The operator $expr is not supported");
       if (key.startsWith("$")) {
         result.put(key, value);
         continue;
       }
 
-      if (top && "_id".equals(key)) {
-        result.put(key, MongoBsonValues.idFilter(value));
-        continue;
-      }
+      // the _id operand takes its stored form first, then goes the way of any other field (its regular expressions are bounded too)
+      final Object operand = top && "_id".equals(key) ? MongoBsonValues.idFilter(value) : value;
 
-      if (value instanceof BsonRegularExpression regex)
+      if (operand instanceof BsonRegularExpression regex)
         result.put(key, new BoundedRegex(regex.getPattern(), regex.getOptions(), deadline));
-      else if (value instanceof ObjectId objectId)
+      else if (operand instanceof ObjectId objectId)
         result.put(key, new Document("$in", bothForms(objectId)));
-      else if (value instanceof Document document && isOperatorDocument(document)) {
+      else if (operand instanceof Document document && isOperatorDocument(document)) {
         if (document.containsKey("$regex")) {
           final Document rest = withoutRegex(document);
           final BoundedRegex regex = BoundedRegex.of(document, deadline);
@@ -210,7 +211,7 @@ final class MongoFilter {
         } else
           result.put(key, normalizeOperators(document, deadline));
       } else
-        result.put(key, value);
+        result.put(key, operand);
     }
 
     if (lifted == null)
@@ -259,6 +260,9 @@ final class MongoFilter {
           for (final Object item : list)
             if (item instanceof BsonRegularExpression regex)
               converted.add(new BoundedRegex(regex.getPattern(), regex.getOptions(), deadline));
+            else if (item instanceof Document document && isOperatorDocument(document))
+              // {$all: [{$elemMatch: ...}]}
+              converted.add(normalizeOperators(document, deadline));
             else {
               converted.add(item);
               // not for $all, which asks for each element: the hex form of an ObjectId is not an extra one
@@ -314,7 +318,7 @@ final class MongoFilter {
   /**
    * The time a filter may spend in regular expressions, shared by every search of the filter: {@code arcadedb.command.regexTimeout}
    * counts the time inside the expressions only, not the reading of the documents around them, so a long scan with a harmless
-   * expression is not cut short while a pathological one still is. Not thread-safe: a filter is built per command and evaluated by
+   * expression is not cut short while a pathological one still is (the clock is read every few hundred steps of a search, so a very short value never trips it). Not thread-safe: a filter is built per command and evaluated by
    * one thread.
    */
   private static final class RegexBudget {
