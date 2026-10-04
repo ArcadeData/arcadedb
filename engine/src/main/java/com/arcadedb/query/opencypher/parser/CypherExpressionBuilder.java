@@ -24,6 +24,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.opencypher.ast.*;
+import com.arcadedb.query.opencypher.grammar.Cypher25Lexer;
 import com.arcadedb.query.opencypher.grammar.Cypher25Parser;
 import com.arcadedb.query.opencypher.temporal.CypherDate;
 import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
@@ -37,6 +38,8 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 
+import org.antlr.v4.runtime.CharStreams;
+import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
 
@@ -1972,6 +1975,23 @@ class CypherExpressionBuilder {
    * Parse an extended CASE expression (with case value).
    * Example: CASE status WHEN 'active' THEN 1 WHEN 'inactive' THEN 0 ELSE -1 END
    */
+  /**
+   * Builds the predicate a comparison-form {@code WHEN} stands for by parsing {@code (<operand>) <when text>} with its
+   * whitespace intact, so that every comparison the grammar allows behaves exactly as it does written out in full.
+   */
+  private Expression parseOperandPredicate(final Cypher25Parser.ExpressionContext operand,
+      final Cypher25Parser.ExtendedWhenContext whenCtx) {
+    final String text = "(" + CypherASTBuilder.getOriginalText(operand) + ") " + CypherASTBuilder.getOriginalText(whenCtx);
+    final CypherErrorListener errorListener = new CypherErrorListener();
+    final Cypher25Lexer lexer = new Cypher25Lexer(CharStreams.fromString(text));
+    lexer.removeErrorListeners();
+    lexer.addErrorListener(errorListener);
+    final Cypher25Parser parser = new Cypher25Parser(new CommonTokenStream(lexer));
+    parser.removeErrorListeners();
+    parser.addErrorListener(errorListener);
+    return parseExpression(parser.expression());
+  }
+
   CaseExpression parseExtendedCaseExpression(final Cypher25Parser.ExtendedCaseExpressionContext ctx) {
     // Parse the case expression (the value being tested)
     final Expression caseExpr = parseExpression(ctx.expression(0));
@@ -1985,11 +2005,12 @@ class CypherExpressionBuilder {
       final Expression thenExpr = parseExpression(altCtx.expression());
       for (final Cypher25Parser.ExtendedWhenContext whenCtx : altCtx.extendedWhen()) {
         // A plain value is parsed from its parse tree: re-parsing its whitespace-less text turned a list or map literal
-        // into something that never equals the operand (issue #8996). Comparison forms (WHEN > 5) keep the text path.
-        final Expression whenExpr = whenCtx instanceof Cypher25Parser.WhenEqualsContext equalsCtx
-            ? parseExpression(equalsCtx.expression())
-            : parseExpressionText(whenCtx.getText());
-        alternatives.add(new CaseAlternative(whenExpr, thenExpr));
+        // into something that never equals the operand (issue #8996).
+        if (whenCtx instanceof Cypher25Parser.WhenEqualsContext equalsCtx)
+          alternatives.add(new CaseAlternative(parseExpression(equalsCtx.expression()), thenExpr));
+        else
+          // A comparison form (WHEN > 5, WHEN IS NULL, WHEN STARTS WITH 'a') is the predicate "(operand) <form>"
+          alternatives.add(new CaseAlternative(parseOperandPredicate(ctx.expression(0), whenCtx), thenExpr, true));
       }
     }
 

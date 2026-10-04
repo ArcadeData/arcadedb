@@ -86,6 +86,23 @@ class CypherNestingGuardIssue9051Test extends TestHelper {
   }
 
   @Test
+  void longUnionChainsAndNestedClauseBudgetsExecuteWithoutOverflow() {
+    try (final ResultSet rs = database.query("opencypher", "RETURN 1 AS x" + " UNION ALL RETURN 1 AS x".repeat(3000))) {
+      int n = 0;
+      while (rs.hasNext()) {
+        rs.next();
+        n++;
+      }
+      assertThat(n).isEqualTo(3001);
+    }
+    // each nested subquery body carries its own clause budget: 10 levels of 450 clauses must still be safe to execute
+    String q = "RETURN 1 AS x";
+    for (int i = 0; i < 10; i++)
+      q = "CALL { " + q.replace("RETURN 1 AS x", "WITH 1 AS x " + "WITH x ".repeat(450) + "RETURN x") + " } RETURN x";
+    drain(q);
+  }
+
+  @Test
   void clauseLimitAppliesInsideNestedSubqueryBodies() {
     database.getConfiguration().setValue(GlobalConfiguration.CYPHER_MAX_CLAUSES, 5);
     assertRejected("CALL { MATCH (n) " + "WITH n ".repeat(10) + "RETURN n } RETURN n");
