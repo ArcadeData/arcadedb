@@ -3349,6 +3349,26 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
+   * Parses an {@code INTEGER_LITERAL} token: decimal or hexadecimal ({@code 0xFF}), with an optional {@code L} suffix. A value
+   * above {@code Integer.MAX_VALUE} (hexadecimal included, so {@code 0xFFFFFFFF} is 4294967295 and not -1) is a long.
+   */
+  private static Number parseIntegerLiteral(final String text) {
+    final boolean isLong = text.endsWith("L") || text.endsWith("l");
+    final String digits = isLong ? text.substring(0, text.length() - 1) : text;
+    final boolean isHex = digits.length() > 2 && digits.charAt(0) == '0' && (digits.charAt(1) == 'x' || digits.charAt(1) == 'X');
+    final String body = isHex ? digits.substring(2) : digits;
+    final int radix = isHex ? 16 : 10;
+    if (isLong)
+      return Long.parseLong(body, radix);
+    try {
+      return Integer.parseInt(body, radix);
+    } catch (final NumberFormatException e) {
+      // If it's too large for int, try long
+      return Long.parseLong(body, radix);
+    }
+  }
+
+  /**
    * Integer literal visitor.
    */
   @Override
@@ -3358,16 +3378,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final PInteger number = new PInteger();
     final String text = ctx.INTEGER_LITERAL().getText();
     try {
-      if (text.endsWith("L") || text.endsWith("l")) {
-        number.setValue(Long.parseLong(text.substring(0, text.length() - 1)));
-      } else {
-        try {
-          number.setValue(Integer.parseInt(text));
-        } catch (final NumberFormatException e) {
-          // If it's too large for int, try long
-          number.setValue(Long.parseLong(text));
-        }
-      }
+      number.setValue(parseIntegerLiteral(text));
     } catch (final NumberFormatException e) {
       throw new CommandSQLParsingException("Invalid integer: " + text);
     }
@@ -4491,10 +4502,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final String text = ctx.INTEGER_LITERAL().getText();
 
     try {
-      pInt.setValue(Integer.parseInt(text));
+      pInt.setValue(parseIntegerLiteral(text));
     } catch (final NumberFormatException e) {
-      // If it's too large for int, try long
-      pInt.setValue(Long.parseLong(text));
+      throw new CommandSQLParsingException("Invalid integer: " + text);
     }
 
     return pInt;
