@@ -1028,7 +1028,7 @@ public class SnapshotHttpHandler implements HttpHandler {
    * #7671, #8738). The manifest entry is added only once the identity has been re-checked AFTER the read, so a store
    * rewritten while it streamed fails the ship rather than being certified. Its ZIP entry is already in the stream by
    * then, which is acceptable only because the failure aborts the ship: the manifest is never written, so the follower
-   * rejects the whole download (#4831).
+   * rejects the whole download (#4831, pinned by {@code SnapshotManifestVerificationTest}).
    */
   private static void addSealedStoreToZip(final ZipOutputStream zipOut, final ListedSealedStore sealedFile,
       final List<SnapshotManager.ManifestEntry> manifest) throws Exception {
@@ -1037,18 +1037,11 @@ public class SnapshotHttpHandler implements HttpHandler {
       throw new IOException("Refusing to archive the symlink '" + filePath
           + "': the entry's content would come from a path this archive does not name");
 
-    final CRC32 crc = new CRC32();
-    final long size;
     // OPENED - AND THE IDENTITY CHECKED - BEFORE THE ENTRY IS STARTED, so a store replaced before the read fails
     // without leaving a half-written entry behind
-    try (final FileInputStream fis = sealedFile.open();
-        final CheckedInputStream cis = new CheckedInputStream(fis, crc)) {
-      zipOut.putNextEntry(new ZipEntry(sealedFile.name()));
-      size = cis.transferTo(zipOut);
-    }
-    zipOut.closeEntry();
-    sealedFile.verifyUnchanged(size);
-    manifest.add(new SnapshotManager.ManifestEntry(sealedFile.name(), size, crc.getValue()));
+    final SnapshotManager.ManifestEntry entry = streamEntry(zipOut, sealedFile.name(), sealedFile.open());
+    sealedFile.verifyUnchanged(entry.size());
+    manifest.add(entry);
   }
 
   /**
@@ -1149,16 +1142,7 @@ public class SnapshotHttpHandler implements HttpHandler {
       LogManager.instance().log(SnapshotHttpHandler.class, Level.WARNING, "Skipping symlink in snapshot: %s", filePath);
       return;
     }
-    final ZipEntry entry = new ZipEntry(inputFile.getName());
-    zipOut.putNextEntry(entry);
-    final CRC32 crc = new CRC32();
-    final long size;
-    try (final FileInputStream fis = new FileInputStream(inputFile);
-        final CheckedInputStream cis = new CheckedInputStream(fis, crc)) {
-      size = cis.transferTo(zipOut);
-    }
-    zipOut.closeEntry();
-    manifest.add(new SnapshotManager.ManifestEntry(inputFile.getName(), size, crc.getValue()));
+    addStreamToZip(zipOut, inputFile.getName(), new FileInputStream(inputFile), manifest);
   }
 
   /**
@@ -1167,15 +1151,24 @@ public class SnapshotHttpHandler implements HttpHandler {
    */
   private static void addStreamToZip(final ZipOutputStream zipOut, final String name, final InputStream input,
       final List<SnapshotManager.ManifestEntry> manifest) throws Exception {
-    final ZipEntry entry = new ZipEntry(name);
-    zipOut.putNextEntry(entry);
+    manifest.add(streamEntry(zipOut, name, input));
+  }
+
+  /**
+   * The one place a streamed ZIP entry is written: consumes and closes {@code input}, and returns the manifest record
+   * (name + uncompressed size + CRC32 of the exact bytes streamed) WITHOUT adding it, so a caller with a check to run
+   * after the read - a sealed store's identity (#8738) - can decide whether the entry is certified.
+   */
+  private static SnapshotManager.ManifestEntry streamEntry(final ZipOutputStream zipOut, final String name,
+      final InputStream input) throws Exception {
     final CRC32 crc = new CRC32();
     final long size;
     try (final InputStream in = input; final CheckedInputStream cis = new CheckedInputStream(in, crc)) {
+      zipOut.putNextEntry(new ZipEntry(name));
       size = cis.transferTo(zipOut);
     }
     zipOut.closeEntry();
-    manifest.add(new SnapshotManager.ManifestEntry(name, size, crc.getValue()));
+    return new SnapshotManager.ManifestEntry(name, size, crc.getValue());
   }
 
   /**

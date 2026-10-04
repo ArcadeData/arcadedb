@@ -348,6 +348,9 @@ public class FullBackupFormat extends AbstractBackupFormat {
         final Consumer<File> hook = beforeSealedStoreReadForTesting;
         if (hook != null)
           hook.accept(sealedFile.file());
+        // FAIL FAST on a store already replaced, before reading and compressing a whole file the archive cannot keep.
+        // Not a substitute for the post-read check below: the writer opens the path itself, after this
+        sealedFile.verifyUnchanged(-1L);
         // NO exists() PRE-CHECK: the open inside compressFile IS the check, so there is no window between asking
         // and reading in which the file can still go away silently.
         final long size = compressFile(archive, sealedFile.file(), false);
