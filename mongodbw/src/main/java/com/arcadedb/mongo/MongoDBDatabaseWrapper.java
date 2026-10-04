@@ -163,7 +163,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
     final Document transformedQuery = json2Document(q);
 
-    final MongoQuery mongoQuery = new MongoQuery(null, null, collection, numberToSkip, numberToReturn, transformedQuery, null);
+    final MongoQuery mongoQuery = new MongoQuery(null, null, getFullCollectionNamespace(collection), numberToSkip, numberToReturn, transformedQuery, null);
 
     final QueryResult result = handleQuery(mongoQuery);
 
@@ -259,7 +259,9 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   private Document aggregateCollection(final String command, final Document document, final Oplog oplog)
       throws MongoServerException {
     final String collectionName = document.get("aggregate").toString();
-    database.countType(collectionName, false);
+    // like MongoDB, a pipeline over a collection that does not exist is answered with no documents (countDocuments is one)
+    if (!database.getSchema().existsType(collectionName))
+      return firstBatchCursorResponse(collectionName, "firstBatch", new ArrayList<>(), 0);
 
     final MongoCollection<Long> collection = getCollection(collectionName);
 
@@ -467,7 +469,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       // reject an invalid projection up front, even when no document would be projected
       MongoDBToSqlTranslator.isInclusionProjection(projection, "_id");
 
-    final MongoQuery mongoQuery = new MongoQuery(null, null, collectionName, skip, limit, queryPayload, null);
+    final MongoQuery mongoQuery = new MongoQuery(null, null, getFullCollectionNamespace(collectionName), skip, limit, queryPayload, null);
 
     final QueryResult result = handleQuery(mongoQuery);
 
@@ -598,13 +600,17 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
           final Number limit = (Number) del.get("limit");
           final boolean single = limit != null && limit.intValue() == 1;
 
-          final Map<String, Object> params = new HashMap<>();
-          final StringBuilder sql = new StringBuilder("DELETE FROM ").append(Identifier.quote(collectionName));
-          appendWhere(sql, params, q);
-          if (single)
-            sql.append(" LIMIT 1");
+          final MongoFilter filter = new MongoFilter(database, q);
+          if (filter.isSql()) {
+            final Map<String, Object> params = new HashMap<>();
+            final StringBuilder sql = new StringBuilder("DELETE FROM ").append(Identifier.quote(collectionName));
+            filter.appendWhere(sql, params);
+            if (single)
+              sql.append(" LIMIT 1");
 
-          n += executeCount(sql.toString(), params);
+            n += executeCount(sql.toString(), params);
+          } else
+            n += deleteRecords(filter.select(database, collectionName, single ? 1 : 0));
         }
         database.commit();
       } catch (final RuntimeException e) {
@@ -730,13 +736,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * Advisory: it only decides whether to touch the index ahead of the transaction, the match can change before it starts.
    */
   private boolean matchesAny(final String collectionName, final Document q) {
-    final Map<String, Object> params = new HashMap<>();
-    final StringBuilder sql = new StringBuilder("SELECT @rid FROM ").append(Identifier.quote(collectionName));
-    appendWhere(sql, params, q);
-    sql.append(" LIMIT 1");
-    try (final ResultSet rs = database.query("sql", sql.toString(), params)) {
-      return rs.hasNext();
-    }
+    return !new MongoFilter(database, q).select(database, collectionName, 1).isEmpty();
   }
 
   private int executeUpdate(final String collectionName, final Document q, final Document u, final boolean multi) {
@@ -745,13 +745,15 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
     // A replacement must keep the stored _id and $set on a dotted path must reach into the embedded document: neither can be
     // expressed as a single SQL UPDATE, so those are applied to each matching record. Everything else stays one SQL UPDATE.
-    if (isReplacement(u) || setsDottedPath(u) || touchesId(u))
-      return executeUpdateOnRecords(collectionName, q, u, multi);
+    final MongoFilter filter = new MongoFilter(database, q);
+    // a filter the SQL cannot answer exactly (see MongoFilter) also selects the records itself
+    if (isReplacement(u) || setsDottedPath(u) || touchesId(u) || !filter.isSql())
+      return executeUpdateOnRecords(collectionName, filter, u, multi);
 
     final Map<String, Object> params = new HashMap<>();
     final StringBuilder sql = new StringBuilder("UPDATE ").append(Identifier.quote(collectionName));
     appendUpdateOperations(sql, params, u);
-    appendWhere(sql, params, q);
+    filter.appendWhere(sql, params);
     if (!multi)
       sql.append(" LIMIT 1");
 
@@ -795,20 +797,10 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     return false;
   }
 
-  private int executeUpdateOnRecords(final String collectionName, final Document q, final Document u, final boolean multi) {
-    final Map<String, Object> params = new HashMap<>();
-    final StringBuilder sql = new StringBuilder("SELECT @rid FROM ").append(Identifier.quote(collectionName));
-    appendWhere(sql, params, q);
-    if (!multi)
-      sql.append(" LIMIT 1");
-
+  private int executeUpdateOnRecords(final String collectionName, final MongoFilter filter, final Document u, final boolean multi) {
     // collect the RIDs first (the records are modified while the result set would still be open on them), and load each record
     // in turn: only identities are held on the heap, not every matching document
-    final List<RID> rids = new ArrayList<>();
-    try (final ResultSet rs = database.query("sql", sql.toString(), params)) {
-      while (rs.hasNext())
-        rs.next().getIdentity().ifPresent(rids::add);
-    }
+    final List<RID> rids = filter.select(database, collectionName, multi ? 0 : 1);
 
     final boolean replacement = isReplacement(u);
     int skipped = 0;
@@ -1177,11 +1169,16 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     return true;
   }
 
-  private void appendWhere(final StringBuilder sql, final Map<String, Object> params, final Document q) {
-    if (q != null && !q.isEmpty()) {
-      sql.append(" WHERE ");
-      MongoDBToSqlTranslator.buildExpression(sql, params, q);
-    }
+  private int deleteRecords(final List<RID> rids) {
+    int deleted = 0;
+    for (final RID rid : rids)
+      try {
+        rid.asDocument().delete();
+        deleted++;
+      } catch (final RecordNotFoundException e) {
+        // deleted since the selection: it is not this command's to count
+      }
+    return deleted;
   }
 
   private int executeCount(final String sql, final Map<String, Object> params) {
