@@ -605,7 +605,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * Handles the MongoDB {@code delete} command (used by the driver's {@code deleteOne} /
    * {@code deleteMany} helpers). Each delete spec carries a filter {@code q} and a {@code limit}:
    * a limit of 1 deletes only the first match ({@code deleteOne}), 0 deletes all matches
-   * ({@code deleteMany}). Filters are translated to the same SQL {@code WHERE} clause used by find.
+   * ({@code deleteMany}). The records to delete are the ones the filter selects, as in find (see {@link MongoFilter}).
    */
   private Document deleteDocuments(final Document document) {
     final String collectionName = document.get("delete").toString();
@@ -658,9 +658,9 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   /**
    * Handles the MongoDB {@code update} command (used by {@code updateOne}, {@code updateMany},
    * {@code replaceOne} and {@code replaceMany}). The update document {@code u} is either a full
-   * replacement (no {@code $}-prefixed keys, mapped to SQL {@code CONTENT}) or a set of update
-   * operators ({@code $set}, {@code $unset}, {@code $inc}). The {@code multi} flag selects between
-   * updating the first match only ({@code LIMIT 1}) and all matches. When {@code upsert} is set and
+   * replacement (no {@code $}-prefixed keys) or a set of update operators ({@code $set}, {@code $unset},
+   * {@code $inc}). The {@code multi} flag selects between updating the first match only and all matches; the matches are the
+   * records the filter selects (see {@link MongoFilter}), each updated in turn. When {@code upsert} is set and
    * nothing matched, a new document seeded from the filter's equalities and the update is inserted.
    */
   private Document updateDocuments(final Document document) {
