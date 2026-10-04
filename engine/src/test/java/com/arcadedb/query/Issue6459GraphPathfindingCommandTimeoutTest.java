@@ -264,6 +264,21 @@ class Issue6459GraphPathfindingCommandTimeoutTest {
   }
 
   @Test
+  @Tag("slow")
+  @Timeout(120)
+  void cypherAllShortestPathsExpressionHonoursTheCommandTimeout() {
+    setTimeout(50);
+
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
+    assertThatThrownBy(() -> drainCypher(
+        "MATCH (a:Node {v: $src}), (b:Node {v: $dst}) RETURN allShortestPaths((a)-[:LINK*]-(b)) AS p",
+        Map.of("src", 0, "dst", NODES / 2)))
+        .as("the RETURN-position allShortestPaths() runs the same guarded layered BFS as the MATCH form (issue #8995)")
+        .hasStackTraceContaining(GlobalConfiguration.COMMAND_TIMEOUT.getKey());
+    stopwatch.assertGaveUpWithin(60_000L, "the expression-form layered BFS aborted from inside its own loop");
+  }
+
+  @Test
   void cypherShortestPathFormsStillReturnCorrectPathsWhenNothingAborts() {
     assertThat(drainCypher(
         "MATCH (a:Node {v: $src}), (b:Node {v: $dst}), p = shortestPath((a)-[:LINK*]-(b)) RETURN p",

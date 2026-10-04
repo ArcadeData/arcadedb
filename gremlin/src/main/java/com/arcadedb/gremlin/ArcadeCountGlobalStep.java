@@ -18,6 +18,7 @@
  */
 package com.arcadedb.gremlin;
 
+import com.arcadedb.graph.Edge;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.VertexType;
@@ -30,6 +31,7 @@ import org.apache.tinkerpop.gremlin.structure.Element;
 import org.apache.tinkerpop.gremlin.structure.Vertex;
 import org.apache.tinkerpop.gremlin.structure.util.StringFactory;
 
+import java.util.Iterator;
 import java.util.Locale;
 import java.util.NoSuchElementException;
 
@@ -78,8 +80,15 @@ public final class ArcadeCountGlobalStep<S extends Element> extends AbstractStep
             final boolean matchesKind = Vertex.class.isAssignableFrom(this.elementClass) ?
                 type instanceof VertexType :
                 type instanceof EdgeType;
-            if (matchesKind)
-              total += bucketName != null ? graph.database.countBucket(bucketName) : graph.database.countType(typeName, true);
+            if (matchesKind) {
+              if (bucketName != null)
+                total += graph.database.countBucket(bucketName);
+              else if (LightweightEdges.isHeldBy(type))
+                // THE RECORD COUNT OF A LIGHTWEIGHT EDGE TYPE IS 0 BY CONSTRUCTION, ITS EDGES LIVE INSIDE THE VERTICES (#9142)
+                total += LightweightEdges.countOfType(graph.database, typeName);
+              else
+                total += graph.database.countType(typeName, true);
+            }
           }
         } else if (Vertex.class.isAssignableFrom(this.elementClass)) {
           // NON-POLYMORPHIC HERE, AND ONLY HERE: EVERY TYPE IS SUMMED, SO A POLYMORPHIC COUNT WOULD COUNT A SUB-TYPE'S
@@ -93,6 +102,11 @@ public final class ArcadeCountGlobalStep<S extends Element> extends AbstractStep
           for (DocumentType type : graph.database.getSchema().getTypes()) {
             if (type instanceof EdgeType)
               total += graph.database.countType(type.getName(), false);
+          }
+          final Iterator<Edge> lightweight = LightweightEdges.all(graph.database);
+          while (lightweight.hasNext()) {
+            lightweight.next();
+            ++total;
           }
         }
       } finally {

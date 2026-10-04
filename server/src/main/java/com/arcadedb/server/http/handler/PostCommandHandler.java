@@ -33,6 +33,7 @@ import com.arcadedb.query.sql.parser.ExplainResultSet;
 import com.arcadedb.query.sql.parser.MatchStatement;
 import com.arcadedb.query.sql.parser.SelectStatement;
 import com.arcadedb.query.sql.parser.Statement;
+import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ForwardedRequestIdContext;
 import com.arcadedb.server.http.HttpServer;
@@ -43,6 +44,7 @@ import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 
 import java.io.IOException;
+import java.lang.reflect.Array;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
@@ -254,20 +256,23 @@ public class PostCommandHandler extends AbstractQueryHandler {
     final Object rawParams = requestMap.get("params");
     Map<String, Object> paramMap;
     if (rawParams instanceof Map<?, ?> m) {
-      @SuppressWarnings("unchecked")
-      final Map<String, Object> typed = (Map<String, Object>) m;
-      paramMap = typed;
+      paramMap = new HashMap<>((int) (m.size() / 0.75f) + 1);
+      // A numeric array given as a parameter is a list, as it is when the statement runs embedded with a List: a primitive array
+      // would be stored as one element of a LIST property, or as an ARRAY_OF_* instead of a LIST (issue #9002). Only arrays nested
+      // deeper in the parameters (batches of vectors) keep the primitive form.
+      for (final Map.Entry<?, ?> entry : m.entrySet())
+        paramMap.put(String.valueOf(entry.getKey()), numericArrayToList(entry.getValue()));
     } else if (rawParams instanceof List<?> list) {
       // Positional params forwarded as a JSON array [v0, v1, ...] — convert to ordinal map
       paramMap = new HashMap<>((int) (list.size() / 0.75f) + 1);
       for (int i = 0; i < list.size(); i++)
-        paramMap.put("" + i, list.get(i));
+        paramMap.put("" + i, numericArrayToList(list.get(i)));
     } else if (rawParams != null && rawParams.getClass().isArray()) {
       // Positional params converted to a primitive array by toMap(true) — convert to ordinal map
-      final int len = java.lang.reflect.Array.getLength(rawParams);
+      final int len = Array.getLength(rawParams);
       paramMap = new HashMap<>((int) (len / 0.75f) + 1);
       for (int i = 0; i < len; i++)
-        paramMap.put("" + i, java.lang.reflect.Array.get(rawParams, i));
+        paramMap.put("" + i, boxedNumber(Array.get(rawParams, i)));
     } else {
       paramMap = new HashMap<>();
     }
@@ -523,5 +528,26 @@ public class PostCommandHandler extends AbstractQueryHandler {
       database.async().command(language, command, callback, os);
     else
       database.async().command(language, command, callback, (Map<String, Object>) params);
+  }
+
+  /** A primitive numeric array parsed from a JSON array parameter becomes the list of its elements, as the embedded API receives it.
+   * Elements are narrowed like a scalar parameter the JSON parser reads (a long that fits an int is an int), which is what the embedded
+   * caller passing {@code List.of(1, 2, 3)} gives.
+   */
+  private static Object numericArrayToList(final Object value) {
+    if (value instanceof long[] longs) {
+      final List<Object> list = new ArrayList<>(longs.length);
+      for (final long v : longs)
+        list.add(v >= Integer.MIN_VALUE && v <= Integer.MAX_VALUE ? (Object) (int) v : (Object) v);
+      return list;
+    }
+    return Type.isPrimitiveNumberArray(value) ? Type.primitiveArrayToList(value) : value;
+  }
+
+  /** A long that fits an int is an int, as the JSON parser answers a scalar number. */
+  private static Object boxedNumber(final Object value) {
+    if (value instanceof Long l && l >= Integer.MIN_VALUE && l <= Integer.MAX_VALUE)
+      return l.intValue();
+    return value;
   }
 }

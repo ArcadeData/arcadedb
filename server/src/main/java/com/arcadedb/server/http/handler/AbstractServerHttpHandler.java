@@ -127,6 +127,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   private static final String AUTHORIZATION_BEARER = "Bearer";
   // Cached once: tryFromString scans/validates the header name, wasteful to repeat on every request.
   private static final HttpString REQUEST_ID_HEADER = HttpString.tryFromString(IdempotencyCache.HEADER_REQUEST_ID);
+  private static final HttpString REPLAY_PROTECTION_HEADER = HttpString.tryFromString(IdempotencyCache.HEADER_REPLAY_PROTECTION);
   protected static final String   EVENT_STREAM_CONTENT_TYPE = "text/event-stream";
   private static final HttpString X_ACCEL_BUFFERING_HEADER  = HttpString.tryFromString("X-Accel-Buffering");
   // Response header set by session-establishing routes (e.g. /begin). Its presence means the response
@@ -488,6 +489,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       if (correlationRequestId == null)
         correlationRequestId = generateCorrelationId();
       exchange.getResponseHeaders().put(REQUEST_ID_HEADER, correlationRequestId);
+      exchange.getResponseHeaders().put(REPLAY_PROTECTION_HEADER, IdempotencyCache.PROCESS_ID);
+      // A retry that was told about another server process: the entry of the write it repeats died with that process, and running it
+      // again could apply it twice. Refused before anything runs (issue #8526).
+      final String replayInstance = exchange.getRequestHeaders().getFirst(IdempotencyCache.HEADER_REPLAY_INSTANCE);
+      if (replayInstance != null && !replayInstance.equals(IdempotencyCache.PROCESS_ID)) {
+        new ExecutionResponse(412, error2json("The server restarted since the request was first sent",
+            "The write may already have been applied and its answer is no longer available: it is not run again", null, null, null))
+            .send(exchange);
+        return;
+      }
       // The supplier is an SPI: tolerate an array shorter than 2 (or null) instead of indexing blindly.
       final String[] traceContext = LogManager.instance().currentTraceContext();
       final String traceId = traceContext != null && traceContext.length > 0 ? traceContext[0] : null;
@@ -749,11 +760,21 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
 
         final String currentPrincipal = user != null ? user.getName() : null;
 
-        final IdempotencyCache.Reservation reservation = claimIdempotencyKey(exchange, idempotencyKey, currentPrincipal);
+        final IdempotencyCache.Reservation reservation = claimIdempotencyKey(exchange, idempotencyKey, currentPrincipal,
+            exchange.getRequestHeaders().getFirst(IdempotencyCache.HEADER_REPLAY_INSTANCE) != null);
         if (reservation == null)
           return;
-        if (reservation.isReserved())
+        if (reservation.isReserved()) {
           idempotencyReservation = reservation;
+          // A replay (the client names this process and says an earlier attempt may have reached it) that finds no cached answer - it
+          // was too big to keep, expired or was evicted - must not run: the earlier attempt may have applied it (issue #8526)
+          if (exchange.getRequestHeaders().getFirst(IdempotencyCache.HEADER_REPLAY_INSTANCE) != null) {
+            httpServer.getIdempotencyCache().abort(idempotencyKey, reservation);
+            idempotencyReservation = null;
+            sendReplayUnavailable(exchange);
+            return;
+          }
+        }
 
         // A peer forwarded this request and named the key the client's own request has on the peer (issue #8347). The
         // client may send its retry straight here, where it computes that key from its own body: claim it too, so the
@@ -762,7 +783,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
         // client's key leaves the reservation on the own key to the finally block, which releases it.
         if (trustedClientKey != null && !trustedClientKey.equals(idempotencyKey)) {
           final IdempotencyCache.Reservation clientReservation = claimIdempotencyKey(exchange, trustedClientKey,
-              currentPrincipal);
+              currentPrincipal, false);
           if (clientReservation == null)
             return;
           if (clientReservation.isReserved()) {
@@ -1430,12 +1451,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * another principal, or the identical request settled without a replayable one).
    */
   private IdempotencyCache.Reservation claimIdempotencyKey(final HttpServerExchange exchange, final String key,
-      final String currentPrincipal) {
+      final String currentPrincipal, final boolean isReplay) {
     final IdempotencyCache.Reservation reservation = httpServer.getIdempotencyCache().reserve(key);
     if (reservation.isHit()) {
       if (replayCachedResponse(exchange, reservation.entry(), currentPrincipal))
         return null;
-      // Principal mismatch: fall through and execute as this caller, without owning the reservation.
+      // Principal mismatch: fall through and execute as this caller, without owning the reservation. A replay never executes (issue #8526).
+      if (isReplay) {
+        sendReplayUnavailable(exchange);
+        return null;
+      }
     } else if (reservation.isInFlight()) {
       // A concurrent identical retry is already executing. Wait briefly for its result rather than running
       // the write a second time.
@@ -1451,9 +1476,20 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       if (replayCachedResponse(exchange, httpServer.getIdempotencyCache().get(key), currentPrincipal))
         return null;
       // Settled without a replayable answer (it failed, or its response was not cacheable), or cached for a
-      // different principal: execute as this caller, without owning the reservation.
+      // different principal: execute as this caller, without owning the reservation. A replay never executes (issue #8526).
+      if (isReplay) {
+        sendReplayUnavailable(exchange);
+        return null;
+      }
     }
     return reservation;
+  }
+
+  /** Answers a replay the cache cannot answer: the earlier attempt may have been applied, so the request is not run again. */
+  private void sendReplayUnavailable(final HttpServerExchange exchange) {
+    new ExecutionResponse(412, error2json("The answer to the request is no longer available",
+        "The earlier attempt may have been applied and its answer was not kept: the request is not run again", null, null, null))
+        .send(exchange);
   }
 
   /**
@@ -1605,6 +1641,9 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * {@code grep -rn 'bodyReachesIdempotencyKey' server/src/main}: it is the only handler that overrides
    * {@link #parseRequestPayload} to return {@code null} without overriding {@link #idempotencyBodyBytes}
    * ({@code AbstractBinaryHttpHandler} does both, {@code PostTimeSeriesWriteHandler} returns the text).
+   * <p>
+   * Invariant (issue #8526): the remote driver resends a {@code command} whose response was lost and relies on this cache to answer the
+   * repeat instead of running it twice, so the route that serves {@code command} must keep answering true here.
    */
   protected boolean bodyReachesIdempotencyKey() {
     return true;

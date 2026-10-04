@@ -354,15 +354,22 @@ public record SQLAntlrParser(Database database) {
     for (final Token token : tokens.getTokens()) {
       if (token.getChannel() != Token.DEFAULT_CHANNEL)
         continue;
-      if (token.getType() == SQLLexer.LPAREN) {
+      switch (token.getType()) {
+      case SQLLexer.LPAREN, SQLLexer.LBRACKET, SQLLexer.LBRACE, SQLLexer.CASE:
         if (++depth > maxDepth)
           throw new CommandSQLParsingException(
               "Expression nesting exceeds the maximum allowed depth of " + maxDepth
-                  + " (parentheses nested inside one another). This protects the server from a query that ties up "
-                  + "a worker thread for a very long time without crashing; raise 'arcadedb.sql.maxExpressionDepth' "
-                  + "if this is a legitimate query.");
-      } else if (token.getType() == SQLLexer.RPAREN && depth > 0)
-        --depth;
+                  + " (parentheses, brackets, maps or CASE expressions nested inside one another). This protects the "
+                  + "server from a query that ties up a worker thread for a very long time or overflows its stack; raise "
+                  + "'arcadedb.sql.maxExpressionDepth' if this is a legitimate query.");
+        break;
+      case SQLLexer.RPAREN, SQLLexer.RBRACKET, SQLLexer.RBRACE, SQLLexer.END:
+        if (depth > 0)
+          --depth;
+        break;
+      default:
+        break;
+      }
     }
   }
 }

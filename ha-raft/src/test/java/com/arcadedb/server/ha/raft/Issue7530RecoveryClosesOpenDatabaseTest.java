@@ -27,6 +27,7 @@ import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
@@ -70,6 +71,20 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author Roberto Franchini (r.franchini@arcadedata.com)
  */
 class Issue7530RecoveryClosesOpenDatabaseTest {
+
+  /**
+   * The fixtures stand in for a snapshot with placeholder files no engine can open, so recovery is told every snapshot
+   * opens: what it does with one that does not is the subject of {@link Issue8950RollForwardProvesTheSnapshotOpensTest}.
+   */
+  @BeforeEach
+  void snapshotsOpenForIssue8950() {
+    SnapshotInstaller.snapshotOpensForTesting = path -> true;
+  }
+
+  @AfterEach
+  void restoreSnapshotOpenProofForIssue8950() {
+    SnapshotInstaller.snapshotOpensForTesting = null;
+  }
 
   private static final String DB_NAME       = "recov7530";
   private static final String DEFERRED_DB   = "deferred7530";

@@ -56,15 +56,21 @@ class Issue9021IntegralIndexInexactBoundTest extends TestHelper {
         database.command("sql", "CREATE PROPERTY " + type + ".b BYTE");
         database.command("sql", "CREATE PROPERTY " + type + ".c INTEGER");
         database.command("sql", "CREATE PROPERTY " + type + ".d INTEGER");
+        database.command("sql", "CREATE PROPERTY " + type + ".u INTEGER");
+        database.command("sql", "CREATE PROPERTY " + type + ".h INTEGER");
       }
       database.command("sql", "CREATE INDEX ON I (i) NOTUNIQUE");
       database.command("sql", "CREATE INDEX ON I (l) NOTUNIQUE");
       database.command("sql", "CREATE INDEX ON I (s) NOTUNIQUE");
       database.command("sql", "CREATE INDEX ON I (b) NOTUNIQUE");
       database.command("sql", "CREATE INDEX ON I (c, d) NOTUNIQUE");
+      // an equality on a UNIQUE index, and any bound on a HASH index, take other lookup paths than a NOTUNIQUE LSM range
+      database.command("sql", "CREATE INDEX ON I (u) UNIQUE");
+      database.command("sql", "CREATE INDEX ON I (h) UNIQUE_HASH");
       for (final String type : new String[] { "I", "S" })
         for (int k = 11; k <= 13; k++)
-          database.newVertex(type).set("i", k, "l", Long.MAX_VALUE - 13 + k, "s", (short) k, "b", (byte) k, "c", k % 2, "d", k).save();
+          database.newVertex(type)
+              .set("i", k, "l", Long.MAX_VALUE - 13 + k, "s", (short) k, "b", (byte) k, "c", k % 2, "d", k, "u", k, "h", k).save();
     });
   }
 
@@ -101,8 +107,33 @@ class Issue9021IntegralIndexInexactBoundTest extends TestHelper {
     }
   }
 
+  @Test
+  void fluentSelectIndexAgreesWithTheScanOnEveryIntegralKeyType() {
+    final Object[] bounds = { 12.5d, -12.5d, 3_000_000_000L, -3_000_000_000L, 1e19d, -1e19d, Double.POSITIVE_INFINITY,
+        Double.NEGATIVE_INFINITY, Double.NaN };
+    final SelectOperator[] operators = { SelectOperator.eq, SelectOperator.lt, SelectOperator.le, SelectOperator.gt, SelectOperator.ge };
+    for (final String property : new String[] { "i", "l", "s", "b", "u", "h" })
+      for (final SelectOperator operator : operators)
+        for (final Object bound : bounds) {
+          if (property.equals("h") && operator != SelectOperator.eq)
+            // a HASH index answers no range: the fluent API scans, there is no index side to compare
+            continue;
+          assertThat(fluent("I", property, operator, bound)).as(property + " " + operator + " " + describe(bound))
+              .isEqualTo(fluent("S", property, operator, bound));
+        }
+    for (final String property : new String[] { "i", "l", "s", "b", "u" })
+      for (final Object[] range : new Object[][] { { 11.5d, 12.5d }, { 12.2d, 12.7d }, { -1e19d, 1e19d }, { 1e19d, -1e19d },
+          { Double.NEGATIVE_INFINITY, Double.NaN } })
+        assertThat(fluent("I", property, SelectOperator.between, range)).as(property + " between " + range[0] + " and " + range[1])
+            .isEqualTo(fluent("S", property, SelectOperator.between, range));
+  }
+
   private List<Object> fluent(final String type, final SelectOperator operator, final Object... value) {
-    final SelectWhereOperatorBlock where = database.select().fromType(type).where().property("i");
+    return fluent(type, "i", operator, value);
+  }
+
+  private List<Object> fluent(final String type, final String property, final SelectOperator operator, final Object... value) {
+    final SelectWhereOperatorBlock where = database.select().fromType(type).where().property(property);
     final SelectWhereAfterBlock after = switch (operator) {
       case lt -> where.lt().value(value[0]);
       case le -> where.le().value(value[0]);
@@ -129,7 +160,8 @@ class Issue9021IntegralIndexInexactBoundTest extends TestHelper {
   @Test
   void theIndexIsUsedForTheBoundsUnderTest() {
     // the agreement below proves nothing if the indexed type is answered by a scan as well
-    for (final String where : new String[] { "i = 12.5", "i < 12.5", "i >= ?", "l = ?", "s > 12.5", "b <= 12.5", "c = 1 AND d < 12.5" })
+    for (final String where : new String[] { "i = 12.5", "i < 12.5", "i >= ?", "l = ?", "s > 12.5", "b <= 12.5", "c = 1 AND d < 12.5",
+        "u = 12.5", "h = 12.5" })
       try (final ResultSet rs = database.query("sql", "EXPLAIN SELECT i FROM I WHERE " + where, 12.5d)) {
         assertThat(rs.next().<String>getProperty("executionPlanAsString")).as(where).contains("FETCH FROM INDEX");
       }
@@ -137,9 +169,9 @@ class Issue9021IntegralIndexInexactBoundTest extends TestHelper {
 
   @Test
   void sqlIndexAgreesWithTheScanForEveryOperatorAndInexactBound() {
-    final Object[] bounds = { 12.5d, 12.5f, -12.5d, 10.5d, 13.5d, 12.0d, new BigDecimal("12.5"), 3_000_000_000L, -3_000_000_000L, 1e19d, -1e19d,
-        new BigInteger("18446744073709551615"), Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, Double.NaN, 40_000, 300 };
-    for (final String field : new String[] { "i", "l", "s", "b" })
+    final Object[] bounds = { 12.5d, 12.5f, -12.5d, 10.5d, 13.5d, 12.0d, new BigDecimal("12.5"), 3_000_000_000L, -3_000_000_000L, 1e19d,
+        -1e19d, new BigInteger("18446744073709551615"), Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, Double.NaN, 40_000, 300 };
+    for (final String field : new String[] { "i", "l", "s", "b", "u", "h" })
       for (final String op : OPERATORS)
         for (final Object bound : bounds) {
           final String where = field + " " + op + " ?";
@@ -152,7 +184,7 @@ class Issue9021IntegralIndexInexactBoundTest extends TestHelper {
   void sqlLiteralBoundsAgreeWithTheScan() {
     for (final String op : OPERATORS)
       for (final String literal : new String[] { "12.5", "-12.5", "13.5", "10.5", "12.0", "3000000000", "-3000000000" })
-        for (final String field : new String[] { "i", "s", "b" }) {
+        for (final String field : new String[] { "i", "s", "b", "u", "h" }) {
           final String where = field + " " + op + " " + literal;
           assertThat(sql("SELECT i FROM I WHERE " + where)).as(where).isEqualTo(sql("SELECT i FROM S WHERE " + where));
         }
@@ -161,8 +193,10 @@ class Issue9021IntegralIndexInexactBoundTest extends TestHelper {
   @Test
   void sqlTwoSidedRangesBetweenAndInAgreeWithTheScan() {
     final String[] wheres = { "i > 11.5 AND i < 12.5", "i >= 11.5 AND i <= 13.5", "i > ? AND i <= 13", "i BETWEEN 11.5 AND 12.5",
-        "i BETWEEN ? AND 13", "i IN [12.5, 13]", "i IN [12.5]", "i IN ?", "l BETWEEN ? AND 9223372036854775807", "c = 1 AND d < 12.5",
-        "c = 1 AND d >= 12.5", "c = 0.5 AND d > 0", "i > 12.2 AND i < 12.7", "i BETWEEN 12.2 AND 12.7", "i BETWEEN 13 AND 12", "c = 1 AND d = 12.5", "c = 1 AND d > 11.5 AND d < 13.5", "c = 1 AND d BETWEEN 10.5 AND 12.5" };
+        "i BETWEEN ? AND 13", "i IN [12.5, 13]", "i IN [12.5]", "i IN ?", "l BETWEEN ? AND 9223372036854775807",
+        "c = 1 AND d < 12.5", "c = 1 AND d >= 12.5", "c = 0.5 AND d > 0", "i > 12.2 AND i < 12.7", "i BETWEEN 12.2 AND 12.7",
+        "i BETWEEN 13 AND 12", "c = 1 AND d = 12.5", "c = 1 AND d > 11.5 AND d < 13.5", "c = 1 AND d BETWEEN 10.5 AND 12.5",
+        "u IN [12.5, 13]", "h IN [12.5, 13]", "u BETWEEN 11.5 AND 12.5" };
     for (final String where : wheres) {
       final Object parameter = where.contains("IN ?") ? List.of(12.5d, 11) : where.startsWith("l ") ? 1e19d : 11.5d;
       assertThat(sql("SELECT i FROM I WHERE " + where, parameter)).as(where).isEqualTo(sql("SELECT i FROM S WHERE " + where, parameter));
@@ -170,10 +204,27 @@ class Issue9021IntegralIndexInexactBoundTest extends TestHelper {
   }
 
   @Test
+  void sqlBetweenWithNaNAndInfiniteBoundsAgreesWithTheScan() {
+    final double[] bounds = { Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, 12.5d };
+    for (final String field : new String[] { "i", "l", "s", "b", "u" })
+      for (final double from : bounds)
+        for (final double to : bounds) {
+          final String where = field + " BETWEEN ? AND ?";
+          assertThat(sql("SELECT i FROM I WHERE " + where, from, to)).as(where + " with " + from + ", " + to)
+              .isEqualTo(sql("SELECT i FROM S WHERE " + where, from, to));
+        }
+  }
+
+  @Test
   void sqlDescendingOrderOverAnInexactRange() {
     for (final String type : new String[] { "I", "S" }) {
       assertThat(sql("SELECT i FROM " + type + " WHERE i < 12.5 ORDER BY i DESC")).as(type).containsExactly(12, 11);
       assertThat(sql("SELECT i FROM " + type + " WHERE i > 11.5 ORDER BY i DESC")).as(type).containsExactly(13, 12);
+      // two mapped bounds: the descending seek swaps them, with their inclusion flags
+      assertThat(sql("SELECT i FROM " + type + " WHERE i > 10.5 AND i < 12.5 ORDER BY i DESC")).as(type).containsExactly(12, 11);
+      assertThat(sql("SELECT i FROM " + type + " WHERE i BETWEEN 11.5 AND 13.5 ORDER BY i DESC")).as(type).containsExactly(13, 12);
+      assertThat(sql("SELECT i FROM " + type + " WHERE c = 1 AND d > 10.5 AND d < 13.5 ORDER BY i DESC")).as(type)
+          .containsExactly(13, 11);
     }
   }
 
@@ -185,10 +236,12 @@ class Issue9021IntegralIndexInexactBoundTest extends TestHelper {
       for (final String op : OPERATORS)
         for (final Object bound : bounds) {
           final String where = "n." + field + " " + op + " $p";
-          assertThat(cypher("MATCH (n:I) WHERE " + where + " RETURN n.i AS i ORDER BY i", Map.of("p", bound))).as(where + " with " + describe(bound))
+          assertThat(cypher("MATCH (n:I) WHERE " + where + " RETURN n.i AS i ORDER BY i", Map.of("p", bound)))
+              .as(where + " with " + describe(bound))
               .isEqualTo(cypher("MATCH (n:S) WHERE " + where + " RETURN n.i AS i ORDER BY i", Map.of("p", bound)));
         }
-    for (final String where : new String[] { "n.i > 12.2 AND n.i < 12.7", "n.i > 11.5 AND n.i < 12.5", "n.i >= 10.5 AND n.i <= 12.5", "n.i < 12.5", "n.i <= 12.5", "n.i > 12.5" })
+    for (final String where : new String[] { "n.i > 12.2 AND n.i < 12.7", "n.i > 11.5 AND n.i < 12.5", "n.i >= 10.5 AND n.i <= 12.5",
+        "n.i < 12.5", "n.i <= 12.5", "n.i > 12.5" })
       assertThat(cypher("MATCH (n:I) WHERE " + where + " RETURN n.i AS i ORDER BY i DESC", Map.of())).as(where)
           .isEqualTo(cypher("MATCH (n:S) WHERE " + where + " RETURN n.i AS i ORDER BY i DESC", Map.of()));
   }
@@ -204,6 +257,17 @@ class Issue9021IntegralIndexInexactBoundTest extends TestHelper {
     assertThat(IntegralKeyBound.isInexact(INT, Double.NaN)).isTrue();
     assertThat(IntegralKeyBound.isInexact(BinaryTypes.TYPE_DOUBLE, 12.5d)).isFalse();
     assertThat(IntegralKeyBound.isInexact(INT, "12.5")).isFalse();
+    // the primitive fast path for a double or float below 2^53, and the BigDecimal path above it
+    assertThat(IntegralKeyBound.isInexact(INT, 12.0f)).isFalse();
+    assertThat(IntegralKeyBound.isInexact(INT, 12.5f)).isTrue();
+    assertThat(IntegralKeyBound.isInexact(INT, -0.0d)).isFalse();
+    assertThat(IntegralKeyBound.isInexact(INT, (double) Integer.MAX_VALUE)).isFalse();
+    assertThat(IntegralKeyBound.isInexact(INT, Integer.MAX_VALUE + 1.0d)).isTrue();
+    assertThat(IntegralKeyBound.isInexact(INT, Integer.MIN_VALUE - 1.0d)).isTrue();
+    assertThat(IntegralKeyBound.isInexact(BinaryTypes.TYPE_LONG, 9007199254740991d)).isFalse();
+    assertThat(IntegralKeyBound.isInexact(BinaryTypes.TYPE_LONG, 9007199254740992d)).isFalse();
+    assertThat(IntegralKeyBound.isInexact(BinaryTypes.TYPE_LONG, 0x1p63)).isTrue();
+    assertThat(IntegralKeyBound.isInexact(BinaryTypes.TYPE_BYTE, 128.0d)).isTrue();
 
     assertThat(IntegralKeyBound.ceiling(INT, 12.5d)).isEqualTo(13);
     assertThat(IntegralKeyBound.floor(INT, 12.5d)).isEqualTo(12);

@@ -35,13 +35,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 class JSONNumericArrayOptimizationTest {
 
   @Test
-  void numericDoubleArrayBecomesPrimitiveFloatArray() {
+  void numericDoubleArrayBecomesPrimitiveDoubleArray() {
     final JSONObject obj = new JSONObject("{\"vector\":[1.5, 2.5, 3.5]}");
     final Map<String, Object> map = obj.toMap(true);
 
-    assertThat(map.get("vector")).isInstanceOf(float[].class);
-    final float[] vec = (float[]) map.get("vector");
-    assertThat(vec).containsExactly(1.5f, 2.5f, 3.5f);
+    assertThat(map.get("vector")).isInstanceOf(double[].class);
+    final double[] vec = (double[]) map.get("vector");
+    assertThat(vec).containsExactly(1.5, 2.5, 3.5);
   }
 
   @Test
@@ -83,11 +83,11 @@ class JSONNumericArrayOptimizationTest {
     final List<?> batch = (List<?>) map.get("batch");
     assertThat(batch).hasSize(2);
     final Map<?, ?> first = (Map<?, ?>) batch.get(0);
-    assertThat(first.get("vector")).isInstanceOf(float[].class);
-    assertThat((float[]) first.get("vector")).containsExactly(1.0f, 2.0f);
+    assertThat(first.get("vector")).isInstanceOf(double[].class);
+    assertThat((double[]) first.get("vector")).containsExactly(1.0, 2.0);
     final Map<?, ?> second = (Map<?, ?>) batch.get(1);
-    assertThat(second.get("vector")).isInstanceOf(float[].class);
-    assertThat((float[]) second.get("vector")).containsExactly(3.0f, 4.0f);
+    assertThat(second.get("vector")).isInstanceOf(double[].class);
+    assertThat((double[]) second.get("vector")).containsExactly(3.0, 4.0);
   }
 
   @Test
@@ -102,21 +102,22 @@ class JSONNumericArrayOptimizationTest {
   }
 
   @Test
-  void scientificNotationParsedToFloat() {
+  void scientificNotationParsedToDouble() {
     final JSONObject obj = new JSONObject("{\"v\":[1e3, 2e-2]}");
     final Map<String, Object> map = obj.toMap(true);
 
-    assertThat(map.get("v")).isInstanceOf(float[].class);
-    assertThat((float[]) map.get("v")).containsExactly(1000.0f, 0.02f);
+    assertThat(map.get("v")).isInstanceOf(double[].class);
+    assertThat((double[]) map.get("v")).containsExactly(1000.0, 0.02);
   }
 
   @Test
-  void mixedDecimalAndIntegerInSameArrayBecomesFloatArray() {
+  void mixedDecimalAndIntegerInSameArrayStaysAsList() {
+    // A primitive array would turn the integers into floating point values (issue #9003): the list keeps each element as written
     final JSONObject obj = new JSONObject("{\"v\":[1, 2.5, 3]}");
     final Map<String, Object> map = obj.toMap(true);
 
-    assertThat(map.get("v")).isInstanceOf(float[].class);
-    assertThat((float[]) map.get("v")).containsExactly(1.0f, 2.5f, 3.0f);
+    assertThat(map.get("v")).isInstanceOf(List.class);
+    assertThat(map.get("v")).isEqualTo(List.of(1, 2.5, 3));
   }
 
   @Test

@@ -21,6 +21,7 @@ package com.arcadedb.server.http;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
@@ -50,6 +51,15 @@ import java.util.concurrent.TimeUnit;
 public class IdempotencyCache {
 
   public static final String HEADER_REQUEST_ID = "X-Request-Id";
+  /**
+   * Sent on every response: this server answers a write that carries the same {@link #HEADER_REQUEST_ID} from the cache (issue #8526).
+   * Its value names this server process: the cache lives in memory, so a client that retries after the connection dropped sends it back
+   * in {@link #HEADER_REPLAY_INSTANCE}, and a server that is not that process (it restarted) refuses instead of running the write again.
+   */
+  public static final String HEADER_REPLAY_PROTECTION = "X-ArcadeDB-Replay-Protection";
+  public static final String HEADER_REPLAY_INSTANCE   = "X-ArcadeDB-Replay-Instance";
+  /** Names this JVM: the cache entries do not survive it. */
+  public static final String PROCESS_ID               = UUID.randomUUID().toString();
 
   public static class CachedEntry {
     public final int    statusCode;

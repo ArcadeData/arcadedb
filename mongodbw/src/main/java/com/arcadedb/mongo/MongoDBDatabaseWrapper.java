@@ -48,6 +48,8 @@ import de.bwaldvogel.mongo.backend.DatabaseResolver;
 import de.bwaldvogel.mongo.backend.QueryResult;
 import de.bwaldvogel.mongo.backend.Utils;
 import de.bwaldvogel.mongo.backend.aggregation.Aggregation;
+import de.bwaldvogel.mongo.bson.BsonRegularExpression;
+import de.bwaldvogel.mongo.bson.Decimal128;
 import de.bwaldvogel.mongo.bson.Document;
 import de.bwaldvogel.mongo.bson.ObjectId;
 import de.bwaldvogel.mongo.exception.ErrorCode;
@@ -57,6 +59,7 @@ import de.bwaldvogel.mongo.oplog.Oplog;
 import de.bwaldvogel.mongo.wire.message.MongoQuery;
 import io.netty.channel.Channel;
 
+import java.math.BigDecimal;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.Lock;
@@ -774,7 +777,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     for (final Map.Entry<String, Object> op : u.entrySet()) {
       if (!(op.getValue() instanceof Document fields) || !fields.containsKey("_id"))
         continue;
-      if (!"$set".equals(op.getKey()) || (stored != null && !sameId(stored, normalizeIdValue(fields.get("_id")))))
+      if (!"$set".equals(op.getKey()) || (stored != null && !sameId(stored, idValue(fields.get("_id")))))
         throw new MongoServerError(66, "ImmutableField", "Performing an update on the path '_id' would modify the immutable field '_id'");
     }
   }
@@ -835,7 +838,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    */
   private static void replaceContent(final MutableDocument record, final Document replacement) {
     final Object storedId = record.get("_id");
-    final Object newId = replacement.containsKey("_id") ? normalizeIdValue(replacement.get("_id")) : storedId;
+    final Object newId = replacement.containsKey("_id") ? idValue(replacement.get("_id")) : storedId;
     if (storedId != null && !sameId(storedId, newId))
       throw new MongoServerError(66, "ImmutableField", "After applying the update, the (immutable) field '_id' was found to have been altered");
 
@@ -868,14 +871,19 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         if (value instanceof Document opDoc) {
           if (opDoc.containsKey("$eq")) {
             final Object eqValue = opDoc.get("$eq");
+            // a regex in the filter is a pattern to match, not a value to insert
+            if (eqValue instanceof BsonRegularExpression)
+              continue;
             if ("_id".equals(field) && eqValue instanceof ObjectId)
               idIsObjectId = true;
-            record.set(field, normalizeIdValue(eqValue));
+            record.set(field, MongoBsonValues.toStored(field, eqValue));
           }
         } else {
+          if (value instanceof BsonRegularExpression)
+            continue;
           if ("_id".equals(field) && value instanceof ObjectId)
             idIsObjectId = true;
-          record.set(field, normalizeIdValue(value));
+          record.set(field, MongoBsonValues.toStored(field, value));
         }
       }
 
@@ -887,7 +895,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         // replacement's own _id is some other type.
         if ("_id".equals(entry.getKey()))
           idIsObjectId = value instanceof ObjectId;
-        record.set(entry.getKey(), normalizeIdValue(value));
+        record.set(entry.getKey(), MongoBsonValues.toStored(entry.getKey(), value));
       }
     } else {
       final Boolean setIdIsObjectId = applyOperatorsToDocument(record, u);
@@ -906,14 +914,6 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
     final Object id = record.get("_id");
     return idIsObjectId && id instanceof String hex ? new ObjectId(hex) : id;
-  }
-
-  /**
-   * The filter seeding loop copies values verbatim; an {@code ObjectId}-typed filter value (e.g. {@code eq("_id", objectId)})
-   * must be normalized to its hex string, matching how {@code insertDocuments} and {@code buildValue} store an ObjectId.
-   */
-  private static Object normalizeIdValue(final Object value) {
-    return value instanceof ObjectId oid ? oid.getHexData() : value;
   }
 
   /**
@@ -936,7 +936,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
           final Object value = f.getValue();
           if ("_id".equals(f.getKey()))
             idIsObjectId = value instanceof ObjectId;
-          setPath(record, f.getKey(), toMapValue(value));
+          setPath(record, f.getKey(), "_id".equals(f.getKey()) ? idValue(value) : toMapValue(value));
         }
       }
       case "$unset" -> {
@@ -945,7 +945,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       }
       case "$inc" -> {
         for (final Map.Entry<String, Object> f : operand.entrySet())
-          setPath(record, f.getKey(), add(numberOf(getPath(record, f.getKey())), numberOf(f.getValue())));
+          // toStored: a Decimal128 delta added to a missing field is a Number that must still become a DECIMAL
+          setPath(record, f.getKey(), MongoBsonValues.toStored(add(numberOf(getPath(record, f.getKey())), numberOf(f.getValue()))));
       }
       default -> throw new UnsupportedOperationException("Unsupported update operator '" + op + "'");
       }
@@ -967,7 +968,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
     if (isReplacement(u)) {
       sql.append(" CONTENT ");
-      MongoDBToSqlTranslator.buildValue(sql, params, documentToMap(u));
+      MongoDBToSqlTranslator.bindStored(sql, params, documentToMap(u, true));
       return;
     }
 
@@ -977,7 +978,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       switch (op) {
       case "$set" -> {
         sql.append(" MERGE ");
-        MongoDBToSqlTranslator.buildValue(sql, params, documentToMap(operand));
+        MongoDBToSqlTranslator.bindStored(sql, params, documentToMap(operand, true));
       }
       case "$unset" -> {
         sql.append(" REMOVE ");
@@ -1160,6 +1161,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       }
       return current instanceof Long || delta instanceof Long || sum > Integer.MAX_VALUE || sum < Integer.MIN_VALUE ? (Number) sum : (Number) (int) sum;
     }
+    if (current instanceof BigDecimal || delta instanceof BigDecimal || current instanceof Decimal128 || delta instanceof Decimal128)
+      return MongoBsonValues.toBigDecimal(current).add(MongoBsonValues.toBigDecimal(delta));
     return current.doubleValue() + delta.doubleValue();
   }
 
@@ -1193,27 +1196,34 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   }
 
   /**
+   * An {@code _id} value in its stored form: an ObjectId is its hex string.
+   */
+  private static Object idValue(final Object value) {
+    return MongoBsonValues.toStored("_id", value);
+  }
+
+  /**
    * Converts a BSON document into the map bound as the payload of {@code UPDATE ... MERGE} / {@code ... CONTENT}. Insertion
    * order is preserved so a replacement document reaches the record in wire order.
    */
-  private static Map<String, Object> documentToMap(final Document doc) {
+  private static Map<String, Object> documentToMap(final Document doc, final boolean topLevel) {
     final Map<String, Object> map = LinkedHashMap.newLinkedHashMap(doc.size());
     for (final Map.Entry<String, Object> entry : doc.entrySet())
-      map.put(entry.getKey(), toMapValue(entry.getValue()));
+      map.put(entry.getKey(), topLevel && "_id".equals(entry.getKey()) ? MongoBsonValues.toStored("_id", entry.getValue()) : toMapValue(entry.getValue()));
     return map;
   }
 
   private static Object toMapValue(final Object value) {
-    if (value instanceof Document document)
-      return documentToMap(document);
-    else if (value instanceof List<?> list) {
+    if (value instanceof Document document) {
+      MongoBsonValues.checkNotReserved(document);
+      return documentToMap(document, false);
+    } else if (value instanceof List<?> list) {
       final List<Object> converted = new ArrayList<>(list.size());
       for (final Object item : list)
         converted.add(toMapValue(item));
       return converted;
-    } else if (value instanceof ObjectId id)
-      return id.getHexData();
-    return value;
+    }
+    return MongoBsonValues.toStored(value);
   }
 
   private Document responseOk() {

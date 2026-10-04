@@ -516,6 +516,8 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     final List<PCollection> secondValueCombinations = cartesianProduct(fromKey);
     final List<PCollection> thirdValueCombinations = cartesianProduct(toKey);
 
+    final boolean[] fromInSlots = inSlotMask(true);
+    final boolean[] toInSlots = inSlotMask(false);
     final List<Object[][]> seeks = new ArrayList<>(secondValueCombinations.size());
     for (int i = 0; i < secondValueCombinations.size(); i++) {
 
@@ -536,6 +538,11 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       // (the other endpoint of a prefix range is shorter than the range slot, and may end with such an equality null)
       final int rangeKeySize = Math.max(fromKey.getExpressions().size(), toKey.getExpressions().size());
       if (isRangeCondition() && (endsWithNull(convertedFrom, rangeKeySize) || endsWithNull(convertedTo, rangeKeySize)))
+        continue;
+
+      // x IN (..., null) is UNKNOWN for a null element, never true, as in a scan: the index must not answer it with the records whose
+      // key is null (#9032)
+      if (hasNullInKeySlot(convertedFrom, fromInSlots) || hasNullInKeySlot(convertedTo, toInSlots))
         continue;
 
       // A bound no integral key equals (12.5, 1e19) is moved onto the key that bounds the same keys, or matches none (#9021).
@@ -645,32 +652,37 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     return true;
   }
 
+  /** {@link #mapInexactIntegralBound} outcomes. */
+  private static final int NO_MATCH = -1, BOUND_KEPT = 0, BOUND_MAPPED = 1;
+
   /**
    * Maps the last element of {@code key}, in place, when an integral key cannot hold it (issue #9021): to the smallest key above
    * it for a {@code lower} bound and the largest below it otherwise, both to be read inclusive. The elements before it are an
    * exact prefix, and one of them no key equals makes the key match nothing.
    *
-   * @return false when no key can match
+   * @return {@link #NO_MATCH} when no key can match, {@link #BOUND_MAPPED} when the last element was replaced, else
+   * {@link #BOUND_KEPT}
    */
-  private boolean mapInexactIntegralBound(final Object[] key, final boolean lower) {
+  private int mapInexactIntegralBound(final Object[] key, final boolean lower) {
     if (key.length == 0 || !(index instanceof IndexInternal internalIndex))
-      return true;
+      return BOUND_KEPT;
     final byte[] keyTypes = internalIndex.getBinaryKeyTypes();
     if (keyTypes == null)
-      return true;
+      return BOUND_KEPT;
     for (int i = 0; i < key.length && i < keyTypes.length; i++) {
       if (!IntegralKeyBound.isInexact(keyTypes[i], key[i]))
         continue;
       if (i < key.length - 1)
-        return false;
+        return NO_MATCH;
       final Number mapped = lower ?
           IntegralKeyBound.ceiling(keyTypes[i], (Number) key[i]) :
           IntegralKeyBound.floor(keyTypes[i], (Number) key[i]);
       if (mapped == null)
-        return false;
+        return NO_MATCH;
       key[i] = mapped;
+      return BOUND_MAPPED;
     }
-    return true;
+    return BOUND_KEPT;
   }
 
   /** True when the key at {@code position} is BYTE, SHORT, INTEGER or LONG, so a bound in range reads as a long exactly. */
@@ -683,6 +695,39 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     final byte keyType = keyTypes[position];
     return keyType == BinaryTypes.TYPE_BYTE || keyType == BinaryTypes.TYPE_SHORT || keyType == BinaryTypes.TYPE_INT
         || keyType == BinaryTypes.TYPE_LONG;
+  }
+
+  /**
+   * Which positions of the key {@link #indexKeyFrom}/{@link #indexKeyTo} build come from a non-negated {@code IN}. A sub-block
+   * that resolves to no key expression takes no position, so the mask is built with the same rule the key is, instead of
+   * assuming that position {@code i} belongs to sub-block {@code i}.
+   */
+  private boolean[] inSlotMask(final boolean from) {
+    if (!(condition instanceof AndBlock andBlock))
+      return new boolean[0];
+    final List<BooleanExpression> subBlocks = andBlock.getSubBlocks();
+    final boolean[] mask = new boolean[subBlocks.size()];
+    int slot = 0;
+    for (final BooleanExpression exp : subBlocks) {
+      final Expression resolved = from ? exp.resolveKeyFrom(additionalRangeCondition) : exp.resolveKeyTo(additionalRangeCondition);
+      if (resolved != null)
+        mask[slot++] = exp instanceof InCondition in && !in.not;
+    }
+    return mask;
+  }
+
+  /**
+   * Whether a key position that an {@code IN} condition fills holds null: {@code IN} turns a null into "matches nothing", an
+   * equality keeps its own handling.
+   */
+  private static boolean hasNullInKeySlot(final Object[] key, final boolean[] inSlots) {
+    if (key == null)
+      return false;
+    final int slots = Math.min(key.length, inSlots.length);
+    for (int i = 0; i < slots; i++)
+      if (key[i] == null && inSlots[i])
+        return true;
+    return false;
   }
 
   private static boolean endsWithNull(final Object[] key, final int rangeKeySize) {
@@ -931,7 +976,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     final Object[] from = { second.execute((Result) null, context) };
     final Object[] to = { third.execute((Result) null, context) };
 
-    if (!mapInexactIntegralBound(from, true) || !mapInexactIntegralBound(to, false)
+    if (mapInexactIntegralBound(from, true) == NO_MATCH || mapInexactIntegralBound(to, false) == NO_MATCH
         || (from[0] instanceof Number lower && to[0] instanceof Number upper && isIntegralKey(0) && lower.longValue() > upper.longValue()))
       // no integral key lies between the bounds an inexact bound maps to (#9021)
       cursor = null;
@@ -1006,29 +1051,28 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     final boolean lower = operator instanceof GeOperator || operator instanceof GtOperator;
     final boolean upper = operator instanceof LeOperator || operator instanceof LtOperator;
     final Object[] key = values.clone();
-    if (!mapInexactIntegralBound(key, lower))
+    final int mapping = mapInexactIntegralBound(key, lower);
+    // an equality on a bound no key equals matches none
+    if (mapping == NO_MATCH || (mapping == BOUND_MAPPED && !(lower || upper)))
       return null;
-    final boolean boundMapped = key.length > 0 && key[key.length - 1] != values[values.length - 1];
-    if (boundMapped && !(lower || upper))
-      return null;
+    // a mapped bound is the key that bounds the same keys inclusively, whatever the operator
+    final boolean boundMapped = mapping == BOUND_MAPPED;
 
     if (!valuesConvertToIndexKeyTypes(key))
       // A bound has no defined ordering against the index's declared key type (e.g. a non-numeric String bound on
       // a numeric column): no indexed row can match, consistent with the row-scan operators (#5900).
       return null;
-    // a mapped bound is the key that bounds the same keys inclusively, whatever the operator
-    final boolean inclusive = boundMapped;
 
     if (operator instanceof EqualsCompareOperator) {
       return index.get(values);
     } else if (operator instanceof GeOperator) {
       return index.iterator(true, key, true);
     } else if (operator instanceof GtOperator) {
-      return index.iterator(true, key, inclusive);
+      return index.iterator(true, key, boundMapped);
     } else if (operator instanceof LeOperator) {
       return index.iterator(false, key, true);
     } else if (operator instanceof LtOperator) {
-      return index.iterator(false, key, inclusive);
+      return index.iterator(false, key, boundMapped);
     } else {
       throw new CommandExecutionException("search for index for " + condition + " is not supported yet");
     }

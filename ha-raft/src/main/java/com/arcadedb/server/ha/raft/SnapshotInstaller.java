@@ -42,9 +42,11 @@ import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.UncheckedIOException;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.nio.BufferUnderflowException;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
@@ -64,6 +66,7 @@ import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.zip.CRC32;
@@ -328,6 +331,15 @@ public final class SnapshotInstaller {
    * refused while its files are being moved.
    */
   static volatile Runnable recoveryBarrierForTesting = null;
+
+  /**
+   * Test-only replacement for {@link #snapshotOpens}, the proof recovery asks for before it deletes the retained backup
+   * of a swap it rolls forward (issue #8950). {@code null} in production. The recovery fixtures stand in for a snapshot
+   * with placeholder files that no engine can open, so the tests about what recovery does with a snapshot that does
+   * open set it to {@code path -> true}, and the ones about a snapshot that does not set it to {@code path -> false}.
+   * Process-wide: tests that set it must not run concurrently.
+   */
+  static volatile Predicate<Path> snapshotOpensForTesting = null;
 
   /**
    * Test-only barrier invoked inside {@link #acquireNewDatabase}, right after the early
@@ -1617,6 +1629,8 @@ public final class SnapshotInstaller {
         }
         default -> throw new IOException("Unhandled snapshot swap phase " + phase + " in " + dbDir);
         }
+        if (phase == SwapPhase.BACKING_UP || phase == SwapPhase.INSTALLING || phase == SwapPhase.INSTALLED)
+          rollBackUnlessSnapshotOpens(dbDir, snapshotNew, snapshotBackup);
         requireRecoveredDatabase(dbDir);
         completeSwapRecovery(dbDir);
         return;
@@ -1631,6 +1645,7 @@ public final class SnapshotInstaller {
         if (!hasStagedSnapshotFiles(snapshotNew)) {
           LogManager.instance().log(SnapshotInstaller.class, Level.INFO,
               "Cleaning up completed legacy snapshot swap for: %s", null, dbDir);
+          rollBackUnlessSnapshotOpens(dbDir, snapshotNew, snapshotBackup);
           requireRecoveredDatabase(dbDir);
           completeSwapRecovery(dbDir);
           return;
@@ -1646,6 +1661,7 @@ public final class SnapshotInstaller {
                 null, dbDir);
             writeSwapPhase(dbDir, SwapPhase.INSTALLING);
             atomicSwap(dbDir, snapshotNew, snapshotBackup);
+            rollBackUnlessSnapshotOpens(dbDir, snapshotNew, snapshotBackup);
           } else {
             // Disjoint names: almost surely a phase-1 crash, so the backup restored over the live directory is the
             // original database. A phase-2 crash that moved only snapshot-only names lands here too; the snapshot
@@ -1673,6 +1689,7 @@ public final class SnapshotInstaller {
         LogManager.instance().log(SnapshotInstaller.class, Level.INFO,
             "Completing interrupted snapshot swap for: %s", null, dbDir);
         atomicSwap(dbDir, snapshotNew, snapshotBackup);
+        rollBackUnlessSnapshotOpens(dbDir, snapshotNew, snapshotBackup);
         requireRecoveredDatabase(dbDir);
         completeSwapRecovery(dbDir);
         return;
@@ -1730,6 +1747,81 @@ public final class SnapshotInstaller {
     } catch (final IOException e) {
       LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
           "Error recovering snapshot swap for %s: %s", e, dbDir, e.getMessage());
+    }
+  }
+
+  /**
+   * Called on every path that rolls a swap FORWARD, just before {@link #completeSwapRecovery} deletes the retained backup
+   * (issue #8950). Rolling forward only proved that a schema file is present, so a snapshot that does not open - a crash
+   * during the validating reopen, a rollback that never published its phase, a verdict whose rename failed - was kept
+   * and the only copy that opens was deleted. The snapshot is opened once here, without a server; if it does not open
+   * and the backup is there, the verdict is the one a failed validating reopen records, and the backup is restored.
+   * With no backup there is nothing to fall back to, and the snapshot is kept as before.
+   */
+  private static void rollBackUnlessSnapshotOpens(final Path dbDir, final Path snapshotNew, final Path snapshotBackup)
+      throws IOException {
+    if (!Files.isDirectory(snapshotBackup) || snapshotOpens(dbDir))
+      return;
+
+    LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
+        "The snapshot rolled forward in %s does not open: restoring the retained backup instead of deleting it", null, dbDir);
+    writeSwapPhase(dbDir, SwapPhase.ROLLING_BACK);
+    resumeRollback(dbDir, snapshotBackup);
+    deleteDirectoryIfExists(snapshotNew);
+  }
+
+  /**
+   * Opens the database in {@code dbDir} and closes it again, the way the server's own reopen would: a read-only open
+   * does not register every component file, so it accepts a snapshot the server then refuses.
+   * <p>
+   * The open is a real one, with its side effects: it replays the WAL and may rebuild indexes, exactly what the
+   * server's own reopen would do next.
+   * <p>
+   * The answer is only trusted when it is certain. A directory that another instance of this JVM already holds open
+   * proves nothing, so it is accepted, and a failure that points at the environment rather than at the files (an I/O
+   * error, a lock held elsewhere) is refused as inconclusive with an {@link IOException}: recovery then keeps the marker
+   * and BOTH copies for the next attempt instead of deleting either on a guess.
+   */
+  private static boolean snapshotOpens(final Path dbDir) throws IOException {
+    final Predicate<Path> override = snapshotOpensForTesting;
+    if (override != null) {
+      try {
+        return override.test(dbDir);
+      } catch (final UncheckedIOException e) {
+        throw new IOException(e.getMessage(), e);
+      }
+    }
+
+    final Path normalized = dbDir.toAbsolutePath().normalize();
+    for (final Database active : DatabaseFactory.getActiveDatabaseInstances())
+      if (Path.of(((DatabaseInternal) active).getDatabasePath()).toAbsolutePath().normalize().equals(normalized)) {
+        LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
+            "The snapshot in %s is held open by this JVM, so it cannot be proven to open here: accepting it", null, dbDir);
+        return true;
+      }
+
+    LogManager.instance().log(SnapshotInstaller.class, Level.INFO,
+        "Opening the rolled-forward snapshot in %s to prove it before the retained backup is deleted (can take long on a large database)",
+        null, dbDir);
+    final long start = System.currentTimeMillis();
+    try (final DatabaseFactory factory = new DatabaseFactory(dbDir.toString())) {
+      factory.open().close();
+      LogManager.instance().log(SnapshotInstaller.class, Level.INFO, "The snapshot in %s opened in %dms", null, dbDir,
+          System.currentTimeMillis() - start);
+      return true;
+    } catch (final Exception e) {
+      // Only a failure that says the FILES are unusable proves the snapshot does not open: a component that cannot be
+      // registered, a malformed structure. Anything else (an I/O error, a lock, a missing plugin, a limit of this bare
+      // open) may be a limit of the proof rather than of the snapshot, and costs nothing to retry with both copies kept.
+      for (Throwable cause = e; cause != null; cause = cause.getCause())
+        if (cause instanceof IllegalArgumentException
+            || cause instanceof IndexOutOfBoundsException || cause instanceof BufferUnderflowException) {
+          LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE, "The snapshot in %s failed to open: %s", e, dbDir,
+              e.getMessage());
+          return false;
+        }
+      throw new IOException("Cannot tell whether the snapshot in " + dbDir + " opens (" + e.getMessage()
+          + "); retaining the pending marker and both copies", e);
     }
   }
 
