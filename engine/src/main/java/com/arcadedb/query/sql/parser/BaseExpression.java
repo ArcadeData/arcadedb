@@ -222,7 +222,12 @@ public class BaseExpression extends MathExpression {
           fnResult = modifier.next.execute(currentRecord, fnResult, context);
         return fnResult;
       }
-      result = identifier.execute(currentRecord != null ? currentRecord.getRecord() : null, context);
+      // POSTGRES $N PARAMETER: SAME TEST AS THE Result OVERLOAD (ISSUE #9248)
+      final Map<String, Object> params = context != null ? context.getInputParameters() : null;
+      final String positionalKey = postgresPositionalParameterKey(identifier, params);
+      result = positionalKey != null ?
+          params.get(positionalKey) :
+          identifier.execute(currentRecord != null ? currentRecord.getRecord() : null, context);
     } else if (expression != null)
       result = expression.execute(currentRecord != null ? currentRecord.getRecord() : null, context);
     else if (string != null && string.length() > 1)
