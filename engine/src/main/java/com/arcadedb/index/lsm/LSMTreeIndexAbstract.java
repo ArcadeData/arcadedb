@@ -981,6 +981,14 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   }
 
   protected void checkForNulls(final Object[] keys) {
+    checkForNulls(nullStrategy, mainIndex.getTypeName(), mainIndex.getPropertyNames(), keys);
+  }
+
+  /**
+   * Refuses a key with a null component when the strategy is ERROR. Shared with the hash index so both report the same message.
+   */
+  public static void checkForNulls(final NULL_STRATEGY nullStrategy, final String typeName, final List<String> propertyNames,
+      final Object[] keys) {
     if (nullStrategy != NULL_STRATEGY.ERROR)
       return;
 
@@ -988,9 +996,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
       for (int i = 0; i < keys.length; ++i)
         if (keys[i] == null)
           throw new IllegalArgumentException(
-              "Indexed key " + mainIndex.getTypeName() + mainIndex.getPropertyNames() + " cannot be NULL (" + Arrays.toString(
-                  keys)
-                  + ")");
+              "Indexed key " + typeName + propertyNames + " cannot be NULL (" + Arrays.toString(keys) + ")");
   }
 
   protected boolean lookupInPageAndAddInResultset(final BasePage currentPage, final Binary currentPageBuffer, final int count,
