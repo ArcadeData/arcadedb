@@ -24,7 +24,11 @@ import com.mongodb.MongoClientOptions;
 import com.mongodb.MongoCredential;
 import com.mongodb.ServerAddress;
 import com.mongodb.client.MongoCollection;
+import com.mongodb.client.model.CountOptions;
+import com.mongodb.client.model.UpdateOptions;
+import com.mongodb.MongoQueryException;
 import org.bson.Document;
+import org.bson.types.ObjectId;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -34,6 +38,7 @@ import java.util.Date;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression tests for #9137 (array fields), #9136 (BSON type bracketing), #9138 (nested {@code $exists}), #9139 (dotted
@@ -209,5 +214,63 @@ class MongoDBFilterSemanticsTest extends BaseMongoServerTest {
     assertThat(ids(c, "{s:{$regex:'^hel', $options:'i'}}")).containsExactly(1, 3);
     assertThat(ids(c, "{s:{$regex:'^hel', $options:'i', $ne:'Hello'}}")).containsExactly(3);
     assertThat(ids(c, "{s:{$not:{$regex:'^hel', $options:'i'}}}")).containsExactly(2);
+  }
+
+  @Test
+  void sortSkipAndLimitCountTheMatchesOfAFilterOnAnArray() {
+    final MongoCollection<Document> c = collection("paged", "{_id:1, t:['x'], n:3}", "{_id:2, t:['y'], n:9}", "{_id:3, t:['x'], n:1}",
+        "{_id:4, t:['x','y'], n:2}", "{_id:5, t:['x'], n:4}");
+    final List<Object> page = new ArrayList<>();
+    for (final Document d : c.find(Document.parse("{t:'x'}")).sort(Document.parse("{n:1}")).skip(1).limit(2))
+      page.add(d.get("_id"));
+    assertThat(page).containsExactly(4, 1);
+
+    assertThat(c.countDocuments(Document.parse("{t:'x'}"))).isEqualTo(4);
+    assertThat(c.countDocuments(Document.parse("{t:'x'}"), new CountOptions().skip(1).limit(2))).isEqualTo(2);
+  }
+
+  @Test
+  void deleteOneAndUpsertOnANonIdFilter() {
+    final MongoCollection<Document> c = collection("writes", "{_id:1, t:['x']}", "{_id:2, t:['x']}", "{_id:3, t:['y']}");
+    assertThat(c.deleteOne(Document.parse("{t:'x'}")).getDeletedCount()).isEqualTo(1);
+    assertThat(c.countDocuments()).isEqualTo(2);
+
+    // the array already holds 'y': the upsert matches it instead of inserting
+    c.updateOne(Document.parse("{t:'y'}"), Document.parse("{$set:{hit:1}}"), new UpdateOptions().upsert(true));
+    assertThat(c.countDocuments()).isEqualTo(2);
+    assertThat(ids(c, "{hit:1}")).containsExactly(3);
+  }
+
+  @Test
+  void logicalAndRegexOperatorsOnArrays() {
+    final MongoCollection<Document> c = collection("logic", "{_id:1, s:['alpha','beta']}", "{_id:2, s:['gamma']}", "{_id:3, s:['delta']}");
+    assertThat(ids(c, "{$nor:[{s:'gamma'},{s:'delta'}]}")).containsExactly(1);
+    assertThat(ids(c, "{s:{$in:[{$regex:'^ga'}]}}")).isEmpty();
+    assertThatThrownBy(() -> ids(c, "{s:{$elemMatch:{$regex:'^be'}}}")).isInstanceOf(MongoQueryException.class);
+    assertThat(ids(c, "{s:{$regex:'^d'}}")).containsExactly(3);
+  }
+
+  @Test
+  void topLevelNotIsRefusedLikeMongoDB() {
+    final MongoCollection<Document> c = collection("notop", "{_id:1, k:1}");
+    assertThatThrownBy(() -> ids(c, "{$not:{k:1}}")).isInstanceOf(MongoQueryException.class);
+  }
+
+  @Test
+  void objectIdOutsideTheIdMatchesBothStoredForms() {
+    final ObjectId oid = new ObjectId("507f1f77bcf86cd799439021");
+    final MongoCollection<Document> c = client.getDatabase(getDatabaseName()).getCollection("oids");
+    c.insertOne(new Document("_id", 1).append("ref", oid));
+    c.insertOne(new Document("_id", 2).append("ref", new ObjectId("507f1f77bcf86cd799439022")));
+    c.insertOne(new Document("_id", 3).append("refs", List.of(oid)));
+    assertThat(ids(c, "{}")).hasSize(3);
+    final List<Object> found = new ArrayList<>();
+    for (final Document d : c.find(new Document("ref", oid)))
+      found.add(d.get("_id"));
+    assertThat(found).containsExactly(1);
+    found.clear();
+    for (final Document d : c.find(new Document("refs", oid)))
+      found.add(d.get("_id"));
+    assertThat(found).containsExactly(3);
   }
 }
