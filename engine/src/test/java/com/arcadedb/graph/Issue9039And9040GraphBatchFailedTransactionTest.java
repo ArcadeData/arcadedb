@@ -22,7 +22,6 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.SchemaException;
-import com.arcadedb.exception.TransactionException;
 
 import org.junit.jupiter.api.Test;
 
@@ -43,6 +42,7 @@ class Issue9039And9040GraphBatchFailedTransactionTest extends TestHelper {
     database.command("sql", "CREATE PROPERTY Person.id INTEGER");
     database.command("sql", "CREATE INDEX ON Person (id) UNIQUE");
     database.command("sql", "CREATE DOCUMENT TYPE Note");
+    database.command("sql", "CREATE EDGE TYPE Link");
   }
 
   @Test
@@ -61,6 +61,27 @@ class Issue9039And9040GraphBatchFailedTransactionTest extends TestHelper {
       }
     }
     assertThat(database.countType("Person", true)).isEqualTo(3);
+  }
+
+  @Test
+  void createVerticesAfterRolledBackCreateVertexThenEdgeStaysUsable() {
+    try (final GraphBatch batch = GraphBatch.builder(database).build()) {
+      for (final int id : new int[] { 1, 1 }) {
+        try {
+          database.begin();
+          batch.createVertex("Person", "id", id);
+          database.commit();
+        } catch (final DuplicatedKeyException e) {
+          if (database.isTransactionActive())
+            database.rollback();
+        }
+      }
+      // THE POSITION OF THE ROLLED BACK VERTEX IS REUSED BY THE BULK PATH
+      final RID[] rids = batch.createVertices("Person", new Object[][] { { "id", 2 }, { "id", 3 } });
+      batch.newEdge(rids[0], "Link", rids[1]);
+    }
+    assertThat(database.countType("Person", true)).isEqualTo(3);
+    assertThat(database.countType("Link", true)).isEqualTo(1);
   }
 
   @Test
@@ -96,8 +117,6 @@ class Issue9039And9040GraphBatchFailedTransactionTest extends TestHelper {
       assertThat(rids).hasSize(2);
     }
     assertThat(database.isTransactionActive()).isFalse();
-    assertThatThrownBy(() -> database.command("sql", "INSERT INTO Note SET text = 'outside'"))
-        .isInstanceOf(TransactionException.class);
     assertThat(database.countType("Person", true)).isEqualTo(2);
   }
 

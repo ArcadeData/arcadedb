@@ -294,7 +294,7 @@ public class BinarySerializer {
         result.add(name);
       }
     } catch (final DatabaseIsClosedException e) {
-      // A CLOSED DATABASE IS NOT A DAMAGED RECORD: LET THE CALLER SEE IT (#9038)
+      // A CLOSED DATABASE IS NOT A DAMAGED RECORD: LET THE CALLER SEE IT, AS db.query() DOES (SAME AT EVERY CATCH BELOW)
       throw e;
     } catch (Exception e) {
       LogManager.instance().log(this, Level.WARNING, "Possible corrupted record %s, returning %d names read so far", e, rid,
@@ -381,7 +381,6 @@ public class BinarySerializer {
 
           values.put(propertyName, propertyValue);
         } catch (final DatabaseIsClosedException e) {
-          // A CLOSED DATABASE IS NOT A DAMAGED RECORD: LET THE CALLER SEE IT (#9038)
           throw e;
         } catch (Exception e) {
           if (strict)
@@ -398,7 +397,6 @@ public class BinarySerializer {
           break;
       }
     } catch (final DatabaseIsClosedException e) {
-      // A CLOSED DATABASE IS NOT A DAMAGED RECORD: LET THE CALLER SEE IT (#9038)
       throw e;
     } catch (Exception e) {
       if (strict)
@@ -431,7 +429,6 @@ public class BinarySerializer {
         buffer.getUnsignedNumber(); // contentPosition
       }
     } catch (final DatabaseIsClosedException e) {
-      // A CLOSED DATABASE IS NOT A DAMAGED RECORD: LET THE CALLER SEE IT (#9038)
       throw e;
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Possible corrupted record %s", e, rid);
@@ -495,7 +492,6 @@ public class BinarySerializer {
         return deserializeValue(database, buffer, type, propertyModifier);
       }
     } catch (final DatabaseIsClosedException e) {
-      // A CLOSED DATABASE IS NOT A DAMAGED RECORD: LET THE CALLER SEE IT (#9038)
       throw e;
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Possible corrupted record %s", e, rid);

@@ -581,12 +581,7 @@ public class GraphBatch implements AutoCloseable {
     vertex.save();
 
     if (preAllocateEdgeChunks) {
-      // A NEW VERTEX CANNOT OWN A SEGMENT YET: ANY ENTRY CACHED FOR ITS POSITION BELONGS TO A VERTEX WHOSE TRANSACTION WAS ROLLED BACK AND
-      // WHOSE POSITION WAS REUSED (#9039)
-      final RID vertexRID = vertex.getIdentity();
-      final long key = packVertexKey(vertexRID.getBucketId(), vertexRID.getPosition());
-      outChunkRIDCache.remove(key);
-      inChunkRIDCache.remove(key);
+      evictStaleChunkCache(vertex.getIdentity());
       getOrCreateOutEdgeChunk(vertex);
       if (bidirectional)
         getOrCreateInEdgeChunk(vertex);
@@ -594,6 +589,16 @@ public class GraphBatch implements AutoCloseable {
 
     totalVerticesCreated++;
     return vertex;
+  }
+
+  /**
+   * A NEW VERTEX CANNOT OWN A SEGMENT YET: ANY ENTRY CACHED FOR ITS POSITION BELONGS TO A VERTEX WHOSE TRANSACTION WAS ROLLED BACK AND
+   * WHOSE POSITION WAS REUSED (#9039).
+   */
+  private void evictStaleChunkCache(final RID vertexRID) {
+    final long key = packVertexKey(vertexRID.getBucketId(), vertexRID.getPosition());
+    outChunkRIDCache.remove(key);
+    inChunkRIDCache.remove(key);
   }
 
   /**
@@ -612,6 +617,7 @@ public class GraphBatch implements AutoCloseable {
         final MutableVertex vertex = database.newVertex(typeName);
         vertex.save();
         rids[i] = vertex.getIdentity();
+        evictStaleChunkCache(rids[i]);
       }
     });
   }
@@ -636,6 +642,7 @@ public class GraphBatch implements AutoCloseable {
         }
         vertex.save();
         rids[i] = vertex.getIdentity();
+        evictStaleChunkCache(rids[i]);
       }
     });
   }
