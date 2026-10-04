@@ -160,9 +160,9 @@ public final class BoundedHttpExchange {
         return completed(pending, request);
       final HttpTimeoutException timeout = new HttpTimeoutException(timeoutMessage != null ?
           timeoutMessage :
-          "no complete answer from " + request.uri().getAuthority() + " within " + deadline + " ms" + (progress != null ?
-              " of the exchange last moving forward" :
-              ""));
+          progress != null ?
+              "no complete answer from " + request.uri().getAuthority() + " and no progress for " + deadline + " ms" :
+              "no complete answer from " + request.uri().getAuthority() + " within " + deadline + " ms");
       timeout.initCause(e);
       throw timeout;
     } catch (final InterruptedException e) {
