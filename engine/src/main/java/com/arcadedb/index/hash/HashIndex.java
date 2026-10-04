@@ -297,7 +297,6 @@ public class HashIndex implements IndexInternal {
       getDatabase().getTransaction()
           .addIndexOperation(this, TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE, convertedKeys, null);
     else {
-      checkForNulls(keys);
       lock.executeInReadLock(() -> {
         try {
           bucket.remove(convertedKeys);
@@ -326,7 +325,6 @@ public class HashIndex implements IndexInternal {
       getDatabase().getTransaction()
           .addIndexOperation(this, TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE, convertedKeys, rid.getIdentity());
     else {
-      checkForNulls(keys);
       lock.executeInReadLock(() -> {
         try {
           bucket.remove(convertedKeys, rid.getIdentity());
@@ -338,6 +336,9 @@ public class HashIndex implements IndexInternal {
     }
   }
 
+  // Only a put is checked. A remove can never add an entry, and refusing it would leave undeletable the rows a hash index
+  // already holds under a key with a null (the strategy was stored but not enforced before #9074). A lookup is lenient for
+  // the same reason: it asks for a key, it does not add one.
   private void checkForNulls(final Object[] keys) {
     LSMTreeIndexAbstract.checkForNulls(bucket.nullStrategy, getTypeName(), getPropertyNames(), keys);
   }
