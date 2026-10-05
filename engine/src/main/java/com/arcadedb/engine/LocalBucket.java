@@ -23,6 +23,7 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.RecordEventsRegistry;
@@ -50,6 +51,7 @@ import com.arcadedb.utility.LongHashSet;
 import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 import java.util.logging.Level;
@@ -214,6 +216,21 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   // #8640: set when a replicated apply timed out on this bucket's lock, so the following ones do not wait again for the
   // same long recompute; cleared by the first apply that gets the lock
   private volatile       boolean                   applyLockContended;
+  // #8649: set once recomputes keep being refused: the applies then wait for a running recompute again, bounded by the
+  // length of the last scan, so the next recompute gets the quiet window it needs to publish. Cleared by a publish (or
+  // any known counter), or by a patient wait that still timed out, which also starts a back-off (below)
+  private volatile       boolean                   applyLockPatient;
+  // #8649: System.nanoTime() before which the applies do not turn patient again, set when a patient wait timed out so
+  // the apply thread is not stalled behind every scan of a bucket whose scans outgrew the bound. 0 = no back-off
+  private volatile       long                      applyLockPatientBackoffUntilNanos;
+  // #8649: wall time of the last count() recompute scan that ran under the bucket lock, in ms. Sizes the patient wait.
+  // A lock-free recompute (lock timeout) leaves it alone; while it is still 0 a patient wait is just the commit timeout,
+  // and a timed-out one is corrected by the back-off, which the next locked scan sizes
+  private volatile       long                      lastRecountScanMs;
+  // #8649: recomputes refused because an unlocked apply overlapped their scan, in total and since the last publish.
+  // Written under this bucket's monitor, like unlockedApplyStamp; the run is volatile so the applies read it lock-free
+  private                long                      recountPublishesRefused;
+  private volatile       long                      consecutiveRecountPublishesRefused;
 
   /**
    * Bucket purpose tag. Declared up here (next to the {@link #purpose} field that uses it) so the enum is the
@@ -1083,6 +1100,43 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /**
+   * The {@link #hasRecordChangedSinceRead} answer for a record whose body is not in its own slot (#8985): a multi-page
+   * record's head chunk, or a placeholder pointer. The record is assembled the way a read does, from the page just
+   * pinned and the rest of it as the transaction sees it, and compared with the image the update started from.
+   * <p>
+   * Without this a commit landing between the read and the pin went unnoticed for these shapes: the pin takes the
+   * newer head page, the off-page fingerprint is taken from it too, and the commit-time checks then compare the newer
+   * state with itself, so a read-modify-write computed from the older read overwrote the other transaction's change
+   * without any error. The off-page fingerprint is taken BEFORE this comparison (see
+   * {@code TransactionContext.addUpdatedRecord}), so a change that lands after the comparison is still caught at commit.
+   * <p>
+   * A record that moves while it is read is a changed record, not an I/O failure: the read reports it as a
+   * {@link ConcurrentModificationException}, which is the answer here too.
+   */
+  private boolean hasOffPageRecordChangedSinceRead(final RID rid, final BasePage page, final int recordPositionInPage,
+      final long[] recordSize, final Binary readImage) {
+    try {
+      final Binary current;
+      if (recordSize[0] == FIRST_CHUNK)
+        current = loadMultiPageRecord(rid, page, recordPositionInPage, recordSize);
+      else
+        current = getRecordInternal(new RID(fileId, page.readLong((int) (recordPositionInPage + recordSize[1]))), true, false);
+
+      if (current == null)
+        // CANNOT BE RECONSTRUCTED: IT CANNOT BE VOUCHED FOR EITHER
+        return true;
+      final int size = current.size();
+      return size != readImage.size() || !readImage.isSameRegionAs(0, current, 0, size);
+    } catch (final ConcurrentModificationException e) {
+      return true;
+    } catch (final Exception e) {
+      // FAIL CLOSED: A RECORD THAT CANNOT BE RE-READ IS NOT ONE THE UPDATE MAY BE LAID OVER
+      LogManager.instance().log(this, Level.WARNING, "Unable to re-read the off-page record %s while taking it for update", e, rid);
+      return true;
+    }
+  }
+
+  /**
    * Whether the slot of {@code rid} on {@code page} no longer holds, byte for byte, the record image an update was
    * computed from (#6950).
    * <p>
@@ -1094,13 +1148,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * update started from against the slot the pin just loaded is what tells the two apart, and it does so at RECORD
    * granularity, so a concurrent write to another slot of the same page stays the false conflict it is.
    * <p>
-   * Answers only for a plain record stored inside this very slot. A placeholder pointer, a multi-page record's head
-   * chunk and a placeholder's content keep their body elsewhere, so this page cannot see whether it changed: they
-   * return {@code false} here and stay covered by the off-page fingerprint
-   * ({@link #offPageContentFingerprint(RID, BasePage, boolean)}) exactly as before. A freed or deleted slot also
-   * returns {@code false}: the commit's own vanished-record check (#4959) is what reports that one.
+   * A plain record stored inside this very slot is compared in place. A placeholder pointer and a multi-page record's
+   * head chunk keep their body elsewhere, so it is assembled and compared whole (#8985), and the off-page fingerprint
+   * ({@link #offPageContentFingerprint(RID, BasePage, boolean)}) covers what changes AFTER that. A placeholder's
+   * content returns {@code false}: it is not a record of its own. A freed or deleted slot also returns {@code false}:
+   * the commit's own vanished-record check (#4959) is what reports that one.
    * <p>
-   * Never throws. A page that cannot be read where a record was is not a reason to fail a write that would otherwise
+   * Throws only the retryable {@link ConcurrentModificationException} of a multi-page record found moving while it was
+   * assembled. A page that cannot be read where a record was is not a reason to fail a write that would otherwise
    * succeed, and the commit-time version check is still behind it.
    *
    * @param readImage the image the update is diffed against - the record's own buffer, the same one
@@ -1118,6 +1173,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         return false;
 
       final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
+      if (recordSize[0] == FIRST_CHUNK || recordSize[0] == RECORD_PLACEHOLDER_POINTER)
+        // #8985: THE BODY IS ELSEWHERE, SO IT IS ASSEMBLED AND COMPARED WHOLE
+        return hasOffPageRecordChangedSinceRead(rid, page, recordPositionInPage, recordSize, readImage);
+
       if (recordSize[0] <= 0)
         // DELETED, OR A SHAPE WHOSE BODY IS NOT (ENTIRELY) IN THIS SLOT: SEE THE JAVADOC
         return false;
@@ -1130,6 +1189,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // byte loop through the page accessors: this runs on the write path, once per record taken for update.
       return !page.isSameContentAs((int) (recordPositionInPage + recordSize[1]), readImage, 0, size);
 
+    } catch (final ConcurrentModificationException e) {
+      // #8982: assembling a multi-page record found it moving under the read - the conflict this check exists to report
+      throw e;
     } catch (final Exception e) {
       LogManager.instance()
           .log(this, Level.FINE, "Unable to re-read record %s on page %s while taking it for update", e, rid,
@@ -1232,6 +1294,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       // #8640: read before the scan, so an apply that wrote pages without the lock while the scan ran is detected
       final long stampAtScanStart = getUnlockedApplyStamp();
+      final long scanStartNanos = System.nanoTime();
 
       final Runnable scanHook = recountScanHookForTesting;
       if (scanHook != null)
@@ -1290,10 +1353,19 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // already includes this transaction's pending delta. Cache the COMMITTED base (total - pending) so the
         // commit-time fold adds the delta exactly once instead of double-counting it; the caller still gets the
         // transaction-visible `total` below.
-        if (!publishRecomputedCount(transaction != null ? total - transaction.getBucketRecordDelta(fileId) : total, stampAtScanStart))
-          LogManager.instance().log(this, Level.FINE,
-              "count() recompute on bucket '%s' overlapped a replicated apply that could not take the bucket lock; result not cached",
-              componentName);
+        // #8649: the scan ran under the lock, so its length is what a replicated apply has to wait out to leave it alone
+        lastRecountScanMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - scanStartNanos);
+        final long refusedInARow = publishRecomputedCountOrRefusalRun(
+            transaction != null ? total - transaction.getBucketRecordDelta(fileId) : total, stampAtScanStart);
+        if (refusedInARow > 0) {
+          // #8649: one refusal is the expected cost of a catch-up, so it stays at FINE. A run of them means the
+          // replication never leaves this bucket a quiet window and every count(*) is a full scan: WARNING on 4, 8,
+          // 16... refusals in a row, so the condition is visible without one line per count()
+          LogManager.instance().log(this, isRefusalRunWorthAWarning(refusedInARow) ? Level.WARNING : Level.FINE,
+              "count() recompute on bucket '%s' overlapped a replicated apply that could not take the bucket lock; result not"
+                  + " cached (%d refused in a row, %d in total, last scan %dms)", null, componentName, refusedInARow,
+              getRecountPublishesRefused(), lastRecountScanMs);
+        }
       } else
         LogManager.instance().log(this, Level.FINE,
                 "count() recompute on bucket '%s' ran lock-free after a %dms lock-acquisition timeout; result not cached", componentName,
@@ -2365,7 +2437,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     }
 
     try {
-      final BasePage page = database.getTransaction().getPage(new PageId(database, file.getFileId(), pageId), pageSize);
+      final TransactionContext readTransaction = database.getTransaction();
+      final PageId headPageId = new PageId(database, file.getFileId(), pageId);
+      // #8987: BEFORE the read pins it - a head pinned by this very read is not a snapshot older than the chain's tails
+      final boolean headPrePinned = readTransaction.getPinnedPage(headPageId) != null;
+      final BasePage page = readTransaction.getPage(headPageId, pageSize);
 
       final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
       if (positionInPage >= recordCountInPage)
@@ -2400,7 +2476,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         return getRecordInternal(placeHolderPointer, true, false);
       } else if (isChunkHead(recordSize[0])) {
         // FOUND 1ST CHUNK, LOAD THE ENTIRE MULTI-PAGE RECORD
-        return loadMultiPageRecord(rid, page, recordPositionInPage, recordSize);
+        return loadMultiPageRecord(rid, page, recordPositionInPage, recordSize, headPrePinned);
       } else if (recordSize[0] == NEXT_CHUNK)
         // CANNOT LOAD PARTIAL CHUNK
         return null;
@@ -2420,6 +2496,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
   public void setCachedRecordCount(final long count) {
     cachedRecordCount.set(count);
+    // #8649: a counter made known some other way (statistics load, CHECK DATABASE) ends the episode too, or the next -1
+    // would start out patient. Three volatile reads on the commit fold, and the reset itself only once per episode
+    if (count > -1 && (applyLockPatient || applyLockContended || consecutiveRecountPublishesRefused != 0))
+      resetApplyLockState();
   }
 
   /**
@@ -2445,17 +2525,112 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     applyLockContended = contended;
   }
 
+  boolean isApplyLockPatient() {
+    return applyLockPatient;
+  }
+
+  void setApplyLockPatient(final boolean patient) {
+    applyLockPatient = patient;
+  }
+
+  /**
+   * Turns the applies patient if {@code minRefusals} recomputes in a row were refused, in one step with the publish
+   * that would reset the run, so a recompute publishing in between cannot leave a known counter with a patient flag
+   * that the next unknown-counter episode would inherit (issue #8649).
+   *
+   * @return the refusal run that made the bucket patient, or 0 when it did not
+   */
+  synchronized long turnApplyLockPatientIfRefused(final long minRefusals) {
+    final long run = consecutiveRecountPublishesRefused;
+    if (applyLockPatient || run < minRefusals)
+      return 0;
+    applyLockPatient = true;
+    return run;
+  }
+
+  /**
+   * Whether a patient wait timed out less than a back-off ago, so the applies must not turn patient yet (issue #8649).
+   */
+  boolean isApplyLockPatientBackingOff(final long nowNanos) {
+    final long until = applyLockPatientBackoffUntilNanos;
+    return until != 0L && nowNanos - until < 0;
+  }
+
+  /** Starts the back-off after a patient wait that timed out: no patient wait for {@code backoffMs} (issue #8649). */
+  void startApplyLockPatientBackoff(final long backoffMs) {
+    final long until = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(backoffMs);
+    // 0 is the "no back-off" sentinel, and nanoTime() may legitimately land on it
+    applyLockPatientBackoffUntilNanos = until != 0L ? until : 1L;
+  }
+
+  /** Wall time of the last {@code count()} recompute scan that ran under the bucket lock, in ms (issue #8649). */
+  long getLastRecountScanMs() {
+    return lastRecountScanMs;
+  }
+
+  /** Test seam: plants the length of the last recompute scan, which sizes the waits of the applies (#8649). */
+  void setLastRecountScanMs(final long scanMs) {
+    lastRecountScanMs = scanMs;
+  }
+
+  /**
+   * How many {@code count()} recomputes of this bucket were not cached because a replicated apply wrote the bucket
+   * without its lock while they scanned (issue #8649). A number that keeps growing means every {@code count(*)} on this
+   * bucket is a full scan.
+   */
+  public synchronized long getRecountPublishesRefused() {
+    return recountPublishesRefused;
+  }
+
+  /** The refused recomputes since the last one that published; 0 once a recompute is cached (issue #8649). */
+  public long getConsecutiveRecountPublishesRefused() {
+    return consecutiveRecountPublishesRefused;
+  }
+
+  /**
+   * Whether a run of refused recomputes is long enough to log at WARNING: 4, 8, 16... in a row (issue #8649). One or two
+   * are the expected cost of a catch-up; logging every one past that would add a line per {@code count()}.
+   */
+  static boolean isRefusalRunWorthAWarning(final long refusedInARow) {
+    return refusedInARow >= 4 && Long.bitCount(refusedInARow) == 1;
+  }
+
+  /**
+   * Forgets the apply-lock state of the last unknown-counter episode (issue #8649), so a later one starts clean.
+   * Synchronized with the refusal counting in {@link #publishRecomputedCount}.
+   */
+  private synchronized void resetApplyLockState() {
+    consecutiveRecountPublishesRefused = 0;
+    applyLockContended = false;
+    applyLockPatient = false;
+    applyLockPatientBackoffUntilNanos = 0L;
+  }
+
   /**
    * Publishes a recomputed counter unless an unlocked apply ran since {@code stampAtScanStart} was read (issue #8640).
    * Synchronized with {@link #invalidateCachedRecordCountForUnlockedApply()} so the check and the publish are one step.
    */
-  synchronized boolean publishRecomputedCount(final long count, final long stampAtScanStart) {
-    if (unlockedApplyStamp != stampAtScanStart)
-      return false;
+  boolean publishRecomputedCount(final long count, final long stampAtScanStart) {
+    return publishRecomputedCountOrRefusalRun(count, stampAtScanStart) == 0;
+  }
+
+  /**
+   * {@link #publishRecomputedCount} that tells a refusal by the run of refusals it brought the bucket to, read in the
+   * same step as the increment, so the log of a concurrent recompute cannot report this one's run (issue #8649).
+   *
+   * @return 0 when published, otherwise the refused recomputes in a row including this one
+   */
+  synchronized long publishRecomputedCountOrRefusalRun(final long count, final long stampAtScanStart) {
+    if (unlockedApplyStamp != stampAtScanStart) {
+      ++recountPublishesRefused;
+      if (database.getEmbedded() instanceof LocalDatabase local)
+        local.recountPublishesRefused.incrementAndGet();
+      return ++consecutiveRecountPublishesRefused;
+    }
     cachedRecordCount.set(count);
-    // A known counter makes the applies skip the lock, so nothing else would clear the mark before the next -1
-    applyLockContended = false;
-    return true;
+    // A known counter makes the applies skip the lock, so nothing else would clear the marks before the next -1
+    resetApplyLockState();
+    return 0;
   }
 
   private RID createRecordInternal(final Record record, final boolean isPlaceHolder, final boolean discardRecordAfter) {
@@ -2513,9 +2688,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       } else
         selectedPage = database.getTransaction().getPageToModify(foundPage);
 
-      LogManager.instance()
-              .log(this, Level.FINE, "Creating record (%s records=%d threadId=%d)", selectedPage, availablePositionIndex,
-                      Thread.currentThread().threadId());
+      if (LogManager.instance().isLoggable(this, Level.FINE))
+        LogManager.instance()
+                .log(this, Level.FINE, "Creating record (%s records=%d threadId=%d)", selectedPage, availablePositionIndex,
+                        Thread.currentThread().threadId());
       final RID rid = new RID(file.getFileId(),
               ((long) selectedPage.getPageId().getPageNumber()) * maxRecordsInPage + availablePositionIndex);
 
@@ -2569,9 +2745,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         selectedPage.endCoveredWrite(previousCoverage);
       }
 
-      LogManager.instance()
-              .log(this, Level.FINE, "Created record %s (%s records=%d threadId=%d)", rid, selectedPage, recordCountInPage,
-                      Thread.currentThread().threadId());
+      if (LogManager.instance().isLoggable(this, Level.FINE))
+        LogManager.instance()
+                .log(this, Level.FINE, "Created record %s (%s records=%d threadId=%d)", rid, selectedPage, recordCountInPage,
+                        Thread.currentThread().threadId());
 
       // DISJOINT-SLOT MERGE (#5381): a brand-new record inserted into a FREE slot of an EXISTING (reused) page
       // commutes with concurrent writes to other slots of that page. Track it so a commit-time page-version
@@ -3717,9 +3894,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
               slotTx.poisonSlotRebasePage(fileId, pageId);
           }
 
-          LogManager.instance()
-                  .log(this, Level.FINE, "Updated record %s by allocating new space on the same page (%s threadId=%d)", null, rid, page,
-                          Thread.currentThread().threadId());
+          if (LogManager.instance().isLoggable(this, Level.FINE))
+            LogManager.instance()
+                    .log(this, Level.FINE, "Updated record %s by allocating new space on the same page (%s threadId=%d)", null, rid, page,
+                            Thread.currentThread().threadId());
 
         } else {
           // THE RECORD MUST SPILL OUT OF THE PAGE.
@@ -3763,9 +3941,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             final RID realRID = createRecordInternal(record, true, false);
             page.writeLong(recordPositionInPage + bytesWritten, realRID.getPosition());
 
-            LogManager.instance()
-                    .log(this, Level.FINE, "Updated record %s by allocating new space with a placeholder (%s threadId=%d)", null, rid,
-                            page, Thread.currentThread().threadId());
+            if (LogManager.instance().isLoggable(this, Level.FINE))
+              LogManager.instance()
+                      .log(this, Level.FINE, "Updated record %s by allocating new space with a placeholder (%s threadId=%d)", null, rid,
+                              page, Thread.currentThread().threadId());
           } else {
             // SPLIT THE RECORD IN CHUNKS AS LINKED LIST AND STORE THE FIRST PART ON CURRENT PAGE ISSUE https://github.com/ArcadeData/arcadedb/issues/332
             //
@@ -3822,9 +4001,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                 slotTx.poisonSlotRebasePage(fileId, pageId);
             }
 
-            LogManager.instance().log(this, Level.FINE,
-                    "Updated record %s by splitting it in multiple chunks to be saved in multiple pages (%s threadId=%d)", null, rid,
-                    page, Thread.currentThread().threadId());
+            if (LogManager.instance().isLoggable(this, Level.FINE))
+              LogManager.instance().log(this, Level.FINE,
+                      "Updated record %s by splitting it in multiple chunks to be saved in multiple pages (%s threadId=%d)", null, rid,
+                      page, Thread.currentThread().threadId());
           }
         }
       } else {
@@ -3881,9 +4061,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         if (bufferSize + recordSize[1] < footprintBefore)
           freedWithoutClaiming(page);
 
-        LogManager.instance()
-                .log(this, Level.FINE, "Updated record %s with the same size or less as before (%s threadId=%d)", null, rid, page,
-                        Thread.currentThread().threadId());
+        if (LogManager.instance().isLoggable(this, Level.FINE))
+          LogManager.instance()
+                  .log(this, Level.FINE, "Updated record %s with the same size or less as before (%s threadId=%d)", null, rid, page,
+                          Thread.currentThread().threadId());
       }
 
       if (!discardRecordAfter)
@@ -4346,8 +4527,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         freedWithoutClaiming(page);
       }
 
-      LogManager.instance()
-              .log(this, Level.FINE, "Deleted record %s (%s threadId=%d)", null, rid, page, Thread.currentThread().threadId());
+      if (LogManager.instance().isLoggable(this, Level.FINE))
+        LogManager.instance()
+                .log(this, Level.FINE, "Deleted record %s (%s threadId=%d)", null, rid, page, Thread.currentThread().threadId());
 
     } catch (final RecordNotFoundException e) {
       throw e;
@@ -4433,7 +4615,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       if (recordCountInPage > 0) {
         // RESET RECORD COUNTER TO 0
         page.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) 0);
-        LogManager.instance().log(this, Level.FINE, "Update record count from %d to 0 in page %s", recordCountInPage, page.pageId);
+        if (LogManager.instance().isLoggable(this, Level.FINE))
+          LogManager.instance().log(this, Level.FINE, "Update record count from %d to 0 in page %s", recordCountInPage, page.pageId);
         wipeOutFreeSpace(page, (short) 0);
       }
       accountCompressedPage(page, contentHeaderSize);
@@ -4445,7 +4628,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     defragPage(page, holes, recordCountInPage);
 
     if (!holes.isEmpty()) {
-      LogManager.instance().log(this, Level.FINE, "Compressed page %s removed %d holes", page.pageId, holes.size());
+      if (LogManager.instance().isLoggable(this, Level.FINE))
+        LogManager.instance().log(this, Level.FINE, "Compressed page %s removed %d holes", page.pageId, holes.size());
 
       // UPDATE THE RECORD COUNT
       // LAST POSITION IN THE PAGE, UPDATE THE TOTAL RECORDS IN THE PAGE GOING BACK FROM THE CURRENT RECORD
@@ -4461,8 +4645,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       if (newRecordCount > -1) {
         // UPDATE TOTAL RECORDS IN THE PAGE
-        LogManager.instance()
-                .log(this, Level.FINE, "Update record count from %d to %d in page %s", recordCountInPage, newRecordCount, page.pageId);
+        if (LogManager.instance().isLoggable(this, Level.FINE))
+          LogManager.instance()
+                  .log(this, Level.FINE, "Update record count from %d to %d in page %s", recordCountInPage, newRecordCount, page.pageId);
         page.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) newRecordCount);
       }
 
@@ -4644,6 +4829,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   private void defragPage(final MutablePage page, final List<int[]> holes, final short recordCountInPage) {
+    final boolean fine = LogManager.instance().isLoggable(this, Level.FINE);
     int gap = 0;
     for (int i = 0; i < holes.size(); i++) {
       final int[] hole = holes.get(i);
@@ -4655,7 +4841,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       if (length < 1)
         LogManager.instance().log(this, Level.SEVERE, "Error on reusing hole in page %s, invalid length %d", page.pageId, length);
 
-      LogManager.instance().log(this, Level.FINE, "Moving segment page %s %d-(%d)->%d...", page.pageId, from, length, to);
+      if (fine)
+        LogManager.instance().log(this, Level.FINE, "Moving segment page %s %d-(%d)->%d...", page.pageId, from, length, to);
       page.move(from, to, length);
 
       // SHIFT ALL THE POINTERS FROM THE HOLE TO THE LAST
@@ -4669,8 +4856,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         if (recordPositionInPage >= from && recordPositionInPage <= from + length) {
           page.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE,
                   recordPositionInPage - hole[1] - gap);
-          LogManager.instance().log(this, Level.FINE, "- record %d %d->%d", positionInPage, recordPositionInPage,
-                  recordPositionInPage - hole[1] - gap);
+          if (fine)
+            LogManager.instance().log(this, Level.FINE, "- record %d %d->%d", positionInPage, recordPositionInPage,
+                    recordPositionInPage - hole[1] - gap);
         }
       }
 
@@ -4825,6 +5013,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     cachedRecordCount.set(-1);
   }
 
+  private Binary loadMultiPageRecord(final RID originalRID, final BasePage firstPage, final int recordPositionInPage,
+                                     final long[] recordSize) throws IOException {
+    return loadMultiPageRecord(originalRID, firstPage, recordPositionInPage, recordSize, false);
+  }
+
   /**
    * Loads a multi-page record, validating that what it assembled is one committed state of the record and not a mix
    * of two.
@@ -4855,10 +5048,15 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * the same walk, is paid only on a page that actually moved, and unlike a hash it cannot be wrong. The commit side
    * has to compare two points in TIME and can only carry a number across them; a read holds both images at once.
    *
+   *
+   * @param headPrePinned whether the transaction already held the head page before the read fetched it (#8987): a chain
+   *                      is a snapshot older than this read only if its head was pinned before it too, otherwise a newer
+   *                      head can sit on tails pinned earlier by a neighbour record's read.
+   *
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   private Binary loadMultiPageRecord(final RID originalRID, BasePage firstPage, int recordPositionInPage,
-                                     long[] recordSize) throws IOException {
+                                     long[] recordSize, final boolean headPrePinned) throws IOException {
     final int maxRetries = database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRIES);
     final PageId firstPageId = firstPage.pageId;
     final int firstChunkSlot = (int) (originalRID.getPosition() % maxRecordsInPage);
@@ -4887,6 +5085,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // chunks - pay nothing for it. The self-reference check further down stays: it is free, and it names the loop
       // for the chain that doubles back on its very first hop, long before this threshold (code review on #6258).
       LongHashSet visitedChunks = null;
+
+      // #8987: whether the head and every continuation page were ALREADY pinned by the transaction when this walk began, so that the chain
+      // is a snapshot taken before it. Only the first attempt can say so: a later one finds the pages its predecessor pinned.
+      final TransactionContext walkTransaction = database.getTransactionIfExists();
+      boolean tailsPrePinned = retry == 0 && headPrePinned && walkTransaction != null;
 
       boolean chainInconsistent = false;
       final Binary record = new Binary();
@@ -4928,8 +5131,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             break;
           }
 
-          final BasePage nextPage = database.getTransaction()
-                  .getPage(new PageId(database, file.getFileId(), chunkPageId), pageSize);
+          final PageId nextPageId = new PageId(database, file.getFileId(), chunkPageId);
+          if (tailsPrePinned && walkTransaction.getPinnedPage(nextPageId) == null)
+            tailsPrePinned = false;
+
+          final BasePage nextPage = database.getTransaction().getPage(nextPageId, pageSize);
 
           final int nextRecordPositionInPage = getRecordPositionInPage(nextPage, chunkPositionInPage);
           if (nextRecordPositionInPage == 0) {
@@ -4995,7 +5201,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // chunk it cannot make sense of as a chunk that changed. What is left to come out of here is the failure to
         // LOAD a page at all, which is an I/O error and not a conflict - absorbing it would spend the retry budget
         // on a broken disk and then report it as "the record was modified during read".
-        final int verdict = validateChainRead(chainTrace, chunks, record, lastNextChunkPointer, headMarker);
+        final int verdict = validateChainRead(chainTrace, chunks, record, lastNextChunkPointer, headMarker, tailsPrePinned);
         if (verdict == CHAIN_READ_REVALIDATED)
           database.getPageManager().incrementChunkChainReadRevalidations();
         chainInconsistent = verdict == CHAIN_READ_CHANGED;
@@ -5055,14 +5261,26 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    *                             it is part of what the comparison checks: a head whose marker changed under the read
    *                             is a slot that stopped being what it was, exactly like one whose size or pointer did.
    *
+   * @param tailsPrePinned       whether the transaction already held every continuation page when the walk began: the
+   *                             pages the walk pins itself can come from different commits, so only a chain pinned
+   *                             before it is a snapshot (#8987).
+   *
    * @return {@link #CHAIN_READ_UNCHANGED}, {@link #CHAIN_READ_REVALIDATED} or {@link #CHAIN_READ_CHANGED}.
    *
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   private int validateChainRead(final long[] chainTrace, final int chunks, final Binary record,
-                                final long lastNextChunkPointer, final long headMarker) throws IOException {
+                                final long lastNextChunkPointer, final long headMarker, final boolean tailsPrePinned)
+          throws IOException {
     int verdict = CHAIN_READ_UNCHANGED;
     int contentOffset = 0;
+
+    // A chain whose continuation pages the transaction held BEFORE this walk, and still holds whole, IS its snapshot (#8987): under REPEATABLE_READ a later commit on it is not a
+    // change made during the read, the chain is exactly what the transaction pinned and what every read of the record
+    // must keep returning. A chain only partly held (its head pinned by a read of a neighbour on the same page) is
+    // validated as before: its other chunks came from the page manager and a commit can have torn the read.
+    if (tailsPrePinned && isChainPinnedWhole(chainTrace, chunks))
+      return CHAIN_READ_UNCHANGED;
 
     for (int chunk = 0; chunk < chunks; ++chunk) {
       final int trace = chunk * CHAIN_TRACE_STRIDE;
@@ -5093,6 +5311,21 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     }
 
     return verdict;
+  }
+
+  /** Whether every chunk of the traced chain was read from a page this transaction holds, at the version it read. */
+  private boolean isChainPinnedWhole(final long[] chainTrace, final int chunks) {
+    final TransactionContext transaction = database.getTransactionIfExists();
+    if (transaction == null)
+      return false;
+    for (int chunk = 0; chunk < chunks; ++chunk) {
+      final int trace = chunk * CHAIN_TRACE_STRIDE;
+      final BasePage pinned = transaction.getPinnedPage(
+              new PageId(database, file.getFileId(), (int) chainTrace[trace + CHAIN_TRACE_PAGE_NUMBER]));
+      if (pinned == null || pinned.getVersion() != chainTrace[trace + CHAIN_TRACE_PAGE_VERSION])
+        return false;
+    }
+    return true;
   }
 
   /**
@@ -5169,7 +5402,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // THE COMMITTED CHAIN WALKS CLEANLY: what this read met was a chain in motion, which is what the retry is for.
         return null;
 
-      return validateChainRead(chainTrace, chunks, record, lastNextChunkPointer, headMarker) == CHAIN_READ_CHANGED ?
+      return validateChainRead(chainTrace, chunks, record, lastNextChunkPointer, headMarker, false) == CHAIN_READ_CHANGED ?
               null :
               reason;
     } catch (final Exception e) {
@@ -5926,9 +6159,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                       TransactionContext.SLOT_KIND_CHUNK_COLLAPSED_TO_PLACEHOLDER_CONTENT :
                       TransactionContext.SLOT_KIND_CHUNK_COLLAPSED_TO_RECORD);
 
-    LogManager.instance().log(this, Level.FINE,
-            "Updated record %s by collapsing its chunk chain back into a plain %srecord (%s threadId=%d)", null, rid,
-            isPlaceHolderContent ? "placeholder content " : "", page, Thread.currentThread().threadId());
+    if (LogManager.instance().isLoggable(this, Level.FINE))
+      LogManager.instance().log(this, Level.FINE,
+              "Updated record %s by collapsing its chunk chain back into a plain %srecord (%s threadId=%d)", null, rid,
+              isPlaceHolderContent ? "placeholder content " : "", page, Thread.currentThread().threadId());
 
     return true;
   }

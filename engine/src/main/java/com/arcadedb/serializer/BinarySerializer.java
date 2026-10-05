@@ -40,6 +40,7 @@ import com.arcadedb.database.Record;
 import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.ConfigurationException;
+import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.SerializationException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.EdgeSegment;
@@ -292,6 +293,9 @@ public class BinarySerializer {
         final String name = database.getSchema().getDictionary().getNameById(nameId);
         result.add(name);
       }
+    } catch (final DatabaseIsClosedException e) {
+      // A CLOSED DATABASE IS NOT A DAMAGED RECORD: LET THE CALLER SEE IT, AS db.query() DOES (SAME AT EVERY CATCH BELOW)
+      throw e;
     } catch (Exception e) {
       LogManager.instance().log(this, Level.WARNING, "Possible corrupted record %s, returning %d names read so far", e, rid,
           result.size());
@@ -376,6 +380,8 @@ public class BinarySerializer {
           }
 
           values.put(propertyName, propertyValue);
+        } catch (final DatabaseIsClosedException e) {
+          throw e;
         } catch (Exception e) {
           if (strict)
             throw new SerializationException("Property '" + propertyName + "' of record " + rid + " cannot be decoded: "
@@ -390,6 +396,8 @@ public class BinarySerializer {
           // ALL REQUESTED PROPERTIES ALREADY FOUND
           break;
       }
+    } catch (final DatabaseIsClosedException e) {
+      throw e;
     } catch (Exception e) {
       if (strict)
         throw e instanceof SerializationException serializationException ?
@@ -420,6 +428,8 @@ public class BinarySerializer {
           return true;
         buffer.getUnsignedNumber(); // contentPosition
       }
+    } catch (final DatabaseIsClosedException e) {
+      throw e;
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Possible corrupted record %s", e, rid);
     }
@@ -481,6 +491,8 @@ public class BinarySerializer {
 
         return deserializeValue(database, buffer, type, propertyModifier);
       }
+    } catch (final DatabaseIsClosedException e) {
+      throw e;
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Possible corrupted record %s", e, rid);
       return found ? null : absentValue;
@@ -567,10 +579,12 @@ public class BinarySerializer {
     case BinaryTypes.TYPE_DATETIME_NANOS:
       serializeDateTime(database, content, value, type);
       break;
-    case BinaryTypes.TYPE_DECIMAL:
-      content.putNumber(((BigDecimal) value).scale());
-      content.putBytes(((BigDecimal) value).unscaledValue().toByteArray());
+    case BinaryTypes.TYPE_DECIMAL: {
+      final BigDecimal decimal = value instanceof BigInteger bigInteger ? new BigDecimal(bigInteger) : (BigDecimal) value;
+      content.putNumber(decimal.scale());
+      content.putBytes(decimal.unscaledValue().toByteArray());
       break;
+    }
     case BinaryTypes.TYPE_COMPRESSED_RID: {
       final RID rid = ((Identifiable) value).getIdentity();
       serialized.putNumber(rid.getBucketId());
@@ -1525,6 +1539,14 @@ public class BinarySerializer {
 
   public Class<?> getDateTimeImplementation() {
     return dateTimeImplementation;
+  }
+
+  /**
+   * The class a {@code DATETIME_MICROS} / {@code DATETIME_NANOS} value is read back as: the configured datetime
+   * implementation, or {@code LocalDateTime} when that one stops at the millisecond (issue #8158).
+   */
+  public Class<?> getSubMillisDateTimeImplementation() {
+    return subMillisDateTimeImplementation;
   }
 
   /** See {@link #setDateImplementation(Object)}. */

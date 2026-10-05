@@ -20,6 +20,7 @@ package com.arcadedb.database;
 
 import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
@@ -91,6 +92,9 @@ public class ImmutableDocument extends BaseDocument {
     try {
       return database.getSerializer()
           .deserializeProperty(database, content, new EmbeddedModifierProperty(this, propertyName), propertyName, rid);
+    } catch (final DatabaseIsClosedException e) {
+      // A CLOSED DATABASE IS NOT A DAMAGED RECORD: LET THE CALLER SEE IT, AS db.query() DOES (SAME AT EVERY CATCH BELOW)
+      throw e;
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on loading property '%s' from record %s", e, propertyName, rid);
       return null;
@@ -111,6 +115,8 @@ public class ImmutableDocument extends BaseDocument {
       return database.getSerializer()
           .deserializeProperty(database, content, new EmbeddedModifierProperty(this, propertyName), propertyName, rid,
               absentValue);
+    } catch (final DatabaseIsClosedException e) {
+      throw e;
     } catch (Exception e) {
       // deserializeProperty() ALREADY CATCHES EVERYTHING ITSELF (SAME "Possible corrupted record" LOG) AND ANSWERS
       // absentValue/null PER ITS DOCUMENTED FOUND-VS-NOT-FOUND CONTRACT, SO THIS CATCH IS DEAD TODAY. absentValue,
@@ -237,6 +243,14 @@ public class ImmutableDocument extends BaseDocument {
       reload();
       onReloadedForModify(readImage);
     }
+  }
+
+  /**
+   * Whether this record's content was read from its bucket by the transaction that began with {@code transactionBeginSequence}
+   * (issue #8984). A record that was only referenced (not yet loaded) proves nothing about the bucket, so it does not count.
+   */
+  boolean wasLoadedInTransaction(final long transactionBeginSequence) {
+    return buffer != null && readInTransaction >= 0 && readInTransaction == readTransactionId(transactionBeginSequence);
   }
 
   /**

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.schema;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.index.Index;
@@ -34,7 +35,8 @@ import java.util.List;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public abstract class IndexBuilder<T extends Index> {
-  public static final int BUILD_BATCH_SIZE = 5_000;
+  public static final int BUILD_BATCH_SIZE      = 5_000;
+  static final int        MIN_DEFAULT_PAGE_SIZE = 8_192;
 
   /**
    * Value of {@link #pageSize} meaning "the caller did not ask for a page size", so each index implementation is free
@@ -351,6 +353,16 @@ public abstract class IndexBuilder<T extends Index> {
    */
   public int getPageSize(final int defaultIfUnset) {
     return pageSize > 0 ? pageSize : defaultIfUnset;
+  }
+
+  /**
+   * Page size for a plain LSM-tree index: the requested one, or the {@link GlobalConfiguration#INDEX_DEFAULT_PAGE_SIZE}
+   * setting (never below {@link #MIN_DEFAULT_PAGE_SIZE}) when none was requested. Full-text, geo and vector indexes keep
+   * {@link #getPageSize()}, whose default they size their records against.
+   */
+  public int getLsmTreePageSize() {
+    return getPageSize(Math.max(MIN_DEFAULT_PAGE_SIZE,
+        database.getConfiguration().getValueAsInteger(GlobalConfiguration.INDEX_DEFAULT_PAGE_SIZE)));
   }
 
   public Schema.INDEX_TYPE getIndexType() {

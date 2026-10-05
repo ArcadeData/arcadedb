@@ -211,7 +211,7 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
       final Set<String> propertyNames = result.getPropertyNames();
       this.properties = new HashMap<>(propertyNames.size());
       for (final String propName : propertyNames) {
-        this.properties.put(propName, Type.normalizeNumberForKey(result.getProperty(propName)));
+        this.properties.put(propName, Type.normalizeForKey(result.getProperty(propName)));
       }
       // Pre-compute hashCode for performance
       this.hashCode = properties.hashCode();

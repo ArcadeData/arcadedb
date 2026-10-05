@@ -58,6 +58,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
 import java.net.ConnectException;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -1011,8 +1013,9 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    * releases a reader parked on it (issue #7738).
    * <p>
    * It exists for the follower's relay of a streamed batch answer. That forward carries no request timeout (issue
-   * #8325): the wait for the leader's response HEADERS, which on the streaming encoding arrive with its first progress
-   * line, is bounded by {@link LeaderDial#sendBounded}, and every later wait by this stream alone.
+   * #8325): the wait for the leader's response HEADERS, which on HTTP/1.1 the JDK client hands back only once the
+   * relayed upload has been published whole, is bounded by {@link LeaderDial#sendBoundedWhileProgressing} from the
+   * upload's last byte (issue #8719), and every later wait by this stream alone.
    * {@code BodyHandlers.ofInputStream} has no per-read timeout and the client sets no socket read timeout, so a
    * leader that answered its 200 and then stalled - deadlocked, in a long GC, blocked on a full volume - parked
    * the follower's worker thread in {@code readLine()} for as long as the leader kept the connection open.
@@ -1396,6 +1399,16 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
   // Package-private, not private: PostBatchHandlerBodyFailureTest drives it directly, which is the only way to
   // reproduce a request body that fails on a probe and then offers bytes anyway (issue #6180).
   static class CountingInputStream extends FilterInputStream {
+    private static final VarHandle BYTES_READ;
+
+    static {
+      try {
+        BYTES_READ = MethodHandles.lookup().findVarHandle(CountingInputStream.class, "bytesRead", long.class);
+      } catch (final ReflectiveOperationException e) {
+        throw new ExceptionInInitializerError(e);
+      }
+    }
+
     private final HttpServerExchange exchange;
     /**
      * {@code arcadedb.server.httpBodyContentMaxSize}, or a value {@code <= 0} when the deployment turned the cap
@@ -1404,6 +1417,13 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
      * length, and that is how a chunked bulk load used to be read without any bound at all (issue #7772).
      */
     private final long              maxBodySize;
+    /**
+     * Written only by the thread reading the body, and stored with {@link #BYTES_READ} in opaque mode: a forwarded body
+     * is read on the JDK client's publisher thread while the handler thread waiting for the leader's answer samples
+     * {@link #progress()} to tell an upload that is still moving from one that stopped (issue #8719). Opaque rather
+     * than volatile, so the local load path, which reads the same stream, pays no barrier per read: the sampler needs
+     * a value that eventually changes, not one ordered with anything else.
+     */
     private       long              bytesRead;
     private       boolean           endOfBody;
     /**
@@ -1438,7 +1458,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
         throw e;
       }
       if (read >= 0) {
-        ++bytesRead;
+        BYTES_READ.setOpaque(this, bytesRead + 1);
         refuseIfOverCap();
       } else
         endOfBody = true;
@@ -1456,7 +1476,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
         throw e;
       }
       if (read > 0) {
-        bytesRead += read;
+        BYTES_READ.setOpaque(this, bytesRead + read);
         refuseIfOverCap();
       } else if (read < 0)
         endOfBody = true;
@@ -1619,8 +1639,17 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       return BufferedDrain.BUDGET_SPENT;
     }
 
+    /** Plain read, for the thread reading the body; another thread samples {@link #progress()} instead. */
     long getBytesRead() {
       return bytesRead;
+    }
+
+    /**
+     * {@link #getBytesRead()} for a thread other than the one reading the body: the leader forward samples it while the
+     * JDK client's publisher thread relays the upload (issue #8719).
+     */
+    long progress() {
+      return (long) BYTES_READ.getOpaque(this);
     }
 
     /** The cap this body enforces, {@code <= 0} when uncapped. */
@@ -1863,8 +1892,9 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    * for the streaming answer would be handed the leader's buffered one under an {@code application/json}
    * content type - a silent downgrade of the very thing it negotiated, and a body its NDJSON reader cannot
    * parse. With it the leader streams, and {@link #relayNdJsonFromLeader} passes those lines straight through
-   * as they arrive, so the acknowledgements keep reaching the client while the follower is still relaying the
-   * upload.
+   * as they arrive. Not while the upload is still being relayed, though: on HTTP/1.1 the JDK client hands back the
+   * leader's answer only once the relayed upload has been published whole (issue #8719), so the client sees the
+   * leader's acknowledgements from the end of its upload on.
    *
    * @param streaming whether the client negotiated {@code Accept: application/x-ndjson}
    */
@@ -1938,9 +1968,10 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     // address was resolved for - or none, when leadership changed in between (issue #7603).
     final String leaderIdBeforeDial = ha.getLeaderPeerId();
     final LeaderDial dial = LeaderDial.resolve(ha, httpClient);
-    final String intendedLeaderId = LeaderForwardContext.stableLeaderId(leaderIdBeforeDial, ha.getLeaderPeerId());
+    final String leaderIdAfterDial = ha.getLeaderPeerId();
+    final String intendedLeaderId = LeaderForwardContext.stableLeaderId(leaderIdBeforeDial, leaderIdAfterDial);
     // The refusal hold is keyed on the node dialled, even when leadership moved during the resolution (issue #8709).
-    final String holdLeaderId = LeaderForwardContext.holdLeaderId(intendedLeaderId, leaderIdBeforeDial);
+    final String holdLeaderId = LeaderForwardContext.holdLeaderId(intendedLeaderId, leaderIdBeforeDial, leaderIdAfterDial);
     if (dial == null)
       return new ExecutionResponse(503,
           "{ \"error\" : \"Cannot forward batch to leader: leader address is not available\"}");
@@ -1983,11 +2014,14 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     // arcadedb.ha.proxyReadTimeout, because a bulk load's legitimate duration is a function of the payload the
     // client is still streaming - the same reasoning relaxConnectionReadTimeout above applies to the INCOMING
     // side of this same load. On the non-streaming path it bounds the whole exchange, the leader's body included. On
-    // the streaming encoding it bounds the wait for the leader's first response line, and relayNdJsonFromLeader
-    // applies the same budget to every later wait for the leader's data (issue #7738): a leader that stays silent
-    // that long is given up on, however far into the stream it stalls - but one that keeps talking is never cut off.
+    // the streaming encoding it bounds how long the forward may stand still before the leader's answer is handed
+    // back - counted from the last byte of the upload relayed, not from the send (issue #8719) - and
+    // relayNdJsonFromLeader applies the same budget to every later wait for the leader's data (issue #7738): a leader
+    // that stays silent that long is given up on, however far into the stream it stalls - but one that keeps talking,
+    // or keeps taking the upload, is never cut off.
     //
-    // Enforced by LeaderDial.sendBounded rather than by the JDK request timeout (issue #8325), whose coverage depends
+    // Enforced by LeaderDial.sendBounded (sendBoundedWhileProgressing on the streaming encoding) rather than by the JDK
+    // request timeout (issue #8325), whose coverage depends
     // on the JDK: on 21-25 it stops at the response headers, so a buffered answer whose body stalls half-way was
     // read with no bound at all; on 26+ it covers the whole body, so on the streaming encoding it became a cap on the
     // TOTAL length of a load that is working. The streaming request therefore carries no request timeout at all.
@@ -2009,17 +2043,24 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
 
     try {
       if (streaming)
-        // With ofInputStream the send completes as soon as the leader's response HEADERS arrive, which on the
-        // streaming encoding is at the leader's first progress line - while the JDK client's own executor thread is
-        // still publishing the relayed upload. That is what keeps the acknowledgements incremental across the hop,
-        // and why the deadline here bounds the headers only.
-        // NOT what the JDK does on HTTP/1.1 (21, 25, 27): the response is handed back only once the upload has been
-        // published whole, so this deadline currently bounds the upload too (issue #8719).
+        // On HTTP/1.1 the JDK client (21, 25, 27) hands back the leader's answer only once the relayed upload has
+        // been published whole, even when the leader has already answered 200 and its first progress lines (pinned by
+        // Issue8674StreamedRelayBodyCapTerminalLineTest). A deadline counted from the send would therefore cap the
+        // length of the whole upload, and a load whose upload outlasted it was answered 504 while the leader was
+        // working (issue #8719). It is counted from the last byte the upload relayed instead: an upload that keeps
+        // moving is never cut off, one that stands still that long with no answer is, and once the upload has ended
+        // the same budget bounds the wait for the answer. Restoring the acknowledgements DURING the upload needs a
+        // transport that delivers the response while the request body is still being sent (issue #9216).
+        //
+        // The counter is the bytes read from the CLIENT, not those the leader accepted. It stands for both because the
+        // JDK publisher is flow-controlled: it reads the body only on demand from the connection, so a leader that
+        // stops taking the upload stops the counter too, within one flow-control window.
         //
         // A leader that refused instead of streaming is relayed as a buffered answer, and an unnamed "not the leader"
         // among those is held until this node's view moves, as on the buffered encoding below (issue #8486).
         return LeaderCommandForwarder.holdUnnamedNotTheLeaderRefusal(relayNdJsonFromLeader(exchange, databaseName, url,
-                LeaderDial.sendBounded(dial.client(), request, HttpResponse.BodyHandlers.ofInputStream(), deadlineMs),
+                LeaderDial.sendBoundedWhileProgressing(dial.client(), request, HttpResponse.BodyHandlers.ofInputStream(),
+                    deadlineMs, body::progress),
                 deadlineMs, body), ha, holdLeaderId, httpServer.getServer().getConfiguration());
 
       final HttpResponse<String> response = LeaderDial.sendBounded(dial.client(), request,
@@ -2073,8 +2114,15 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       // Not unit-tested: a cap trip aborts send() with an IOException at once, so reaching this arm needs a race.
       rethrowIfRefusedOverCap(body, databaseName);
       LogManager.instance().log(this, Level.WARNING, "Leader at %s did not answer /batch forward within %,dms", url, deadlineMs);
+      // On the streaming encoding the window restarts with every byte of the upload relayed (issue #8719), so the
+      // message says so. Which side stopped cannot be told from here - the leader no longer taking the upload, or the
+      // client no longer sending it, when its incoming read timeout is longer than this budget - so both are named.
+      final String since = streaming ?
+          " of the last byte of the upload relayed to it: either the leader stopped taking the upload or the client "
+              + "stopped sending it" :
+          "";
       return new ExecutionResponse(504, new JSONObject()
-          .put("error", "The leader at " + url + " did not answer within " + deadlineMs + "ms")
+          .put("error", "The leader at " + url + " did not answer within " + deadlineMs + "ms" + since)
           .toString());
     } catch (final Exception e) {
       // This node's own body cap tripped mid-relay (issue #8161): the JDK wraps the refusal in a plain IOException.
@@ -2151,8 +2199,9 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    * leader that accepts the connection and never answers parks the Undertow worker thread serving
    * {@code POST /api/v1/batch} until the OS tears the socket down. The production forward
    * ({@link #forwardBatchToLeader}) supplies one on the buffered encoding only, and bounds the exchange itself through
-   * {@link LeaderDial#sendBounded} on both (issue #8325); the shorter overloads above pass {@code null} for the tests
-   * that exercise the request shape without a deadline of their own.
+   * {@link LeaderDial#sendBounded} or {@link LeaderDial#sendBoundedWhileProgressing} (issues #8325, #8719); the
+   * shorter overloads above pass {@code null} for the tests that exercise the request shape without a deadline of
+   * their own.
    *
    * @param timeout the response deadline, or {@code null} for none
    */
@@ -2291,7 +2340,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       // is on the wire, so the 413 #8161 answers with can only travel in band, as the line the leader writes for the
       // same body. Asked of the stream, not of the failure: the JDK reports the cut as a plain IOException, or not at
       // all when the leader's answer then simply ends. Unreachable on JDK 21/25/27, which hand back the response only
-      // once the upload is published whole (#8719); kept for a client that does not.
+      // once the upload is published whole (#8719); kept for a client that does not (#9216).
       final RequestTooBigException tooBig = body.refusedOverCap();
       if (tooBig != null && !ended) {
         LogManager.instance().log(this, getUserSevereErrorLogLevel(),

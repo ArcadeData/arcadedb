@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
+import com.arcadedb.server.http.FakeLeader;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.StallAwareStopwatch;
@@ -35,7 +36,6 @@ import org.junit.jupiter.api.Test;
 import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.ConnectException;
@@ -43,7 +43,6 @@ import java.net.HttpURLConnection;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
-import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -110,7 +109,7 @@ class Issue8325LeaderForwardBodyDeadlineTest {
   /** The defect at its root: a buffered read of a body the leader stops writing half-way. */
   @Test
   void sendBoundedGivesUpOnALeaderThatStallsInsideItsBody() throws Exception {
-    try (final ScriptedLeader leader = new ScriptedLeader(out -> write(out, STALLED_BODY));
+    try (final FakeLeader leader = FakeLeader.scripted(out -> write(out, STALLED_BODY));
         final HttpClient client = HttpClient.newHttpClient()) {
       // No request timeout at all: the bound under test is sendBounded's own, on every JDK.
       final HttpRequest request = HttpRequest.newBuilder(URI.create("http://" + leader.address() + "/")).GET().build();
@@ -123,7 +122,7 @@ class Issue8325LeaderForwardBodyDeadlineTest {
       watch.assertGaveUpWithin(GAVE_UP_BOUND_MS,
           "a 1s deadline over the whole exchange from the unbounded body read the JDK 21-25 request timeout leaves");
 
-      assertThat(leader.connectionClosedByFollower.await(GAVE_UP_BOUND_MS, TimeUnit.MILLISECONDS))
+      assertThat(leader.awaitConnectionClosedByClient(GAVE_UP_BOUND_MS, TimeUnit.MILLISECONDS))
           .as("the exchange is cancelled, not only abandoned by the calling thread").isTrue();
     }
   }
@@ -131,7 +130,7 @@ class Issue8325LeaderForwardBodyDeadlineTest {
   @Test
   void sendBoundedReturnsAWholeAnswer() throws Exception {
     final String body = "{\"result\":[1,2,3]}";
-    try (final ScriptedLeader leader = new ScriptedLeader(out -> write(out,
+    try (final FakeLeader leader = FakeLeader.scripted(out -> write(out,
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + body.length() + "\r\n\r\n" + body));
         final HttpClient client = HttpClient.newHttpClient()) {
       final HttpRequest request = HttpRequest.newBuilder(URI.create("http://" + leader.address() + "/")).GET().build();
@@ -162,7 +161,7 @@ class Issue8325LeaderForwardBodyDeadlineTest {
   /** An interrupt while waiting reaches the caller as itself, and the exchange it abandons is cancelled. */
   @Test
   void sendBoundedInterruptedWhileWaitingThrowsTheInterruptAndCancelsTheExchange() throws Exception {
-    try (final ScriptedLeader leader = new ScriptedLeader(out -> write(out, STALLED_BODY));
+    try (final FakeLeader leader = FakeLeader.scripted(out -> write(out, STALLED_BODY));
         final HttpClient client = HttpClient.newHttpClient()) {
       final HttpRequest request = HttpRequest.newBuilder(URI.create("http://" + leader.address() + "/")).GET().build();
       final AtomicReference<Throwable> thrown = new AtomicReference<>();
@@ -179,12 +178,12 @@ class Issue8325LeaderForwardBodyDeadlineTest {
       caller.setDaemon(true);
       caller.start();
 
-      assertThat(leader.requestReceived.await(GAVE_UP_BOUND_MS, TimeUnit.MILLISECONDS)).isTrue();
+      assertThat(leader.awaitRequestReceived(GAVE_UP_BOUND_MS, TimeUnit.MILLISECONDS)).isTrue();
       caller.interrupt();
 
       assertThat(done.await(GAVE_UP_BOUND_MS, TimeUnit.MILLISECONDS)).as("the interrupt releases the caller").isTrue();
       assertThat(thrown.get()).isInstanceOf(InterruptedException.class);
-      assertThat(leader.connectionClosedByFollower.await(GAVE_UP_BOUND_MS, TimeUnit.MILLISECONDS)).isTrue();
+      assertThat(leader.awaitConnectionClosedByClient(GAVE_UP_BOUND_MS, TimeUnit.MILLISECONDS)).isTrue();
     }
   }
 
@@ -205,7 +204,7 @@ class Issue8325LeaderForwardBodyDeadlineTest {
   /** Part (1) of the issue on the /batch forward: the non-streaming branch reads the leader's answer buffered. */
   @Test
   void aBufferedBatchForwardWhoseLeaderStallsInsideItsBodyIsAnswered504() throws Exception {
-    try (final ScriptedLeader leader = new ScriptedLeader(out -> write(out, STALLED_BODY))) {
+    try (final FakeLeader leader = FakeLeader.scripted(out -> write(out, STALLED_BODY))) {
       final PostBatchHandler handler = handlerWith(config());
 
       final StallAwareStopwatch watch = StallAwareStopwatch.start();
@@ -215,7 +214,7 @@ class Issue8325LeaderForwardBodyDeadlineTest {
 
       assertThat(response.getCode()).isEqualTo(504);
       assertThat(new JSONObject(response.getResponse()).getString("error")).contains(leader.address());
-      assertThat(leader.connectionClosedByFollower.await(GAVE_UP_BOUND_MS, TimeUnit.MILLISECONDS)).isTrue();
+      assertThat(leader.awaitConnectionClosedByClient(GAVE_UP_BOUND_MS, TimeUnit.MILLISECONDS)).isTrue();
     }
   }
 
@@ -225,7 +224,7 @@ class Issue8325LeaderForwardBodyDeadlineTest {
    */
   @Test
   void aStreamingBatchForwardWhoseLeaderNeverAnswersIsStillAnswered504() throws Exception {
-    try (final ScriptedLeader leader = new ScriptedLeader(out -> {
+    try (final FakeLeader leader = FakeLeader.scripted(out -> {
       // headers never come
     })) {
       final PostBatchHandler handler = handlerWith(config());
@@ -252,7 +251,7 @@ class Issue8325LeaderForwardBodyDeadlineTest {
       sent.add("{\"type\":\"progress\",\"verticesCreated\":" + i + "}");
     sent.add("{\"type\":\"summary\"}");
 
-    try (final ScriptedLeader leader = new ScriptedLeader(out -> {
+    try (final FakeLeader leader = FakeLeader.scripted(out -> {
       write(out, "HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nTransfer-Encoding: chunked\r\n\r\n");
       for (final String line : sent) {
         writeChunk(out, line + "\n");
@@ -304,7 +303,7 @@ class Issue8325LeaderForwardBodyDeadlineTest {
    * Runs {@code call} on its own thread and fails - rather than hanging the suite - when it has not returned within
    * the hang detector. Closing the leader is what releases a forward that never gave up.
    */
-  private static <T> T callWithin(final Callable<T> call, final ScriptedLeader leader) throws Exception {
+  private static <T> T callWithin(final Callable<T> call, final FakeLeader leader) throws Exception {
     final FutureTask<T> task = new FutureTask<>(call);
     final Thread thread = new Thread(task, "issue8325-forward");
     thread.setDaemon(true);
@@ -388,67 +387,6 @@ class Issue8325LeaderForwardBodyDeadlineTest {
       Thread.sleep(ms);
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
-    }
-  }
-
-  @FunctionalInterface
-  private interface LeaderScript {
-    void answer(OutputStream out) throws IOException;
-  }
-
-  /**
-   * A leader that reads one request's headers, answers with a script, and then keeps the connection open until the
-   * follower closes it - which it records.
-   */
-  private static final class ScriptedLeader implements AutoCloseable {
-    private final ServerSocket            serverSocket;
-    private final AtomicReference<Socket> accepted                   = new AtomicReference<>();
-    final CountDownLatch                  connectionClosedByFollower = new CountDownLatch(1);
-    final CountDownLatch                  requestReceived            = new CountDownLatch(1);
-
-    ScriptedLeader(final LeaderScript script) throws IOException {
-      serverSocket = new ServerSocket(0, 16, InetAddress.getLoopbackAddress());
-      final Thread acceptor = new Thread(() -> {
-        try (final Socket socket = serverSocket.accept()) {
-          accepted.set(socket);
-          final InputStream in = socket.getInputStream();
-          skipRequestHeaders(in);
-          requestReceived.countDown();
-          script.answer(socket.getOutputStream());
-          final byte[] buffer = new byte[1024];
-          while (in.read(buffer) >= 0) {
-            // discard whatever the follower still sends, until it closes the connection
-          }
-          connectionClosedByFollower.countDown();
-        } catch (final IOException e) {
-          connectionClosedByFollower.countDown();
-        }
-      }, "issue8325-scripted-leader");
-      acceptor.setDaemon(true);
-      acceptor.start();
-    }
-
-    String address() {
-      return serverSocket.getInetAddress().getHostAddress() + ":" + serverSocket.getLocalPort();
-    }
-
-    private static void skipRequestHeaders(final InputStream in) throws IOException {
-      int matched = 0;
-      final byte[] terminator = "\r\n\r\n".getBytes(StandardCharsets.US_ASCII);
-      while (matched < terminator.length) {
-        final int b = in.read();
-        if (b < 0)
-          throw new IOException("the follower closed before sending its request");
-        matched = b == terminator[matched] ? matched + 1 : (b == terminator[0] ? 1 : 0);
-      }
-    }
-
-    @Override
-    public void close() throws IOException {
-      serverSocket.close();
-      final Socket socket = accepted.get();
-      if (socket != null)
-        socket.close();
     }
   }
 }

@@ -45,7 +45,7 @@ class PluginApiSpecTest {
   }
 
   @Test
-  void allFourteenPluginOperationsAreDeclared() {
+  void allFifteenPluginOperationsAreDeclared() {
     assertThat(openAPI.getPaths().keySet()).containsExactlyInAnyOrder(
         "/prometheus",
         "/api/v1/cluster",
@@ -56,6 +56,7 @@ class PluginApiSpecTest {
         "/api/v1/cluster/leave",
         "/api/v1/cluster/verify/{database}",
         "/api/v1/cluster/resync/{database}",
+        "/api/v1/cluster/accept-copy/{database}",
         "/api/v1/cluster/bootstrap-state",
         "/api/v1/cluster/capabilities",
         "/api/v1/cluster/security-seed",
@@ -64,7 +65,7 @@ class PluginApiSpecTest {
 
     final long operations = openAPI.getPaths().values().stream()
         .mapToLong(item -> item.readOperations().size()).sum();
-    assertThat(operations).isEqualTo(14);
+    assertThat(operations).isEqualTo(15);
   }
 
   @Test
@@ -128,9 +129,11 @@ class PluginApiSpecTest {
     // 'leaderCommitIndex' and 'localStalledBehindLeader' joined with issue #8342: the same blind spot at the
     // current term, where only the leader's commit index shows that this follower stopped receiving entries.
     // 'bootstrapInstalls' joined with issue #8044: the #7519 bootstrap install window pins '/api/v1/ready' at 503
-    // and points the reader here, and nothing here reflected it.
+    // and points the reader here, and nothing here reflected it. 'leaderContactElapsedMs' joined with issue #8900:
+    // 'raftState' reads RUNNING while the leader's appends never reach this division, and only this figure shows it.
     assertThat(schema.getProperties().keySet()).containsExactlyInAnyOrder(
-        "implementation", "clusterName", "localPeerId", "capabilities", "raftState", "isLeader", "leaderReady",
+        "implementation", "clusterName", "localPeerId", "capabilities", "raftState", "leaderContactElapsedMs",
+        "isLeader", "leaderReady",
         "leaderId", "leaderHttpAddress", "electionCount", "lastElectionTime", "uptime",
         "localAppliedIndex", "localCommitIndex", "localReplicationLag", "localStuckAtStaleTerm",
         "leaderCommitIndex", "localStalledBehindLeader",
@@ -141,14 +144,31 @@ class PluginApiSpecTest {
     // Pinned to the exact set (not .contains(...)): GetClusterHandler writes exactly these fields per peer, no
     // more, no fewer. 'capabilitiesUnknownReason' joined them with issue #7578's sweep - the leader writes it
     // when it knows WHY a peer's capabilities are unknown, and the two causes have nothing alike as remedies
-    // (issue #7256), so an undeclared one left a client unable to tell them apart.
+    // (issue #7256), so an undeclared one left a client unable to tell them apart. 'capabilitiesUnknownKind' joined
+    // with issue #8655, the same verdict for a client that has to act on it rather than show it.
     final Schema<?> peersProperty = schema.getProperties().get("peers");
     final Schema<?> peerItemSchema = peersProperty.getItems();
     assertThat(peerItemSchema.getProperties().keySet()).containsExactlyInAnyOrder(
         "id", "address", "httpAddress", "httpAddressAmbiguous", "role", "matchIndex", "nextIndex",
         "replicationLag", "lastContactMs", "replicaStatus", "laggingForMs", "lagging", "replicationRttMs",
-        "capabilitiesUnknownReason",
+        "capabilitiesUnknownReason", "capabilitiesUnknownKind",
         "replicationRttP99Ms", "capabilities", "version");
+    // The same four names PeerCapabilityRegistry.UnknownKind declares, which Issue8655CapabilityUnknownKindTest pins
+    // from the other side: Studio gates on the literal, so a renamed constant must break a test, not the gate.
+    assertThat(peerItemSchema.getProperties().get("capabilitiesUnknownKind").getEnum())
+        .containsExactly("ROUTE_MISSING", "UNREACHABLE", "ADDRESS_REFUSED", "STALE");
+  }
+
+  /**
+   * Issue #8689: an admission served by a follower sends the declared HTTP address of the admitted peer with its seed
+   * request, so the leader can record it. The two fields belong to the documented request, not to an undocumented one.
+   */
+  @Test
+  void securitySeedRequestDeclaresTheAdmittedPeersHttpAddress() {
+    final Schema<?> schema = openAPI.getComponents().getSchemas().get("SecuritySeedRequest");
+
+    assertThat(schema.getProperties().keySet()).containsExactlyInAnyOrder("reason", "catchUp", "fingerprints",
+        "admittedPeerId", "declaredHttpAddress");
   }
 
   /**
@@ -310,6 +330,16 @@ class PluginApiSpecTest {
     final Operation post = openAPI.getPaths().get("/api/v1/cluster/resync/{database}").getPost();
     assertThat(post.getResponses().keySet())
         .containsExactlyInAnyOrder("200", "400", "401", "403", "409", "500", "503");
+  }
+
+  /** Issue #8641: root-only override on the leader; 404 when no marked copy is held, 400 on a follower. */
+  @Test
+  void acceptCopyDeclaresWhatTheHandlerAnswers() {
+    final Operation post = openAPI.getPaths().get("/api/v1/cluster/accept-copy/{database}").getPost();
+    assertThat(post.getOperationId()).isEqualTo("acceptClusterDatabaseCopy");
+    assertThat(post.getResponses().keySet()).containsExactlyInAnyOrder("200", "400", "401", "403", "404", "500");
+    assertThat(openAPI.getComponents().getSchemas().get("ClusterActionResponse").getProperties().keySet())
+        .contains("database", "localServer", "appliedIndex", "overriddenRefusal");
   }
 
   /**

@@ -175,6 +175,12 @@ table,
   display: flex;
   flex-direction: column;
   min-height: 0;
+  /* The sidebar column is a fixed 70px, so this one must take what is left. Left at Bootstrap's 11/12 of the row it stopped
+     short of the right edge, and the gap grew with the window (about 100px on a wide screen) on every page. */
+  flex: 1 1 0;
+  width: auto;
+  max-width: none;
+  min-width: 0;
 }
 
 #studioPanel > .card-header > .row > .col-11 > .tab-content {
@@ -4138,16 +4144,51 @@ body.col-resizing * {
   color: var(--text-muted);
 }
 
-.support-nav .nav-link {
-  color: var(--text-secondary);
-  font-size: 0.86rem;
-  padding: 5px 14px;
+/* A little air on the right of the Support page: the content column now reaches the window edge */
+#tab-support {
+  padding-right: 14px;
 }
 
-.support-nav .nav-link.active {
-  background-color: var(--color-brand-light);
+/* The two tabs under the status card of the Support page: the AI Assistant and the Issues */
+.support-tabs-bar {
+  position: relative;
+  margin-top: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.support-tabs {
+  border-bottom: 1px solid var(--border-color, #dee2e6);
+}
+
+/* The AI controls (database, usage, mode) live in the tab bar, on its right: it saves the header row of the chat */
+.support-ai-toolbar {
+  position: absolute;
+  right: 0;
+  bottom: 3px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+@media (max-width: 1250px) {
+  .support-ai-toolbar {
+    position: static;
+    flex-wrap: wrap;
+    padding: 6px 0;
+  }
+}
+
+.support-tabs .nav-link {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  padding: 6px 16px;
+}
+
+.support-tabs .nav-link.active {
   color: var(--color-brand);
   font-weight: 600;
+  background-color: transparent;
+  border-color: var(--border-color, #dee2e6) var(--border-color, #dee2e6) var(--bg-main, #fff);
 }
 
 .support-card .form-control,
@@ -4349,6 +4390,57 @@ body.col-resizing * {
   color: var(--text-primary);
 }
 
+/* Comment bodies drawn by studio-support-markdown.js: real elements, so the plain-text line handling of .support-body is off */
+.support-timeline-entry .support-body.support-md {
+  white-space: normal;
+}
+
+.support-md p {
+  margin: 0 0 0.5rem;
+}
+
+.support-md p:last-child,
+.support-md ul:last-child,
+.support-md ol:last-child,
+.support-md .table-responsive:last-child {
+  margin-bottom: 0;
+}
+
+.support-md ul,
+.support-md ol {
+  margin: 0 0 0.5rem;
+  padding-left: 1.4rem;
+}
+
+.support-md pre {
+  margin: 0 0 0.5rem;
+  padding: 0.5rem 0.65rem;
+  max-height: 22rem;
+  overflow: auto;
+  white-space: pre;
+  background: var(--bg-secondary, rgba(127, 127, 127, 0.1));
+  border: 1px solid var(--border-light);
+  border-radius: 4px;
+}
+
+.support-md code {
+  font-size: 0.82rem;
+  color: inherit;
+}
+
+.support-md .support-md-table {
+  margin-bottom: 0.5rem;
+  width: auto;
+  max-width: 100%;
+  font-size: 0.82rem;
+  color: var(--text-primary);
+}
+
+.support-md .support-md-table th {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
 /* ---- Support page: status line, issues, popups ---- */
 
 .support-connect-code {
@@ -4363,8 +4455,8 @@ body.col-resizing * {
 .support-register-head {
   display: flex;
   align-items: center;
-  gap: 14px;
-  margin-bottom: 12px;
+  gap: 12px;
+  margin-bottom: 8px;
 }
 
 .support-status {
@@ -4374,7 +4466,7 @@ body.col-resizing * {
   border: 1px solid var(--status-border);
   background: var(--status-bg);
   border-radius: 10px;
-  margin-bottom: 18px;
+  margin-bottom: 10px;
   overflow: hidden;
 }
 
@@ -4408,19 +4500,22 @@ body.col-resizing * {
   --status-border: #6b2a2a;
 }
 
+/* One slim line: icon, title, the plan summary (ellipsized when the window is narrow), chevron, refresh. */
 .support-status-bar {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding-right: 12px;
+  gap: 10px;
+  padding-right: 8px;
+  min-height: 42px;
 }
 
 .support-status-main {
   flex: 1;
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 12px 14px;
+  gap: 10px;
+  min-width: 0;
+  padding: 5px 12px;
   background: none;
   border: 0;
   text-align: left;
@@ -4434,21 +4529,34 @@ body.col-resizing * {
 }
 
 .support-status-icon {
-  font-size: 1.5rem;
+  font-size: 1.15rem;
   color: var(--status-fg);
   line-height: 1;
 }
 
 .support-status-text {
   display: flex;
-  flex-direction: column;
+  flex: 1 1 auto;
+  flex-direction: row;
+  align-items: baseline;
+  gap: 10px;
   min-width: 0;
 }
 
 .support-status-title {
-  font-size: 1.05rem;
+  flex: 0 0 auto;
+  font-size: 0.98rem;
   font-weight: 600;
+  white-space: nowrap;
   color: var(--status-fg);
+}
+
+.support-status-text .support-hint {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .support-status-chevron {
@@ -4463,7 +4571,14 @@ body.col-resizing * {
 
 .support-status-actions {
   display: flex;
+  flex: 0 0 auto;
   gap: 8px;
+}
+
+.support-status-actions .btn {
+  padding-top: 2px;
+  padding-bottom: 2px;
+  white-space: nowrap;
 }
 
 .support-status-details {

@@ -1888,14 +1888,10 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   protected Map<String, Object> mapArgs(final Object[] args) {
     Map<String, Object> params = null;
     if (args != null && args.length > 0) {
-      if (args.length == 1 && args[0] instanceof Map)
-        params = (Map<String, Object>) args[0];
-      else {
-        params = new HashMap<>();
-        for (final Object o : args) {
-          params.put("" + params.size(), o);
-        }
-      }
+      // same semantics as the embedded engine: every argument is positional, a Map included (issue #9046)
+      params = new HashMap<>();
+      for (final Object o : args)
+        params.put("" + params.size(), o);
     }
     return params;
   }

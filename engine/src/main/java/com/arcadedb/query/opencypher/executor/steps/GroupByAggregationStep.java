@@ -111,6 +111,7 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
     final String[] aggOutputNames = new String[aggCount];
     for (int i = 0; i < aggCount; i++) {
       aggExpressions[i] = aggregationItems.get(i).funcExpr;
+      aggExpressions[i].validateArity(functionFactory.getFunctionExecutor(aggExpressions[i].getFunctionName(), aggExpressions[i].isDistinct()));
       aggOutputNames[i] = aggregationItems.get(i).outputName;
     }
 
@@ -564,8 +565,9 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
         final String key = funcExpr.getText();
         if (!innerAggs.containsKey(key)) {
           innerAggs.put(key, funcExpr);
-          innerFunctions.put(key, functionFactory.getFunctionExecutor(
-              funcExpr.getFunctionName(), funcExpr.isDistinct()));
+          final StatelessFunction innerFunction = functionFactory.getFunctionExecutor(funcExpr.getFunctionName(), funcExpr.isDistinct());
+          funcExpr.validateArity(innerFunction);
+          innerFunctions.put(key, innerFunction);
         }
         return;
       }

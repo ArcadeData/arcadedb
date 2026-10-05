@@ -26,6 +26,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Locale;
 import java.util.Map;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
@@ -62,7 +63,7 @@ public final class SupportRuntime {
       }
       final String content = cgroup.get();
       if (content != null) {
-        final String lower = content.toLowerCase();
+        final String lower = content.toLowerCase(Locale.ROOT);
         if (lower.contains("docker")) {
           container = "docker";
           evidence.put("/proc/1/cgroup: docker");

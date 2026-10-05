@@ -42,78 +42,63 @@ public class BetweenCondition extends BooleanExpression {
 
   @Override
   public Boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
-    final Object firstValue = first.execute(currentRecord, context);
-    if (firstValue == null) {
-      return false;
-    }
-
-    Object secondValue = second.execute(currentRecord, context);
-    if (secondValue == null) {
-      return false;
-    }
-
-    // A bound with no defined ordering against firstValue (e.g. a non-numeric String bound on a numeric column)
-    // makes the comparison undefined, not an error: report "not between" rather than let the raw conversion
-    // failure (e.g. NumberFormatException) escape (#5900).
-    secondValue = Type.convertOrNull(context.getDatabase(), secondValue, firstValue.getClass());
-    if (secondValue == null) {
-      return false;
-    }
-
-    Object thirdValue = third.execute(currentRecord, context);
-    if (thirdValue == null) {
-      return false;
-    }
-
-    thirdValue = Type.convertOrNull(context.getDatabase(), thirdValue, firstValue.getClass());
-    if (thirdValue == null) {
-      return false;
-    }
-
-    return isBetween(firstValue, secondValue, thirdValue);
+    return evaluate(first.execute(currentRecord, context), second.execute(currentRecord, context), third.execute(currentRecord, context),
+        context);
   }
 
   @Override
   public Boolean evaluate(final Result currentRecord, final CommandContext context) {
-    final Object firstValue = first.execute(currentRecord, context);
-    if (firstValue == null) {
-      return false;
+    return evaluate(first.execute(currentRecord, context), second.execute(currentRecord, context), third.execute(currentRecord, context),
+        context);
+  }
+
+  /**
+   * {@code x BETWEEN a AND b} is {@code x >= a AND x <= b} under SQL three-valued logic: a null operand makes its side unknown,
+   * and a side that is false still decides the result, so {@code 1 BETWEEN 5 AND NULL} is false while
+   * {@code 7 BETWEEN 5 AND NULL} is unknown (issue #8979).
+   */
+  private static Boolean evaluate(final Object firstValue, Object secondValue, Object thirdValue, final CommandContext context) {
+    if (firstValue == null)
+      return null;
+
+    // A bound with no defined ordering against firstValue (e.g. a non-numeric String bound on a numeric column)
+    // makes the comparison undefined, not an error: report "not between" rather than let the raw conversion
+    // failure (e.g. NumberFormatException) escape (#5900). That verdict is false even when the other bound is null
+    // An integer value is compared with a numeric bound as it is, as >= and <= compare it: converted to the value's class, 11.5
+    // read as 11 and 3e9 wrapped around (issue #9021)
+    final boolean integralValue = firstValue instanceof Integer || firstValue instanceof Long || firstValue instanceof Short
+        || firstValue instanceof Byte;
+    if (secondValue != null && !(integralValue && secondValue instanceof Number)) {
+      secondValue = Type.convertOrNull(context.getDatabase(), secondValue, firstValue.getClass());
+      if (secondValue == null)
+        return false;
+    }
+    if (thirdValue != null && !(integralValue && thirdValue instanceof Number)) {
+      thirdValue = Type.convertOrNull(context.getDatabase(), thirdValue, firstValue.getClass());
+      if (thirdValue == null)
+        return false;
     }
 
-    Object secondValue = second.execute(currentRecord, context);
-    if (secondValue == null) {
+    final Boolean lower = secondValue == null ? null : isOnTheRightSide(firstValue, secondValue, 1);
+    final Boolean upper = thirdValue == null ? null : isOnTheRightSide(firstValue, thirdValue, -1);
+    if (Boolean.FALSE.equals(lower) || Boolean.FALSE.equals(upper))
       return false;
-    }
-
-    secondValue = Type.convertOrNull(context.getDatabase(), secondValue, firstValue.getClass());
-    if (secondValue == null) {
-      return false;
-    }
-
-    Object thirdValue = third.execute(currentRecord, context);
-    if (thirdValue == null) {
-      return false;
-    }
-    thirdValue = Type.convertOrNull(context.getDatabase(), thirdValue, firstValue.getClass());
-    if (thirdValue == null) {
-      return false;
-    }
-
-    return isBetween(firstValue, secondValue, thirdValue);
+    return lower == null || upper == null ? null : Boolean.TRUE;
   }
 
   /**
    * Compares through {@link BinaryComparator#compareTo(Object, Object)}, the comparison {@code <=} and {@code >=} use:
    * for strings it is the unsigned UTF-8 byte order the LSM indexes keep (issue #6997), which {@code
    * String.compareTo()}'s UTF-16 order contradicts for a non-BMP character against a BMP one above U+E000. So
-   * {@code k BETWEEN a AND b} now agrees with {@code k >= a AND k <= b} and with the index serving either, which a scan
-   * of the type relies on when it stands in for that index (issue #8333).
+   * {@code k BETWEEN a AND b} agrees with {@code k >= a AND k <= b} and with the index serving either, which a scan
+   * of the type relies on when it stands in for that index (issue #8333). {@code sign} is 1 for "at least" (the lower bound)
+   * and -1 for "at most" (the upper bound). A value with no defined ordering against the bound is not between, as LeOperator
+   * and GeOperator report it (#5900).
    */
-  private static boolean isBetween(final Object value, final Object from, final Object to) {
+  private static boolean isOnTheRightSide(final Object value, final Object bound, final int sign) {
     try {
-      return BinaryComparator.compareTo(value, from) >= 0 && BinaryComparator.compareTo(value, to) <= 0;
+      return Integer.signum(BinaryComparator.compareTo(value, bound)) != -sign;
     } catch (final IllegalArgumentException | IndexOutOfBoundsException e) {
-      // No defined ordering between the value and a bound, as LeOperator and GeOperator report it (#5900)
       return false;
     }
   }

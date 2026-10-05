@@ -32,6 +32,7 @@ import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.index.vector.LSMVectorIndexCompacted;
 import com.arcadedb.index.vector.LSMVectorIndexMutable;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.LockException;
 import com.arcadedb.utility.LockManager;
 
@@ -41,6 +42,8 @@ import java.nio.channels.ClosedChannelException;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
@@ -49,6 +52,12 @@ import java.util.logging.Level;
 public class TransactionManager {
   private static final long MAX_LOG_FILE_SIZE = 64 * 1024 * 1024;
   private static final int  WRITE_WAL_TIMEOUT = 30_000;
+  // #8649: refused recomputes in a row after which the applies wait for a running recompute again. One is the normal
+  // cost of a catch-up; a second one means the replication is not leaving the bucket a quiet window by itself
+  static final         long PATIENT_AFTER_REFUSED_RECOMPUTES = 2;
+  // #8649: after a patient wait timed out, the applies stay impatient for this many recompute scans (and never less
+  // than the commit timeout), which bounds the share of the apply thread spent behind scans that outgrow the wait
+  private static final long PATIENT_BACKOFF_FACTOR           = 4;
   /**
    * On-disk record of the highest assigned transaction id, written on close and whenever a runtime
    * WAL rotation drops log files (issue #5277), read on open. Lets {@link #getLastTransactionId()}
@@ -65,6 +74,9 @@ public class TransactionManager {
   private final String                       logContext;
   private final Timer                        task;
   private final AtomicLong                   transactionIds      = new AtomicLong();
+  // Sequence of the transactions that published unidirectional edges, and the last one that did for each target bucket (#8986)
+  private final AtomicLong                   unidirectionalEdgeSequence = new AtomicLong();
+  private final Map<Integer, Long>           unidirectionalEdgeLastCommit = new ConcurrentHashMap<>();
   private final AtomicLong                   logFileCounter      = new AtomicLong();
   private final LockManager<Integer, Object> fileIdsLockManager  = new LockManager<>();
   private final AtomicLong                   statsPagesWritten   = new AtomicLong();
@@ -108,6 +120,26 @@ public class TransactionManager {
    * the local commit path - so it is nowhere near a hot path.
    */
   private final ReentrantReadWriteLock       applyLock           = new ReentrantReadWriteLock();
+
+  /** The sequence a delete takes before it scans for the unidirectional edges ending in its vertices (#8986). */
+  public long getUnidirectionalEdgeSequence() {
+    return unidirectionalEdgeSequence.get();
+  }
+
+  /** Whether a transaction published unidirectional edges ending in {@code bucketId} after {@code sequence} was taken. */
+  public boolean hasUnidirectionalEdgesCommittedSince(final int bucketId, final long sequence) {
+    return unidirectionalEdgeLastCommit.getOrDefault(bucketId, 0L) > sequence;
+  }
+
+  /**
+   * Called after a transaction published unidirectional edges ending in {@code targetBuckets}, and while the files of
+   * those buckets are still locked by it, so a delete holding their lock sees the sequence moved or the edges.
+   */
+  public void unidirectionalEdgesCommitted(final IntHashSet targetBuckets) {
+    final long sequence = unidirectionalEdgeSequence.incrementAndGet();
+    // merge(max): with an explicit lock list two commits can reach here out of order
+    targetBuckets.forEach(bucketId -> unidirectionalEdgeLastCommit.merge(bucketId, sequence, Math::max));
+  }
 
   public TransactionManager(final DatabaseInternal database) {
     this.database = database;
@@ -852,6 +884,8 @@ public class TransactionManager {
    * {@link LocalBucket#invalidateCachedRecordCountForUnlockedApply()}). The bucket is then marked contended, and the
    * entries that follow only TRY its lock instead of each waiting the full timeout behind the same long scan: the
    * catch-up pays one timeout per recompute, not one per entry. The first apply that gets the lock clears the mark.
+   * Recomputes that keep being refused turn the applies patient instead, so a recompute gets a quiet window (issue
+   * #8649, see {@link #lockBuckets}).
    * <p>
    * The unknown-counter check and the lock are not atomic. Known to unknown between the two (a {@code CHECK DATABASE
    * FIX} or a corrupted-slot repair invalidating the counter while this entry is being applied) leaves this one entry
@@ -896,22 +930,75 @@ public class TransactionManager {
     return result;
   }
 
+  /**
+   * Takes the lock of each bucket, in order, with a wait that depends on the bucket's apply-lock state:
+   * <ul>
+   * <li>not contended: {@link GlobalConfiguration#COMMIT_LOCK_TIMEOUT};</li>
+   * <li>contended (an earlier apply timed out behind a recompute, issue #8640): 1ms, so the catch-up does not pay one
+   * timeout per entry behind the same long scan;</li>
+   * <li>patient (issue #8649): {@link #PATIENT_AFTER_REFUSED_RECOMPUTES} recomputes in a row were refused because an
+   * apply wrote the bucket without its lock under their scan. Left alone, that repeats for every recompute under
+   * sustained replication: the counter stays unknown and every {@code count(*)} is a full scan. A patient apply waits
+   * for a running recompute again, for up to {@link #patientWaitMs} - twice the last scan on top of the commit
+   * timeout - so the next recompute scans with no unlocked apply under it and publishes. The patient state holds until
+   * a publish clears it, or a patient wait still times out (the scan grew past the bound): the bucket is then contended
+   * again, and the applies do not turn patient for {@link #patientBackoffMs} - at least
+   * {@link #PATIENT_BACKOFF_FACTOR} scans - which bounds the share of the apply thread spent behind scans that keep
+   * outgrowing it. The next patient phase is sized on the longer scan.</li>
+   * </ul>
+   * A patient phase stalls the apply thread for about one scan, and only while the counter is unknown: once a recompute
+   * publishes, the applies skip the lock altogether. The trigger is the refusal count and not the age of the contended
+   * mark, because the first apply that gets the lock between two recomputes clears that mark.
+   */
   private void lockBuckets(final LocalBucket[] buckets, final int count, final long timeout, final Object requester,
       final BucketLocks result) {
     for (int i = 0; i < count; i++) {
       final LocalBucket bucket = buckets[i];
       final int fileId = bucket.getFileId();
       final boolean contended = bucket.isApplyLockContended();
+      boolean patient = bucket.isApplyLockPatient();
+      if (!patient && bucket.getConsecutiveRecountPublishesRefused() >= PATIENT_AFTER_REFUSED_RECOMPUTES
+          && !bucket.isApplyLockPatientBackingOff(System.nanoTime())) {
+        final long refusedInARow = bucket.turnApplyLockPatientIfRefused(PATIENT_AFTER_REFUSED_RECOMPUTES);
+        if (refusedInARow > 0) {
+          patient = true;
+          LogManager.instance().log(this, Level.INFO,
+              "Bucket '%s' refused %d record count recomputes in a row under replication: replicated transactions wait up"
+                  + " to %dms for a running recompute again, so it can cache its result", null, bucket.getName(),
+              refusedInARow, patientWaitMs(bucket, timeout));
+        }
+      }
+
       // 1ms, not 0: LockManager reads a zero timeout as "wait forever"
-      final LockManager.LOCK_STATUS status = tryLockFile(fileId, contended ? 1L : timeout, requester);
+      final long waitMs = patient ? patientWaitMs(bucket, timeout) : contended ? 1L : timeout;
+      final long waitStart = patient ? System.nanoTime() : 0L;
+      final LockManager.LOCK_STATUS status = tryLockFile(fileId, waitMs, requester);
       if (status == LockManager.LOCK_STATUS.YES) {
         result.locked[result.lockedCount++] = fileId;
-        if (contended)
+        // A patient bucket stays patient until a recompute publishes: dropping back to the plain timeout here would
+        // let the next long scan time an apply out again and refuse itself
+        if (patient) {
+          final long waitedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - waitStart);
+          // The replication stalled behind the scan: say so, so a follower lag can be put down to it
+          if (waitedMs >= timeout)
+            LogManager.instance().log(this, Level.INFO,
+                "Replicated transaction waited %dms for a record count recompute on bucket '%s' to finish", null, waitedMs,
+                bucket.getName());
+        } else if (contended)
           bucket.setApplyLockContended(false);
       } else if (status == LockManager.LOCK_STATUS.NO) {
         bucket.invalidateCachedRecordCountForUnlockedApply();
         result.timedOut[result.timedOutCount++] = bucket;
-        if (!contended) {
+        if (patient) {
+          bucket.setApplyLockPatient(false);
+          bucket.setApplyLockContended(true);
+          final long backoffMs = patientBackoffMs(bucket, timeout);
+          bucket.startApplyLockPatientBackoff(backoffMs);
+          LogManager.instance().log(this, Level.WARNING,
+              "Cannot lock bucket '%s' within %dms (last record count scan took %dms) while applying a replicated"
+                  + " transaction: its record counter stays unknown and every count() on it scans the bucket; next"
+                  + " attempt in %dms", null, bucket.getName(), waitMs, bucket.getLastRecountScanMs(), backoffMs);
+        } else if (!contended) {
           bucket.setApplyLockContended(true);
           LogManager.instance().log(this, Level.WARNING,
               "Cannot lock bucket '%s' within %dms while applying a replicated transaction: its record counter is left"
@@ -922,6 +1009,16 @@ public class TransactionManager {
               "Bucket '%s' is still locked by a record count recompute: applying without the lock", null, bucket.getName());
       }
     }
+  }
+
+  /** How long the applies stay impatient after a patient wait timed out: {@link #PATIENT_BACKOFF_FACTOR} scans. */
+  static long patientBackoffMs(final LocalBucket bucket, final long timeout) {
+    return Math.max(timeout, PATIENT_BACKOFF_FACTOR * bucket.getLastRecountScanMs());
+  }
+
+  /** How long a patient apply waits for a running recompute: the commit timeout plus twice the last scan. */
+  static long patientWaitMs(final LocalBucket bucket, final long timeout) {
+    return timeout + 2 * bucket.getLastRecountScanMs();
   }
 
   /**
@@ -1625,7 +1722,6 @@ public class TransactionManager {
    *                        before it gets here.
    */
   private boolean cleanWALFiles(final boolean dropFiles, final boolean force, final boolean syncDataOnDrop) {
-    boolean dataSynced = false;
     boolean droppedAny = false;
     // #8356: inactiveWALFilePool is a Collections.synchronizedList, which only makes each INDIVIDUAL call
     // (add/remove/size) atomic - its own Javadoc requires the caller to synchronize on the list for manual
@@ -1633,37 +1729,47 @@ public class TransactionManager {
     // (checkWALFiles, run every second on its own Timer thread) or from a second, racing close() could land
     // between this iterator's hasNext()/next() and throw ConcurrentModificationException out of it.remove().
     synchronized (inactiveWALFilePool) {
-      for (final Iterator<WALFile> it = inactiveWALFilePool.iterator(); it.hasNext(); ) {
-        final WALFile file = it.next();
+      if (inactiveWALFilePool.isEmpty())
+        return true;
 
-        if (force || !dropFiles || file.getPendingPagesToFlush() == 0) {
-          // ALL PAGES FLUSHED, REMOVE THE FILE
-          try {
-            final Map<String, Object> fileStats = file.getStats();
-            statsPagesWritten.addAndGet((Long) fileStats.get("pagesWritten"));
-            statsBytesWritten.addAndGet((Long) fileStats.get("bytesWritten"));
+      // #8923: decide EVERY removable file before the fsync below, never after it. The flush thread decrements a
+      // file's pending counter (WALFile.notifyPageFlushed) right after a write() that only reaches the OS page
+      // cache and without taking any lock this pass holds, so a counter read AFTER the fsync can be zero because
+      // of a page the fsync did not cover. A file selected here had zero pending pages before the fsync, so every
+      // one of its pages is covered by it; a file that reaches zero later waits for the next pass and its fsync.
+      final List<WALFile> removable = new ArrayList<>(inactiveWALFilePool.size());
+      for (final WALFile file : inactiveWALFilePool)
+        if (force || !dropFiles || file.getPendingPagesToFlush() == 0)
+          removable.add(file);
 
-            if (dropFiles) {
-              // Make the data pages durable before the WAL that protects them is deleted. fsync once, lazily,
-              // right before the first WAL file is actually dropped in this pass (issue #4509).
-              if (syncDataOnDrop && !dataSynced) {
-                if (!database.getFileManager().syncFiles()) {
-                  // #4934: the fsync failed - the data this WAL protects may never reach the disk. Dropping
-                  // the WAL now would make it unrecoverable; abort this pass, the rotation retries later.
-                  return false;
-                }
-                dataSynced = true;
-              }
-              file.drop();
-              droppedAny = true;
-            } else
-              file.close();
+      if (removable.isEmpty())
+        return false;
 
-          } catch (final IOException e) {
-            LogManager.instance().log(this, Level.SEVERE, "Error on %s WAL file '%s'", e, dropFiles ? "dropping" : "closing", file);
-          }
-          it.remove();
+      // Make the data pages durable before the WALs that protect them are deleted: one fsync per pass, not per file
+      // (issues #4509, #8626).
+      if (dropFiles && syncDataOnDrop && !database.getFileManager().syncFiles())
+        // #4934: the fsync failed - the data these WALs protect may never reach the disk. Dropping them now would
+        // make it unrecoverable; abort this pass, the rotation retries later.
+        return false;
+
+      for (final WALFile file : removable) {
+        try {
+          final Map<String, Object> fileStats = file.getStats();
+          statsPagesWritten.addAndGet((Long) fileStats.get("pagesWritten"));
+          statsBytesWritten.addAndGet((Long) fileStats.get("bytesWritten"));
+
+          if (dropFiles) {
+            file.drop();
+            droppedAny = true;
+          } else
+            file.close();
+
+        } catch (final IOException e) {
+          LogManager.instance().log(this, Level.SEVERE, "Error on %s WAL file '%s'", e, dropFiles ? "dropping" : "closing", file);
         }
+        // Out of the pool as soon as it is handled, so an unchecked exception from a later file cannot leave an
+        // already-dropped file behind for the next pass to drop again.
+        inactiveWALFilePool.remove(file);
       }
     }
 

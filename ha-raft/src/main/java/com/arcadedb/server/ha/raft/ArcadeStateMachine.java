@@ -2542,7 +2542,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
     return membershipSecuritySeeder.seedNowAndReport(reason, timeoutMs, mayReuseRecentSeed);
   }
 
-  /** Package-private test seam (issue #7531): substitutes the seeder the configuration callback drives. */
+  /**
+   * {@link #seedSecurityNowAndReport} answered only by a seed that starts after this call (issue #8689); see
+   * {@link MembershipSecuritySeeder#seedAfterInFlightAndReport}.
+   */
+  public List<String> seedSecurityAfterInFlightAndReport(final String reason, final long timeoutMs) {
+    return membershipSecuritySeeder.seedAfterInFlightAndReport(reason, timeoutMs);
+  }
+
   /** Installs the detector {@link RaftHAServer} owns, so it outlives this state machine (issue #7819). */
   void setRuntimeJoinDetector(final RuntimeJoinDetector detector) {
     this.runtimeJoinDetector = detector;
@@ -2553,6 +2560,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     return runtimeJoinDetector;
   }
 
+  /** Package-private test seam (issue #7531): substitutes the seeder the configuration callback drives. */
   void setMembershipSecuritySeederForTesting(final MembershipSecuritySeeder seeder) {
     final MembershipSecuritySeeder previous = this.membershipSecuritySeeder;
     this.membershipSecuritySeeder = seeder;
@@ -4386,7 +4394,17 @@ public class ArcadeStateMachine extends BaseStateMachine {
       if (raftHA != null && raftHA.isLeader()) {
         if (!isDatabasePresentLocally(databaseName)) {
           final long appliedBefore = readPersistedAppliedIndex(databaseName);
-          if (appliedBefore >= entryIndex)
+          if (appliedBefore >= entryIndex && raftHA.isSoleVoter()) {
+            // A quarantine is lifted by the leadership hand-off and the targeted resync from the next leader. A sole voter
+            // has neither, so the quarantine would be permanent, and a permanent quarantine takes the whole node out of the
+            // ready set and stops the Raft log from being checkpointed for a database only the operator can restore
+            // (issue #8940). Alert in the log instead and keep serving.
+            LogManager.instance().log(this, Level.SEVERE,
+                "Database '%s' was reinstalled by the forceSnapshot entry at index %d in a previous session but has no copy "
+                    + "on this node now, and this node is the only voter, so there is no peer to reinstall it from. It is "
+                    + "NOT quarantined (that could never be lifted here and would keep the node out of service): restore "
+                    + "the database directory from a backup, or drop the database", databaseName, entryIndex);
+          } else if (appliedBefore >= entryIndex)
             throw new IllegalStateException("Database '" + databaseName + "' was reinstalled by the forceSnapshot entry "
                 + "at index " + entryIndex + " in a previous session (persistedAppliedIndex=" + appliedBefore
                 + ") but has no copy on this node now, and this node is the Raft leader, so there is nowhere to "
@@ -4940,7 +4958,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
     return false;
   }
 
-  private InstallApplyGate installApplyGate(final String dbName) {
+  // Package-private for tests that hold the apply thread off a database WITHOUT the install's "being replaced"
+  // registration, which a leader answers by refusing every transaction on it (Issue8454SnapshotSourceBehindFollowerIT).
+  InstallApplyGate installApplyGate(final String dbName) {
     return installApplyGates.computeIfAbsent(dbName, name -> new InstallApplyGate());
   }
 

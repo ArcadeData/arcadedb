@@ -24,6 +24,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.opencypher.ast.*;
+import com.arcadedb.query.opencypher.grammar.Cypher25Lexer;
 import com.arcadedb.query.opencypher.grammar.Cypher25Parser;
 import com.arcadedb.query.opencypher.temporal.CypherDate;
 import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
@@ -37,6 +38,9 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 
+import org.antlr.v4.runtime.CharStreams;
+import org.antlr.v4.runtime.CommonTokenStream;
+import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
 
@@ -54,6 +58,8 @@ import java.util.logging.Level;
 class CypherExpressionBuilder {
 
   private final ExpressionTypeDetector detector = new ExpressionTypeDetector(this);
+  // Set only while the comparison-form WHEN predicates of an extended CASE are being parsed
+  private CaseOperandExpression activeCaseOperand;
 
   /**
    * Parse an expression into an Expression AST node.
@@ -649,6 +655,8 @@ class CypherExpressionBuilder {
     }
 
     // Simple variable (strip backticks so escaped keywords like `match` match the name bound by the pattern)
+    if (activeCaseOperand != null && CaseOperandExpression.PLACEHOLDER.equals(text))
+      return activeCaseOperand;
     return new VariableExpression(CypherASTBuilder.stripBackticks(text));
   }
 
@@ -1969,23 +1977,65 @@ class CypherExpressionBuilder {
   }
 
   /**
+   * Builds the predicate a comparison-form {@code WHEN} stands for by parsing {@code <operand placeholder> <when text>}
+   * with its whitespace intact, so that every comparison the grammar allows behaves exactly as it does written out in
+   * full, over an operand that is evaluated once.
+   */
+  private Expression parseOperandPredicate(final CaseOperandExpression operandHolder,
+      final Cypher25Parser.ExtendedWhenContext whenCtx) {
+    final String text = CaseOperandExpression.PLACEHOLDER + " " + CypherASTBuilder.getOriginalText(whenCtx);
+    final CypherErrorListener errorListener = new CypherErrorListener();
+    final Cypher25Lexer lexer = new Cypher25Lexer(CharStreams.fromString(text));
+    lexer.removeErrorListeners();
+    lexer.addErrorListener(errorListener);
+    final CommonTokenStream tokens = new CommonTokenStream(lexer);
+    final Cypher25Parser parser = new Cypher25Parser(tokens);
+    parser.removeErrorListeners();
+    parser.addErrorListener(errorListener);
+    // The text is the operand placeholder plus a WHEN form that already passed the depth guard in the original query,
+    // so this small parse needs none of its own. The placeholder resolves to the shared holder while it is parsed.
+    final CaseOperandExpression previous = activeCaseOperand;
+    activeCaseOperand = operandHolder;
+    try {
+      final Cypher25Parser.ExpressionContext predicate = parser.expression();
+      if (tokens.LA(1) != Token.EOF)
+        throw new CommandParsingException("Unexpected input in CASE WHEN: " + text);
+      return parseExpression(predicate);
+    } finally {
+      activeCaseOperand = previous;
+    }
+  }
+
+  /**
    * Parse an extended CASE expression (with case value).
    * Example: CASE status WHEN 'active' THEN 1 WHEN 'inactive' THEN 0 ELSE -1 END
    */
   CaseExpression parseExtendedCaseExpression(final Cypher25Parser.ExtendedCaseExpressionContext ctx) {
     // Parse the case expression (the value being tested)
     final Expression caseExpr = parseExpression(ctx.expression(0));
+    final CaseOperandExpression operandHolder = new CaseOperandExpression();
+    boolean usesOperandHolder = false;
 
     final List<CaseAlternative> alternatives = new ArrayList<>();
 
     // Parse each WHEN...THEN alternative
     for (final Cypher25Parser.ExtendedCaseAlternativeContext altCtx : ctx.extendedCaseAlternative()) {
-      // In extended form, WHEN contains value(s) to match against
-      // Use the first extendedWhen's text to create an expression
-      final String whenText = altCtx.extendedWhen(0).getText();
-      final Expression whenExpr = parseExpressionText(whenText);
+      // In extended form, WHEN contains one or more comma-separated values to match against: each one becomes its own
+      // alternative sharing the same THEN expression (evaluated lazily, so only the matching branch runs).
       final Expression thenExpr = parseExpression(altCtx.expression());
-      alternatives.add(new CaseAlternative(whenExpr, thenExpr));
+      for (final Cypher25Parser.ExtendedWhenContext whenCtx : altCtx.extendedWhen()) {
+        // A plain value is parsed from its parse tree: re-parsing its whitespace-less text turned a list or map literal
+        // into something that never equals the operand (issue #8996).
+        if (whenCtx instanceof Cypher25Parser.WhenEqualsContext equalsCtx)
+          alternatives.add(new CaseAlternative(parseExpression(equalsCtx.expression()), thenExpr));
+        else {
+          // A comparison form (WHEN > 5, WHEN IS NULL, WHEN STARTS WITH 'a') is the predicate "<operand> <form>" over
+          // the operand evaluated once
+          alternatives.add(new CaseAlternative(parseOperandPredicate(operandHolder, whenCtx), thenExpr,
+              CypherASTBuilder.getOriginalText(whenCtx)));
+          usesOperandHolder = true;
+        }
+      }
     }
 
     // Parse optional ELSE clause
@@ -1994,7 +2044,7 @@ class CypherExpressionBuilder {
       elseExpr = parseExpression(ctx.elseExp);
     }
 
-    return new CaseExpression(caseExpr, alternatives, elseExpr);
+    return new CaseExpression(caseExpr, alternatives, elseExpr, usesOperandHolder ? operandHolder : null);
   }
 
   /**
@@ -2139,6 +2189,11 @@ class CypherExpressionBuilder {
     final Expression leftExpr = parseExpressionFromText(ctx.expression6());
     final Cypher25Parser.LabelComparisonContext labelCtx = (Cypher25Parser.LabelComparisonContext) ctx.comparisonExpression6();
     final Cypher25Parser.LabelExpressionContext labelExprCtx = labelCtx.labelExpression();
+
+    // A negation, the wildcard or a mix of '&' and '|' is evaluated as the tree it is (issue #8992).
+    final LabelPredicate predicate = ParserUtils.buildLabelPredicate(labelExprCtx);
+    if (predicate != null)
+      return new BooleanWrapperExpression(new LabelCheckExpression(leftExpr, predicate, ctx.getText()));
 
     // See parseLabelCheckExpression in CypherASTBuilder: extract through the grammar so backticks
     // are stripped and a quoted label is never split on a character of its own name. This also
@@ -2523,7 +2578,16 @@ class CypherExpressionBuilder {
       variable = ParserUtils.stripBackticks(ctx.variable().getText());
     }
 
-    if (ctx.labelExpression() != null) {
+    // A negation, the wildcard or a mix of '&' and '|' is checked as a predicate on the node, the way the MATCH-side
+    // builder does it (issue #8992).
+    BooleanExpression labelCheck = null;
+    final LabelPredicate labelPredicate = ParserUtils.buildLabelPredicate(ctx.labelExpression());
+    if (labelPredicate != null) {
+      labels = labelPredicate.requiredLabels();
+      if (variable == null)
+        variable = ParserUtils.newLabelExpressionVariable();
+      labelCheck = ParserUtils.labelCheckOn(variable, labelPredicate, ctx.labelExpression());
+    } else if (ctx.labelExpression() != null) {
       labels = extractLabels(ctx.labelExpression());
       labelDisjunction = ParserUtils.isLabelDisjunction(ctx.labelExpression());
     }
@@ -2542,6 +2606,7 @@ class CypherExpressionBuilder {
     BooleanExpression whereExpression = null;
     if (ctx.expression() != null)
       whereExpression = new BooleanCoercionExpression(parseExpression(ctx.expression()));
+    whereExpression = ParserUtils.andLabelCheck(labelCheck, whereExpression);
 
     return new NodePattern(variable, labels, null, properties, propertiesParameterName, labelDisjunction, whereExpression);
   }
@@ -2560,7 +2625,17 @@ class CypherExpressionBuilder {
       variable = ParserUtils.stripBackticks(ctx.variable().getText());
     }
 
-    if (ctx.labelExpression() != null) {
+    BooleanExpression labelCheck = null;
+    final LabelPredicate labelPredicate = ParserUtils.buildRelationshipTypePredicate(ctx.labelExpression());
+    if (labelPredicate != null) {
+      if (ctx.pathLength() != null)
+        ParserUtils.rejectOnVariableLengthRelationship(ctx.labelExpression());
+      final List<String> required = labelPredicate.requiredLabels();
+      types = required.isEmpty() ? null : required;
+      if (variable == null)
+        variable = ParserUtils.newLabelExpressionVariable();
+      labelCheck = ParserUtils.labelCheckOn(variable, labelPredicate, ctx.labelExpression());
+    } else if (ctx.labelExpression() != null) {
       types = extractLabels(ctx.labelExpression());
     }
 
@@ -2599,6 +2674,7 @@ class CypherExpressionBuilder {
     BooleanExpression whereExpression = null;
     if (ctx.expression() != null)
       whereExpression = new BooleanCoercionExpression(parseExpression(ctx.expression()));
+    whereExpression = ParserUtils.andLabelCheck(labelCheck, whereExpression);
 
     return new RelationshipPattern(variable, types, direction, properties, propertiesParameterName, minHops, maxHops,
         whereExpression);

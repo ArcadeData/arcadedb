@@ -165,7 +165,7 @@ public enum GlobalConfiguration {
     return impl;
   }),
 
-  MAX_PAGE_RAM("arcadedb.maxPageRAM", SCOPE.DATABASE, "Maximum amount of pages (in MB) to keep in RAM", Long.class, 4 * 1024, // 4GB
+  MAX_PAGE_RAM("arcadedb.maxPageRAM", SCOPE.DATABASE, "Maximum amount of pages (in MB) to keep in RAM. When unset it is a quarter of the maximum JVM heap. A value above 80% of the heap is reduced to half of it", Long.class, 4 * 1024, // 4GB
       new Callable<>() {
         @Override
         public Object call(final Object value) {
@@ -232,6 +232,10 @@ public enum GlobalConfiguration {
 
   BUCKET_DEFAULT_PAGE_SIZE("arcadedb.bucketDefaultPageSize", SCOPE.DATABASE,
       "Default page size in bytes for buckets. Default is 64KB", Integer.class, 65_536),
+
+  INDEX_DEFAULT_PAGE_SIZE("arcadedb.indexDefaultPageSize", SCOPE.DATABASE,
+      "Default page size in bytes for new plain LSM-tree indexes (not full-text, geo or vector ones) created without an explicit page size (SQL CREATE INDEX has no page-size clause). A transaction that changes an index page works on a private copy of the whole page, so a smaller page makes small write transactions cheaper while a larger one makes lookups slightly faster. Existing indexes keep their page size. Minimum is 8KB. Default is 256KB. In a cluster, keep it identical on all the servers",
+      Integer.class, 262_144),
 
   EXTERNAL_PROPERTY_BUCKET_DEFAULT_PAGE_SIZE("arcadedb.externalPropertyBucketDefaultPageSize", SCOPE.DATABASE,
       "Default page size in bytes for paired external-property buckets. They hold heavy property payloads (vector embeddings, large strings, embedded JSON) so the default is larger than for primary buckets to reduce multi-page chunking. Matches the LSM-index default (256KB)",
@@ -387,6 +391,18 @@ public enum GlobalConfiguration {
       else 0 is faster on every measure. The crossover is hardware and workload specific, so no \
       number for it is given here. Re-read on every query.""",
       Integer.class, 0),
+
+  SPARSE_VECTOR_SCORING_WINDOW("arcadedb.sparseVectorScoringWindow", SCOPE.JVM,
+      """
+      Size, in RID positions, of the window the LSM_SPARSE_VECTOR top-K traversal scores at a time (issue #9200). \
+      The essential terms of the query add their postings into a window array term by term, without a per-posting \
+      heap; each document of the window that can still beat the top-K threshold then probes the non-essential terms. \
+      On learned-sparse corpora, where most queries touch most documents, this measured about 1.8x faster at the \
+      median and 2.4x at p99 than the document-at-a-time traversal on the same cursors. Scores can differ from it in \
+      the last bit, so the rank among exact ties is not guaranteed to match. 0 (or a negative value) selects the classic \
+      document-at-a-time Block-Max MaxScore traversal. The value is rounded up to a multiple of 64 and capped at \
+      1048576. Re-read on every query.""",
+      Integer.class, 16384),
 
   SPARSE_VECTOR_SCORING_MIN_POSTINGS_FOR_PARTITIONING("arcadedb.sparseVectorScoringMinPostingsForPartitioning", SCOPE.JVM,
       """
@@ -709,10 +725,10 @@ public enum GlobalConfiguration {
 
   SQL_MAX_EXPRESSION_DEPTH("arcadedb.sql.maxExpressionDepth", SCOPE.DATABASE,
       """
-      Maximum nesting depth allowed for parentheses in a single SQL statement (WHERE conditions, sub-expressions, \
-      nested function/statement calls, ...). The ANTLR-generated SQL parser resolves ambiguity between several \
-      grammar rules that all start with '(' (a parenthesized expression, condition, or sub-statement) by first \
-      trying a fast SLL prediction and falling back to full ALL(*) prediction on failure; for a query with enough \
+      Maximum nesting depth allowed for parentheses, brackets, braces (map/JSON literals) and CASE expressions in a \
+      single SQL statement (WHERE conditions, sub-expressions, nested function/statement calls, ...). The \
+      ANTLR-generated SQL parser resolves ambiguity between several grammar rules that all start with '(' (a \
+      parenthesized expression, condition, or sub-statement) by first trying a fast SLL prediction and falling back to full ALL(*) prediction on failure; for a query with enough \
       nested parentheses that fallback's cost grows so steeply that a query of only a few KB can tie up a worker \
       thread for minutes without ever crashing, which is worse than a fast failure since it is not distinguishable \
       from a slow legitimate query. This is checked on the token stream before any parse is attempted, so a query \
@@ -828,7 +844,9 @@ public enum GlobalConfiguration {
       (0), which is the default. Every entry point reached through a command context - MATCHES, =~, PromQL's matchers \
       and the text.regexReplace()/.normalize() functions - shares ONE deadline for the whole command: not one per row, \
       not one per function, and not one per worker of a parallel type scan. Full-text search and REGEXP property \
-      validation run outside a command context and share one deadline across an entire scan (not per item). A large, \
+      validation run outside a command context and share one deadline across an entire scan (not per item). The MongoDB \
+      wire protocol plugin applies a regex filter the same way: one budget per command, counting only the time spent \
+      inside the regular expressions. A large, \
       legitimately slow (non-catastrophic) operation can hit this bound too, so raise it for workloads that need more \
       than 1s. Set to 0 to disable (not recommended).""",
       Long.class, 1000),
@@ -984,15 +1002,28 @@ public enum GlobalConfiguration {
   // than wired up: two settings for one cache is the defect, and the surviving one already works.
   CYPHER_MAX_EXPRESSION_DEPTH("arcadedb.cypher.maxExpressionDepth", SCOPE.DATABASE,
       """
-      Maximum nesting depth allowed for a single Cypher expression, for example parentheses, list/map literals \
-      or function arguments nested inside one another, and the depth of a chain of AND/OR/string-concatenation \
-      terms in the resulting expression tree. The ANTLR-generated parser re-enters its expression grammar rule \
-      roughly ten Java stack frames per nesting level, so a few thousand levels is enough to exhaust the default \
-      JVM thread stack with a payload of only a few KB; a query past this limit is rejected as a normal parse \
-      error instead of crashing the worker thread with a StackOverflowError. Real-world queries rarely nest \
+      Maximum nesting depth allowed for a single Cypher expression, for example parentheses, list/map literals, \
+      function arguments, pattern parentheses or CALL/EXISTS/COUNT/COLLECT subqueries nested inside one another, \
+      and the depth of a chain of AND/OR/string-concatenation terms in the resulting expression tree. The levels of \
+      all these kinds add up: they are counted cumulatively against this one limit. The ANTLR-generated parser \
+      re-enters its expression grammar rule roughly ten Java stack frames per nesting level, so a few thousand \
+      levels is enough to exhaust the default JVM thread stack with a payload of only a few KB; a query past this \
+      limit is rejected as a normal parse error instead of crashing the worker thread with a StackOverflowError. Real-world queries rarely nest \
       more than a handful of levels, so the default is deliberately generous while staying far below the point \
       where the stack is at risk. Raise it only if a legitimate, deeply-nested or very long generated query needs it.""",
       Integer.class, 200),
+
+  CYPHER_MAX_CLAUSES("arcadedb.cypher.maxClauses", SCOPE.DATABASE,
+      """
+      Maximum number of clauses (MATCH, WITH, CREATE, RETURN, ...) in one query or subquery body; each branch of a \
+      UNION is counted on its own, not the UNION as a whole. The clauses of a query \
+      execute as a pull pipeline in which every step asks the previous one for its next row, so the Java stack is \
+      as deep as the clause chain is long; a query of a few thousand clauses is parsed but then exhausts the JVM \
+      thread stack while its rows are fetched (measured on a 1MB thread stack: about 2,500 WITH or 3,000 CREATE \
+      clauses). A query past this limit is rejected as a normal parse error. The default leaves room for the \
+      759-clause query of the openCypher TCK. Must be at least 1; raise it only if a legitimate, very long \
+      generated query needs it.""",
+      Integer.class, 1000),
 
   CYPHER_ALGO_MAX_WORKING_MEMORY("arcadedb.cypher.algoMaxWorkingMemory", SCOPE.DATABASE,
       """
@@ -1672,7 +1703,8 @@ public enum GlobalConfiguration {
       "List of server plugins to install. The format to load a plugin is: `<pluginName>:<pluginFullClass>`", String.class, ""),
 
   // SERVER HTTP
-  SERVER_HTTP_INCOMING_HOST("arcadedb.server.httpIncomingHost", SCOPE.SERVER, "TCP/IP host name used for incoming HTTP connections",
+  SERVER_HTTP_INCOMING_HOST("arcadedb.server.httpIncomingHost", SCOPE.SERVER,
+      "TCP/IP host name used for incoming HTTP connections. A name resolving to several local addresses (e.g. 'localhost' as 127.0.0.1 and ::1) is listened on every one of them, and a port is used only when it is free on all of them",
       String.class, "0.0.0.0"),
 
   SERVER_HTTP_INCOMING_PORT("arcadedb.server.httpIncomingPort", SCOPE.SERVER,
@@ -2534,10 +2566,13 @@ public enum GlobalConfiguration {
       arcadedb.server.httpStreamingReadTimeout (the budget this node grants the INCOMING side of the same load) \
       applies here to the OUTGOING hop instead - a short control-plane deadline would abort large loads that are \
       working correctly. On the non-streaming path it bounds the wait for the leader's answer. On the streaming \
-      encoding it bounds the wait for the leader's first response line and then, separately, every later wait \
-      for the leader's data (issue #7738): it is a limit on how long the leader may stay SILENT, not on the \
-      length of the load, so a leader that keeps emitting progress lines is never cut off, and one that stalls \
-      mid-stream is given up on and its connection closed. 0 or a negative value does not disable it - an \
+      encoding it is a limit on how long the forward may stay SILENT, not on the length of the load. It bounds the \
+      wait for the leader's first response line, counted from the last byte of the upload relayed to the leader \
+      rather than from the start of the forward (issue #8719). It then bounds, separately, every later wait for the \
+      leader's data (issue #7738). An upload that keeps moving and a leader that keeps emitting progress lines are \
+      therefore never cut off, and one that stalls mid-stream is given up on and its connection closed. A client \
+      that trickles its upload is not cut off by this setting either: its pauses are bounded on the incoming side \
+      by arcadedb.server.httpStreamingReadTimeout. 0 or a negative value does not disable it - an \
       outgoing forward must never be unbounded - it is clamped to 1 ms instead, so set a positive value. \
       Re-read on every forward.""",
       Long.class, 600_000L),
@@ -3029,6 +3064,21 @@ public enum GlobalConfiguration {
       A positive value here forces the wait either way, trading a slower open() for the restored/rebuilt view being \
       usable by the query that triggered the reopen""",
       Long.class, 0L),
+
+  GAV_ALGO_RESTORE_AWAIT_TIMEOUT("arcadedb.gavAlgoRestoreAwaitTimeout", SCOPE.DATABASE,
+      """
+      Milliseconds a whole-graph algorithm (algo.wcc, algo.pagerank, algo.bfs and the other algo.* procedures) waits for a \
+      Graph Analytical View (GAV/CSR) whose deferred restore from disk is still in flight, so the first call after a \
+      database reopen runs on the restored view instead of scanning every record. The wait ends early when the restore \
+      finishes, and it also ends when the command's own timeout expires. A view that is only rebuilding after a commit is \
+      never waited for. 0 does not wait: the call takes the record path, as it did before this setting existed. A command \
+      without a timeout of its own (see arcadedb.command.timeout) can block for this whole budget when a restore never \
+      ends, for example while it is stuck waiting for a build permit behind another large build, so lower it if such \
+      commands must answer quickly. The default of 60 seconds suits a restore or rebuild that is much cheaper than the \
+      record-by-record scan it replaces; raise it for databases large enough that the scan would take many minutes. \
+      This is separate from arcadedb.gavRestoreAwaitTimeout, which makes database open() itself block (default 0 = do \
+      not block)""",
+      Long.class, 60_000L),
 
   GAV_PERSIST_CSR("arcadedb.gavPersistCsr", SCOPE.DATABASE,
       """

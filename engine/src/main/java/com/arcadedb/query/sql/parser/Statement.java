@@ -26,6 +26,7 @@ import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalExecutionPlan;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.SqlAstInspector;
 
 import com.arcadedb.query.OperationType;
 import com.arcadedb.schema.TimeSeriesTypeBuilder;
@@ -248,9 +249,15 @@ public class Statement extends SimpleNode {
     return false;
   }
 
+  /** The plan-cache key; the parameter-number suffix applies to the computed text, not to the raw text the parser presets. */
   public String getOriginalStatement() {
-    if (originalStatementAsString == null)
-      originalStatementAsString = originalStatement.toString();
+    if (originalStatementAsString == null) {
+      final String text = originalStatement.toString();
+      // NO PARAMETER, NO NUMBERS TO TELL APART: SKIP THE TREE WALK
+      originalStatementAsString = text.indexOf('?') < 0 && text.indexOf(':') < 0 ?
+          text :
+          text + SqlAstInspector.parameterNumbersSuffix(originalStatement);
+    }
     return originalStatementAsString;
   }
 

@@ -25,6 +25,7 @@ import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.parser.AndBlock;
+import com.arcadedb.query.sql.parser.BaseExpression;
 import com.arcadedb.query.sql.parser.Bucket;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.FieldMatchPathItem;
@@ -45,6 +46,7 @@ import com.arcadedb.query.sql.parser.Projection;
 import com.arcadedb.query.sql.parser.ProjectionItem;
 import com.arcadedb.query.sql.parser.Rid;
 import com.arcadedb.query.sql.parser.SelectStatement;
+import com.arcadedb.query.sql.parser.SimpleNode;
 import com.arcadedb.query.sql.parser.Skip;
 import com.arcadedb.query.sql.parser.Timeout;
 import com.arcadedb.query.sql.parser.Unwind;
@@ -79,6 +81,7 @@ public class MatchExecutionPlanner {
   private final   Unwind                 unwind;
   protected final Limit                  limit;
   protected final Timeout                timeout;
+  private final   MatchStatement         statement;
 
   //post-parsing
   private Pattern                  pattern;
@@ -91,6 +94,7 @@ public class MatchExecutionPlanner {
   private static final long threshold = 100;
 
   public MatchExecutionPlanner(final MatchStatement stm) {
+    this.statement = stm;
     this.matchExpressions = stm.getMatchExpressions().stream().map(x -> x.copy()).collect(Collectors.toList());
     this.notMatchExpressions = stm.getNotMatchExpressions().stream().map(x -> x.copy()).collect(Collectors.toList());
     this.returnItems = stm.getReturnItems().stream().map(x -> x.copy()).collect(Collectors.toList());
@@ -139,8 +143,10 @@ public class MatchExecutionPlanner {
         final InternalExecutionPlan subPlan = createPlanForPattern(subPattern, context, estimatedRootEntries, aliasesToPrefetch,
             correlated);
         // A CORRELATED LEG IS PLANNED AGAIN FOR EVERY OUTER TUPLE: THE FETCH AND FILTER STEPS OF ITS ROOT SELECT DO NOT RESTART
+        // THE ALIASES IT READS ARE WHAT ITS ROWS ARE REMEMBERED BY (ISSUE #8443)
         step.addSubPlan(subPlan,
-            correlated ? () -> createPlanForPattern(subPattern, context, estimatedRootEntries, aliasesToPrefetch, true) : null);
+            correlated ? levelContext -> createPlanForPattern(subPattern, levelContext, estimatedRootEntries, aliasesToPrefetch, true) : null,
+            correlated ? outerAliasesRead(subPattern) : null, statement);
       }
       result.chain(step);
     } else {
@@ -748,7 +754,75 @@ public class MatchExecutionPlanner {
     if (filter == null || filter.getBaseExpression() == null)
       return Collections.emptyList();
     final List<String> involvedAliases = filter.getBaseExpression().getMatchPatternInvolvedAliases();
-    return involvedAliases == null ? Collections.emptyList() : involvedAliases;
+    // getMatchPatternInvolvedAliases() DOES NOT SEE A $matched INSIDE A NESTED STATEMENT (A SUBQUERY OF AN IN), SO THE WHOLE TREE
+    // IS WALKED TOO: A NODE THAT READS AN ALIAS ONLY THERE MUST NOT BE PREFETCHED OR PLANNED AS INDEPENDENT OF IT
+    // A BARE $matched (NO ALIAS SUFFIX) IS STILL NOT ATTRIBUTED TO ANY ALIAS, AS IN outerAliasesRead()
+    final Set<String> aliases = new LinkedHashSet<>();
+    if (involvedAliases != null)
+      aliases.addAll(involvedAliases);
+    collectMatchedAliases(filter, aliases);
+    return aliases.isEmpty() ? Collections.emptyList() : new ArrayList<>(aliases);
+  }
+
+  /**
+   * The aliases bound outside {@code subPattern} that its nodes read through {@code $matched}, or null when that cannot
+   * be told. It can be told only when every {@code $matched} in the MATCH expressions is written
+   * {@code $matched.<alias>...}, the one form {@link #matchedDependencies} sees: a bare {@code $matched}, passed to a
+   * function or indexed, may read any alias, so a level reading it has to be given the whole outer tuple.
+   */
+  private String[] outerAliasesRead(final Pattern subPattern) {
+    if (!SqlAstInspector.allNodesMatch(matchExpressions, MatchExecutionPlanner::isAliasQualifiedMatchedRead))
+      return null;
+    // A while: IS NOT IN aliasFilters, SO AN ALIAS IT READS WOULD BE MISSING FROM THE SET BELOW: GIVE THE LEVEL THE WHOLE TUPLE
+    if (!SqlAstInspector.allNodesMatch(matchExpressions, MatchExecutionPlanner::hasNoMatchedInWhile))
+      return null;
+
+    // matchedDependencies() DOES NOT SEE A $matched INSIDE A FUNCTION ARGUMENT OR A NESTED STATEMENT, SO THE ALIASES ARE COLLECTED
+    // BY WALKING EVERY NODE OF THE FILTERS. IF THE FILTERS DO NOT ACCOUNT FOR EVERY $matched OF THE MATCH EXPRESSIONS, ONE SITS
+    // SOMEWHERE ELSE (A PATH ITEM, ...) AND THE LEVEL HAS TO BE GIVEN THE WHOLE TUPLE
+    final Set<String> all = new TreeSet<>();
+    final int total = collectMatchedAliases(matchExpressions, all);
+    int inFilters = 0;
+    for (final WhereClause filter : aliasFilters.values())
+      inFilters += collectMatchedAliases(filter, new TreeSet<>());
+    if (total != inFilters)
+      return null;
+
+    final Set<String> aliases = new TreeSet<>();
+    for (final PatternNode node : subPattern.aliasToNode.values())
+      collectMatchedAliases(aliasFilters.get(node.alias), aliases);
+    aliases.removeAll(subPattern.aliasToNode.keySet());
+    return aliases.toArray(new String[0]);
+  }
+
+  /** Adds the alias of every {@code $matched.<alias>} under {@code root} to {@code aliases}; returns how many there were. */
+  private static int collectMatchedAliases(final Object root, final Set<String> aliases) {
+    final int[] count = { 0 };
+    SqlAstInspector.allNodesMatch(root, node -> {
+      if (node instanceof BaseExpression expression && expression.identifier != null
+          && "$matched".equalsIgnoreCase(expression.identifier.toString())) {
+        count[0]++;
+        if (expression.modifier != null && expression.modifier.suffix != null && expression.modifier.suffix.identifier != null)
+          aliases.add(expression.modifier.suffix.identifier.toString());
+      }
+      return true;
+    });
+    return count[0];
+  }
+
+  private static boolean hasNoMatchedInWhile(final SimpleNode node) {
+    if (node instanceof MatchFilter filter && filter.getWhileCondition() != null)
+      return SqlAstInspector.allNodesMatch(filter.getWhileCondition(),
+          n -> !(n instanceof BaseExpression expression && expression.identifier != null
+              && "$matched".equalsIgnoreCase(expression.identifier.toString())));
+    return true;
+  }
+
+  private static boolean isAliasQualifiedMatchedRead(final SimpleNode node) {
+    if (node instanceof BaseExpression expression && expression.identifier != null
+        && "$matched".equalsIgnoreCase(expression.identifier.toString()))
+      return expression.modifier != null && expression.modifier.suffix != null && expression.modifier.suffix.identifier != null;
+    return true;
   }
 
   /**

@@ -188,6 +188,11 @@ public class Slf4jLogger implements Logger {
     return LoggerFactory.getLogger(name);
   }
 
+  @Override
+  public boolean isLoggable(final Object requester, final Level level) {
+    return isEnabled(resolveLogger(requester), slf4jLevel(level));
+  }
+
   /** Prefixes the message with {@code <context> } when a context is set, otherwise returns it unchanged. */
   private static String withContext(final String context, final String message) {
     return context != null ? "<" + context + "> " + message : message;

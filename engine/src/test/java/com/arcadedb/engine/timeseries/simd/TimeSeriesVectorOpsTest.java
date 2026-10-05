@@ -18,6 +18,7 @@
  */
 package com.arcadedb.engine.timeseries.simd;
 
+import org.assertj.core.data.Percentage;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -256,5 +257,20 @@ class TimeSeriesVectorOpsTest {
     assertThat(ops).isNotNull();
     // Smoke test
     assertThat(ops.sum(new double[] { 1.0, 2.0, 3.0 }, 0, 3)).isCloseTo(6.0, within(1e-10));
+  }
+
+  @ParameterizedTest
+  @MethodSource("implementations")
+  void warmUpDoesNotBreakAnyOperation(final TimeSeriesVectorOps ops) {
+    // regression for #9171: the provider warms the SIMD ops off the query path, and must not change any answer
+    assertThat(TimeSeriesVectorOpsProvider.warmUp(ops, 3)).isGreaterThan(0);
+    final double[] data = new double[65_536];
+    for (int i = 0; i < data.length; i++)
+      data[i] = i % 17 == 0 ? Double.NaN : i;
+    final TimeSeriesVectorOps scalar = new ScalarTimeSeriesVectorOps();
+    assertThat(ops.sum(data, 0, data.length)).isCloseTo(scalar.sum(data, 0, data.length), Percentage.withPercentage(1e-9));
+    assertThat(ops.countPresent(data, 0, data.length)).isEqualTo(scalar.countPresent(data, 0, data.length));
+    assertThat(ops.min(data, 0, data.length)).isEqualTo(scalar.min(data, 0, data.length));
+    assertThat(ops.max(data, 0, data.length)).isEqualTo(scalar.max(data, 0, data.length));
   }
 }

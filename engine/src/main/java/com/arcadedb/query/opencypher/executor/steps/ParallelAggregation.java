@@ -118,8 +118,11 @@ final class ParallelAggregation {
       for (final Expression argument : aggregate.getArguments())
         if (!ParallelSafeExpressions.isParallelSafe(argument, variable))
           return null;
-      if (!functionFactory.getFunctionExecutor(aggregate.getFunctionName(), false).canMergePartials())
+      final StatelessFunction function = functionFactory.getFunctionExecutor(aggregate.getFunctionName(), false);
+      if (!function.canMergePartials())
         return null;
+      // the argument count is static per call site: validate it here, so a scan that produces no row still rejects a wrong count
+      function.checkArity(new Object[aggregate.getArguments().size()]);
     }
     return new ParallelAggregation(source, functionFactory, evaluator, keys, aggregates);
   }

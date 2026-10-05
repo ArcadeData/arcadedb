@@ -258,6 +258,12 @@ public final class IncomingEdgeLookup {
     if (!schema.hasUnidirectionalEdgeTypes())
       return Collections.emptyList();
 
+    final TransactionContext tx = database.getTransactionIfExists();
+    if (tx != null)
+      // BEFORE THE SCAN, AND BEFORE TYPES WITH NO EDGE YET ARE LEFT OUT: AN EDGE COMMITTED FROM HERE ON IS ONE THE DELETE DOES
+      // NOT SEE, AND ITS COMMIT MUST FAIL (ISSUE #8986)
+      tx.noteUnidirectionalEdgeScan(target.getBucketId());
+
     final List<String> types = new ArrayList<>(2);
     for (final String name : cachedClosure(schema, null).unidirectional)
       if (schema.getType(name) instanceof EdgeType edgeType && (edgeType.isLightweight() || database.countType(name, false) > 0))
@@ -266,7 +272,6 @@ public final class IncomingEdgeLookup {
       return Collections.emptyList();
 
     final String[] names = types.toArray(new String[0]);
-    final TransactionContext tx = database.getTransactionIfExists();
     final UnidirectionalEdgeChanges changes = tx != null ? tx.getUnidirectionalEdgeChanges() : null;
     if (changes != null && !changes.isDeleteLookupTooLarge()) {
       try {

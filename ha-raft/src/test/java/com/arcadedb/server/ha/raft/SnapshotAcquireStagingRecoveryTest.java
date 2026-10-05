@@ -19,6 +19,8 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.server.ArcadeDBServer;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -35,6 +37,20 @@ import static org.assertj.core.api.Assertions.assertThat;
  * try to open. No HTTP downloads or Raft clusters are involved.
  */
 class SnapshotAcquireStagingRecoveryTest {
+
+  /**
+   * The fixtures stand in for a snapshot with placeholder files no engine can open, so recovery is told every snapshot
+   * opens: what it does with one that does not is the subject of {@link Issue8950RollForwardProvesTheSnapshotOpensTest}.
+   */
+  @BeforeEach
+  void snapshotsOpenForIssue8950() {
+    SnapshotInstaller.snapshotOpensForTesting = path -> true;
+  }
+
+  @AfterEach
+  void restoreSnapshotOpenProofForIssue8950() {
+    SnapshotInstaller.snapshotOpensForTesting = null;
+  }
 
   @Test
   void acquireStagingPrefixIsReserved() {

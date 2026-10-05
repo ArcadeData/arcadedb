@@ -174,8 +174,9 @@ public final class LeaderForwardContext {
 
   /**
    * The leader id a forward's refusal hold is keyed on (issue #8709): {@code stableLeaderId} when there is one, else the
-   * id read before the dial. The stable id governs what a forward NAMES in {@link #FORWARDED_LEADER_ID_HEADER} - saying
-   * nothing about a node it is unsure of - but the hold only asks the view to move away from the node that refused, and
+   * id read before the dial, else the one read after it. The stable id governs what a forward NAMES in
+   * {@link #FORWARDED_LEADER_ID_HEADER} - saying nothing
+   * about a node it is unsure of - but the hold only asks the view to move away from the node that refused, and
    * the id read before the dial is that node when the address resolution found no leader or the same one again. If
    * leadership moved to another node in between (A to B), the address may be either node's: the hold is then keyed on A,
    * the view has already moved from it and {@link #awaitLeaderViewMovedFrom} returns at once, so a refusal from B is
@@ -183,10 +184,16 @@ public final class LeaderForwardContext {
    *
    * @return the id to hold on, or null when the forward had no leader to dial
    */
-  public static String holdLeaderId(final String stableLeaderId, final String leaderIdBeforeDial) {
+  public static String holdLeaderId(final String stableLeaderId, final String leaderIdBeforeDial,
+      final String leaderIdAfterDial) {
     if (stableLeaderId != null)
       return stableLeaderId;
-    return leaderIdBeforeDial == null || leaderIdBeforeDial.isBlank() ? null : leaderIdBeforeDial;
+    if (leaderIdBeforeDial != null && !leaderIdBeforeDial.isBlank())
+      return leaderIdBeforeDial;
+    // No leader was named before the dial, yet the address was resolved in between: the id read after it is the only one
+    // the forward has (issue #8925). Leadership may have moved during the resolution, so it is the best available key,
+    // not a guarantee of the node dialled; a mismatch only costs a bounded wait.
+    return leaderIdAfterDial == null || leaderIdAfterDial.isBlank() ? null : leaderIdAfterDial;
   }
 
   /**

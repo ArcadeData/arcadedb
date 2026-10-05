@@ -29,6 +29,7 @@ var SUPPORT_LOG_PRESETS = [
 ];
 
 var supportStatus = null;
+var supportTier = null; // the tier of the workspace plan as the portal reports it for the AI Assistant ('assistant', 'silver'...)
 var supportLoaded = false;
 var supportCurrentView = "ai";
 var supportPreviews = {}; // prefix -> { id, expiresAt, description }
@@ -150,6 +151,33 @@ function supportNumber(value) {
   return value == null ? "" : Number(value).toLocaleString();
 }
 
+/**
+ * The AI Assistant plan has no private support: only the AI Assistant, the news and the public GitHub issue. A UI rule, not a
+ * security boundary (the portal is the authority); a tier Studio does not know of keeps the full page.
+ */
+function supportIsAssistantOnly() {
+  return !!(supportStatus && supportStatus.registered && supportTier === "assistant");
+}
+
+/** Asks the server for the tier of the plan (it reads it from the portal and caches it), then calls {@code done}. */
+function supportLoadTier(done) {
+  jQuery
+    .ajax({
+      type: "GET",
+      url: "api/v1/ai/config",
+      beforeSend: function (xhr) {
+        xhr.setRequestHeader("Authorization", globalCredentials);
+      },
+    })
+    .done(function (data) {
+      supportTier = data && data.portal && typeof data.portal.tier === "string" ? data.portal.tier : null;
+    })
+    .fail(function () {
+      supportTier = null;
+    })
+    .always(done);
+}
+
 function supportIsEntitled() {
   return !!(supportStatus && supportStatus.registered && supportStatus.plan && supportStatus.plan.entitled);
 }
@@ -176,11 +204,7 @@ function initSupport() {
 }
 
 function refreshSupport() {
-  if (supportCurrentView === "issues") {
-    if (supportCurrentIssue) loadSupportIssue(supportCurrentIssue.number);
-    else loadSupportIssues();
-    return;
-  }
+  // The refresh next to the status reloads the status; the one in the Issues tab reloads the issues (renderSupportIssuesShell).
   loadSupport(true);
 }
 
@@ -192,9 +216,17 @@ function loadSupport(refresh) {
       supportStatus = supportParse(text) || {};
       supportLoaded = true;
       $("#supportContent").show();
-      renderSupportAll();
-      // The installation is completed at most once a day, whoever opens the tab; it only fills blank fields
-      if (supportStatus.registered && !supportStatus.portalError && supportStatus.instanceId) supportAutoSync(supportStatus.instanceId);
+      // The page depends on the tier (the AI Assistant plan has no private issues), so the tier is known before it is drawn
+      var drawn = function () {
+        renderSupportAll();
+        // The installation is completed at most once a day, whoever opens the tab; it only fills blank fields
+        if (supportStatus.registered && !supportStatus.portalError && supportStatus.instanceId) supportAutoSync(supportStatus.instanceId);
+      };
+      if (supportStatus.registered) supportLoadTier(drawn);
+      else {
+        supportTier = null;
+        drawn();
+      }
     })
     .fail(function (jqXHR) {
       supportLoaded = false;
@@ -213,33 +245,68 @@ function renderSupportAll() {
 }
 
 function showSupportView(view) {
-  // The popups are opened from the Support page: their old tabs are gone, their links now open them
+  // The popups are opened from the Issues tab: their old tabs are gone, their links now open them
   if (view === "issue" || view === "public") {
-    showSupportView("overview");
+    showSupportView("issues");
     if (view === "issue") supportOpenIssueModal();
     else supportOpenPublicModal();
     return;
   }
-  if (view === "issues") view = "overview";
+  if (view === "overview") view = "issues";
+  if (view !== "ai") view = "issues";
 
   supportCurrentView = view;
+  if (typeof studioRouteSupportView === "function") studioRouteSupportView(view);
   $("#supportNav .nav-link").removeClass("active");
   $('#supportNav .nav-link[data-support-view="' + view + '"]').addClass("active");
 
-  // The AI Assistant is the first view of this tab and needs nothing from the portal.
+  // The status of the registration is on top of both tabs: load it whichever tab opens first.
+  if (!supportLoaded) initSupport();
+
   if (view === "ai") {
-    $("#supportSection").hide();
+    $("#supportViewIssues").hide();
     $("#supportViewAi").show();
     if (typeof initAi === "function") initAi();
+    supportSyncToolbar();
+    setTimeout(supportSyncToolbar, 150);
     return;
   }
 
   $("#supportViewAi").hide();
-  $("#supportSection").show();
-  $(".support-view").show();
-  if (!supportLoaded) initSupport();
-  else if (supportStatus && supportStatus.registered && supportIssues == null && !supportCurrentIssue) loadSupportIssues();
+  $("#aiToolbar").hide();
+  $("#supportViewIssues").show();
+  if (supportLoaded && supportStatus && supportStatus.registered && supportIssues == null && !supportCurrentIssue) loadSupportIssues();
 }
+
+/**
+ * The chat fills what is left of the window below the status card and the tabs, so its prompt is always on screen (sticky at
+ * the bottom) whatever the height of the card above it (the plan details expand, the connect panel is taller, a narrow window).
+ */
+function supportFitAi() {
+  var layout = document.getElementById("aiLayout");
+  if (!layout || !$("#supportViewAi").is(":visible") || !$("#aiActivePanel").is(":visible")) return;
+  var top = layout.getBoundingClientRect().top;
+  layout.style.height = Math.max(360, Math.floor(window.innerHeight - top - 12)) + "px";
+}
+
+$(window).on("resize", supportFitAi);
+if (typeof ResizeObserver !== "undefined")
+  $(function () {
+    var section = document.getElementById("supportSection");
+    if (section) new ResizeObserver(supportFitAi).observe(section);
+  });
+
+/** The AI controls in the tab bar are shown only while the AI view is the one on screen and the assistant is active. */
+function supportSyncToolbar() {
+  $("#aiToolbar").toggle(supportCurrentView === "ai" && $("#aiActivePanel").is(":visible"));
+  supportFitAi();
+}
+
+$(function () {
+  var panel = document.getElementById("aiActivePanel");
+  if (panel && typeof MutationObserver !== "undefined")
+    new MutationObserver(supportSyncToolbar).observe(panel, { attributes: true, attributeFilter: ["style", "class"] });
+});
 
 /** What opening the Support tab does: the view that was last shown (the AI Assistant the first time). */
 function initSupportTab() {
@@ -281,7 +348,7 @@ function supportHideModal(id) {
 }
 
 function supportOpenIssueModal() {
-  if (!supportIsEntitled()) return;
+  if (!supportIsEntitled() || supportIsAssistantOnly()) return;
   renderSupportIssueForm();
   supportShowModal("supportIssueModal");
 }
@@ -352,11 +419,16 @@ function renderSupportOverview() {
 /** The registered state: one line ("Support Active") that expands to the details nobody needs after the first minute. */
 function supportStatusPanelHtml(s) {
   var plan = s.plan;
-  var kind = s.portalError ? "bad" : plan && plan.entitled ? "ok" : "warn";
+  var assistantOnly = supportIsAssistantOnly() && !s.portalError;
+  var kind = s.portalError ? "bad" : assistantOnly || (plan && plan.entitled) ? "ok" : "warn";
   var icon = { ok: "fa-circle-check", warn: "fa-triangle-exclamation", bad: "fa-plug-circle-xmark" }[kind];
   var title = { ok: "Support Active", warn: "Support not active", bad: "Cannot reach the support portal" }[kind];
+  if (assistantOnly) title = "AI Assistant plan";
   var sub = [];
-  if (kind === "ok") {
+  if (assistantOnly) {
+    if (s.workspaceName) sub.push(supportEsc(s.workspaceName));
+    sub.push("The AI Assistant is included. Private support issues need a professional support plan.");
+  } else if (kind === "ok") {
     if (plan.label) sub.push(supportEsc(plan.label) + (plan.units ? " &times; " + supportEsc(plan.units) : ""));
     if (s.workspaceName) sub.push(supportEsc(s.workspaceName));
     sub.push(plan.endsOn ? "until " + supportEsc(supportFormatDate(plan.endsOn)) : "no end date");
@@ -370,15 +442,24 @@ function supportStatusPanelHtml(s) {
     (supportDetailsOpen ? "true" : "false") +
     '" aria-controls="supportStatusDetails" title="Show the registration details">';
   html += '<span class="support-status-icon"><i class="fa ' + icon + '"></i></span>';
-  html += '<span class="support-status-text"><span class="support-status-title">' + title + '</span><span class="support-hint">' + sub.join(" &middot; ") + "</span></span>";
+  html +=
+    '<span class="support-status-text"><span class="support-status-title">' +
+    title +
+    '</span><span class="support-hint" title="' +
+    supportEsc($("<div>").html(sub.join(" \u00b7 ")).text()) +
+    '">' +
+    sub.join(" &middot; ") +
+    "</span></span>";
   html += '<span class="support-status-chevron' + (supportDetailsOpen ? " open" : "") + '"><i class="fa fa-chevron-down"></i></span>';
   html += "</button>";
   html += '<div class="support-status-actions">';
-  if (kind === "warn")
+  if (kind === "warn" || assistantOnly)
     html +=
       '<a class="btn btn-sm btn-outline-secondary" href="' +
       supportEsc(supportBuyUrl()) +
-      '" target="_blank" rel="noopener noreferrer">Get professional support</a>';
+      '" target="_blank" rel="noopener noreferrer">' +
+      (assistantOnly ? "Upgrade for private issues" : "Get professional support") +
+      "</a>";
   html += '<button type="button" class="btn btn-sm btn-outline-secondary" id="supportRefreshBtn" title="Check the plan again"><i class="fa fa-sync"></i></button>';
   html += "</div></div>";
 
@@ -919,7 +1000,7 @@ function supportSendIssue() {
       supportHideModal("supportIssueModal");
       supportIssues = null;
       globalNotify("Support", "Issue #" + r.number + " was sent to ArcadeData support", "success");
-      if (supportCurrentView === "overview") loadSupportIssues();
+      if (supportCurrentView === "issues") loadSupportIssues();
     })
     .fail(function (jqXHR) {
       supportShowError(jqXHR, "#spIssueResult");
@@ -940,6 +1021,10 @@ function renderSupportIssuesShell() {
     $("#supportViewIssues").empty();
     return;
   }
+  if (supportIsAssistantOnly()) {
+    $("#supportViewIssues").html(supportAssistantOnlyHtml());
+    return;
+  }
   var entitled = supportIsEntitled();
   var html = '<div class="support-actions">';
   html += '<h5 class="support-section-title"><i class="fa fa-life-ring"></i> Support issues</h5>';
@@ -954,10 +1039,29 @@ function renderSupportIssuesShell() {
   html += '<div id="spIssuesList"></div><div id="spIssueDetail" style="display: none;"></div>';
   $("#supportViewIssues").html(html);
   if (supportIssues != null && !supportCurrentIssue) renderSupportIssuesList();
-  else if (supportIssues == null && !supportCurrentIssue && supportCurrentView === "overview") loadSupportIssues();
+  else if (supportIssues == null && !supportCurrentIssue && supportCurrentView === "issues") loadSupportIssues();
+}
+
+/** What the AI Assistant plan shows where the issues would be: the public path and the way up. */
+function supportAssistantOnlyHtml() {
+  var html = '<div class="support-actions">';
+  html += '<h5 class="support-section-title"><i class="fa fa-life-ring"></i> Support issues</h5>';
+  html += '<div class="ms-auto d-flex gap-2 flex-wrap">';
+  html += '<button class="btn btn-outline-secondary support-open-public"><i class="fab fa-github"></i> Report a public GitHub issue</button>';
+  html += "</div></div>";
+  html += '<div class="support-empty"><i class="fa fa-lock"></i>';
+  html += "<div><b>Private support issues are not part of the AI Assistant plan</b></div>";
+  html +=
+    '<div class="support-hint">Upgrade to a professional support plan to open private issues with response times, and to follow the replies here. ' +
+    '<a href="' +
+    SUPPORT_BUY_URL +
+    '" target="_blank" rel="noopener noreferrer"><i class="fa fa-arrow-up-right-from-square"></i> See the plans</a>. ' +
+    "Until then you can report a problem in public on GitHub.</div></div>";
+  return html;
 }
 
 function loadSupportIssues() {
+  if (supportIsAssistantOnly()) return;
   supportCurrentIssue = null;
   $("#spIssueDetail").hide().empty();
   $("#spIssuesList").show().html('<div class="text-center py-3 support-hint">' + supportSpinner("Loading the issues...") + "</div>");
@@ -1042,6 +1146,7 @@ $(document).on("click keydown", "#spIssuesList .support-row-click", function (e)
 });
 
 function loadSupportIssue(number) {
+  if (supportIsAssistantOnly()) return;
   $("#spIssuesList").hide();
   $("#spIssueDetail")
     .show()
@@ -1095,7 +1200,7 @@ function renderSupportIssueDetail() {
   if (link) html += ' - <a href="' + supportEsc(link) + '" target="_blank" rel="noopener noreferrer">Open in the portal</a>';
   html += "</div>";
   if (issue.body || issue.description)
-    html += '<div class="support-timeline-entry client"><div class="support-meta">Description</div><div class="support-body">' + supportEsc(issue.body || issue.description) + "</div></div>";
+    html += '<div class="support-timeline-entry client"><div class="support-meta">Description</div><div class="support-body support-md">' + supportMarkdownHtml(issue.body || issue.description) + "</div></div>";
 
   var timeline = supportTimeline(issue);
   if (!timeline.length) html += '<div class="support-hint mb-2">No reply yet.</div>';
@@ -1114,8 +1219,8 @@ function renderSupportIssueDetail() {
       (kind ? "<span>" + supportEsc(kind) + "</span>" : "") +
       "<span>" +
       supportEsc(supportFormatDate(entry.createdOn || entry.createdAt || entry.at || entry.date)) +
-      '</span></div><div class="support-body">' +
-      supportEsc(text) +
+      '</span></div><div class="support-body support-md">' +
+      supportMarkdownHtml(text) +
       "</div>" +
       supportRequestsHtml(entry) +
       "</div>";

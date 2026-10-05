@@ -130,7 +130,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
   // supertype - so a chained MATCH that re-opens this scan per outer row was allocating one per row from
   // the moment issue #7021 made this lookup polymorphic. Same write-once-per-execution contract as the
   // fields above, and cleared with them.
-  private       Collection<TypeIndex> polymorphicIndexes;
+  private       List<TypeIndex>     polymorphicIndexes;
   /** Context variable the plan sets to TRUE for a read-only statement; the scan hash below is only ever built for one. */
   public static final String READ_ONLY_STATEMENT_KEY = "cypherReadOnlyStatement";
   /**
@@ -789,9 +789,9 @@ public class MatchNodeStep extends AbstractExecutionStep {
     List<String> bestMatchedProperties = null;
 
     for (final TypeIndex index : polymorphicIndexesOf(type)) {
-      if (!index.getType().isExactKeyLookup())
-        continue; // a FULL_TEXT index answers by token, and misses a value with none (issue #8439)
-      final List<String> indexProperties = index.getPropertyNames();
+      final List<String> indexProperties = index.getPropertyNamesIfExactKeyLookup();
+      if (indexProperties == null)
+        continue; // not a key index (a FULL_TEXT index answers by token, and misses a value with none, issue #8439) or dropped meanwhile
 
       // Check how many properties match as a leftmost prefix
       // For composite indexes, we can only use a partial key if we have values for all
@@ -849,10 +849,12 @@ public class MatchNodeStep extends AbstractExecutionStep {
    * Memoized because the answer is built rather than viewed (see {@link #polymorphicIndexes}) and this runs
    * once per input row on a chained MATCH.
    */
-  private Collection<TypeIndex> polymorphicIndexesOf(final DocumentType type) {
+  private List<TypeIndex> polymorphicIndexesOf(final DocumentType type) {
     if (polymorphicIndexes == null || indexesResolvedForType != type) {
       indexesResolvedForType = type;
-      polymorphicIndexes = type.getAllIndexes(true);
+      // A filtered snapshot, not the live view of the schema map: an index being created or dropped by a concurrent DDL has no
+      // type yet, or is invalid, and is not a candidate (issue #8918)
+      polymorphicIndexes = TypeIndex.filterReadyForQueries(type.getAllIndexes(true));
     }
     return polymorphicIndexes;
   }
@@ -891,9 +893,9 @@ public class MatchNodeStep extends AbstractExecutionStep {
     List<String> bestMatchedProperties = null;
 
     for (final TypeIndex index : polymorphicIndexesOf(type)) {
-      if (!index.getType().isExactKeyLookup())
-        continue; // a FULL_TEXT index answers by token, and misses a value with none (issue #8439)
-      final List<String> indexProperties = index.getPropertyNames();
+      final List<String> indexProperties = index.getPropertyNamesIfExactKeyLookup();
+      if (indexProperties == null)
+        continue; // not a key index (a FULL_TEXT index answers by token, and misses a value with none, issue #8439) or dropped meanwhile
       int matchCount = 0;
       final List<String> matchedProperties = new ArrayList<>();
 
@@ -1114,7 +1116,8 @@ public class MatchNodeStep extends AbstractExecutionStep {
     builder.append("+ MATCH NODE ");
     builder.append("(").append(variable);
     if (pattern.hasLabels()) {
-      builder.append(":").append(String.join("|", pattern.getLabels()));
+      // ':' between the labels of a conjunction, '|' only for a disjunction: (n:N:A) used to print as (n:N|A).
+      builder.append(":").append(String.join(pattern.isLabelDisjunction() ? "|" : ":", pattern.getLabels()));
     }
     builder.append(")");
     // The ID push-down is the single most consequential thing this step can do - it turns a full type scan (and,

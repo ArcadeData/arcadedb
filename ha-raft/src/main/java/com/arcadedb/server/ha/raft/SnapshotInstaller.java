@@ -42,9 +42,11 @@ import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.UncheckedIOException;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.nio.BufferUnderflowException;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
@@ -64,6 +66,7 @@ import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.zip.CRC32;
@@ -114,6 +117,12 @@ public final class SnapshotInstaller {
   static final String SNAPSHOT_COMPLETE_FILE = ".snapshot-complete";
   static final String SNAPSHOT_SWAP_STATE_FILE = ".snapshot-swap-state";
   static final String SNAPSHOT_SWAP_STATE_TMP_FILE = SNAPSHOT_SWAP_STATE_FILE + ".tmp";
+  /**
+   * A VALIDATION_FAILED phase record written and fsynced before the swap starts, so that a failed validating reopen
+   * can publish its verdict with a rename rather than a fresh write (issue #8942). Never read as a phase on its own:
+   * only {@link #rollbackAfterFailedValidation} publishes it, and every swap-state cleanup deletes it.
+   */
+  static final String SNAPSHOT_VALIDATION_FAILED_FILE = SNAPSHOT_SWAP_STATE_FILE + ".validation-failed";
 
   private enum SwapPhase {
     BACKING_UP, INSTALLING, INSTALLED,
@@ -322,6 +331,15 @@ public final class SnapshotInstaller {
    * refused while its files are being moved.
    */
   static volatile Runnable recoveryBarrierForTesting = null;
+
+  /**
+   * Test-only replacement for {@link #snapshotOpens}, the proof recovery asks for before it deletes the retained backup
+   * of a swap it rolls forward (issue #8950). {@code null} in production. The recovery fixtures stand in for a snapshot
+   * with placeholder files that no engine can open, so the tests about what recovery does with a snapshot that does
+   * open set it to {@code path -> true}, and the ones about a snapshot that does not set it to {@code path -> false}.
+   * Process-wide: tests that set it must not run concurrently.
+   */
+  static volatile Predicate<Path> snapshotOpensForTesting = null;
 
   /**
    * Test-only barrier invoked inside {@link #acquireNewDatabase}, right after the early
@@ -597,9 +615,22 @@ public final class SnapshotInstaller {
    * skipping the HA wrapper's replicated-close semantics: this is a local file swap, not a cluster-wide close).
    * On a swap or reopen failure the previous copy is restored and reopened so the node never stays closed; the
    * caller's {@code .snapshot-pending} marker remains the single startup-recovery hook.
+   * <p>
+   * The install is refused, with nothing moved, when the record of a failed validation cannot be prepared first. This
+   * trades availability on an almost full volume for never losing that verdict (issue #8942): do not relax it into a
+   * warning.
    */
   static void swapAndReopen(final String databaseName, final Path dbPath, final Path snapshotNew,
       final Path snapshotBackup, final Path pendingMarker, final ArcadeDBServer server) throws IOException {
+    // Prepared while nothing has moved, so a failed validation can record its verdict without free space (#8942).
+    // Outside the registry lock: the install's maintenance slot already excludes every other writer of this directory.
+    try {
+      prepareValidationFailedVerdict(dbPath);
+    } catch (final IOException e) {
+      throw new IOException("Refusing to install the snapshot for '" + databaseName + "': cannot prepare the record of "
+          + "a failed validation in " + dbPath + " (typically a full volume). The live database is untouched", e);
+    }
+
     synchronized (server.getDatabasesLock()) {
       // Close + deregister the live database now that a complete snapshot is staged on disk. The DB
       // must be closed before the file move so no open handles point at the directory being swapped.
@@ -1115,12 +1146,16 @@ public final class SnapshotInstaller {
    * Records the verdict of the failed validation before acting on it, then rolls back. Without the record, the interval
    * between the failed reopen and the published ROLLING_BACK would leave the phase at INSTALLED, which recovery reads as
    * "roll forward" and answers by deleting the backup it was about to restore (#8305). Only worth recording when there
-   * is a backup to roll back to; a failure to record is logged and the rollback is still attempted.
+   * is a backup to roll back to.
+   * <p>
+   * The record is the one {@link #prepareValidationFailedVerdict} wrote before the swap, published by a rename that
+   * needs no free space, so the verdict survives the full volume that typically makes the rollback fail too (#8942).
+   * Without a prepared record it is written afresh. A failure to record is logged and the rollback is still attempted.
    */
   static void rollbackAfterFailedValidation(final Path dbPath, final Path snapshotBackup) {
     if (Files.isDirectory(snapshotBackup)) {
       try {
-        writeSwapPhase(dbPath, SwapPhase.VALIDATION_FAILED);
+        publishValidationFailedVerdict(dbPath);
       } catch (final IOException e) {
         LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
             "Failed to record that the installed snapshot for %s does not open: %s. Attempting the rollback anyway", e, dbPath,
@@ -1128,6 +1163,56 @@ public final class SnapshotInstaller {
       }
     }
     rollbackToBackup(dbPath, snapshotBackup);
+  }
+
+  /**
+   * Writes a VALIDATION_FAILED phase record durably under a name recovery never reads as a phase, ready for
+   * {@link #publishValidationFailedVerdict} to rename over {@code .snapshot-swap-state} (issue #8942).
+   */
+  static void prepareValidationFailedVerdict(final Path dbPath) throws IOException {
+    final Path prepared = dbPath.resolve(SNAPSHOT_VALIDATION_FAILED_FILE);
+    try {
+      writeFileForced(prepared, SwapPhase.VALIDATION_FAILED.name());
+    } catch (final IOException e) {
+      // A full volume can create the file and fail the write: leave the directory as the refused install found it.
+      try {
+        Files.deleteIfExists(prepared);
+      } catch (final IOException cleanup) {
+        e.addSuppressed(cleanup);
+      }
+      throw e;
+    }
+    fsyncDirectory(dbPath);
+  }
+
+  /**
+   * Publishes VALIDATION_FAILED from the prepared record when there is one, by a fresh phase write otherwise. A record
+   * left behind by an earlier install that failed its swap is never published stale: {@link #swapAndReopen} rewrites
+   * it before every swap, and that is the only path that reaches here after a swap.
+   */
+  private static void publishValidationFailedVerdict(final Path dbPath) throws IOException {
+    final Path prepared = dbPath.resolve(SNAPSHOT_VALIDATION_FAILED_FILE);
+    if (!Files.isRegularFile(prepared)) {
+      writeSwapPhase(dbPath, SwapPhase.VALIDATION_FAILED);
+      return;
+    }
+    // A rename onto an existing entry of the same directory typically allocates no data block, unlike the write it
+    // replaces (a copy-on-write filesystem on an exhausted pool may still refuse it: #8950).
+    try {
+      Files.move(prepared, dbPath.resolve(SNAPSHOT_SWAP_STATE_FILE), StandardCopyOption.ATOMIC_MOVE,
+          StandardCopyOption.REPLACE_EXISTING);
+    } catch (final IOException renameFailure) {
+      // Never weaker than the fresh write this replaced: the rename may have failed for a reason the write survives.
+      try {
+        writeSwapPhase(dbPath, SwapPhase.VALIDATION_FAILED);
+        return;
+      } catch (final IOException writeFailure) {
+        writeFailure.addSuppressed(renameFailure);
+        throw writeFailure;
+      }
+    }
+    fsyncDirectory(dbPath);
+    snapshotSwapProgress(SwapPhase.VALIDATION_FAILED.name());
   }
 
   /**
@@ -1544,6 +1629,8 @@ public final class SnapshotInstaller {
         }
         default -> throw new IOException("Unhandled snapshot swap phase " + phase + " in " + dbDir);
         }
+        if (phase == SwapPhase.BACKING_UP || phase == SwapPhase.INSTALLING || phase == SwapPhase.INSTALLED)
+          rollBackUnlessSnapshotOpens(dbDir, snapshotNew, snapshotBackup);
         requireRecoveredDatabase(dbDir);
         completeSwapRecovery(dbDir);
         return;
@@ -1558,6 +1645,7 @@ public final class SnapshotInstaller {
         if (!hasStagedSnapshotFiles(snapshotNew)) {
           LogManager.instance().log(SnapshotInstaller.class, Level.INFO,
               "Cleaning up completed legacy snapshot swap for: %s", null, dbDir);
+          rollBackUnlessSnapshotOpens(dbDir, snapshotNew, snapshotBackup);
           requireRecoveredDatabase(dbDir);
           completeSwapRecovery(dbDir);
           return;
@@ -1573,6 +1661,7 @@ public final class SnapshotInstaller {
                 null, dbDir);
             writeSwapPhase(dbDir, SwapPhase.INSTALLING);
             atomicSwap(dbDir, snapshotNew, snapshotBackup);
+            rollBackUnlessSnapshotOpens(dbDir, snapshotNew, snapshotBackup);
           } else {
             // Disjoint names: almost surely a phase-1 crash, so the backup restored over the live directory is the
             // original database. A phase-2 crash that moved only snapshot-only names lands here too; the snapshot
@@ -1600,6 +1689,7 @@ public final class SnapshotInstaller {
         LogManager.instance().log(SnapshotInstaller.class, Level.INFO,
             "Completing interrupted snapshot swap for: %s", null, dbDir);
         atomicSwap(dbDir, snapshotNew, snapshotBackup);
+        rollBackUnlessSnapshotOpens(dbDir, snapshotNew, snapshotBackup);
         requireRecoveredDatabase(dbDir);
         completeSwapRecovery(dbDir);
         return;
@@ -1660,6 +1750,81 @@ public final class SnapshotInstaller {
     }
   }
 
+  /**
+   * Called on every path that rolls a swap FORWARD, just before {@link #completeSwapRecovery} deletes the retained backup
+   * (issue #8950). Rolling forward only proved that a schema file is present, so a snapshot that does not open - a crash
+   * during the validating reopen, a rollback that never published its phase, a verdict whose rename failed - was kept
+   * and the only copy that opens was deleted. The snapshot is opened once here, without a server; if it does not open
+   * and the backup is there, the verdict is the one a failed validating reopen records, and the backup is restored.
+   * With no backup there is nothing to fall back to, and the snapshot is kept as before.
+   */
+  private static void rollBackUnlessSnapshotOpens(final Path dbDir, final Path snapshotNew, final Path snapshotBackup)
+      throws IOException {
+    if (!Files.isDirectory(snapshotBackup) || snapshotOpens(dbDir))
+      return;
+
+    LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
+        "The snapshot rolled forward in %s does not open: restoring the retained backup instead of deleting it", null, dbDir);
+    writeSwapPhase(dbDir, SwapPhase.ROLLING_BACK);
+    resumeRollback(dbDir, snapshotBackup);
+    deleteDirectoryIfExists(snapshotNew);
+  }
+
+  /**
+   * Opens the database in {@code dbDir} and closes it again, the way the server's own reopen would: a read-only open
+   * does not register every component file, so it accepts a snapshot the server then refuses.
+   * <p>
+   * The open is a real one, with its side effects: it replays the WAL and may rebuild indexes, exactly what the
+   * server's own reopen would do next.
+   * <p>
+   * The answer is only trusted when it is certain. A directory that another instance of this JVM already holds open
+   * proves nothing, so it is accepted, and a failure that points at the environment rather than at the files (an I/O
+   * error, a lock held elsewhere) is refused as inconclusive with an {@link IOException}: recovery then keeps the marker
+   * and BOTH copies for the next attempt instead of deleting either on a guess.
+   */
+  private static boolean snapshotOpens(final Path dbDir) throws IOException {
+    final Predicate<Path> override = snapshotOpensForTesting;
+    if (override != null) {
+      try {
+        return override.test(dbDir);
+      } catch (final UncheckedIOException e) {
+        throw new IOException(e.getMessage(), e);
+      }
+    }
+
+    final Path normalized = dbDir.toAbsolutePath().normalize();
+    for (final Database active : DatabaseFactory.getActiveDatabaseInstances())
+      if (Path.of(((DatabaseInternal) active).getDatabasePath()).toAbsolutePath().normalize().equals(normalized)) {
+        LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
+            "The snapshot in %s is held open by this JVM, so it cannot be proven to open here: accepting it", null, dbDir);
+        return true;
+      }
+
+    LogManager.instance().log(SnapshotInstaller.class, Level.INFO,
+        "Opening the rolled-forward snapshot in %s to prove it before the retained backup is deleted (can take long on a large database)",
+        null, dbDir);
+    final long start = System.currentTimeMillis();
+    try (final DatabaseFactory factory = new DatabaseFactory(dbDir.toString())) {
+      factory.open().close();
+      LogManager.instance().log(SnapshotInstaller.class, Level.INFO, "The snapshot in %s opened in %dms", null, dbDir,
+          System.currentTimeMillis() - start);
+      return true;
+    } catch (final Exception e) {
+      // Only a failure that says the FILES are unusable proves the snapshot does not open: a component that cannot be
+      // registered, a malformed structure. Anything else (an I/O error, a lock, a missing plugin, a limit of this bare
+      // open) may be a limit of the proof rather than of the snapshot, and costs nothing to retry with both copies kept.
+      for (Throwable cause = e; cause != null; cause = cause.getCause())
+        if (cause instanceof IllegalArgumentException
+            || cause instanceof IndexOutOfBoundsException || cause instanceof BufferUnderflowException) {
+          LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE, "The snapshot in %s failed to open: %s", e, dbDir,
+              e.getMessage());
+          return false;
+        }
+      throw new IOException("Cannot tell whether the snapshot in " + dbDir + " opens (" + e.getMessage()
+          + "); retaining the pending marker and both copies", e);
+    }
+  }
+
   private static void requireRecoveredDatabase(final Path dbDir) throws IOException {
     if (!looksLikeADatabaseDirectory(dbDir))
       throw new IOException("Recovered snapshot has no loadable schema in " + dbDir
@@ -1678,6 +1843,7 @@ public final class SnapshotInstaller {
   private static void deleteSwapState(final Path dbDir) throws IOException {
     Files.deleteIfExists(dbDir.resolve(SNAPSHOT_SWAP_STATE_FILE));
     Files.deleteIfExists(dbDir.resolve(SNAPSHOT_SWAP_STATE_TMP_FILE));
+    Files.deleteIfExists(dbDir.resolve(SNAPSHOT_VALIDATION_FAILED_FILE));
     fsyncDirectory(dbDir);
   }
 

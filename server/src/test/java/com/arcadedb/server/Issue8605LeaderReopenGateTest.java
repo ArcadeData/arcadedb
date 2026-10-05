@@ -88,7 +88,8 @@ class Issue8605LeaderReopenGateTest {
     assertThatThrownBy(() -> server.getDatabase(MARKED))
         .isInstanceOf(DatabaseNotAvailableException.class)
         .hasMessageContaining("did not confirm")
-        .hasMessageContaining(ArcadeDBServer.UNVERIFIED_CLOSED_COPY_FILE)
+        // the way out is the audited override of issue #8641, not deleting the marker by hand
+        .hasMessageContaining("POST /api/v1/cluster/accept-copy/" + MARKED)
         // the reason names peers and failed-call text: it goes to the log and the cluster alert, not to the client
         .hasMessageNotContaining("peer-1");
     assertThat(server.existsDatabase(MARKED)).as("the copy is not registered").isFalse();

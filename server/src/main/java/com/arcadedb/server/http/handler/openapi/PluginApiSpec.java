@@ -68,7 +68,7 @@ public class PluginApiSpec implements OpenApiContributor {
       "/api/v1/cluster", "/api/v1/cluster/peer", "/api/v1/cluster/peer/{peerId}",
       "/api/v1/cluster/leader", "/api/v1/cluster/stepdown", "/api/v1/cluster/leave",
       "/api/v1/cluster/verify/{database}", "/api/v1/cluster/resync/{database}",
-      "/api/v1/cluster/bootstrap-state", "/api/v1/cluster/capabilities",
+      "/api/v1/cluster/accept-copy/{database}", "/api/v1/cluster/bootstrap-state", "/api/v1/cluster/capabilities",
       "/api/v1/cluster/security-seed",
       "/api/v1/ha/snapshot/{database}", "/api/v1/ha/snapshot/{database}/checksums");
 
@@ -95,6 +95,7 @@ public class PluginApiSpec implements OpenApiContributor {
     openAPI.getPaths().addPathItem("/api/v1/cluster/leave", createLeavePath());
     openAPI.getPaths().addPathItem("/api/v1/cluster/verify/{database}", createVerifyPath());
     openAPI.getPaths().addPathItem("/api/v1/cluster/resync/{database}", createResyncPath());
+    openAPI.getPaths().addPathItem("/api/v1/cluster/accept-copy/{database}", createAcceptCopyPath());
     openAPI.getPaths().addPathItem("/api/v1/cluster/bootstrap-state", createBootstrapStatePath());
     openAPI.getPaths().addPathItem("/api/v1/cluster/capabilities", createCapabilitiesPath());
     openAPI.getPaths().addPathItem("/api/v1/cluster/security-seed", createSecuritySeedPath());
@@ -311,6 +312,29 @@ public class PluginApiSpec implements OpenApiContributor {
     post.setResponses(SpecBuilders.standardResponses("200",
         SpecBuilders.jsonResponse("Database resynced", "ClusterActionResponse"),
         "400", "401", "403", "409", "500", "503"));
+
+    final PathItem pathItem = new PathItem();
+    pathItem.setPost(post);
+    return pathItem;
+  }
+
+  private PathItem createAcceptCopyPath() {
+    final Operation post = SpecBuilders.operation("acceptClusterDatabaseCopy", "Cluster",
+        "Accept the leader's unverified copy of a database",
+        """
+            Accepts this leader's closed copy of one database, which the last resync could not verify, as \
+            the cluster's copy without the other servers' confirmation. Before reopening such a copy the \
+            leader asks every peer about its own, and refuses while any peer is unanswered or holds a copy \
+            that cannot be ordered (the critical unverified-closed-copy-refused alert); a peer that can \
+            never answer again keeps the database closed on every node. This override removes the copy's \
+            marker and logs who accepted it, at which applied index, over which refusal. The copy is not \
+            reopened by this call: the next request that names the database reopens it, and every follower \
+            then installs it. Root only. Answers 400 on a follower, and 404 when this server holds no \
+            closed copy of the database marked unverified. The body is ignored. """ + RAFT_REQUIRED);
+    post.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
+    post.setResponses(SpecBuilders.standardResponses("200",
+        SpecBuilders.jsonResponse("Copy accepted", "ClusterActionResponse"),
+        "400", "401", "403", "404", "500"));
 
     final PathItem pathItem = new PathItem();
     pathItem.setPost(post);
@@ -534,6 +558,16 @@ public class PluginApiSpec implements OpenApiContributor {
         never asked because its address identifies no single peer, and the two have nothing alike as remedies \
         (issue #7256). Written by any node since issue #7549; absent while the answering node has not finished \
         its first probe round."""));
+    final Schema<String> unknownKind = SpecBuilders.string("""
+        What kind of unknown 'capabilitiesUnknownReason' describes, present exactly when it is (issue #8655): \
+        ROUTE_MISSING (the peer answered HTTP 404 on the capability route, so its build predates it - every node's \
+        probe gets that answer, the leader's included), UNREACHABLE (the answering node got no usable answer - a \
+        transport failure, a timeout, another status, or an answer naming another peer - which says nothing about \
+        what another node's probe gets), ADDRESS_REFUSED (the answering node has no address it may dial for this \
+        peer) or STALE (the last answer aged out with no failed probe behind it). Lets a client on a follower gate \
+        on ROUTE_MISSING without matching the reason's text.""");
+    unknownKind.setEnum(List.of("ROUTE_MISSING", "UNREACHABLE", "ADDRESS_REFUSED", "STALE"));
+    peer.addProperty("capabilitiesUnknownKind", unknownKind);
     // Only these three are written for every peer; every other member above is conditional on a health sample,
     // on a resolvable endpoint, or on this node being the leader (issue #7578).
     peer.setRequired(List.of("id", "address", "role"));
@@ -560,6 +594,10 @@ public class PluginApiSpec implements OpenApiContributor {
     schema.addProperty("capabilities", SpecBuilders.arrayOf(SpecBuilders.string("Capability token"),
         "Optional wire-format sections THIS node can decode, sorted (issue #7219)"));
     schema.addProperty("raftState", SpecBuilders.string("Raft lifecycle state"));
+    schema.addProperty("leaderContactElapsedMs", SpecBuilders.integer(
+        "Milliseconds since this follower's Raft division last heard from its leader (an append or a heartbeat). "
+            + "'raftState' can read RUNNING while the leader's appends never reach this division; this figure then "
+            + "keeps growing. -1 on the leader, with no leader known, or when the division cannot be read"));
     schema.addProperty("isLeader", SpecBuilders.bool("True when this server is the leader"));
     schema.addProperty("leaderReady", SpecBuilders.bool(
         "True when the leader has finished the work that makes it safe to serve writes"));
@@ -645,7 +683,7 @@ public class PluginApiSpec implements OpenApiContributor {
     // every answer, with 'leaderId', 'leaderHttpAddress', 'criticalHalt' and 'raftLogFailure' carrying an
     // explicit null rather than going absent (issues #7578, #7872).
     schema.setRequired(List.of("implementation", "clusterName", "localPeerId", "capabilities", "raftState",
-        "isLeader", "leaderReady", "leaderId", "leaderHttpAddress", "electionCount", "lastElectionTime",
+        "leaderContactElapsedMs", "isLeader", "leaderReady", "leaderId", "leaderHttpAddress", "electionCount", "lastElectionTime",
         "uptime", "localAppliedIndex", "localCommitIndex", "localReplicationLag", "localStuckAtStaleTerm",
         "leaderCommitIndex", "localStalledBehindLeader", "peers",
         "databases", "localResync", "criticalHalt", "raftLogFailure", "crashLoopEscalated", "bootstrapInstalls",
@@ -899,10 +937,14 @@ public class PluginApiSpec implements OpenApiContributor {
     schema.addProperty("leaderId", SpecBuilders.string(
         "Leader after the action. Present on leadership transfer."));
     schema.addProperty("database", SpecBuilders.string(
-        "Database the action applied to. Present on resync."));
+        "Database the action applied to. Present on resync and accept-copy."));
     schema.addProperty("localServer", SpecBuilders.string(
-        "Server that performed the action. Present on resync."));
-    // 'result' is the one member every one of these routes writes; the other three say in their own
+        "Server that performed the action. Present on resync and accept-copy."));
+    schema.addProperty("appliedIndex", SpecBuilders.integer(
+        "Last Raft index applied to the accepted copy, or -1 when none is recorded. Present on accept-copy."));
+    schema.addProperty("overriddenRefusal", SpecBuilders.string(
+        "Why the leader had refused to reopen the copy, when a refusal was standing. Present on accept-copy."));
+    // 'result' is the one member every one of these routes writes; the others say in their own
     // descriptions which action produces them (issue #7578).
     schema.setRequired(List.of("result"));
     return schema;
@@ -1052,6 +1094,14 @@ public class PluginApiSpec implements OpenApiContributor {
             + "without anything being submitted - that is what the fingerprint comparison is for, and it "
             + "answers upToDate before any seeder is asked."));
     schema.addProperty("fingerprints", createSecuritySeedFingerprintsSchema());
+    schema.addProperty("admittedPeerId", SpecBuilders.string(
+        "The Raft id of the peer an admission request reports on, sent together with declaredHttpAddress when the "
+            + "admission declared that peer's HTTP port (issue #8689). Ignored on a catch-up."));
+    schema.addProperty("declaredHttpAddress", SpecBuilders.string(
+        "The host:port the admission declared for the admitted peer's HTTP listener. The leader records it for a "
+            + "peer of its committed configuration - never over an address its own server list declared - and then "
+            + "answers with a seed that started after the record, so the capability probe the seed waits on dials "
+            + "the declared listener rather than a derived one. Must be sent together with admittedPeerId."));
     return schema;
   }
 

@@ -23,6 +23,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.index.IndexException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.schema.DocumentType;
@@ -118,25 +119,24 @@ public class StatisticsProvider {
     // child type whose only index lives on its parent (issue #7021). NodeIndexSeek resolves the index it is
     // handed polymorphically and filters the cursor by the queried label, exactly as SQL's
     // FETCH FROM INDEX / FILTER ITEMS BY TYPE plan does.
-    final Collection<TypeIndex> indexes = type.getAllIndexes(true);
-    for (final TypeIndex index : indexes) {
+    for (final TypeIndex index : TypeIndex.filterReadyForQueries(type.getAllIndexes(true))) {
       // Only a key index can anchor a seek or a range scan: a FULL_TEXT, vector or geospatial index handed an
       // equality answers by token or similarity, and misses what it cannot tokenize (issue #8439)
-      if (!index.getType().isExactKeyLookup())
+      final List<String> propertyNames = index.getPropertyNamesIfExactKeyLookup();
+      if (propertyNames == null)
         continue;
-      final List<String> propertyNames = index.getPropertyNames();
-      final boolean isUnique = index.isUnique();
-      final String indexName = index.getName();
-
-      final IndexStatistics indexStats = new IndexStatistics(
-          typeName,
-          propertyNames,
-          isUnique,
-          indexName,
-          index.getMetadata() != null && index.getMetadata().hasAnyCaseInsensitive(),
-          index.supportsOrderedIterations()
-      );
-      indexStatsList.add(indexStats);
+      try {
+        indexStatsList.add(new IndexStatistics(
+            typeName,
+            propertyNames,
+            index.isUnique(),
+            index.getName(),
+            index.getMetadata() != null && index.getMetadata().hasAnyCaseInsensitive(),
+            index.supportsOrderedIterations()
+        ));
+      } catch (final IndexException e) {
+        // dropped or rebuilt by a concurrent DDL while being read: not a candidate (issue #8918)
+      }
     }
 
     indexStatsCache.put(typeName, indexStatsList);

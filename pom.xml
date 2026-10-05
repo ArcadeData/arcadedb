@@ -93,7 +93,7 @@
         <maven-enforcer-plugin.version>3.6.3</maven-enforcer-plugin.version>
 
         <testcontainers.version>2.0.5</testcontainers.version>
-        <logback-classic.version>1.6.3</logback-classic.version>
+        <logback-classic.version>1.6.5</logback-classic.version>
         <micrometer.version>1.17.1</micrometer.version>
         <micrometer-tracing.version>1.7.1</micrometer-tracing.version>
         <opentelemetry.version>1.66.0</opentelemetry.version>
@@ -126,11 +126,11 @@
         <gremlin.version>3.8.2</gremlin.version>
 
 
-        <protobuf-maven-plugin.version>5.1.10</protobuf-maven-plugin.version>
+        <protobuf-maven-plugin.version>5.1.11</protobuf-maven-plugin.version>
         <grpc.version>1.84.0</grpc.version>
         <protoc.version>4.33.0</protoc.version>
         <protobuf-java.version>4.36.2</protobuf-java.version>
-        <com.google.api.grpc.version>2.77.0</com.google.api.grpc.version>
+        <com.google.api.grpc.version>2.78.0</com.google.api.grpc.version>
         <javax.annotation-api.version>1.3.2</javax.annotation-api.version>
 
         <maven-enforcer-plugin.version>3.6.3</maven-enforcer-plugin.version>

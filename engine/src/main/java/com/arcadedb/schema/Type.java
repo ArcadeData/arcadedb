@@ -30,12 +30,14 @@ import com.arcadedb.database.RID;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.MultiIterator;
 
+import java.lang.reflect.Array;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.text.ParsePosition;
@@ -120,8 +122,13 @@ public enum Type {
    * a constant here will not widen what the engine accepts.
    */
   public static final  String              DATE_FORMAT_DAYS    = "yyyy-MM-dd";
+
   public static final  String              DATE_FORMAT_SECONDS = "yyyy-MM-dd HH:mm:ss";
   public static final  String              DATE_FORMAT_MILLIS  = "yyyy-MM-dd HH:mm:ss.SSS";
+  private static final BigDecimal LONG_MAX_DECIMAL = BigDecimal.valueOf(Long.MAX_VALUE);
+  private static final BigDecimal LONG_MIN_DECIMAL = BigDecimal.valueOf(Long.MIN_VALUE);
+  private static final BigInteger LONG_MAX_INTEGER = BigInteger.valueOf(Long.MAX_VALUE);
+  private static final BigInteger LONG_MIN_INTEGER = BigInteger.valueOf(Long.MIN_VALUE);
   // Don't change the order, the type discover get broken if you change the order.
   private static final Type[]              TYPES               = new Type[] { LIST, MAP, LINK, STRING, DATETIME };
   private static final Type[]              TYPES_BY_ID         = new Type[24];
@@ -140,6 +147,11 @@ public enum Type {
    * double. See {@link #isExactAsDouble}.
    */
   private static final long                EXACT_INTEGRAL_DOUBLE = 1L << 53;
+  /**
+   * Significant digits a double carries: a decimal with no more than this is the double it narrows to, one with more
+   * says something no double can (issue #8872, the same bound the SQL parser applies to a suffix-less literal).
+   */
+  private static final int                 MAX_DOUBLE_DIGITS     = 17;
 
   static {
     for (final Type type : values()) {
@@ -351,8 +363,9 @@ public enum Type {
    * of its branches, which issue #8090 turned into a refusal - this restores it as a stated contract rather than as
    * a side effect of where the branches happened to stop.
    * <p>
-   * Two shapes of giving up are kept, not one. The date that motivates the policy arrives as a REFUSAL, and only a
-   * date's refusal is kept - anything else propagates. But {@code convert()} can also give up SILENTLY, through its
+   * Three shapes of giving up are kept, not one. The date that motivates the policy arrives as a REFUSAL, and so does
+   * a value the declared type cannot take (an {@code InconvertibleValueException}: a list for an INTEGER, an empty
+   * string, a number out of range) - those two are kept, anything else propagates. But {@code convert()} can also give up SILENTLY, through its
    * own blanket handler, and that answers {@code null} for any target: a {@code List} handed to an {@code Integer}
    * column, say. The original is kept there too, for the same reason and with no date about it - the contract is
    * "never answers {@code null} for a non-null input", which is what {@code convertOrKeepNeverAnswersNullForANonNullValue}
@@ -367,6 +380,10 @@ public enum Type {
       // is what this method promises; letting that null through would discard a value that arrived intact by a route
       // this method cannot see.
       return converted == null && value != null ? value : converted;
+    } catch (final InconvertibleValueException e) {
+      // a value the declared type cannot take, read by a caller that has no schema to blame: keep what arrived
+      LogManager.instance().log(Type.class, Level.FINE, "Error in conversion of value '%s' to type '%s'", e, value, targetClass);
+      return value;
     } catch (final IllegalArgumentException e) {
       // Only a DATE/TIME parse failure is kept. That is the one this method exists for: the client has no schema in
       // scope, so a value the server formatted with a pattern it cannot see is unreadable HERE rather than wrong.
@@ -396,7 +413,8 @@ public enum Type {
    * since {@code build()} rethrows, would also fail an ordinary {@code INSERT} that used to index a null key and
    * continue - a regression {@code convert()} becoming strict in issue #8090 would otherwise have caused.
    * <p>
-   * Every OTHER refusal still fails the build, exactly as it did before that change: a non-numeric string reaching a
+   * Every OTHER refusal still fails the build, exactly as it did before that change (this method passes no property, so
+   * the refusals reserved for a declared property never reach it): a non-numeric string reaching a
    * {@code LONG} key raised {@link NumberFormatException} through {@code convert()} then and still does. Using
    * {@code convertOrNull()} here instead would swallow those too, silently indexing a genuinely mismatched value
    * under a null key - a widening that has nothing to do with the date parsing this rule exists for.
@@ -411,6 +429,39 @@ public enum Type {
       LogManager.instance().log(Type.class, Level.FINE, "Error in conversion of value '%s' to type '%s'", e, value, targetClass);
       return null;
     }
+  }
+
+  /**
+   * The text of a floating point or decimal number as an index key over a STRING key type of a property that is not declared,
+   * which is what a Cypher index on a property that no record had yet falls back to (a declared STRING property keeps the
+   * text it holds). One number has to be one key whatever type it was written with: 3 and 3.0 and
+   * 3.00 are equal for Cypher, and the default spellings ("3", "3.0", "3.00") would put them under three keys, so an equality
+   * lookup, a MERGE or a unique constraint on one would miss the others (issue #8993). The shortest decimal of a float or double
+   * (widenFloat for a float, so 0.1f reads as 0.1), without trailing zeros and without an exponent, is the spelling of the integer
+   * types too. NaN and the infinities have no decimal form and keep their own text.
+   */
+  public static String canonicalNumberKey(final Object number) {
+    final BigDecimal decimal;
+    if (number instanceof BigDecimal bigDecimal)
+      decimal = bigDecimal;
+    else {
+      final double d;
+      if (number instanceof Float f)
+        d = widenFloat(f);
+      else if (number instanceof Double dbl)
+        d = dbl;
+      else
+        throw new IllegalArgumentException("Not a floating point or decimal number: " + number);
+      if (Double.isNaN(d) || Double.isInfinite(d))
+        return Double.toString(d);
+      decimal = BigDecimal.valueOf(d);
+    }
+    if (decimal.signum() == 0)
+      return "0";
+    // a plain spelling of an extreme exponent is as long as the exponent: such a number keeps its scientific text
+    if (Math.abs((long) decimal.precision() - decimal.scale()) > 400)
+      return decimal.stripTrailingZeros().toString();
+    return decimal.stripTrailingZeros().toPlainString();
   }
 
   /**
@@ -467,30 +518,69 @@ public enum Type {
       // The "ofType" refers to an embedded document type, not a scalar: nothing to coerce here.
       return null;
 
-    final Class<?> ofClass = ofType.getDefaultJavaType();
+    // getJavaImplementation, not the default: a LIST OF DATE / DATETIME holds what the database materialises those as (#9111)
+    final Class<?> ofClass = ofType.getJavaImplementation(database);
 
     if (value instanceof Map<?, ?> sourceMap && Map.class.isAssignableFrom(targetClass)) {
       final Map<Object, Object> result = new LinkedHashMap<>(sourceMap.size());
       for (final Map.Entry<?, ?> entry : sourceMap.entrySet())
-        result.put(entry.getKey(), coerceScalarItem(database, entry.getValue(), ofClass));
+        result.put(entry.getKey(), coerceScalarItem(database, entry.getValue(), ofClass, ofType, property));
       return result;
     } else if (value instanceof Collection<?> sourceCollection && List.class.isAssignableFrom(targetClass)) {
       final List<Object> result = new ArrayList<>(sourceCollection.size());
       for (final Object item : sourceCollection)
-        result.add(coerceScalarItem(database, item, ofClass));
+        result.add(coerceScalarItem(database, item, ofClass, ofType, property));
+      return result;
+    } else if (List.class.isAssignableFrom(targetClass) && isPrimitiveNumberArray(value)) {
+      // a primitive array (long[], int[]...) is the same list of numbers, converted element by element
+      final List<Object> items = primitiveArrayToList(value);
+      final List<Object> result = new ArrayList<>(items.size());
+      for (final Object item : items)
+        result.add(coerceScalarItem(database, item, ofClass, ofType, property));
+      return result;
+    } else if (List.class.isAssignableFrom(targetClass) && isPlainScalar(value, ofType)) {
+      // a scalar written to a LIST OF <type> is wrapped as one element, converted like the elements of a list are (#9028)
+      final List<Object> result = new ArrayList<>(1);
+      result.add(coerceScalarItem(database, value, ofClass, ofType, property));
       return result;
     }
 
     return null;
   }
 
-  private static Object coerceScalarItem(final Database database, final Object item, final Class<?> ofClass) {
+  private static boolean isPlainScalar(final Object item, final Type ofType) {
+    return item instanceof Number || item instanceof Boolean || item instanceof CharSequence || item instanceof Character
+        || (ofType.isDateOrDateTime() && isDateValue(item));
+  }
+
+  /**
+   * @return true for the values a DATE or DATETIME property accepts as a date: {@link Date}, {@link Calendar} and the
+   * {@code java.time} instant/date types (#9111)
+   */
+  public static boolean isDateValue(final Object value) {
+    return value instanceof Date || value instanceof Calendar || value instanceof LocalDate || value instanceof LocalDateTime
+        || value instanceof ZonedDateTime || value instanceof OffsetDateTime || value instanceof Instant;
+  }
+
+  /**
+   * @return true for DATE and every DATETIME precision
+   */
+  public boolean isDateOrDateTime() {
+    return this == DATE || this == DATETIME || this == DATETIME_SECOND || this == DATETIME_MICROS || this == DATETIME_NANOS;
+  }
+
+  private static Object coerceScalarItem(final Database database, final Object item, final Class<?> ofClass,
+      final Type ofType, final Property property) {
     if (item == null)
       return null;
 
     // Only coerce plain scalar values; leave nested documents/collections/links to the validation layer.
-    if (item instanceof Number || item instanceof Boolean || item instanceof CharSequence || item instanceof Character)
-      return convert(database, item, ofClass, null);
+    // a date value is only coerced towards a date type: in a LIST OF STRING / INTEGER it stays what it is, for the
+    // validator to refuse (#9111)
+    if (isPlainScalar(item, ofType))
+      // the declared property is carried so a number out of the element range is refused instead of clamped; a date
+      // conversion expects a date property, not the collection one
+      return convert(database, item, ofClass, ofType.isDateOrDateTime() ? null : property);
 
     return item;
   }
@@ -534,11 +624,20 @@ public enum Type {
     }
 
     try {
-      if (targetClass.equals(String.class))
+      if (targetClass.equals(String.class)) {
+        // An array's toString() is its class code and identity hash ("[B@72e34f77"): not the content, not stable, and
+        // not reversible. Refuse it rather than store that (issue #9041).
+        if (property != null && valueClass.isArray())
+          throw inconvertible(value, "STRING", property);
         return value.toString();
+      }
       else if (value instanceof Binary binary && targetClass.isAssignableFrom(byte[].class))
         return binary.toByteArray();
       else if (byte[].class.isAssignableFrom(valueClass)) {
+        // with a declared property the value must be one it can hold: a byte[] left in an INTEGER or BOOLEAN property
+        // would reach the serializer as is. Without a property this stays the plain pass-through.
+        if (property != null && !targetClass.isAssignableFrom(byte[].class))
+          throw inconvertible(value, targetClass.getSimpleName(), property);
         return value;
       } else if (value instanceof JSONArray jsonArray) {
         // JSONArray is an Iterable but not a java.util.Collection, so without this branch it would fall through to
@@ -663,47 +762,41 @@ public enum Type {
         else if (value instanceof String string)
           return Byte.parseByte(string);
         else
-          return narrowToIntegral((Number) value, Byte.MIN_VALUE, Byte.MAX_VALUE, "BYTE", property).byteValue();
+          return narrowToIntegral(asNumber(value, "BYTE", property), Byte.MIN_VALUE, Byte.MAX_VALUE, "BYTE", property).byteValue();
 
       } else if (targetClass.equals(Short.TYPE) || targetClass.equals(Short.class)) {
         if (value instanceof Short)
           return value;
         else if (value instanceof String string)
-          return string.isEmpty() ? 0 : Short.parseShort(string);
+          return string.isEmpty() ? emptyNumericString((short) 0, "SHORT", property) : Short.parseShort(string);
         else
-          return narrowToIntegral((Number) value, Short.MIN_VALUE, Short.MAX_VALUE, "SHORT", property).shortValue();
+          return narrowToIntegral(asNumber(value, "SHORT", property), Short.MIN_VALUE, Short.MAX_VALUE, "SHORT", property).shortValue();
 
       } else if (targetClass.equals(Integer.TYPE) || targetClass.equals(Integer.class)) {
         if (value instanceof Integer)
           return value;
         else if (value instanceof String string)
-          return string.isEmpty() ? 0 : Integer.parseInt(string);
+          return string.isEmpty() ? emptyNumericString(0, "INTEGER", property) : Integer.parseInt(string);
         else
-          return narrowToIntegral((Number) value, Integer.MIN_VALUE, Integer.MAX_VALUE, "INTEGER", property).intValue();
+          return narrowToIntegral(asNumber(value, "INTEGER", property), Integer.MIN_VALUE, Integer.MAX_VALUE, "INTEGER", property).intValue();
 
       } else if (targetClass.equals(Long.TYPE) || targetClass.equals(Long.class)) {
         if (value instanceof Long)
           return value;
         else if (value instanceof String string)
-          return string.isEmpty() ? 0L : Long.parseLong(string);
+          return string.isEmpty() ? emptyNumericString(0L, "LONG", property) : Long.parseLong(string);
         else if (DateUtils.isDate(value))
           return DateUtils.dateTimeToTimestamp(value, ChronoUnit.MILLIS);
-        else if (isNaN((Number) value))
-          // LONG never goes through narrowToIntegral() - there is no narrower range to check, it IS the widest
-          // integral type - so it needs its own NaN guard (issue #5970).
-          throw new IllegalArgumentException(
-              "Value '" + value + "' is NaN and cannot be converted to type LONG" //
-                  + (property != null ? " for property '" + property.getName() + "'" : ""));
         else
-          return ((Number) value).longValue();
+          return narrowToLong(asNumber(value, "LONG", property), property);
 
       } else if (targetClass.equals(Float.TYPE) || targetClass.equals(Float.class)) {
         if (value instanceof Float)
           return value;
         else if (value instanceof String string)
-          return string.isEmpty() ? 0f : Float.parseFloat(string);
+          return string.isEmpty() ? emptyNumericString(0f, "FLOAT", property) : Float.parseFloat(string);
         else
-          return ((Number) value).floatValue();
+          return narrowToFloat(asNumber(value, "FLOAT", property), property);
 
       } else if (targetClass.equals(BigDecimal.class)) {
         if (value instanceof String string)
@@ -715,13 +808,13 @@ public enum Type {
         if (value instanceof Double)
           return value;
         else if (value instanceof String string)
-          return string.isEmpty() ? 0d : Double.parseDouble(string);
+          return string.isEmpty() ? emptyNumericString(0d, "DOUBLE", property) : Double.parseDouble(string);
         else if (value instanceof Float float1)
           // The primitive widening would carry the float's rounding error into the double; widenFloat re-reads its
           // decimal instead, and skips the round-trip where it provably cannot matter (issue #7609).
           return widenFloat(float1);
         else
-          return ((Number) value).doubleValue();
+          return narrowToDouble(asNumber(value, "DOUBLE", property), property);
 
       } else if (targetClass.equals(Boolean.TYPE) || targetClass.equals(Boolean.class)) {
         if (value instanceof Boolean)
@@ -733,7 +826,11 @@ public enum Type {
             return Boolean.FALSE;
           throw new IllegalArgumentException("Value is not boolean. Expected true or false but received '" + value + "'");
         } else if (value instanceof Number number)
-          return number.intValue() != 0;
+          // 0 is false and anything else is true, as documented: intValue() truncated 0.5 to 0 and kept only the low
+          // 32 bits of a LONG, so 0.5 and 4294967296 were stored as false (issue #9027)
+          return !isZero(number, property);
+        if (property != null)
+          throw inconvertible(value, "BOOLEAN", property);
 
       } else if (Set.class.isAssignableFrom(targetClass)) {
         // The caller specifically wants a Set.  If the value is a collection
@@ -743,6 +840,8 @@ public enum Type {
         if (value instanceof Collection<?> collection) {
           final Set<Object> set = new HashSet<Object>(collection);
           return set;
+        } else if (isPrimitiveNumberArray(value)) {
+          return new HashSet<Object>(primitiveArrayToList(value));
         } else {
           final Set<Object> set = new HashSet<>(2);
           set.add(value);
@@ -758,6 +857,9 @@ public enum Type {
         if (value instanceof Collection<?> collection) {
           final List<Object> list = new ArrayList<Object>(collection);
           return list;
+        } else if (isPrimitiveNumberArray(value)) {
+          // A primitive array (e.g. a JSON array parameter parsed to long[]/double[]) is the elements of the list, not one element (issue #9002)
+          return primitiveArrayToList(value);
         } else {
           final List<Object> list = new ArrayList<>(1);
           list.add(value);
@@ -771,6 +873,8 @@ public enum Type {
         if (value instanceof Collection<?> collection) {
           final List<Object> set = new ArrayList<Object>(collection);
           return set;
+        } else if (isPrimitiveNumberArray(value)) {
+          return primitiveArrayToList(value);
         } else {
           final Set<Object> set = new HashSet<>(2);
           set.add(value);
@@ -796,6 +900,10 @@ public enum Type {
           return time.toLocalDate();
         else if (value instanceof Instant instant)
           return instant.atOffset(ZoneOffset.UTC).toLocalDate();
+        else if (value instanceof ZonedDateTime zoned)
+          return zoned.toInstant().atOffset(ZoneOffset.UTC).toLocalDate();
+        else if (value instanceof OffsetDateTime offset)
+          return offset.toInstant().atOffset(ZoneOffset.UTC).toLocalDate();
         else if (value instanceof Number number)
           return DateUtils.date(database, DateUtils.numberToEpochUnits(number), LocalDate.class);
         else if (value instanceof Date date)
@@ -829,6 +937,8 @@ public enum Type {
             return truncateToPropertyPrecision(time, property);
         } else if (value instanceof Number number) {
           return DateUtils.date(database, DateUtils.numberToEpochUnits(number), LocalDateTime.class);
+        } else if (value instanceof LocalDate date) {
+          return truncateToPropertyPrecision(date.atStartOfDay(), property);
         } else if (value instanceof Instant instant) {
           // the moment as the stored value reads back (UTC wall clock, as the Date and Number branches do), so an
           // equality lookup agrees with the ordering path and with the index key
@@ -866,7 +976,15 @@ public enum Type {
         if (value instanceof ZonedDateTime time) {
           if (property != null)
             return truncateToPropertyPrecision(time, property);
-        } else if (value instanceof Number number)
+        } else if (value instanceof LocalDateTime local)
+          return truncateToPropertyPrecision(local.atZone(ZoneOffset.UTC), property);
+        else if (value instanceof LocalDate date)
+          return truncateToPropertyPrecision(date.atStartOfDay(ZoneOffset.UTC), property);
+        else if (value instanceof OffsetDateTime offset)
+          return truncateToPropertyPrecision(offset.toZonedDateTime(), property);
+        else if (value instanceof Instant instant)
+          return truncateToPropertyPrecision(instant.atZone(ZoneOffset.UTC), property);
+        else if (value instanceof Number number)
           return DateUtils.dateTime(database, DateUtils.numberToEpochUnits(number), ChronoUnit.MILLIS, ZonedDateTime.class,
               property != null ? DateUtils.getPrecisionFromType(property.getType()) : ChronoUnit.MILLIS);
         else if (value instanceof Date date)
@@ -901,16 +1019,25 @@ public enum Type {
           return DateUtils.dateTime(database, calendar.getTimeInMillis(), ChronoUnit.MILLIS, Instant.class,
               property != null ? DateUtils.getPrecisionFromType(property.getType()) : ChronoUnit.MILLIS);
         }
+        case LocalDateTime local -> {
+          return truncateToPropertyPrecision(local.toInstant(ZoneOffset.UTC), property);
+        }
+        case LocalDate date -> {
+          return truncateToPropertyPrecision(date.atStartOfDay().toInstant(ZoneOffset.UTC), property);
+        }
+        case ZonedDateTime zoned -> {
+          return truncateToPropertyPrecision(zoned.toInstant(), property);
+        }
+        case OffsetDateTime offset -> {
+          return truncateToPropertyPrecision(offset.toInstant(), property);
+        }
         case String valueAsString -> {
           // This branch had no String case at all, so `arcadedb.dateTimeImplementation=java.time.Instant` left a
           // datetime literal in the record as the raw String it arrived as. It now goes through the same shared
           // chain as every other datetime target (issue #8090).
           //
-          // isLong: an all-digits string falls through to the original value, as it already does in the
-          // LocalDateTime and ZonedDateTime branches above. Only the LocalDate branch reads such a string as an
-          // epoch count, so the three disagree about what a numeric string means for a datetime target. That
-          // predates this issue and is left alone here rather than settled in passing - it is a question about
-          // epoch semantics, not about which spellings parse, which is what #8090 is.
+          // An all-digits string is left to the end of the method, which refuses it for a declared property: it is as likely
+          // a compact date (yyyyMMdd, a year) as an epoch count, and guessing turns a loud failure into a wrong instant (#9110).
           if (!FileUtils.isLong(valueAsString)) {
             // parseZonedDateTime, not parseDateTime().atZone(): an Instant IS an instant, so an offset the value
             // carries has to survive. The wall-clock chain drops it - deliberately, for LocalDateTime (issue #4125) -
@@ -931,19 +1058,26 @@ public enum Type {
             } else if (o instanceof Result resultObj && resultObj.isElement()) {
               // Extract the document from Result object
               result.add((Identifiable) resultObj.getElement().get());
-            } else if (o instanceof String) {
+            } else if (o instanceof String string) {
               try {
-                result.add(RID.create(database, value.toString()));
+                result.add(RID.create(database, string));
               } catch (final Exception e) {
+                if (property != null)
+                  throw inconvertible(o, "LINK", property, e);
                 LogManager.instance()
-                    .log(Type.class, Level.FINE, "Error in conversion of value '%s' to type '%s'", e, value, targetClass);
+                    .log(Type.class, Level.FINE, "Error in conversion of value '%s' to type '%s'", e, o, targetClass);
               }
-            }
+            } else if (property != null)
+              // a member that is no link cannot be dropped: the result would silently be a different value (issue #9015)
+              throw inconvertible(o, "LINK", property);
           }
           // If the property type is LINK (not LIST) and we have a single-element list, unwrap it
           if (property != null && property.getType() == LINK && result.size() == 1) {
             return result.get(0);
           }
+          // an empty or multi-valued collection cannot be the single link a LINK property holds (issue #9015)
+          if (property != null && property.getType() == LINK)
+            throw inconvertible(value, "LINK", property);
           return result;
         } else if (value instanceof String string) {
           try {
@@ -957,6 +1091,14 @@ public enum Type {
     } catch (final IllegalArgumentException e) {
       // PASS THROUGH
       throw e;
+    } catch (final ClassCastException e) {
+      LogManager.instance().log(Type.class, Level.FINE, "Error in conversion of value '%s' to type '%s'", e, value, targetClass);
+      // a value of a shape the target cannot take, reaching a cast the branches above did not guard: a write refuses,
+      // never answering NULL for a non-null input (issue #9014). Without a declared property this is the plain public
+      // conversion, which keeps answering null for it.
+      if (property == null)
+        return null;
+      throw inconvertible(value, targetClass.getSimpleName(), property, e);
     } catch (final DateTimeException e) {
       // A date/time value that cannot be parsed must fail the write, not empty the column. This is the date/time
       // family's equivalent of the NumberFormatException the arm above already lets through, and it was the reason a
@@ -982,10 +1124,148 @@ public enum Type {
           "Error in conversion of value '" + value + "' to type '" + targetClass.getSimpleName() + "': " + e.getMessage(), e);
     } catch (final Exception e) {
       LogManager.instance().log(Type.class, Level.FINE, "Error in conversion of value '%s' to type '%s'", e, value, targetClass);
+      // a write to a declared property never stores NULL for a value it could not convert (issue #9014)
+      if (property != null)
+        throw inconvertible(value, targetClass.getSimpleName(), property, e);
       return null;
     }
 
+    // No branch had a case for this value. For these targets the property can only hold an instance of the target, so
+    // keeping the value as it came stores a type the index and the serializer cannot read back (issue #9015).
+    // Without a declared property this is the plain public conversion (the BaseDocument getters, a query comparison),
+    // which has always answered the original value
+    if (property != null && (mustBeInstanceOfTarget(targetClass) || targetClass.equals(Identifiable.class))
+        && !targetClass.isInstance(value))
+      throw inconvertible(value, targetClass.getSimpleName(), property);
+
     return value;
+  }
+
+  /**
+   * A refusal, for a declared property, of a value the target cannot take: a shape it has no case for (a list for an
+   * INTEGER, a boolean for a DECIMAL) or a content it cannot hold (an empty string, a number out of range, NaN). Only
+   * a refusal of this kind is kept by {@link #convertOrKeep(Database, Object, Class, Property)}, which reads records it
+   * did not write, while a WRITE through {@code convert()} fails with it (issue #9110). It is raised only when a
+   * property is declared, so {@link #convertIndexKeyOrNull} never sees it.
+   */
+  private static final class InconvertibleValueException extends IllegalArgumentException {
+    InconvertibleValueException(final String message, final Throwable cause) {
+      super(message, cause);
+    }
+  }
+
+  /** An empty string is no number for a declared property, but the plain conversion has always read it as zero. */
+  private static <T extends Number> T emptyNumericString(final T zero, final String targetType, final Property property) {
+    if (property != null)
+      throw inconvertible("", targetType, property);
+    return zero;
+  }
+
+  private static String forProperty(final Property property) {
+    return property != null ? " for property '" + property.getName() + "'" : "";
+  }
+
+  private static InconvertibleValueException inconvertible(final Object value, final String targetType, final Property property) {
+    return inconvertible(value, targetType, property, null);
+  }
+
+  private static InconvertibleValueException inconvertible(final Object value, final String targetType, final Property property,
+      final Throwable cause) {
+    // only the class of an array, a collection or a map: its text can be as large as the value, or just an identity hash
+    if (value == null)
+      return new InconvertibleValueException("A null element cannot be converted to type " + targetType + forProperty(property), cause);
+    final String text = value.getClass().isArray() || value instanceof Collection || value instanceof Map ? null : value.toString();
+    final String shown = text == null ? "" : "'" + (text.length() > 100 ? text.substring(0, 100) + "..." : text) + "' ";
+    return new InconvertibleValueException(
+        "Value " + shown + "of type " + value.getClass().getSimpleName() + " cannot be converted to type " + targetType //
+            + forProperty(property), cause);
+  }
+
+  private static Number asNumber(final Object value, final String targetType, final Property property) {
+    if (value instanceof Number number)
+      return number;
+    if (property == null)
+      // the plain public conversion answers null for it, through the ClassCastException handler
+      return (Number) value;
+    throw inconvertible(value, targetType, property);
+  }
+
+  private static boolean mustBeInstanceOfTarget(final Class<?> targetClass) {
+    return targetClass.equals(BigDecimal.class) || targetClass.equals(LocalDate.class) || targetClass.equals(LocalDateTime.class)
+        || targetClass.equals(ZonedDateTime.class) || targetClass.equals(Instant.class) || targetClass.equals(byte[].class);
+  }
+
+  /** A finite number that overflows to an infinity is refused for a declared FLOAT (issue #9110, as #9024 for LONG). */
+  private static float narrowToFloat(final Number value, final Property property) {
+    final float result = value.floatValue();
+    if (property != null && Float.isInfinite(result) && !isInfinite(value))
+      throw new InconvertibleValueException("Value '" + value + "' is out of range for type FLOAT" + forProperty(property), null);
+    return result;
+  }
+
+  private static double narrowToDouble(final Number value, final Property property) {
+    final double result = value.doubleValue();
+    if (property != null && Double.isInfinite(result) && !isInfinite(value))
+      throw new InconvertibleValueException("Value '" + value + "' is out of range for type DOUBLE" + forProperty(property), null);
+    return result;
+  }
+
+  private static boolean isInfinite(final Number value) {
+    return value instanceof Double d && d.isInfinite() || value instanceof Float f && f.isInfinite();
+  }
+
+  private static boolean isZero(final Number number, final Property property) {
+    if (isNaN(number)) {
+      if (property == null)
+        // the plain conversion always answered false for it (NaN.intValue() is 0)
+        return true;
+      throw new InconvertibleValueException(
+          "Value '" + number + "' is NaN and cannot be converted to type BOOLEAN" + forProperty(property), null);
+    }
+    return switch (number) {
+      case BigDecimal bigDecimal -> bigDecimal.signum() == 0;
+      case BigInteger bigInteger -> bigInteger.signum() == 0;
+      case Double doubleValue -> doubleValue == 0d;
+      case Float floatValue -> floatValue == 0f;
+      default -> number.longValue() == 0L;
+    };
+  }
+
+  /**
+   * The LONG counterpart of {@link #narrowToIntegral(Number, long, long, String, Property)}: LONG has no narrower range,
+   * but a {@link BigInteger}, a {@link BigDecimal}, a {@link Double} or a {@link Float} can still be outside the 64-bit
+   * one, where {@code longValue()} wraps (the first two) or saturates (the others) without a word (issue #9024).
+   * <p>
+   * The range is only enforced for a declared property: the plain public conversion (a getter, a query comparison, an
+   * index lookup by a literal) keeps clamping, as it always did.
+   */
+  private static long narrowToLong(final Number value, final Property property) {
+    if (value instanceof Integer || value instanceof Short || value instanceof Byte)
+      return value.longValue();
+
+    if (isNaN(value)) {
+      final String message = "Value '" + value + "' is NaN and cannot be converted to type LONG" + forProperty(property);
+      throw property != null ? new InconvertibleValueException(message, null) : new IllegalArgumentException(message);
+    }
+
+    if (property == null)
+      // the range is only enforced for a declared property: the plain conversion keeps clamping
+      return value.longValue();
+
+    final boolean outOfRange = switch (value) {
+      case BigDecimal bigDecimal -> bigDecimal.compareTo(LONG_MAX_DECIMAL) > 0 || bigDecimal.compareTo(LONG_MIN_DECIMAL) < 0;
+      case BigInteger bigInteger -> bigInteger.compareTo(LONG_MAX_INTEGER) > 0 || bigInteger.compareTo(LONG_MIN_INTEGER) < 0;
+      // 2^63 is the first double above the range, and -2^63 is exactly Long.MIN_VALUE
+      case Double doubleValue -> doubleValue >= 0x1p63 || doubleValue < -0x1p63;
+      case Float floatValue -> floatValue >= 0x1p63f || floatValue < -0x1p63f;
+      default -> false;
+    };
+    if (outOfRange)
+      throw new InconvertibleValueException(
+          "Value '" + value + "' is out of range for type LONG (" + Long.MIN_VALUE + " to " + Long.MAX_VALUE + ")" //
+              + forProperty(property), null);
+
+    return value.longValue();
   }
 
   /**
@@ -1601,7 +1881,8 @@ public enum Type {
    * Ordering is untouched: it keeps the decimal reading of {@link #widenFloat}.
    * <p>
    * The relation is not transitive (0.1f equals both 0.1 and 0.10000000149011612, which differ) and the Double/BigDecimal
-   * rule is as loose as the double's ulp, as the index's is: never use it for hashing or grouping. NaN equals NaN here, as
+   * rule is as loose as the double's ulp, as the index's is, for a decimal of at most 17 significant digits; a longer one
+   * is compared exactly (issue #8872, see {@link #doubleEqualsDecimal}): never use it for hashing or grouping. NaN equals NaN here, as
    * {@code Double.equals} says; a caller needing the IEEE answer (Cypher) guards for it.
    *
    * @param left  the first operand
@@ -1623,28 +1904,62 @@ public enum Type {
     final Number[] pair = castComparableNumber(left, right);
     if (pair[0].equals(pair[1]))
       return true;
+    // Double.equals separates the two zeros; IEEE 754 and openCypher do not (issue #8920)
+    if (pair[0] instanceof Double a && pair[1] instanceof Double b && a == 0.0d && b == 0.0d)
+      return true;
 
     if (left instanceof Float f)
       return narrowsTo(f, right);
     if (right instanceof Float f)
       return narrowsTo(f, left);
     if (left instanceof Double d && right instanceof BigDecimal bd)
-      return Double.isFinite(d) && Double.compare(d, bd.doubleValue()) == 0;
+      return doubleEqualsDecimal(d, bd);
     if (left instanceof BigDecimal bd && right instanceof Double d)
-      return Double.isFinite(d) && Double.compare(d, bd.doubleValue()) == 0;
+      return doubleEqualsDecimal(d, bd);
     return false;
+  }
+
+  /**
+   * A DOUBLE against a BigDecimal. A decimal of at most {@link #MAX_DOUBLE_DIGITS} significant digits is what a double
+   * carries (the {@code printf("%.17g")} round-trip form), so it equals the double it narrows to, as an index key
+   * converted to DOUBLE does (issue #8882). A longer decimal says more than any double can: it is compared exactly, as
+   * the ordering operators compare it, so a value is never equal to such a bound and below it at once, and a DOUBLE
+   * column against an 18+ digit SQL literal answers the exact comparison (issue #8872). The exact binary expansion of
+   * the stored double ({@code new BigDecimal(d)}) still equals it.
+   */
+  private static boolean doubleEqualsDecimal(final double d, final BigDecimal bd) {
+    if (!Double.isFinite(d))
+      return false;
+    if (bd.precision() <= MAX_DOUBLE_DIGITS)
+      return BinaryComparator.compareDoubles(d, bd.doubleValue()) == 0;
+    return new BigDecimal(d).compareTo(bd) == 0;
   }
 
   // Deliberately as loose as the index key: Type.convert narrows the operand, so 1e-50 reads as 0.0f and finds it (#8882)
   private static boolean floatEqualsDouble(final float f, final double d) {
     // same answer as the castComparableNumber path: the decimal reading of f, else the double that narrows to f
-    return Double.compare(widenFloat(f), d) == 0 || narrowsTo(f, d);
+    return BinaryComparator.compareDoubles(widenFloat(f), d) == 0 || narrowsTo(f, d);
+  }
+
+  /**
+   * True when one operand is a {@code Float} and the other a {@code Double} or {@code BigDecimal} that narrows to it: the pair
+   * {@link #numbersEqual} calls equal and the index, which converts a bound to its FLOAT key, finds together (issue #8882).
+   * The ordering operators ask it first, so a value is never equal to a bound and less than it at once (issue #8919). Allocates
+   * nothing. Equality through narrowing is not transitive (0.1f equals the double 0.1 but is below 0.10000000149011612), so this
+   * is for comparing a value with a bound, never for sorting.
+   */
+  public static boolean floatNarrowsToOperand(final Number left, final Number right) {
+    if (left instanceof Float f)
+      return narrowsTo(f, right);
+    if (right instanceof Float f)
+      return narrowsTo(f, left);
+    return false;
   }
 
   private static boolean narrowsTo(final float f, final Number other) {
     if (other instanceof Double || other instanceof BigDecimal)
-      // Float.compare, not ==: negative zero is not zero, as Double.equals reads it
-      return Float.isFinite(f) && Float.compare(f, other.floatValue()) == 0;
+      // + 0.0f maps negative zero onto zero, which is one value (issue #8920); Float.compare is for the NaN-free total order
+      return Float.isFinite(f) && Float.compare(f + 0.0f, other.floatValue() + 0.0f) == 0;
     return false;
   }
 
@@ -1921,6 +2236,110 @@ public enum Type {
   }
 
   /**
+   * Deep variant of {@link #normalizeNumberForKey}: canonicalizes the numbers held inside a list, a set, a map or a Java
+   * array too, so {@code [1]}, {@code [1L]} and {@code [1.0]}, or {@code {a: 1}} and {@code {a: 1L}}, key the same way the
+   * scalars do (issue #8977). The keys of a map are kept as they are, they are rarely numbers. A list and an object array
+   * key as lists, a set as a set (it compares without order), a map as a map. A primitive array (a vector, a byte buffer)
+   * is wrapped by content without boxing its elements, and a list, set or map that holds no number, collection, map or
+   * array is returned as it is, so the common case copies nothing, and the returned collection is then the caller's own instance, which
+   * the key must not outlive a mutation of. A String returns at once; a list of numbers (an embedding) is copied and boxed, so
+   * DISTINCT or GROUP BY over such a column allocates per row.
+   *
+   * @param value the value to normalise (may be {@code null})
+   *
+   * @return the canonical key for the value
+   */
+  public static Object normalizeForKey(final Object value) {
+    if (value instanceof String)
+      return value;
+    if (value == null || value instanceof Number)
+      return normalizeNumberForKey(value);
+    if (value instanceof Set<?> set) {
+      if (holdsOnlyPlainValues(set))
+        return set;
+      final Set<Object> items = new HashSet<>((int) (set.size() / 0.75f) + 1);
+      for (final Object item : set)
+        items.add(normalizeForKey(item));
+      return items;
+    }
+    if (value instanceof Collection<?> collection) {
+      if (collection instanceof List<?> && holdsOnlyPlainValues(collection))
+        return collection;
+      final List<Object> items = new ArrayList<>(collection.size());
+      for (final Object item : collection)
+        items.add(normalizeForKey(item));
+      return items;
+    }
+    if (value instanceof Map<?, ?> map) {
+      if (holdsOnlyPlainValues(map.values()))
+        return map;
+      final Map<Object, Object> entries = new HashMap<>((int) (map.size() / 0.75f) + 1);
+      for (final Map.Entry<?, ?> entry : map.entrySet())
+        entries.put(entry.getKey(), normalizeForKey(entry.getValue()));
+      return entries;
+    }
+    if (value.getClass().isArray()) {
+      if (value instanceof Object[] objects) {
+        final List<Object> items = new ArrayList<>(objects.length);
+        for (final Object item : objects)
+          items.add(normalizeForKey(item));
+        return items;
+      }
+      return new PrimitiveArrayKey(value);
+    }
+    return value;
+  }
+
+  private static boolean holdsOnlyPlainValues(final Collection<?> values) {
+    for (final Object item : values)
+      if (item instanceof Number || item instanceof Collection || item instanceof Map || (item != null && item.getClass().isArray()))
+        return false;
+    return true;
+  }
+
+  /**
+   * A primitive array as a hash key: two arrays of the same type with the same content are equal, which the array itself does
+   * not do (it compares by identity).
+   * Floating point content compares by bits (as {@link Arrays#equals(float[], float[])}): NaN equals NaN, which is what grouping
+   * wants, while 0.0 and -0.0 are different keys, unlike the numeric canonicalization of a scalar.
+   */
+  private record PrimitiveArrayKey(Object array) {
+    @Override
+    public boolean equals(final Object other) {
+      if (this == other)
+        return true;
+      if (!(other instanceof PrimitiveArrayKey that) || !array.getClass().equals(that.array.getClass()))
+        return false;
+      return switch (array) {
+        case byte[] a -> Arrays.equals(a, (byte[]) that.array);
+        case short[] a -> Arrays.equals(a, (short[]) that.array);
+        case int[] a -> Arrays.equals(a, (int[]) that.array);
+        case long[] a -> Arrays.equals(a, (long[]) that.array);
+        case float[] a -> Arrays.equals(a, (float[]) that.array);
+        case double[] a -> Arrays.equals(a, (double[]) that.array);
+        case char[] a -> Arrays.equals(a, (char[]) that.array);
+        case boolean[] a -> Arrays.equals(a, (boolean[]) that.array);
+        default -> false;
+      };
+    }
+
+    @Override
+    public int hashCode() {
+      return switch (array) {
+        case byte[] a -> Arrays.hashCode(a);
+        case short[] a -> Arrays.hashCode(a);
+        case int[] a -> Arrays.hashCode(a);
+        case long[] a -> Arrays.hashCode(a);
+        case float[] a -> Arrays.hashCode(a);
+        case double[] a -> Arrays.hashCode(a);
+        case char[] a -> Arrays.hashCode(a);
+        case boolean[] a -> Arrays.hashCode(a);
+        default -> 0;
+      };
+    }
+  }
+
+  /**
    * Convert the input object to an integer.
    *
    * @param value Any type supported
@@ -2024,10 +2443,18 @@ public enum Type {
    * Returns the Java class a value of this type is materialised as once the schema has coerced it, i.e. the target
    * {@link #convert(Database, Object, Class, Property)} uses when a property declares this type.
    * <p>
-   * This is {@link #getDefaultJavaType()} for every type except {@code DATE} and {@code DATETIME}, whose runtime
-   * representation is configurable per database. Callers that need to reproduce the stored form of a value - the
+   * This is {@link #getDefaultJavaType()} for every type except {@code DATE} and the {@code DATETIME} family, whose
+   * runtime representation is configurable per database. Callers that need to reproduce the stored form of a value - the
    * write path in {@code MutableDocument}, and the partitioned bucket strategy that has to hash a lookup key the way
    * placement hashed the stored one (issue #5595) - must agree on this mapping, so it lives in one place.
+   * <p>
+   * The precision subtypes ({@code DATETIME_SECOND}, {@code DATETIME_MICROS}, {@code DATETIME_NANOS}) answer the class
+   * the deserializer reads them back as: the configured datetime implementation, except that a sub-millisecond column
+   * stays a {@code LocalDateTime} under an implementation that stops at the millisecond (issue #8158). Answering their
+   * static default ({@code LocalDateTime}) instead used to be inert only while {@code convert} handed an
+   * {@code Instant} or a zoned value back untouched; since it reads them into a {@code LocalDateTime} (issue #8886) the
+   * write path would keep in memory a class the record never reads back as, and a partitioned type placed the record by
+   * hashing one class and looked it up by hashing the other.
    *
    * @param database database whose {@code DATE}/{@code DATETIME} settings apply, or {@code null} to fall back to the
    *                 default Java type
@@ -2036,8 +2463,10 @@ public enum Type {
     if (database instanceof DatabaseInternal internal) {
       if (this == DATE)
         return internal.getSerializer().getDateImplementation();
-      if (this == DATETIME)
+      if (this == DATETIME || this == DATETIME_SECOND)
         return internal.getSerializer().getDateTimeImplementation();
+      if (this == DATETIME_MICROS || this == DATETIME_NANOS)
+        return internal.getSerializer().getSubMillisDateTimeImplementation();
     }
     return javaDefaultType;
   }
@@ -2146,5 +2575,45 @@ public enum Type {
 
   private static Instant truncateToPropertyPrecision(final Instant value, final Property property) {
     return property == null ? value : value.truncatedTo(DateUtils.getPrecisionFromType(property.getType()));
+  }
+
+  /** A primitive array of numbers (not {@code byte[]}, which is binary content, nor {@code boolean[]}/{@code char[]}). */
+  public static boolean isPrimitiveNumberArray(final Object value) {
+    return value instanceof long[] || value instanceof double[] || value instanceof int[] || value instanceof float[]
+        || value instanceof short[];
+  }
+
+  /** Boxes the elements of a primitive array into a mutable list (the shape a collection target expects). */
+  public static List<Object> primitiveArrayToList(final Object array) {
+    final List<Object> list;
+    switch (array) {
+    case long[] longs -> {
+      list = new ArrayList<>(longs.length);
+      for (final long v : longs)
+        list.add(v);
+    }
+    case double[] doubles -> {
+      list = new ArrayList<>(doubles.length);
+      for (final double v : doubles)
+        list.add(v);
+    }
+    case float[] floats -> {
+      list = new ArrayList<>(floats.length);
+      for (final float v : floats)
+        list.add(v);
+    }
+    case int[] ints -> {
+      list = new ArrayList<>(ints.length);
+      for (final int v : ints)
+        list.add(v);
+    }
+    default -> {
+      final int length = Array.getLength(array);
+      list = new ArrayList<>(length);
+      for (int i = 0; i < length; i++)
+        list.add(Array.get(array, i));
+    }
+    }
+    return list;
   }
 }

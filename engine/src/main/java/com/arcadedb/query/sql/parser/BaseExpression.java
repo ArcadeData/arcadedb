@@ -222,7 +222,12 @@ public class BaseExpression extends MathExpression {
           fnResult = modifier.next.execute(currentRecord, fnResult, context);
         return fnResult;
       }
-      result = identifier.execute(currentRecord != null ? currentRecord.getRecord() : null, context);
+      // POSTGRES $N PARAMETER: SAME TEST AS THE Result OVERLOAD
+      final Map<String, Object> params = context != null ? context.getInputParameters() : null;
+      final String positionalKey = postgresPositionalParameterKey(identifier, params);
+      result = positionalKey != null ?
+          params.get(positionalKey) :
+          identifier.execute(currentRecord != null ? currentRecord.getRecord() : null, context);
     } else if (expression != null)
       result = expression.execute(currentRecord != null ? currentRecord.getRecord() : null, context);
     else if (string != null && string.length() > 1)
@@ -298,6 +303,9 @@ public class BaseExpression extends MathExpression {
       return null;
     if (identifier.levelZero != null || identifier.suffix == null || identifier.suffix.identifier == null
         || identifier.suffix.recordAttribute != null || identifier.suffix.star)
+      return null;
+    // A back-ticked name is a property, never a namespace: `map`.values() reads the property called map (issue #9076)
+    if (identifier.suffix.identifier.quoted)
       return null;
 
     final String namespace = identifier.suffix.identifier.getValue();

@@ -25,6 +25,7 @@ import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.query.opencypher.InternalVariables;
 import com.arcadedb.query.opencypher.ast.ClauseEntry;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.ast.Expression;
@@ -513,14 +514,30 @@ public class SubqueryStep extends AbstractExecutionStep {
 
   /**
    * Returns a seed row exposing only the outer variables that the subquery is allowed to
-   * see. For {@code CALL (*)} the whole outer row is passed through; for explicit or
+   * see. For {@code CALL (*)} the whole outer row is passed through minus the generated (internal) bindings; for explicit or
    * implicit imports only the declared variables are retained; otherwise an empty row is
    * returned so inner MATCH variables sharing a name with an outer variable are not
    * silently bound to the outer value (issue #3959).
    */
   private Result filterSeedRow(final Result outerRow) {
-    if (importAllVariables)
-      return outerRow;
+    if (importAllVariables) {
+      // The outer clauses' generated bindings (  nd0, ...) are not query variables. The inner plan numbers its own
+      // anonymous elements from zero, so a leaked one would pre-bind an inner anonymous pattern to the outer value
+      // (issue #9205: an OPTIONAL MATCH that matched nothing turned the inner MATCH () into a bound null).
+      boolean hasInternal = false;
+      for (final String name : outerRow.getPropertyNames())
+        if (InternalVariables.isInternal(name)) {
+          hasInternal = true;
+          break;
+        }
+      if (!hasInternal)
+        return outerRow;
+      final ResultInternal filtered = new ResultInternal();
+      for (final String name : outerRow.getPropertyNames())
+        if (!InternalVariables.isInternal(name))
+          filtered.setProperty(name, outerRow.getProperty(name));
+      return filtered;
+    }
     if (importedVariables.isEmpty())
       return new ResultInternal();
 
@@ -534,7 +551,8 @@ public class SubqueryStep extends AbstractExecutionStep {
 
   /**
    * Merges the outer row and inner row into a single output row.
-   * The outer row's properties are preserved, and inner row's properties are added.
+   * The outer row's properties are preserved, and inner row's properties are added, except the inner plan's generated
+   * (internal) bindings, which must not replace the outer ones.
    */
   private ResultInternal mergeResults(final Result outerRow, final Result innerRow) {
     final ResultInternal merged = new ResultInternal();
@@ -544,8 +562,10 @@ public class SubqueryStep extends AbstractExecutionStep {
       merged.setProperty(prop, outerRow.getProperty(prop));
 
     // Add inner row properties (may override outer if names clash, which is correct per Cypher semantics)
+    // except the inner plan's generated bindings, which would otherwise overwrite the outer clauses' own (issue #9205)
     for (final String prop : innerRow.getPropertyNames())
-      merged.setProperty(prop, innerRow.getProperty(prop));
+      if (!InternalVariables.isInternal(prop))
+        merged.setProperty(prop, innerRow.getProperty(prop));
 
     return merged;
   }

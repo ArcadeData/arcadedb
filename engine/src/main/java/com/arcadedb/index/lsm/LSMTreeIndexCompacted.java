@@ -34,6 +34,7 @@ import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.utility.RidHashSet;
 
 import java.io.IOException;
@@ -370,11 +371,17 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
       return new LookupResult(true, false, mid,
           new int[] { currentPageBuffer.getInt(startIndexArray + (mid * INT_SERIALIZED_SIZE)) + keySerializedSize });
     } else if (purpose == 1) {
+      // RETRIEVE
+
+      currentPageBuffer.position(currentPageBuffer.getInt(startIndexArray + (mid * INT_SERIALIZED_SIZE)));
+      final int keySerializedSize = getSerializedKeySize(currentPageBuffer, convertedKeys.length);
+
       // RETRIEVE ALL THE RESULTS
       final int firstKeyPos = findFirstEntryOfSameKey(currentPageBuffer, convertedKeys, startIndexArray, mid);
       final int lastKeyPos = findLastEntryOfSameKey(count, currentPageBuffer, convertedKeys, startIndexArray, mid);
 
-      final int[] positionsArray = getValuePositionsOfRun(currentPageBuffer, startIndexArray, convertedKeys.length, firstKeyPos, lastKeyPos);
+      final int[] positionsArray = valuePositionsOfRun(currentPageBuffer, startIndexArray, convertedKeys.length, firstKeyPos, lastKeyPos, mid,
+          keySerializedSize);
 
       return new LookupResult(true, false, lastKeyPos, positionsArray);
     }
@@ -671,6 +678,10 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
     // fails to serialize - searches every series exactly as before #5517.
     final LSMTreeIndexBloomFilter filters = bloomFilter;
     long keyHash = 0L;
+    // A series compacted before -0.0 was canonicalised hashed it as -0.0: its filter is probed under that spelling too, or
+    // the entry would be missed until the index is rebuilt (issue #8920)
+    long legacyZeroHash = 0L;
+    boolean useLegacyZeroHash = false;
     boolean useFilters = false;
     if (filters != null && bloomFilterEnabled && isBloomHashable(convertedKeys)) {
       try {
@@ -678,6 +689,11 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
         if (serialized != null) {
           keyHash = LSMTreeIndexBloomFilter.hashKey(serialized);
           useFilters = true;
+          final Object[] negatedZeros = BinaryComparator.withNegativeZeros(convertedKeys);
+          if (negatedZeros != null) {
+            legacyZeroHash = LSMTreeIndexBloomFilter.hashKey(serializeKeyAsWrittenForHashing(BLOOM_KEY_BUFFER.get(), negatedZeros));
+            useLegacyZeroHash = true;
+          }
         }
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.FINE,
@@ -700,7 +716,9 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
       pageNumber -= rootPageCount;
 
       if (useFilters) {
-        if (!filters.mightContain(pageNumber, rootPageCount, seriesFingerprint(lastPage), keyHash)) {
+        final int fingerprint = seriesFingerprint(lastPage);
+        if (!filters.mightContain(pageNumber, rootPageCount, fingerprint, keyHash)
+            && !(useLegacyZeroHash && filters.mightContain(pageNumber, rootPageCount, fingerprint, legacyZeroHash))) {
           // THE SERIES PROVABLY DOES NOT HOLD THE KEY: SKIP ITS ROOT AND DATA PAGES ENTIRELY
           bloomSkippedSeries.increment();
           --pageNumber;

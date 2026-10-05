@@ -74,4 +74,10 @@ public class PostRollbackHandler extends DatabaseAbstractHandler {
   protected boolean mustExecuteOnWorkerThread(final HttpServerExchange exchange) {
     return carriesSessionId(exchange);
   }
+
+  /** Ends the session, so it must be answered even when a failed command already rolled the transaction back (issue #9006). */
+  @Override
+  protected boolean endsSession() {
+    return true;
+  }
 }

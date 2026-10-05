@@ -22,6 +22,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.ExistingRecordsCheck;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -75,8 +76,17 @@ public class CreatePropertyStatement extends DDLStatement {
   }
 
   private void executeInternal(final CommandContext context, final ResultInternal result) {
+    // A prepared statement is reused, so the type name resolved from a variable is put back on every exit, a refusal included
+    final Identifier prevType = typeName;
+    try {
+      executeResolved(context, result);
+    } finally {
+      typeName = prevType;
+    }
+  }
+
+  private void executeResolved(final CommandContext context, final ResultInternal result) {
     final Database db = context.getDatabase();
-    Identifier prevType= typeName;
     if (typeName.getStringValue().startsWith("$")) {
       String variable = (String) context.getVariable(typeName.getStringValue());
       typeName = new Identifier(variable);
@@ -90,7 +100,6 @@ public class CreatePropertyStatement extends DDLStatement {
       if (typez.existsPolymorphicProperty(propertyName.getStringValue())) {
         // Same row as the creating path, with created=false telling the two apart (issue #7143).
         result.setProperty("created", false);
-        typeName = prevType;
         return;
       }
     } else if (typez.existsProperty(propertyName.getStringValue()))
@@ -102,9 +111,23 @@ public class CreatePropertyStatement extends DDLStatement {
     final String ofTypeAsString = ofType != null ? ofType.getStringValue() : null;
     final Property internalProp = typez.createProperty(propertyName.getStringValue(), type, ofTypeAsString);
     result.setProperty("created", true);
-    for (final CreatePropertyAttributeStatement attr : attributes) {
-      final Object val = attr.setOnProperty(internalProp, context);
-      result.setProperty(attr.settingName.getStringValue(), val);
+    try {
+      for (final CreatePropertyAttributeStatement attr : attributes) {
+        final Object val = attr.setOnProperty(internalProp, context);
+        result.setProperty(attr.settingName.getStringValue(), val);
+      }
+
+      // The documentation promises that the creation fails over incompatible stored data (#9112), and the planners trust
+      // MANDATORY + NOTNULL to mean that an index on the property holds every record (#8943)
+      ExistingRecordsCheck.requireDeclaration(db, typez, internalProp);
+    } catch (final RuntimeException e) {
+      // LEAVE THE SCHEMA AS IT WAS BEFORE THE STATEMENT
+      try {
+        typez.dropProperty(propertyName.getStringValue());
+      } catch (final RuntimeException dropFailure) {
+        e.addSuppressed(dropFailure);
+      }
+      throw e;
     }
 
     if (!customProperties.isEmpty()) {
@@ -117,8 +140,6 @@ public class CreatePropertyStatement extends DDLStatement {
       }
       result.setProperty("custom", applied);
     }
-
-    typeName = prevType;
   }
 
   @Override

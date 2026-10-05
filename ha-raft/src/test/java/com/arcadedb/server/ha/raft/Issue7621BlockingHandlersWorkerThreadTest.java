@@ -124,6 +124,8 @@ class Issue7621BlockingHandlersWorkerThreadTest {
     put("/api/v1/cluster/leave", Dispatch.ALWAYS);       // idem
     put("/api/v1/cluster/verify/", Dispatch.ALWAYS);     // hashes a database and dials the leader
     put("/api/v1/cluster/resync/", Dispatch.ALWAYS);     // downloads a full snapshot
+    // Waits for a peer round in flight on the same database (up to 5s), then deletes a file (#8641).
+    put(PostAcceptCopyHandler.ROUTE, Dispatch.ALWAYS);
     // SHA-256 over every database directory on this node, and it may open one left deliberately closed (#7861).
     put("/api/v1/cluster/bootstrap-state", Dispatch.ALWAYS);
     // Answers from constants, with no lock, no IO and no Raft round-trip: the counter-case that keeps the

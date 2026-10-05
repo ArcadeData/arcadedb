@@ -252,6 +252,63 @@ public final class CypherFunctionHelper {
   }
 
   /**
+   * Number of Unicode characters (code points) of a string, as Cypher counts them: a character outside the BMP is one
+   * character even though it takes two UTF-16 code units (issue #8998).
+   */
+  public static int codePointLength(final CharSequence text) {
+    return Character.codePointCount(text, 0, text.length());
+  }
+
+  /**
+   * The first {@code length} code points of the string; never splits a surrogate pair.
+   */
+  public static String leftCodePoints(final String str, final int length) {
+    if (length >= str.length())
+      return str;
+    // walk at most length code points instead of counting the whole string: left(bigText, 3) stays O(3)
+    int end = 0;
+    for (int i = 0; i < length && end < str.length(); i++)
+      end += Character.charCount(str.codePointAt(end));
+    return str.substring(0, end);
+  }
+
+  /**
+   * The last {@code length} code points of the string; never splits a surrogate pair.
+   */
+  public static String rightCodePoints(final String str, final int length) {
+    if (length >= str.length())
+      return str;
+    // walk back at most length code points instead of counting the whole string: right(bigText, 3) stays O(3)
+    int begin = str.length();
+    for (int i = 0; i < length && begin > 0; i++)
+      begin -= Character.charCount(str.codePointBefore(begin));
+    return str.substring(begin);
+  }
+
+  /**
+   * {@code length} code points starting at code point {@code startCodePoint} (use {@link Long#MAX_VALUE} for "to the
+   * end"), clamped to the string; never splits a surrogate pair. Walks only as far as it has to, so a short window of a
+   * long text costs the window, not the whole string.
+   */
+  public static String substringCodePoints(final String str, final int startCodePoint, final long length) {
+    final int size = str.length();
+    int begin = 0;
+    for (int i = 0; i < startCodePoint; i++) {
+      if (begin >= size)
+        return "";
+      begin += Character.charCount(str.codePointAt(begin));
+    }
+    if (begin >= size)
+      return "";
+    if (length >= size - begin)
+      return begin == 0 ? str : str.substring(begin);
+    int end = begin;
+    for (long i = 0; i < length && end < size; i++)
+      end += Character.charCount(str.codePointAt(end));
+    return str.substring(begin, end);
+  }
+
+  /**
    * Answers whether an optional argument was written as an explicit {@code null} rather than left out, so that a
    * function can propagate it instead of falling back on its default.
    * <p>
@@ -341,7 +398,7 @@ public final class CypherFunctionHelper {
       return Integer.compare(rankA, rankB);
     // Same type category - compare within type
     if (a instanceof Number && b instanceof Number)
-      return Double.compare(((Number) a).doubleValue(), ((Number) b).doubleValue());
+      return BinaryComparator.compareDoubles(((Number) a).doubleValue(), ((Number) b).doubleValue());
     if (a instanceof String && b instanceof String)
       return BinaryComparator.compareStrings((String) a, (String) b);
     if (a instanceof Boolean && b instanceof Boolean)

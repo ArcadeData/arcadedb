@@ -962,11 +962,11 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
       tx.addAfterCommitCallbackIfAbsent(afterCommitFlushKey, engine::maybeFlush);
       return;
     }
-    // #7933: no open transaction to queue onto, but the commit of one may still be in flight. An UPDATE indexes at
-    // commit time, not at save() time - TransactionContext.commit1stPhase() drains its deferred writes through
-    // updateRecordNoLock, which re-runs DocumentIndexer and lands right here, with the status no longer BEGUN - and
-    // that is BEFORE the page versions are validated, so applying straight through would leak exactly what the
-    // deferral below exists to prevent. This path is what a conflicted vector REWRITE travels.
+    // #7933: no open transaction to queue onto, but the commit of one may still be in flight. Before #8983 an UPDATE
+    // indexed here: commit1stPhase() drained its deferred writes through updateRecordNoLock, which re-ran
+    // DocumentIndexer with the status no longer BEGUN, BEFORE the page versions are validated. That flush no longer
+    // indexes (save() queued the changes), but this deferral stays for any other write that reaches the index while
+    // a commit is in flight: applying straight through would leak what an aborted transaction must not leave behind.
     // record() carries a tripwire for a posting arriving after its transaction concluded. Should it ever fire, it
     // surfaces from inside commit1stPhase() - here, or through indexChanges.commit() below - not from wherever the
     // conclusion ran, which is where a reader would go looking first.

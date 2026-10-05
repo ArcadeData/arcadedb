@@ -202,10 +202,15 @@ public class AiApiSpec implements OpenApiContributor {
     responses.addApiResponse("403", SpecBuilders.errorResponse(
         "Forbidden: the user cannot access the requested database"));
     responses.addApiResponse("404", SpecBuilders.errorResponse("Chat not found"));
+    responses.addApiResponse("402", SpecBuilders.errorResponse(
+        "The plan of the customer portal does not include the AI assistant ('code': 'ai.not_entitled', 'upgrade': true)"));
+    responses.addApiResponse("429", SpecBuilders.errorResponse(
+        "The AI allowance of the plan is used up ('ai.allowance_exhausted', 'upgrade': true) or the workspace is busy "
+            + "('ai.busy')"));
     responses.addApiResponse("500", SpecBuilders.errorResponse("Internal server error"));
     responses.addApiResponse("502", SpecBuilders.errorResponse(
-        "The gateway rejected the stored subscription token; remapped from the gateway's own 401 "
-            + "or 403"));
+        "The gateway rejected the stored subscription token, or the customer portal rejected the Client key; remapped "
+            + "from the upstream's own 401 or 403"));
     responses.addApiResponse("503", SpecBuilders.errorResponse(
         "AI gateway unreachable, reported with code 'gateway_unreachable'"));
     responses.addApiResponse("504", SpecBuilders.errorResponse(
@@ -299,8 +304,14 @@ public class AiApiSpec implements OpenApiContributor {
   private Schema<?> createConfigSchema() {
     final Schema<Object> schema = SpecBuilders.object("AI assistant configuration");
     schema.addProperty("configured", SpecBuilders.bool(
-        "True once a subscription has been activated"));
+        "True when the assistant can answer: a connected portal whose plan includes it, or an activated gateway key"));
     schema.addProperty("gatewayUrl", SpecBuilders.string("AI gateway endpoint"));
+    schema.addProperty("source", SpecBuilders.string(
+        "Where the answers come from: 'portal' (this server is connected to the customer portal and the plan includes the "
+            + "assistant), 'gateway' (a legacy subscription key) or 'none'. Absent on a server without the portal client"));
+    schema.addProperty("portal", SpecBuilders.freeFormObject(
+        "The state of the customer portal connection: connected, enabled, tier, turns, spent, budget (billed dollars this month), percent, resetsOn, portalUrl, upgradeUrl "
+            + "and, when the plan could not be read, code and message. Never carries the key"));
     schema.addProperty("currentProtocolVersion", SpecBuilders.integer(
         "Protocol version this server prefers"));
     schema.addProperty("supportedProtocolVersions", SpecBuilders.arrayOf(
@@ -346,6 +357,9 @@ public class AiApiSpec implements OpenApiContributor {
     schema.addProperty("commands", SpecBuilders.arrayOf(
         SpecBuilders.ref("AiCommand"),
         "SQL commands the assistant proposes. Absent when it proposes none."));
+    schema.addProperty("charts", SpecBuilders.arrayOf(SpecBuilders.freeFormObject(
+        "{type, title, language, query, x, y[]}: Studio runs the read-only query itself and draws the rows"),
+        "Charts the assistant asks Studio to draw (at most 3, validated by this server). Absent when it asks for none."));
     schema.addProperty("toolCalls", SpecBuilders.arrayOf(
         SpecBuilders.ref("AiToolCall"),
         "Tools the assistant invoked while answering. Absent when it invoked none."));
@@ -411,6 +425,10 @@ public class AiApiSpec implements OpenApiContributor {
         SpecBuilders.ref("AiCommand"),
         "SQL commands the assistant proposed with this reply. Present only on an assistant message "
             + "that proposed at least one."));
+    message.addProperty("charts", SpecBuilders.arrayOf(SpecBuilders.freeFormObject(
+        "{type, title, language, query, x, y[]}: Studio runs the read-only query itself and draws the rows"),
+        "Charts the assistant asked Studio to draw with this reply (at most 3, validated by this server). Present only on an "
+            + "assistant message that asked for at least one."));
     message.setRequired(List.of("role", "content", "timestamp"));
 
     final Schema<Object> schema = SpecBuilders.object(
@@ -458,7 +476,7 @@ public class AiApiSpec implements OpenApiContributor {
         'tool_call' events never appear: the server consumes both and synthesizes the pair above in their place. Any OTHER value is an event the \
         gateway added and this server relays unchanged - ignore what you do not recognise rather than failing \
         on it.""");
-    type.setEnum(List.of("tool_start", "tool_end", "done", "error"));
+    type.setEnum(List.of("tool_start", "tool_end", "delta", "reset", "done", "error"));
 
     final Schema<Object> schema = SpecBuilders.object("""
         One event of the chat stream. 'type' says which one; the other members below belong to the kinds their \
@@ -478,10 +496,21 @@ public class AiApiSpec implements OpenApiContributor {
         Machine-readable reason, on 'error' only: 'gateway_interrupted' when the gateway's connection dropped, \
         'gateway_timeout' when it stopped sending, 'internal_error' otherwise. The same vocabulary as the 'code' member of the error bodies the chat \
         operations answer before a stream starts. The interrupted exchange was not persisted."""));
+    schema.addProperty("text", SpecBuilders.string(
+        "A piece of the reply, on 'delta', when the answer comes through the customer portal. Append the pieces in "
+            + "order; 'reset' voids what was appended"));
+    schema.addProperty("upgrade", SpecBuilders.bool(
+        "On 'error' about the plan ('ai.not_entitled', 'ai.allowance_exhausted'): true when upgrading the plan in the "
+            + "customer portal fixes it"));
+    schema.addProperty("usage", SpecBuilders.freeFormObject(
+        "On 'done', when the answer comes through the customer portal: {spent, budget, percent, turns} of this month's allowance (spent and budget in billed dollars)"));
     schema.addProperty("response", SpecBuilders.string(
         "The assistant's reply, on 'done'. The same value POST /api/v1/ai/chat returns under this name"));
     schema.addProperty("commands", SpecBuilders.arrayOf(SpecBuilders.ref("AiCommand"),
         "SQL commands the assistant proposes, on 'done'. Absent or empty when it proposes none"));
+    schema.addProperty("charts", SpecBuilders.arrayOf(SpecBuilders.freeFormObject(
+        "{type, title, language, query, x, y[]}: Studio runs the read-only query itself and draws the rows"),
+        "Charts the assistant asks Studio to draw, on 'done' (at most 3). Absent when it asks for none"));
     schema.addProperty("chatId", SpecBuilders.string("""
         Chat this exchange belongs to, on 'done'. Added by this server, not by the gateway, and the chat is \
         persisted before this event is written - so a client that has seen it can read the chat back \

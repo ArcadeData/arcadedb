@@ -27,6 +27,7 @@ import com.arcadedb.database.bucketselectionstrategy.BucketSelectionStrategy;
 import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
@@ -81,6 +82,7 @@ import com.arcadedb.query.sql.parser.SchemaIdentifier;
 import com.arcadedb.query.sql.parser.SelectStatement;
 import com.arcadedb.query.sql.parser.SuffixIdentifier;
 import com.arcadedb.query.sql.parser.Statement;
+import com.arcadedb.query.sql.parser.Timeout;
 import com.arcadedb.query.sql.parser.TraverseStatement;
 import com.arcadedb.query.sql.parser.SubQueryCollector;
 import com.arcadedb.query.sql.parser.ValueExpression;
@@ -104,6 +106,7 @@ import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.Pair;
 
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
@@ -195,6 +198,34 @@ public class SelectExecutionPlanner {
     // literal-only comparisons, so the verdict holds for every execution that reuses the cached plan.
     if (info.whereClause != null && info.whereClause.isAlwaysTrue(context))
       info.whereClause = null;
+  }
+
+  /**
+   * Plans the read side of an UPDATE or DELETE: {@code SELECT FROM <target> WHERE <where>}. The synthetic SELECT is its own
+   * original statement, so the plan lands in the execution plan cache under its text and the next execution of the same
+   * UPDATE/DELETE (or of the identical SELECT) takes a copy instead of planning again (issue #9207). Honors the cache
+   * rules of a SELECT: no profiling, no input-parameter dependent plan, no non-cacheable clause.
+   *
+   * @param timeout may be null
+   * @param keyHolder the key memoized on the UPDATE/DELETE statement, so a cache hit builds nothing
+   */
+  static InternalExecutionPlan createSourcePlan(final FromClause target, final WhereClause whereClause, final Timeout timeout,
+      final DmlSourcePlanKey keyHolder, final CommandContext context) {
+    final DatabaseInternal db = context.getDatabase();
+    final long epoch = db.getExecutionPlanCache().getInvalidationEpoch();
+    final String key = context.isProfiling() ? null : keyHolder.resolve(target, whereClause, timeout, epoch);
+    if (key == null)
+      return new SelectExecutionPlanner(DmlSourcePlanKey.newSource(target, whereClause, timeout, null)).createExecutionPlan(context,
+          false);
+
+    final ExecutionPlan cached = db.getExecutionPlanCache().get(key, context);
+    if (cached != null)
+      return (InternalExecutionPlan) cached;
+
+    final InternalExecutionPlan plan = new SelectExecutionPlanner(DmlSourcePlanKey.newSource(target, whereClause, timeout, key))
+        .createExecutionPlan(context, true);
+    keyHolder.planned(db.getExecutionPlanCache().contains(key), epoch, db.getExecutionPlanCache().getInvalidationEpoch());
+    return plan;
   }
 
   public InternalExecutionPlan createExecutionPlan(final CommandContext context, final boolean useCache) {
@@ -466,6 +497,8 @@ public class SelectExecutionPlanner {
         final ProjectionItem item = projection.getItems().getFirst();
         final FunctionCall function = ((BaseExpression) item.getExpression().getMathExpression()).getIdentifier().getLevelZero()
             .getFunctionCall();
+        if (function.getParams() == null || function.getParams().isEmpty())
+          throw new CommandSQLParsingException("distinct() requires one argument: distinct(<expression>)");
         final Expression exp = function.getParams().getFirst();
         final ProjectionItem resultItem = new ProjectionItem();
         resultItem.setAlias(item.getAlias());
@@ -523,6 +556,10 @@ public class SelectExecutionPlanner {
       final CommandContext context) {
     final Identifier targetClass = info.target == null ? null : info.target.getItem().getIdentifier();
     if (targetClass == null)
+      return false;
+
+    // a variable ($parent, a LET) is not a type name: the schema has nothing to count (#9049)
+    if (targetClass.getStringValue().startsWith("$"))
       return false;
 
     if (info.distinct || info.expand)
@@ -599,6 +636,10 @@ public class SelectExecutionPlanner {
         || info.projection.getItems().size() != 1) {
       return false;
     }
+    // THE PROJECTION MUST BE THE AGGREGATE ITSELF: count(*) + 1 SPLITS INTO count(*) PLUS A "+ 1" PROJECTED AFTER IT (ISSUE #8976)
+    final MathExpression projectionMath = info.projection.getItems().getFirst().getExpression().getMathExpression();
+    if (!(projectionMath instanceof BaseExpression projectionBase) || projectionBase.getModifier() != null)
+      return false;
     final ProjectionItem item = info.aggregateProjection.getItems().getFirst();
     return "count(*)".equalsIgnoreCase(item.getExpression().toString());
   }
@@ -855,7 +896,8 @@ public class SelectExecutionPlanner {
     if (preAggExp.getMathExpression() == null || !(preAggExp.getMathExpression() instanceof BaseExpression preAggBase))
       return null;
 
-    if (preAggBase.getIdentifier() == null)
+    // A MODIFIER (s.length(), s.toUpperCase()) MEANS THE INDEXED VALUE IS NOT WHAT IS AGGREGATED (ISSUE #8976)
+    if (preAggBase.getIdentifier() == null || preAggBase.getModifier() != null)
       return null;
 
     // For simple properties like "value", the identifier is in suffix, not levelZero
@@ -976,7 +1018,11 @@ public class SelectExecutionPlanner {
 
       String typeName = info.target.getItem().getIdentifier().getStringValue();
       if (typeName.startsWith("$")) {
-        typeName = (String) context.getVariable(typeName);
+        // only a variable holding a type name can be resolved here: an unset one ($parent at the top level, a script
+        // LET) is resolved at execution time, and one holding RIDs or records is not a type at all (#9049)
+        if (!(context.getVariable(typeName) instanceof final String variableValue) || variableValue.startsWith("#"))
+          return;
+        typeName = variableValue;
         info.target.getItem().setIdentifier(new Identifier(typeName));
       }
 
@@ -1891,7 +1937,7 @@ public class SelectExecutionPlanner {
       else if (name.startsWith("index:"))
         plan.chain(new FetchFromSchemaIndexDetailStep(metadata.getName().substring("index:".length()), context));
       else
-        throw new UnsupportedOperationException("Invalid metadata: " + metadata.getName());
+        throw new CommandExecutionException("Invalid metadata: " + metadata.getName());
     }
     }
   }
@@ -4048,13 +4094,17 @@ public class SelectExecutionPlanner {
           final SelectExecutionPlan nullPlan = new SelectExecutionPlan(context, 0);
           nullPlan.chain(new FetchFromTypeExecutionStep(queryTarget.getStringValue(), filterClusters, context, true));
 
-          // Create IS NULL filter for the first indexed property
-          final String propertyName = indexFields.getFirst();
-          final IsNullCondition isNullCondition = new IsNullCondition();
-          final Expression expr = new Expression(new Identifier(propertyName));
-          isNullCondition.setExpression(expr);
+          // A SKIP index drops a key only when EVERY indexed property is null, so a composite one holds the records whose
+          // first property is null and a later one is not: the null scan is limited to the records the index does not hold,
+          // or those would come back twice (#8978). For a single-property index that is just IS NULL on the property
+          final AndBlock allNull = new AndBlock();
+          for (final String propertyName : indexFields) {
+            final IsNullCondition isNullCondition = new IsNullCondition();
+            isNullCondition.setExpression(new Expression(new Identifier(propertyName)));
+            allNull.getSubBlocks().add(isNullCondition);
+          }
           final WhereClause nullWhereClause = new WhereClause();
-          nullWhereClause.setBaseExpression(isNullCondition);
+          nullWhereClause.setBaseExpression(allNull);
           nullPlan.chain(new FilterStep(nullWhereClause, context));
 
           // Combine: for ASC, NULL records come first; for DESC, NULL records come last
@@ -4143,9 +4193,8 @@ public class SelectExecutionPlanner {
 
     if (conjunct instanceof BinaryCondition binary) {
       final BinaryCompareOperator operator = binary.getOperator();
-      // >= and <= are left out: they answer true for two nulls (WHERE x >= x), so a null row can satisfy them
-      return (operator instanceof EqualsCompareOperator || operator instanceof GtOperator || operator instanceof LtOperator)
-          && isPropertyReference(binary.getLeft(), propertyName);
+      // A comparison with a null operand is unknown, so a null row can never satisfy it (#8979)
+      return operator.isUnknownOnNull() && isPropertyReference(binary.getLeft(), propertyName);
     }
     return false;
   }
@@ -4735,12 +4784,7 @@ public class SelectExecutionPlanner {
    * index metadata must do the same.
    */
   private static List<TypeIndex> plannableIndexes(final Collection<TypeIndex> indexes) {
-    final List<TypeIndex> result = new ArrayList<>(indexes.size());
-    for (final TypeIndex index : indexes) {
-      if (isPlannable(index))
-        result.add(index);
-    }
-    return result;
+    return TypeIndex.filterReadyForQueries(indexes);
   }
 
   /**
@@ -5089,8 +5133,11 @@ public class SelectExecutionPlanner {
             // side of the range)
             while (blockIterator.hasNext()) {
               BooleanExpression next = blockIterator.next();
-              // The other side of a range over field.toLowerCase() is probed lower-cased too, so it must already be
-              if (next.createRangeWith(singleExp) && rangePartnerAllowed(singleExp, next, ciCollation, info)
+              // The other side of a range over field.toLowerCase() is probed lower-cased too, so it must already be.
+              // The other side becomes a key the index scan computes with no record, so it must pass the same
+              // isIndexAware test as the first side: a bound that reads the record (u <= id, u <= w * 100) is not
+              // early calculated and stays in the filter, and the search goes on for a constant partner (issue #9029)
+              if (next.createRangeWith(singleExp) && next.isIndexAware(info) && rangePartnerAllowed(singleExp, next, ciCollation, info)
                   && !hasLossyDecimalLiteralBound(next, clazz, baseFieldName, context)) {
                 additionalRangeCondition = (BinaryCondition) next;
                 blockIterator.remove();
@@ -5130,42 +5177,56 @@ public class SelectExecutionPlanner {
   }
 
   /**
-   * True when a comparison against a property that is not a DECIMAL has a literal BigDecimal bound, a decimal literal a
-   * double cannot hold (issue #8872). A key index converts the bound to its key type, so on a DOUBLE key it would answer for
-   * the rounded bound, and neither the rows it returns nor the ones it leaves out follow the exact comparison a scan makes.
-   * Such a condition is left to the scan, so the indexed and the unindexed query agree.
+   * True when a comparison against a property has a literal bound its key type cannot hold: a BigDecimal on a property that is
+   * not a DECIMAL (issue #8872), or an integer above the range a DOUBLE (2^53) or a FLOAT (2^24) holds exactly (issue #8919). A
+   * key index converts the bound to its key type, so it would answer for the rounded bound, and neither the rows it returns nor
+   * the ones it leaves out follow the exact comparison a scan makes. Such a condition is left to the scan, so the indexed and
+   * the unindexed query agree. A double bound on a FLOAT key is not one of them: the FLOAT reads as equal to the double that
+   * narrows to it on both sides (issue #8882), and the ordering operators follow that rule too.
    */
   private static boolean hasLossyDecimalLiteralBound(final BooleanExpression expression, final DocumentType type, final String field,
       final CommandContext context) {
-    final boolean decimalBound;
-    if (expression instanceof BinaryCondition condition)
-      decimalBound = isDecimalLiteral(condition.getRight(), context);
-    else if (expression instanceof BetweenCondition between)
-      decimalBound = isDecimalLiteral(between.getSecond(), context) || isDecimalLiteral(between.getThird(), context);
-    else if (expression instanceof InCondition in)
-      decimalBound = hasDecimalLiteralElement(in, context);
-    else
-      return false;
-    if (!decimalBound)
-      return false;
-    // a null property is unreachable (an index needs a declared property); treated as lossy to stay on the safe scan path
-    // any non-DECIMAL key type (DOUBLE, FLOAT, INTEGER, LONG) would round or truncate the bound; the scan is slower but exact
     final Property property = type.getPropertyIfExists(field);
-    return property == null || property.getType() != Type.DECIMAL;
-  }
-
-  private static boolean hasDecimalLiteralElement(final InCondition in, final CommandContext context) {
-    final MathExpression right = in.getRightMathExpression();
-    if (right == null || !right.isLiteral() || !(right.execute((Result) null, context) instanceof Collection<?> values))
-      return false;
-    for (final Object value : values)
-      if (value instanceof BigDecimal)
-        return true;
+    if (expression instanceof BinaryCondition condition)
+      return isLossyBound(literalValue(condition.getRight(), context), property);
+    if (expression instanceof BetweenCondition between)
+      return isLossyBound(literalValue(between.getSecond(), context), property)
+          || isLossyBound(literalValue(between.getThird(), context), property);
+    if (expression instanceof InCondition in) {
+      final MathExpression right = in.getRightMathExpression();
+      if (right == null || !right.isLiteral() || !(right.execute((Result) null, context) instanceof Collection<?> values))
+        return false;
+      for (final Object value : values)
+        if (isLossyBound(value, property))
+          return true;
+    }
     return false;
   }
 
-  private static boolean isDecimalLiteral(final Expression expression, final CommandContext context) {
-    return expression != null && expression.isLiteral() && expression.execute((Result) null, context) instanceof BigDecimal;
+  private static Object literalValue(final Expression expression, final CommandContext context) {
+    return expression != null && expression.isLiteral() ? expression.execute((Result) null, context) : null;
+  }
+
+  private static boolean isLossyBound(final Object bound, final Property property) {
+    if (bound instanceof BigDecimal)
+      // a null property is unreachable (an index needs a declared property); treated as lossy to stay on the safe scan path
+      // any non-DECIMAL key type (DOUBLE, FLOAT, INTEGER, LONG) would round or truncate the bound; the scan is slower but exact
+      return property == null || property.getType() != Type.DECIMAL;
+    if (property == null || !(bound instanceof Byte || bound instanceof Short || bound instanceof Integer || bound instanceof Long
+        || bound instanceof BigInteger))
+      return false;
+    final long exactLimit;
+    switch (property.getType()) {
+    case DOUBLE -> exactLimit = 1L << 53;
+    case FLOAT -> exactLimit = 1L << 24;
+    default -> {
+      return false;
+    }
+    }
+    if (bound instanceof BigInteger bigInteger)
+      return bigInteger.abs().compareTo(BigInteger.valueOf(exactLimit)) > 0;
+    final long value = ((Number) bound).longValue();
+    return value > exactLimit || value < -exactLimit;
   }
 
   /**

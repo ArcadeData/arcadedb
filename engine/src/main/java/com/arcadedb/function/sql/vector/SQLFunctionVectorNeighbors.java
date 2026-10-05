@@ -73,6 +73,9 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
     if (params == null || params.length < 3 || params.length > 4)
       throw new CommandSQLParsingException(getSyntax());
 
+    if (params[0] == null)
+      throw new CommandSQLParsingException("index name is null");
+
     final String indexSpec = params[0].toString();
 
     Object key = params[1];
@@ -149,11 +152,11 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
           "No vector index found on property '" + propertyName + "' for type '" + specifiedTypeName + "' or its parent types");
     }
 
-    // Get the bucket IDs that belong to the specified type (not polymorphic - just this type's own buckets).
+    // Get the bucket IDs that belong to the specified type and of its sub-types (issue #8958): the parent spec is the cross-type search.
     // IntHashSet is zero-boxing - the contains() in executeWithTypeIndex runs once per bucket index per
     // vector query, and avoiding Integer boxing on every probe matters under sustained ANN workloads.
     IntHashSet allowedBucketIds = new IntHashSet();
-    for (final Bucket bucket : specifiedType.getBuckets(false)) {
+    for (final Bucket bucket : specifiedType.getBuckets(true)) {
       allowedBucketIds.add(bucket.getFileId());
     }
 

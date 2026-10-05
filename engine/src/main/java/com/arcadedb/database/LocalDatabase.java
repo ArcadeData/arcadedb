@@ -213,6 +213,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   public final       AtomicLong                                indexCompactions          = new AtomicLong();
+  // #8649: count() recomputes not cached because a replicated apply wrote the bucket without its lock during the scan
+  public final       AtomicLong                                recountPublishesRefused   = new AtomicLong();
   protected final    String                                    name;
   protected final    ComponentFile.MODE                        mode;
   protected final    ContextConfiguration                      configuration;
@@ -616,6 +618,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   public Map<String, Object> getStats() {
     final Map<String, Object> map = stats.toMap();
     map.put("indexCompactions", indexCompactions.get());
+    map.put("recountPublishesRefused", recountPublishesRefused.get());
     return map;
   }
 
@@ -1694,6 +1697,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * and the commit-time {@code updatedRecords} flush - is deliberately unguarded here, because the check already ran
    * once for it. A NEW direct caller that opens its own transaction and then calls this is therefore the one shape
    * that would slip through both: route it through {@link #updateRecord(Record)} instead of adding a third bypass.
+   * <p>
+   * <b>Indexes are not maintained while the transaction is in {@code COMMIT_1ST_PHASE} (#8983).</b> The only caller there
+   * is the flush of deferred updates, whose index changes {@code updateRecord()} queued at save time; indexing again would
+   * write them twice. A new caller running in that phase must queue its own index changes. For the same reason the index
+   * follows the last {@code save()}: a property changed after it and before commit is not re-indexed.
    */
   @Override
   public void updateRecordNoLock(final Record record, final boolean discardRecordAfter) {
@@ -1717,8 +1725,13 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         }
       }
 
-      final List<IndexInternal> indexes = record instanceof Document d ? indexer.getInvolvedIndexes(d) :
-          Collections.emptyList();
+      // #8983: the commit-time flush of a deferred update runs in COMMIT_1ST_PHASE, and the index changes of that update
+      // were already queued by updateRecord() when it was saved. Indexing again here diffs against the committed buffer
+      // and, because the status is no longer BEGUN, writes the index directly (outside the queue and before the unique
+      // check), so the queue replay then applies the same change a second time.
+      final List<IndexInternal> indexes =
+          record instanceof Document d && getTransaction().getStatus() != TransactionContext.STATUS.COMMIT_1ST_PHASE ?
+              indexer.getInvolvedIndexes(d) : Collections.emptyList();
 
       if (!indexes.isEmpty()) {
         // UPDATE THE INDEXES TOO
@@ -1765,6 +1778,28 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   @Override
   public boolean deleteRecordNoLock(final Record record) {
     return deleteRecordNoLock(record, null);
+  }
+
+  /**
+   * #8984: a record this transaction read from its bucket and then finds gone at the delete was removed by a concurrent
+   * transaction that committed in between (nothing else can take it: this transaction's own delete is excluded), which is the
+   * conflict {@code UPDATE} and REPEATABLE_READ already report. Retrying re-reads the data and no longer sees the record.
+   * Anything else keeps the not-found: a reference that was never read from the bucket (a lazy handle, a stale edge entry, a RID
+   * held past a delete) names a record that is gone for good, and no retry can change that (#6572, #6586).
+   * <p>
+   * Limit: only an {@link ImmutableDocument} carries the read marker. A record turned into a {@code MutableDocument} by
+   * {@code modify()} and then deleted keeps the not-found, since the mutable copy does not remember where it was read.
+   */
+  private RuntimeException asConcurrentDeleteIfReadHere(final Record record, final RecordNotFoundException e) {
+    final RID rid = record.getIdentity();
+    if (rid.equals(e.getRID()) && record instanceof ImmutableDocument document) {
+      final TransactionContext tx = getTransaction();
+      if (!tx.isDeletedInTransaction(rid) && document.wasLoadedInTransaction(tx.getBeginSequence()))
+        return new ConcurrentModificationException(
+            "Record " + rid + " was deleted by a concurrent transaction after it was read in this transaction. Please retry the operation",
+            e);
+    }
+    return e;
   }
 
   /**
@@ -1840,40 +1875,44 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         // comes back as BrokenChunkChainException on an attempt that is not racing a publication.
       }
 
-      if (record instanceof Edge edge) {
-        graphEngine.deleteEdge(edge, skipEdgeEndpoint);
-      } else if (record instanceof Vertex) {
-        try {
-          graphEngine.deleteVertex((VertexInternal) record, forceBrokenChainDelete);
-        } catch (final BrokenChunkChainException e) {
-          // The record body could not be assembled to reach the vertex's edge lists, and the loader has already
-          // confirmed why (#6258): no structural probe needed, only the opt-in and the guard against re-forcing a
-          // delete that was already forced.
-          if (!tolerateBrokenChain || forceBrokenChainDelete)
-            throw e;
-          logBrokenChainForcePhysicalDelete(record.getIdentity(), e);
-          graphEngine.deleteVertex((VertexInternal) record, true);
+      try {
+        if (record instanceof Edge edge) {
+          graphEngine.deleteEdge(edge, skipEdgeEndpoint);
+        } else if (record instanceof Vertex) {
+          try {
+            graphEngine.deleteVertex((VertexInternal) record, forceBrokenChainDelete);
+          } catch (final BrokenChunkChainException e) {
+            // The record body could not be assembled to reach the vertex's edge lists, and the loader has already
+            // confirmed why (#6258): no structural probe needed, only the opt-in and the guard against re-forcing a
+            // delete that was already forced.
+            if (!tolerateBrokenChain || forceBrokenChainDelete)
+              throw e;
+            logBrokenChainForcePhysicalDelete(record.getIdentity(), e);
+            graphEngine.deleteVertex((VertexInternal) record, true);
+          }
+          // NO ConcurrentModificationException ARM: see the index-cleanup branch above (#6282). Both sources of a CME
+          // here have already asked the stronger question and declined to confirm - the loader for the read of the
+          // edge lists, deleteRecordInternal for the physical free - so the answer is a retry, not a force.
+        } else {
+          try {
+            bucket.deleteRecord(record.getIdentity(), forceBrokenChainDelete);
+          } catch (final BrokenChunkChainException e) {
+            // THE ARM #6258 LEFT OUT AS DEAD CODE, LIVE SINCE #6282: deleteRecordInternal walks the chunk chain itself
+            // and never loads the record, so it used to report a break as the #4932 retry signal and this branch had
+            // to walk the chain a second time to find out which of the two it was holding. It now confirms the break
+            // against the newest committed image and says so, exactly as the loader does for the vertex branch above.
+            if (!tolerateBrokenChain || forceBrokenChainDelete)
+              throw e;
+            logBrokenChainForcePhysicalDelete(record.getIdentity(), e);
+            bucket.deleteRecord(record.getIdentity(), true);
+          }
+          // NO ConcurrentModificationException ARM: see the index-cleanup branch above (#6282). deleteRecordInternal
+          // raises this only for a break its own confirmation could NOT prove - a chain caught mid-publication, or one
+          // that broke somewhere else in the committed image - and for the ordinary page conflicts of a busy bucket.
+          // Every one of those is answered by retrying, none of them by deleting.
         }
-        // NO ConcurrentModificationException ARM: see the index-cleanup branch above (#6282). Both sources of a CME
-        // here have already asked the stronger question and declined to confirm - the loader for the read of the
-        // edge lists, deleteRecordInternal for the physical free - so the answer is a retry, not a force.
-      } else {
-        try {
-          bucket.deleteRecord(record.getIdentity(), forceBrokenChainDelete);
-        } catch (final BrokenChunkChainException e) {
-          // THE ARM #6258 LEFT OUT AS DEAD CODE, LIVE SINCE #6282: deleteRecordInternal walks the chunk chain itself
-          // and never loads the record, so it used to report a break as the #4932 retry signal and this branch had
-          // to walk the chain a second time to find out which of the two it was holding. It now confirms the break
-          // against the newest committed image and says so, exactly as the loader does for the vertex branch above.
-          if (!tolerateBrokenChain || forceBrokenChainDelete)
-            throw e;
-          logBrokenChainForcePhysicalDelete(record.getIdentity(), e);
-          bucket.deleteRecord(record.getIdentity(), true);
-        }
-        // NO ConcurrentModificationException ARM: see the index-cleanup branch above (#6282). deleteRecordInternal
-        // raises this only for a break its own confirmation could NOT prove - a chain caught mid-publication, or one
-        // that broke somewhere else in the committed image - and for the ordinary page conflicts of a busy bucket.
-        // Every one of those is answered by retrying, none of them by deleting.
+      } catch (final RecordNotFoundException e) {
+        throw asConcurrentDeleteIfReadHere(record, e);
       }
 
       success = true;

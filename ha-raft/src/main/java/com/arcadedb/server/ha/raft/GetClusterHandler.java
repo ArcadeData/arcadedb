@@ -128,6 +128,9 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
     // or EXCEPTION cannot vote or accept a leader's contact - surfacing it here is the only way an
     // operator can see that the cluster is running without failover margin.
     response.put("raftState", raftHAServer.getRaftLifeCycleState().name());
+    // What raftState cannot show (issue #8900): a division can report RUNNING while the leader's appends never reach
+    // it. How long ago this follower last heard from its leader, -1 on the leader or with no leader known.
+    response.put("leaderContactElapsedMs", raftHAServer.getLeaderContactElapsedMs());
 
     // The raw role is not the same as the ability to serve: a node that has just won an election
     // rejects writes with the retryable LeaderNotReadyException until it has committed its
@@ -257,16 +260,8 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
           raftHAServer.getPeerCapabilityRegistry().freshAdvertisementOf(peerId);
       final boolean published = putPeerCapabilities(peerJson, peerId, localPeerId.toString(), advertisement,
           raftHAServer.getAdvertisedCapabilities());
-      if (!published) {
-        // An absent capabilities field reads the same whether this peer runs a build that predates the route or
-        // was never asked because its address identifies no single peer - and the remedies are nothing alike, the
-        // second being "declare each node's 'http' port" (#6202) rather than "finish the upgrade". Written
-        // whenever this node has a reason to give (issues #7256, #7549); unknownReasonOf answers null when it has
-        // none, which is what a node that has not finished its first round has.
-        final String unknownReason = raftHAServer.getPeerCapabilityRegistry().unknownReasonOf(peerId);
-        if (unknownReason != null)
-          peerJson.put("capabilitiesUnknownReason", unknownReason);
-      }
+      if (!published)
+        putPeerCapabilitiesUnknown(peerJson, raftHAServer.getPeerCapabilityRegistry().unknownOf(peerId));
 
       final HAReplicationStatsProvider.FollowerSample health = followerHealth.get(peerId);
       if (!peerIsLeader && health != null) {
@@ -550,6 +545,29 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
     }
 
     return false;
+  }
+
+  /**
+   * Says why a peer row carries no {@code capabilities}, when this node knows why.
+   * <p>
+   * An absent capabilities field reads the same whether the peer runs a build that predates the route or was never
+   * asked because its address identifies no single peer - and the remedies are nothing alike, the second being
+   * "declare each node's 'http' port" (#6202) rather than "finish the upgrade". Written whenever this node has a
+   * reason to give (issues #7256, #7549); {@code unknown} is null when it has none, which is what a node that has not
+   * finished its first round has.
+   * <p>
+   * {@code capabilitiesUnknownKind} is the same verdict for a client that has to act on it (issue #8655). A follower's
+   * probe is its own view, and Studio there gates nothing on a peer only this node could not reach, because the leader
+   * decides on its own probe. A {@code ROUTE_MISSING} peer is different: it answered that it has no capability route,
+   * which the leader's probe hears too, so the client can gate on it without matching the reason's text.
+   * Package-private and static so the row can be pinned without a cluster.
+   */
+  // @VisibleForTesting
+  static void putPeerCapabilitiesUnknown(final JSONObject peerJson, final PeerCapabilityRegistry.Unknown unknown) {
+    if (unknown == null)
+      return;
+    peerJson.put("capabilitiesUnknownReason", unknown.reason());
+    peerJson.put("capabilitiesUnknownKind", unknown.kind().name());
   }
 
   /** A capability set as a stable, sorted JSON array, so two peers' documents can be diffed by eye. */

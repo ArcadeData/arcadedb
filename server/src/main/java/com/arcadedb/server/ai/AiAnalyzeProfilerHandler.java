@@ -29,6 +29,7 @@ import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
 import com.arcadedb.server.http.handler.ExecutionResponse;
 import com.arcadedb.server.info.SchemaInfo;
 import com.arcadedb.server.security.ServerSecurityUser;
+import com.arcadedb.server.support.SupportPortalException;
 import io.undertow.server.HttpServerExchange;
 
 import java.io.IOException;
@@ -63,11 +64,19 @@ public class AiAnalyzeProfilerHandler extends AbstractServerHttpHandler {
 
   private final ArcadeDBServer server;
   private final AiConfiguration config;
+  private final AiPortal        portal;
 
   public AiAnalyzeProfilerHandler(final HttpServer httpServer, final ArcadeDBServer server, final AiConfiguration config) {
+    this(httpServer, server, config, new AiPortal(server, config));
+  }
+
+  /** @param portal where the analysis comes from when the server is connected to the customer portal */
+  public AiAnalyzeProfilerHandler(final HttpServer httpServer, final ArcadeDBServer server, final AiConfiguration config,
+      final AiPortal portal) {
     super(httpServer);
     this.server = server;
     this.config = config;
+    this.portal = portal;
   }
 
   @Override
@@ -77,7 +86,8 @@ public class AiAnalyzeProfilerHandler extends AbstractServerHttpHandler {
 
   @Override
   protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final JSONObject payload) {
-    if (!config.isConfigured())
+    final AiPortal.Source source = portal.source();
+    if (source == AiPortal.Source.NONE)
       return new ExecutionResponse(400,
           new JSONObject().put("error", "AI assistant is not configured. Please configure config/ai.json.").toString());
 
@@ -91,6 +101,9 @@ public class AiAnalyzeProfilerHandler extends AbstractServerHttpHandler {
     try {
       // Collect schemas for all databases referenced in profiler data
       final JSONObject schemas = collectDatabaseSchemas(profilerData, user);
+
+      if (source == AiPortal.Source.PORTAL)
+        return analyzeThroughPortal(profilerData, schemas);
 
       final JSONObject gatewayRequest = new JSONObject();
       gatewayRequest.put("profilerData", profilerData);
@@ -112,6 +125,8 @@ public class AiAnalyzeProfilerHandler extends AbstractServerHttpHandler {
       throw e;
     } catch (final AiTokenException e) {
       return new ExecutionResponse(e.getHttpStatus(), e.getJsonResponse());
+    } catch (final SupportPortalException e) {
+      return AiChatHandler.portalError(e);
     } catch (final ConnectException | HttpConnectTimeoutException e) {
       LogManager.instance().log(this, Level.WARNING, "AI gateway unreachable: %s", e.getMessage());
       return new ExecutionResponse(503, new JSONObject()//
@@ -132,6 +147,37 @@ public class AiAnalyzeProfilerHandler extends AbstractServerHttpHandler {
       return new ExecutionResponse(500, new JSONObject()//
           .put("error", "An unexpected error occurred. Please try again later.").toString());
     }
+  }
+
+  /** The analysis as one turn without tools (contract mode {@code profiler}); the answer is collected and returned as JSON. */
+  private ExecutionResponse analyzeThroughPortal(final JSONObject profilerData, final JSONObject schemas) throws Exception {
+    final AiPortalClient client = portal.client();
+    if (client == null)
+      return new ExecutionResponse(400, new JSONObject().put("error", "AI assistant is not configured.").toString());
+
+    // The contract: the capture itself under 'profiler', the schemas of the databases it names beside it
+    final JSONObject request = new JSONObject().put("mode", "profiler").put("message", "Analyze this profiler capture.")
+        .put("profiler", profilerData);
+    if (schemas.length() > 0)
+      request.put("schemas", schemas);
+
+    final AiPortalChat.Answer answer = new AiPortalChat(client, gatewayTimeoutMs).run(request, null, new AiPortalChat.Sink() {
+      @Override
+      public void open() {
+      }
+
+      @Override
+      public void event(final JSONObject event) {
+      }
+
+      @Override
+      public void heartbeat() {
+      }
+    });
+    final JSONObject result = new JSONObject().put("response", answer.response());
+    if (answer.commands().length() > 0)
+      result.put("commands", answer.commands());
+    return new ExecutionResponse(200, result.toString());
   }
 
   /**

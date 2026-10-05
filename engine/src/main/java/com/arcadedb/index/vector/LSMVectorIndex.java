@@ -115,6 +115,7 @@ import java.util.PriorityQueue;
 import java.util.Set;
 import java.util.Timer;
 import java.util.TimerTask;
+import java.util.WeakHashMap;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.ForkJoinTask;
@@ -128,6 +129,7 @@ import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.logging.Level;
@@ -235,6 +237,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private volatile boolean                       persistedGraphUnresolved = true;
   private volatile ImmutableGraphIndex           graphIndex;        // Current graph (OnHeap or OnDisk)
   private volatile int[]                         ordinalToVectorId; // Maps graph ordinals to vector IDs
+  // The lookups of the ordinal maps a renumbering compaction translated while the old graph was resident: such a map holds -1 for
+  // the ordinals whose vector is gone, so it is not sorted and a lookup by vector id cannot binary search it (issue #9241). Keyed
+  // by the identity of the map, so a query holding a map always finds the lookup that belongs to it, and the entry goes with the map.
+  private final Map<int[], OrdinalLookup> renumberedLookups = Collections.synchronizedMap(new WeakHashMap<>());
+
+  /** The live ids of an ordinal map holding -1 entries, ascending, and the ordinal of each: a binary search over primitives */
+  private record OrdinalLookup(int[] vectorIds, int[] ordinals) {
+    int ordinalOf(final int vectorId) {
+      final int position = Arrays.binarySearch(vectorIds, vectorId);
+      return position < 0 ? -1 : ordinals[position];
+    }
+  }
   // Lightweight pointer index. Volatile and swapped as a whole (never cleared and refilled in place) so the
   // readers that take no lock - countEntries() and getStats() - always see a complete location set instead of a
   // rebuild in progress (issue #5568). Everything else reaches it through lock.readLock().
@@ -263,6 +277,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private volatile boolean                       materializedUnderWriteLock;
   private final    AtomicInteger                 nextId;
   private final    AtomicReference<INDEX_STATUS> status;
+  /**
+   * Set once a graph build left records out because they share a vector id. A compaction of such an index declines
+   * (it would erase the shared ids from the pages), so the garbage-ratio trigger must stop asking: each ask is a
+   * full graph build that reclaims nothing, repeated after every commit. Cleared only by a new index instance,
+   * which is what the rebuild of CHECK DATABASE FIX produces, or by a later build that finds nothing left out. In
+   * memory only: after a restart the first build sets it again, at the cost of one build.
+   */
+  private volatile boolean compactionBlockedBySharedIds;
+  /** Records the last build left out of the graph for sharing a vector id; in memory only, like the block above. */
+  private volatile int     recordsLeftOutBySharedIds;
   // Set once the ignored location-cache limit has been reported, so a rebuild does not repeat the warning.
   // compareAndSet, not a plain flag: two threads racing the first call would otherwise both log it.
   private final    AtomicBoolean                 locationCacheCapReported = new AtomicBoolean();
@@ -339,6 +363,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
   // that a build has passed the point after which further mutations are preserved rather than folded into the
   // build's own snapshot (issue #3683).
   private volatile long    rebuildSnapshotGeneration = 0;
+  /**
+   * The data file this compaction holds the commit lock of, or -1. Only touched under {@code graphBuildLock}. The commits of the
+   * index are held off for the page read, the document scan fallback when pages miss vectors, and the rewrite.
+   */
+  private          int     compactionFileLock = -1;
 
   // Dedicated ForkJoinPool for graph building, so we can shut it down on close() to cancel
   // long-running build operations that would otherwise block server shutdown.
@@ -681,6 +710,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // each >= their rank), so a renumbered entry is never bigger on disk than the one it replaces.
         final List<VectorEntryForGraphBuild> sorted = new ArrayList<>(liveEntries);
         sorted.sort((a, b) -> Integer.compare(a.vectorId, b.vectorId));
+        // the old id of each entry, ascending: the position of an old id is its new one (issue #9241)
+        final int[] oldVectorIds = new int[sorted.size()];
+        for (int i = 0; i < oldVectorIds.length; i++)
+          oldVectorIds[i] = sorted.get(i).vectorId;
 
         final List<MutablePage> newPages = new ArrayList<>();
         final int pageSize = getPageSize();
@@ -773,6 +806,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // entry's bytes, or the dropped compacted component through a null reference.
         publishLocationIndex(liveEntries);
 
+        // The renumbering reissued every id, and what is resident still speaks the old ones until the graph this build is about
+        // to make is published: the resident graph's ordinal map and the pending entries of the delta buffer. Both are
+        // translated here, in the critical section of the swap, rather than dropped (the buffer was emptied for issue #9071,
+        // which made every record added since the last build unsearchable for the whole build, issue #9241). An id that is no
+        // longer live (deleted, or superseded by a newer vector of its record) has no new one: its ordinal answers -1, which
+        // every reader of the map treats as a vector that is gone. The write lock is held.
+        renumberResidentIds(oldVectorIds);
+
         // The rename and the schema re-keying are ONE step and must stay adjacent: `indexName` is volatile and read
         // without this lock (getName(), which is what TransactionIndexContext keys a lane by), so between these two
         // statements the index answers to a name the schema does not know yet - a milder recurrence of the very bug
@@ -857,6 +898,58 @@ public class LSMVectorIndex implements Index, IndexInternal {
       LogManager.instance().log(this, Level.WARNING, "Error dropping the file replaced by the compaction of '%s': %s",
           indexName, e.getMessage());
     }
+  }
+
+  private static OrdinalLookup lookupOf(final int[] map) {
+    int live = 0;
+    for (final int vectorId : map)
+      if (vectorId >= 0)
+        live++;
+    final int[] vectorIds = new int[live];
+    final int[] ordinals = new int[live];
+    // the live ids are ascending, as in the map this one was translated from
+    for (int ordinal = 0, i = 0; ordinal < map.length; ordinal++)
+      if (map[ordinal] >= 0) {
+        vectorIds[i] = map[ordinal];
+        ordinals[i++] = ordinal;
+      }
+    return new OrdinalLookup(vectorIds, ordinals);
+  }
+
+  /**
+   * Translates the ids the resident graph's ordinal map and the delta buffer hold into the ids a renumbering compaction
+   * handed out. Called with the write lock held, in the section that swaps the data file and publishes the new location
+   * index, so no reader sees one generation of ids through the other (issue #9241).
+   *
+   * @param oldVectorIds the ids of the live set before the renumbering, ascending; the position of an id is its new id
+   */
+  private void renumberResidentIds(final int[] oldVectorIds) {
+    final int[] oldOrdinalMap = ordinalToVectorId;
+    if (oldOrdinalMap != null && oldOrdinalMap.length > 0) {
+      final int[] renumbered = new int[oldOrdinalMap.length];
+      boolean anyDead = false;
+      // both are ascending: one pass over the two
+      for (int ordinal = 0, next = 0; ordinal < renumbered.length; ordinal++) {
+        final int oldId = oldOrdinalMap[ordinal];
+        while (next < oldVectorIds.length && oldVectorIds[next] < oldId)
+          next++;
+        final boolean live = next < oldVectorIds.length && oldVectorIds[next] == oldId;
+        renumbered[ordinal] = live ? next : -1;
+        anyDead |= !live;
+      }
+      if (anyDead)
+        renumberedLookups.put(renumbered, lookupOf(renumbered));
+      ordinalToVectorId = renumbered;
+    }
+
+    final List<DeltaVectorEntry> renumberedDelta = new ArrayList<>(deltaVectors.size());
+    for (final DeltaVectorEntry entry : deltaVectors) {
+      final int newId = Arrays.binarySearch(oldVectorIds, entry.vectorId);
+      if (newId >= 0)
+        renumberedDelta.add(new DeltaVectorEntry(newId, entry.rid, entry.vector));
+    }
+    deltaVectors = renumberedDelta;
+    recountDeltaResidentPayloads();
   }
 
   /**
@@ -2691,7 +2784,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
       if (ordinal < 0 || ordinal >= graphNodes || ordinal >= ordinalToVectorId.length)
         continue;
       final int vectorId = ordinalToVectorId[ordinal];
-      if (!alreadyQueued.contains(vectorId))
+      // -1: the vector is gone (a map translated by a compaction)
+      if (vectorId >= 0 && !alreadyQueued.contains(vectorId))
         candidates[count++] = vectorId;
     }
     return count == candidates.length ? candidates : Arrays.copyOf(candidates, count);
@@ -2999,7 +3093,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // The persist keeps opening a transaction of its own (issue #7058) - it now opens it on the suspended
       // thread's fresh context, so it cannot reach the caller's at all rather than merely promising not to.
       try (final CommittedReadScope ignored = CommittedReadScope.open(database)) {
-        buildGraphFromScratchExclusively(graphCallback, compactDataFile, releaseResidentGraphFirst);
+        // A compaction reads the live set off the pages and then replaces the data file with a rewrite of it: whatever a
+        // commit adds to the old file in between is in neither, and the old file is then dropped (issue #9071). The commits
+        // of this index are kept out from before the pages are read until the new file is in, which is the only span where
+        // the live set has to equal the file. Released by the build as soon as the rewrite is done, so the graph build that
+        // follows does not hold writers up.
+        compactionFileLock = compactDataFile ? lockDataFileForCompaction() : -1;
+        try {
+          buildGraphFromScratchExclusively(graphCallback, compactDataFile, releaseResidentGraphFirst);
+        } finally {
+          releaseCompactionFileLock();
+        }
       }
     } finally {
       // The scan work this build was meant to make unnecessary has been paid for; start the amortization window
@@ -3015,6 +3119,42 @@ public class LSMVectorIndex implements Index, IndexInternal {
       deltaScanWorkSinceRebuild.set(0L);
       graphBuildLock.unlock();
     }
+  }
+
+  /**
+   * Takes the lock commits take on this index's data file, waiting as long as a commit waits for it, so that no commit can add to
+   * the file while a compaction reads its live set and swaps the rewrite in (issue #9071). Commits lock their files before they take
+   * the index lock and so does this, in the same order. When the lock is already held by this thread (the rewrite itself asks for
+   * it too) nothing is taken and nothing is released here.
+   *
+   * Lock order: this runs under {@code graphBuildLock}, and no commit path takes the file lock and then {@code graphBuildLock}
+   * (commits take the file lock, then the index lock; only searches and rebuild threads take {@code graphBuildLock}, holding no file
+   * lock), so the two cannot invert. A {@link TimeoutException} is what {@link #compact()} treats as "retry later".
+   * <p>
+   * Only the mutable data file is locked, not every file of the index: it is the one the rewrite replaces and the only one commits
+   * append to (the compacted sub-index is read-only).
+   *
+   * @return the file id to release, or -1 when this call did not take the lock
+   *
+   * @throws TimeoutException when the commits of the index did not leave the file free: the compaction is retried later
+   */
+  private int lockDataFileForCompaction() {
+    final DatabaseInternal database = getDatabase();
+    final int fileId = getFileId();
+    final LockManager.LOCK_STATUS locked = database.getTransactionManager().tryLockFile(fileId,
+        database.getConfiguration().getValueAsLong(GlobalConfiguration.COMMIT_LOCK_TIMEOUT), Thread.currentThread());
+    if (locked == LockManager.LOCK_STATUS.NO)
+      throw new TimeoutException("Cannot compact vector index '" + indexName + "': timeout locking file " + fileId);
+    return locked == LockManager.LOCK_STATUS.YES ? fileId : -1;
+  }
+
+  /** Lets the commits of this index in again. Idempotent: the build releases it after the rewrite and the caller on every exit. */
+  private void releaseCompactionFileLock() {
+    final int fileId = compactionFileLock;
+    if (fileId < 0)
+      return;
+    compactionFileLock = -1;
+    getDatabase().getTransactionManager().unlockFile(fileId, Thread.currentThread());
   }
 
   private void buildGraphFromScratchExclusively(final GraphBuildCallback graphCallback, final boolean compactDataFile,
@@ -3058,7 +3198,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     //
     // The read lock is all it takes: writers mutate both under the write lock, and holding it for two volatile
     // reads costs a rebuild nothing next to the build it is about to run.
-    final int deltaSnapshotId;
+    int deltaSnapshotId;
     final int mutationsAtBuildStart;
     lock.readLock().lock();
     try {
@@ -3107,7 +3247,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // CRITICAL FIX: Collect vectors DIRECTLY from pages instead of from vectorIndex.
     // This avoids race conditions where concurrent replication adds entries to vectorIndex
     // that don't yet exist on disk pages. We iterate pages and read what's actually persisted.
-    final Map<RID, VectorEntryForGraphBuild> ridToLatestVector = new HashMap<>(Math.max(16, vectorIndex().size() * 4 / 3));
+    final LiveSetReplay replay = new LiveSetReplay(Math.max(16, vectorIndex().size() * 4 / 3));
+    final Map<RID, VectorEntryForGraphBuild> ridToLatestVector = replay.byRid;
     final int[] totalEntriesRead = { 0 };
     final int[] filteredDeletedVectors = { 0 };
 
@@ -3129,7 +3270,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
             totalEntriesRead[0]++;
             if (entry.deleted)
               filteredDeletedVectors[0]++;
-            mergeEntryIntoLiveSet(ridToLatestVector, entry, true);
+            replay.accept(entry, true);
           });
     }
 
@@ -3139,7 +3280,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       totalEntriesRead[0]++;
       if (entry.deleted)
         filteredDeletedVectors[0]++;
-      mergeEntryIntoLiveSet(ridToLatestVector, entry, false);
+      replay.accept(entry, false);
     });
 
     // Build ordinal mapping from deduplicated vectors read directly from pages
@@ -3229,6 +3370,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
       }
     }
 
+    final boolean leftRecordsOut = collapseToWhatALoadKeeps(replay);
+
     // COMPACTION (issue #5516 follow-up): the live set just computed IS the compacted content of this index, so
     // when the caller asked for a compaction the data file is rewritten here, from the very same set the graph is
     // about to be built on. Doing it in the rebuild instead of in a separate compactor is what keeps the two from
@@ -3236,8 +3379,31 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // (validation, preload, vectorIndex re-sync, graph build) transparently uses the compacted file.
     // A completed rewrite already re-published the location index against the new file, inside the critical section
     // that swapped it - re-publishing an identical copy below would only reopen the window it closed (issue #5568).
-    final boolean locationIndexAlreadyPublished = compactDataFile && rewriteDataFileWithLiveEntries(
+    // Not when records were just left out: rewriting the data file from the collapsed set would erase the losers'
+    // entries from the pages, and with them the only evidence of how two records came to share an id.
+    if (compactDataFile && leftRecordsOut)
+      LogManager.instance().log(this, Level.WARNING,
+          "Compaction of index %s did not rewrite its data file: records were left out for sharing a vector id, and "
+              + "rewriting would erase them from the pages. Run CHECK DATABASE FIX to rebuild the index",
+          indexName);
+    final boolean locationIndexAlreadyPublished = compactDataFile && !leftRecordsOut && rewriteDataFileWithLiveEntries(
         ridToLatestVector.values());
+    if (locationIndexAlreadyPublished) {
+      // (The file lock is held here: it was taken by this build, or by a caller that holds it for the whole build.)
+      // The rewrite renumbered every vector and reset the id sequence to the dense count, so the snapshot taken above is a
+      // high-water mark of ids that no longer exist: kept, it would trim as "already in the graph" the ids the next commits
+      // hand out below it (issue #9071). Nothing has been committed since the pages were read, so the current sequence is the
+      // first id this build does not cover.
+      lock.readLock().lock();
+      try {
+        deltaSnapshotId = nextId.get();
+      } finally {
+        lock.readLock().unlock();
+      }
+    }
+    // The file is final now, and the commits held off since the pages were read can go on: the ids they hand out continue
+    // the dense sequence the rewrite just set
+    releaseCompactionFileLock();
 
     // Rebuild ordinal mapping (may have changed after document scan fallback)
     final int[] finalActiveVectorIdsFromPages = ridToLatestVector.values().stream()
@@ -6339,6 +6505,286 @@ public class LSMVectorIndex implements Index, IndexInternal {
     return ordinalToVectorId;
   }
 
+  /**
+   * Which record holds each vector id after a replay of the pages, in primitives.
+   * <p>
+   * Ids are dense in the usual case, so they index arrays directly; the arrays only grow while the id stays within
+   * twice the number of entries seen, and a stray larger id goes to an open-addressing table. Memory therefore
+   * follows the entries replayed, never the largest id: 12 bytes per slot, so about 12-24 bytes per entry when ids
+   * are dense and up to about 48 in the worst case, against the ~100 bytes per record of the RID map held beside it.
+   */
+  static final class IdOwners {
+    /** The bucket value of an id whose last page entry is a tombstone. */
+    static final int DELETED = -1;
+
+    private int[]  denseBucket    = new int[1024];
+    private long[] densePosition  = new long[1024];
+    private int    entries;
+    /** Open addressing, keys stored as id + 1 so 0 means empty. */
+    private int[]  keys           = new int[64];
+    private int[]  sparseBucket   = new int[64];
+    private long[] sparsePosition = new long[64];
+    private int    sparseSize;
+
+    /** Bucket id + 1 of the record that holds the id, {@link #DELETED}, or 0 when no page entry named it. */
+    int bucket(final int id) {
+      if (id < denseBucket.length)
+        return denseBucket[id];
+      final int slot = find(id);
+      return keys[slot] != 0 ? sparseBucket[slot] : 0;
+    }
+
+    long position(final int id) {
+      if (id < denseBucket.length)
+        return densePosition[id];
+      final int slot = find(id);
+      return keys[slot] != 0 ? sparsePosition[slot] : 0L;
+    }
+
+    void put(final int id, final int bucket, final long position) {
+      ++entries;
+      if (id >= denseBucket.length && id <= 2L * entries + 1024) {
+        final int grown = (int) Math.max(id + 1L, denseBucket.length * 2L);
+        denseBucket = Arrays.copyOf(denseBucket, grown);
+        densePosition = Arrays.copyOf(densePosition, grown);
+        migrateSparseIntoDense();
+      }
+      if (id < denseBucket.length) {
+        denseBucket[id] = bucket;
+        densePosition[id] = position;
+        return;
+      }
+      if (2 * (sparseSize + 1) > keys.length)
+        growSparse();
+      final int slot = find(id);
+      if (keys[slot] == 0) {
+        keys[slot] = id + 1;
+        ++sparseSize;
+      }
+      sparseBucket[slot] = bucket;
+      sparsePosition[slot] = position;
+    }
+
+    private int find(final int id) {
+      final int mask = keys.length - 1;
+      int slot = (id * 0x9E3779B9) >>> (32 - Integer.numberOfTrailingZeros(keys.length));
+      while (keys[slot] != 0 && keys[slot] != id + 1)
+        slot = slot + 1 & mask;
+      return slot;
+    }
+
+    /** Ids stored sparse before the dense arrays grew past them now belong in the arrays, which are read first. */
+    private void migrateSparseIntoDense() {
+      if (sparseSize == 0)
+        return;
+      final int[] oldKeys = keys;
+      final int[] oldBucket = sparseBucket;
+      final long[] oldPosition = sparsePosition;
+      keys = new int[oldKeys.length];
+      sparseBucket = new int[keys.length];
+      sparsePosition = new long[keys.length];
+      sparseSize = 0;
+      for (int i = 0; i < oldKeys.length; i++) {
+        if (oldKeys[i] == 0)
+          continue;
+        final int id = oldKeys[i] - 1;
+        if (id < denseBucket.length) {
+          denseBucket[id] = oldBucket[i];
+          densePosition[id] = oldPosition[i];
+        } else {
+          final int slot = find(id);
+          keys[slot] = oldKeys[i];
+          sparseBucket[slot] = oldBucket[i];
+          sparsePosition[slot] = oldPosition[i];
+          ++sparseSize;
+        }
+      }
+    }
+
+    private void growSparse() {
+      final int[] oldKeys = keys;
+      final int[] oldBucket = sparseBucket;
+      final long[] oldPosition = sparsePosition;
+      keys = new int[oldKeys.length * 2];
+      sparseBucket = new int[keys.length];
+      sparsePosition = new long[keys.length];
+      for (int i = 0; i < oldKeys.length; i++)
+        if (oldKeys[i] != 0) {
+          final int slot = find(oldKeys[i] - 1);
+          keys[slot] = oldKeys[i];
+          sparseBucket[slot] = oldBucket[i];
+          sparsePosition[slot] = oldPosition[i];
+        }
+    }
+  }
+
+  /**
+   * The live set of a page replay in the two shapes a build and a load disagree on: {@link #byRid} keeps one entry
+   * per record (what a build wants), {@link #owners} is the id-keyed state a load ends up with. A tombstone deletes
+   * the id whoever holds it, so a stale one for record A also removes record B holding the same id. The opposite
+   * mismatch, one record with two live ids and no tombstone, is not judged: a build counts it once and a load twice.
+   */
+  private static final class LiveSetReplay {
+    final Map<RID, VectorEntryForGraphBuild> byRid;
+    private final IdOwners                   owners = new IdOwners();
+
+    LiveSetReplay(final int expectedSize) {
+      byRid = new HashMap<>(expectedSize);
+    }
+
+    void accept(final LSMVectorIndexPageParser.VectorEntry entry, final boolean isCompacted) {
+      mergeEntryIntoLiveSet(byRid, entry, isCompacted);
+      if (entry.vectorId >= 0)
+        owners.put(entry.vectorId, entry.deleted ? IdOwners.DELETED : entry.rid.getBucketId() + 1,
+            entry.deleted ? 0L : entry.rid.getPosition());
+    }
+
+    /** The entries in {@link #byRid} whose id belongs to another record or a tombstone, ordered by (bucket, position). */
+    List<VectorEntryForGraphBuild> losers() {
+      List<VectorEntryForGraphBuild> losers = null;
+      for (final VectorEntryForGraphBuild entry : byRid.values()) {
+        final int id = entry.vectorId;
+        final int bucket = id >= 0 ? owners.bucket(id) : 0;
+        // Not judged: an id no page entry named (recovered from memory or a document scan).
+        if (bucket == 0)
+          continue;
+        if (bucket == IdOwners.DELETED || bucket != entry.rid.getBucketId() + 1
+            || owners.position(id) != entry.rid.getPosition()) {
+          if (losers == null)
+            losers = new ArrayList<>();
+          losers.add(entry);
+        }
+      }
+      if (losers == null)
+        return Collections.emptyList();
+      losers.sort(Comparator.comparingInt((VectorEntryForGraphBuild e) -> e.rid.getBucketId())
+          .thenComparingLong(e -> e.rid.getPosition()));
+      return losers;
+    }
+
+    /** The first few losers with the record that took their id, so a later run has the pairing directly. */
+    String describeFirst(final List<VectorEntryForGraphBuild> losers) {
+      final StringBuilder detail = new StringBuilder();
+      for (int i = 0; i < Math.min(5, losers.size()); i++) {
+        final VectorEntryForGraphBuild loser = losers.get(i);
+        final int owner = owners.bucket(loser.vectorId);
+        detail.append(i > 0 ? ", " : "").append(loser.rid).append(loser.isCompacted ? " (compacted" : " (mutable")
+            .append(", id ").append(loser.vectorId).append(owner == IdOwners.DELETED ? ", tombstoned)" :
+                " lost to #" + (owner - 1) + ":" + owners.position(loser.vectorId) + ")");
+      }
+      return detail.toString();
+    }
+  }
+
+  /**
+   * Drops the records a load of the same pages would not keep (same id given to another record, or tombstoned), or
+   * the graph is larger than the load's live set and is rejected and rebuilt on every query. The losers are logged,
+   * not repaired: a build also runs on followers and must not write, so CHECK DATABASE FIX does that. The caller
+   * skips compaction in such a pass, which would erase the pages' evidence.
+   *
+   * @return whether any record was left out
+   */
+  private boolean collapseToWhatALoadKeeps(final LiveSetReplay replay) {
+    final List<VectorEntryForGraphBuild> losers = replay.losers();
+    if (losers.isEmpty()) {
+      // A clean pass proves the condition cleared (the losers were deleted or the index was repaired in place).
+      recordsLeftOutBySharedIds = 0;
+      compactionBlockedBySharedIds = false;
+      return false;
+    }
+
+    for (final VectorEntryForGraphBuild loser : losers)
+      replay.byRid.remove(loser.rid);
+    compactionBlockedBySharedIds = true;
+    recordsLeftOutBySharedIds = losers.size();
+    LogManager.instance().log(this, Level.WARNING,
+        "Graph build for index %s left out %d records whose vector id a load of the same pages gives to another record or "
+            + "deletes: they are not in the graph until the index is rebuilt (CHECK DATABASE FIX or REBUILD INDEX), and the "
+            + "data file is not compacted in this pass. First: %s",
+        indexName, losers.size(), replay.describeFirst(losers));
+    return true;
+  }
+
+  /** Reports records whose vector id a load gives to another record or deletes; CHECK DATABASE FIX rebuilds the index. */
+  @Override
+  public List<String> checkIntegrity() {
+    final LiveSetReplay replay;
+    // Under the read lock end to end, like LSMTreeIndex.checkIntegrity: a compaction swapping the files must not
+    // land between the page count and the read, and a write must not raise a finding that is not there (under FIX
+    // that is a full rebuild). Writers to this index wait for the duration of the parse.
+    lock.readLock().lock();
+    try {
+      // Pass 1 keeps only the owner of each id: does any id carry two different records? A record and the
+      // tombstone that deletes it name the same one, so a healthy index never fires, and without it there is
+      // nothing for a load to give to another record.
+      if (!anyVectorIdWrittenByTwoRecords())
+        return Collections.emptyList();
+
+      replay = new LiveSetReplay(16);
+      replayPages(getDatabase(), replay);
+    } finally {
+      lock.readLock().unlock();
+    }
+
+    final List<VectorEntryForGraphBuild> losers = replay.losers();
+    if (losers.isEmpty())
+      return Collections.emptyList();
+
+    return List.of(("%d records have a vector id that a load gives to another record or deletes, so a persisted graph "
+        + "is rejected on every load and these records are missing from search (first: %s). "
+        + "Rebuild the index (CHECK DATABASE FIX)").formatted(losers.size(), replay.describeFirst(losers)));
+  }
+
+  private void replayPages(final DatabaseInternal database, final LiveSetReplay replay) {
+    if (compactedSubIndex != null)
+      LSMVectorIndexPageParser.parsePages(database, compactedSubIndex.getFileId(), compactedSubIndex.getTotalPages(),
+          getPageSize(), true, false, entry -> replay.accept(entry, true));
+    LSMVectorIndexPageParser.parsePages(database, getFileId(), getTotalPages(), getPageSize(), false, false,
+        entry -> replay.accept(entry, false));
+  }
+
+  private boolean anyVectorIdWrittenByTwoRecords() {
+    final IdOwners owners = new IdOwners();
+    final boolean[] shared = { false };
+    final Consumer<LSMVectorIndexPageParser.VectorEntry> consumer = entry -> {
+      final int id = entry.vectorId;
+      if (shared[0] || id < 0)
+        return;
+      final int bucket = entry.rid.getBucketId() + 1;
+      final int previous = owners.bucket(id);
+      if (previous == 0)
+        owners.put(id, bucket, entry.rid.getPosition());
+      else
+        shared[0] = previous != bucket || owners.position(id) != entry.rid.getPosition();
+    };
+    final DatabaseInternal database = getDatabase();
+    if (compactedSubIndex != null)
+      LSMVectorIndexPageParser.parsePages(database, compactedSubIndex.getFileId(), compactedSubIndex.getTotalPages(),
+          getPageSize(), true, false, consumer);
+    LSMVectorIndexPageParser.parsePages(database, getFileId(), getTotalPages(), getPageSize(), false, false, consumer);
+    return shared[0];
+  }
+
+  /**
+   * Visible for tests, never to be called from production code: appends one page entry carrying an explicit vector id,
+   * which can create exactly the damage CHECK DATABASE repairs. Runs inside the caller's transaction, exactly
+   * as a commit replay does. Lets a test place two different records on the SAME vector id, the page state the
+   * RID-keyed graph build and the id-keyed location load read differently.
+   */
+  public void persistEntryForTest(final int id, final RID rid, final float[] vector) {
+    persistVectorWithLocation(id, rid, vector);
+  }
+
+  /** Visible for tests: whether a build left records out, which stops the compaction trigger. */
+  boolean compactionBlockedBySharedIdsForTest() {
+    return compactionBlockedBySharedIds;
+  }
+
+  /** Visible for tests: appends a tombstone for an explicit vector id, inside the caller's transaction. */
+  void persistTombstoneForTest(final int id, final RID rid) {
+    persistDeletionTombstones(List.of(id), rid);
+  }
+
   /** Visible for tests: where this index's persisted graph lives, for a test that has to tamper with its sidecars. */
   Path getGraphFilePathForTest() {
     final LSMVectorIndexGraphFile gf = graphFile;
@@ -6750,9 +7196,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
   /**
    * Resolve an allow-list to the ordinals it occupies in {@code ordinalMap}, ascending.
    * <p>
-   * {@code ordinalMap} is always sorted ascending - every producer of {@code ordinalToVectorId} builds it with
+   * {@code ordinalMap} is sorted ascending - every producer of {@code ordinalToVectorId} builds it with
    * {@code sorted()} because the ordinal order has to match the order the graph was persisted in - so the reverse
-   * lookup is a binary search and needs no per-query map. A RID with no live vector id, or one whose vector was
+   * lookup is a binary search and needs no per-query map. The exception is the map a renumbering compaction translated
+   * while the old graph is resident, which holds -1 entries: it is resolved through its {@link OrdinalLookup}
+   * (issue #9241). A RID with no live vector id, or one whose vector was
    * ingested after the last rebuild and is therefore only in the delta buffer, simply contributes no ordinal.
    * <p>
    * The result is sorted so the caller scores in ordinal order, exactly the order the full scan uses. Distance ties
@@ -6765,9 +7213,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
     int[] ordinals = new int[Math.min(allowedRIDs.size(), 256)];
     int count = 0;
     final VectorLocationIndex locations = vectorIndex();
+    // A map translated by a renumbering compaction holds -1 for the vectors that are gone and is not sorted: it is resolved
+    // through its lookup for as long as that graph is the resident one
+    final OrdinalLookup lookup = renumberedLookups.get(ordinalMap);
     for (final RID rid : allowedRIDs) {
       for (final int vectorId : locations.getVectorIdsForRid(rid)) {
-        final int ordinal = Arrays.binarySearch(ordinalMap, vectorId);
+        final int ordinal =
+            lookup != null ? lookup.ordinalOf(vectorId) : Arrays.binarySearch(ordinalMap, vectorId);
         if (ordinal < 0)
           continue;
         if (count == ordinals.length)
@@ -9114,7 +9566,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * the number of resident locations, two settings read live - and never touches a page.
    */
   private boolean isCompactionDue() {
-    if (!isCompactionAllowedOnThisNode(getDatabase()))
+    if (compactionBlockedBySharedIds || !isCompactionAllowedOnThisNode(getDatabase()))
       return false;
 
     final ContextConfiguration configuration = getDatabase().getConfiguration();
@@ -10046,6 +10498,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // persistedGraphNodeCount above is read from there: "how many are only reachable by scan" is a question an
     // operator has to be able to ask on a freshly reopened index too.
     final int[] unreachableOrdinals = graphUnreachableOrdinals;
+    stats.put("compactionBlockedBySharedIds", compactionBlockedBySharedIds ? 1L : 0L);
+    stats.put("recordsLeftOutBySharedIds", (long) recordsLeftOutBySharedIds);
     stats.put("unreachableGraphNodes", unreachableOrdinals != null ?
         (long) unreachableOrdinals.length :
         manifestContent != null ? (long) manifestContent.unreachableOrdinals().length : 0L);
@@ -10291,6 +10745,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // Track bytes written for chunking
     final AtomicLong bytesInCurrentChunk = new AtomicLong(0);
 
+    // scanBucket() logs and swallows whatever its callback throws, so a failed chunk commit is parked here, the scan
+    // is stopped, and the failure is rethrown below for build() to roll back and mark the index INVALID (issue #8906).
+    // Deliberately only the commit: a record that cannot be indexed is skipped and logged by design, while a failed
+    // commit leaves the transaction unusable and every later record failing for the same reason
+    final AtomicReference<RuntimeException> chunkCommitFailure = new AtomicReference<>();
+
     // Scan the bucket and index all documents
     db.scanBucket(db.getSchema().getBucketById(metadata.associatedBucketId).getName(), record -> {
       // Add to index
@@ -10321,10 +10781,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
             "Committing chunk: %.1fMB written, %d vectors...",
             bytesInCurrentChunk.get() / (1024.0 * 1024.0), total.get());
 
-        db.getWrappedDatabaseInstance().commit();
-        db.getWrappedDatabaseInstance().begin();
-        db.getTransaction().setUseWALForThisTransaction(false); // Re-disable WAL for new transaction
-        db.getTransaction().setCommitLockTimeout(getGraphPersistCommitLockTimeout()); // and re-apply the bulk lock budget
+        try {
+          db.getWrappedDatabaseInstance().commit();
+          db.getWrappedDatabaseInstance().begin();
+          db.getTransaction().setUseWALForThisTransaction(false); // Re-disable WAL for new transaction
+          db.getTransaction().setCommitLockTimeout(getGraphPersistCommitLockTimeout()); // and re-apply the bulk lock budget
+        } catch (final RuntimeException e) {
+          chunkCommitFailure.set(e);
+          return false;
+        }
 
         bytesInCurrentChunk.set(0);
       }
@@ -10334,6 +10799,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       return true;
     });
+
+    final RuntimeException failure = chunkCommitFailure.get();
+    if (failure != null)
+      throw new IndexException("Cannot build vector index '" + indexName
+          + "': a chunk commit or the restart of its transaction failed after " + total.get() + " records were indexed", failure);
 
     final long elapsed = System.currentTimeMillis() - startTime;
     LogManager.instance().log(this, Level.INFO,

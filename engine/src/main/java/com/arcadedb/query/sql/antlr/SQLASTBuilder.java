@@ -376,7 +376,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    * a namespace name and then calling a method of that namespace on it ({@code SELECT FROM Foo map WHERE
    * map.get('x') = 1}) still parses as the namespaced function {@code map.get}. That ambiguity predates aliases -
    * it applies to any property named {@code map}, {@code ts}, {@code geo}, ... - and is left as is; backtick-quote
-   * the alias, or pick another one, to address the record instead.
+   * the alias (or the property, as in {@code `map`.values()}), or pick another name, to address the record instead.
    *
    * @return {@code expr}, rewritten in place when it was alias-qualified
    */
@@ -2574,7 +2574,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       if (ctx.whereClause() != null) {
         // Form: expression CONTAINSALL (whereClause)
         final WhereClause whereClause = (WhereClause) visit(ctx.whereClause());
-        condition.rightBlock = (OrBlock) whereClause.baseExpression;
+        condition.rightBlock = whereClause.baseExpression;
       } else {
         // Form: expression CONTAINSALL expression
         final Expression right = (Expression) visit(ctx.expression(1));
@@ -2602,7 +2602,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       if (ctx.whereClause() != null) {
         // Form: expression CONTAINSANY (whereClause)
         final WhereClause whereClause = (WhereClause) visit(ctx.whereClause());
-        condition.rightBlock = (OrBlock) whereClause.baseExpression;
+        condition.rightBlock = whereClause.baseExpression;
       } else {
         // Form: expression CONTAINSANY expression
         final Expression right = (Expression) visit(ctx.expression(1));
@@ -3040,7 +3040,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
   /**
    * Map entry visitor - handles key: value.
-   * Grammar: mapEntry : (identifier | STRING_LITERAL) COLON expression
+   * Grammar: mapEntry : (identifier | MAXDEPTH | STRING_LITERAL) COLON expression
    */
   @Override
   public JsonItem visitMapEntry(final SQLParser.MapEntryContext ctx) {
@@ -3050,6 +3050,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       // Left side (key) can be identifier or string literal
       if (ctx.identifier() != null) {
         item.leftIdentifier = (Identifier) visit(ctx.identifier());
+      } else if (ctx.MAXDEPTH() != null) {
+        // the keyword is case-insensitive but the option consumers look the key up as spelled: normalise it
+        item.leftIdentifier = new Identifier("maxDepth");
       } else if (ctx.STRING_LITERAL() != null) {
         // Remove quotes from string literal
         String str = ctx.STRING_LITERAL().getText();
@@ -3349,6 +3352,26 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
+   * Parses an {@code INTEGER_LITERAL} token: decimal or hexadecimal ({@code 0xFF}), with an optional {@code L} suffix. A value
+   * above {@code Integer.MAX_VALUE} (hexadecimal included, so {@code 0xFFFFFFFF} is 4294967295 and not -1) is a long.
+   */
+  private static Number parseIntegerLiteral(final String text) {
+    final boolean isLong = text.endsWith("L") || text.endsWith("l");
+    final String digits = isLong ? text.substring(0, text.length() - 1) : text;
+    final boolean isHex = digits.length() > 2 && digits.charAt(0) == '0' && (digits.charAt(1) == 'x' || digits.charAt(1) == 'X');
+    final String body = isHex ? digits.substring(2) : digits;
+    final int radix = isHex ? 16 : 10;
+    if (isLong)
+      return Long.parseLong(body, radix);
+    try {
+      return Integer.parseInt(body, radix);
+    } catch (final NumberFormatException e) {
+      // If it's too large for int, try long
+      return Long.parseLong(body, radix);
+    }
+  }
+
+  /**
    * Integer literal visitor.
    */
   @Override
@@ -3358,16 +3381,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final PInteger number = new PInteger();
     final String text = ctx.INTEGER_LITERAL().getText();
     try {
-      if (text.endsWith("L") || text.endsWith("l")) {
-        number.setValue(Long.parseLong(text.substring(0, text.length() - 1)));
-      } else {
-        try {
-          number.setValue(Integer.parseInt(text));
-        } catch (final NumberFormatException e) {
-          // If it's too large for int, try long
-          number.setValue(Long.parseLong(text));
-        }
-      }
+      number.setValue(parseIntegerLiteral(text));
     } catch (final NumberFormatException e) {
       throw new CommandSQLParsingException("Invalid integer: " + text);
     }
@@ -4491,10 +4505,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final String text = ctx.INTEGER_LITERAL().getText();
 
     try {
-      pInt.setValue(Integer.parseInt(text));
+      pInt.setValue(parseIntegerLiteral(text));
     } catch (final NumberFormatException e) {
-      // If it's too large for int, try long
-      pInt.setValue(Long.parseLong(text));
+      throw new CommandSQLParsingException("Invalid integer: " + text);
     }
 
     return pInt;
@@ -8062,17 +8075,11 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       final ArraySingleValuesSelector multiSelector = new ArraySingleValuesSelector();
 
       // Add all selectors (first one plus the ones after commas)
-      for (int i = 0; i < ctx.expression().size(); i++) {
+      // the generated accessor rescans all the children on every call: fetch the list once (#9053)
+      final List<SQLParser.ExpressionContext> expressions = ctx.expression();
+      for (int i = 0; i < expressions.size(); i++) {
         final ArraySelector selector = new ArraySelector();
-
-        if (ctx.expression(i) != null) {
-          selector.expression = (Expression) visit(ctx.expression(i));
-        } else if (ctx.rid(i) != null) {
-          selector.rid = (Rid) visit(ctx.rid(i));
-        } else if (ctx.inputParameter(i) != null) {
-          selector.inputParam = (InputParameter) visit(ctx.inputParameter(i));
-        }
-
+        selector.expression = (Expression) visit(expressions.get(i));
         multiSelector.items.add(selector);
       }
 

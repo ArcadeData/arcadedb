@@ -38,6 +38,13 @@ public class MongoDBProtocolPlugin implements ServerPlugin, DatabaseResolver {
   private int                                 port;
   private Map<String, MongoDBDatabaseWrapper> databases = new ConcurrentHashMap<>();
 
+  /**
+   * Whether key values must stay out of what a client is told: the same policy every other surface applies (issue #8931).
+   */
+  boolean isProductionMode() {
+    return server != null && server.isProductionMode();
+  }
+
   @Override
   public void configure(final ArcadeDBServer arcadeDBServer, final ContextConfiguration configuration) {
     this.server = arcadeDBServer;

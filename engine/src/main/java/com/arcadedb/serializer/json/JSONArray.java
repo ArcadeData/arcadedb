@@ -86,7 +86,7 @@ public class JSONArray implements Iterable<Object> {
    * Converts the array to a Java {@link List}.
    *
    * @param optimizeNumericArrays when {@code true}, homogeneous numeric arrays are returned as
-   *                              primitive {@code float[]} instead of {@code List<Number>}. This
+   *                              primitive {@code long[]}/{@code double[]} instead of {@code List<Number>}. This
    *                              avoids both per-element boxing and the downstream double-to-float
    *                              narrowing required by {@link com.arcadedb.schema.Type#ARRAY_OF_FLOATS}
    *                              vector properties (issue #3864 follow-up). Used by the HTTP
@@ -121,20 +121,21 @@ public class JSONArray implements Iterable<Object> {
   /**
    * If this array contains only numeric primitive elements, returns a primitive numeric array
    * holding the values: {@code long[]} when every element is integer-valued in textual form
-   * (no decimal point and no exponent), or {@code float[]} otherwise. Returns {@code null} when
+   * (no decimal point and no exponent), or {@code double[]} when every element has a fraction or an exponent. Returns {@code null} when
    * the array is empty or contains a non-numeric element so callers can fall back to
    * {@link #toList()}.
    * <p>
    * Used by {@link JSONObject#toMap(boolean)} when parsing HTTP {@code params}.
    * <p>
-   * Why two shapes: vector-embedding payloads (issue #3864 follow-up) need the {@code float[]}
-   * fast path - the dominant use case is {@code ARRAY_OF_FLOATS} and storing vectors as
-   * {@code float[]} halves memory vs. {@code double[]}. Integer payloads (issue #4148) cannot
-   * go through {@code float[]}: float32 has 23 mantissa bits, so two distinct int64 values
-   * within the same float bucket (~131072 wide near 2^40) collapse onto the same bits and the
-   * {@code (long) f} cast in {@link com.arcadedb.schema.Type#convert} can't recover them.
-   * Choosing {@code long[]} for integer-only arrays preserves int64 precision; downstream
-   * {@code Type.convert} handles {@code long[] -> long[]/int[]/short[]/float[]/double[]}.
+   * Why these shapes: vector-embedding payloads (issue #3864 follow-up) avoid millions of boxed numbers. The array is exact:
+   * {@code long[]} when every element is integer-valued (issue #4148), {@code double[]} when every element has a fraction or an
+   * exponent ({@code float[]} narrowed every element to float32, issue #9003). A mixed array, an integer beyond the long range or
+   * a decimal with more digits than a double holds returns {@code null}, so the list keeps each element as written (an int
+   * stays an int, a big number stays a {@link BigDecimal}). {@code Type.convert} turns {@code double[]} into the {@code float[]}
+   * of an {@code ARRAY_OF_FLOATS} property, and a primitive array written to a {@code LIST} property becomes its elements.
+   * <p>
+   * Trade-offs: a {@code double[]} takes twice the memory of the {@code float[]} it replaces; a token with more digits than the double
+   * parsed from it keeps (a producer printing {@code %.20f}) makes the whole array a list of {@link BigDecimal}.
    */
   public Object toPrimitiveNumericArrayOrNull() {
     final List<JsonElement> list = array.asList();
@@ -148,32 +149,52 @@ public class JSONArray implements Iterable<Object> {
     // the integer-vs-float decision deterministic from the JSON text rather than from the parsed
     // numeric value.
     boolean allIntegers = true;
+    boolean allFractions = true;
     for (int i = 0; i < size; i++) {
       final JsonElement e = list.get(i);
       if (!(e instanceof JsonPrimitive p) || !p.isNumber())
         return null;
-      if (allIntegers) {
-        final String s = p.getAsString();
-        for (int c = 0, n = s.length(); c < n; c++) {
-          final char ch = s.charAt(c);
-          if (ch == '.' || ch == 'e' || ch == 'E') {
-            allIntegers = false;
-            break;
-          }
+      final String s = p.getAsString();
+      boolean fraction = false;
+      for (int c = 0, n = s.length(); c < n; c++) {
+        final char ch = s.charAt(c);
+        if (ch == '.' || ch == 'e' || ch == 'E') {
+          fraction = true;
+          break;
         }
       }
+      if (fraction)
+        allIntegers = false;
+      else
+        allFractions = false;
+      // MIXED ARRAYS STAY LISTS: A PRIMITIVE ARRAY WOULD TURN THE INTEGERS INTO FLOATING POINT VALUES (OR THE OTHER WAY AROUND)
+      if (!allIntegers && !allFractions)
+        return null;
     }
 
     if (allIntegers) {
       final long[] result = new long[size];
-      for (int i = 0; i < size; i++)
-        result[i] = ((JsonPrimitive) list.get(i)).getAsLong();
+      for (int i = 0; i < size; i++) {
+        try {
+          result[i] = Long.parseLong(((JsonPrimitive) list.get(i)).getAsString());
+        } catch (final NumberFormatException ex) {
+          // BEYOND THE LONG RANGE: THE LIST KEEPS EVERY DIGIT (BigDecimal), A long[] WOULD WRAP IT AROUND
+          return null;
+        }
+      }
       return result;
     }
 
-    final float[] result = new float[size];
-    for (int i = 0; i < size; i++)
-      result[i] = ((JsonPrimitive) list.get(i)).getAsFloat();
+    // EXACT: A float[] WOULD NARROW EVERY ELEMENT TO 24 BITS OF PRECISION, EVEN WHEN THE ARRAY IS NOT A VECTOR (issue #9003)
+    final double[] result = new double[size];
+    for (int i = 0; i < size; i++) {
+      final String token = ((JsonPrimitive) list.get(i)).getAsString();
+      final double value = Double.parseDouble(token);
+      // MORE DIGITS THAN A double HOLDS: THE LIST KEEPS THEM (BigDecimal)
+      if (JSONObject.mayLoseDigits(token, value) && !JSONObject.isExactDouble(token, value))
+        return null;
+      result[i] = value;
+    }
     return result;
   }
 
@@ -355,10 +376,9 @@ public class JSONArray implements Iterable<Object> {
     return this;
   }
 
-  public JSONArray put(Number object) {
-    if (Double.isNaN(object.doubleValue()) || Double.isInfinite(object.doubleValue()))
-      object = 0;
-    array.add(object);
+  public JSONArray put(final Number object) {
+    // NaN AND THE INFINITIES HAVE NO JSON LITERAL: null, as JSONObject.put(String, Number) does; a null number is JSON null too
+    array.add(object == null || JSONObject.isNonFinite(object) ? JsonNull.INSTANCE : new JsonPrimitive(object));
     return this;
   }
 

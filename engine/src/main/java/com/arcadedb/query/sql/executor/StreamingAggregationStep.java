@@ -147,7 +147,7 @@ public class StreamingAggregationStep extends AbstractExecutionStep {
     int idx = 0;
     for (final Expression item : groupBy.getItems())
       // Normalise numeric values so numerically-equal keys with different numeric types are not split (issue #4516).
-      keyValues[idx++] = Type.normalizeNumberForKey(item.execute(row, context));
+      keyValues[idx++] = Type.normalizeForKey(item.execute(row, context));
     return keyValues;
   }
 

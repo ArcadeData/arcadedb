@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.http.FakeLeader;
 import com.arcadedb.server.http.HttpServer;
 import io.undertow.Undertow;
 import io.undertow.server.RequestTooBigException;
@@ -40,10 +41,7 @@ import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.io.UncheckedIOException;
 import java.net.HttpURLConnection;
-import java.net.InetAddress;
 import java.net.InetSocketAddress;
-import java.net.ServerSocket;
-import java.net.Socket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpHeaders;
@@ -206,7 +204,7 @@ class Issue8674StreamedRelayBodyCapTerminalLineTest {
   @Test
   @Timeout(value = 60, unit = TimeUnit.SECONDS)
   void theJdkClientHandsBackTheResponseOnlyOnceTheUploadIsPublished() throws Exception {
-    try (final ScriptedLeader leader = new ScriptedLeader()) {
+    try (final FakeLeader leader = FakeLeader.scripted(Issue8674StreamedRelayBodyCapTerminalLineTest::answerWithOneProgressLine)) {
       final CountDownLatch release = new CountDownLatch(1);
       // Trickles a byte at a time until the leader has answered - so the request, headers and chunks, keeps reaching
       // it whatever thread the JDK happens to pull the body on - and only then holds the rest of the upload back.
@@ -220,7 +218,7 @@ class Issue8674StreamedRelayBodyCapTerminalLineTest {
         @Override
         public int read(final byte[] b, final int off, final int len) throws IOException {
           try {
-            if (!leader.answered.await(50, TimeUnit.MILLISECONDS)) {
+            if (!leader.awaitAnswered(50, TimeUnit.MILLISECONDS)) {
               b[off] = '\n';
               return 1;
             }
@@ -239,7 +237,7 @@ class Issue8674StreamedRelayBodyCapTerminalLineTest {
                 "application/x-ndjson", "test-token", "root", -1, pendingUpload, NdJsonResultStream.CONTENT_TYPE),
             HttpResponse.BodyHandlers.ofInputStream());
 
-        assertThat(leader.answered.await(CLIENT_READ_MS, TimeUnit.MILLISECONDS))
+        assertThat(leader.awaitAnswered(CLIENT_READ_MS, TimeUnit.MILLISECONDS))
             .as("the leader answered 200 and a progress line while the upload is still pending").isTrue();
         assertThat(catchThrowable(() -> sent.get(2, TimeUnit.SECONDS)))
             .as("the response is withheld while the upload is pending - if this fails, a JDK now delivers it mid-upload: "
@@ -392,64 +390,14 @@ class Issue8674StreamedRelayBodyCapTerminalLineTest {
   }
 
   /**
-   * A leader that reads one request's headers, answers 200 and a progress line at once - before the upload is over,
-   * as a leader streaming a large load does - and then drains the upload until the client closes the connection.
+   * Answers 200 and a progress line at once - before the upload is over, as a leader streaming a large load does -
+   * after which the leader drains the upload until the client closes the connection.
    */
-  private static final class ScriptedLeader implements AutoCloseable {
-    private final ServerSocket   serverSocket;
-    private final CountDownLatch answered = new CountDownLatch(1);
-    private volatile Socket      accepted;
-
-    ScriptedLeader() throws IOException {
-      // The literal IPv4 loopback: under java.net.preferIPv6Addresses=true getLoopbackAddress() is ::1, and an
-      // unbracketed IPv6 literal followed by ":port" is not a URI the forwarder can build.
-      serverSocket = new ServerSocket(0, 16, InetAddress.getByName("127.0.0.1"));
-      final Thread acceptor = new Thread(() -> {
-        try (final Socket socket = serverSocket.accept()) {
-          accepted = socket;
-          final InputStream in = socket.getInputStream();
-          skipRequestHeaders(in);
-          final OutputStream out = socket.getOutputStream();
-          final byte[] line = (PROGRESS_LINE + "\n").getBytes(StandardCharsets.UTF_8);
-          out.write(("HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nTransfer-Encoding: chunked\r\n\r\n"
-              + Integer.toHexString(line.length) + "\r\n").getBytes(StandardCharsets.US_ASCII));
-          out.write(line);
-          out.write("\r\n".getBytes(StandardCharsets.US_ASCII));
-          out.flush();
-          answered.countDown();
-          final byte[] buffer = new byte[8_192];
-          while (in.read(buffer) >= 0) {
-            // discard
-          }
-        } catch (final IOException ignored) {
-          // the client closed the connection
-        }
-      }, "issue8674-scripted-leader");
-      acceptor.setDaemon(true);
-      acceptor.start();
-    }
-
-    String address() {
-      return serverSocket.getInetAddress().getHostAddress() + ":" + serverSocket.getLocalPort();
-    }
-
-    private static void skipRequestHeaders(final InputStream in) throws IOException {
-      int matched = 0;
-      final byte[] terminator = "\r\n\r\n".getBytes(StandardCharsets.US_ASCII);
-      while (matched < terminator.length) {
-        final int b = in.read();
-        if (b < 0)
-          throw new IOException("the client closed before sending its request");
-        matched = b == terminator[matched] ? matched + 1 : (b == terminator[0] ? 1 : 0);
-      }
-    }
-
-    @Override
-    public void close() throws IOException {
-      serverSocket.close();
-      final Socket socket = accepted;
-      if (socket != null)
-        socket.close();
-    }
+  private static void answerWithOneProgressLine(final OutputStream out) throws IOException {
+    final byte[] line = (PROGRESS_LINE + "\n").getBytes(StandardCharsets.UTF_8);
+    out.write(("HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nTransfer-Encoding: chunked\r\n\r\n"
+        + Integer.toHexString(line.length) + "\r\n").getBytes(StandardCharsets.US_ASCII));
+    out.write(line);
+    out.write("\r\n".getBytes(StandardCharsets.US_ASCII));
   }
 }

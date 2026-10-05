@@ -100,7 +100,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     @Override
     public IndexInternal create(final IndexBuilder<?> builder) {
       return new LSMTreeIndex(builder.getDatabase(), builder.getIndexName(), builder.isUnique(), builder.getFilePath(),
-          ComponentFile.MODE.READ_WRITE, builder.getKeyTypes(), builder.getPageSize(), builder.getNullStrategy());
+          ComponentFile.MODE.READ_WRITE, builder.getKeyTypes(), builder.getLsmTreePageSize(), builder.getNullStrategy());
     }
   }
 
@@ -572,7 +572,9 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
       Set<IndexCursorEntry> txChanges = null;
       // what the pending entries of this key hide from the disk result, or null when they hide nothing (#6970)
       PendingIndexRemovals removals = null;
-      final boolean unique = isUnique();
+      int pendingEntries = 0;
+      // the entries of an all-null key belong to different records, so a pending removal of one never removes the key (issue #9237)
+      final boolean unique = isUnique() && !LSMTreeIndexAbstract.isKeyNull(convertedKeys);
 
       final Map<TransactionIndexContext.ComparableKey, Map<TransactionIndexContext.IndexKey,
           TransactionIndexContext.IndexKey>> indexChanges = getDatabase().getTransaction()
@@ -581,6 +583,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
         final Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey> values = indexChanges.get(
             new TransactionIndexContext.ComparableKey(convertedKeys));
         if (values != null) {
+          pendingEntries = values.size();
           for (final TransactionIndexContext.IndexKey value : values.values()) {
             if (value != null) {
               if (unique && PendingIndexRemovals.removesWholeKey(value, true))
@@ -599,13 +602,16 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
               if (limit > -1 && txChanges.size() > limit)
                 // LIMIT REACHED
-                return new TempIndexCursor(txChanges);
+                return new TempIndexCursor(TypeIndex.cappedTo(txChanges, limit));
             }
           }
         }
       }
 
-      final IndexCursor result = lock.executeInReadLock(() -> mutable.get(convertedKeys, limit));
+      // the disk rows that a pending removal hides do not count towards the limit: each pending entry hides at most one row, so
+      // that many more are read and the limit is applied to the merged rows below. A key-wide removal hides every row
+      final int diskLimit = removals == null || removals.isKeyWide() || limit < 0 ? limit : (int) Math.min(Integer.MAX_VALUE, (long) limit + pendingEntries);
+      final IndexCursor result = lock.executeInReadLock(() -> mutable.get(convertedKeys, diskLimit));
 
       if (txChanges != null || removals != null) {
         if (txChanges == null)
@@ -618,7 +624,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
             continue;
           txChanges.add(new IndexCursorEntry(convertedKeys, next, 1));
         }
-        return new TempIndexCursor(txChanges);
+        return new TempIndexCursor(TypeIndex.cappedTo(txChanges, limit));
       }
 
       return result;

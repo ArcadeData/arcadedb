@@ -22,6 +22,7 @@ import de.bwaldvogel.mongo.bson.Document;
 import de.bwaldvogel.mongo.bson.ObjectId;
 import org.junit.jupiter.api.Test;
 
+import java.util.Arrays;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
@@ -238,7 +239,7 @@ class MongoDBToSqlTranslatorParamsTest {
     final List<String> names = List.of("v1", "v2");
     MongoDBToSqlTranslator.buildExpression(sql, params, new Document("name", new Document("$nin", names)));
 
-    assertThat(sql.toString()).isEqualTo("(`name` NOT IN (:p0))");
+    assertThat(sql.toString()).isEqualTo("((`name` IS NULL OR `name` NOT IN (:p0)))");
     assertThat(params.get("p0")).isEqualTo(names);
   }
 
@@ -339,7 +340,7 @@ class MongoDBToSqlTranslatorParamsTest {
 
     MongoDBToSqlTranslator.buildExpression(sql, params, new Document("age", new Document("$not", new Document("$gt", 18))));
 
-    assertThat(sql.toString()).isEqualTo("(NOT (`age` > :p0))");
+    assertThat(sql.toString()).isEqualTo("((`age` IS NULL OR NOT (`age` > :p0)))");
     assertThat(params.get("p0")).isEqualTo(18);
   }
 
@@ -404,7 +405,7 @@ class MongoDBToSqlTranslatorParamsTest {
     final ObjectId id = new ObjectId("507f1f77bcf86cd799439011");
     MongoDBToSqlTranslator.buildExpression(sql, params, new Document("_id", new Document("$nin", List.of(id))));
 
-    assertThat(sql.toString()).isEqualTo("(`_id` NOT IN (:p0))");
+    assertThat(sql.toString()).isEqualTo("((`_id` IS NULL OR `_id` NOT IN (:p0)))");
     assertThat(params.get("p0")).isEqualTo(List.of("507f1f77bcf86cd799439011"));
   }
 
@@ -423,7 +424,7 @@ class MongoDBToSqlTranslatorParamsTest {
     range.put("$lt", 5);
     MongoDBToSqlTranslator.buildExpression(sql, params, new Document("price", new Document("$not", range)));
 
-    assertThat(sql.toString()).isEqualTo("(NOT (`price` > :p0 AND `price` < :p1))");
+    assertThat(sql.toString()).isEqualTo("((`price` IS NULL OR NOT (`price` > :p0 AND `price` < :p1)))");
     assertThat(params.get("p0")).isEqualTo(1);
     assertThat(params.get("p1")).isEqualTo(5);
   }
@@ -470,5 +471,53 @@ class MongoDBToSqlTranslatorParamsTest {
     assertThatThrownBy(() -> MongoDBToSqlTranslator.getObjectId("abc")).isInstanceOf(IllegalArgumentException.class);
     assertThatThrownBy(() -> MongoDBToSqlTranslator.getObjectId("g".repeat(24))).isInstanceOf(IllegalArgumentException.class);
     assertThatThrownBy(() -> MongoDBToSqlTranslator.getObjectId("short")).isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  void regexFlagsBecomeAnInlineGroupAroundTheUserPattern() {
+    final StringBuilder sql = new StringBuilder();
+    final Map<String, Object> params = new HashMap<>();
+
+    MongoDBToSqlTranslator.buildExpression(sql, params, new Document("name", new Document("$regex", "^a").append("$options", "imsi")));
+
+    assertThat(sql.toString()).isEqualTo("(`name` MATCHES :p0)");
+    assertThat(params.get("p0")).isEqualTo("(?s:.*)(?uims:^a)(?s:.*)");
+  }
+
+  @Test
+  void regexOptionsWithoutRegexAndUnknownOptionsAreRefused() {
+    assertThatThrownBy(() -> MongoDBToSqlTranslator.buildExpression(new StringBuilder(), new HashMap<>(),
+        new Document("name", new Document("$options", "i")))).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> MongoDBToSqlTranslator.buildExpression(new StringBuilder(), new HashMap<>(),
+        new Document("name", new Document("$regex", "a").append("$options", "z")))).isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  void nullAwareOperatorsEmitTheirSqlShape() {
+    final StringBuilder sql = new StringBuilder();
+    final Map<String, Object> params = new HashMap<>();
+
+    MongoDBToSqlTranslator.buildExpression(sql, params, new Document("age", new Document("$ne", 30)));
+    assertThat(sql.toString()).isEqualTo("((`age` IS NULL OR `age` <> :p0))");
+
+    final StringBuilder in = new StringBuilder();
+    MongoDBToSqlTranslator.buildExpression(in, new HashMap<>(), new Document("age", new Document("$in", Arrays.asList(1, null))));
+    assertThat(in.toString()).isEqualTo("((`age` IS NULL OR `age` IN (:p0)))");
+
+    final StringBuilder nin = new StringBuilder();
+    MongoDBToSqlTranslator.buildExpression(nin, new HashMap<>(), new Document("age", new Document("$nin", Arrays.asList((Object) null))));
+    assertThat(nin.toString()).isEqualTo("((`age` IS NOT NULL))");
+  }
+
+  @Test
+  void projectionKindsAreValidated() {
+    assertThat(MongoDBToSqlTranslator.isInclusionProjection(new Document("a", 1), "_id")).isTrue();
+    assertThat(MongoDBToSqlTranslator.isInclusionProjection(new Document("a", 0), "_id")).isFalse();
+    assertThat(MongoDBToSqlTranslator.isInclusionProjection(new Document("a", 1).append("_id", 0), "_id")).isTrue();
+    assertThat(MongoDBToSqlTranslator.isInclusionProjection(new Document("a", 0).append("_id", 1), "_id")).isFalse();
+    assertThatThrownBy(() -> MongoDBToSqlTranslator.isInclusionProjection(new Document("a", 1).append("b", 0), "_id"))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> MongoDBToSqlTranslator.isInclusionProjection(new Document("a", new Document("$slice", 1)), "_id"))
+        .isInstanceOf(IllegalArgumentException.class);
   }
 }

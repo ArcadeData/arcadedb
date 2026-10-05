@@ -180,6 +180,23 @@ class Issue8067LeaderForceSnapshotReplayMissingDatabaseTest {
     assertThat(sm.isDatabaseDiverged(DB_NAME)).as("the quarantine lifts once the copy is installed").isFalse();
   }
 
+  /**
+   * Issue #8940: a sole voter has no peer to hand the leadership to or to install from, so the quarantine would never
+   * lift, and it would keep the node unready and the log un-checkpointed. It must alert and carry on instead.
+   */
+  @Test
+  void aSoleVoterMissingTheDatabaseIsNotQuarantined() {
+    when(raft.isSoleVoter()).thenReturn(true);
+    sm.writePersistedAppliedIndex(ENTRY_INDEX + 8, DB_NAME);
+    wipeTheLocalCopy();
+
+    assertThatCode(this::applyTheReplayedEntry).doesNotThrowAnyException();
+
+    assertThat(sm.isDatabaseDiverged(DB_NAME)).isFalse();
+    assertThat(sm.isResyncInProgress()).isFalse();
+    verify(raft, never()).handOffLeadershipToResync(anyString());
+  }
+
   /** The counter-case: a leader that holds the database takes no action, exactly as before. */
   @Test
   void aLeaderThatHoldsTheDatabaseStillSkips() {

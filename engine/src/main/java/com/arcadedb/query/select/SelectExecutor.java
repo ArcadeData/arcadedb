@@ -25,10 +25,13 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexInternal;
+import com.arcadedb.index.IntegralKeyBound;
 import com.arcadedb.index.MultiIndexCursor;
+import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.query.sql.executor.SelectExecutionPlanner;
+import com.arcadedb.schema.Type;
 import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.Pair;
 
@@ -82,6 +85,9 @@ public class SelectExecutor {
   // JUST RUNNING LESS EFFICIENTLY. KEEP BOTH CALL SITES READING THIS ONE FIELD SO THEY CANNOT DRIFT APART AGAIN.
   private static final Set<SelectOperator> CURSOR_BUILDABLE_OPERATORS = EnumSet.of(SelectOperator.eq, SelectOperator.in_op,
       SelectOperator.between, SelectOperator.gt, SelectOperator.ge, SelectOperator.lt, SelectOperator.le);
+
+  /** What {@link #integralLowerBound} and {@link #integralUpperBound} answer when no key of the index can satisfy the bound. */
+  private static final Object NO_KEY = new Object();
 
   static class IndexInfo {
     public final Index   index;
@@ -730,19 +736,29 @@ public class SelectExecutor {
         cursor = node.index.get(new Object[] { rightValue });
     } else if (node.operator == SelectOperator.between) {
       // BETWEEN: range scan
-      if (rightValue instanceof Object[] range && range.length == 2)
-        cursor = node.index.range(ascendingOrder, new Object[] { range[0] }, true, new Object[] { range[1] }, true);
-      else
+      if (rightValue instanceof Object[] range && range.length == 2) {
+        final Object from = integralLowerBound(node.index, range[0]);
+        final Object to = integralUpperBound(node.index, range[1]);
+        // 12.2 BETWEEN 12.7 maps to [13, 12]: an empty range, which the index is not asked to read backwards, as in SQL and Cypher
+        cursor = from == NO_KEY || to == NO_KEY || ((from != range[0] || to != range[1]) && from instanceof Number lower
+            && to instanceof Number upper && lower.longValue() > upper.longValue()) ?
+            new TempIndexCursor(Collections.emptyList()) :
+            node.index.range(ascendingOrder, new Object[] { from }, true, new Object[] { to }, true);
+      } else
         return;
-    } else if (node.operator == SelectOperator.gt)
-      cursor = node.index.range(ascendingOrder, new Object[] { rightValue }, false, null, false);
-    else if (node.operator == SelectOperator.ge)
-      cursor = node.index.range(ascendingOrder, new Object[] { rightValue }, true, null, false);
-    else if (node.operator == SelectOperator.lt)
-      cursor = node.index.range(ascendingOrder, null, false, new Object[] { rightValue }, false);
-    else if (node.operator == SelectOperator.le)
-      cursor = node.index.range(ascendingOrder, null, false, new Object[] { rightValue }, true);
-    else
+    } else if (node.operator == SelectOperator.gt || node.operator == SelectOperator.ge) {
+      // A bound no integral key equals (12.5, 1e19) is moved onto the smallest key above it, inclusive (issue #9021)
+      final Object from = integralLowerBound(node.index, rightValue);
+      cursor = from == NO_KEY ?
+          new TempIndexCursor(Collections.emptyList()) :
+          node.index.range(ascendingOrder, new Object[] { from }, from != rightValue || node.operator == SelectOperator.ge, null, false);
+    } else if (node.operator == SelectOperator.lt || node.operator == SelectOperator.le) {
+      // ... and the greatest key below it
+      final Object to = integralUpperBound(node.index, rightValue);
+      cursor = to == NO_KEY ?
+          new TempIndexCursor(Collections.emptyList()) :
+          node.index.range(ascendingOrder, null, false, new Object[] { to }, to != rightValue || node.operator == SelectOperator.le);
+    } else
       return;
 
     if (cursor == null)
@@ -890,5 +906,33 @@ public class SelectExecutor {
     if (result instanceof Boolean boolean1)
       return boolean1;
     throw new IllegalArgumentException("A boolean result was expected but '" + result + "' was returned");
+  }
+
+  /**
+   * The lower bound to seek an index with: {@code bound} itself, or, when the leading key is integral and no key equals it
+   * (12.5, 1e19), the smallest key above it, to be read inclusive, or {@link #NO_KEY} when there is none (issue #9021). The
+   * callers tell a mapped bound by identity ({@code from != bound}), which is safe: a mapped key is an integral number in range,
+   * so it is never the inexact bound it replaces.
+   */
+  private static Object integralLowerBound(final TypeIndex index, final Object bound) {
+    final byte keyType = leadingIntegralKeyType(index);
+    if (!IntegralKeyBound.isInexact(keyType, bound))
+      return bound;
+    final Number mapped = IntegralKeyBound.ceiling(keyType, (Number) bound);
+    return mapped == null ? NO_KEY : mapped;
+  }
+
+  /** The upper-bound twin of {@link #integralLowerBound}: the greatest key below an inexact bound. */
+  private static Object integralUpperBound(final TypeIndex index, final Object bound) {
+    final byte keyType = leadingIntegralKeyType(index);
+    if (!IntegralKeyBound.isInexact(keyType, bound))
+      return bound;
+    final Number mapped = IntegralKeyBound.floor(keyType, (Number) bound);
+    return mapped == null ? NO_KEY : mapped;
+  }
+
+  private static byte leadingIntegralKeyType(final TypeIndex index) {
+    final Type[] keyTypes = index.getKeyTypes();
+    return IntegralKeyBound.binaryTypeOf(keyTypes != null && keyTypes.length > 0 ? keyTypes[0] : null);
   }
 }

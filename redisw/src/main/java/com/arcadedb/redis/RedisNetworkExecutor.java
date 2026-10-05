@@ -24,6 +24,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.*;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.ErrorCategory;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
@@ -45,6 +46,7 @@ import java.net.Socket;
 import java.net.SocketException;
 import java.net.SocketTimeoutException;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -54,6 +56,26 @@ import java.util.function.UnaryOperator;
 import java.util.logging.Level;
 
 public class RedisNetworkExecutor extends Thread {
+
+  /**
+   * Argument counts (command name included) real Redis enforces before it runs a command: {min, max}, max -1 = no upper
+   * bound. Without it a surplus argument was read as the INCR/DECR amount, a missing one defaulted to 1, and a missing
+   * argument of GET/SET/INCR surfaced as {@code Index 1 out of bounds for length 1} (#9059). Intentionally partial: only
+   * the commands this wrapper dispatches with a fixed shape are listed.
+   */
+  private static final Map<String, int[]> ARITY = Map.ofEntries(//
+      Map.entry("DECR", new int[] { 2, 2 }), Map.entry("DECRBY", new int[] { 3, 3 }),//
+      Map.entry("INCR", new int[] { 2, 2 }), Map.entry("INCRBY", new int[] { 3, 3 }),//
+      Map.entry("INCRBYFLOAT", new int[] { 3, 3 }),//
+      Map.entry("GET", new int[] { 2, 2 }), Map.entry("GETDEL", new int[] { 2, 2 }),//
+      Map.entry("EXISTS", new int[] { 2, -1 }), Map.entry("SET", new int[] { 3, -1 }),//
+      Map.entry("HDEL", new int[] { 2, -1 }), Map.entry("HEXISTS", new int[] { 3, 3 }),//
+      Map.entry("HGET", new int[] { 3, 3 }), Map.entry("HMGET", new int[] { 3, -1 }),//
+      Map.entry("HSET", new int[] { 3, -1 }), Map.entry("HMSET", new int[] { 3, -1 }));
+
+  /** Commands whose arguments are opaque bytes (issue #9057); see the argument loop in the command dispatch. */
+  private static final Set<String> BINARY_SAFE_COMMANDS = Set.of("SET", "ECHO", "PING");
+
   private final    ArcadeDBServer      server;
   private final    ChannelBinaryServer channel;
   private volatile boolean             shutdown         = false;
@@ -211,7 +233,7 @@ public class RedisNetworkExecutor extends Thread {
   public void replyToClient(final StringBuilder response) throws IOException {
     LogManager.instance().log(this, Level.FINE, "Redis wrapper: Sending response back to the client '%s'...", response);
 
-    final byte[] buffer = response.toString().getBytes(DatabaseFactory.getDefaultCharset());
+    final byte[] buffer = RedisBinaryCodec.encode(response);
 
     channel.outStream.write(buffer);
     channel.flush();
@@ -266,12 +288,21 @@ public class RedisNetworkExecutor extends Thread {
       // raw ClassCastException from the generic catch-all instead of this message. No handler actually
       // consumes a nested array argument today, so that's an obscure, already-non-crashing edge case rather
       // than a gap worth a recursive check for.
+      // Only SET, ECHO and PING carry opaque bytes (issue #9057). Every other command parses its arguments as text, where
+      // an escaped byte would be a lone surrogate, so it gets the replacement character instead.
+      // A new command that handles opaque bytes must be added here. The KEY of SET is text like the key of every lookup
+      // command (GET, EXISTS, DEL...), so it is sanitized the same way and stays findable.
+      final boolean binarySafe = BINARY_SAFE_COMMANDS.contains(cmdString);
+      final boolean keyIsText = "SET".equals(cmdString);
       for (int i = 1; i < list.size(); i++) {
-        if (list.get(i) == null) {
+        final Object arg = list.get(i);
+        if (arg == null) {
           value.append("-ERR Protocol error: unexpected null bulk string argument");
           appendCrLf();
           return;
         }
+        if ((!binarySafe || (keyIsText && i == 1)) && arg instanceof String str)
+          list.set(i, RedisBinaryCodec.sanitize(str));
       }
 
       // Redis maps commands directly to engine operations rather than going through
@@ -303,6 +334,8 @@ public class RedisNetworkExecutor extends Thread {
           appendCrLf();
           return;
         }
+
+        checkArity(cmdString, list.size());
 
         switch (cmdString) {
           case "DECR":
@@ -387,6 +420,16 @@ public class RedisNetworkExecutor extends Thread {
       LogManager.instance().log(this, Level.SEVERE, "Redis wrapper: Invalid command %s", command);
   }
 
+  private static void checkArity(final String cmdString, final int argumentCount) {
+    final int[] arity = ARITY.get(cmdString);
+    if (arity != null && (argumentCount < arity[0] || (arity[1] >= 0 && argumentCount > arity[1])))
+      throw wrongArity(cmdString);
+  }
+
+  private static RedisException wrongArity(final String cmdString) {
+    return new RedisException("wrong number of arguments for '" + cmdString.toLowerCase(Locale.ROOT) + "' command");
+  }
+
   /**
    * The kind word a RESP error reply opens with (issue #5628). Errors used to go out as a bare {@code -<message>},
    * which carries no kind at all: a client had nothing to branch on, and an optimistic-concurrency conflict - the
@@ -430,7 +473,7 @@ public class RedisNetworkExecutor extends Thread {
    */
   private void decrBy(final List<Object> list) {
     final String k = (String) list.get(1);
-    final long by = list.size() > 2 ? Long.parseLong((String) list.get(2)) : 1L;
+    final long by = list.size() > 2 ? RedisCounterOperations.parseInteger((String) list.get(2)) : 1L;
 
     final long newValue = ((Number) computeVariable(k, RedisCounterOperations.decrementBy(by))).longValue();
 
@@ -464,19 +507,40 @@ public class RedisNetworkExecutor extends Thread {
     final int pos = bucketName.indexOf(".");
     final int[] deleted = {0};
 
+    // HDEL <db>.<rid> may stand alone (the record is named by the bucket); every other form needs at least one key, and the
+    // table can only express the lower bound of 2
+    if (list.size() < 3 && (pos < 0 || !bucketName.startsWith("#", pos + 1)))
+      throw wrongArity("HDEL");
+
     if (pos < 0) {
-      // Transient mode: delete from globalVariables atomically
+      // Transient mode: delete from globalVariables atomically. A key that is a RID deletes that record of the database
+      // named by the bucket, the shape HGET/HMGET/HEXISTS read it with (#9056).
       final DatabaseInternal database = getAuthorizedDatabase(bucketName);
-      database.transaction(() -> {
-        for (int i = 2; i < list.size(); i++) {
-          final String key = (String) list.get(i);
-          // Use setGlobalVariable which atomically returns the previous value
-          final Object previous = database.setGlobalVariable(key, null);
-          if (previous != null) {
-            deleted[0]++;
-          }
-        }
-      });
+      // Records first, variables last, and the variables only once the records are committed: a RID that fails (permission,
+      // rollback) must not leave the variables of the same command removed behind an error reply. Every RID is parsed up
+      // front for the same reason. A key that merely starts with '#' but is not a RID is a variable name.
+      final Set<RID> rids = new LinkedHashSet<>();
+      final List<String> variables = new ArrayList<>();
+      for (int i = 2; i < list.size(); i++) {
+        final String key = (String) list.get(i);
+        if (isRid(key))
+          rids.add(parseRid(key));
+        else
+          variables.add(key);
+      }
+      if (!rids.isEmpty())
+        database.transaction(() -> {
+          // counted locally and published once: a transaction retried after a conflict must not add its discarded attempt
+          int removed = 0;
+          for (final RID rid : rids)
+            removed += deleteByRid(database, rid) ? 1 : 0;
+          deleted[0] = removed;
+        });
+      // the two phases are not one atomic unit: variable removal cannot fail, but it is not undone with the records
+      for (final String variable : variables)
+        // setGlobalVariable atomically returns the previous value
+        if (database.setGlobalVariable(variable, null) != null)
+          deleted[0]++;
     } else {
       // Persistent mode: delete from database
       final String databaseName = bucketName.substring(0, pos);
@@ -485,8 +549,20 @@ public class RedisNetworkExecutor extends Thread {
       final Database database = getAuthorizedDatabase(databaseName);
 
       if (keyType.startsWith("#")) {
-        database.lookupByRID(new RID(keyType), true).delete();
-        deleted[0]++;
+        // The RID of the bucket argument, plus every RID among the keys: each record is deleted once (#9056)
+        final Set<RID> rids = new LinkedHashSet<>();
+        rids.add(parseRid(keyType));
+        for (int i = 2; i < list.size(); i++) {
+          final String key = (String) list.get(i);
+          if (isRid(key))
+            rids.add(parseRid(key));
+        }
+        database.transaction(() -> {
+          int removed = 0;
+          for (final RID rid : rids)
+            removed += deleteByRid(database, rid) ? 1 : 0;
+          deleted[0] = removed;
+        });
       } else {
         final Index index = database.getSchema().getIndexByName(keyType);
 
@@ -503,6 +579,37 @@ public class RedisNetworkExecutor extends Thread {
     }
     value.append(":");
     value.append(deleted[0]);
+  }
+
+  /** {@code #<bucket-id>:<position>}, both non-negative: the only shape of key HDEL reads as a record rather than a variable. */
+  private static boolean isRid(final String key) {
+    final int colon = key.indexOf(':');
+    if (colon < 2 || key.charAt(0) != '#' || colon == key.length() - 1)
+      return false;
+    for (int i = 1; i < key.length(); i++)
+      if (i != colon && (key.charAt(i) < '0' || key.charAt(i) > '9'))
+        return false;
+    return true;
+  }
+
+  private static RID parseRid(final String text) {
+    try {
+      return new RID(text);
+    } catch (final RuntimeException e) {
+      throw new RedisException("invalid RID '" + text + "', it must be #<bucket-id>:<bucket-position>");
+    }
+  }
+
+  /** Deletes the record at {@code rid}; false when there is none, so the reply counts only what was really deleted. */
+  private static boolean deleteByRid(final Database database, final RID rid) {
+    final Record record;
+    try {
+      record = database.lookupByRID(rid, true);
+    } catch (final RecordNotFoundException e) {
+      return false;
+    }
+    record.delete();
+    return true;
   }
 
   private void hExists(final List<Object> list) {
@@ -546,23 +653,32 @@ public class RedisNetworkExecutor extends Thread {
     // Check for transient mode: no dot in bucketName
     final int pos = bucketName.indexOf(".");
     if (pos < 0) {
-      // Transient mode: get from globalVariables
-      value.append("*");
-      value.append(keys.size());
-
+      // Transient mode: resolve every key BEFORE writing the array header, so a failure can never leave a reply that is
+      // shorter than its header announces (issue #9055). A RID with no record keeps its place as a null entry.
+      final List<String> values = new ArrayList<>(keys.size());
+      Database database = null;
       for (final Object keyObj : keys) {
-        appendCrLf();
         final String key = keyObj.toString();
         if (key.startsWith("#")) {
           // BY RID - persistent mode
-          final Database database = getAuthorizedDatabase(bucketName);
-          final Record record = database.lookupByRID(new RID(key), true);
-          respondValue(record != null ? record.toJSON(true) : null, true);
-        } else {
-          // Transient mode
-          final String transientValue = getTransientValue(bucketName, key);
-          respondValue(transientValue, true);
-        }
+          if (database == null)
+            database = getAuthorizedDatabase(bucketName);
+          Record record;
+          try {
+            record = database.lookupByRID(new RID(key), true);
+          } catch (final RecordNotFoundException e) {
+            record = null;
+          }
+          values.add(record != null ? record.toJSON(true).toString() : null);
+        } else
+          values.add(getTransientValue(bucketName, key));
+      }
+
+      value.append("*");
+      value.append(values.size());
+      for (final String v : values) {
+        appendCrLf();
+        respondValue(v, true);
       }
     } else {
       // Persistent mode: get records from database
@@ -603,6 +719,9 @@ public class RedisNetworkExecutor extends Thread {
       value.append(stored[0]);
     } else {
       // Persistent mode: store documents in database type
+      // the table minimum of 3 is the transient JSON form; the persistent form also needs a type and one document
+      if (list.size() < 4)
+        throw wrongArity((String) list.get(0));
       final String typeName = secondArg;
       final Database database = getAuthorizedDatabase(databaseName);
       database.transaction(() -> {
@@ -632,27 +751,18 @@ public class RedisNetworkExecutor extends Thread {
   private void incrBy(final List<Object> list, final boolean decimal) {
     final String k = (String) list.get(1);
 
-    final Number by;
-    if (list.size() > 2) {
-      if (decimal)
-        by = Double.valueOf((String) list.get(2));
-      else
-        by = Long.valueOf((String) list.get(2));
-    } else
-      by = 1L;
-
     // The read, the addition and the write are ONE atomic operation on the key - see computeVariable() for why a
-    // get followed by a set is not good enough here (issue #7776).
-    final Number newValue = (Number) computeVariable(k,
-        decimal ? RedisCounterOperations.incrementByFloat(by.doubleValue()) : RedisCounterOperations.incrementBy(by.longValue()));
-
+    // get followed by a set is not good enough here (issue #7776). The arity check in executeCommand guarantees the
+    // amount of INCRBY/INCRBYFLOAT is present, and INCR has none.
     if (decimal) {
-      final String text = newValue.toString();
+      final String text = (String) computeVariable(k, RedisCounterOperations.incrementByFloat((String) list.get(2)));
       value.append("$");
-      value.append(text.getBytes(DatabaseFactory.getDefaultCharset()).length);
+      value.append(RedisBinaryCodec.encodedLength(text));
       appendCrLf();
       value.append(text);
     } else {
+      final long by = list.size() > 2 ? RedisCounterOperations.parseInteger((String) list.get(2)) : 1L;
+      final long newValue = ((Number) computeVariable(k, RedisCounterOperations.incrementBy(by))).longValue();
       value.append(":");
       value.append(newValue);
     }
@@ -1161,7 +1271,7 @@ public class RedisNetworkExecutor extends Thread {
       // chars onto something byte-oriented, which is a larger change than this correctness fix warrants.
       final String text = v.toString();
       value.append("$");
-      value.append(text.getBytes(DatabaseFactory.getDefaultCharset()).length);
+      value.append(RedisBinaryCodec.encodedLength(text));
       appendCrLf();
       value.append(text);
     }
@@ -1186,7 +1296,7 @@ public class RedisNetworkExecutor extends Thread {
     for (; read < size && !shutdown; ++read)
       bytes[read] = readNext();
 
-    return new String(bytes, 0, read, DatabaseFactory.getDefaultCharset());
+    return RedisBinaryCodec.decode(bytes, read);
   }
 
   private byte readNext() throws IOException {

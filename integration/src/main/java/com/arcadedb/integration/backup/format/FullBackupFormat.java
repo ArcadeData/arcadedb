@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.PageSnapshot;
+import com.arcadedb.engine.timeseries.ListedSealedStore;
 import com.arcadedb.engine.timeseries.TimeSeriesCompactionPause;
 import com.arcadedb.engine.timeseries.TimeSeriesSealedStore;
 import com.arcadedb.exception.PageSnapshotException;
@@ -56,6 +57,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 
 public class FullBackupFormat extends AbstractBackupFormat {
   /**
@@ -65,6 +67,12 @@ public class FullBackupFormat extends AbstractBackupFormat {
    * the one outcome worth failing over, an archive that restores with duplicated samples and reports success.
    */
   private static final long COMPACTION_PAUSE_TIMEOUT_MS = 60_000L;
+
+  /**
+   * Test seam, {@code null} in production: called with each listed sealed store just before the backup reads it, so a
+   * test can replace the file between the t0 listing and the read (issue #8738).
+   */
+  static volatile Consumer<File> beforeSealedStoreReadForTesting;
 
   /**
    * Whether this attempt has written a non-empty {@code schema.json} entry, set by the two methods that append
@@ -325,15 +333,37 @@ public class FullBackupFormat extends AbstractBackupFormat {
    * {@code sealedFiles} is the set CAPTURED WITH the page image rather than one listed here, and a name in it that
    * cannot be read fails the backup - see the catch below for both, and {@link #backupFromSnapshot} for the frame
    * that captures them (issue #7705).
+   * <p>
+   * So does a name whose path, by the time it is read, names a DIFFERENT file than the one listed (issue #8738): a
+   * TIMESERIES type dropped and recreated under the same name after t0 leaves the path naming the new store, which
+   * reads cleanly and would be archived beside a t0 {@code schema.json} and page image it does not belong to. Each
+   * store is checked against the identity it had when listed once the archive writer has read it to the end; see
+   * {@link ListedSealedStore}.
    */
-  private long compressSealedStores(final BackupArchiveWriter archive, final List<File> sealedFiles)
+  private long compressSealedStores(final BackupArchiveWriter archive, final List<ListedSealedStore> sealedFiles)
       throws IOException {
     long origSize = 0L;
-    for (final File sealedFile : sealedFiles)
+    for (final ListedSealedStore sealedFile : sealedFiles)
       try {
+        final Consumer<File> hook = beforeSealedStoreReadForTesting;
+        if (hook != null)
+          hook.accept(sealedFile.file());
+        // FAIL FAST on a store already replaced, before reading and compressing a whole file the archive cannot keep.
+        // Not a substitute for the post-read check below: the writer opens the path itself, after this
+        sealedFile.verifyUnchanged(-1L);
         // NO exists() PRE-CHECK: the open inside compressFile IS the check, so there is no window between asking
         // and reading in which the file can still go away silently.
-        origSize += compressFile(archive, sealedFile, false);
+        final long size = compressFile(archive, sealedFile.file(), false);
+        // AFTER THE READ, NOT BEFORE IT: the writer opens the path itself, so only a check once it has read the bytes
+        // can tell whether the path still named the listed file - a replacement before the open leaves it naming the
+        // new one now, and one during the read changes the size or the times (#8738). BOTH writers read their input
+        // to the end before addFile returns; the parallel one's workers only compress
+        sealedFile.verifyUnchanged(size);
+        origSize += size;
+      } catch (final ListedSealedStore.ChangedException e) {
+        throw new BackupException("TimeSeries sealed store '" + sealedFile.name()
+            + "' changed after being listed for this backup, so the archive would pair it with a schema and page "
+            + "image it does not belong to (" + e.getMessage() + ")", e);
       } catch (final FileNotFoundException e) {
         // THE LISTING AND THE READ ARE NOT ONE OPERATION, AND A STORE THAT WENT AWAY BETWEEN THEM NOW FAILS THE
         // BACKUP (issue #7705). Neither a compaction nor retention nor downsampling can replace the file here -
@@ -359,7 +389,7 @@ public class FullBackupFormat extends AbstractBackupFormat {
         // process holds open on Windows all arrive here. Any OTHER IOException is a real I/O failure, and it
         // already fails the backup by propagating out of this method - just without the sentence below saying
         // which store it was (code review on PR #7746).
-        throw new BackupException("TimeSeries sealed store '" + sealedFile.getName()
+        throw new BackupException("TimeSeries sealed store '" + sealedFile.name()
             + "' could not be read after being listed for this backup: the archive would declare its type without "
             + "its data (" + e.getMessage() + ")", e);
       }
@@ -376,13 +406,13 @@ public class FullBackupFormat extends AbstractBackupFormat {
    * declaring a TIMESERIES type with no sealed-store entry beside it, and report success. Refusing costs one
    * re-run; answering "none" costs a restore that cannot open the type.
    */
-  private List<File> listSealedStoresOrFail() {
-    final File[] sealedFiles = TimeSeriesSealedStore.listSealedFilesOrNull(new File(database.getDatabasePath()));
+  private List<ListedSealedStore> listSealedStoresOrFail() {
+    final List<ListedSealedStore> sealedFiles = ListedSealedStore.listOrNull(new File(database.getDatabasePath()));
     if (sealedFiles == null)
       throw new BackupException("Cannot list the directory of database '" + database.getName()
           + "' to archive its TimeSeries sealed stores: a backup taken on the assumption that there are none would "
           + "declare every TIMESERIES type without its data");
-    return List.of(sealedFiles);
+    return sealedFiles;
   }
 
   /**
@@ -393,7 +423,7 @@ public class FullBackupFormat extends AbstractBackupFormat {
    * together buys and what it does not. {@code sealedFiles} is immutable and never {@code null}; it is empty for a
    * database with no TimeSeries type.
    */
-  private record SnapshotImage(PageSnapshot snapshot, List<File> sealedFiles) {
+  private record SnapshotImage(PageSnapshot snapshot, List<ListedSealedStore> sealedFiles) {
   }
 
   /**

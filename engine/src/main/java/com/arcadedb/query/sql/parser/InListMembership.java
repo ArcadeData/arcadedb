@@ -146,11 +146,11 @@ public final class InListMembership {
       if (item instanceof Float f && Float.isFinite(f)) {
         if (floats == null)
           floats = new HashSet<>();
-        floats.add(f);
+        floats.add(f + 0.0f); // + 0.0f: -0.0f is 0.0f (issue #8920), and Arrays.binarySearch orders them apart
       } else if (item instanceof Double d && Double.isFinite(d)) {
         if (narrowedDoubles == null)
           narrowedDoubles = new HashSet<>();
-        narrowedDoubles.add((float) (double) d);
+        narrowedDoubles.add((float) (double) d + 0.0f);
       }
     }
 
@@ -195,9 +195,9 @@ public final class InListMembership {
 
   private boolean narrowsToAnItem(final Object left) {
     if (left instanceof Float f)
-      return narrowedDoubles != null && Float.isFinite(f) && Arrays.binarySearch(narrowedDoubles, f) >= 0;
+      return narrowedDoubles != null && Float.isFinite(f) && Arrays.binarySearch(narrowedDoubles, f + 0.0f) >= 0;
     if (left instanceof Double d)
-      return floats != null && Double.isFinite(d) && Arrays.binarySearch(floats, (float) (double) d) >= 0;
+      return floats != null && Double.isFinite(d) && Arrays.binarySearch(floats, (float) (double) d + 0.0f) >= 0;
     return false;
   }
 

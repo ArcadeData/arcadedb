@@ -24,6 +24,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.ha.raft.PostSecuritySeedHandler.DeclaredPeerHttpAddress;
 import com.arcadedb.server.http.handler.LeaderDial;
 import com.arcadedb.server.security.ReplicatedSecurityFingerprintRepository;
 import com.arcadedb.server.security.ServerSecurity;
@@ -69,6 +70,12 @@ public final class ClusterSecuritySeedQuery {
    * last attempt, plus the request itself.
    */
   private static final long SEED_REPORT_MARGIN_MS = 30_000L;
+
+  /**
+   * How much longer than the leader's own deadline a declared admission's request waits (issue #8689), so the leader's
+   * answer - a 503 naming the documents, or a 200 - reaches the caller before the caller gives up on it.
+   */
+  static final long CLIENT_HEADROOM_MS = 5_000L;
 
   /**
    * Attempts a request whose only failure is "you are not the leader any more" (issue #7834).
@@ -139,6 +146,19 @@ public final class ClusterSecuritySeedQuery {
   }
 
   /**
+   * The deadline of an admission request that DECLARED the admitted peer's HTTP address (issue #8689): room for two
+   * whole seeds plus the margin, because the leader that records the address answers only after the seed already in
+   * flight - which was probing the old address and may spend its whole retry budget doing so - and then a fresh one.
+   * The leader waits this long; the admitting node's request is given {@link #CLIENT_HEADROOM_MS} more, because the
+   * leader's clock starts only once the request has arrived, and with equal values the client would time out first and
+   * the operator would read a timeout instead of the leader's answer.
+   */
+  public static long declaredAdmissionReportTimeoutMs(final ContextConfiguration configuration) {
+    return 2 * Math.max(0L, configuration.getValueAsLong(GlobalConfiguration.HA_SECURITY_SEED_RETRY_TIMEOUT))
+        + SEED_REPORT_MARGIN_MS;
+  }
+
+  /**
    * How long to wait for an election to name a new leader before re-resolving, taken from the cluster's own
    * {@code arcadedb.ha.electionTimeoutMax} so the two cannot drift apart: a deployment that widens its election
    * timeout for a WAN link or a bulk-load workload widens this with it, without a second setting to remember.
@@ -164,7 +184,21 @@ public final class ClusterSecuritySeedQuery {
    */
   public static List<String> seedForAdmission(final ArcadeDBServer server, final RaftHAPlugin plugin,
       final String admittedPeer) throws IOException {
-    return seed(server, plugin, "the admission of peer '" + admittedPeer + "'", null, false).failedSeeds();
+    return seedForAdmission(server, plugin, admittedPeer, null);
+  }
+
+  /**
+   * {@link #seedForAdmission(ArcadeDBServer, RaftHAPlugin, String)} for a peer whose HTTP address the admission
+   * DECLARED (issue #8689). The address goes to the leader with the request, because the leader's seed probes the
+   * peer at the address the LEADER's map holds, and a declaration served by a follower reached only the follower's.
+   * When this node is the leader there is nothing to send: {@code RaftClusterManager.addPeer} wrote it here before
+   * the membership change committed (issue #8330).
+   *
+   * @param declared the admitted peer's id and declared HTTP address, or {@code null} when the admission declared none
+   */
+  static List<String> seedForAdmission(final ArcadeDBServer server, final RaftHAPlugin plugin,
+      final String admittedPeer, final DeclaredPeerHttpAddress declared) throws IOException {
+    return seed(server, plugin, "the admission of peer '" + admittedPeer + "'", null, false, declared).failedSeeds();
   }
 
   /**
@@ -187,7 +221,7 @@ public final class ClusterSecuritySeedQuery {
    */
   public static SeedAnswer seedForCatchUpAnswer(final ArcadeDBServer server, final RaftHAPlugin plugin,
       final String reason) throws IOException {
-    return seed(server, plugin, reason, localFingerprints(server.getSecurity()), true);
+    return seed(server, plugin, reason, localFingerprints(server.getSecurity()), true, null);
   }
 
   /** The three digests the leader compares against its own; {@code null} when there is no security store. */
@@ -201,10 +235,10 @@ public final class ClusterSecuritySeedQuery {
   }
 
   private static SeedAnswer seed(final ArcadeDBServer server, final RaftHAPlugin plugin, final String reason,
-      final JSONObject fingerprints, final boolean catchUp) throws IOException {
+      final JSONObject fingerprints, final boolean catchUp, final DeclaredPeerHttpAddress declared) throws IOException {
     for (int attempt = 1; ; attempt++) {
       try {
-        return seedOnce(server, plugin, reason, fingerprints, catchUp);
+        return seedOnce(server, plugin, reason, fingerprints, catchUp, declared);
       } catch (final NotLeaderException e) {
         if (attempt >= NOT_LEADER_ATTEMPTS)
           throw new IOException("the security seed could not be requested: " + e.getMessage());
@@ -248,9 +282,10 @@ public final class ClusterSecuritySeedQuery {
    *                catch-up on a node with no security store has no fingerprints to send and would otherwise be
    *                read as an admission - and answered by a recently completed seed it did not cause, which is
    *                the reuse hole this distinction exists to keep shut (CodeRabbit on PR #7854)
+   * @param declared the admitted peer's id and declared HTTP address, or {@code null} (issue #8689)
    */
   private static SeedAnswer seedOnce(final ArcadeDBServer server, final RaftHAPlugin plugin, final String reason,
-      final JSONObject fingerprints, final boolean catchUp) throws IOException {
+      final JSONObject fingerprints, final boolean catchUp, final DeclaredPeerHttpAddress declared) throws IOException {
     final RaftHAServer raft = plugin.getRaftHAServer();
     if (raft == null)
       throw new IOException("Raft HA is not started on this node, so no security seed can be requested");
@@ -278,8 +313,13 @@ public final class ClusterSecuritySeedQuery {
       body.put("catchUp", true);
     if (fingerprints != null)
       body.put("fingerprints", fingerprints);
+    if (declared != null)
+      body.put(PostSecuritySeedHandler.ADMITTED_PEER_ID, declared.peerId())
+          .put(PostSecuritySeedHandler.DECLARED_HTTP_ADDRESS, declared.httpAddress());
 
-    final long timeoutMs = Math.max(reportTimeoutMs(server.getConfiguration()), LeaderDial.MIN_FORWARD_TIMEOUT_MS);
+    final long timeoutMs = Math.max(declared != null
+        ? declaredAdmissionReportTimeoutMs(server.getConfiguration()) + CLIENT_HEADROOM_MS
+        : reportTimeoutMs(server.getConfiguration()), LeaderDial.MIN_FORWARD_TIMEOUT_MS);
     final HttpRequest.Builder builder = HttpRequest.newBuilder()
         .uri(URI.create(dial.url(PostSecuritySeedHandler.ROUTE)))
         .timeout(Duration.ofMillis(timeoutMs))

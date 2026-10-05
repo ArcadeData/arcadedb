@@ -105,7 +105,7 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
     final WorkGuard guard = newWorkGuard(context);
 
     // Try CSR-accelerated path: delegate to native label propagation on CSR arrays
-    final GraphTraversalProvider provider = findProvider(db, null);
+    final GraphTraversalProvider provider = findProvider(db, null, context);
     // Only while the view is not serving pending changes: the GraphAlgorithms kernel below reads its base CSR
     // arrays directly and sizes its result from the base node mapping, which is neither the current graph nor
     // as wide as the id space the view now reports - see GraphTraversalProvider#hasPendingChanges (issue #6792).

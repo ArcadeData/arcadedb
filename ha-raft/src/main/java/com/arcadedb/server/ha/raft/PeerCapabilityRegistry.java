@@ -90,6 +90,36 @@ public final class PeerCapabilityRegistry {
   }
 
   /**
+   * What KIND of unknown a peer is, as a machine-readable companion to {@link #unknownReasonOf} (issue #8655).
+   * <p>
+   * {@link #peersMissing} still never reads it - every unknown is a "no" here whatever produced it. It exists for a
+   * reader that is NOT the node deciding: a follower answering {@code GET /api/v1/cluster} reports what its own probe
+   * saw, and whether that says anything about what the leader's probe will see depends on the kind. A peer that
+   * answered 404 runs a build without the capability route, and that is a property of the peer, so every node's
+   * probe gets the same answer. A peer this node could not reach may well be reachable from the leader.
+   */
+  public enum UnknownKind {
+    /** The peer answered HTTP 404 on the capability route: its build predates it. True from every node. */
+    ROUTE_MISSING,
+    /**
+     * This node got no usable answer: a transport failure, a timeout, an interrupted probe, a status other than 404,
+     * or an answer that named another peer. Says nothing about what another node's probe gets.
+     */
+    UNREACHABLE,
+    /** This node has no address it may dial for the peer, so it never asked. A property of this node's configuration. */
+    ADDRESS_REFUSED,
+    /** The last answer aged out with no failed probe behind it: this node stopped asking, the peer did not stop answering. */
+    STALE
+  }
+
+  /**
+   * Why one peer is unknown: the operator-facing sentence and its machine-readable kind, read together by
+   * {@link #unknownOf} so a reader never pairs one probe's sentence with the next probe's kind.
+   */
+  public record Unknown(String reason, UnknownKind kind) {
+  }
+
+  /**
    * Sentinel stored in {@link #lastReported} for a peer whose last probe FAILED, so a repeated failure is not a
    * change and is not reported again. Never a real capability set: no advertisement can contain this token.
    */
@@ -110,7 +140,7 @@ public final class PeerCapabilityRegistry {
    * Why each currently-unknown peer is unknown, so the cluster-status endpoint can say it (issue #7256). Purely
    * operator-facing: {@link #peersMissing} never reads it, because every unknown is a "no" whatever produced it.
    */
-  private final ConcurrentHashMap<String, String>        unknownReasons = new ConcurrentHashMap<>();
+  private final ConcurrentHashMap<String, Unknown>       unknownReasons = new ConcurrentHashMap<>();
   private final long                                     ttlMs;
 
   /**
@@ -193,14 +223,20 @@ public final class PeerCapabilityRegistry {
    * answered" and "a peer stopped answering" are both things an operator needs told.
    */
   public boolean forget(final long generation, final String peerId, final String reason) {
+    return forget(generation, peerId, reason, UnknownKind.UNREACHABLE);
+  }
+
+  /**
+   * As {@link #forget(long, String, String)}, recording what kind of failure {@code reason} describes (issue #8655).
+   * The three-argument form records {@link UnknownKind#UNREACHABLE}: the kind that claims nothing about the peer
+   * itself.
+   */
+  public boolean forget(final long generation, final String peerId, final String reason, final UnknownKind kind) {
     synchronized (writeLock) {
       if (generation != this.generation)
         return false;
       advertisements.remove(peerId);
-      if (reason == null)
-        unknownReasons.remove(peerId);
-      else
-        unknownReasons.put(peerId, reason);
+      putUnknown(peerId, reason, kind);
       return lastReported.put(peerId, PROBE_FAILED) != PROBE_FAILED;
     }
   }
@@ -223,15 +259,26 @@ public final class PeerCapabilityRegistry {
    *                   ended leadership term is dropped rather than recorded.
    */
   public void suspend(final long generation, final String peerId, final String reason) {
+    suspend(generation, peerId, reason, UnknownKind.UNREACHABLE);
+  }
+
+  /** As {@link #suspend(long, String, String)}, recording what kind of failure {@code reason} describes (issue #8655). */
+  public void suspend(final long generation, final String peerId, final String reason, final UnknownKind kind) {
     synchronized (writeLock) {
       if (generation != this.generation)
         return;
       advertisements.remove(peerId);
-      if (reason == null)
-        unknownReasons.remove(peerId);
-      else
-        unknownReasons.put(peerId, reason);
+      putUnknown(peerId, reason, kind);
     }
+  }
+
+  // Caller holds writeLock. A null reason clears the entry, kind and all: a kind with nothing to explain it would be
+  // a verdict an operator cannot read.
+  private void putUnknown(final String peerId, final String reason, final UnknownKind kind) {
+    if (reason == null)
+      unknownReasons.remove(peerId);
+    else
+      unknownReasons.put(peerId, new Unknown(reason, kind != null ? kind : UnknownKind.UNREACHABLE));
   }
 
   /**
@@ -278,14 +325,35 @@ public final class PeerCapabilityRegistry {
    * one arm of "every unknown is a no" that no reason describes.
    */
   public String unknownReasonOf(final String peerId) {
+    final Unknown unknown = unknownOf(peerId);
+    return unknown != null ? unknown.reason() : null;
+  }
+
+  /**
+   * What kind of unknown {@code peerId} is, or {@code null} exactly when {@link #unknownReasonOf} is: it has a fresh
+   * answer, or was never asked at all (issue #8655). The reason says it to an operator; this says it to a client that
+   * has to decide on it without matching message text - Studio on a follower, telling a peer whose build predates the
+   * capability route (which the leader's probe sees too) from one only this node cannot reach.
+   */
+  public UnknownKind unknownKindOf(final String peerId) {
+    final Unknown unknown = unknownOf(peerId);
+    return unknown != null ? unknown.kind() : null;
+  }
+
+  /**
+   * {@link #unknownReasonOf} and {@link #unknownKindOf} as one read, or {@code null} when {@code peerId} has a fresh
+   * answer or was never asked. What {@code GET /api/v1/cluster} reads, so the sentence and the kind it publishes for a
+   * peer always come from the same probe.
+   */
+  public Unknown unknownOf(final String peerId) {
     if (freshAdvertisementOf(peerId) != null)
       return null;
-    final String reason = unknownReasons.get(peerId);
-    if (reason != null)
-      return reason;
+    final Unknown unknown = unknownReasons.get(peerId);
+    if (unknown != null)
+      return unknown;
     return advertisements.containsKey(peerId)
-        ? "this peer's last advertisement is older than the " + ttlMs + "ms one is believed for, and no probe has "
-            + "refreshed it since"
+        ? new Unknown("this peer's last advertisement is older than the " + ttlMs + "ms one is believed for, and no "
+            + "probe has refreshed it since", UnknownKind.STALE)
         : null;
   }
 

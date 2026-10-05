@@ -120,7 +120,7 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
     // Renumbered when the provider's id space has holes in it, so that n below is both the array size and the
     // exclusive id bound - the two have to be the same number for a rank array indexed by neighbour id
     // (issue #6792). wrap() is a no-op for a compact id space.
-    final GraphTraversalProvider provider = DenseNodeIdProvider.wrap(findProvider(db, relTypes));
+    final GraphTraversalProvider provider = DenseNodeIdProvider.wrap(findProvider(db, relTypes, context));
     if (provider != null) {
       final double[] personalization = buildPersonalization(sources, provider.getNodeCount(), provider::getNodeId, false);
       if (personalization != null) {

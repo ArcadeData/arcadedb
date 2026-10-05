@@ -146,10 +146,11 @@ class Issue8882FloatDoubleEqualityTest extends TestHelper {
   @Test
   void orderingKeepsTheDecimalReading() {
     setup();
-    // equality follows the index key, ordering keeps the decimal reading of the FLOAT (#8252): a deliberate split
+    // a FLOAT equal to the bound (the index key) is neither below nor above it (#8919); between two stored values the
+    // ordering still keeps the decimal reading of the FLOAT (#8252)
     assertThat(count("sql", "SELECT FROM T WHERE g = ? AND k = 0", (double) 0.1f)).isEqualTo(1);
-    assertThat(count("sql", "SELECT FROM T WHERE g >= ? AND k = 0", (double) 0.1f)).isEqualTo(0);
-    assertThat(count("sql", "SELECT FROM T WHERE g < ? AND k = 0", (double) 0.1f)).isEqualTo(1);
+    assertThat(count("sql", "SELECT FROM T WHERE g >= ? AND k = 0", (double) 0.1f)).isEqualTo(1);
+    assertThat(count("sql", "SELECT FROM T WHERE g < ? AND k = 0", (double) 0.1f)).isEqualTo(0);
   }
 
   @Test
@@ -168,8 +169,9 @@ class Issue8882FloatDoubleEqualityTest extends TestHelper {
     database.command("sql", "CREATE DOCUMENT TYPE Z");
     database.command("sql", "CREATE PROPERTY Z.g FLOAT");
     database.transaction(() -> database.newDocument("Z").set("g", -0.0f).save());
+    // a negative zero is a zero (IEEE 754, #8920)
     assertThat(count("sql", "SELECT FROM Z WHERE g = ?", -0.0d)).isEqualTo(1);
-    assertThat(count("sql", "SELECT FROM Z WHERE g = ?", 0.0d)).isEqualTo(0);
+    assertThat(count("sql", "SELECT FROM Z WHERE g = ?", 0.0d)).isEqualTo(1);
   }
 
   @Test
@@ -198,8 +200,8 @@ class Issue8882FloatDoubleEqualityTest extends TestHelper {
     assertThat(Type.numbersEqual((double) 0.1f, 0.1f)).isTrue();
     assertThat(Type.numbersEqual(0.1f, 0.1d)).isTrue();
     assertThat(Type.numbersEqual(0.1f, 0.10000001d)).isFalse();
-    assertThat(Type.numbersEqual(0.0f, -0.0d)).isFalse();
-    assertThat(Type.numbersEqual(-0.0f, 0.0d)).isFalse();
+    assertThat(Type.numbersEqual(0.0f, -0.0d)).isTrue();
+    assertThat(Type.numbersEqual(-0.0f, 0.0d)).isTrue();
     assertThat(Type.numbersEqual(Float.POSITIVE_INFINITY, Double.POSITIVE_INFINITY)).isTrue();
     assertThat(Type.numbersEqual(Float.POSITIVE_INFINITY, 1e300d)).isFalse();
     assertThat(Type.numbersEqual(1e10d, new BigDecimal("1e400"))).isFalse();

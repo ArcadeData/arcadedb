@@ -22,7 +22,10 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.index.EmptyIndexCursor;
 import com.arcadedb.index.IndexCursor;
+import com.arcadedb.index.IndexInternal;
+import com.arcadedb.index.IntegralKeyBound;
 import com.arcadedb.index.RangeIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.parser.*;
@@ -93,7 +96,7 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
           final ResultInternal result = new ResultInternal(context.getDatabase());
           final Identifiable value = entry.getSecond();
 
-          index.remove(new Object[]{entry.getFirst()}, value);
+          index.remove((Object[]) entry.getFirst(), value);
           localCount++;
           nextEntry = loadNextEntry(context);
           return result;
@@ -172,7 +175,7 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
 
       final ResultInternal res = new ResultInternal(context.getDatabase());
       res.setProperty("rid", result.getSecond());
-      if (ridCondition.evaluate(res, commandContext))
+      if (Boolean.TRUE.equals(ridCondition.evaluate(res, commandContext)))
         return result;
 
     }
@@ -210,8 +213,24 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
     final Expression second = ((BetweenCondition) condition).getSecond();
     final Expression third = ((BetweenCondition) condition).getThird();
 
-    final Object secondValue = second.execute((Result) null, context);
-    final Object thirdValue = third.execute((Result) null, context);
+    Object secondValue = second.execute((Result) null, context);
+    Object thirdValue = third.execute((Result) null, context);
+
+    // A bound no integral key equals (11.5, 1e19) is moved onto the key that bounds the same keys: the index would otherwise
+    // truncate or clamp it and remove keys outside the range (issue #9125)
+    final byte keyType = integralKeyType();
+    final boolean lowerInexact = IntegralKeyBound.isInexact(keyType, secondValue);
+    final boolean upperInexact = IntegralKeyBound.isInexact(keyType, thirdValue);
+    if (lowerInexact)
+      secondValue = IntegralKeyBound.ceiling(keyType, (Number) secondValue);
+    if (upperInexact)
+      thirdValue = IntegralKeyBound.floor(keyType, (Number) thirdValue);
+    if ((lowerInexact || upperInexact) && (secondValue == null || thirdValue == null
+        || (secondValue instanceof Number lower && thirdValue instanceof Number upper && lower.longValue() > upper.longValue()))) {
+      // no key lies between the bounds
+      cursor = new EmptyIndexCursor();
+      return;
+    }
     if (isOrderAsc())
       cursor = index.range(true, new Object[]{secondValue}, true, new Object[]{thirdValue}, true);
     else
@@ -228,21 +247,50 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
     cursor = createCursor(operator, rightValue);
   }
 
-  private IndexCursor createCursor(final BinaryCompareOperator operator, final Object value) {
-    final boolean orderAsc = isOrderAsc();
+  private IndexCursor createCursor(final BinaryCompareOperator operator, final Object operand) {
+    // A bound no integral key equals (12.5, 1e19) is moved onto the key that bounds the same keys, inclusive, or matches none:
+    // the index would otherwise truncate or clamp it (issue #9125)
+    final byte keyType = integralKeyType();
+    Object value = operand;
+    boolean inexact = false;
+    if (IntegralKeyBound.isInexact(keyType, operand)) {
+      inexact = true;
+      if (operator instanceof EqualsCompareOperator)
+        return new EmptyIndexCursor();
+      else if (operator instanceof GeOperator || operator instanceof GtOperator)
+        value = IntegralKeyBound.ceiling(keyType, (Number) value);
+      else if (operator instanceof LeOperator || operator instanceof LtOperator)
+        value = IntegralKeyBound.floor(keyType, (Number) value);
+      if (value == null)
+        return new EmptyIndexCursor();
+    }
+
+    // The scan direction is irrelevant to a delete, so the order the step was built with is not consulted here.
+    // Each operator is bounded on the side it needs: the cursor of a one-sided scan has no upper end, so = used to remove every
+    // key from the value upwards and <, <= every key from the value in the scan direction instead of the ones below it
     if (operator instanceof EqualsCompareOperator) {
-      return index.iterator(orderAsc, new Object[]{value}, true);
+      return index.range(true, new Object[]{value}, true, new Object[]{value}, true);
     } else if (operator instanceof GeOperator) {
-      return index.iterator(orderAsc, new Object[]{value}, true);
+      return index.iterator(true, new Object[]{value}, true);
     } else if (operator instanceof GtOperator) {
-      return index.iterator(orderAsc, new Object[]{value}, false);
+      return index.iterator(true, new Object[]{value}, inexact);
     } else if (operator instanceof LeOperator) {
-      return index.iterator(orderAsc, new Object[]{value}, true);
+      return index.iterator(false, new Object[]{value}, true);
     } else if (operator instanceof LtOperator) {
-      return index.iterator(orderAsc, new Object[]{value}, false);
+      return index.iterator(false, new Object[]{value}, inexact);
     } else {
       throw new CommandExecutionException("search for index for " + condition + " is not supported yet");
     }
+  }
+
+  /** The binary type of the first key of the index, or -1 when the key types are not known. */
+  private byte integralKeyType() {
+    if (index instanceof IndexInternal internalIndex) {
+      final byte[] keyTypes = internalIndex.getBinaryKeyTypes();
+      if (keyTypes != null && keyTypes.length > 0)
+        return keyTypes[0];
+    }
+    return -1;
   }
 
   protected boolean isOrderAsc() {

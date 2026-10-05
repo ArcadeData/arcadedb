@@ -50,7 +50,11 @@ class Issue8560MixedCaseToLowerCaseCiIndexTest extends TestHelper {
     });
   }
 
-  private List<String> names(final String query, final Object... params) {
+  private List<String> names(final String query) {
+    return names(query, Map.of());
+  }
+
+  private List<String> names(final String query, final Map<String, Object> params) {
     final List<String> result = new ArrayList<>();
     try (final ResultSet rs = database.query("sql", query, params)) {
       while (rs.hasNext()) {

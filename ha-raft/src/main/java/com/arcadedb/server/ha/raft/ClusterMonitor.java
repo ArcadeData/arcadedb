@@ -25,6 +25,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 import java.util.function.LongSupplier;
+import java.util.function.ToLongFunction;
 import java.util.logging.Level;
 
 /**
@@ -131,6 +132,10 @@ public class ClusterMonitor {
   // Injectable clock for deterministic tests; defaults to the wall clock. Volatile because the test
   // thread writes it while the lag-monitor thread reads it (consistent with the other volatile fields).
   private volatile LongSupplier                    clock         = System::currentTimeMillis;
+  // When each peer last answered OUTSIDE Raft (its HTTP capability advertisement), or -1 when unknown (issue #8900).
+  // A follower that keeps answering there while every Raft RPC to it fails is up and refusing, not down: its channel
+  // is reset at once instead of after a full peerChannelResetDurationMs. Volatile: wired after construction.
+  private volatile ToLongFunction<String>          peerLastAnsweredAtMs;
 
   public ClusterMonitor(final long lagWarningThreshold) {
     this(lagWarningThreshold, 0L, null);
@@ -209,6 +214,14 @@ public class ClusterMonitor {
     this.peerChannelResetDurationMs = peerChannelResetDurationMs;
     this.unreachablePeerChannelHandler = unreachablePeerChannelHandler;
     this.exhaustedPeerChannelHandler = exhaustedPeerChannelHandler;
+  }
+
+  /**
+   * Sets where the monitor learns when a peer last answered outside Raft (issue #8900): a time in the clock's units, or
+   * -1 when unknown. {@code null} turns the early channel reset off.
+   */
+  void setPeerLastAnsweredAt(final ToLongFunction<String> peerLastAnsweredAtMs) {
+    this.peerLastAnsweredAtMs = peerLastAnsweredAtMs;
   }
 
   /** Package-private test hook to drive the stall-duration logic deterministically. */
@@ -590,6 +603,7 @@ public class ClusterMonitor {
       state.channelLastResetAtMs = -1;
       state.channelResetCount = 0;
       state.channelResetGaveUp = false;
+      state.channelEarlyResetDone = false;
       return;
     }
 
@@ -603,6 +617,27 @@ public class ClusterMonitor {
     // Only act once a full interval has elapsed since the streak start (first attempt) or the last reset
     // (subsequent attempts). A follower that reconnects within an interval clears the streak above and is
     // never reset, so an in-progress reconnection is not disrupted.
+    // Issue #8900: one EXTRA reset, at once, when the follower answered outside Raft after the streak began. It is up
+    // and refusing every Raft RPC - in #8898 the leader's appends kept reaching a CLOSED division through the
+    // connection of a server that had been replaced - and a fresh channel reconnects to whatever holds the port now.
+    // It is not counted against CHANNEL_RESET_MAX_ATTEMPTS and does not move channelLastResetAtMs, so the regular
+    // schedule and the #5346 escalation (a leadership transfer) keep exactly the timing they had: "answers over HTTP"
+    // also matches a slow in-place restart or a Raft-port-only network problem, which must not escalate any sooner.
+    if (!state.channelEarlyResetDone && state.channelResetCount == 0
+        && answeredOutsideRaftSince(replicaId, state.channelUnreachableSinceMs)) {
+      state.channelEarlyResetDone = true;
+      LogManager.instance().log(this, Level.WARNING,
+          "Follower '%s' answers over HTTP but no Raft RPC to it has succeeded for %dms; resetting its replication "
+              + "channel now so the leader reconnects to the server holding its Raft port.",
+          replicaId, lastRpcElapsedMs);
+      try {
+        unreachablePeerChannelHandler.accept(replicaId);
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Channel-reset recovery for follower '%s' failed: %s", replicaId, e.getMessage());
+      }
+      return;
+    }
     if (now - state.channelLastResetAtMs < peerChannelResetDurationMs)
       return;
 
@@ -644,6 +679,18 @@ public class ClusterMonitor {
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING,
           "Channel-reset recovery for follower '%s' failed: %s", replicaId, e.getMessage());
+    }
+  }
+
+  /** Whether {@code replicaId} answered outside Raft at or after {@code sinceMs} (issue #8900). Never throws. */
+  private boolean answeredOutsideRaftSince(final String replicaId, final long sinceMs) {
+    final ToLongFunction<String> source = peerLastAnsweredAtMs;
+    if (source == null || sinceMs < 0)
+      return false;
+    try {
+      return source.applyAsLong(replicaId) >= sinceMs;
+    } catch (final RuntimeException e) {
+      return false;
     }
   }
 
@@ -800,6 +847,8 @@ public class ClusterMonitor {
     long          channelLastResetAtMs      = -1;
     int           channelResetCount         = 0;
     boolean       channelResetGaveUp        = false;
+    // Whether this streak already had its #8900 early reset of a follower that answers outside Raft.
+    boolean       channelEarlyResetDone     = false;
 
     ReplicaState(final long initialMatchIndex, final long initialLeaderCommitIndex) {
       this.lastMatchIndex = initialMatchIndex;

@@ -40,20 +40,34 @@ public final class DocumentBatcher {
       }
       return n;
     }
+    // A caller's own transaction is the caller's to commit or roll back: batch
+    // commits and the failure rollback apply only to the transactions opened
+    // here, matching the Python per-row fallback (#7882).
     final boolean wasActive = db.isTransactionActive();
     if (!wasActive)
       db.begin();
-    for (int i = 0; i < n; i++) {
-      final MutableDocument doc = db.newDocument(typeName);
-      fill(doc, rows.getJSONObject(i));
-      doc.save();
-      if (commitEvery > 0 && (i + 1) % commitEvery == 0) {
-        db.commit();
-        db.begin();
+    try {
+      for (int i = 0; i < n; i++) {
+        final MutableDocument doc = db.newDocument(typeName);
+        fill(doc, rows.getJSONObject(i));
+        doc.save();
+        if (!wasActive && commitEvery > 0 && (i + 1) % commitEvery == 0) {
+          db.commit();
+          db.begin();
+        }
       }
+      if (!wasActive)
+        db.commit();
+    } catch (final Throwable e) {
+      if (!wasActive && db.isTransactionActive()) {
+        try {
+          db.rollback();
+        } catch (final Throwable rollbackError) {
+          e.addSuppressed(rollbackError);
+        }
+      }
+      throw e;
     }
-    if (!wasActive)
-      db.commit();
     return n;
   }
 

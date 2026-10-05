@@ -53,7 +53,7 @@ public class SQLMethodHash extends AbstractSQLMethod {
     if (value == null)
       return null;
 
-    final String algorithm = params.length > 0 ? params[0].toString() : HASH_ALGORITHM;
+    final String algorithm = params.length > 0 && params[0] != null ? params[0].toString() : HASH_ALGORITHM;
     try {
       return createHash(value.toString(), algorithm);
 

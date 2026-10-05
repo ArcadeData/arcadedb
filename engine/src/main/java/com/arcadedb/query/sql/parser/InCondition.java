@@ -28,7 +28,6 @@ import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.QueryOperatorEquals;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.utility.CodeUtils;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -185,17 +184,19 @@ public class InCondition extends BooleanExpression {
   }
 
   protected static Object executeQuery(final SelectStatement rightStatement, final CommandContext context) {
-    final ResultSet result = rightStatement.execute(context.getDatabase(), context.getInputParameters());
-    return result.stream()
-        .map(r -> {
-          if (!r.isElement()) {
-            final Set<String> names = r.getPropertyNames();
-            if (names.size() == 1)
-              return r.getProperty(names.iterator().next());
-          }
-          return (Object) r;
-        })
-        .collect(Collectors.toSet());
+    // THE ENCLOSING CONTEXT IS THE PARENT, SO A VARIABLE OF IT ($matched, $parent...) IS VISIBLE TO THE SUBQUERY
+    try (final ResultSet result = rightStatement.execute(context.getDatabase(), context.getInputParameters(), context)) {
+      return result.stream()
+          .map(r -> {
+            if (!r.isElement()) {
+              final Set<String> names = r.getPropertyNames();
+              if (names.size() == 1)
+                return r.getProperty(names.iterator().next());
+            }
+            return (Object) r;
+          })
+          .collect(Collectors.toSet());
+    }
   }
 
   /**
@@ -242,7 +243,26 @@ public class InCondition extends BooleanExpression {
 
   // QueryOperatorEquals converts its 2nd argument to the class of the 1st, so try both directions
   private static boolean equalsEitherWay(final Object left, final Object item, final boolean convertOperand) {
-    return QueryOperatorEquals.equals(left, item) || (convertOperand && mayMatchByConversion(left, item) && QueryOperatorEquals.equals(item, left));
+    if (!convertOperand)
+      return QueryOperatorEquals.equals(left, subQueryRowScalar(item));
+    return QueryOperatorEquals.equals(left, item) || (mayMatchByConversion(left, item) && QueryOperatorEquals.equals(item, left));
+  }
+
+  /**
+   * The scalar a sub-query row stands for, or the item itself. QueryOperatorEquals compares a row through its first property
+   * converting either way, which would convert a record property on the left to the row's value type: unwrapped, the property is
+   * compared one way like {@code =} and the list forms (#8913). A row holding a collection keeps the IN-over-items behavior.
+   */
+  private static Object subQueryRowScalar(final Object item) {
+    if (item instanceof Result row && !row.isElement()) {
+      final Set<String> names = row.getPropertyNames();
+      if (names.size() == 1) {
+        final Object value = row.getProperty(names.iterator().next());
+        if (value != null && !MultiValue.isMultiValue(value))
+          return value;
+      }
+    }
+    return item;
   }
 
   // False where QueryOperatorEquals is symmetric (same class, two numbers, records, embedded documents), so the reverse call adds nothing
@@ -265,6 +285,7 @@ public class InCondition extends BooleanExpression {
    * non-match, or {@code null} (UNKNOWN) when the left value is null or no match was found but the
    * right collection contains a null element. UNKNOWN is mapped to false at the WHERE boundary.
    * @param convertOperand false when {@code iLeft} is a record property: it is compared without converting the items, like {@code =}
+   *                       (a sub-query row is the exception: it converts either way in QueryOperatorEquals)
    */
   protected static Boolean evaluateExpressionThreeValued(Object iLeft, final Object iRight, final boolean convertOperand) {
     if (iLeft instanceof Result r && !r.isElement()) {
@@ -337,7 +358,9 @@ public class InCondition extends BooleanExpression {
           sawNull = true;
           continue;
         }
-        if (QueryOperatorEquals.equals(iLeft, o))
+        // A sub-query row is a Result: equals() compares its first property, converting either way inside comparesValues()/valueEquals(),
+        // except for a record property on the left, which is not converted (#8913)
+        if (convertOperand ? QueryOperatorEquals.equals(iLeft, o) : QueryOperatorEquals.equals(iLeft, subQueryRowScalar(o)))
           return Boolean.TRUE;
       }
       if (empty)
@@ -345,10 +368,11 @@ public class InCondition extends BooleanExpression {
       return sawNull ? null : Boolean.FALSE;
     }
 
-    // Scalar right-hand side: degrade to an equality test (e.g. IN with a single non-collection value).
+    // Scalar right-hand side: degrade to the same equality test as "=" and the list forms (e.g. IN with a single non-collection
+    // value), so a Long matches an Integer, two BigDecimals of different scale match, and a Date matches the stored DATETIME (#9030)
     if (iLeft == null)
       return null;
-    return CodeUtils.compare(iLeft, iRight) ? Boolean.TRUE : Boolean.FALSE;
+    return equalsEitherWay(iLeft, iRight, convertOperand) ? Boolean.TRUE : Boolean.FALSE;
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {

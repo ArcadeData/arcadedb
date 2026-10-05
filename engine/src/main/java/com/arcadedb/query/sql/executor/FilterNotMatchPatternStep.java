@@ -164,7 +164,11 @@ public class FilterNotMatchPatternStep extends AbstractExecutionStep {
         return result;
       }
     });
-    subSteps.forEach(step -> plan.chain(step));
+    // The sub-steps are shared by every row tested: their cursor state belongs to the previous row (issue #9201)
+    for (final AbstractExecutionStep step : subSteps) {
+      step.reset();
+      plan.chain(step);
+    }
     return plan;
   }
 

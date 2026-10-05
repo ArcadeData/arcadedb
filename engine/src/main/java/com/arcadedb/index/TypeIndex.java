@@ -29,6 +29,7 @@ import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.index.fulltext.FullTextSearch;
 import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.IndexMetadata;
@@ -40,6 +41,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.logging.Level;
 
 /**
  * It represent an index on a type. It's backed by one or multiple underlying indexes, one per bucket. By using multiple buckets, the read/write operation can
@@ -151,7 +153,8 @@ public class TypeIndex implements RangeIndex, IndexInternal {
       Set<Identifiable> result = null;
 
       for (final Index index : getIndexesByKeys(keys)) {
-        final boolean unique = index.isUnique();
+        // an all-null key is exempt from uniqueness, so a unique index holds an entry per record that has it (issue #9237)
+        final boolean unique = index.isUnique() && !LSMTreeIndexAbstract.isKeyNull(keys);
 
         // #5662: try-with-resources - the unique branch returns from inside the loop, abandoning the cursor partway
         try (final IndexCursor cursor = index.get(keys, unique ? 1 : -1)) {
@@ -241,6 +244,19 @@ public class TypeIndex implements RangeIndex, IndexInternal {
       }
       return keyedCursor(result != null ? result : Collections.emptyList(), keys);
     }
+  }
+
+  /** The entries of the set, at most {@code limit} of them when the limit is set (-1 for none) */
+  public static Set<IndexCursorEntry> cappedTo(final Set<IndexCursorEntry> entries, final int limit) {
+    if (limit < 0 || entries.size() <= limit)
+      return entries;
+    final Set<IndexCursorEntry> capped = new HashSet<>(limit * 2);
+    for (final IndexCursorEntry entry : entries) {
+      if (capped.size() >= limit)
+        break;
+      capped.add(entry);
+    }
+    return capped;
   }
 
   /**
@@ -728,8 +744,41 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   public boolean isReadyForQueries() {
     if (!valid)
       return false;
-    final IndexInternal first = firstOrNull();
-    return first != null && first.getType() != null;
+    try {
+      final IndexInternal first = firstOrNull();
+      return first != null && first.getType() != null;
+    } catch (final IndexException e) {
+      LogManager.instance().log(this, Level.FINE, "Index '%s' is not ready for queries: %s", null, getName(), e.getMessage());
+      return false;
+    }
+  }
+
+  /**
+   * Snapshot of the indexes of {@code indexes} that a query can use, see {@link #isReadyForQueries()}. The collection a type
+   * hands out can be a live view of its schema map, so it is copied once rather than walked while a concurrent DDL changes it.
+   * Best effort: the caller still reads an index's metadata under a try/catch of {@link IndexException}.
+   */
+  public static List<TypeIndex> filterReadyForQueries(final Collection<TypeIndex> indexes) {
+    final List<TypeIndex> result = new ArrayList<>(indexes.size());
+    for (final TypeIndex index : indexes) {
+      if (index.isReadyForQueries())
+        result.add(index);
+    }
+    return result;
+  }
+
+  /**
+   * The property names of this index when it can answer an exact key lookup (not a FULL_TEXT, vector or geospatial one, which
+   * answer by token or similarity), null when it cannot or when it went away while being read: a concurrent DDL can drop or
+   * rebuild an index right after {@link #isReadyForQueries()} said yes (issue #8918).
+   */
+  public List<String> getPropertyNamesIfExactKeyLookup() {
+    try {
+      final Schema.INDEX_TYPE indexType = getType();
+      return indexType != null && indexType.isExactKeyLookup() ? getPropertyNames() : null;
+    } catch (final IndexException e) {
+      return null;
+    }
   }
 
   private void checkIsValid() {

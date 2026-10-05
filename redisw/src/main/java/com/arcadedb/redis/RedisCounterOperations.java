@@ -18,8 +18,8 @@
  */
 package com.arcadedb.redis;
 
-import com.arcadedb.schema.Type;
-
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.function.UnaryOperator;
 
 /**
@@ -43,6 +43,41 @@ public final class RedisCounterOperations {
   }
 
   /**
+   * Parses a 64-bit integer the way real Redis does ({@code string2ll}): the canonical decimal text only, so no leading
+   * {@code +}, no leading zeros, no {@code -0}, no surrounding blanks and nothing outside the {@code long} range (#9059).
+   * {@code Long.parseLong} accepts all of those, which made INCR succeed on {@code "+10"} and {@code "007"} and rewrite
+   * them as {@code 11} and {@code 8}.
+   */
+  public static long parseInteger(final String text) {
+    final int length = text.length();
+    int start = 0;
+    if (length > 0 && text.charAt(0) == '-')
+      start = 1;
+
+    if (length == start || length - start > 19)
+      throw new RedisException("value is not an integer or out of range");
+
+    final char first = text.charAt(start);
+    if (first < '0' || first > '9')
+      throw new RedisException("value is not an integer or out of range");
+    // no leading zero before more digits ("05", "-05"), and no negative zero ("-0")
+    if (first == '0' && (length - start > 1 || start == 1))
+      throw new RedisException("value is not an integer or out of range");
+
+    for (int i = start + 1; i < length; i++) {
+      final char c = text.charAt(i);
+      if (c < '0' || c > '9')
+        throw new RedisException("value is not an integer or out of range");
+    }
+
+    try {
+      return Long.parseLong(text);
+    } catch (final NumberFormatException e) {
+      throw new RedisException("value is not an integer or out of range");
+    }
+  }
+
+  /**
    * Normalizes a stored Redis value for DECR/DECRBY and the non-decimal path of INCR/INCRBY: a {@code null} key reads
    * as {@code 0}, and a non-{@code Number} stored value (always a {@code String} here) is parsed as a 64-bit integer.
    * Anything that isn't - or can't be parsed as - an integral value, such as a fractional string or a {@code Double}
@@ -55,11 +90,7 @@ public final class RedisCounterOperations {
 
     Object number = stored;
     if (!(number instanceof Number)) {
-      try {
-        number = Long.parseLong(number.toString());
-      } catch (final NumberFormatException e) {
-        throw new RedisException("value is not an integer or out of range");
-      }
+      number = parseInteger(number.toString());
     }
 
     if (!(number instanceof Long || number instanceof Integer || number instanceof Short || number instanceof Byte))
@@ -100,39 +131,87 @@ public final class RedisCounterOperations {
   }
 
   /**
-   * The remapping for INCRBYFLOAT: no integral restriction - it promotes an integral value to float and accepts any
-   * stored value it can read as a float ({@code "3.3"} included), refusing only what cannot be parsed as one, with
-   * real Redis' own "value is not a valid float". {@code Double.parseDouble}/{@code Double.valueOf} both accept the
-   * text "NaN"/"Infinity", and finite plus finite can itself overflow to infinite, so the increment, the stored
-   * value and the result are each checked for finiteness rather than let a non-finite value enter or persist
-   * through this key, refused with real Redis' own "increment would produce NaN or Infinity" (found in review).
+   * The remapping for INCRBYFLOAT: no integral restriction - it accepts any stored value it can read as a decimal number
+   * ({@code "3.3"} and an integral {@code "10"} included), refusing only what cannot be parsed as one, with real Redis'
+   * own "value is not a valid float". The sum is computed in {@link BigDecimal} and stored as TEXT, the way Redis stores
+   * the reply it sends (#9058): {@code 0.1 + 0.2} is {@code 0.3} rather than {@code 0.30000000000000004}, an integral
+   * result is {@code 3} rather than {@code 3.0}, and there is no exponent form, so INCR works on an integral result.
+   * Like Redis' {@code %.17Lf} the result keeps at most 17 decimals, with trailing zeros removed. Unlike Redis' {@code long double}
+   * the integer part is exact up to the magnitude cap, which is harmless and deliberate.
+   * <p>
+   * NaN/Infinity (as an increment, as the sum, or as a magnitude beyond what Redis' {@code long double} holds) are
+   * refused with real Redis' own "increment would produce NaN or Infinity"; a stored non-finite text is "value is not a
+   * valid float". The magnitude check and the early rounding to 17 decimals keep a hostile exponent such as
+   * {@code 1e999999999} or {@code 1e-999999999} from allocating a gigantic number.
    */
-  public static UnaryOperator<Object> incrementByFloat(final double delta) {
-    if (!Double.isFinite(delta))
-      throw new RedisException("increment would produce NaN or Infinity");
+  public static UnaryOperator<Object> incrementByFloat(final String delta) {
+    final BigDecimal increment = parseFloatOperand(delta, "increment would produce NaN or Infinity");
 
     return stored -> {
-      final Number number;
+      final BigDecimal base;
       if (stored == null)
-        number = 0L;
-      else if (stored instanceof Number storedNumber)
-        number = storedNumber;
-      else {
-        final double parsed;
-        try {
-          parsed = Double.parseDouble(stored.toString());
-        } catch (final NumberFormatException e) {
+        base = BigDecimal.ZERO;
+      else if (stored instanceof Double || stored instanceof Float) {
+        final double d = ((Number) stored).doubleValue();
+        if (!Double.isFinite(d))
           throw new RedisException("value is not a valid float");
-        }
-        if (!Double.isFinite(parsed))
-          throw new RedisException("value is not a valid float");
-        number = parsed;
-      }
+        // the Float's own shortest text, not its widened double (0.1f is 0.10000000149011612 as a double)
+        base = new BigDecimal(stored.toString());
+      } else
+        base = parseFloatOperand(stored.toString(), "value is not a valid float");
 
-      final Number result = Type.increment(number, delta);
-      if (!Double.isFinite(result.doubleValue()))
+      final BigDecimal sum = base.add(increment);
+      if (isOutOfRange(sum))
         throw new RedisException("increment would produce NaN or Infinity");
-      return result;
+      return format(sum);
     };
+  }
+
+  private static BigDecimal parseFloatOperand(final String text, final String nonFiniteMessage) {
+    // Redis refuses long double text of 5 KB or more; without a cap a client could SET megabytes of digits and make every
+    // INCRBYFLOAT on the key parse and add them while the key's lock is held
+    if (text.length() >= 5120)
+      throw new RedisException("value is not a valid float");
+    // strtold reads ASCII only, BigDecimal also accepts the digits of other scripts
+    for (int i = 0; i < text.length(); i++)
+      if (text.charAt(i) > 127)
+        throw new RedisException("value is not a valid float");
+
+    final BigDecimal number;
+    try {
+      number = new BigDecimal(text);
+    } catch (final NumberFormatException e) {
+      if (isNonFiniteSpelling(text))
+        throw new RedisException(nonFiniteMessage);
+      throw new RedisException("value is not a valid float");
+    }
+    if (isOutOfRange(number))
+      throw new RedisException(nonFiniteMessage);
+    // Beyond 17 decimals nothing survives the result's rounding, and aligning a huge scale such as 1e-999999999 to the other
+    // operand would allocate a gigantic number. A value below 1e-18 is zero at 17 decimals, answered without ever rounding
+    // across the scale gap (that rounding builds a power of ten as big as the gap); any other value has at most
+    // precision + 1 digits to drop, and the operand length is capped.
+    if (number.scale() <= 17)
+      return number;
+    if ((long) number.scale() - number.precision() > 18)
+      return BigDecimal.ZERO;
+    return number.setScale(17, RoundingMode.HALF_EVEN);
+  }
+
+  private static boolean isNonFiniteSpelling(final String text) {
+    final String t = text.startsWith("+") || text.startsWith("-") ? text.substring(1) : text;
+    return t.equalsIgnoreCase("nan") || t.equalsIgnoreCase("inf") || t.equalsIgnoreCase("infinity");
+  }
+
+  /** Beyond the decimal exponent a {@code long double} holds (about 1e4932). */
+  private static boolean isOutOfRange(final BigDecimal number) {
+    return number.signum() != 0 && (long) number.precision() - number.scale() > 4932;
+  }
+
+  private static String format(final BigDecimal number) {
+    final BigDecimal rounded = number.setScale(17, RoundingMode.HALF_EVEN);
+    if (rounded.signum() == 0)
+      return "0";
+    return rounded.stripTrailingZeros().toPlainString();
   }
 }

@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
+  SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+  SPDX-License-Identifier: Apache-2.0
+-->
+<!--
   Example Log4j2 configuration for an application that EMBEDS ArcadeDB.
 
   ArcadeDB logs through the SLF4J facade when the SLF4J logger is selected with

@@ -407,6 +407,17 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
                 continue;
             }
 
+            // Inline property map: the properties live on the record, not in the view, so the vertex is loaded - last, and
+            // only when the pattern carries a map (#8991). A record deleted since the view was built is skipped.
+            if (targetNodePattern != null && targetNodePattern.hasProperties()) {
+              try {
+                if (!matchesTargetProperties(db.lookupByRID(targetRid, true).asVertex(), lastResult))
+                  continue;
+              } catch (final RecordNotFoundException e) {
+                continue;
+              }
+            }
+
             // Create result with GAVVertex (no OLTP load)
             final ResultInternal result = ResultInternal.copyBindings(lastResult, 2);
             result.setProperty(targetVariable,

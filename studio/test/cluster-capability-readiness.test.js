@@ -573,3 +573,78 @@ test("the group modal carries the gate too, because Edit is reachable while Crea
   for (const fn of ["showCreateGroupForm", "editGroup"])
     assert.match(extractFn(securitySrc, fn), /applyGroupModalCapabilityGate\(\)/, fn + " must apply the gate");
 });
+
+// Issue #8655: a follower could not tell a peer on a pre-capability-route build (404, which the leader's probe gets
+// too) from one only it could not reach, so #8540 read both as "unverified" and left Create enabled. The server now
+// says which with 'capabilitiesUnknownKind', and ROUTE_MISSING is a refusal on every node.
+
+const ROUTE_404 = "capability query to http://arcadedb3:2480/api/v1/cluster/capabilities returned HTTP 404";
+
+test("on a follower, a peer whose build predates the capability route is missing, not unverified", () => {
+  const data = followerView(readyCluster());
+  data.peers.push({ id: "arcadedb3", role: "FOLLOWER", capabilitiesUnknownReason: ROUTE_404, capabilitiesUnknownKind: "ROUTE_MISSING" });
+
+  const readiness = clusterCapabilityReadiness(data, GROUPS);
+  assert.equal(readiness.ready, false, "the leader's probe gets the same 404 and refuses");
+  assert.deepEqual(readiness.missing.map((m) => m.id), ["arcadedb3"]);
+  assert.deepEqual(readiness.unverified, []);
+  assert.match(readiness.missing[0].reason, /predates/, "the remedy is 'finish the upgrade'");
+});
+
+test("ROUTE_MISSING reads the same on the leader and on a follower", () => {
+  const leader = readyCluster();
+  leader.peers.push({ id: "arcadedb3", role: "FOLLOWER", capabilitiesUnknownReason: ROUTE_404, capabilitiesUnknownKind: "ROUTE_MISSING" });
+  const follower = followerView(JSON.parse(JSON.stringify(leader)));
+
+  assert.deepEqual(clusterSecurityCapabilityGaps(follower), clusterSecurityCapabilityGaps(leader));
+});
+
+test("on a follower, every other kind stays unverified, whatever the reason's text says", () => {
+  for (const kind of ["UNREACHABLE", "ADDRESS_REFUSED", "STALE", undefined]) {
+    const data = followerView(readyCluster());
+    const row = { id: "arcadedb3", role: "FOLLOWER", capabilitiesUnknownReason: ROUTE_404 };
+    if (kind) row.capabilitiesUnknownKind = kind;
+    data.peers.push(row);
+
+    const readiness = clusterCapabilityReadiness(data, GROUPS);
+    assert.equal(readiness.ready, true, String(kind) + ": the gate reads the kind, never the reason's text");
+    assert.deepEqual(readiness.unverified.map((u) => u.id), ["arcadedb3"]);
+  }
+});
+
+test("a ROUTE_MISSING kind on a row that carries capabilities is ignored: the answer wins", () => {
+  const data = followerView(readyCluster());
+  data.peers[1].capabilitiesUnknownKind = "ROUTE_MISSING";
+
+  assert.equal(clusterCapabilityReadiness(data, GROUPS).ready, true);
+});
+
+test("the Security page disables Create on a follower when a peer predates the capability route", () => {
+  const calls = {};
+  const fake$ = (selector) => {
+    const el = {
+      html: (v) => ((calls[selector] = Object.assign(calls[selector] || {}, { html: v })), el),
+      prop: (k, v) => ((calls[selector] = Object.assign(calls[selector] || {}, { [k]: v })), el),
+      attr: (k, v) => ((calls[selector] = Object.assign(calls[selector] || {}, { [k]: v })), el),
+    };
+    return el;
+  };
+  const run = new Function(
+    "$", "clusterSecurityCapabilityGaps", "escapeHtml", "securityClusterStatus",
+    RENDER_HELPERS + extractFn(securitySrc, "securityCapabilityGap") + "\n" +
+      extractFn(securitySrc, "securityCapabilityBanner") + "\n" +
+      extractFn(securitySrc, "renderSecurityCapabilityGate") + "\n" +
+      extractFn(securitySrc, "applyGroupModalCapabilityGate") + "\n" +
+      "renderSecurityCapabilityGate(); applyGroupModalCapabilityGate();"
+  );
+
+  const upgrading = followerView(readyCluster());
+  upgrading.peers.push({ id: "arcadedb3", role: "FOLLOWER", capabilitiesUnknownReason: ROUTE_404, capabilitiesUnknownKind: "ROUTE_MISSING" });
+  run(fake$, clusterSecurityCapabilityGaps, escapeHtml, upgrading);
+
+  assert.equal(calls["#btnCreateGroup"].disabled, true, "the leader will refuse it, so the button says so first");
+  assert.equal(calls["#btnCreateToken"].disabled, true);
+  assert.equal(calls["#groupModalSaveBtn"].disabled, true);
+  assert.match(calls["#groupsCapabilityGate"].html, /alert-warning/);
+  assert.match(calls["#groupsCapabilityGate"].html, /arcadedb3/);
+});

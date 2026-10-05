@@ -89,19 +89,23 @@ public class HashIndex implements IndexInternal {
   // ─── FACTORY HANDLERS ────────────────────────────────────
 
   public static class HashIndexFactoryHandler implements IndexFactoryHandler {
+    // Layout version given to the files created from now on. Always the current one; the tests of the read path of the
+    // indexes created before #5712 lower it to create a file in the legacy sorted layout.
+    static volatile int layoutVersion = HashIndexBucket.CURRENT_VERSION;
+
     @Override
     public IndexInternal create(final IndexBuilder<?> builder) {
       // Refuse a key type the bucket cannot encode BEFORE any file is created, so the failure names the type instead
       // of surfacing on the first insert as an unsupported-key-type error (issue #5677).
       HashIndexBucket.checkSupportedKeyTypes(builder.getIndexName(), builder.getKeyTypes());
 
-      // Use the 64KB hash default (vs 256KB for LSM) when the caller did not ask for a page size. Asking IS
+      // Use the hash default (4KB, 16KB for variable-width keys; vs 256KB for LSM) when the caller did not ask for a page size. Asking IS
       // distinguishable from not asking (issue #5713): the builder carries an explicit unset marker, so an explicit
       // 262144 now reaches HashIndexBucket and is refused for exceeding the 16-bit addressing limit, instead of being
-      // silently remapped to 65536 - which used to make that one value impossible to request.
-      final int pageSize = builder.getPageSize(HashIndexBucket.DEF_PAGE_SIZE);
+      // silently remapped to the default - which used to make that one value impossible to request.
+      final int pageSize = builder.getPageSize(HashIndexBucket.defaultPageSize(builder.getKeyTypes()));
       return new HashIndex(builder.getDatabase(), builder.getIndexName(), builder.isUnique(), builder.getFilePath(),
-          ComponentFile.MODE.READ_WRITE, builder.getKeyTypes(), pageSize, builder.getNullStrategy());
+          ComponentFile.MODE.READ_WRITE, builder.getKeyTypes(), pageSize, builder.getNullStrategy(), layoutVersion);
     }
   }
 
@@ -137,10 +141,17 @@ public class HashIndex implements IndexInternal {
   public HashIndex(final DatabaseInternal database, final String name, final boolean unique, final String filePath,
       final ComponentFile.MODE mode, final Type[] keyTypes, final int pageSize,
       final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy) {
+    this(database, name, unique, filePath, mode, keyTypes, pageSize, nullStrategy, HashIndexBucket.CURRENT_VERSION);
+  }
+
+  HashIndex(final DatabaseInternal database, final String name, final boolean unique, final String filePath,
+      final ComponentFile.MODE mode, final Type[] keyTypes, final int pageSize,
+      final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, final int layoutVersion) {
     try {
       this.name = name;
       this.metadata = new IndexMetadata(null, null, -1);
-      this.bucket = new HashIndexBucket(this, database, name, unique, filePath, mode, keyTypes, pageSize, nullStrategy);
+      this.bucket = new HashIndexBucket(this, database, name, unique, filePath, mode, keyTypes, pageSize, nullStrategy,
+          layoutVersion);
     } catch (final IOException e) {
       throw new IndexException("Error on creating hash index '" + name + "'", e);
     }
@@ -183,7 +194,9 @@ public class HashIndex implements IndexInternal {
       Set<IndexCursorEntry> txChanges = null;
       // what the pending entries of this key hide from the disk result, or null when they hide nothing (#6970)
       PendingIndexRemovals removals = null;
-      final boolean unique = isUnique();
+      int pendingEntries = 0;
+      // the entries of an all-null key belong to different records, so a pending removal of one never removes the key (issue #9237)
+      final boolean unique = isUnique() && !LSMTreeIndexAbstract.isKeyNull(convertedKeys);
 
       final Map<TransactionIndexContext.ComparableKey, Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey>> indexChanges =
           getDatabase().getTransaction().getIndexChanges().getIndexKeys(getName());
@@ -191,6 +204,7 @@ public class HashIndex implements IndexInternal {
         final Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey> values =
             indexChanges.get(new TransactionIndexContext.ComparableKey(convertedKeys));
         if (values != null) {
+          pendingEntries = values.size();
           for (final TransactionIndexContext.IndexKey value : values.values()) {
             if (value != null) {
               if (unique && PendingIndexRemovals.removesWholeKey(value, true))
@@ -208,13 +222,16 @@ public class HashIndex implements IndexInternal {
               txChanges.add(new IndexCursorEntry(convertedKeys, value.rid, 1));
 
               if (limit > -1 && txChanges.size() > limit)
-                return new TempIndexCursor(txChanges);
+                return new TempIndexCursor(TypeIndex.cappedTo(txChanges, limit));
             }
           }
         }
       }
 
-      final IndexCursor result = lock.executeInReadLock(() -> getDiskResult(convertedKeys, limit));
+      // the disk rows that a pending removal hides do not count towards the limit: each pending entry hides at most one row, so
+      // that many more are read and the limit is applied to the merged rows below. A key-wide removal hides every row
+      final int diskLimit = removals == null || removals.isKeyWide() || limit < 0 ? limit : (int) Math.min(Integer.MAX_VALUE, (long) limit + pendingEntries);
+      final IndexCursor result = lock.executeInReadLock(() -> getDiskResult(convertedKeys, diskLimit));
 
       if (txChanges != null || removals != null) {
         if (txChanges == null)
@@ -226,7 +243,7 @@ public class HashIndex implements IndexInternal {
             continue;
           txChanges.add(new IndexCursorEntry(convertedKeys, next, 1));
         }
-        return new TempIndexCursor(txChanges);
+        return new TempIndexCursor(TypeIndex.cappedTo(txChanges, limit));
       }
 
       return result;
@@ -237,7 +254,7 @@ public class HashIndex implements IndexInternal {
 
   private IndexCursor getDiskResult(final Object[] convertedKeys, final int limit) {
     try {
-      final List<RID> rids = bucket.get(convertedKeys, isUnique() ? 1 : limit);
+      final List<RID> rids = bucket.get(convertedKeys, isUnique() && !LSMTreeIndexAbstract.isKeyNull(convertedKeys) ? 1 : limit);
       if (rids.isEmpty())
         return EMPTY_CURSOR;
 
@@ -261,7 +278,10 @@ public class HashIndex implements IndexInternal {
       final TransactionContext tx = getDatabase().getTransaction();
       for (final RID rid : rids)
         tx.addIndexOperation(this, TransactionIndexContext.IndexKey.IndexKeyOperation.ADD, convertedKeys, rid);
-    } else
+    } else {
+      // The null strategy is enforced where the entry reaches the index, which is the commit for a transaction: exactly
+      // when the LSM index does it (issue #9074)
+      checkForNulls(keys);
       lock.executeInReadLock(() -> {
         try {
           for (final RID rid : rids)
@@ -271,6 +291,7 @@ public class HashIndex implements IndexInternal {
         }
         return null;
       });
+    }
   }
 
   @Override
@@ -317,6 +338,13 @@ public class HashIndex implements IndexInternal {
         }
         return null;
       });
+  }
+
+  // Only a put is checked. A remove can never add an entry, and refusing it would leave undeletable the rows a hash index
+  // already holds under a key with a null (the strategy was stored but not enforced before #9074). A lookup is lenient for
+  // the same reason: it asks for a key, it does not add one.
+  private void checkForNulls(final Object[] keys) {
+    LSMTreeIndexAbstract.checkForNulls(bucket.nullStrategy, getTypeName(), getPropertyNames(), keys);
   }
 
   @Override
@@ -595,7 +623,13 @@ public class HashIndex implements IndexInternal {
   @Override
   public int getPageSizeForNewFile() {
     final int pageSize = getPageSize();
-    return HashIndexBucket.isSupportedPageSize(pageSize) ? pageSize : HashIndexBucket.DEF_PAGE_SIZE;
+    if (!HashIndexBucket.isSupportedPageSize(pageSize))
+      return HashIndexBucket.defaultPageSize(bucket.keyTypes);
+    // A rebuild is also how an index created before #5712 moves to the current layout: the 64 KB it was given by default
+    // is the one size that layout no longer wants, so it takes the new default instead of carrying it over
+    return !bucket.tagged && pageSize == HashIndexBucket.LEGACY_DEF_PAGE_SIZE ?
+        HashIndexBucket.defaultPageSize(bucket.keyTypes) :
+        pageSize;
   }
 
   @Override

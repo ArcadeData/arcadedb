@@ -99,8 +99,18 @@ public class FunctionCallExpression implements Expression {
    */
   public static Object invoke(final StatelessFunction function, final Object[] args, final Result result,
       final CommandContext context) {
+    function.checkArity(args);
     LoadCSVRowContext.bind(result, context);
     return function.execute(args, context);
+  }
+
+  /**
+   * Validates this call's argument count against the declared bounds of {@code function}. The count is a property of the call
+   * site, so an aggregation step checks it once when it builds the aggregator, before any row (an empty input included),
+   * instead of on every row.
+   */
+  public void validateArity(final StatelessFunction function) {
+    function.checkArity(new Object[arguments.size()]);
   }
 
   @Override

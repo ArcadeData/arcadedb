@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.RecordNotFoundException;
@@ -49,6 +50,7 @@ import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -72,6 +74,11 @@ import java.util.Set;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class ShortestPathStep extends AbstractExecutionStep {
+  // Direction arrays shared by every expansion, never written: callers only iterate them
+  private static final Vertex.DIRECTION[] OUT_ONLY = { Vertex.DIRECTION.OUT };
+  private static final Vertex.DIRECTION[] IN_ONLY  = { Vertex.DIRECTION.IN };
+  private static final Vertex.DIRECTION[] OUT_IN   = { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN };
+
   private final String sourceVariable;
   private final String targetVariable;
   private final String pathVariable;
@@ -107,6 +114,8 @@ public class ShortestPathStep extends AbstractExecutionStep {
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
       private boolean finished = false;
+      private Iterator<List<Object>> currentPaths = null;
+      private Result currentInput = null;
 
       @Override
       public boolean hasNext() {
@@ -137,6 +146,26 @@ public class ShortestPathStep extends AbstractExecutionStep {
 
         while (buffer.size() < n) {
           guard.check();
+
+          if (currentPaths != null) {
+            // The paths of one input row are pulled a batch at a time, so a LIMIT or any consumer that stops reading
+            // also stops the enumeration instead of waiting for every path to be built (issue #9123).
+            final long begin = context.isProfiling() ? System.nanoTime() : 0;
+            try {
+              if (currentPaths.hasNext()) {
+                final List<Object> path = currentPaths.next();
+                if (path != null && !path.isEmpty())
+                  buffer.add(toRow(currentInput, path));
+                continue;
+              }
+              currentPaths = null;
+              currentInput = null;
+            } finally {
+              if (context.isProfiling())
+                cost += System.nanoTime() - begin;
+            }
+          }
+
           if (prevResults == null) {
             prevResults = prev.syncPull(context, nRecords);
           }
@@ -167,33 +196,15 @@ public class ShortestPathStep extends AbstractExecutionStep {
             // For allShortestPaths(), enumerate every path sharing the minimal length; for shortestPath()
             // (singular), keep returning just one. Reuse the same compute method for the single-path case
             // so existing behaviour and CSR-accelerated lookups in SQLFunctionShortestPath stay in play.
-            final List<List<Object>> paths;
-            if (pattern.isAllPaths()) {
-              paths = computeAllShortestPaths(sourceVertex, targetVertex, inputResult, context);
-            } else {
+            if (pattern.isAllPaths())
+              currentPaths = iterateAllShortestPaths(sourceVertex, targetVertex, inputResult, context);
+            else {
               final List<Object> single = computeShortestPath(sourceVertex, targetVertex, inputResult, context);
-              paths = single == null || single.isEmpty() ? Collections.emptyList() : Collections.singletonList(single);
+              currentPaths = single == null || single.isEmpty() ?
+                  Collections.emptyIterator() :
+                  Collections.singletonList(single).iterator();
             }
-
-            for (final List<Object> path : paths) {
-              if (path == null || path.isEmpty())
-                continue;
-
-              // Create result with the path
-              final ResultInternal result = new ResultInternal();
-
-              // Copy all properties from previous result
-              for (final String prop : inputResult.getPropertyNames()) {
-                result.setProperty(prop, inputResult.getProperty(prop));
-              }
-
-              // Add path binding if path variable is specified
-              if (pathVariable != null && !pathVariable.isEmpty()) {
-                result.setProperty(pathVariable, path);
-              }
-
-              buffer.add(result);
-            }
+            currentInput = inputResult;
             // If no path found, skip this result (similar to a failed MATCH)
           } finally {
             if (context.isProfiling())
@@ -202,8 +213,25 @@ public class ShortestPathStep extends AbstractExecutionStep {
         }
       }
 
+      private Result toRow(final Result inputResult, final List<Object> path) {
+        final ResultInternal result = new ResultInternal();
+
+        // Copy all properties from previous result
+        for (final String prop : inputResult.getPropertyNames()) {
+          result.setProperty(prop, inputResult.getProperty(prop));
+        }
+
+        // Add path binding if path variable is specified
+        if (pathVariable != null && !pathVariable.isEmpty()) {
+          result.setProperty(pathVariable, path);
+        }
+        return result;
+      }
+
       @Override
       public void close() {
+        currentPaths = null;
+        currentInput = null;
         ShortestPathStep.this.close();
       }
     };
@@ -285,51 +313,45 @@ public class ShortestPathStep extends AbstractExecutionStep {
   }
 
   /**
-   * Enumerates every simple path between {@code source} and {@code target} sharing the minimum length.
-   * <p>
-   * Implementation: layered BFS that records, for each visited vertex, the full set of predecessors that
-   * reached it on the same BFS layer. Once {@code target} is discovered, BFS halts at the end of that
-   * layer (any further expansion would only find longer paths) and all paths are reconstructed by
-   * back-tracking through the predecessor multimap. Respects relationship direction and the type filter
-   * declared in the pattern.
-   * <p>
-   * For issue #4239: {@code allShortestPaths()} must return every path of the minimal length, not just
-   * one. The legacy implementation returned the single path that {@link SQLFunctionShortestPath} happened
-   * to find first, violating the OpenCypher contract.
+   * Enumerates every path between {@code source} and {@code target} sharing the minimum length, honouring the
+   * pattern's inline edge constraint, direction, type filter and hop bounds.
    */
-  private List<List<Object>> computeAllShortestPaths(final Vertex source, final Vertex target, final Result inputResult,
+  private Iterator<List<Object>> iterateAllShortestPaths(final Vertex source, final Vertex target, final Result inputResult,
       final CommandContext context) {
-    // Inline edge constraints must be enforced on every hop; the vertex-only BFS below cannot see edge
-    // properties, so delegate to the edge-aware variant when a property map or inline WHERE is declared.
     final HopBounds bounds = patternHopBounds();
 
+    // Inline edge constraints must be enforced on every hop; the vertex-only BFS cannot see edge properties,
+    // so delegate to the edge-aware variant when a property map or inline WHERE is declared.
     final EdgeConstraint constraint = edgeConstraint(inputResult, context);
     if (constraint != null)
-      return computeFilteredAllShortestPaths(source, target, patternDirection(), patternEdgeTypesArray(), constraint,
+      return iterateFilteredAllShortestPaths(source, target, patternDirection(), patternEdgeTypesArray(), constraint,
           bounds, context.getDatabase(), context);
 
-    final List<String> edgeTypes;
-    if (pattern.getRelationshipCount() > 0 && pattern.getRelationship(0).hasTypes())
-      edgeTypes = pattern.getRelationship(0).getTypes();
-    else
-      edgeTypes = null;
+    return iterateAllShortestPaths(source, target, patternDirection(), patternEdgeTypesArray(), bounds, context);
+  }
 
-    Vertex.DIRECTION direction = Vertex.DIRECTION.BOTH;
-    if (pattern.getRelationshipCount() > 0) {
-      final Direction dir = pattern.getRelationship(0).getDirection();
-      switch (dir) {
-        case OUT:
-          direction = Vertex.DIRECTION.OUT;
-          break;
-        case IN:
-          direction = Vertex.DIRECTION.IN;
-          break;
-        default:
-          direction = Vertex.DIRECTION.BOTH;
-      }
-    }
+  /**
+   * Enumerates every path between {@code source} and {@code target} sharing the minimum length, with no per-edge
+   * constraint: a layered BFS over vertices that stops after the layer reaching {@code target}, then back-tracks
+   * through the co-shortest parents. Parallel relationships are distinct paths (issue #8995). Shared by the MATCH and
+   * the RETURN-expression forms of {@code allShortestPaths()}. The list materializes every path: the RETURN expression
+   * has to hand back a list, while the MATCH form pulls them lazily through {@link #iterateAllShortestPaths}.
+   *
+   * @param edgeTypes restrict edges to these types, or null/empty to allow any type
+   * @param bounds    the {@code *min..max} hop bounds declared on the pattern relationship (issue #7009)
+   */
+  public static List<List<Object>> computeAllShortestPaths(final Vertex source, final Vertex target,
+      final Vertex.DIRECTION direction, final String[] edgeTypes, final HopBounds bounds, final CommandContext context) {
+    return drain(iterateAllShortestPaths(source, target, direction, edgeTypes, bounds, context));
+  }
 
-    final Database database = context.getDatabase();
+  /**
+   * Same search as {@link #computeAllShortestPaths}, but the paths are produced one at a time: the BFS runs up front, the
+   * back-tracking walks the co-shortest predecessors on demand, so memory holds the walk's current branch, not every path
+   * (issue #9123).
+   */
+  public static Iterator<List<Object>> iterateAllShortestPaths(final Vertex source, final Vertex target,
+      final Vertex.DIRECTION direction, final String[] edgeTypes, final HopBounds bounds, final CommandContext context) {
     final RID sourceRid = source.getIdentity();
     final RID targetRid = target.getIdentity();
 
@@ -337,17 +359,17 @@ public class ShortestPathStep extends AbstractExecutionStep {
       // The zero-length path is the only shortest path between a vertex and itself; a declared minimum of
       // more than one hop rejects it (issue #7017).
       if (!bounds.acceptsSelfPath())
-        return Collections.emptyList();
+        return Collections.emptyIterator();
       final List<Object> singleNode = new ArrayList<>(1);
       singleNode.add(source);
-      return Collections.singletonList(singleNode);
+      return Collections.singletonList(singleNode).iterator();
     }
 
-    final String[] typesArray = edgeTypes == null || edgeTypes.isEmpty() ? null : edgeTypes.toArray(new String[0]);
+    final String[] typesArray = edgeTypes == null || edgeTypes.length == 0 ? null : edgeTypes;
 
     // distance from source. Acts as visited-set too.
     final Map<RID, Integer> distance = new HashMap<>();
-    // For each vertex, the set of parents that reached it at the same BFS depth (= co-shortest predecessors).
+    // For each vertex, its distinct co-shortest parents; parallel relationships are enumerated at back-tracking time.
     final Map<RID, List<RID>> predecessors = new HashMap<>();
     distance.put(sourceRid, 0);
 
@@ -377,6 +399,7 @@ public class ShortestPathStep extends AbstractExecutionStep {
       final Set<RID> nextLayerSeen = new HashSet<>();
 
       for (final Vertex v : currentLayer) {
+        final RID vRid = v.getIdentity();
         // The incoming side of a unidirectional edge type comes from the query's lookup (issue #8625)
         for (final Iterator<Vertex> neighbors = IncomingEdgeLookup.getVertices(context, v, direction, typesArray);
             neighbors.hasNext(); ) {
@@ -386,15 +409,17 @@ public class ShortestPathStep extends AbstractExecutionStep {
           if (existing == null) {
             distance.put(neighborRid, currentDepth + 1);
             final List<RID> parents = new ArrayList<>(1);
-            parents.add(v.getIdentity());
+            parents.add(vRid);
             predecessors.put(neighborRid, parents);
             if (neighborRid.equals(targetRid))
               foundDepth = currentDepth + 1;
             else if (nextLayerSeen.add(neighborRid))
               nextLayer.add(neighbor);
           } else if (existing == currentDepth + 1) {
-            // Another co-shortest predecessor at the same BFS depth.
-            predecessors.get(neighborRid).add(v.getIdentity());
+            // All of v's relationships are walked before the next vertex, so a parallel one finds v as the last parent.
+            final List<RID> parents = predecessors.get(neighborRid);
+            if (!parents.get(parents.size() - 1).equals(vRid))
+              parents.add(vRid);
           }
         }
       }
@@ -405,18 +430,11 @@ public class ShortestPathStep extends AbstractExecutionStep {
 
     // Every path returned here has length foundDepth, so one bound check answers for all of them.
     if (foundDepth < 0 || !bounds.accepts(foundDepth))
-      return Collections.emptyList();
+      return Collections.emptyIterator();
 
-    // Backtrack from target through every predecessor chain to produce every path of length foundDepth.
-    final List<List<RID>> ridPaths = new ArrayList<>();
-    final Deque<RID> stack = new ArrayDeque<>();
-    stack.push(targetRid);
-    buildAllPaths(targetRid, sourceRid, predecessors, stack, ridPaths);
-
-    final List<List<Object>> result = new ArrayList<>(ridPaths.size());
-    for (final List<RID> ridPath : ridPaths)
-      result.add(resolvePathWithEdges(ridPath, direction, edgeTypes, database));
-    return result;
+    final Database database = context.getDatabase();
+    return new PathEnumerator(target, sourceRid, foundDepth,
+        current -> resolveHops(current, predecessors.get(current.getIdentity()), direction, typesArray, database), guard);
   }
 
   /**
@@ -669,16 +687,25 @@ public class ShortestPathStep extends AbstractExecutionStep {
   public static List<List<Object>> computeFilteredAllShortestPaths(final Vertex source, final Vertex target,
       final Vertex.DIRECTION direction, final String[] edgeTypes, final EdgeConstraint constraint,
       final HopBounds bounds, final Database database, final CommandContext context) {
+    return drain(iterateFilteredAllShortestPaths(source, target, direction, edgeTypes, constraint, bounds, database, context));
+  }
+
+  /**
+   * Same search as {@link #computeFilteredAllShortestPaths}, with the paths produced one at a time (issue #9123).
+   */
+  public static Iterator<List<Object>> iterateFilteredAllShortestPaths(final Vertex source, final Vertex target,
+      final Vertex.DIRECTION direction, final String[] edgeTypes, final EdgeConstraint constraint,
+      final HopBounds bounds, final Database database, final CommandContext context) {
     final RID sourceRid = source.getIdentity();
     final RID targetRid = target.getIdentity();
     if (sourceRid.equals(targetRid)) {
       // The zero-length path is the only shortest path between a vertex and itself; a declared minimum of
       // more than one hop rejects it (issue #7017).
       if (!bounds.acceptsSelfPath())
-        return Collections.emptyList();
+        return Collections.emptyIterator();
       final List<Object> single = new ArrayList<>(1);
       single.add(source);
-      return Collections.singletonList(single);
+      return Collections.singletonList(single).iterator();
     }
 
     final Vertex.DIRECTION[] directions = expandDirections(direction);
@@ -750,34 +777,27 @@ public class ShortestPathStep extends AbstractExecutionStep {
 
     // Every path returned here has length foundDepth, so one bound check answers for all of them.
     if (foundDepth < 0 || !bounds.accepts(foundDepth))
-      return Collections.emptyList();
+      return Collections.emptyIterator();
 
-    final List<List<Object>> result = new ArrayList<>();
-    final Deque<Object> stack = new ArrayDeque<>();
-    buildAllFilteredPaths(targetRid, sourceRid, predecessors, database, stack, result);
-    return result;
+    return new PathEnumerator(target, sourceRid, foundDepth,
+        current -> resolveFilteredHops(predecessors.get(current.getIdentity()), database), guard);
   }
 
-  private static void buildAllFilteredPaths(final RID current, final RID sourceRid,
-      final Map<RID, List<PredecessorLink>> predecessors, final Database database,
-      final Deque<Object> stack, final List<List<Object>> out) {
-    final Vertex currentVertex = (Vertex) database.lookupByRID(current, true);
-    stack.push(currentVertex);
-    if (current.equals(sourceRid)) {
-      // stack head-to-tail already reads source-to-target because we push from target down to source.
-      out.add(new ArrayList<>(stack));
-      stack.pop();
-      return;
-    }
-    final List<PredecessorLink> parents = predecessors.get(current);
-    if (parents != null) {
-      for (final PredecessorLink link : parents) {
-        stack.push(link.edge);
-        buildAllFilteredPaths(link.parent, sourceRid, predecessors, database, stack, out);
-        stack.pop();
-      }
-    }
-    stack.pop();
+  /**
+   * The hops into a vertex of the edge-aware search: one per co-shortest parent, holding every edge that reached the vertex
+   * from it, so parallel relationships stay distinct paths.
+   */
+  private static HopLink[] resolveFilteredHops(final List<PredecessorLink> links, final Database database) {
+    if (links == null)
+      return new HopLink[0];
+    final Map<RID, List<Edge>> edgesByParent = new LinkedHashMap<>();
+    for (final PredecessorLink link : links)
+      edgesByParent.computeIfAbsent(link.parent, k -> new ArrayList<>(1)).add(link.edge);
+    final HopLink[] hops = new HopLink[edgesByParent.size()];
+    int i = 0;
+    for (final Map.Entry<RID, List<Edge>> entry : edgesByParent.entrySet())
+      hops[i++] = new HopLink((Vertex) database.lookupByRID(entry.getKey(), true), entry.getValue().toArray(new Edge[0]));
+    return hops;
   }
 
   /**
@@ -903,10 +923,13 @@ public class ShortestPathStep extends AbstractExecutionStep {
     }
   }
 
+  /** One of the shared direction arrays above. */
   private static Vertex.DIRECTION[] expandDirections(final Vertex.DIRECTION direction) {
-    return direction == Vertex.DIRECTION.BOTH ?
-        new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN } :
-        new Vertex.DIRECTION[] { direction };
+    return switch (direction) {
+      case OUT -> OUT_ONLY;
+      case IN -> IN_ONLY;
+      default -> OUT_IN;
+    };
   }
 
   /**
@@ -923,20 +946,166 @@ public class ShortestPathStep extends AbstractExecutionStep {
     }
   }
 
-  private static void buildAllPaths(final RID current, final RID sourceRid, final Map<RID, List<RID>> predecessors,
-      final Deque<RID> stack, final List<List<RID>> out) {
-    if (current.equals(sourceRid)) {
-      // stack pushes from target down to source, so iterating head-to-tail yields source-to-target.
-      out.add(new ArrayList<>(stack));
-      return;
+  /**
+   * Walks the co-shortest predecessors from the target back to the source and hands out one path per call, source first:
+   * a depth-first search over an explicit stack (one frame per hop, so {@code foundDepth + 1} frames) instead of the
+   * recursion that collected every path before the first one could be returned. The hops into a vertex are resolved once
+   * ({@code hopCache}), so the work is proportional to the hops, not the paths through them.
+   * <p>
+   * Every branch of the walk ends in a path, so the deadline is checked once every 1024 completed paths.
+   */
+  private static final class PathEnumerator implements Iterator<List<Object>> {
+    private final RID                  sourceRid;
+    private final HopResolver          resolver;
+    private final WorkGuard            guard;
+    private final Map<RID, HopLink[]>  hopCache = new HashMap<>();
+    // frame i holds the vertex reached after i hops from the target and the cursor over the hops (and their parallel
+    // edges) still to try into it; chosen[i] is the edge currently taken from frame i to frame i + 1
+    private final Vertex[]             vertices;
+    private final HopLink[][]          hops;
+    private final int[]                hopIndex;
+    private final int[]                edgeIndex;
+    private final Edge[]              chosen;
+    private       int                  depth    = 0;
+    private       long                 emitted  = 0L;
+    private       List<Object>         pending;
+    private       boolean              exhausted;
+
+    PathEnumerator(final Vertex target, final RID sourceRid, final int foundDepth, final HopResolver resolver,
+        final WorkGuard guard) {
+      this.sourceRid = sourceRid;
+      this.resolver = resolver;
+      this.guard = guard;
+      this.vertices = new Vertex[foundDepth + 1];
+      this.hops = new HopLink[foundDepth + 1][];
+      this.hopIndex = new int[foundDepth + 1];
+      this.edgeIndex = new int[foundDepth + 1];
+      this.chosen = new Edge[foundDepth + 1];
+      vertices[0] = target;
+      hops[0] = hopsInto(target);
     }
-    final List<RID> parents = predecessors.get(current);
-    if (parents == null)
+
+    @Override
+    public boolean hasNext() {
+      if (pending != null)
+        return true;
+      if (exhausted)
+        return false;
+      pending = advance();
+      if (pending == null)
+        exhausted = true;
+      return pending != null;
+    }
+
+    @Override
+    public List<Object> next() {
+      if (!hasNext())
+        throw new NoSuchElementException();
+      final List<Object> path = pending;
+      pending = null;
+      return path;
+    }
+
+    private List<Object> advance() {
+      while (depth >= 0) {
+        final HopLink[] frameHops = hops[depth];
+        if (hopIndex[depth] >= frameHops.length) {
+          depth--;
+          continue;
+        }
+        final HopLink hop = frameHops[hopIndex[depth]];
+        if (edgeIndex[depth] >= hop.edges.length) {
+          hopIndex[depth]++;
+          edgeIndex[depth] = 0;
+          continue;
+        }
+        chosen[depth] = hop.edges[edgeIndex[depth]++];
+        final int child = depth + 1;
+        vertices[child] = hop.parent;
+        if (hop.parent.getIdentity().equals(sourceRid)) {
+          checkPathEnumeration(guard, emitted++);
+          return buildPath(child);
+        }
+        hops[child] = hopsInto(hop.parent);
+        hopIndex[child] = 0;
+        edgeIndex[child] = 0;
+        depth = child;
+      }
+      return null;
+    }
+
+    private HopLink[] hopsInto(final Vertex vertex) {
+      final RID rid = vertex.getIdentity();
+      HopLink[] resolved = hopCache.get(rid);
+      if (resolved == null) {
+        resolved = resolver.hopsInto(vertex);
+        hopCache.put(rid, resolved);
+      }
+      return resolved;
+    }
+
+    /** The stack holds the walk from the target; the path reads from the source (frame {@code last}) back to it. */
+    private List<Object> buildPath(final int last) {
+      final List<Object> path = new ArrayList<>(2 * last + 1);
+      path.add(vertices[last]);
+      for (int i = last - 1; i >= 0; i--) {
+        path.add(chosen[i]);
+        path.add(vertices[i]);
+      }
+      return path;
+    }
+  }
+
+  /** Resolves the hops into a vertex: its co-shortest parents, each with the relationships that join them. */
+  @FunctionalInterface
+  private interface HopResolver {
+    HopLink[] hopsInto(Vertex vertex);
+  }
+
+  private static List<List<Object>> drain(final Iterator<List<Object>> paths) {
+    final List<List<Object>> result = new ArrayList<>();
+    while (paths.hasNext())
+      result.add(paths.next());
+    return result;
+  }
+
+  /**
+   * Checked once every 1024 completed paths, since the path count is the product of the parallel relationships per hop and
+   * the enumeration can outlast the BFS.
+   */
+  private static void checkPathEnumeration(final WorkGuard guard, final long pathsSoFar) {
+    if ((pathsSoFar & 1023) != 0)
       return;
-    for (final RID parent : parents) {
-      stack.push(parent);
-      buildAllPaths(parent, sourceRid, predecessors, stack, out);
-      stack.pop();
+    if (Thread.interrupted())
+      throw new CommandExecutionException("The allShortestPaths() function has been interrupted");
+    guard.check();
+  }
+
+  private static HopLink[] resolveHops(final Vertex current, final List<RID> parents, final Vertex.DIRECTION direction,
+      final String[] edgeTypes, final Database database) {
+    if (parents == null)
+      return new HopLink[0];
+    final HopLink[] hops = new HopLink[parents.size()];
+    final List<Edge> connecting = new ArrayList<>(1);
+    for (int i = 0; i < hops.length; i++) {
+      final Vertex parent = (Vertex) database.lookupByRID(parents.get(i), true);
+      connecting.clear();
+      collectConnectingEdges(parent, current, direction, edgeTypes, false, connecting);
+      hops[i] = new HopLink(parent, connecting.toArray(new Edge[0]));
+    }
+    return hops;
+  }
+
+  /**
+   * A co-shortest parent of a vertex with every relationship joining the two in the walked direction.
+   */
+  private static final class HopLink {
+    final Vertex parent;
+    final Edge[] edges;
+
+    HopLink(final Vertex parent, final Edge[] edges) {
+      this.parent = parent;
+      this.edges = edges;
     }
   }
 
@@ -981,48 +1150,59 @@ public class ShortestPathStep extends AbstractExecutionStep {
    */
   private static Edge findConnectingEdge(final Vertex from, final Vertex to, final Vertex.DIRECTION direction,
       final List<String> edgeTypes) {
-    final Vertex.DIRECTION[] directions = direction == Vertex.DIRECTION.BOTH ?
-        new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN } :
-        new Vertex.DIRECTION[] { direction };
+    final String[] typesArray = edgeTypes == null || edgeTypes.isEmpty() ? null : edgeTypes.toArray(new String[0]);
+    final List<Edge> found = new ArrayList<>(1);
+    collectConnectingEdges(from, to, direction, typesArray, true, found);
+    return found.isEmpty() ? null : found.get(0);
+  }
 
-    final String[] typesArray = edgeTypes == null || edgeTypes.isEmpty() ? null :
-        edgeTypes.toArray(new String[0]);
+  /**
+   * Collects the relationships joining {@code from} to {@code to} when walked in {@code direction}, stopping at the
+   * first one when {@code firstOnly} is set.
+   * <p>
+   * The edge lists are filtered on the neighbour pointer they hold, so only the relationships that actually reach
+   * {@code to} are loaded rather than every relationship of {@code from}; over an edge type declared unidirectional,
+   * which stores no incoming side, they are looked for from the end that stores them (issue #8625).
+   *
+   * @param typesArray restrict edges to these types, or null to allow any type
+   */
+  private static void collectConnectingEdges(final Vertex from, final Vertex to, final Vertex.DIRECTION direction,
+      final String[] typesArray, final boolean firstOnly, final List<Edge> out) {
+    final RID fromRid = from.getIdentity();
+    final RID toRid = to.getIdentity();
 
-    for (final Vertex.DIRECTION dir : directions) {
-      // An edge type declared unidirectional stores no incoming side: the edge is found from the end that stores it
-      // (issue #8625)
-      if (dir == Vertex.DIRECTION.IN
-          && IncomingEdgeLookup.isIncomingSideMissing(from.getDatabase().getSchema(), dir, typesArray)) {
-        final Iterator<Edge> connecting = from instanceof VertexInternal internal ?
-            IncomingEdgeLookup.getEdgesConnectedTo(internal, Vertex.DIRECTION.IN, to.getIdentity(), typesArray) :
-            to.getEdges(Vertex.DIRECTION.OUT, typesArray).iterator();
-        while (connecting.hasNext()) {
-          final Edge edge = connecting.next();
-          try {
-            if (edge.getIn().equals(from.getIdentity()))
-              return edge;
-          } catch (final RecordNotFoundException e) {
-            GhostEdgeReporter.reportSkipped(e);
-          }
-        }
-        continue;
-      }
+    for (final Vertex.DIRECTION dir : expandDirections(direction)) {
+      final boolean incomingSideMissing = dir == Vertex.DIRECTION.IN
+          && IncomingEdgeLookup.isIncomingSideMissing(from.getDatabase().getSchema(), dir, typesArray);
 
-      final Iterable<Edge> edges = typesArray != null ?
-          from.getEdges(dir, typesArray) :
-          from.getEdges(dir);
+      final Iterator<Edge> connecting;
+      if (from instanceof VertexInternal internal)
+        connecting = incomingSideMissing ?
+            IncomingEdgeLookup.getEdgesConnectedTo(internal, dir, toRid, typesArray) :
+            ((DatabaseInternal) from.getDatabase()).getGraphEngine().getEdgesConnectedTo(internal, dir, toRid, typesArray);
+      else if (incomingSideMissing)
+        connecting = to.getEdges(Vertex.DIRECTION.OUT, typesArray).iterator();
+      else
+        connecting = (typesArray != null ? from.getEdges(dir, typesArray) : from.getEdges(dir)).iterator();
 
-      for (final Edge edge : edges) {
+      while (connecting.hasNext()) {
+        final Edge edge = connecting.next();
         try {
-          final RID connected = dir == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut();
-          if (connected.equals(to.getIdentity()))
-            return edge;
+          // The neighbour-filtered iterators answer only edges joining the two ends; the check is for the unfiltered
+          // fallbacks, where the incoming-side one walks every outgoing edge of the other end.
+          final boolean joins = dir == Vertex.DIRECTION.OUT ?
+              edge.getIn().equals(toRid) :
+              edge.getOut().equals(toRid) && edge.getIn().equals(fromRid);
+          if (joins) {
+            out.add(edge);
+            if (firstOnly)
+              return;
+          }
         } catch (final RecordNotFoundException e) {
           GhostEdgeReporter.reportSkipped(e);
         }
       }
     }
-    return null;
   }
 
   @Override

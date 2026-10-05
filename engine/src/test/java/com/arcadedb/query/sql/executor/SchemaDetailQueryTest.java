@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -265,6 +266,6 @@ class SchemaDetailQueryTest extends TestHelper {
       try (final ResultSet rs = database.query("sql", "SELECT FROM schema:invalidTarget")) {
         rs.hasNext();
       }
-    }).isInstanceOf(UnsupportedOperationException.class);
+    }).isInstanceOf(CommandExecutionException.class);
   }
 }

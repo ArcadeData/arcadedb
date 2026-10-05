@@ -612,20 +612,43 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
   /**
    * Finds a {@link GraphTraversalProvider} suitable for graph algorithms.
    * When {@code relTypes} is null (whole-graph algorithms like PageRank, WCC, LCC), accepts any
-   * ready provider even if it covers only specific types — the algorithm will use whatever the
-   * CSR contains, which is the desired behavior for whole-graph analytics.
+   * ready provider that covers every edge type and every vertex type, the same terms as the
+   * exact-match lookup: a view over a subset of the vertex types would run the algorithm on part
+   * of the graph and answer as if it were the whole.
    *
    * @param db       the database
    * @param relTypes edge types to filter by (null = any provider)
+   * @param context  the command context whose timeout bounds the wait for a restoring view; may be null
    */
-  protected GraphTraversalProvider findProvider(final Database db, final String[] relTypes) {
+  protected GraphTraversalProvider findProvider(final Database db, final String[] relTypes, final CommandContext context) {
+    final GraphTraversalProvider provider = findReadyProvider(db, relTypes);
+    if (provider != null)
+      return provider;
+    // The first isReady() above dispatches a view's deferred restore-from-disk and answers false for that call (#6641),
+    // so the first whole-graph call after a reopen would take the record-by-record scan, which costs far more than the
+    // restore it did not wait for (#9220). Wait for the views that cover the request and are restoring, within the
+    // configured budget and the command's own timeout, then ask again. A view that is only rebuilding after a commit is
+    // not a restore and is never waited for.
+    final long awaitMs = db.getConfiguration().getValueAsLong(GlobalConfiguration.GAV_ALGO_RESTORE_AWAIT_TIMEOUT);
+    if (awaitMs <= 0)
+      return null;
+    final WorkGuard guard = WorkGuard.forCommand(context, getName() + "()");
+    GraphTraversalProviderRegistry.awaitRestoring(db, relTypes, awaitMs, guard::check);
+    // Ask again whatever the wait reported: the restore runs on another thread and can finish between the first lookup
+    // and the moment the wait samples it. It then has nothing to wait for, yet the view is ready, and answering null
+    // here would send this call down the record-by-record path anyway. The lookup is a few volatile reads.
+    return findReadyProvider(db, relTypes);
+  }
+
+  private GraphTraversalProvider findReadyProvider(final Database db, final String[] relTypes) {
     // Try exact match first (covers all requested types)
     final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(db, relTypes);
     if (provider != null && provider.coversVertexType(null))
       return provider;
 
     // For whole-graph algorithms (null/empty relTypes), accept any ready provider that covers
-    // all edge types. A partial-coverage provider would silently produce wrong results.
+    // all edge types and all vertex types, the terms of the exact match above. A partial-coverage
+    // provider would silently produce wrong results (issue #9240).
     if (relTypes != null && relTypes.length != 0)
       return null;
     // Coverage checked before readiness: coversEdgeType() is a pure config check, while a
@@ -638,7 +661,7 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     GraphTraversalProvider found = null;
     while (found == null && iterator.hasNext()) {
       final GraphTraversalProvider p = iterator.next();
-      if (p.coversEdgeType(null) && p.isReady())
+      if (p.coversEdgeType(null) && p.coversVertexType(null) && p.isReady())
         found = p;
     }
     return found;
@@ -684,7 +707,7 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
       final CommandContext context) {
     final MemoryBudget memory = newMemoryBudget(db);
     if (nodeLabels == null || nodeLabels.length == 0) {
-      final GraphTraversalProvider provider = findProvider(db, relTypes);
+      final GraphTraversalProvider provider = findProvider(db, relTypes, context);
       if (provider != null) {
         if (context != null)
           context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
@@ -1157,6 +1180,56 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
         return new NodeEdgeWeights(Arrays.copyOf(scratchNeighbors, degree), Arrays.copyOf(scratchWeights, degree));
       }
     }
+  }
+
+  /** A vertex path interleaved with the edges that connect consecutive vertices, and the sum of those edges' weights. */
+  protected record WeightedPath(List<RID> ridsWithEdges, double weight) {
+  }
+
+  /**
+   * Path finders that return vertex RIDs only (A*, Bellman-Ford) lose the edges that were walked. This rebuilds them: for
+   * every pair of consecutive vertices the lightest edge in the given direction (optionally restricted to one edge type)
+   * is picked (an edge without the weight property counts {@code missingWeight}), so the returned weight is the sum of the path's edge weights and the path exposes its relationships.
+   */
+  protected WeightedPath attachEdges(final List<RID> pathRids, final String relType, final Vertex.DIRECTION dir,
+      final String weightProperty, final double missingWeight) {
+    // callers hand a LinkedList: index it once as an array-backed list
+    final List<RID> vertexRids = new ArrayList<>(pathRids);
+    final String[] edgeTypeFilter = relType != null && !relType.isEmpty() ? new String[] { relType } : null;
+
+    final List<RID> pathWithEdges = new ArrayList<>(vertexRids.size() * 2 - 1);
+    pathWithEdges.add(vertexRids.get(0));
+
+    double totalWeight = 0.0;
+    for (int i = 0; i < vertexRids.size() - 1; i++) {
+      final Vertex from = vertexRids.get(i).asVertex();
+      final RID toRid = vertexRids.get(i + 1);
+
+      Edge bestEdge = null;
+      double bestWeight = Double.POSITIVE_INFINITY;
+      for (final Edge edge : edgeTypeFilter != null ? from.getEdges(dir, edgeTypeFilter) : from.getEdges(dir)) {
+        try {
+          final RID otherRid = edge.getOut().equals(from.getIdentity()) ? edge.getIn() : edge.getOut();
+          if (!toRid.equals(otherRid))
+            continue;
+          final Object w = weightProperty != null ? edge.get(weightProperty) : null;
+          final double edgeWeight = w instanceof Number num ? num.doubleValue() : missingWeight;
+          if (bestEdge == null || edgeWeight < bestWeight) {
+            bestWeight = edgeWeight;
+            bestEdge = edge;
+          }
+        } catch (final RecordNotFoundException e) {
+          GhostEdgeReporter.reportSkipped(e);
+        }
+      }
+
+      if (bestEdge != null) {
+        totalWeight += bestWeight;
+        pathWithEdges.add(bestEdge.getIdentity());
+      }
+      pathWithEdges.add(toRid);
+    }
+    return new WeightedPath(pathWithEdges, totalWeight);
   }
 
   /**
