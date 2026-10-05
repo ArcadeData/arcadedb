@@ -149,10 +149,24 @@ public class WhereClause {
       collectExpressionVariables(regexExpr.getPattern(), vars);
     } else if (expr instanceof LabelCheckExpression labelCheck) {
       collectExpressionVariables(labelCheck.getVariableExpression(), vars);
-    } else if (expr instanceof PatternPredicateExpression) {
-      // Pattern predicates reference multiple variables, collect from text
+    } else if (expr instanceof PatternPredicateExpression patternPredicate) {
+      // The variables a pattern predicate reads are the ones its nodes and relationships name; the text only yields
+      // the var.property ones, and a bare (a)-[:T]-(b) names none (issue #9282)
+      collectPatternVariables(patternPredicate, vars);
       collectFromText(expr.getText(), vars);
     }
+  }
+
+  private static void collectPatternVariables(final PatternPredicateExpression predicate, final Set<String> vars) {
+    final PathPattern pattern = predicate.getPathPattern();
+    if (pattern == null)
+      return;
+    for (final NodePattern node : pattern.getNodes())
+      if (node.getVariable() != null)
+        vars.add(node.getVariable());
+    for (final RelationshipPattern relationship : pattern.getRelationships())
+      if (relationship.getVariable() != null)
+        vars.add(relationship.getVariable());
   }
 
   private static void collectExpressionVariables(final Expression expr, final Set<String> vars) {
