@@ -46,6 +46,9 @@ public class QueryPlanningInfo {
 
   Projection preAggregateProjection;
   Projection aggregateProjection;
+  int        nextAggregateAliasId   = 0;
+  // TRUE WHEN addOrderByProjections() ADDED AN AGGREGATE ONLY NEEDED BY THE ORDER BY TO THE AGGREGATE PROJECTION
+  boolean    orderByAggregateAdded  = false;
   Projection projection             = null;
   Projection projectionAfterOrderBy = null;
   Projection projectionAfterUnwind  = null;
@@ -94,6 +97,8 @@ public class QueryPlanningInfo {
     result.aggregateProjection = this.aggregateProjection;
     result.projection = this.projection;
     result.projectionAfterOrderBy = this.projectionAfterOrderBy;
+    result.nextAggregateAliasId = this.nextAggregateAliasId;
+    result.orderByAggregateAdded = this.orderByAggregateAdded;
     result.projectionAfterUnwind = this.projectionAfterUnwind;
     result.globalLetClause = this.globalLetClause;
     result.globalLetPresent = this.globalLetPresent;
