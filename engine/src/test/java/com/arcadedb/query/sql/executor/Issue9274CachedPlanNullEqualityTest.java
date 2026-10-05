@@ -152,4 +152,20 @@ class Issue9274CachedPlanNullEqualityTest extends TestHelper {
     assertThat(database.countType("T", false)).isEqualTo(2);
     reload();
   }
+
+  @Test
+  void selectNullThenValue() {
+    final Object nul = null;
+    assertThat(ids("p = ?", nul)).isEmpty();
+    assertThat(ids("p = ?", 1)).containsExactly(1);
+    assertThat(ids("p = ?", nul)).isEmpty();
+  }
+
+  @Test
+  void selectInListValueThenNullElement() {
+    final Object nul = null;
+    assertThat(ids("p IN [?]", 1)).containsExactly(1);
+    assertThat(ids("p IN [?]", nul)).isEmpty();
+    assertThat(ids("p IN [?]", 1)).containsExactly(1);
+  }
 }
