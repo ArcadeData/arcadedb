@@ -61,6 +61,7 @@
                             <ignoreDirFormatExtensions>false</ignoreDirFormatExtensions>
                         </configuration>
                     </execution>
+<!-- Disabled: minimal/headless distributions are not worth the saved KB
                     <execution>
                         <id>minimal</id>
                         <phase>package</phase>
@@ -76,6 +77,8 @@
                             <ignoreDirFormatExtensions>false</ignoreDirFormatExtensions>
                         </configuration>
                     </execution>
+-->
+<!-- Disabled: minimal/headless distributions are not worth the saved KB
                     <execution>
                         <id>headless</id>
                         <phase>package</phase>
@@ -91,6 +94,7 @@
                             <ignoreDirFormatExtensions>false</ignoreDirFormatExtensions>
                         </configuration>
                     </execution>
+-->
                     <execution>
                         <id>base</id>
                         <phase>package</phase>
@@ -340,6 +344,7 @@
                                     </resources>
                                 </configuration>
                             </execution>
+<!-- Disabled: minimal/headless distributions are not worth the saved KB
                             <execution>
                                 <id>copy-resources-minimal</id>
                                 <phase>validate</phase>
@@ -360,6 +365,8 @@
                                     </resources>
                                 </configuration>
                             </execution>
+-->
+<!-- Disabled: minimal/headless distributions are not worth the saved KB
                             <execution>
                                 <id>copy-resources-headless</id>
                                 <phase>validate</phase>
@@ -380,6 +387,7 @@
                                     </resources>
                                 </configuration>
                             </execution>
+-->
                         </executions>
                     </plugin>
                     <plugin>
@@ -421,6 +429,7 @@
                                         </tags>
                                     </build>
                                 </image>
+<!-- Disabled: not worth the saved KB
                                 <image>
                                     <name>arcadedata/arcadedb-minimal</name>
                                     <build>
@@ -437,6 +446,8 @@
                                         </tags>
                                     </build>
                                 </image>
+-->
+<!-- Disabled: not worth the saved KB
                                 <image>
                                     <name>arcadedata/arcadedb-headless</name>
                                     <build>
@@ -453,6 +464,7 @@
                                         </tags>
                                     </build>
                                 </image>
+-->
                             </images>
                         </configuration>
                     </plugin>
