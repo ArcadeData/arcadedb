@@ -53,6 +53,7 @@ class Issue9254RebuildIndexFailureTest extends TestHelper {
 
     try (final ResultSet rs = database.command("sql", "REBUILD INDEX *")) {
       assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<java.util.List<String>>getProperty("failedIndexes")).hasSize(2);
     }
 
     assertIndexesKept("A", true);

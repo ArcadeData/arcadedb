@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.BasePage;
+import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.index.IndexInternal;
@@ -80,6 +81,40 @@ class Issue9253HashIndexOverflowWalkTest extends TestHelper {
 
     load(20_000, 20_000);
     verifyCounts(40_000, deleted);
+  }
+
+  @Test
+  void pagesWithoutTheMarkAreCheckedAndMarkedAgain() throws IOException {
+    createType();
+    load(20_000, 0);
+    final int marked = countPagesMarkedWithoutDeadSpace();
+    assertThat(marked).isGreaterThan(0);
+
+    // files written before the mark existed have it clear on every page
+    clearMarks();
+    assertThat(countPagesMarkedWithoutDeadSpace()).isZero();
+
+    load(20_000, 20_000);
+    assertThat(countPagesMarkedWithoutDeadSpace()).isGreaterThan(0);
+    verifyCounts(40_000, new int[KEYS]);
+  }
+
+  private void clearMarks() {
+    final DatabaseInternal db = (DatabaseInternal) database;
+    db.transaction(() -> {
+      for (final IndexInternal sub : ((TypeIndex) db.getSchema().getIndexByName("H[g]")).getIndexesOnBuckets()) {
+        final HashIndexBucket bucket = ((HashIndex) sub).bucket;
+        final int pageSize = ((PaginatedComponentFile) db.getFileManager().getFile(bucket.getFileId())).getPageSize();
+        for (int p = 2; p < bucket.getTotalPages(); p++)
+          try {
+            final MutablePage page = db.getTransaction().getPageToModify(new PageId(db, bucket.getFileId(), p), pageSize, false);
+            final int depthAndFlag = page.readShort(HashIndexBucket.BUCKET_LOCAL_DEPTH) & 0xFFFF;
+            page.writeShort(HashIndexBucket.BUCKET_LOCAL_DEPTH, (short) (depthAndFlag & HashIndexBucket.LOCAL_DEPTH_MASK));
+          } catch (final IOException e) {
+            throw new RuntimeException(e);
+          }
+      }
+    });
   }
 
   private void createType() {
