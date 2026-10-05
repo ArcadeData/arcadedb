@@ -797,6 +797,11 @@ public class GraphBatch implements AutoCloseable {
       throw new IllegalArgumentException(GraphEngine.unidirectionalEdgeOnBidirectionalTypeMessage(edgeTypeName)
           + ". Build the batch with withBidirectional(true), or declare the type UNIDIRECTIONAL");
 
+    // The edge that fills the buffer flushes it, which a caller's transaction forbids: refuse BEFORE buffering it, so a
+    // rejected call leaves nothing behind for a later flush or close() to commit (#9242)
+    if (edgeCount + 1 >= batchSize)
+      requireNoCallerTransaction("newEdge");
+
     final int idx = edgeCount;
     edgeSrcBucketIds[idx] = sourceVertexRID.getBucketId();
     edgeSrcPositions[idx] = sourceVertexRID.getPosition();

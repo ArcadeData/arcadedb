@@ -168,4 +168,20 @@ class Issue9242GraphBatchCallerTransactionTest extends TestHelper {
       database.rollback();
     }
   }
+
+  @Test
+  void edgeThatWouldAutoFlushInsideCallerTransactionIsNotBuffered() {
+    try (final GraphBatch batch = GraphBatch.builder(database).withBatchSize(2).build()) {
+      final RID[] v = batch.createVertices("V", 3);
+      batch.newEdge(v[0], "E", v[1]);
+
+      database.begin();
+      saveNote("auto-flush");
+      assertThatThrownBy(() -> batch.newEdge(v[1], "E", v[2])).isInstanceOf(IllegalStateException.class);
+      assertThat(batch.getBufferedEdgeCount()).isEqualTo(1);
+      database.rollback();
+    }
+    // Only the accepted edge was written: the rejected one is not replayed by close()
+    assertThat(database.countType("E", true)).isEqualTo(1);
+  }
 }
