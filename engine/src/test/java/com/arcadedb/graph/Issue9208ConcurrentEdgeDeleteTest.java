@@ -110,4 +110,79 @@ class Issue9208ConcurrentEdgeDeleteTest extends TestHelper {
       for (int i = 0; i < HUBS; i++)
         assertThat(hubs[t][i].asVertex().countEdges(Vertex.DIRECTION.OUT, "E")).isZero();
   }
+
+  @Test
+  void concurrentAppendsAndDeletesOnSharedPagesKeepEveryEdgeList() throws Exception {
+    database.transaction(() -> {
+      database.getSchema().createVertexType("V");
+      database.getSchema().createEdgeType("E");
+    });
+
+    final int perThread = 600;
+    final RID[][] hubs = new RID[THREADS][HUBS];
+    final RID[][] victims = new RID[THREADS][perThread];
+    final int[][] expected = new int[THREADS][HUBS];
+
+    database.transaction(() -> {
+      for (int i = 0; i < HUBS; i++)
+        for (int t = 0; t < THREADS; t++)
+          hubs[t][i] = database.newVertex("V").save().getIdentity();
+    });
+    final SplittableRandom random = new SplittableRandom(7);
+    final int[][] hubOf = new int[THREADS][perThread];
+    for (int start = 0; start < perThread; start += 300) {
+      final int from = start;
+      database.transaction(() -> {
+        for (int i = from; i < Math.min(perThread, from + 300); i++)
+          for (int t = 0; t < THREADS; t++) {
+            victims[t][i] = database.newVertex("V").save().getIdentity();
+            hubOf[t][i] = random.nextInt(HUBS);
+            hubs[t][hubOf[t][i]].asVertex().newEdge("E", victims[t][i]);
+            expected[t][hubOf[t][i]]++;
+          }
+      });
+    }
+
+    final ExecutorService pool = Executors.newFixedThreadPool(THREADS);
+    try {
+      final List<Future<?>> futures = new ArrayList<>();
+      for (int t = 0; t < THREADS; t++) {
+        final int thread = t;
+        futures.add(pool.submit(() -> {
+          final SplittableRandom r = new SplittableRandom(thread);
+          for (int idx = 0; idx < perThread; idx++) {
+            final int i = idx;
+            final int newHub = r.nextInt(HUBS);
+            try {
+              // One transaction both deletes a vertex (removing an edge) and appends a new edge to the same hub list
+              database.transaction(() -> {
+                database.lookupByRID(victims[thread][i], true).delete();
+                final var created = database.newVertex("V").save();
+                hubs[thread][newHub].asVertex().newEdge("E", created);
+              });
+              synchronized (expected[thread]) {
+                expected[thread][hubOf[thread][i]]--;
+                expected[thread][newHub]++;
+              }
+            } catch (final ConcurrentModificationException e) {
+              // The whole transaction was rolled back: nothing to account for
+            }
+          }
+        }));
+      }
+      for (final Future<?> f : futures)
+        f.get(5, TimeUnit.MINUTES);
+    } finally {
+      pool.shutdownNow();
+    }
+
+    for (int t = 0; t < THREADS; t++)
+      for (int h = 0; h < HUBS; h++)
+        assertThat(hubs[t][h].asVertex().countEdges(Vertex.DIRECTION.OUT, "E")).as("hub %d of thread %d", h, t)
+            .isEqualTo(expected[t][h]);
+
+    final var check = database.command("sql", "CHECK DATABASE");
+    assertThat(check.hasNext()).isTrue();
+    assertThat(((Number) check.next().getProperty("totalErrors")).longValue()).isZero();
+  }
 }

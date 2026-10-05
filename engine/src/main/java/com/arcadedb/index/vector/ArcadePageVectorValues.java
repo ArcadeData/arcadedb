@@ -85,6 +85,8 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
    * read instead of {@code ordinalToVectorId} + cache slot + {@code Entry} + vector. {@code null} for a search (the
    * index-scoped cache is shared and bounded there) and for a build whose cache is smaller than the corpus, so the
    * array never pins vectors the cache's budget has evicted. Slots left {@code null} fall through to the cache.
+   * The array itself costs one reference per ordinal (4 to 8 bytes) on top of the cache budget, and it lives only as
+   * long as this reader, which a build drops when it ends.
    */
   private VectorFloat<?>[] byOrdinal;
 

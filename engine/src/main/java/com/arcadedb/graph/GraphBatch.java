@@ -1544,8 +1544,12 @@ public class GraphBatch implements AutoCloseable {
         try {
           // Refused up front, before the batch commits anything inside a transaction that is not its own (#9242). The
           // buffered work is dropped, as abandon() does: there is no way to write it without committing the caller's.
-          if (database.isTransactionActive() && hasPendingWork())
+          if (database.isTransactionActive() && hasPendingWork()) {
+            LogManager.instance().log(this, Level.WARNING,
+                "GraphBatch.close() was called inside a transaction the caller opened: dropping %d buffered edge(s) and %d deferred incoming edge(s) that cannot be written without committing it",
+                null, edgeCount, inEdgeCount);
             throw callerTransactionRefusal("close");
+          }
           flush();
         } catch (final RuntimeException e) {
           flushFailure = e;
