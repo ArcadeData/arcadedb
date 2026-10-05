@@ -67,7 +67,9 @@ class Issue8562DescribeStatementNamesReturnedColumnsIT extends PostgresWireProto
             { "S3", "INSERT INTO Article8562 SET id = 3 RETURN id" },
             { "S4", "UPDATE Article8562 SET id = 9 RETURN AFTER @rid" },
             { "S5", "DELETE FROM Article8562 RETURN BEFORE WHERE id >= 0" },
-            { "S6", "INSERT INTO Article8562 SET id = (SELECT max(id) FROM Article8562) RETURN id" } };
+            // a sub-query yields a list of rows: [0].m takes the scalar an INTEGER property can hold, which a bare sub-query
+            // is not (it used to be stored as null without an error, refused since #9110)
+            { "S6", "INSERT INTO Article8562 SET id = (SELECT max(id) AS m FROM Article8562)[0].m RETURN id" } };
 
         for (final String[] statement : statements) {
           sendParse(out, statement[0], statement[1]);
