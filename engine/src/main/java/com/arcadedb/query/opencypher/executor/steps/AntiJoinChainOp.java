@@ -162,6 +162,13 @@ public final class AntiJoinChainOp implements CountOp {
 
     final boolean anchorIsSource = antiJoinSourceIdx == 0;
 
+    // Two hops to the check position (Q9): count the paths algebraically instead of materializing the frontier.
+    if (laterIdx == 2) {
+      final long result = executeTwoHopAlgebraic(provider, nodeIdUpperBound, validBuckets, guard);
+      if (result >= 0)
+        return result;
+    }
+
     // Pre-fetch NeighborViews for each hop up to the check position
     final NeighborView[] hopViews = new NeighborView[laterIdx];
     for (int h = 0; h < laterIdx; h++)
@@ -192,6 +199,218 @@ public final class AntiJoinChainOp implements CountOp {
     }
 
     return totalCount;
+  }
+
+  /**
+   * Counts a chain whose anti-join check position is two hops from the anchor, without enumerating the two-hop frontier
+   * (issue #9282).
+   * <p>
+   * For Q9, {@code (p1)-[:KNOWS]-(p2)-[:KNOWS]-(p3)-[:HAS_INTEREST]->(t) WHERE NOT (p1)-[:KNOWS]-(p3) AND p1 <> p3}, the
+   * frontier of an anchor holds every friend of a friend, which over the whole graph is the number of two-hop paths:
+   * allocating, filtering and binary-searching each of them was slower than the OLTP plan. The count is a sum over those
+   * paths of {@code tail(p3)}, the degree product of the hops after the check position, and that sum factors:
+   * <pre>
+   *   count(p1) = sum over p2 in hop0(p1) of w[p2]                                    w[p2] = sum over p3 in hop1(p2) of tail(p3)
+   *             - sum over distinct x in anti(p1) of tail(x) * paths(p1, x)           the anti-join
+   *             - tail(p1) * paths(p1, p1)   when p1 is not in anti(p1)                the inequality
+   * </pre>
+   * {@code w} is one pass over the middle hop's edges, and {@code paths(p1, x)}, the number of p2 joining p1 to x, is a
+   * multiset intersection of two sorted adjacency ranges, taken only for the few x the anti-join names. Parallel edges and
+   * both directions of an undirected hop are counted the way the enumeration counts them, one path per edge pair; the
+   * anti-join is an existence test, so each x is subtracted once however many edges join it to p1.
+   *
+   * @return the count, or -1 when the shape or the provider is not one this handles (the caller falls back)
+   */
+  private long executeTwoHopAlgebraic(final GraphTraversalProvider provider, final int nodeIdUpperBound,
+      final IntHashSet[] validBuckets, final WorkGuard guard) {
+    // The only inequality the enumeration applies is between the anchor and the check position
+    final boolean inequality = inequalityIdxA >= 0 && inequalityIdxB >= 0;
+    if (inequality && !(inequalityIdxA == 0 && inequalityIdxB == 2 || inequalityIdxA == 2 && inequalityIdxB == 0))
+      return -1;
+
+    // Anti-join neighbours of the anchor: when the anchor is the pattern's target, the edge points the other way round
+    final Vertex.DIRECTION anchorAntiDirection = antiJoinSourceIdx == 0 ? antiJoinDirection : reverse(antiJoinDirection);
+    // An undirected hop has no stored view: the provider merges and sorts the whole adjacency on each request, so the
+    // views that ask for the same direction and edge type (all of them, on Q9) share one
+    final Vertex.DIRECTION[] viewDirections = { directions[0], directions[1], reverse(directions[1]), anchorAntiDirection };
+    final String[] viewTypes = { edgeTypes[0], edgeTypes[1], edgeTypes[1], antiJoinEdgeType };
+    final NeighborView[] views = new NeighborView[4];
+    for (int v = 0; v < views.length; v++) {
+      for (int earlier = 0; earlier < v && views[v] == null; earlier++)
+        if (viewDirections[earlier] == viewDirections[v] && viewTypes[earlier].equals(viewTypes[v]))
+          views[v] = views[earlier];
+      if (views[v] == null)
+        views[v] = provider.getNeighborView(viewDirections[v], viewTypes[v]);
+      if (views[v] == null)
+        return -1;
+    }
+    final NeighborView hop0 = views[0];
+    final NeighborView hop1 = views[1];
+    final NeighborView hop1Reverse = views[2];
+    final NeighborView anti = views[3];
+
+    final NeighborView[] tailViews = new NeighborView[edgeTypes.length - 2];
+    for (int h = 2; h < edgeTypes.length; h++) {
+      tailViews[h - 2] = provider.getNeighborView(directions[h], edgeTypes[h]);
+      if (tailViews[h - 2] == null)
+        return -1;
+    }
+
+    final IntHashSet anchorBuckets = validBuckets[0];
+    final IntHashSet midBuckets = validBuckets[1];
+    final IntHashSet checkBuckets = validBuckets[2];
+    if ((anchorBuckets != null && anchorBuckets.isEmpty()) || (midBuckets != null && midBuckets.isEmpty())
+        || (checkBuckets != null && checkBuckets.isEmpty()))
+      return 0;
+    final int[] bucketIds = anyLabelled(validBuckets) ? precomputeBucketIds(provider, nodeIdUpperBound, guard) : null;
+
+    // tail[x]: the paths the hops after the check position add to a walk that reaches x; 0 for a node that cannot be there
+    final long[] tail = new long[nodeIdUpperBound];
+    for (int x = 0; x < nodeIdUpperBound; x++) {
+      guard.checkPeriodically(x);
+      if (!provider.isNodeLive(x) || checkBuckets != null && !checkBuckets.contains(bucketIds[x]))
+        continue;
+      long paths = 1;
+      for (final NeighborView view : tailViews) {
+        paths *= view.degree(x);
+        if (paths == 0)
+          break;
+      }
+      tail[x] = paths;
+    }
+
+    // weight[m]: the weight of the walks that continue from a middle node m
+    final long[] weight = new long[nodeIdUpperBound];
+    final int[] hop1Neighbors = hop1.neighbors();
+    for (int m = 0; m < nodeIdUpperBound; m++) {
+      guard.checkPeriodically(m);
+      if (!provider.isNodeLive(m) || midBuckets != null && !midBuckets.contains(bucketIds[m]))
+        continue;
+      long sum = 0;
+      for (int j = hop1.offset(m), end = hop1.offsetEnd(m); j < end; j++)
+        sum += tail[hop1Neighbors[j]];
+      weight[m] = sum;
+    }
+
+    final int[] hop0Neighbors = hop0.neighbors();
+    final int[] hop1ReverseNeighbors = hop1Reverse.neighbors();
+    final int[] antiNeighbors = anti.neighbors();
+    long total = 0;
+    for (int anchor = 0; anchor < nodeIdUpperBound; anchor++) {
+      guard.check();
+      if (!provider.isNodeLive(anchor) || anchorBuckets != null && !anchorBuckets.contains(bucketIds[anchor]))
+        continue;
+      final int start = hop0.offset(anchor);
+      final int end = hop0.offsetEnd(anchor);
+      if (start == end)
+        continue;
+
+      long count = 0;
+      for (int j = start; j < end; j++)
+        count += weight[hop0Neighbors[j]];
+      if (count == 0)
+        continue;
+
+      boolean anchorIsAntiJoined = false;
+      int previous = -1;
+      for (int j = anti.offset(anchor), antiEnd = anti.offsetEnd(anchor); j < antiEnd; j++) {
+        final int x = antiNeighbors[j];
+        if (x == previous)
+          continue;
+        previous = x;
+        anchorIsAntiJoined |= x == anchor;
+        if (tail[x] != 0)
+          count -= tail[x] * pathsBetween(hop0Neighbors, start, end, hop1ReverseNeighbors, hop1Reverse.offset(x),
+              hop1Reverse.offsetEnd(x), midBuckets, bucketIds);
+      }
+      if (inequality && !anchorIsAntiJoined && tail[anchor] != 0)
+        count -= tail[anchor] * pathsBetween(hop0Neighbors, start, end, hop1ReverseNeighbors, hop1Reverse.offset(anchor),
+            hop1Reverse.offsetEnd(anchor), midBuckets, bucketIds);
+      total += count;
+    }
+    return total;
+  }
+
+  private static Vertex.DIRECTION reverse(final Vertex.DIRECTION direction) {
+    return direction == Vertex.DIRECTION.OUT ? Vertex.DIRECTION.IN
+        : direction == Vertex.DIRECTION.IN ? Vertex.DIRECTION.OUT : Vertex.DIRECTION.BOTH;
+  }
+
+  /**
+   * The number of pairs of equal values in two sorted ranges, counting a value as often as the two ranges repeat it, and
+   * restricted to the values a middle-position label keeps (null keeps all). The shorter range is looked up in the longer
+   * by binary search when they differ a lot in length, so a hub is not scanned for each of its small neighbours.
+   */
+  private static long pathsBetween(final int[] a, final int aStart, final int aEnd, final int[] b, final int bStart,
+      final int bEnd, final IntHashSet allowed, final int[] bucketIds) {
+    if (aStart == aEnd || bStart == bEnd)
+      return 0;
+    final int aLength = aEnd - aStart;
+    final int bLength = bEnd - bStart;
+    long pairs = 0;
+    if (aLength * 16L < bLength || bLength * 16L < aLength) {
+      final boolean aIsShort = aLength < bLength;
+      final int[] shortArray = aIsShort ? a : b;
+      final int[] longArray = aIsShort ? b : a;
+      final int longEnd = aIsShort ? bEnd : aEnd;
+      int longFrom = aIsShort ? bStart : aStart;
+      int i = aIsShort ? aStart : bStart;
+      final int shortEnd = aIsShort ? aEnd : bEnd;
+      while (i < shortEnd) {
+        final int value = shortArray[i];
+        int runEnd = i + 1;
+        while (runEnd < shortEnd && shortArray[runEnd] == value)
+          runEnd++;
+        final int low = lowerBound(longArray, longFrom, longEnd, value);
+        longFrom = low;
+        if (low < longEnd && longArray[low] == value && (allowed == null || allowed.contains(bucketIds[value]))) {
+          int high = low + 1;
+          while (high < longEnd && longArray[high] == value)
+            high++;
+          pairs += (long) (runEnd - i) * (high - low);
+        }
+        i = runEnd;
+      }
+      return pairs;
+    }
+
+    int i = aStart;
+    int j = bStart;
+    while (i < aEnd && j < bEnd) {
+      final int av = a[i];
+      final int bv = b[j];
+      if (av < bv)
+        i++;
+      else if (av > bv)
+        j++;
+      else {
+        int iEnd = i + 1;
+        while (iEnd < aEnd && a[iEnd] == av)
+          iEnd++;
+        int jEnd = j + 1;
+        while (jEnd < bEnd && b[jEnd] == av)
+          jEnd++;
+        if (allowed == null || allowed.contains(bucketIds[av]))
+          pairs += (long) (iEnd - i) * (jEnd - j);
+        i = iEnd;
+        j = jEnd;
+      }
+    }
+    return pairs;
+  }
+
+  /** The first index in {@code [from, to)} whose value is not below {@code key}. */
+  private static int lowerBound(final int[] array, final int from, final int to, final int key) {
+    int low = from;
+    int high = to;
+    while (low < high) {
+      final int mid = (low + high) >>> 1;
+      if (array[mid] < key)
+        low = mid + 1;
+      else
+        high = mid;
+    }
+    return low;
   }
 
   /**

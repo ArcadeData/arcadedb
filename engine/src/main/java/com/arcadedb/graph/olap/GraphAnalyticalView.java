@@ -40,6 +40,7 @@ import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.VertexType;
 
+import java.lang.ref.SoftReference;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -209,6 +210,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     final String[]                       edgeTypes;
     final String[]                       propertyFilter;
     final String[]                       edgePropertyFilter;
+    // Merged (undirected or multi-type) neighbour views, built on first request. A snapshot never changes, so a view stays
+    // valid for its life, and merging plus sorting the whole adjacency costs far more than the traversal that asks for it
+    // (issue #9282). Soft, so a view over a huge edge set is given back under memory pressure rather than pinned.
+    final Map<String, SoftReference<NeighborView>> mergedNeighborViews = new ConcurrentHashMap<>();
 
     Snapshot(final Map<String, CSRAdjacencyIndex> csrPerType, final NodeIdMapping nodeMapping,
         final ColumnStore[] bucketColumns, final Map<String, ColumnStore> edgeColumnStores,
@@ -1176,6 +1181,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       final CSRAdjacencyIndex csr = snap.csrPerType.get(edgeTypes[0]);
       if (csr == null)
         return null;
+      if (direction == Vertex.DIRECTION.BOTH)
+        return cachedMergedNeighborView(snap, direction, edgeTypes, List.of(csr), n);
       return buildNeighborViewFromCSR(csr, n, direction);
     }
 
@@ -1190,18 +1197,47 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       }
       if (list.isEmpty())
         return null;
-      if (list.size() == 1)
+      if (list.size() == 1) {
+        if (direction == Vertex.DIRECTION.BOTH)
+          return cachedMergedNeighborView(snap, direction, edgeTypes, list, n);
         return buildNeighborViewFromCSR(list.get(0), n, direction);
+      }
       indices = list;
     } else {
       indices = snap.csrPerType.values();
       if (indices.isEmpty())
         return null;
-      if (indices.size() == 1)
+      if (indices.size() == 1) {
+        if (direction == Vertex.DIRECTION.BOTH)
+          return cachedMergedNeighborView(snap, direction, edgeTypes, indices, n);
         return buildNeighborViewFromCSR(indices.iterator().next(), n, direction);
+      }
     }
 
-    return buildMergedNeighborView(indices, n, direction);
+    return cachedMergedNeighborView(snap, direction, edgeTypes, indices, n);
+  }
+
+  /**
+   * The merged view of {@code direction} over {@code indices}, built once per snapshot and shared by every caller that asks
+   * for the same direction and edge types.
+   */
+  private static NeighborView cachedMergedNeighborView(final Snapshot snap, final Vertex.DIRECTION direction,
+      final String[] edgeTypes, final Collection<CSRAdjacencyIndex> indices, final int n) {
+    final String key;
+    if (edgeTypes == null || edgeTypes.length == 0)
+      key = direction + "|*";
+    else {
+      final String[] sorted = edgeTypes.clone();
+      Arrays.sort(sorted);
+      key = direction + "|" + String.join(",", sorted);
+    }
+    final SoftReference<NeighborView> cached = snap.mergedNeighborViews.get(key);
+    final NeighborView hit = cached != null ? cached.get() : null;
+    if (hit != null)
+      return hit;
+    final NeighborView built = buildMergedNeighborView(indices, n, direction);
+    snap.mergedNeighborViews.put(key, new SoftReference<>(built));
+    return built;
   }
 
   private static NeighborView buildNeighborViewFromCSR(final CSRAdjacencyIndex csr, final int n,
