@@ -118,6 +118,19 @@ class Issue9007ArrayBinaryFormatTest {
   }
 
   @Test
+  void heterogeneousListsAreTypedFromAllTheirElementsSoNothingIsNarrowed() {
+    final List<Object> mixedNumbers = List.of(1, 2.5);
+    final PostgresType numbersType = PostgresType.getTypeForValue(mixedNumbers);
+    assertThat(PostgresType.deserialize(numbersType.code, 1, encode(numbersType, mixedNumbers)))
+        .asList().extracting(e -> ((Number) e).doubleValue()).containsExactly(1.0d, 2.5d);
+
+    final List<Object> numberAndText = List.of(1, "a");
+    final PostgresType textType = PostgresType.getTypeForValue(numberAndText);
+    assertThat(textType).isEqualTo(PostgresType.ARRAY_TEXT);
+    assertThat(PostgresType.deserialize(textType.code, 1, encode(textType, numberAndText))).isEqualTo(List.of("1", "a"));
+  }
+
+  @Test
   void aNonArrayValueIsRefusedForAnArrayColumn() {
     assertThatThrownBy(() -> encode(PostgresType.ARRAY_TEXT, "not a list")).isInstanceOf(PostgresProtocolException.class)
         .hasMessageContaining("_text");
