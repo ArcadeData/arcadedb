@@ -18,6 +18,8 @@
  */
 package com.arcadedb.server;
 
+import com.arcadedb.server.http.FakeLeader;
+import com.arcadedb.server.http.SilentPeer;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -48,6 +50,19 @@ import static org.assertj.core.api.Assertions.assertThat;
  * No single test run can see a collision between two processes, so the rule is held by reading the sources of every
  * module. The scan runs from the {@code server} module and walks its siblings; {@link PluginPortFixtureScan} and the
  * ha-raft {@code Issue8203}/{@code Issue8222} guards cover the plugin and Raft ports.
+ * <p>
+ * <b>A held-bound ephemeral listener is not an offender</b>, and the scan deliberately leaves
+ * {@code new ServerSocket(0, backlog, address)} alone when the test keeps that socket bound and dials the port it reads
+ * back from it: the fake leaders of {@link FakeLeader}, the
+ * {@link SilentPeer}, the stub gateways of the AI tests. The port was never hand-picked, so
+ * nothing else can be listening on it, and it stays bound until the test is done, so nothing else can take it in the
+ * meantime. What CLAUDE.md forbids is the other use of port 0: binding it, reading the number, <em>releasing</em> it and
+ * handing the number to a server that binds it later. Between the release and the rebind the port is back in the
+ * ephemeral range, where any outgoing connection on the machine can be given it, and the server then fails with
+ * "Address already in use". Those listeners - Raft, gRPC, Bolt, a second HTTPS port - draw their port from
+ * {@link StaticBaseServerTest#allocateFreePorts(int)} instead. A probe that binds port 0 and closes it only to obtain an
+ * address that refuses connections is the third shape: it hands the number to a client, not to a listener, and the
+ * worst a stranger taking it can do is answer that client.
  */
 class HardcodedTestServerPortsTest {
 
@@ -139,6 +154,13 @@ class HardcodedTestServerPortsTest {
             GrpcConfigKeys.Server.setPort(properties, ports[i]);
             Cluster.build().addContactPoint("localhost").port(gremlinPort).create();
           } }""");
+    // A listener the test holds bound for its whole life and dials on the port it read back (issue #8691).
+    sources.put("b/HeldEphemeralListener.java", """
+        class HeldEphemeralListener {
+          @Test void t() {
+            try (ServerSocket leader = new ServerSocket(0, 16, InetAddress.getByName("127.0.0.1"))) {
+              forward("http://127.0.0.1:" + leader.getLocalPort() + "/api/v1/batch/db");
+            } } }""");
     sources.put("b/Launcher.java", """
         class Launcher { public static void main(String[] a) { new ArcadeDBServer(c); System.out.println("http://localhost:2480"); } }""");
     sources.put("b/UnitTest.java", """

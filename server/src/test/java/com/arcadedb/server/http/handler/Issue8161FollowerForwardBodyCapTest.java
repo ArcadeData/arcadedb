@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
+import com.arcadedb.server.http.FakeLeader;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
@@ -33,15 +34,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.net.InetAddress;
-import java.net.ServerSocket;
-import java.net.Socket;
 import java.nio.charset.StandardCharsets;
-import java.util.List;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -105,7 +98,7 @@ class Issue8161FollowerForwardBodyCapTest {
   @ValueSource(booleans = { false, true })
   @Timeout(value = 60, unit = TimeUnit.SECONDS)
   void anOverCapChunkedBodyIsRefusedAs413NotAnsweredAs503(final boolean streaming) throws Exception {
-    try (final DrainingLeader leader = new DrainingLeader(false)) {
+    try (final FakeLeader leader = FakeLeader.draining()) {
       final HttpServerExchange exchange = new HttpServerExchange(null);
       assertThat(exchange.getRequestContentLength()).isEqualTo(-1L);
       final PostBatchHandler.CountingInputStream body = new PostBatchHandler.CountingInputStream(exchange,
@@ -137,7 +130,7 @@ class Issue8161FollowerForwardBodyCapTest {
   @Test
   @Timeout(value = 60, unit = TimeUnit.SECONDS)
   void aLeaderThatDropsTheConnectionStillAnswers503() throws Exception {
-    try (final DrainingLeader leader = new DrainingLeader(true)) {
+    try (final FakeLeader leader = FakeLeader.dropping()) {
       final HttpServerExchange exchange = new HttpServerExchange(null);
       final PostBatchHandler.CountingInputStream body = new PostBatchHandler.CountingInputStream(exchange,
           new ByteArrayInputStream(ndjson(512)), CAP_BYTES);
@@ -148,76 +141,6 @@ class Issue8161FollowerForwardBodyCapTest {
       assertThat(response.getCode()).isEqualTo(503);
       assertThat(new JSONObject(response.getResponse()).getString("error", "")).startsWith("Error forwarding batch to leader");
       assertThat(body.hasBodyFailed()).isFalse();
-    }
-  }
-
-  /**
-   * A leader that reads the request and never answers, or - with {@code dropAfterAccept} - one that closes every
-   * connection as soon as it has accepted it.
-   */
-  private static final class DrainingLeader implements AutoCloseable {
-    private final ServerSocket   serverSocket;
-    private final Thread         acceptor;
-    private final CountDownLatch firstAccept = new CountDownLatch(1);
-    private final List<Socket>   sockets     = new CopyOnWriteArrayList<>();
-
-    DrainingLeader(final boolean dropAfterAccept) throws IOException {
-      // The literal IPv4 loopback, not getLoopbackAddress(): under java.net.preferIPv6Addresses=true that one is
-      // ::1, and an unbracketed IPv6 literal followed by ":port" is not a URI the forwarder can build.
-      serverSocket = new ServerSocket(0, 16, InetAddress.getByName("127.0.0.1"));
-      acceptor = new Thread(() -> {
-        while (!serverSocket.isClosed()) {
-          try {
-            final Socket socket = serverSocket.accept();
-            firstAccept.countDown();
-            sockets.add(socket);
-            if (dropAfterAccept) {
-              socket.close();
-              continue;
-            }
-            final Thread drainer = new Thread(() -> {
-              try (final InputStream in = socket.getInputStream()) {
-                final byte[] buffer = new byte[8_192];
-                while (in.read(buffer) >= 0) {
-                  // discard: never answers
-                }
-              } catch (final IOException ignored) {
-                // the follower aborted the relay
-              }
-            }, "issue8161-leader-drainer");
-            drainer.setDaemon(true);
-            drainer.start();
-          } catch (final IOException e) {
-            return;
-          }
-        }
-      }, "issue8161-draining-leader");
-      acceptor.setDaemon(true);
-      acceptor.start();
-    }
-
-    String address() {
-      return serverSocket.getInetAddress().getHostAddress() + ":" + serverSocket.getLocalPort();
-    }
-
-    boolean awaitFirstConnection(final long timeout, final TimeUnit unit) throws InterruptedException {
-      return firstAccept.await(timeout, unit);
-    }
-
-    @Override
-    public void close() {
-      try {
-        serverSocket.close();
-      } catch (final IOException ignored) {
-        // best effort
-      }
-      for (final Socket socket : sockets) {
-        try {
-          socket.close();
-        } catch (final IOException ignored) {
-          // best effort
-        }
-      }
     }
   }
 }
