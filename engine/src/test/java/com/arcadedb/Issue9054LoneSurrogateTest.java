@@ -20,7 +20,8 @@ package com.arcadedb;
 
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.MutableDocument;
-import com.arcadedb.exception.SerializationException;
+import com.arcadedb.exception.ErrorCategory;
+import com.arcadedb.exception.ValidationException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
@@ -49,8 +50,8 @@ class Issue9054LoneSurrogateTest extends TestHelper {
   @Test
   void loneSurrogatesAreRefusedOnWrite() {
     for (final String value : new String[] { "\uD83D", "\uDE00", "a\uD83Db", "\uDE00\uD83D" })
-      assertThatThrownBy(() -> database.transaction(() -> save("S", value))).isInstanceOf(SerializationException.class)
-          .hasMessageContaining("lone UTF-16 surrogate");
+      assertThatThrownBy(() -> database.transaction(() -> save("S", value))).isInstanceOf(ValidationException.class)
+          .hasMessageContaining("lone UTF-16 surrogate").satisfies(e -> assertThat(ErrorCategory.of(e)).isEqualTo(ErrorCategory.VALIDATION));
 
     try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM S")) {
       assertThat(rs.next().<Long>getProperty("c")).isEqualTo(0L);
@@ -77,7 +78,7 @@ class Issue9054LoneSurrogateTest extends TestHelper {
   @Test
   void uniqueIndexDoesNotCollideLoneSurrogateWithQuestionMark() {
     database.transaction(() -> save("U", "?"));
-    assertThatThrownBy(() -> database.transaction(() -> save("U", "\uD83D"))).isInstanceOf(SerializationException.class);
+    assertThatThrownBy(() -> database.transaction(() -> save("U", "\uD83D"))).isInstanceOf(ValidationException.class);
     try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM U")) {
       assertThat(rs.next().<Long>getProperty("c")).isEqualTo(1L);
     }
@@ -86,8 +87,8 @@ class Issue9054LoneSurrogateTest extends TestHelper {
   @Test
   void binaryPutStringRefusesLoneSurrogate() {
     final Binary binary = new Binary();
-    assertThatThrownBy(() -> binary.putString("\uD83D")).isInstanceOf(SerializationException.class);
-    assertThatThrownBy(() -> binary.putString(0, "x\uDE00")).isInstanceOf(SerializationException.class);
+    assertThatThrownBy(() -> binary.putString("\uD83D")).isInstanceOf(ValidationException.class);
+    assertThatThrownBy(() -> binary.putString(0, "x\uDE00")).isInstanceOf(ValidationException.class);
     binary.putString("?");
     binary.position(0);
     assertThat(binary.getString()).isEqualTo("?");
