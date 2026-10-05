@@ -88,11 +88,12 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
    * The array itself costs one reference per ordinal (4 to 8 bytes) on top of the cache budget, and it lives only as
    * long as this reader, which a build drops when it ends.
    */
-  private VectorFloat<?>[] byOrdinal;
+  private final VectorFloat<?>[] byOrdinal;
 
   private ArcadePageVectorValues(final DatabaseInternal database, final int dimensions,
       final String vectorPropertyName, final VectorLocationIndex locations, final boolean graphBuilding,
-      final int[] ordinalToVectorId, final LSMVectorIndex lsmIndex, final VectorCache vectorCache) {
+      final int[] ordinalToVectorId, final LSMVectorIndex lsmIndex, final VectorCache vectorCache,
+      final VectorFloat<?>[] byOrdinal) {
     this.database = database;
     this.dimensions = dimensions;
     this.vectorPropertyName = vectorPropertyName;
@@ -101,6 +102,7 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
     this.ordinalToVectorId = ordinalToVectorId;
     this.lsmIndex = lsmIndex;
     this.vectorCache = vectorCache;
+    this.byOrdinal = byOrdinal;
     this.deletedSentinelVector = createDeletedSentinelVector(dimensions);
   }
 
@@ -132,7 +134,7 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
       final String vectorPropertyName, final VectorLocationIndex locations, final int[] ordinalToVectorId,
       final LSMVectorIndex lsmIndex, final VectorCache sharedCache) {
     return new ArcadePageVectorValues(database, dimensions, vectorPropertyName, locations, false, ordinalToVectorId,
-        lsmIndex, sharedCache);
+        lsmIndex, sharedCache, null);
   }
 
   /**
@@ -163,16 +165,19 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
   public static ArcadePageVectorValues forGraphBuild(final DatabaseInternal database, final int dimensions,
       final String vectorPropertyName, final VectorLocationIndex snapshot, final int[] ordinalToVectorId,
       final LSMVectorIndex lsmIndex, final VectorCache warmedCache) {
-    final ArcadePageVectorValues values = new ArcadePageVectorValues(database, dimensions, vectorPropertyName, snapshot, true,
-        ordinalToVectorId, lsmIndex, warmedCache != null ? warmedCache : new VectorCache(DEFAULT_CACHE_SIZE));
+    final VectorCache cache = warmedCache != null ? warmedCache : new VectorCache(DEFAULT_CACHE_SIZE);
 
+    // A snapshot of the warmed cache taken once, here (the cache hit/miss counters are not meaningful for this pass). The
+    // field is final, so the reader is safely published to the build threads (issue #9233).
+    VectorFloat<?>[] flat = null;
     if (warmedCache != null && ordinalToVectorId != null && warmedCache.capacity() >= ordinalToVectorId.length) {
-      final VectorFloat<?>[] flat = new VectorFloat<?>[ordinalToVectorId.length];
+      flat = new VectorFloat<?>[ordinalToVectorId.length];
       for (int i = 0; i < flat.length; i++)
         flat[i] = warmedCache.get(ordinalToVectorId[i]);
-      values.byOrdinal = flat;
     }
-    return values;
+
+    return new ArcadePageVectorValues(database, dimensions, vectorPropertyName, snapshot, true, ordinalToVectorId, lsmIndex,
+        cache, flat);
   }
 
   /**
