@@ -1448,7 +1448,7 @@ public class CypherOptimizer {
       return expression;
 
     // the variables bound at or below chain[i]: a hop adds its target and its relationship
-    final List<Set<String>> boundAt = new ArrayList<>(chain.size());
+    final List<Set<String>> boundAt = new ArrayList<>(Collections.nCopies(chain.size(), (Set<String>) null));
     final Set<String> bound = new HashSet<>();
     for (int i = chain.size() - 1; i >= 0; i--) {
       final PhysicalOperator op = chain.get(i);
@@ -1460,7 +1460,7 @@ public class CypherOptimizer {
         addVariable(bound, into.getEdgeVariable());
       } else if (op == anchorOperator)
         addVariable(bound, anchorVariable);
-      boundAt.add(0, new HashSet<>(bound));
+      boundAt.set(i, new HashSet<>(bound));
     }
 
     final List<BooleanExpression> conjuncts = new ArrayList<>();
