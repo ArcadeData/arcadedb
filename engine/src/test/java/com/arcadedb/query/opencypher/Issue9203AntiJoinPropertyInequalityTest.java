@@ -165,4 +165,24 @@ class Issue9203AntiJoinPropertyInequalityTest {
     assertThat(count(CHAIN + "WHERE p1.id < 20 AND p1.loose <> p3.loose AND id(t) <> id(p1) AND p2.id > 10 RETURN count(*) AS n"))
         .isEqualTo(count(CHAIN + "WHERE p1.id < 20 AND p1 <> p3 AND p2.id > 10 RETURN count(*) AS n"));
   }
+
+  @Test
+  void whereIsStillAppliedOnShapesTheOptimizerMayNotPlan() {
+    // OPTIONAL MATCH and a MATCH after WITH are not planned by the optimizer: their WHERE must keep filtering
+    assertThat(count("MATCH (a:Person) WHERE a.id < 5 OPTIONAL MATCH (a)-[:KNOWS]-(b:Person) WHERE b.id >= 1000 RETURN count(*) AS n"))
+        .isEqualTo(5);
+    assertThat(count("MATCH (a:Person) WHERE a.id < 5 WITH a MATCH (a)-[:KNOWS]-(b:Person) WHERE b.id >= 1000 RETURN count(*) AS n")).isZero();
+    // comma separated patterns with a WHERE spanning them, and a WHERE holding a pattern predicate
+    assertThat(count("MATCH (a:Person), (b:Person) WHERE a.id < b.id AND b.id < 4 RETURN count(*) AS n")).isEqualTo(6);
+    assertThat(count("MATCH (a:Person)-[:KNOWS]-(b:Person) WHERE a.id < b.id AND NOT (b)-[:KNOWS]-(a) RETURN count(*) AS n")).isZero();
+    assertThat(count("MATCH (a:Person)-[:KNOWS]-(b:Person) WHERE a.id < b.id AND EXISTS { (b)-[:HAS_INTEREST]->(:Tag) } RETURN count(*) AS n"))
+        .isEqualTo(count("MATCH (a:Person)-[:KNOWS]-(b:Person) WHERE a.id < b.id RETURN count(*) AS n"));
+  }
+
+  @Test
+  void idOfARelationshipIsNotANodeInequality() {
+    final String query = "MATCH (p1:Person)-[r:KNOWS]-(p2:Person)-[:KNOWS]-(p3:Person) WHERE NOT (p1)-[:KNOWS]-(p3) AND id(p1) <> id(r) RETURN count(*) AS n";
+    assertThat(pushedDown(query)).isFalse();
+    assertThat(count(query)).isEqualTo(count("MATCH (p1:Person)-[r:KNOWS]-(p2:Person)-[:KNOWS]-(p3:Person) WHERE NOT (p1)-[:KNOWS]-(p3) RETURN count(*) AS n"));
+  }
 }

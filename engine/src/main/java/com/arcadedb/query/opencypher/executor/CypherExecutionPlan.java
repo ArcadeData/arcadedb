@@ -7906,8 +7906,11 @@ public class CypherExecutionPlan {
     final Property prop = type.getProperty(property);
     if (!prop.isMandatory() || !prop.isNotNull())
       return false;
-    final TypeIndex index = type.getPolymorphicIndexByProperties(property);
-    return index != null && index.isUnique() && index.getPropertyNames().size() == 1;
+    // any unique index on exactly this property, whichever of the type's indexes the lookup would pick first
+    for (final TypeIndex index : type.getAllIndexes(true))
+      if (index.isUnique() && index.getPropertyNames().size() == 1 && index.getPropertyNames().get(0).equals(property))
+        return true;
+    return false;
   }
 
   /** The single label every occurrence of the variable carries in the pattern, or null when it has none or several. */

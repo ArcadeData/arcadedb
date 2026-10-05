@@ -1494,6 +1494,7 @@ public class CypherOptimizer {
       above.setChild(filter);
       // the next conjunct finds the chain with this filter in it
       chain.add(target, filter);
+      // the filter binds nothing: it shares the set of the operator it sits on, and the sets are never mutated after this loop
       boundAt.add(target, boundAt.get(target));
     }
 

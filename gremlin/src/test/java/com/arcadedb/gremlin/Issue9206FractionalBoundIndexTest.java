@@ -88,4 +88,16 @@ class Issue9206FractionalBoundIndexTest {
     assertThat(graph.traversal().V().hasLabel("V_INTEGER_idx").has("x", P.lt(29.5)).explain().toString()).contains("ArcadeFilterByIndexStep");
     assertThat(run("V_INTEGER_idx", P.lt(29.5))).containsExactly("-1", "0", "1", "28", "29");
   }
+
+  @Test
+  void nonIntegralKeysAndMismatchedBoundsAreUntouched() {
+    graph.getDatabase().command("sql", "CREATE VERTEX TYPE D_idx").close();
+    graph.getDatabase().command("sql", "CREATE PROPERTY D_idx.x DOUBLE").close();
+    graph.getDatabase().command("sql", "CREATE INDEX ON D_idx (x) NOTUNIQUE").close();
+    for (final double v : new double[] { -0.5, 0.0, 28.5, 29.5 })
+      graph.addVertex(T.label, "D_idx", "x", v);
+    graph.tx().commit();
+    assertThat(graph.traversal().V().hasLabel("D_idx").has("x", P.lt(29.5)).values("x").order().toList()).containsExactly(-0.5, 0.0, 28.5);
+    assertThat(graph.traversal().V().hasLabel("D_idx").has("x", P.gt(-0.5)).values("x").order().toList()).containsExactly(0.0, 28.5, 29.5);
+  }
 }
