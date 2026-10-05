@@ -304,10 +304,10 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
   }
 
   /**
-   * Encodes the string with the database charset, refusing a value the charset cannot represent (a lone UTF-16 surrogate, or a
+   * Encodes the string with the database charset (a constant, UTF-8, see {@link DatabaseFactory#getDefaultCharset()}), refusing a value the charset cannot represent (a lone UTF-16 surrogate, or a
    * character outside the charset). {@link String#getBytes(java.nio.charset.Charset)} silently replaces those with '?', which
    * would store a different string and make it collide with a real "?" (issue #9054). The check costs one scan of the encoded
-   * bytes for '?'; only when one is found the characters are counted too, so a replacement is told from a genuine "?".
+   * bytes for '?'; only when one is found the characters are counted too and, if the counts differ, the charset encoder decides exactly, so a replacement is told from a genuine "?" for any charset.
    */
   private static byte[] encodeString(final String value) {
     final Charset charset = DatabaseFactory.getDefaultCharset();
@@ -320,7 +320,8 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
       int questionMarksInChars = 0;
       for (int i = value.indexOf('?'); i >= 0; i = value.indexOf('?', i + 1))
         questionMarksInChars++;
-      if (questionMarksInBytes > questionMarksInChars)
+      // MORE '?' BYTES THAN '?' CHARS ONLY SUSPECTS A REPLACEMENT (A MULTI-BYTE CHARSET CAN HOLD 0x3F INSIDE A VALID CHARACTER), SO THE ENCODER GIVES THE EXACT ANSWER
+      if (questionMarksInBytes > questionMarksInChars && !charset.newEncoder().canEncode(value))
         throw new SerializationException("The string cannot be stored with the " + charset
             + " charset because it holds a lone UTF-16 surrogate or a character the charset cannot encode: it would be stored as '?' (string length "
             + value.length() + ")");
