@@ -301,9 +301,14 @@ final class MongoFilter {
         result.put(key, converted);
         continue;
       }
-      if ("$expr".equals(key))
-        // an aggregation expression can carry a regular expression of its own, out of reach of the time bound
-        throw new IllegalArgumentException("The operator $expr is not supported");
+      if ("$expr".equals(key)) {
+        // in a find filter the expression is evaluated through SQL, where it can carry a regular expression out of reach of the time
+        // bound. An aggregation $match evaluates it with the library, whose expressions have no regular expression operator
+        if (!deadline.allowsExpr)
+          throw new IllegalArgumentException("The operator $expr is not supported");
+        result.put(key, value);
+        continue;
+      }
       if (key.startsWith("$")) {
         result.put(key, value);
         continue;
@@ -452,7 +457,8 @@ final class MongoFilter {
    * Bounds the regular expressions of an aggregation pipeline: the mongo-java-server aggregation filters a {@code $match} stage with
    * its own matcher, whose expressions run with no deadline. Each {@code $match} query (also the ones of {@code $facet} branches,
    * {@code $lookup} and {@code $unionWith} sub-pipelines, and {@code $graphLookup.restrictSearchWithMatch}) is prepared as a find
-   * filter is, so every regular expression of the pipeline draws on one budget. The stages are copied, the pipeline of the request is
+   * filter is, so every regular expression of the pipeline draws on one budget. The library evaluates no other regular expression: it has no
+   * {@code $expr}, {@code $regexMatch} or {@code $regexFind}, and {@code $merge}/{@code $out} cannot resolve a collection here. The stages are copied, the pipeline of the request is
    * left as it is.
    */
   static List<Document> boundPipeline(final List<Document> pipeline, final RegexBudget budget) {
@@ -522,18 +528,25 @@ final class MongoFilter {
    */
   static final class RegexBudget {
     private final long    timeoutNanos;
+    private final boolean allowsExpr;
     private       long    remainingNanos;
     private       boolean exhausted;
 
     static RegexBudget ofMillis(final long timeoutMillis) {
-      return new RegexBudget(timeoutMillis);
+      return new RegexBudget(timeoutMillis, false);
     }
 
     static RegexBudget of(final Database database) {
-      return new RegexBudget(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(database));
+      return new RegexBudget(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(database), false);
     }
 
-    private RegexBudget(final long timeoutMillis) {
+    /** The budget of an aggregation pipeline, whose {@code $match} may carry {@code $expr}. */
+    static RegexBudget ofAggregation(final Database database) {
+      return new RegexBudget(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(database), true);
+    }
+
+    private RegexBudget(final long timeoutMillis, final boolean allowsExpr) {
+      this.allowsExpr = allowsExpr;
       // an oversized timeout saturates (it never expires) instead of wrapping around into a deadline in the past
       long nanos = 0;
       if (timeoutMillis > 0)

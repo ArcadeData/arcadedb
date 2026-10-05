@@ -60,25 +60,29 @@ public class MongoDBProtocolPlugin implements ServerPlugin, DatabaseResolver {
   @Override
   public void startService() {
     mongoDBBackend = new MongoDBBackend(server, this);
-    mongoDBServer = new MongoServer(mongoDBBackend);
-
     // Every local address the host resolves to, not only the first one: a port held on [::1] must not look free for "localhost"
     // (issue #9224). The library binds one address per server, so each further address gets a server of its own on the same port.
     // They share the backend: MongoServer.shutdown() only clears its database map, which is harmless to repeat. A name resolving to
     // several local addresses is bound by their literals (the configured name is not what the sockets show)
     final List<String> hosts = MultiAddressServerSocket.resolveListenHosts(host);
-    try {
-      mongoDBServer.bind(hosts.getFirst(), port);
-      final int boundPort = getPort();
-      for (final String address : hosts.subList(1, hosts.size())) {
-        final MongoServer additional = new MongoServer(mongoDBBackend);
-        additionalServers.add(additional);
-        additional.bind(address, boundPort);
+    // an ephemeral port picked on the first address can be taken on another one: the whole set is tried again, with fresh servers
+    final int attempts = port == 0 && hosts.size() > 1 ? 10 : 1;
+    for (int attempt = 1; ; attempt++)
+      try {
+        mongoDBServer = new MongoServer(mongoDBBackend);
+        mongoDBServer.bind(hosts.getFirst(), port);
+        final int boundPort = getPort();
+        for (final String address : hosts.subList(1, hosts.size())) {
+          final MongoServer additional = new MongoServer(mongoDBBackend);
+          additionalServers.add(additional);
+          additional.bind(address, boundPort);
+        }
+        return;
+      } catch (final RuntimeException e) {
+        stopService();
+        if (attempt >= attempts)
+          throw e;
       }
-    } catch (final RuntimeException e) {
-      stopService();
-      throw e;
-    }
   }
 
   @Override

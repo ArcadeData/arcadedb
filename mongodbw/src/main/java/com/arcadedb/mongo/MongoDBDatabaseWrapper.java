@@ -298,7 +298,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * for the whole command (#9164).
    */
   private List<Document> boundedPipeline(final Object pipeline) {
-    return MongoFilter.boundPipeline(Aggregation.parse(Aggregation.parse(pipeline)), MongoFilter.RegexBudget.of(database));
+    return MongoFilter.boundPipeline(Aggregation.parse(Aggregation.parse(pipeline)), MongoFilter.RegexBudget.ofAggregation(database));
   }
 
   private static boolean startsWithChangeStream(final Object pipeline) {
