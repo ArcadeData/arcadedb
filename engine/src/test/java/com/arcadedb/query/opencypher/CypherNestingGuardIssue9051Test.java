@@ -105,11 +105,26 @@ class CypherNestingGuardIssue9051Test extends TestHelper {
   }
 
   @Test
-  void defaultClauseLimitIsExactlyFiveHundred() {
+  void defaultClauseLimitIsExactlyOneThousand() {
     database.getSchema().createVertexType("Person");
-    // MATCH + 498 WITH + RETURN = 500 clauses
-    drain("MATCH (n:Person) " + "WITH n ".repeat(498) + "RETURN n");
-    assertRejected("MATCH (n:Person) " + "WITH n ".repeat(499) + "RETURN n");
+    // MATCH + 998 WITH + RETURN = 1000 clauses
+    drain("MATCH (n:Person) " + "WITH n ".repeat(998) + "RETURN n");
+    assertRejected("MATCH (n:Person) " + "WITH n ".repeat(999) + "RETURN n");
+  }
+
+  @Test
+  void manyCreateClausesOfTheTckScenarioAreAccepted() {
+    // openCypher TCK Create4 "[2] Many CREATE clauses" is a single query of 759 CREATE clauses; a default limit of 500
+    // rejected it and turned the TCK lane red
+    database.transaction(() -> {
+      try (final ResultSet rs = database.command("opencypher", "CREATE (:N {i: 0})" + " CREATE (:N {i: 0})".repeat(758))) {
+        while (rs.hasNext())
+          rs.next();
+      }
+    });
+    try (final ResultSet rs = database.query("opencypher", "MATCH (n:N) RETURN count(n) AS c")) {
+      assertThat(rs.next().<Long>getProperty("c")).isEqualTo(759L);
+    }
   }
 
   @Test
@@ -133,7 +148,7 @@ class CypherNestingGuardIssue9051Test extends TestHelper {
     database.getSchema().createVertexType("Person");
     database.getConfiguration().setValue(GlobalConfiguration.CYPHER_MAX_CLAUSES, 0);
     drain("MATCH (n:Person) RETURN n");
-    assertRejected("MATCH (n:Person) " + "WITH n ".repeat(600) + "RETURN n");
+    assertRejected("MATCH (n:Person) " + "WITH n ".repeat(1100) + "RETURN n");
   }
 
   @Test

@@ -1019,9 +1019,11 @@ public enum GlobalConfiguration {
       UNION is counted on its own, not the UNION as a whole. The clauses of a query \
       execute as a pull pipeline in which every step asks the previous one for its next row, so the Java stack is \
       as deep as the clause chain is long; a query of a few thousand clauses is parsed but then exhausts the JVM \
-      thread stack while its rows are fetched. A query past this limit is rejected as a normal parse error. \
-      Must be at least 1; raise it only if a legitimate, very long generated query needs it.""",
-      Integer.class, 500),
+      thread stack while its rows are fetched (measured on a 1MB thread stack: about 2,500 WITH or 3,000 CREATE \
+      clauses). A query past this limit is rejected as a normal parse error. The default leaves room for the \
+      759-clause query of the openCypher TCK. Must be at least 1; raise it only if a legitimate, very long \
+      generated query needs it.""",
+      Integer.class, 1000),
 
   CYPHER_ALGO_MAX_WORKING_MEMORY("arcadedb.cypher.algoMaxWorkingMemory", SCOPE.DATABASE,
       """

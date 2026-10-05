@@ -279,6 +279,21 @@
             <scope>test</scope>
         </dependency>
 
+        <!-- Cucumber 8 no longer bundles a JSON library: its report plugins (the TCK's html: report) look one up
+             through messages-ndjson's JsonProvider and fail the whole suite with "Cucumber needs a JSON library to
+             write reports" when none is found. Jackson 2 at the root BOM version satisfies its Jackson2JsonProvider. -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>com.fasterxml.jackson.datatype</groupId>
+            <artifactId>jackson-datatype-jdk8</artifactId>
+            <scope>test</scope>
+        </dependency>
+
         <dependency>
             <groupId>org.junit.platform</groupId>
             <artifactId>junit-platform-suite</artifactId>
