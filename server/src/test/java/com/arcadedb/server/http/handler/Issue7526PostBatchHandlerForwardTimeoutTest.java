@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
+import com.arcadedb.server.http.FakeLeader;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.StallAwareStopwatch;
@@ -30,17 +31,13 @@ import io.undertow.server.HttpServerExchange;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
-import java.io.IOException;
 import java.lang.reflect.Field;
 import java.net.InetAddress;
 import java.net.ServerSocket;
-import java.net.Socket;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
@@ -87,7 +84,7 @@ class Issue7526PostBatchHandlerForwardTimeoutTest {
 
   @Test
   void aLeaderThatAcceptsAndNeverAnswersIsGivenUp504() throws Exception {
-    try (final StalledLeader leader = new StalledLeader()) {
+    try (final FakeLeader leader = FakeLeader.silent()) {
       final ContextConfiguration cfg = new ContextConfiguration();
       cfg.setValue(GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT, 5_000L);
       cfg.setValue(GlobalConfiguration.HA_PROXY_BATCH_READ_TIMEOUT, 1_000L);
@@ -160,49 +157,5 @@ class Issue7526PostBatchHandlerForwardTimeoutTest {
         "http://leader:2480/api/v1/batch/db", "application/x-ndjson", "token", "root", -1,
         new ByteArrayInputStream("x".getBytes(StandardCharsets.UTF_8)));
     assertThat(withoutTimeout.timeout()).isEmpty();
-  }
-
-  /** A server socket that accepts connections and answers nothing at all. */
-  private static final class StalledLeader implements AutoCloseable {
-    private final ServerSocket   serverSocket;
-    private final Thread         acceptor;
-    private final CountDownLatch started = new CountDownLatch(1);
-    private volatile int         accepted = 0;
-
-    StalledLeader() throws IOException, InterruptedException {
-      serverSocket = new ServerSocket(0, 16, InetAddress.getLoopbackAddress());
-      acceptor = new Thread(() -> {
-        started.countDown();
-        while (!serverSocket.isClosed()) {
-          try {
-            final Socket socket = serverSocket.accept();
-            accepted++;
-            // never answers: the socket stays open until close() tears it down
-          } catch (final IOException e) {
-            return;
-          }
-        }
-      }, "issue7526-stalled-leader");
-      acceptor.setDaemon(true);
-      acceptor.start();
-      started.await(10, TimeUnit.SECONDS);
-    }
-
-    String address() {
-      return serverSocket.getInetAddress().getHostAddress() + ":" + serverSocket.getLocalPort();
-    }
-
-    int acceptedConnections() {
-      return accepted;
-    }
-
-    @Override
-    public void close() {
-      try {
-        serverSocket.close();
-      } catch (final IOException ignored) {
-        // best effort
-      }
-    }
   }
 }

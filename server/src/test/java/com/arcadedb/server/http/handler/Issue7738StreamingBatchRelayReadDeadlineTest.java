@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
+import com.arcadedb.server.http.FakeLeader;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.StallAwareStopwatch;
@@ -33,14 +34,10 @@ import org.junit.jupiter.api.Test;
 import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
-import java.net.InetAddress;
 import java.net.InetSocketAddress;
-import java.net.ServerSocket;
-import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
@@ -87,7 +84,7 @@ class Issue7738StreamingBatchRelayReadDeadlineTest {
   /** The defect as filed: headers plus the first progress line, then silence. */
   @Test
   void aLeaderThatStallsMidStreamIsGivenUpOnAndItsConnectionClosed() throws Exception {
-    try (final ScriptedLeader leader = new ScriptedLeader(out -> {
+    try (final FakeLeader leader = FakeLeader.scripted(out -> {
       writeStreamingHeaders(out);
       writeChunk(out, FIRST_LINE + "\n");
       // ... and nothing else, ever.
@@ -102,7 +99,7 @@ class Issue7738StreamingBatchRelayReadDeadlineTest {
       assertThat(lines).as("what the leader sent before stalling still reaches the client").containsExactly(FIRST_LINE);
       assertThat(relay.returned.await(GAVE_UP_BOUND_MS, TimeUnit.MILLISECONDS))
           .as("the follower's worker thread is given back").isTrue();
-      assertThat(leader.connectionClosedByFollower.await(GAVE_UP_BOUND_MS, TimeUnit.MILLISECONDS))
+      assertThat(leader.awaitConnectionClosedByClient(GAVE_UP_BOUND_MS, TimeUnit.MILLISECONDS))
           .as("the connection to the stalled leader is closed, not left open").isTrue();
     }
   }
@@ -118,7 +115,7 @@ class Issue7738StreamingBatchRelayReadDeadlineTest {
       sent.add("{\"type\":\"progress\",\"verticesCreated\":" + i + "}");
     sent.add("{\"type\":\"summary\"}");
 
-    try (final ScriptedLeader leader = new ScriptedLeader(out -> {
+    try (final FakeLeader leader = FakeLeader.scripted(out -> {
       writeStreamingHeaders(out);
       for (final String line : sent) {
         writeChunk(out, line + "\n");
@@ -139,7 +136,7 @@ class Issue7738StreamingBatchRelayReadDeadlineTest {
    */
   @Test
   void aLeaderThatStallsInsideABufferedRefusalIsAnswered504() throws Exception {
-    try (final ScriptedLeader leader = new ScriptedLeader(out -> {
+    try (final FakeLeader leader = FakeLeader.scripted(out -> {
       out.write(("HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n"
           + "{\"error\":").getBytes(StandardCharsets.US_ASCII));
       out.flush();
@@ -249,69 +246,6 @@ class Issue7738StreamingBatchRelayReadDeadlineTest {
       Thread.sleep(ms);
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
-    }
-  }
-
-  @FunctionalInterface
-  private interface LeaderScript {
-    void answer(OutputStream out) throws IOException;
-  }
-
-  /**
-   * A leader that reads one request's headers, answers with a script, and then keeps the connection open until
-   * the follower closes it - which it records. Closing the leader tears the connection down from its side too,
-   * which is what releases a follower that never gave up: without it an unbounded relay would hold the Undertow
-   * worker and hang {@code Undertow.stop()} rather than fail the test.
-   */
-  private static final class ScriptedLeader implements AutoCloseable {
-    private final ServerSocket            serverSocket;
-    private final AtomicReference<Socket> accepted                   = new AtomicReference<>();
-    final CountDownLatch                  connectionClosedByFollower = new CountDownLatch(1);
-
-    ScriptedLeader(final LeaderScript script) throws IOException {
-      serverSocket = new ServerSocket(0, 16, InetAddress.getLoopbackAddress());
-      final Thread acceptor = new Thread(() -> {
-        try (final Socket socket = serverSocket.accept()) {
-          accepted.set(socket);
-          final InputStream in = socket.getInputStream();
-          skipRequestHeaders(in);
-          script.answer(socket.getOutputStream());
-          // Drain whatever the follower still sends (the empty chunked upload) until it closes the connection.
-          final byte[] buffer = new byte[1024];
-          while (in.read(buffer) >= 0) {
-            // discard
-          }
-          connectionClosedByFollower.countDown();
-        } catch (final IOException e) {
-          // A reset is the follower closing the connection too.
-          connectionClosedByFollower.countDown();
-        }
-      }, "issue7738-scripted-leader");
-      acceptor.setDaemon(true);
-      acceptor.start();
-    }
-
-    String address() {
-      return serverSocket.getInetAddress().getHostAddress() + ":" + serverSocket.getLocalPort();
-    }
-
-    private static void skipRequestHeaders(final InputStream in) throws IOException {
-      int matched = 0;
-      final byte[] terminator = "\r\n\r\n".getBytes(StandardCharsets.US_ASCII);
-      while (matched < terminator.length) {
-        final int b = in.read();
-        if (b < 0)
-          throw new IOException("the follower closed before sending its request");
-        matched = b == terminator[matched] ? matched + 1 : (b == terminator[0] ? 1 : 0);
-      }
-    }
-
-    @Override
-    public void close() throws IOException {
-      serverSocket.close();
-      final Socket socket = accepted.get();
-      if (socket != null)
-        socket.close();
     }
   }
 }

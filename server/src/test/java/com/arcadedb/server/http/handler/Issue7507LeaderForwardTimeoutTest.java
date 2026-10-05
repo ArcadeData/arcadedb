@@ -21,23 +21,15 @@ package com.arcadedb.server.http.handler;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.http.FakeLeader;
 import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.io.OutputStream;
-import java.net.InetAddress;
-import java.net.ServerSocket;
-import java.net.Socket;
-import java.net.SocketException;
-import java.net.SocketTimeoutException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -74,7 +66,7 @@ class Issue7507LeaderForwardTimeoutTest {
    */
   @Test
   void aLeaderThatAcceptsAndNeverAnswersIsGivenUpOnAndAnswered504() throws Exception {
-    try (final StalledLeader leader = new StalledLeader()) {
+    try (final FakeLeader leader = FakeLeader.silent()) {
       final LeaderCommandForwarder.Transport transport =
           new LeaderCommandForwarder.Transport(configuration(1_000L, 60_000L, 5_000L));
 
@@ -105,7 +97,7 @@ class Issue7507LeaderForwardTimeoutTest {
    */
   @Test
   void aLeaderThatAnswersTheHeadersAndThenStallsMidBodyIsAlsoGivenUpOn() throws Exception {
-    try (final StalledLeader leader = new StalledLeader(true)) {
+    try (final FakeLeader leader = FakeLeader.scripted(Issue7507LeaderForwardTimeoutTest::answerHeadersThenStall)) {
       final LeaderCommandForwarder.Transport transport =
           new LeaderCommandForwarder.Transport(configuration(1_000L, 60_000L, 5_000L));
 
@@ -236,105 +228,14 @@ class Issue7507LeaderForwardTimeoutTest {
   }
 
   /**
-   * A server socket standing in for a wedged leader. In the default mode it accepts the connection and answers
-   * nothing at all; with {@code answerHeadersThenStall} it writes a complete, well-formed response head that
-   * promises a hundred bytes and then delivers five of them, which is the case an {@code HttpRequest.timeout}
-   * alone does not catch.
+   * A complete, well-formed response head that promises a hundred bytes, then five of them and never another: the
+   * case an {@code HttpRequest.timeout} alone does not catch. The connection stays open until the leader is closed.
    */
-  private static final class StalledLeader implements AutoCloseable {
-    private final ServerSocket   serverSocket;
-    private final Thread         acceptor;
-    private final List<Socket>   accepted = new ArrayList<>();
-    private final CountDownLatch started  = new CountDownLatch(1);
-
-    StalledLeader() throws IOException, InterruptedException {
-      this(false);
-    }
-
-    StalledLeader(final boolean answerHeadersThenStall) throws IOException, InterruptedException {
-      serverSocket = new ServerSocket(0, 16, InetAddress.getLoopbackAddress());
-      acceptor = new Thread(() -> {
-        started.countDown();
-        while (!serverSocket.isClosed()) {
-          try {
-            final Socket socket = serverSocket.accept();
-            synchronized (accepted) {
-              accepted.add(socket);
-            }
-            if (answerHeadersThenStall)
-              answerHeadersThenStall(socket);
-          } catch (final IOException e) {
-            return; // socket closed, we are done
-          }
-        }
-      }, "issue7507-stalled-leader");
-      acceptor.setDaemon(true);
-      acceptor.start();
-      started.await(10, TimeUnit.SECONDS);
-    }
-
-    private static void answerHeadersThenStall(final Socket socket) throws IOException {
-      final byte[] request = new byte[8192];
-      socket.getInputStream().read(request);
-      final OutputStream out = socket.getOutputStream();
-      out.write(("HTTP/1.1 200 OK\r\n"
-          + "Content-Type: application/json\r\n"
-          + "Content-Length: 100\r\n"
-          + "\r\n").getBytes(StandardCharsets.US_ASCII));
-      out.write("{\"res\"".getBytes(StandardCharsets.US_ASCII));
-      out.flush();
-      // and never another byte: the socket stays open until close() tears it down
-    }
-
-    String address() {
-      return serverSocket.getInetAddress().getHostAddress() + ":" + serverSocket.getLocalPort();
-    }
-
-    /**
-     * Blocks until the client end of the first accepted connection is closed, or the bound expires. Reads from
-     * this side of the socket: EOF means the peer closed it. Only valid in the default mode, where nothing else
-     * touches the socket's input stream.
-     */
-    boolean firstConnectionClosedByClientWithin(final long boundMs) throws IOException {
-      final Socket socket;
-      synchronized (accepted) {
-        if (accepted.isEmpty())
-          return false;
-        socket = accepted.getFirst();
-      }
-      socket.setSoTimeout((int) boundMs);
-      final byte[] drain = new byte[4096];
-      try {
-        int read;
-        while ((read = socket.getInputStream().read(drain)) != -1)
-          if (read == 0)
-            break;
-        return true;
-      } catch (final SocketTimeoutException e) {
-        return false;
-      } catch (final SocketException e) {
-        // "connection reset" is the peer tearing it down just as abruptly, which is the same answer
-        return true;
-      }
-    }
-
-    int acceptedConnections() {
-      synchronized (accepted) {
-        return accepted.size();
-      }
-    }
-
-    @Override
-    public void close() throws IOException {
-      serverSocket.close();
-      synchronized (accepted) {
-        for (final Socket socket : accepted)
-          try {
-            socket.close();
-          } catch (final IOException ignored) {
-            // best effort
-          }
-      }
-    }
+  private static void answerHeadersThenStall(final OutputStream out) throws IOException {
+    out.write(("HTTP/1.1 200 OK\r\n"
+        + "Content-Type: application/json\r\n"
+        + "Content-Length: 100\r\n"
+        + "\r\n").getBytes(StandardCharsets.US_ASCII));
+    out.write("{\"res\"".getBytes(StandardCharsets.US_ASCII));
   }
 }
