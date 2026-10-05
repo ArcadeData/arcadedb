@@ -52,7 +52,7 @@ class Issue9274CachedPlanNullEqualityTest extends TestHelper {
     reload();
   }
 
-  /** Loads the fixed data set; the tests below do not modify it, as the DELETE statements they run match nothing. */
+  /** Loads the base data set; TestHelper recreates the database per test, so a test can add its own rows. */
   private void reload() {
     database.transaction(() -> {
       database.command("sql", "DELETE FROM T");
