@@ -36,6 +36,7 @@ import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
 
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
@@ -86,12 +87,17 @@ public class GraphQLQueryEngine implements QueryEngine {
   private static Classification classify(final String query) {
     try {
       final Document doc = GraphQLParser.parse(query);
+      final Set<OperationType> ops = EnumSet.noneOf(OperationType.class);
       for (final Definition def : doc.getDefinitions())
-        if (def instanceof OperationDefinition op && !op.isQuery())
-          return new Classification(Set.of(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE), null);
-        else if (def instanceof TypeSystemDefinition)
+        if (def instanceof OperationDefinition op && !op.isQuery()) {
+          ops.add(OperationType.CREATE);
+          ops.add(OperationType.UPDATE);
+          ops.add(OperationType.DELETE);
+        } else if (def instanceof TypeSystemDefinition)
           // A type definition replaces the database's shared GraphQL schema: it is a schema change, not a read
-          return new Classification(CollectionUtils.singletonSet(OperationType.SCHEMA), null);
+          ops.add(OperationType.SCHEMA);
+      if (!ops.isEmpty())
+        return new Classification(ops, null);
     } catch (final ParseException | TokenMgrException e) {
       // Cannot classify: assume the worst so an idempotency gate denies rather than admits. Execution
       // still re-parses and reports the real syntax error; this only changes the answer given to a

@@ -48,10 +48,10 @@ import com.arcadedb.graphql.parser.VariableLiteral;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
+import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.math.BigInteger;
 import java.util.*;
@@ -104,7 +104,8 @@ public class GraphQLSchema {
 
       for (final Definition definition : definitions) {
         if (definition instanceof TypeSystemDefinition typeSystemDefinition) {
-          // THE SCHEMA IS SHARED BY EVERY USER OF THE DATABASE: REPLACING A TYPE IS A SCHEMA CHANGE
+          // The GraphQL schema is shared by every user of the database: replacing a type is a schema change. Checked before
+          // the first type is applied, so a denied document leaves the schema untouched.
           ((DatabaseInternal) database).checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
           final TypeDefinition type = typeSystemDefinition.getTypeDefinition();
