@@ -220,7 +220,7 @@ public class PostgresNetworkExecutor extends Thread {
   private String   userName                   = null;
   private String   databaseName               = null;
   private String   userPassword               = null;
-  private ServerSecurityUser authenticatedUser = null;
+  private ServerSecurityUser authenticatedUser;
   private int      consecutiveErrors          = 0;
   private long     processIdSequence          = 0;
   private boolean  explicitTransactionStarted = false;
@@ -3711,7 +3711,7 @@ public class PostgresNetworkExecutor extends Thread {
     try {
       final ServerSecurityUser current = server.getSecurity().revalidate(authenticatedUser);
       if (!current.canAccessToDatabase(databaseName))
-        throw new ServerSecurityException("User '" + current.getName() + "' has not access to database '" + databaseName + "'");
+        throw new ServerSecurityException("User '" + current.getName() + "' has no access to database '" + databaseName + "'");
       if (current != authenticatedUser) {
         authenticatedUser = current;
         // Rebinds the principal the engine's per-type gates enforce against: the group refresh reaches this one.
