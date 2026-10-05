@@ -153,7 +153,8 @@ public class TypeIndex implements RangeIndex, IndexInternal {
       Set<Identifiable> result = null;
 
       for (final Index index : getIndexesByKeys(keys)) {
-        final boolean unique = index.isUnique();
+        // an all-null key is exempt from uniqueness, so a unique index holds an entry per record that has it (issue #9237)
+        final boolean unique = index.isUnique() && !LSMTreeIndexAbstract.isKeyNull(keys);
 
         // #5662: try-with-resources - the unique branch returns from inside the loop, abandoning the cursor partway
         try (final IndexCursor cursor = index.get(keys, unique ? 1 : -1)) {
@@ -243,6 +244,19 @@ public class TypeIndex implements RangeIndex, IndexInternal {
       }
       return keyedCursor(result != null ? result : Collections.emptyList(), keys);
     }
+  }
+
+  /** The entries of the set, at most {@code limit} of them when the limit is set (-1 for none) */
+  public static Set<IndexCursorEntry> cappedTo(final Set<IndexCursorEntry> entries, final int limit) {
+    if (limit < 0 || entries.size() <= limit)
+      return entries;
+    final Set<IndexCursorEntry> capped = new HashSet<>(limit * 2);
+    for (final IndexCursorEntry entry : entries) {
+      if (capped.size() >= limit)
+        break;
+      capped.add(entry);
+    }
+    return capped;
   }
 
   /**

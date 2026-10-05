@@ -194,7 +194,9 @@ public class HashIndex implements IndexInternal {
       Set<IndexCursorEntry> txChanges = null;
       // what the pending entries of this key hide from the disk result, or null when they hide nothing (#6970)
       PendingIndexRemovals removals = null;
-      final boolean unique = isUnique();
+      int pendingEntries = 0;
+      // the entries of an all-null key belong to different records, so a pending removal of one never removes the key (issue #9237)
+      final boolean unique = isUnique() && !LSMTreeIndexAbstract.isKeyNull(convertedKeys);
 
       final Map<TransactionIndexContext.ComparableKey, Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey>> indexChanges =
           getDatabase().getTransaction().getIndexChanges().getIndexKeys(getName());
@@ -202,6 +204,7 @@ public class HashIndex implements IndexInternal {
         final Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey> values =
             indexChanges.get(new TransactionIndexContext.ComparableKey(convertedKeys));
         if (values != null) {
+          pendingEntries = values.size();
           for (final TransactionIndexContext.IndexKey value : values.values()) {
             if (value != null) {
               if (unique && PendingIndexRemovals.removesWholeKey(value, true))
@@ -219,13 +222,16 @@ public class HashIndex implements IndexInternal {
               txChanges.add(new IndexCursorEntry(convertedKeys, value.rid, 1));
 
               if (limit > -1 && txChanges.size() > limit)
-                return new TempIndexCursor(txChanges);
+                return new TempIndexCursor(TypeIndex.cappedTo(txChanges, limit));
             }
           }
         }
       }
 
-      final IndexCursor result = lock.executeInReadLock(() -> getDiskResult(convertedKeys, limit));
+      // the disk rows that a pending removal hides do not count towards the limit: each pending entry hides at most one row, so
+      // that many more are read and the limit is applied to the merged rows below. A key-wide removal hides every row
+      final int diskLimit = removals == null || removals.isKeyWide() || limit < 0 ? limit : (int) Math.min(Integer.MAX_VALUE, (long) limit + pendingEntries);
+      final IndexCursor result = lock.executeInReadLock(() -> getDiskResult(convertedKeys, diskLimit));
 
       if (txChanges != null || removals != null) {
         if (txChanges == null)
@@ -237,7 +243,7 @@ public class HashIndex implements IndexInternal {
             continue;
           txChanges.add(new IndexCursorEntry(convertedKeys, next, 1));
         }
-        return new TempIndexCursor(txChanges);
+        return new TempIndexCursor(TypeIndex.cappedTo(txChanges, limit));
       }
 
       return result;
@@ -248,7 +254,7 @@ public class HashIndex implements IndexInternal {
 
   private IndexCursor getDiskResult(final Object[] convertedKeys, final int limit) {
     try {
-      final List<RID> rids = bucket.get(convertedKeys, isUnique() ? 1 : limit);
+      final List<RID> rids = bucket.get(convertedKeys, isUnique() && !LSMTreeIndexAbstract.isKeyNull(convertedKeys) ? 1 : limit);
       if (rids.isEmpty())
         return EMPTY_CURSOR;
 

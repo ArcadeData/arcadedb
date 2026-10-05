@@ -240,14 +240,15 @@ public class TransactionIndexContext {
         return true;
       if (!(o instanceof IndexKey indexKey))
         return false;
-      if (unique)
+      // an all-null key is exempt from uniqueness: its entries belong to different records, so the RID tells them apart (issue #9237)
+      if (unique && !LSMTreeIndexAbstract.isKeyNull(keyValues))
         return IndexKeyEquality.sameTuple(keyValues, indexKey.keyValues);
       return Objects.equals(rid, indexKey.rid) && IndexKeyEquality.sameTuple(keyValues, indexKey.keyValues);
     }
 
     @Override
     public int hashCode() {
-      if (unique)
+      if (unique && !LSMTreeIndexAbstract.isKeyNull(keyValues))
         return Objects.hash(IndexKeyEquality.hashTuple(keyValues));
       return Objects.hash(rid, IndexKeyEquality.hashTuple(keyValues));
     }
