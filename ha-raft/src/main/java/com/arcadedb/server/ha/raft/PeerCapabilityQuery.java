@@ -186,9 +186,34 @@ public final class PeerCapabilityQuery {
 
   private static Advertisement parse(final String expectedPeerId, final HttpResponse<String> response, final String url)
       throws IOException {
-    if (response.statusCode() != 200)
-      throw new IOException("capability query to " + url + " returned HTTP " + response.statusCode());
+    checkStatus(response.statusCode(), url);
     return parse(expectedPeerId, response.body(), url);
+  }
+
+  /**
+   * Refuses any status but 200, raising a 404 as {@link RouteMissingException} so the caller can tell a peer whose
+   * build has no capability route from one it could not get a usable answer from (issue #8655). The message is the
+   * same for both, so nothing an operator reads changes. Package-private and pure for unit testing.
+   */
+  // @VisibleForTesting
+  static void checkStatus(final int statusCode, final String url) throws IOException {
+    if (statusCode == 200)
+      return;
+    final String message = "capability query to " + url + " returned HTTP " + statusCode;
+    if (statusCode == 404)
+      throw new RouteMissingException(message);
+    throw new IOException(message);
+  }
+
+  /**
+   * The peer answered, and its answer is that the capability route does not exist: a build that predates it
+   * (issue #8655). Unlike every other probe failure this is a property of the PEER rather than of the path to it, so
+   * every node that asks gets it - which is what lets a follower report it as the leader's verdict too.
+   */
+  public static final class RouteMissingException extends IOException {
+    public RouteMissingException(final String message) {
+      super(message);
+    }
   }
 
   /**
