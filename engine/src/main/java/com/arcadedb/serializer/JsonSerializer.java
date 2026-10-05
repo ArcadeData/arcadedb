@@ -41,6 +41,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.DateUtils;
 
 import java.lang.reflect.Array;
+import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
 import java.time.temporal.Temporal;
 import java.util.ArrayList;
@@ -337,13 +338,60 @@ public class JsonSerializer {
         result = value.size();
       else {
         final JSONArray list = new JSONArray();
-        for (Object o : value)
-          list.put(serializeObject(database, o));
+        final TemporalFormats formats = new TemporalFormats(database);
+        for (final Object o : value)
+          list.put(formatNestedTemporal(serializeObject(database, o), formats));
 
         result = list;
       }
     }
     return result;
+  }
+
+  /** The schema patterns, read once per container and only when it holds a temporal. */
+  private static final class TemporalFormats {
+    private final Database database;
+    private       String   dateTimeFormat;
+    private       String   dateFormat;
+
+    private TemporalFormats(final Database database) {
+      this.database = database;
+    }
+
+    private String dateTimeFormat() {
+      if (dateTimeFormat == null)
+        dateTimeFormat = database.getSchema().getDateTimeFormat();
+      return dateTimeFormat;
+    }
+
+    private String dateFormat() {
+      if (dateFormat == null)
+        dateFormat = database.getSchema().getDateFormat();
+      return dateFormat;
+    }
+  }
+
+  /**
+   * Issue #9011: a temporal inside a LIST or a MAP is rendered as a string with the precision it carries, exactly as a scalar
+   * column is. It used to reach {@link JSONArray} as an epoch-millis number (two instants a microsecond apart became the same
+   * value) and {@link JSONObject} with the schema pattern only (the fractional seconds were cut). The client rebuilds the
+   * configured temporal type from the string through the element-type hint, the same conversion it applies to a scalar.
+   */
+  private static Object formatNestedTemporal(final Object value, final TemporalFormats formats) {
+    if (value instanceof Calendar calendar)
+      return formatNestedTemporal(calendar.getTime(), formats);
+    if (!(value instanceof Temporal || value instanceof Date))
+      return value;
+    if (value instanceof LocalDate)
+      return DateUtils.format(value, formats.dateFormat());
+    final Object formatted = formatTemporalForPrecision(value, null, formats.dateTimeFormat(), formats.dateFormat());
+    // A whole-second value is handed back untouched by formatTemporalForPrecision, for the JSONObject that owns the schema pattern
+    // to format. A container has no such owner, so it is formatted here.
+    if (formatted instanceof Temporal || formatted instanceof Date) {
+      final String text = DateUtils.format(formatted, formats.dateTimeFormat());
+      return text != null ? text : formatted;
+    }
+    return formatted;
   }
 
   private Object serializeIterator(final Database database, final Iterator<?> value,
@@ -371,10 +419,9 @@ public class JsonSerializer {
     } else {
       final JSONObject map = new JSONObject().setDateFormat(database.getSchema().getDateFormat())
           .setDateTimeFormat(database.getSchema().getDateTimeFormat());
-      for (final Map.Entry<Object, Object> entry : value.entrySet()) {
-        final Object o = serializeObject(database, entry.getValue());
-        map.put(entry.getKey().toString(), o);
-      }
+      final TemporalFormats formats = new TemporalFormats(database);
+      for (final Map.Entry<Object, Object> entry : value.entrySet())
+        map.put(entry.getKey().toString(), formatNestedTemporal(serializeObject(database, entry.getValue()), formats));
       result = map;
     }
     return result;

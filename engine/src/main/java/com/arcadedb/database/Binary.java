@@ -19,6 +19,7 @@
 package com.arcadedb.database;
 
 import com.arcadedb.exception.SerializationException;
+import com.arcadedb.exception.ValidationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.UnsignedBytesComparator;
@@ -28,6 +29,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.BufferUnderflowException;
 import java.nio.ByteBuffer;
+import java.nio.charset.Charset;
 import java.util.Arrays;
 import java.util.logging.Level;
 
@@ -294,12 +296,38 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
 
   @Override
   public int putString(final int index, final String value) {
-    return putBytes(index, value.getBytes(DatabaseFactory.getDefaultCharset()));
+    return putBytes(index, encodeString(value));
   }
 
   @Override
   public int putString(final String value) {
-    return putBytes(value.getBytes(DatabaseFactory.getDefaultCharset()));
+    return putBytes(encodeString(value));
+  }
+
+  /**
+   * Encodes the string with the database charset (a constant, UTF-8, see {@link DatabaseFactory#getDefaultCharset()}), refusing a value the charset cannot represent (a lone UTF-16 surrogate, or a
+   * character outside the charset). {@link String#getBytes(java.nio.charset.Charset)} silently replaces those with '?', which
+   * would store a different string and make it collide with a real "?" (issue #9054). The check costs one scan of the encoded
+   * bytes for '?'; only when one is found the characters are counted too and, if the counts differ, the charset encoder decides exactly. The charset is UTF-8, where a 0x3F byte is always a '?'.
+   */
+  private static byte[] encodeString(final String value) {
+    final Charset charset = DatabaseFactory.getDefaultCharset();
+    final byte[] bytes = value.getBytes(charset);
+    int questionMarksInBytes = 0;
+    for (final byte b : bytes)
+      if (b == '?')
+        questionMarksInBytes++;
+    if (questionMarksInBytes > 0) {
+      int questionMarksInChars = 0;
+      for (int i = value.indexOf('?'); i >= 0; i = value.indexOf('?', i + 1))
+        questionMarksInChars++;
+      // more '?' bytes than '?' chars only suspects a replacement (a replacement is the only way a '?' byte can exceed the '?' chars), so the encoder confirms it
+      if (questionMarksInBytes > questionMarksInChars && !charset.newEncoder().canEncode(value))
+        throw new ValidationException("The string cannot be stored with the " + charset
+            + " charset because it holds a lone UTF-16 surrogate or a character the charset cannot encode: it would be stored as '?' (string length "
+            + value.length() + ")");
+    }
+    return bytes;
   }
 
   @Override

@@ -621,8 +621,16 @@ public class ArcadeGraph implements Graph, Closeable {
     // A LIGHTWEIGHT EDGE HAS NO RECORD TO DELETE: IT IS REMOVED FROM THE TWO VERTICES THAT LIST IT (#9142)
     if (element.getBaseElement() instanceof LightEdge edge)
       edge.delete();
-    else
+    else {
+      // REMOVING AN ELEMENT THAT IS ALREADY GONE IS A NO-OP, AS IT IS IN TINKERGRAPH: A TRAVERSAL REACHES THE SAME ELEMENT MORE THAN ONCE
+      // (out() from two vertices that share a neighbour, parallel edges, a self-loop, bothE() meeting every edge from both ends) AND
+      // drop() REMOVES IT EACH TIME. A VERTEX DELETE ALSO TAKES ITS EDGES WITH IT, SO AN EDGE CAN BE GONE WITHOUT ITS OWN remove() (#9145)
+      // A REMOTE DATABASE HAS NO LOCAL TRANSACTION TO ASK: THE SERVER APPLIES THE SAME RULE
+      final RID rid = element.getBaseElement().getIdentity();
+      if (rid != null && database instanceof DatabaseInternal internal && internal.getTransaction().isDeletedInTransaction(rid))
+        return;
       database.deleteRecord(element.getBaseElement().getRecord());
+    }
   }
 
   /** The LIGHTWEIGHT edges of the database, which no bucket holds (#9142). The scans open as the iterator is read. */

@@ -42,6 +42,7 @@ import java.sql.DriverManager;
 import java.sql.Statement;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Properties;
 
@@ -91,7 +92,7 @@ class Issue7188CopyToStdoutIT extends PostgresWireProtocolTestBase {
       database.newDocument(TYPE).set("id", 4, "name", null, "price", null, "flag", null).save();
       database.newDocument(TYPE).set("id", 5, "name", "", "price", 0.0, "flag", false).save();
     });
-    // A type whose one property is a list, which has no binary encoding on this wire.
+    // A type whose one property is a list.
     final DocumentType listed = database.getSchema().createDocumentType(LIST_TYPE);
     listed.createProperty("id", Type.INTEGER);
     listed.createProperty("tags", Type.LIST, "STRING");
@@ -211,15 +212,20 @@ class Issue7188CopyToStdoutIT extends PostgresWireProtocolTestBase {
   }
 
   @Test
-  void aBinaryCopyOfAColumnWithNoBinaryEncodingIsRefusedAndTheSessionStaysUsable() throws Exception {
+  void aBinaryCopyOfAListColumnCarriesTheBinaryArrayFormat() throws Exception {
     try (final Connection connection = openJdbcConnection()) {
-      assertThatThrownBy(() -> copyOut(connection, "COPY (SELECT id, tags FROM " + LIST_TYPE + ") TO STDOUT (FORMAT binary)"))
-          .isInstanceOf(PSQLException.class)
-          .hasMessageContaining("\"tags\"")
-          .extracting(e -> ((PSQLException) e).getSQLState()).isEqualTo("0A000");
+      // Issue #9007: an array column has a binary encoding, so it travels in a binary COPY like any other column.
+      final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+      assertThat(copyManager(connection).copyOut("COPY (SELECT id, tags FROM " + LIST_TYPE + ") TO STDOUT (FORMAT binary)", bytes))
+          .isEqualTo(1);
+      // the tags field is a binary text[] (OID 1009): 1 dimension, no null, element OID 25, 2 elements, lower bound 1, then "a" and "b"
+      final ByteBuffer expectedArray = ByteBuffer.allocate(4 * 5 + 2 * 5);
+      expectedArray.putInt(1).putInt(0).putInt(25).putInt(2).putInt(1);
+      expectedArray.putInt(1).put((byte) 'a').putInt(1).put((byte) 'b');
+      assertThat(indexOf(bytes.toByteArray(), expectedArray.array())).as("the binary array payload is in the COPY stream").isPositive();
       // The same column travels in text format.
       assertThat(copyOut(connection, "COPY (SELECT id, tags FROM " + LIST_TYPE + ") TO STDOUT")).isEqualTo("1\t{\"a\",\"b\"}\n");
-      // The refused statement's result set was closed, not leaked: the type can be dropped, which a still-open
+      // The statement's result set was closed, not leaked: the type can be dropped, which a still-open
       // cursor over it would hold up, and the session goes on.
       getServerDatabase(0, getDatabaseName()).getSchema().dropType(LIST_TYPE);
       assertThat(copyOut(connection, "COPY (SELECT count(*) AS n FROM " + TYPE + ") TO STDOUT")).isEqualTo("5\n");
@@ -468,6 +474,13 @@ class Issue7188CopyToStdoutIT extends PostgresWireProtocolTestBase {
 
   private static CopyManager copyManager(final Connection connection) throws Exception {
     return connection.unwrap(PGConnection.class).getCopyAPI();
+  }
+
+  private static int indexOf(final byte[] haystack, final byte[] needle) {
+    for (int i = 0; i + needle.length <= haystack.length; i++)
+      if (Arrays.equals(haystack, i, i + needle.length, needle, 0, needle.length))
+        return i;
+    return -1;
   }
 
   /**
