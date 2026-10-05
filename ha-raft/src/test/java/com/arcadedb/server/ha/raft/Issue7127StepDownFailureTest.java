@@ -233,6 +233,14 @@ class Issue7127StepDownFailureTest {
       return broker;
     }
 
+    // Since issue #8781 a leader with a live state machine never publishes pages on the committing thread: it waits for
+    // the apply, which nothing here performs. Phase 2 runs on the committing thread - where the fault is injected and the
+    // step-down recovery under test starts - only when no state machine is wired, the Raft server's startup window.
+    @Override
+    public ArcadeStateMachine getStateMachine() {
+      return null;
+    }
+
     @Override
     public boolean isLeader() {
       return leader;
