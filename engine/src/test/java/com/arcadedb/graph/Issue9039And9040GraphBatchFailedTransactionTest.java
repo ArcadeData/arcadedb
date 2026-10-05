@@ -125,8 +125,8 @@ class Issue9039And9040GraphBatchFailedTransactionTest extends TestHelper {
     try (final GraphBatch batch = GraphBatch.builder(database).build()) {
       database.begin();
       assertThatThrownBy(() -> batch.createVertices("Person", new Object[][] { { "id", 2 }, { "id", 2 } }))
-          .isInstanceOf(DuplicatedKeyException.class);
-      // THE TRANSACTION WAS OPENED BY THE CALLER, WHO RESOLVES IT
+          .isInstanceOf(IllegalStateException.class);
+      // THE TRANSACTION WAS OPENED BY THE CALLER, WHO RESOLVES IT: since #9242 the batch refuses it up front, untouched
       assertThat(database.isTransactionActive()).isTrue();
       database.rollback();
     }
