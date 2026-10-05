@@ -95,4 +95,23 @@ class Issue9233BuildVectorsByOrdinalTest {
     assertThat(values.isDeletedSentinel(values.getVector(2))).isTrue();
     assertThat(values.isDeletedSentinel(values.getVector(-1))).isTrue();
   }
+
+  @Test
+  void capacityExactlyEqualToCorpusStillServesEveryVector() {
+    final int n = 1024;
+    final int[] ordinalToVectorId = new int[n];
+    final VectorCache cache = new VectorCache(n);
+    assertThat(cache.capacity()).isEqualTo(n);
+    final VectorFloat<?>[] expected = new VectorFloat<?>[n];
+    for (int i = 0; i < n; i++) {
+      ordinalToVectorId[i] = i;
+      expected[i] = vector(i);
+      cache.put(i, expected[i]);
+    }
+
+    final ArcadePageVectorValues values = ArcadePageVectorValues.forGraphBuild(null, DIMS, "v", null, ordinalToVectorId, null,
+        cache);
+    for (int i = 0; i < n; i++)
+      assertThat(values.getVector(i)).as("ordinal %d", i).isSameAs(expected[i]);
+  }
 }

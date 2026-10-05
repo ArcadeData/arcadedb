@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -157,13 +158,11 @@ class Issue9208ConcurrentEdgeDeleteTest extends TestHelper {
               // One transaction both deletes a vertex (removing an edge) and appends a new edge to the same hub list
               database.transaction(() -> {
                 database.lookupByRID(victims[thread][i], true).delete();
-                final var created = database.newVertex("V").save();
+                final MutableVertex created = database.newVertex("V").save();
                 hubs[thread][newHub].asVertex().newEdge("E", created);
               });
-              synchronized (expected[thread]) {
-                expected[thread][hubOf[thread][i]]--;
-                expected[thread][newHub]++;
-              }
+              expected[thread][hubOf[thread][i]]--;
+              expected[thread][newHub]++;
             } catch (final ConcurrentModificationException e) {
               // The whole transaction was rolled back: nothing to account for
             }
@@ -181,7 +180,7 @@ class Issue9208ConcurrentEdgeDeleteTest extends TestHelper {
         assertThat(hubs[t][h].asVertex().countEdges(Vertex.DIRECTION.OUT, "E")).as("hub %d of thread %d", h, t)
             .isEqualTo(expected[t][h]);
 
-    final var check = database.command("sql", "CHECK DATABASE");
+    final ResultSet check = database.command("sql", "CHECK DATABASE");
     assertThat(check.hasNext()).isTrue();
     assertThat(((Number) check.next().getProperty("totalErrors")).longValue()).isZero();
   }
