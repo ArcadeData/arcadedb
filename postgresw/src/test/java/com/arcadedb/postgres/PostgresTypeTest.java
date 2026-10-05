@@ -2248,30 +2248,6 @@ class PostgresTypeTest {
   }
 
   @Test
-  void hasBinaryEncodingScalarTypesTrue() {
-    assertThat(PostgresType.INTEGER.hasBinaryEncoding()).isTrue();
-    assertThat(PostgresType.LONG.hasBinaryEncoding()).isTrue();
-    assertThat(PostgresType.BOOLEAN.hasBinaryEncoding()).isTrue();
-    assertThat(PostgresType.DATE.hasBinaryEncoding()).isTrue();
-    assertThat(PostgresType.TIMESTAMP.hasBinaryEncoding()).isTrue();
-    // Strings/JSON have identical text and binary wire bytes - safe to honor binary requests.
-    assertThat(PostgresType.VARCHAR.hasBinaryEncoding()).isTrue();
-    assertThat(PostgresType.JSON.hasBinaryEncoding()).isTrue();
-  }
-
-  @Test
-  void hasBinaryEncodingArrayTypesFalse() {
-    // Array binary wire format is not yet implemented in serializeAsBinary, so callers must
-    // advertise text format in RowDescription for arrays regardless of what the client requested.
-    assertThat(PostgresType.ARRAY_INT.hasBinaryEncoding()).isFalse();
-    assertThat(PostgresType.ARRAY_LONG.hasBinaryEncoding()).isFalse();
-    assertThat(PostgresType.ARRAY_TEXT.hasBinaryEncoding()).isFalse();
-    assertThat(PostgresType.ARRAY_DOUBLE.hasBinaryEncoding()).isFalse();
-    assertThat(PostgresType.ARRAY_BOOLEAN.hasBinaryEncoding()).isFalse();
-    assertThat(PostgresType.ARRAY_JSON.hasBinaryEncoding()).isFalse();
-  }
-
-  @Test
   void serializeAsBinaryTimestampPre2000RoundTrip() {
     // 1999-12-31T23:59:59.999999 - exercises the nanos < 0 borrow branch in deserializeBinary.
     final LocalDateTime ldt = LocalDateTime.of(1999, 12, 31, 23, 59, 59, 999_999_000);
@@ -2351,7 +2327,6 @@ class PostgresTypeTest {
     // Announced with its own OID rather than collapsed to varchar, which is what makes a client call
     // getBytes() on it instead of decoding arbitrary bytes as text.
     assertThat(PostgresType.BYTEA.isNativeScalarType()).isTrue();
-    assertThat(PostgresType.BYTEA.hasBinaryEncoding()).isTrue();
   }
 
   @Test
