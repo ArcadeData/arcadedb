@@ -1405,6 +1405,19 @@ public class BoltNetworkExecutor extends Thread {
    * listings itself. Fails closed on a connection with no authenticated user.
    */
   private boolean authorizeDatabase(final String databaseName) throws IOException {
+    if (user != null) {
+      try {
+        // The live principal, not the one bound at LOGON: a user deleted, re-passworded or stripped of the database
+        // grant since then must not keep the access it had when it authenticated.
+        user = server.getSecurity().revalidate(user);
+      } catch (final ServerSecurityException e) {
+        user = null;
+        database = null;
+        sendFailure(BoltErrorCodes.AUTHENTICATION_ERROR, "The credentials of this connection are no longer valid");
+        state = State.FAILED;
+        return false;
+      }
+    }
     if (user != null && user.canAccessToDatabase(databaseName))
       return true;
     sendFailure(BoltErrorCodes.FORBIDDEN_ERROR, "Access to database '" + databaseName + "' is not allowed");

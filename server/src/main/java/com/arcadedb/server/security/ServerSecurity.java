@@ -386,6 +386,32 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   }
 
   /**
+   * Resolves the live principal behind a user a long-lived connection (Postgres, Bolt, MongoDB, Redis wire protocols)
+   * authenticated as, so a change an administrator made after the login reaches the connection on its next request
+   * the way it reaches an HTTP call. The connection keeps the {@link ServerSecurityUser} it got from
+   * {@link #authenticate}, but {@link #updateUser} replaces the map entry with a new object, so a group refresh no
+   * longer reaches the held one and nothing told it that the user was deleted.
+   * <p>
+   * Refused with a {@link ServerSecurityException} when the user was deleted, or its password changed since the login
+   * (the credentials the connection proved are no longer the user's, as for an {@code AU-} login token). Otherwise the
+   * current object is returned and the caller must use IT from then on: its database grants are the ones in force,
+   * so {@code canAccessToDatabase()} on it reflects a revoked grant. No password check and no brute-force accounting
+   * happens here: this is not an authentication.
+   *
+   * @param held the user the connection authenticated as
+   *
+   * @return the principal currently registered under that name, the same instance when nothing changed
+   */
+  public ServerSecurityUser revalidate(final ServerSecurityUser held) {
+    final ServerSecurityUser current = users.get(held.getName());
+    if (current == null)
+      throw new ServerSecurityException("User '" + held.getName() + "' no longer exists");
+    if (current != held && !Objects.equals(current.getPassword(), held.getPassword()))
+      throw new ServerSecurityException("The credentials of user '" + held.getName() + "' changed after the connection authenticated");
+    return current;
+  }
+
+  /**
    * Records a failed password authentication attempt for the given key, atomically incrementing the
    * failure counter (or restarting it once the lockout window has elapsed). Each update publishes a
    * fresh {@code long[]} instance rather than mutating the existing one in place, so concurrent readers
