@@ -184,4 +184,56 @@ class Issue9208ConcurrentEdgeDeleteTest extends TestHelper {
     assertThat(check.hasNext()).isTrue();
     assertThat(((Number) check.next().getProperty("totalErrors")).longValue()).isZero();
   }
+
+  @Test
+  void appendAndDeleteInOneTransactionOnPageSharedWithAnotherCommit() throws Exception {
+    database.transaction(() -> {
+      database.getSchema().createVertexType("V");
+      database.getSchema().createEdgeType("E");
+    });
+
+    // Two hubs and their victims are created together, so both hubs' edge list segments share pages
+    final RID[] ids = new RID[4];
+    database.transaction(() -> {
+      for (int i = 0; i < 4; i++)
+        ids[i] = database.newVertex("V").save().getIdentity();
+      ids[0].asVertex().newEdge("E", ids[2]);
+      ids[1].asVertex().newEdge("E", ids[3]);
+    });
+    final RID hub1 = ids[0];
+    final RID hub2 = ids[1];
+    final RID victim1 = ids[2];
+    final RID victim2 = ids[3];
+
+    // T1 (this thread) appends an edge to hub1 AND deletes victim1 (an edge removal on the same list); it stays open
+    database.begin();
+    final MutableVertex added = database.newVertex("V").save();
+    hub1.asVertex().newEdge("E", added);
+    database.lookupByRID(victim1, true).delete();
+
+    // T2 commits a delete of the other hub's victim meanwhile, on the very same pages
+    final ExecutorService pool = Executors.newSingleThreadExecutor();
+    try {
+      pool.submit(() -> database.transaction(() -> database.lookupByRID(victim2, true).delete())).get(1, TimeUnit.MINUTES);
+    } finally {
+      pool.shutdownNow();
+    }
+
+    boolean committed = true;
+    try {
+      database.commit();
+    } catch (final ConcurrentModificationException e) {
+      // A refused merge is a legitimate outcome, a corrupted edge list is not: the transaction is rolled back whole
+      committed = false;
+    }
+
+    assertThat(hub2.asVertex().countEdges(Vertex.DIRECTION.OUT, "E")).isZero();
+    // hub1 lost victim1 and gained the new vertex, or (rolled back) kept victim1 and gained nothing: one edge either way
+    assertThat(hub1.asVertex().countEdges(Vertex.DIRECTION.OUT, "E")).isEqualTo(1);
+    assertThat(hub1.asVertex().getVertices(Vertex.DIRECTION.OUT, "E").iterator().next().getIdentity())
+        .isEqualTo(committed ? added.getIdentity() : victim1);
+
+    final ResultSet check = database.command("sql", "CHECK DATABASE");
+    assertThat(((Number) check.next().getProperty("totalErrors")).longValue()).isZero();
+  }
 }
