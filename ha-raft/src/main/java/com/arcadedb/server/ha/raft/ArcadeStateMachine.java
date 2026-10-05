@@ -4958,7 +4958,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
     return false;
   }
 
-  private InstallApplyGate installApplyGate(final String dbName) {
+  // Package-private for tests that hold the apply thread off a database WITHOUT the install's "being replaced"
+  // registration, which a leader answers by refusing every transaction on it (Issue8454SnapshotSourceBehindFollowerIT).
+  InstallApplyGate installApplyGate(final String dbName) {
     return installApplyGates.computeIfAbsent(dbName, name -> new InstallApplyGate());
   }
 
