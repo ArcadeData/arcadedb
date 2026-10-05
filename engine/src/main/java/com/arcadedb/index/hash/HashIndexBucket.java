@@ -136,11 +136,21 @@ public class HashIndexBucket extends PaginatedComponent {
   private static final String SUPPORTED_KEY_TYPE_NAMES = supportedKeyTypeNames();
 
   // Bucket page header offsets (relative to PAGE_HEADER_SIZE)
-  static final int BUCKET_LOCAL_DEPTH     = 0;                       // short (2)
+  static final int BUCKET_LOCAL_DEPTH     = 0;                       // short (2): depth in the low 15 bits, see NO_DEAD_SPACE_FLAG
   static final int BUCKET_ENTRY_COUNT     = 2;                       // short (2)
   static final int BUCKET_OVERFLOW_PAGE   = 4;                       // int (4)
   static final int BUCKET_DATA_END       = 8;                        // short (2): offset past last entry data
   static final int BUCKET_CONTENT_START   = 10;                      // entries start here
+
+  // High bit of the local depth short (#9253): set when the page is known to hold no dead space, so the walk of an overflow
+  // chain moves past a full page with one free-space check instead of decoding every entry on it. Clear means unknown: pages
+  // written by older versions and freshly rebuilt ones start that way and are checked once. Whatever leaves a hole in the data
+  // area (removing an entry or a RID, relocating a grown entry) clears it, so a new writer that does the same must too (a miss
+  // costs space, never correctness: the page is just not compacted on this path); a compaction or a clean check sets it.
+  // Files written with the flag set are not readable by a version that predates it (it reads the short as the depth), so
+  // downgrading after this change is not supported.
+  static final int NO_DEAD_SPACE_FLAG = 0x8000;
+  static final int LOCAL_DEPTH_MASK   = 0x7FFF;
 
   // Slot directory: entry offsets stored at the END of the page, growing downward.
   // slot[i] is at pageOffset = (pageSize - PAGE_HEADER_SIZE) - (i + 1) * slotSize
@@ -461,7 +471,7 @@ public class HashIndexBucket extends PaginatedComponent {
     final MutablePage bucketPage = database.getTransaction()
         .getPageToModify(new PageId(database, fileId, bucketPageNum), pageSize, false);
     final int entryCount = bucketPage.readShort(BUCKET_ENTRY_COUNT) & 0xFFFF;
-    final int localDepth = bucketPage.readShort(BUCKET_LOCAL_DEPTH) & 0xFFFF;
+    final int localDepth = bucketPage.readShort(BUCKET_LOCAL_DEPTH) & LOCAL_DEPTH_MASK;
 
     final byte[] serializedRID = serializeCompressedRID(rid);
 
@@ -772,7 +782,7 @@ public class HashIndexBucket extends PaginatedComponent {
       int overflowPageNum = currentPage.readInt(BUCKET_OVERFLOW_PAGE);
 
       if (overflowPageNum == NO_OVERFLOW_PAGE) {
-        final int localDepth = currentPage.readShort(BUCKET_LOCAL_DEPTH) & 0xFFFF;
+        final int localDepth = currentPage.readShort(BUCKET_LOCAL_DEPTH) & LOCAL_DEPTH_MASK;
         overflowPageNum = allocateOverflowPage(localDepth);
         currentPage.writeInt(BUCKET_OVERFLOW_PAGE, overflowPageNum);
       }
@@ -790,10 +800,18 @@ public class HashIndexBucket extends PaginatedComponent {
       }
 
       // The dead space of removed and grown entries is only reclaimed when an entry does not fit, as everywhere else
-      if (hasDeadSpace(overflowPage, entryCount) && compactPage(overflowPage, entryCount) == entryCount
-          && totalNeeded <= freeSpace(overflowPage, entryCount)) {
-        insertEntryInSlottedPage(overflowPage, entryCount, serializedKey, serializedRID, hash);
-        return;
+      if (!hasNoDeadSpace(overflowPage)) {
+        if (hasDeadSpace(overflowPage, entryCount)) {
+          compactPage(overflowPage, entryCount);
+          if (totalNeeded <= freeSpace(overflowPage, entryCount)) {
+            insertEntryInSlottedPage(overflowPage, entryCount, serializedKey, serializedRID, hash);
+            return;
+          }
+        } else
+          // Nothing to reclaim: remember it, so the next insert walking past this page does not read its entries again.
+          // The page is already in the transaction's modified set (getPageToModify above), and the bit is written once per
+          // page, so this adds no page to the commit and no extra conflict footprint
+          setNoDeadSpace(overflowPage, true);
       }
 
       if (entryCount == 0)
@@ -1578,7 +1596,7 @@ public class HashIndexBucket extends PaginatedComponent {
       // No space in this page - follow or create overflow chain (preserves raw entry format)
       int overflowPageNum = page.readInt(BUCKET_OVERFLOW_PAGE);
       if (overflowPageNum == NO_OVERFLOW_PAGE) {
-        final int localDepth = page.readShort(BUCKET_LOCAL_DEPTH) & 0xFFFF;
+        final int localDepth = page.readShort(BUCKET_LOCAL_DEPTH) & LOCAL_DEPTH_MASK;
         overflowPageNum = allocateOverflowPage(localDepth);
         page.writeInt(BUCKET_OVERFLOW_PAGE, overflowPageNum);
       }
@@ -1617,8 +1635,21 @@ public class HashIndexBucket extends PaginatedComponent {
         writeSlot(page, i, readSlot(page, i + 1));
 
     // Note: dataEnd stays the same (dead space). We'll recover it during splits.
+    setNoDeadSpace(page, false);
     page.writeShort(BUCKET_ENTRY_COUNT, (short) (entryCount - 1));
     return removedCount;
+  }
+
+  private boolean hasNoDeadSpace(final BasePage page) {
+    return (page.readShort(BUCKET_LOCAL_DEPTH) & NO_DEAD_SPACE_FLAG) != 0;
+  }
+
+  private void setNoDeadSpace(final MutablePage page, final boolean noDeadSpace) {
+    final int depthAndFlag = page.readShort(BUCKET_LOCAL_DEPTH) & 0xFFFF;
+    if (((depthAndFlag & NO_DEAD_SPACE_FLAG) != 0) == noDeadSpace)
+      return;
+    final int updated = noDeadSpace ? depthAndFlag | NO_DEAD_SPACE_FLAG : depthAndFlag & LOCAL_DEPTH_MASK;
+    page.writeShort(BUCKET_LOCAL_DEPTH, (short) updated);
   }
 
   /** True when the data area holds more bytes than the live entries need: removed and grown entries leave holes. */
@@ -1641,6 +1672,7 @@ public class HashIndexBucket extends PaginatedComponent {
       // Nothing live, so nothing to move, but the data area still ends where the last removed or grown entry left it: a page
       // that emptied that way offered almost no space and could not take any entry (issue #9034 follow-up)
       page.writeShort(BUCKET_DATA_END, (short) BUCKET_CONTENT_START);
+      setNoDeadSpace(page, true);
       return 0;
     }
 
@@ -1662,6 +1694,7 @@ public class HashIndexBucket extends PaginatedComponent {
     }
 
     page.writeShort(BUCKET_DATA_END, (short) dataEnd);
+    setNoDeadSpace(page, true);
     return entryCount;
   }
 
@@ -1730,6 +1763,7 @@ public class HashIndexBucket extends PaginatedComponent {
 
     // Update slot to point to the new location (old entry data becomes a hole)
     writeSlot(page, pos, dataEnd);
+    setNoDeadSpace(page, false);
   }
 
   /**
@@ -1786,6 +1820,7 @@ public class HashIndexBucket extends PaginatedComponent {
 
         // Shorter than the old entry, so it fits in place; the tail is dead space reclaimed by the next compaction
         page.writeByteArray(entryStart, newEntry);
+        setNoDeadSpace(page, false);
 
         return 1;
       }
