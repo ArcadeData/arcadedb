@@ -3703,7 +3703,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // cannot replay it and deliberately poisoned its page. The slot merge owns it instead: the whole chunk
       // content is ours, so re-applying the final image at the same free slot reproduces it exactly.
       final boolean slotInsertedHere = slotMergeOn && slotTx.isSlotTrackedAsInsert(fileId, pageId, positionInPage);
-      final boolean slotCandidate = slotMergeOn && (isSlotMergeCandidate(record) || slotInsertedHere);
+      // #9208: an edge-list segment rewritten on a page this transaction already EXCLUDED from the edge-append merge (an
+      // edge removal, a relink) is no append any more, so that merge will never replay it. It is an in-place rewrite
+      // of one slot like any other record's, whose replay is guarded by the pre-image comparison of that very slot:
+      // a concurrent commit that changed the same segment is a true conflict, one that changed another slot is not.
+      final boolean edgeSegmentRewrite = slotMergeOn && record.getRecordType() == EdgeSegment.RECORD_TYPE//
+              && slotTx.isEdgeAppendPagePoisoned(fileId, pageId);
+      final boolean slotCandidate = slotMergeOn && (isSlotMergeCandidate(record) || slotInsertedHere || edgeSegmentRewrite);
       // A NON-candidate update (an edge-list segment, owned by the edge-append merge) still modifies this page:
       // it must POISON the slot map, not stay invisible to it. Since super-node striping (#5156) a segments page
       // can also host a StripeDirectory - a slot-merge candidate - and a page carrying a tracked directory write
@@ -4494,11 +4500,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           // newer committed version at commit time (#5569). The pre-image must be captured BEFORE the wipe-out below,
           // and lets the replay tell a false page conflict from a concurrent write to THIS record.
           if (slotMergeOn) {
-            if (page.readByte((int) (recordPositionInPage + recordSize[1])) == EdgeSegment.RECORD_TYPE)
-              // An edge-list segment is owned by the commutative edge-append merge, not by this one: keep the two
-              // mechanisms from ever rebasing the same page (mirrors isSlotMergeCandidate on the update path).
-              slotTx.poisonSlotRebasePage(fileId, pageId);
-            else if (!slotTx.isSlotRebasePagePoisoned(fileId, pageId)) {
+            // #9208: an edge-list segment is no exception. Appends to it are owned by the edge-append merge, but this
+            // delete has just excluded the page from that merge (see the top of the method), so the two mechanisms
+            // cannot rebase the same page, and a segment freed in place is the same single-slot change as any
+            // other plain record's. What an earlier append of this transaction wrote on the page stays undeclared
+            // for the slot merge (and poisons it), so a page mixing both is still never rebased.
+            if (!slotTx.isSlotRebasePagePoisoned(fileId, pageId)) {
               final byte[] baseBody = new byte[(int) recordSize[0]];
               page.readByteArray((int) (recordPositionInPage + recordSize[1]), baseBody, 0, baseBody.length);
               slotTx.trackRebasableDelete(fileId, pageId, positionInPage, baseBody);

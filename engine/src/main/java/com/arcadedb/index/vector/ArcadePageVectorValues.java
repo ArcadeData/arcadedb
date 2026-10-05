@@ -79,9 +79,21 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
   // query, so a resident working set is not thrown away when a query ends.
   private final VectorCache vectorCache;
 
+  /**
+   * Vectors by ordinal, only for a graph build whose cache holds the whole corpus (issue #9233). jvector asks for the
+   * operand of every distance evaluation, thousands of times per inserted vector, and answering from here is one array
+   * read instead of {@code ordinalToVectorId} + cache slot + {@code Entry} + vector. {@code null} for a search (the
+   * index-scoped cache is shared and bounded there) and for a build whose cache is smaller than the corpus, so the
+   * array never pins vectors the cache's budget has evicted. Slots left {@code null} fall through to the cache.
+   * The array itself costs one reference per ordinal (4 to 8 bytes) on top of the cache budget, and it lives only as
+   * long as this reader, which a build drops when it ends.
+   */
+  private final VectorFloat<?>[] byOrdinal;
+
   private ArcadePageVectorValues(final DatabaseInternal database, final int dimensions,
       final String vectorPropertyName, final VectorLocationIndex locations, final boolean graphBuilding,
-      final int[] ordinalToVectorId, final LSMVectorIndex lsmIndex, final VectorCache vectorCache) {
+      final int[] ordinalToVectorId, final LSMVectorIndex lsmIndex, final VectorCache vectorCache,
+      final VectorFloat<?>[] byOrdinal) {
     this.database = database;
     this.dimensions = dimensions;
     this.vectorPropertyName = vectorPropertyName;
@@ -90,6 +102,7 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
     this.ordinalToVectorId = ordinalToVectorId;
     this.lsmIndex = lsmIndex;
     this.vectorCache = vectorCache;
+    this.byOrdinal = byOrdinal;
     this.deletedSentinelVector = createDeletedSentinelVector(dimensions);
   }
 
@@ -121,7 +134,7 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
       final String vectorPropertyName, final VectorLocationIndex locations, final int[] ordinalToVectorId,
       final LSMVectorIndex lsmIndex, final VectorCache sharedCache) {
     return new ArcadePageVectorValues(database, dimensions, vectorPropertyName, locations, false, ordinalToVectorId,
-        lsmIndex, sharedCache);
+        lsmIndex, sharedCache, null);
   }
 
   /**
@@ -152,8 +165,19 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
   public static ArcadePageVectorValues forGraphBuild(final DatabaseInternal database, final int dimensions,
       final String vectorPropertyName, final VectorLocationIndex snapshot, final int[] ordinalToVectorId,
       final LSMVectorIndex lsmIndex, final VectorCache warmedCache) {
-    return new ArcadePageVectorValues(database, dimensions, vectorPropertyName, snapshot, true, ordinalToVectorId,
-        lsmIndex, warmedCache != null ? warmedCache : new VectorCache(DEFAULT_CACHE_SIZE));
+    final VectorCache cache = warmedCache != null ? warmedCache : new VectorCache(DEFAULT_CACHE_SIZE);
+
+    // A snapshot of the warmed cache taken once, here (the cache hit/miss counters are not meaningful for this pass). The
+    // field is final, so the reader is safely published to the build threads (issue #9233).
+    VectorFloat<?>[] flat = null;
+    if (warmedCache != null && ordinalToVectorId != null && warmedCache.capacity() >= ordinalToVectorId.length) {
+      flat = new VectorFloat<?>[ordinalToVectorId.length];
+      for (int i = 0; i < flat.length; i++)
+        flat[i] = warmedCache.get(ordinalToVectorId[i]);
+    }
+
+    return new ArcadePageVectorValues(database, dimensions, vectorPropertyName, snapshot, true, ordinalToVectorId, lsmIndex,
+        cache, flat);
   }
 
   /**
@@ -185,6 +209,13 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
   public VectorFloat<?> getVector(final int ordinal) {
     if (ordinal < 0 || ordinalToVectorId == null || ordinal >= ordinalToVectorId.length)
       return deletedSentinelVector;
+
+    final VectorFloat<?>[] flat = byOrdinal;
+    if (flat != null) {
+      final VectorFloat<?> resident = flat[ordinal];
+      if (resident != null)
+        return resident;
+    }
 
     final int vectorId = ordinalToVectorId[ordinal];
 
