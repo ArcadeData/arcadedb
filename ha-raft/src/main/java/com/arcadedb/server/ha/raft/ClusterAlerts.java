@@ -1105,11 +1105,13 @@ public class ClusterAlerts {
             + "verify, and did not reopen them: another server may hold a newer copy, and reopening this one would make "
             + "it the copy every follower installs from. No node serves these databases until this is resolved.")
         .put("recommendation", "Transfer leadership to the server holding the newer copy (POST /api/v1/cluster/leader) "
-            + "and open the database there. Only if this copy is known to be the right one, remove the '"
-            + ArcadeDBServer.UNVERIFIED_CLOSED_COPY_FILE + "' file from its directory on this node to accept it as it is. "
-            + "A refusal because a copy 'cannot be ordered' means one of the servers has no recorded applied index for "
-            + "the database (for instance one not written to since an upgrade): no copy is known to be newer, and "
-            + "removing the file is then the way to reopen it.")
+            + "and open the database there. Only if this copy is known to be the right one, accept it as it is with "
+            + "POST " + PostAcceptCopyHandler.ROUTE + "{database} on this leader (root only), which records who accepted "
+            + "it in the server log. The same applies when a server that can never answer again is still in the "
+            + "configuration, unless it is removed from it (DELETE /api/v1/cluster/peer/{peerId}). A refusal because a "
+            + "copy 'cannot be ordered' means one of the servers has no recorded applied index for the database (for "
+            + "instance one not written to since an upgrade): no copy is known to be newer, and accepting it is then "
+            + "the way to reopen it.")
         .put("details", details));
   }
 
