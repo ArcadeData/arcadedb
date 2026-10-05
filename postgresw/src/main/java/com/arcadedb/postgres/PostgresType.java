@@ -887,9 +887,10 @@ public enum PostgresType {
       final Collection<?> elements = value instanceof Collection<?> collection ? collection
           : value.getClass().isArray() ? convertPrimitiveArrayToCollection(value) : null;
       if (elements == null)
-        serializeAsText(pgType, typeBuffer, value);
-      else
-        putArrayBinary(pgType, typeBuffer, elements);
+        // the OID announced an array and a binary client decodes the array layout: a text literal would be read as garbage
+        throw new PostgresProtocolException("Cannot send a " + value.getClass().getSimpleName() + " value as a binary " + pgType.typeName
+            + " array: a collection or a Java array is expected");
+      putArrayBinary(pgType, typeBuffer, elements);
     }
     // Strings and JSON do not have a separate binary representation: their wire format is identical to text
     // for our purposes (length-prefixed UTF-8 bytes).
