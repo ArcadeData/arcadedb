@@ -676,6 +676,8 @@ public class GraphBatch implements AutoCloseable {
    * @return RIDs of the durably-committed vertices
    */
   private RID[] createVerticesWithRetry(final int count, final Consumer<RID[]> filler) {
+    // Refused BEFORE anything is touched, so the caller's transaction keeps every setting it has (#9242)
+    requireNoCallerTransaction("createVertices");
     try {
       return createVerticesWithRetryInternal(count, filler);
     } finally {
@@ -684,8 +686,7 @@ public class GraphBatch implements AutoCloseable {
   }
 
   private RID[] createVerticesWithRetryInternal(final int count, final Consumer<RID[]> filler) {
-    // THE UNIT BELOW COMMITS AND, ON A RETRYABLE FAILURE, ROLLS BACK: IT CAN ONLY RUN IN A TRANSACTION IT BEGAN ITSELF (#9242)
-    requireNoCallerTransaction("createVertices");
+    // THE UNIT BELOW COMMITS AND, ON A RETRYABLE FAILURE, ROLLS BACK: IT ONLY RUNS IN A TRANSACTION IT BEGAN ITSELF (#9242)
     int attempt = 0;
     while (true) {
       final RID[] rids = new RID[count];
@@ -868,6 +869,8 @@ public class GraphBatch implements AutoCloseable {
     if (edgeCount == 0)
       return;
 
+    // Refused BEFORE anything is touched, so the caller's transaction keeps every setting it has (#9242)
+    requireNoCallerTransaction("flush");
     try {
       flushInternal();
     } finally {
@@ -876,9 +879,7 @@ public class GraphBatch implements AutoCloseable {
   }
 
   private void flushInternal() {
-    // A FLUSH COMMITS SEVERAL TIMES BY DESIGN: IT CANNOT JOIN A TRANSACTION THE CALLER OPENED (#9242)
-    requireNoCallerTransaction("flush");
-
+    // A FLUSH COMMITS SEVERAL TIMES BY DESIGN: flush() has already refused a transaction the caller opened (#9242)
     final long startNs = System.nanoTime();
 
     // Number of buffered edges this flush is about to write. Read after the buffer is reset below, so it cannot

@@ -149,4 +149,17 @@ class Issue9242GraphBatchCallerTransactionTest extends TestHelper {
     database.transaction(() -> saveNote("after-close"));
     assertThat(walBytes() - before).isGreaterThanOrEqualTo(4000);
   }
+
+  @Test
+  void refusalLeavesTheCallersWalFlushSettingAlone() {
+    try (final GraphBatch batch = GraphBatch.builder(database).withWALFlush(WALFile.FlushType.NO).build()) {
+      database.begin();
+      ((DatabaseInternal) database).getTransaction().setWALFlush(WALFile.FlushType.YES_FULL);
+
+      assertThatThrownBy(() -> batch.createVertices("V", 1)).isInstanceOf(IllegalStateException.class);
+      assertThat(((DatabaseInternal) database).getTransaction().getThreadWALFlush()).isEqualTo(WALFile.FlushType.YES_FULL);
+
+      database.rollback();
+    }
+  }
 }
