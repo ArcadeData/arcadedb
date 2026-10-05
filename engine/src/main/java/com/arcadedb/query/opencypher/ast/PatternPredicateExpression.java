@@ -33,6 +33,7 @@ import com.arcadedb.query.opencypher.traversal.VariableLengthPathTraverser;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.schema.Schema;
 
 import java.util.Iterator;
 import java.util.List;
@@ -214,6 +215,21 @@ public class PatternPredicateExpression implements BooleanExpression {
   }
 
   /**
+   * Whether the vertex's edge segment holds {@code other} on the given side, for any of the types (every type when none is
+   * given), answered from the segment without loading an edge record. A type that does not exist holds no edge.
+   */
+  private static boolean isConnectedTo(final Vertex vertex, final Vertex other, final Vertex.DIRECTION direction,
+      final String[] relationshipTypes) {
+    if (relationshipTypes == null || relationshipTypes.length == 0)
+      return vertex.isConnectedTo(other, direction);
+    final Schema schema = vertex.getDatabase().getSchema();
+    for (final String type : relationshipTypes)
+      if (schema.existsType(type) && vertex.isConnectedTo(other, direction, type))
+        return true;
+    return false;
+  }
+
+  /**
    * Check if a relationship exists between two specific vertices.
    */
   private boolean checkRelationshipExists(
@@ -227,7 +243,15 @@ public class PatternPredicateExpression implements BooleanExpression {
       final CommandContext context
   ) {
     // Check outgoing edges: startVertex -> endVertex
-    if (isOutgoing) {
+    // A relationship with no property map and no inline WHERE is decided by the edge segment alone: the neighbour RID sits
+    // beside the edge RID, so no edge record is loaded to compare its endpoint (issue #9203)
+    final boolean segmentOnly = relPattern == null
+        || (!relPattern.hasProperties() && relPattern.getPropertiesParameterName() == null && !relPattern.hasWhereExpression());
+
+    if (isOutgoing && segmentOnly) {
+      if (isConnectedTo(startVertex, endVertex, Vertex.DIRECTION.OUT, relationshipTypes))
+        return true;
+    } else if (isOutgoing) {
       final Iterator<Edge> outEdges;
       if (relationshipTypes != null && relationshipTypes.length > 0) {
         outEdges = startVertex.getEdges(Vertex.DIRECTION.OUT, relationshipTypes).iterator();
@@ -268,6 +292,9 @@ public class PatternPredicateExpression implements BooleanExpression {
         }
         return false;
       }
+
+      if (segmentOnly)
+        return isConnectedTo(startVertex, endVertex, Vertex.DIRECTION.IN, relationshipTypes);
 
       final Iterator<Edge> inEdges;
       if (relationshipTypes != null && relationshipTypes.length > 0) {
