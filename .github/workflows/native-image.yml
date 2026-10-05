@@ -32,10 +32,12 @@ on:
       # #5323 and was only discovered when it lost every native asset of the 26.9.1 release: no
       # dispatch, and no nightly run, could ever execute it. Ticking this runs that step for real,
       # which both recovers a broken release's assets and makes the step testable before it ships.
-      # Requires `ref` to name the release's tag; uploads are --clobber, so a mistaken run replaces
-      # an asset rather than leaving junk behind.
+      # It republishes the release's Docker images too - the per-arch tags and the multi-arch
+      # `-native` manifest - exactly as the `release` event does, so a recovery run leaves the same
+      # set behind a real release would. Requires `ref` to name the release's tag; uploads are
+      # --clobber and image tags are overwritten, so a mistaken run replaces rather than adds junk.
       attach_to_release:
-        description: "Upload the built archives to the GitHub release named by `ref`. Off by default. PUBLISHES PUBLICLY."
+        description: "Upload the built archives to the GitHub release named by `ref` and push its native Docker images. Off by default. PUBLISHES PUBLICLY."
         type: boolean
         default: false
   release:
@@ -403,19 +405,23 @@ jobs:
   # Dockerfile.native.scratch (amd64, FROM scratch) and Dockerfile.native.distroless (arm64,
   # FROM gcr.io/distroless/base-debian12:nonroot) for why the two arches need different bases.
   #
-  # Push gating: this workflow has no `push:` trigger at all (only workflow_dispatch and
-  # release), so a plain branch push can never reach this job. Within that, a further gate keeps
-  # `workflow_dispatch` (a manual, human-triggered run - e.g. to validate this job from a feature
-  # branch during review) from publishing anything either: only github.event_name == 'release'
-  # logs into Docker Hub and passes --push to buildx. workflow_dispatch runs build with --load
-  # instead (loads the image into the runner's local Docker daemon, never touches the registry)
-  # and still runs the full smoke test against that locally-loaded image, so the Dockerfiles and
-  # build context are exercised end-to-end without publishing arcadedata/arcadedb:*-native-* to
-  # anyone. Only a published GitHub release pushes and feeds the `manifest` job below.
+  # Push gating: this workflow has no `push:` trigger at all (only workflow_dispatch, release and
+  # schedule), so a plain branch push can never reach this job. Within that, a further gate keeps
+  # scheduled runs and ordinary `workflow_dispatch` runs (e.g. to validate this job from a feature
+  # branch during review) from publishing anything: only a published `release`, or a dispatch that
+  # ticks `attach_to_release`, logs into Docker Hub and passes --push to buildx. Every other run
+  # builds with --load instead (loads the image into the runner's local Docker daemon, never
+  # touches the registry) and still runs the full smoke test against that locally-loaded image, so
+  # the Dockerfiles and build context are exercised end-to-end without publishing
+  # arcadedata/arcadedb:*-native-* to anyone. The same two cases feed the `manifest` job below.
   docker:
     name: docker-${{ matrix.arch }}
     needs: build
     runs-on: ${{ matrix.runner }}
+    # Both legs parse the same version out of the same pom-named tarball, so whichever leg writes
+    # this output last, `manifest` gets the version the per-arch tags were actually pushed under.
+    outputs:
+      version: ${{ steps.stage.outputs.version }}
     strategy:
       fail-fast: false
       matrix:
@@ -473,17 +479,27 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
+      # The push decision reads both values from env and compares each in its OWN test. #7282 wrote
+      # it as `[ "<event>" = "release" || <attach> ]`, which is not a test at all: `[` errors out on
+      # the missing `]` and the shell runs `<attach> ]` as a command. On a release `inputs` is empty,
+      # so that command is a bare `]` (not found) and every release silently built with --load - no
+      # per-arch tag reached Docker Hub and `manifest` failed - while a dispatch pushed only because
+      # `true ]` happens to exit 0. Lint's actionlint hook now rejects that shape in this file.
       - name: Build (and push on release) per-arch image
         id: build
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          ATTACH_TO_RELEASE: ${{ inputs.attach_to_release }}
         run: |
           set -euo pipefail
           TAG="arcadedata/arcadedb:${{ steps.stage.outputs.version }}-native-${{ matrix.arch }}"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           MODE="--load"
-          if [ "${{ github.event_name }}" = "release" || ${{ inputs.attach_to_release }} ]; then
+          if [ "$EVENT_NAME" = "release" ] || [ "$ATTACH_TO_RELEASE" = "true" ]; then
             MODE="--push"
           fi
+          echo "[docker] $TAG: $MODE (event=$EVENT_NAME, attach_to_release=$ATTACH_TO_RELEASE)"
           docker buildx build --platform "linux/${{ matrix.arch }}" \
             -f "${{ matrix.dockerfile }}" \
             -t "$TAG" \
@@ -523,13 +539,13 @@ jobs:
           fi
 
   # Stitches the two per-arch tags pushed by the `docker` job above into one multi-arch manifest.
-  # Guarded the same way as the `docker` job's push: only a published release reaches here (the
-  # `docker` job only pushes per-arch tags to the registry on `release`, so a workflow_dispatch
-  # run has nothing in the registry for imagetools to stitch - deliberately, per the push-gating
-  # note on the `docker` job above).
+  # Guarded exactly like the `docker` job's push: only a published release, or a dispatch that
+  # ticks `attach_to_release`, reaches here. Every other run builds with --load, so the registry
+  # holds nothing from it for imagetools to stitch - deliberately, per the push-gating note on the
+  # `docker` job above.
   manifest:
     needs: docker
-    if: ${{ github.event_name == 'release' }}
+    if: ${{ github.event_name == 'release' || inputs.attach_to_release }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -543,15 +559,19 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      # This repo's release tags are plain Maven version strings with no "v" prefix (see
-      # mvn-release.yml's `git tag ${{ github.event.inputs.releaseversion }}`, and
-      # `mvn versions:set -DnewVersion=...` run just before it against that same value), so
-      # github.event.release.tag_name already equals project.version - the same value the
-      # `docker` job parsed out of the artifact tarball name to build the per-arch tags below.
+      # VERSION is the one the `docker` job parsed out of the artifact tarball name and pushed the
+      # per-arch tags under, not github.event.release.tag_name. On a release the two agree (tags
+      # are plain Maven versions with no "v" prefix - see mvn-release.yml), but a dispatch has no
+      # release event, and its `ref` may name a SHA or branch rather than the version itself.
       - name: Create multi-arch manifest
+        env:
+          VERSION: ${{ needs.docker.outputs.version }}
         run: |
           set -euo pipefail
-          VERSION="${{ github.event.release.tag_name }}"
+          if [ -z "$VERSION" ]; then
+            echo "::error::the docker job reported no version - nothing to stitch"
+            exit 1
+          fi
           docker buildx imagetools create -t "arcadedata/arcadedb:${VERSION}-native" \
             "arcadedata/arcadedb:${VERSION}-native-amd64" \
             "arcadedata/arcadedb:${VERSION}-native-arm64"
