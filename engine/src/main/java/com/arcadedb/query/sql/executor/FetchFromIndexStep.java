@@ -540,8 +540,8 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       if (isRangeCondition() && (endsWithNull(convertedFrom, rangeKeySize) || endsWithNull(convertedTo, rangeKeySize)))
         continue;
 
-      // x IN (..., null) is UNKNOWN for a null element, never true, as in a scan: the index must not answer it with the records whose
-      // key is null (#9032)
+      // x IN (..., null) and x = null are UNKNOWN, never true, as in a scan: the index must not answer them with the records whose
+      // key is null (#9032, #9238). Checked per run, not at planning, as the plan is reused with other parameter values (#9274)
       if (hasNullInKeySlot(convertedFrom, fromInSlots) || hasNullInKeySlot(convertedTo, toInSlots))
         continue;
 
@@ -698,7 +698,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   }
 
   /**
-   * Which positions of the key {@link #indexKeyFrom}/{@link #indexKeyTo} build come from a non-negated {@code IN}. A sub-block
+   * Which positions of the key {@link #indexKeyFrom}/{@link #indexKeyTo} build come from a non-negated {@code IN} or an equality. A sub-block
    * that resolves to no key expression takes no position, so the mask is built with the same rule the key is, instead of
    * assuming that position {@code i} belongs to sub-block {@code i}.
    */
@@ -711,14 +711,16 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     for (final BooleanExpression exp : subBlocks) {
       final Expression resolved = from ? exp.resolveKeyFrom(additionalRangeCondition) : exp.resolveKeyTo(additionalRangeCondition);
       if (resolved != null)
-        mask[slot++] = exp instanceof InCondition in && !in.not;
+        mask[slot++] = (exp instanceof InCondition in && !in.not)
+            || (exp instanceof BinaryCondition binary && binary.getOperator() instanceof EqualsCompareOperator);
     }
     return mask;
   }
 
   /**
-   * Whether a key position that an {@code IN} condition fills holds null: {@code IN} turns a null into "matches nothing", an
-   * equality keeps its own handling.
+   * Whether a key position that an {@code IN} or an equality fills holds null: a comparison with null is never true, so the
+   * seek matches nothing. Decided here, at execution, because the plan is cached by statement text and reused by runs with
+   * another parameter value (#9274).
    */
   private static boolean hasNullInKeySlot(final Object[] key, final boolean[] inSlots) {
     if (key == null)
