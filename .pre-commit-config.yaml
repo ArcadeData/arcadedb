@@ -30,7 +30,7 @@ repos:
         language_version: python3
         files: ^bindings/python/.*\.py$
   - repo: https://github.com/pycqa/isort
-    rev: 9.0.1
+    rev: 9.0.2
     hooks:
       - id: isort
         args: ["--profile", "black"]
@@ -56,7 +56,7 @@ repos:
         types: [ java, xml ]
         additional_dependencies:
           - prettier@3.9.9
-          - prettier-plugin-java@2.10.4
+          - prettier-plugin-java@2.11.0
           - prettier-plugin-xml
         args:
           - --write
