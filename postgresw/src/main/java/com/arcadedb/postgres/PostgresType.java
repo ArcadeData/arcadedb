@@ -929,7 +929,12 @@ public enum PostgresType {
         else if (elementType == TEXT || elementType == JSON)
           writeString(typeBuffer, arrayElementToText(element));
         else
-          serializeAsBinary(elementType, typeBuffer, element);
+          try {
+            serializeAsBinary(elementType, typeBuffer, element);
+          } catch (final RuntimeException e) {
+            throw new PostgresProtocolException("Cannot send a " + element.getClass().getSimpleName() + " element in a binary "
+                + arrayType.typeName + " array (the element type is announced from the first element of the list): " + e.getMessage(), e);
+          }
       }
     }
     typeBuffer.putInt(lengthPosition, typeBuffer.position() - lengthPosition - 4);

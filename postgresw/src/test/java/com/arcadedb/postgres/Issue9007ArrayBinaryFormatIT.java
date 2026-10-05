@@ -45,7 +45,7 @@ class Issue9007ArrayBinaryFormatIT extends PostgresWireProtocolTestBase {
   @Test
   void aListColumnSurvivesServerPreparedExecutions() throws Exception {
     try (final Connection connection = connect(new Properties())) {
-      createType(connection);
+      createType();
       try (final PreparedStatement ps = connection.prepareStatement("SELECT lst, txt FROM T9007 WHERE id = ?")) {
         for (int execution = 1; execution <= 8; execution++) {
           ps.setInt(1, 1);
@@ -65,7 +65,7 @@ class Issue9007ArrayBinaryFormatIT extends PostgresWireProtocolTestBase {
     final Properties properties = new Properties();
     properties.setProperty("prepareThreshold", "-1");
     try (final Connection connection = connect(properties)) {
-      createType(connection);
+      createType();
       try (final PreparedStatement ps = connection.prepareStatement("SELECT lst FROM T9007 WHERE id = ?")) {
         ps.setInt(1, 1);
         try (final ResultSet rs = ps.executeQuery()) {
@@ -83,7 +83,7 @@ class Issue9007ArrayBinaryFormatIT extends PostgresWireProtocolTestBase {
     return DriverManager.getConnection(getServerPostgresJdbcUrl(), properties);
   }
 
-  private void createType(final Connection connection) {
+  private void createType() {
     final Database database = getServerDatabase(0, getDatabaseName());
     database.transaction(() -> {
       final DocumentType type = database.getSchema().getOrCreateDocumentType("T9007");
