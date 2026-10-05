@@ -687,6 +687,8 @@ public class GraphBatch implements AutoCloseable {
 
   private RID[] createVerticesWithRetryInternal(final int count, final Consumer<RID[]> filler) {
     // THE UNIT BELOW COMMITS AND, ON A RETRYABLE FAILURE, ROLLS BACK: IT ONLY RUNS IN A TRANSACTION IT BEGAN ITSELF (#9242)
+    // From here on every transaction in this loop is one the batch began itself (checked above), so rolling back
+    // whatever is active never touches the caller's: keep it that way when editing
     int attempt = 0;
     while (true) {
       final RID[] rids = new RID[count];
