@@ -868,6 +868,8 @@ public class GraphBatch implements AutoCloseable {
    * and will be connected at {@link #close()}.
    */
   public void flush() {
+    // Nothing buffered means nothing to commit: a no-op flush is harmless inside a caller's transaction, so it is the one
+    // call that does not refuse it (issue #9242)
     if (edgeCount == 0)
       return;
 
