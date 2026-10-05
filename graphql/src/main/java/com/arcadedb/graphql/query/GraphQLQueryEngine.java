@@ -28,6 +28,7 @@ import com.arcadedb.graphql.parser.GraphQLParser;
 import com.arcadedb.graphql.parser.OperationDefinition;
 import com.arcadedb.graphql.parser.ParseException;
 import com.arcadedb.graphql.parser.TokenMgrException;
+import com.arcadedb.graphql.parser.TypeSystemDefinition;
 import com.arcadedb.graphql.schema.GraphQLSchema;
 import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
@@ -63,7 +64,7 @@ public class GraphQLQueryEngine implements QueryEngine {
 
       @Override
       public boolean isDDL() {
-        return false;
+        return ops.contains(OperationType.SCHEMA);
       }
 
       @Override
@@ -88,6 +89,9 @@ public class GraphQLQueryEngine implements QueryEngine {
       for (final Definition def : doc.getDefinitions())
         if (def instanceof OperationDefinition op && !op.isQuery())
           return new Classification(Set.of(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE), null);
+        else if (def instanceof TypeSystemDefinition)
+          // A type definition replaces the database's shared GraphQL schema: it is a schema change, not a read
+          return new Classification(CollectionUtils.singletonSet(OperationType.SCHEMA), null);
     } catch (final ParseException | TokenMgrException e) {
       // Cannot classify: assume the worst so an idempotency gate denies rather than admits. Execution
       // still re-parses and reports the real syntax error; this only changes the answer given to a
