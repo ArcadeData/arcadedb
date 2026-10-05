@@ -62,7 +62,7 @@ public class RedisStaleSessionRevalidationTest extends BaseRedisServerTest {
     try (final Jedis jedis = connect()) {
       insert(jedis, "before");
       getServer(0).getSecurity().dropUser(USER);
-      assertDenied(jedis);
+      assertDenied(jedis, "NOAUTH");
     }
   }
 
@@ -70,8 +70,10 @@ public class RedisStaleSessionRevalidationTest extends BaseRedisServerTest {
   void revokedDatabaseGrantIsCutOff() {
     try (final Jedis jedis = connect()) {
       insert(jedis, "before");
-      update(new JSONObject().put("name", USER).put("password", encoded()).put("databases", new JSONObject()));
-      assertDenied(jedis);
+      // the stored hash is kept, so only the grant changes: a re-salted hash would read as a password rotation
+      update(new JSONObject().put("name", USER).put("password", getServer(0).getSecurity().getUser(USER).getPassword())
+          .put("databases", new JSONObject()));
+      assertDenied(jedis, "NOPERM");
     }
   }
 
@@ -81,7 +83,7 @@ public class RedisStaleSessionRevalidationTest extends BaseRedisServerTest {
       insert(jedis, "before");
       update(new JSONObject().put("name", USER).put("password", getServer(0).getSecurity().encodePassword("another-Password-2"))
           .put("databases", new JSONObject().put(getDatabaseName(), new JSONArray().put("admin"))));
-      assertDenied(jedis);
+      assertDenied(jedis, "NOAUTH");
     }
   }
 
@@ -107,10 +109,10 @@ public class RedisStaleSessionRevalidationTest extends BaseRedisServerTest {
     jedis.sendCommand(Protocol.Command.HSET, getDatabaseName(), "StaleDoc", "{\"name\":\"" + tag + "\"}");
   }
 
-  private void assertDenied(final Jedis jedis) {
+  private void assertDenied(final Jedis jedis, final String expectedError) {
     final JedisDataException error = catchThrowableOfType(JedisDataException.class, () -> insert(jedis, "after"));
     assertThat(error).isNotNull();
-    assertThat(error.getMessage()).contains("NOAUTH");
+    assertThat(error.getMessage()).contains(expectedError);
     assertThat(getServerDatabase(0, getDatabaseName()).countType("StaleDoc", false)).isEqualTo(1L);
   }
 }
