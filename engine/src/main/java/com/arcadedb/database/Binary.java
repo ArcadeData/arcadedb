@@ -320,7 +320,7 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
       int questionMarksInChars = 0;
       for (int i = value.indexOf('?'); i >= 0; i = value.indexOf('?', i + 1))
         questionMarksInChars++;
-      // MORE '?' BYTES THAN '?' CHARS ONLY SUSPECTS A REPLACEMENT (A MULTI-BYTE CHARSET CAN HOLD 0x3F INSIDE A VALID CHARACTER), SO THE ENCODER GIVES THE EXACT ANSWER
+      // more '?' bytes than '?' chars only suspects a replacement (a multi-byte charset can hold 0x3F inside a valid character), so the encoder gives the exact answer
       if (questionMarksInBytes > questionMarksInChars && !charset.newEncoder().canEncode(value))
         throw new SerializationException("The string cannot be stored with the " + charset
             + " charset because it holds a lone UTF-16 surrogate or a character the charset cannot encode: it would be stored as '?' (string length "
