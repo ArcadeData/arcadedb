@@ -52,6 +52,7 @@ import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 import java.util.logging.Level;
@@ -231,6 +232,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   // Written under this bucket's monitor, like unlockedApplyStamp; the run is volatile so the applies read it lock-free
   private                long                      recountPublishesRefused;
   private volatile       long                      consecutiveRecountPublishesRefused;
+  // Number of count() recomputes running while HOLDING this bucket's file lock. A replicated apply waits for the lock
+  // only while one does: any other holder is a commit, and on a replica that commit holds the lock until this node
+  // applies its own entry, so waiting for it stalls the apply thread for the whole commit lock timeout
+  private final          AtomicInteger             recountsHoldingLock              = new AtomicInteger();
 
   /**
    * Bucket purpose tag. Declared up here (next to the {@link #purpose} field that uses it) so the enum is the
@@ -1279,8 +1284,15 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     final long lockTimeout = database.getConfiguration().getValueAsLong(GlobalConfiguration.COMMIT_LOCK_TIMEOUT);
 
     LockManager.LOCK_STATUS lockStatus = LockManager.LOCK_STATUS.NO;
+    boolean holdingLock = false;
     try {
       lockStatus = txManager.tryLockFile(fileId, lockTimeout, requester);
+      // Only once the lock is held: a recompute still queued behind a commit must not make the applies wait for that
+      // commit (see recountsHoldingLock)
+      if (lockStatus != LockManager.LOCK_STATUS.NO) {
+        recountTookLock();
+        holdingLock = true;
+      }
 
       // Another thread may have recomputed the counter while we were queued on the lock. Re-check now that we
       // hold it (or timed out) and skip the duplicate O(N) scan, which also shortens how long we hold the lock.
@@ -1371,6 +1383,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     } catch (final IOException e) {
       throw new DatabaseOperationException("Cannot count bucket '" + componentName + "'", e);
     } finally {
+      if (holdingLock)
+        recountReleasedLock();
       // Release only if WE acquired it. ALREADY_ACQUIRED means an enclosing transaction owns the lock and is
       // responsible for releasing it; NO means the acquisition timed out and we ran the scan lock-free.
       if (lockStatus == LockManager.LOCK_STATUS.YES)
@@ -2511,6 +2525,21 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
   synchronized long getUnlockedApplyStamp() {
     return unlockedApplyStamp;
+  }
+
+  /** Whether a {@link #count()} recompute holds this bucket's file lock right now, see {@code recountsHoldingLock}. */
+  boolean isRecountHoldingLock() {
+    return recountsHoldingLock.get() > 0;
+  }
+
+  /** Called by a {@link #count()} recompute once it holds the bucket's file lock; package-private for the tests. */
+  void recountTookLock() {
+    recountsHoldingLock.incrementAndGet();
+  }
+
+  /** Called by a {@link #count()} recompute before it lets go of the bucket's file lock. */
+  void recountReleasedLock() {
+    recountsHoldingLock.decrementAndGet();
   }
 
   boolean isApplyLockContended() {

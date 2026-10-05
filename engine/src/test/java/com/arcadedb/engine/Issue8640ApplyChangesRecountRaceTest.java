@@ -83,6 +83,8 @@ class Issue8640ApplyChangesRecountRaceTest extends TestHelper {
     // A count() recompute in flight: it owns the bucket's file lock from before its scan until after its publish.
     final Object recompute = new Object();
     assertThat(txManager.tryLockFile(fileId, 1000, recompute)).isEqualTo(LockManager.LOCK_STATUS.YES);
+    // What count() does once it holds the lock: tells the applies a recompute, not a commit, is the holder
+    bucket.recountTookLock();
 
     final PaginatedComponentFile file = (PaginatedComponentFile) db.getFileManager().getFile(fileId);
     final PageId pageId = new PageId(db, fileId, 0);
@@ -103,6 +105,7 @@ class Issue8640ApplyChangesRecountRaceTest extends TestHelper {
 
       // The recompute publishes what it scanned and lets go of the lock.
       bucket.setCachedRecordCount(10);
+      bucket.recountReleasedLock();
       txManager.unlockFile(fileId, recompute);
       released = true;
 
@@ -110,8 +113,10 @@ class Issue8640ApplyChangesRecountRaceTest extends TestHelper {
       // The fold ran AFTER the publish, on top of it: not skipped against a -1 counter, not lost under the publish.
       assertThat(bucket.getCachedRecordCount()).isEqualTo(15);
     } finally {
-      if (!released)
+      if (!released) {
+        bucket.recountReleasedLock();
         txManager.unlockFile(fileId, recompute);
+      }
       applier.shutdownNow();
       db.getConfiguration().setValue(GlobalConfiguration.COMMIT_LOCK_TIMEOUT, previousTimeout);
     }
@@ -174,6 +179,8 @@ class Issue8640ApplyChangesRecountRaceTest extends TestHelper {
     // A recompute that outlasts the commit timeout: it holds the lock and has read the stamp before its scan.
     final Object recompute = new Object();
     assertThat(txManager.tryLockFile(fileId, 1000, recompute)).isEqualTo(LockManager.LOCK_STATUS.YES);
+    // What count() does once it holds the lock: tells the applies a recompute, not a commit, is the holder
+    bucket.recountTookLock();
     final long stampAtScanStart = bucket.getUnlockedApplyStamp();
     try {
       // The apply gives up on the lock and goes ahead: a committed entry is never dropped.
@@ -190,6 +197,7 @@ class Issue8640ApplyChangesRecountRaceTest extends TestHelper {
       applyInBackground(db, fileId, 5, 8643);
       assertThat(bucket.getUnlockedApplyStamp()).isGreaterThan(stampBefore);
     } finally {
+      bucket.recountReleasedLock();
       txManager.unlockFile(fileId, recompute);
       db.getConfiguration().setValue(GlobalConfiguration.COMMIT_LOCK_TIMEOUT, previousTimeout);
     }
