@@ -516,8 +516,8 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     final List<PCollection> secondValueCombinations = cartesianProduct(fromKey);
     final List<PCollection> thirdValueCombinations = cartesianProduct(toKey);
 
-    final boolean[] fromInSlots = inSlotMask(true);
-    final boolean[] toInSlots = inSlotMask(false);
+    final boolean[] fromNullRejectingSlots = nullRejectingSlotMask(true);
+    final boolean[] toNullRejectingSlots = nullRejectingSlotMask(false);
     final List<Object[][]> seeks = new ArrayList<>(secondValueCombinations.size());
     for (int i = 0; i < secondValueCombinations.size(); i++) {
 
@@ -540,9 +540,9 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       if (isRangeCondition() && (endsWithNull(convertedFrom, rangeKeySize) || endsWithNull(convertedTo, rangeKeySize)))
         continue;
 
-      // x IN (..., null) is UNKNOWN for a null element, never true, as in a scan: the index must not answer it with the records whose
-      // key is null (#9032)
-      if (hasNullInKeySlot(convertedFrom, fromInSlots) || hasNullInKeySlot(convertedTo, toInSlots))
+      // x IN (..., null) and x = null are UNKNOWN, never true, as in a scan: the index must not answer them with the records whose
+      // key is null (#9032, #9238). Checked per run, not at planning, as the plan is reused with other parameter values (#9274)
+      if (hasNullInRejectingSlot(convertedFrom, fromNullRejectingSlots) || hasNullInRejectingSlot(convertedTo, toNullRejectingSlots))
         continue;
 
       // A bound no integral key equals (12.5, 1e19) is moved onto the key that bounds the same keys, or matches none (#9021).
@@ -698,11 +698,11 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   }
 
   /**
-   * Which positions of the key {@link #indexKeyFrom}/{@link #indexKeyTo} build come from a non-negated {@code IN}. A sub-block
-   * that resolves to no key expression takes no position, so the mask is built with the same rule the key is, instead of
+   * Which positions of the key {@link #indexKeyFrom}/{@link #indexKeyTo} build come from a non-negated {@code IN} or an
+   * equality. A sub-block that resolves to no key expression takes no position, so the mask is built with the same rule the key is, instead of
    * assuming that position {@code i} belongs to sub-block {@code i}.
    */
-  private boolean[] inSlotMask(final boolean from) {
+  private boolean[] nullRejectingSlotMask(final boolean from) {
     if (!(condition instanceof AndBlock andBlock))
       return new boolean[0];
     final List<BooleanExpression> subBlocks = andBlock.getSubBlocks();
@@ -711,21 +711,23 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     for (final BooleanExpression exp : subBlocks) {
       final Expression resolved = from ? exp.resolveKeyFrom(additionalRangeCondition) : exp.resolveKeyTo(additionalRangeCondition);
       if (resolved != null)
-        mask[slot++] = exp instanceof InCondition in && !in.not;
+        mask[slot++] = (exp instanceof InCondition in && !in.not)
+            || (exp instanceof BinaryCondition binary && binary.getOperator() instanceof EqualsCompareOperator);
     }
     return mask;
   }
 
   /**
-   * Whether a key position that an {@code IN} condition fills holds null: {@code IN} turns a null into "matches nothing", an
-   * equality keeps its own handling.
+   * Whether a key position that an {@code IN} or an equality fills holds null: a comparison with null is never true, so the
+   * seek matches nothing. Decided here, at execution, because the plan is cached by statement text and reused by runs with
+   * another parameter value (#9274).
    */
-  private static boolean hasNullInKeySlot(final Object[] key, final boolean[] inSlots) {
+  private static boolean hasNullInRejectingSlot(final Object[] key, final boolean[] nullRejectingSlots) {
     if (key == null)
       return false;
-    final int slots = Math.min(key.length, inSlots.length);
+    final int slots = Math.min(key.length, nullRejectingSlots.length);
     for (int i = 0; i < slots; i++)
-      if (key[i] == null && inSlots[i])
+      if (key[i] == null && nullRejectingSlots[i])
         return true;
     return false;
   }
