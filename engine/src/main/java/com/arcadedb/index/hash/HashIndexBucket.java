@@ -146,6 +146,8 @@ public class HashIndexBucket extends PaginatedComponent {
   // chain moves past a full page with one free-space check instead of decoding every entry on it. Clear means unknown: pages
   // written by older versions and freshly rebuilt ones start that way and are checked once. Whatever leaves a hole in the data
   // area (removing an entry or a RID, relocating a grown entry) clears it; a compaction or a clean check sets it.
+  // Files written with the flag set are not readable by a version that predates it (it reads the short as the depth), so
+  // downgrading after this change is not supported.
   static final int NO_DEAD_SPACE_FLAG = 0x8000;
   static final int LOCAL_DEPTH_MASK   = 0x7FFF;
 
@@ -805,7 +807,9 @@ public class HashIndexBucket extends PaginatedComponent {
             return;
           }
         } else
-          // Nothing to reclaim: remember it, so the next insert walking past this page does not read its entries again
+          // Nothing to reclaim: remember it, so the next insert walking past this page does not read its entries again.
+          // The page is already in the transaction's modified set (getPageToModify above), and the bit is written once per
+          // page, so this adds no page to the commit and no extra conflict footprint
           setNoDeadSpace(overflowPage, true);
       }
 
@@ -1641,8 +1645,10 @@ public class HashIndexBucket extends PaginatedComponent {
 
   private void setNoDeadSpace(final MutablePage page, final boolean noDeadSpace) {
     final int depthAndFlag = page.readShort(BUCKET_LOCAL_DEPTH) & 0xFFFF;
-    if (((depthAndFlag & NO_DEAD_SPACE_FLAG) != 0) != noDeadSpace)
-      page.writeShort(BUCKET_LOCAL_DEPTH, (short) (noDeadSpace ? depthAndFlag | NO_DEAD_SPACE_FLAG : depthAndFlag & LOCAL_DEPTH_MASK));
+    if (((depthAndFlag & NO_DEAD_SPACE_FLAG) != 0) == noDeadSpace)
+      return;
+    final int updated = noDeadSpace ? depthAndFlag | NO_DEAD_SPACE_FLAG : depthAndFlag & LOCAL_DEPTH_MASK;
+    page.writeShort(BUCKET_LOCAL_DEPTH, (short) updated);
   }
 
   /** True when the data area holds more bytes than the live entries need: removed and grown entries leave holes. */
