@@ -358,6 +358,13 @@ class MongoDBFilterSemanticsTest extends BaseMongoServerTest {
   }
 
   @Test
+  void anExprInAnAggregationMatchStillWorks() {
+    final MongoCollection<Document> c = collection("expragg", "{_id:1, spent:5, budget:3}", "{_id:2, spent:1, budget:3}");
+    assertThat(c.aggregate(List.of(Document.parse("{$match:{$expr:{$gt:['$spent','$budget']}}}"))).into(new ArrayList<>())).hasSize(1);
+    assertThat(c.countDocuments(Document.parse("{$expr:{$gt:['$spent','$budget']}}"))).isEqualTo(1);
+  }
+
+  @Test
   void aCatastrophicRegexOnIdInAMixedFilterIsBoundedToo() {
     final MongoCollection<Document> c = collection("redosid", new Document("_id", "a".repeat(40) + "!").append("n", 1).toJson());
     final long previous = GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong();

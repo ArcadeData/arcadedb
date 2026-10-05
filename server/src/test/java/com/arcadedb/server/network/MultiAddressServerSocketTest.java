@@ -131,4 +131,32 @@ class MultiAddressServerSocketTest {
       }
     }
   }
+
+  @Test
+  void acceptAlwaysTerminatesWhenClosedWhileConnecting() throws Exception {
+    for (int i = 0; i < 20; i++) {
+      final MultiAddressServerSocket socket = MultiAddressServerSocket.bind(FACTORY, "localhost", 0);
+      final int port = socket.getLocalPort();
+      final Thread client = new Thread(() -> {
+        try (final Socket ignored = new Socket(InetAddress.getLoopbackAddress(), port)) {
+          Thread.sleep(50);
+        } catch (final Exception e) {
+          // the listener may be gone already
+        }
+      });
+      client.start();
+      socket.close();
+      final Thread acceptor = new Thread(() -> {
+        try {
+          socket.accept().close();
+        } catch (final IOException e) {
+          // closed: the expected end
+        }
+      });
+      acceptor.start();
+      acceptor.join(5000);
+      assertThat(acceptor.isAlive()).as("accept() after close, round " + i).isFalse();
+      client.join();
+    }
+  }
 }

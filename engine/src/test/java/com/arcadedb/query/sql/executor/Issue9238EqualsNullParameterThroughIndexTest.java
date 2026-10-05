@@ -117,4 +117,18 @@ class Issue9238EqualsNullParameterThroughIndexTest extends TestHelper {
       assertThat(ids(t, "p IS NULL")).as(t).containsExactly(2, 3);
     }
   }
+
+  @Test
+  void caseInsensitiveIndexEqualsNullParameter() {
+    database.command("sql", "CREATE DOCUMENT TYPE Ci");
+    database.command("sql", "CREATE PROPERTY Ci.id INTEGER");
+    database.command("sql", "CREATE PROPERTY Ci.p STRING");
+    database.command("sql", "CREATE INDEX ON Ci (p COLLATE ci) NOTUNIQUE NULL_STRATEGY INDEX");
+    database.transaction(() -> {
+      database.newDocument("Ci").set("id", 1, "p", "A").save();
+      database.newDocument("Ci").set("id", 2, "p", null).save();
+    });
+    assertThat(ids("Ci", "p.toLowerCase() = ?", (Object) null)).isEmpty();
+    assertThat(ids("Ci", "p.toLowerCase() = ?", "a")).containsExactly(1);
+  }
 }

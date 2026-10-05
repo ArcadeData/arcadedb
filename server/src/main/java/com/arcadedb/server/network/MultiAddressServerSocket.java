@@ -30,6 +30,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
 
 /**
  * A listening endpoint that binds EVERY local address a host name resolves to on one port (issue #9224).
@@ -48,6 +49,7 @@ import java.util.concurrent.LinkedBlockingQueue;
 public final class MultiAddressServerSocket implements AutoCloseable {
   private static final Object CLOSED           = new Object();
   private static final long   ERROR_BACKOFF_MS = 50;
+  private static final long   CLOSED_CHECK_MS  = 100;
 
   private final List<ServerSocket>          sockets;
   private final LinkedBlockingQueue<Object> accepted;
@@ -57,8 +59,8 @@ public final class MultiAddressServerSocket implements AutoCloseable {
   private MultiAddressServerSocket(final List<ServerSocket> sockets) {
     this.sockets = sockets;
     if (sockets.size() > 1) {
-      // one slot: the backlog stays in the kernel, as with a single socket, instead of every connection being accepted ahead of the
-      // pre-authentication and connection-limit checks that run after accept()
+      // one slot: the backlog stays in the kernel instead of every connection being accepted ahead of the pre-authentication and
+      // connection-limit checks that run after accept(). At most one queued connection plus one held by each blocked acceptor
       accepted = new LinkedBlockingQueue<>(1);
       for (final ServerSocket socket : sockets) {
         final Thread thread = new Thread(() -> acceptLoop(socket), "ArcadeDB listener " + socket.getLocalSocketAddress());
@@ -155,9 +157,20 @@ public final class MultiAddressServerSocket implements AutoCloseable {
     if (accepted == null)
       return sockets.getFirst().accept();
     try {
-      final Object next = accepted.take();
-      if (next instanceof Socket socket)
+      // polled, not taken: the CLOSED marker can be lost to a connection queued while close() ran, so the flag is the authority
+      Object next;
+      do {
+        if (closed)
+          throw new SocketException("Socket is closed");
+        next = accepted.poll(CLOSED_CHECK_MS, TimeUnit.MILLISECONDS);
+      } while (next == null);
+      if (next instanceof Socket socket) {
+        if (closed) {
+          closeQuietly(socket);
+          throw new SocketException("Socket is closed");
+        }
         return socket;
+      }
       if (next instanceof IOException e)
         throw e;
       accepted.offer(CLOSED); // leave the marker for any other waiter

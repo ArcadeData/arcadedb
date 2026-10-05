@@ -323,7 +323,7 @@ public class UpsertStatementExecutionTest extends TestHelper {
     for (int i = 0; i < 10; i++) {
       database.transaction(() -> {
         final LocalDateTime stop = LocalDateTime.now();
-        database.command("sql", "UPDATE Product SET start = ?, stop = ? UPSERT WHERE start = ? and stop = ?", start, stop);
+        database.command("sql", "UPDATE Product SET start = ?, stop = ? UPSERT WHERE start = ? and stop = ?", start, stop, start, stop);
 
         Result result;
         ResultSet resultSet = database.query("sql", "SELECT from Product");
