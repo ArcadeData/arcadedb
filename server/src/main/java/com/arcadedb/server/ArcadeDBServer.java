@@ -1496,8 +1496,9 @@ public class ArcadeDBServer {
       throw new DatabaseNotAvailableException("Database '" + databaseName + "' is not available: this node is the "
           + "leader and holds a closed copy the last HA resync could not verify, and the other servers did not confirm "
           + "that none of them holds a newer one, so it is not reopened as the cluster's copy. The reason is in the "
-          + "server log and in the cluster alerts. Transfer the leadership to the server holding the newer copy, or "
-          + "remove this node's '" + UNVERIFIED_CLOSED_COPY_FILE + "' marker to accept this copy as it is");
+          + "server log and in the cluster alerts. Transfer the leadership to the server holding the newer copy, or, "
+          + "only if this copy is known to be the right one, accept it as it is with POST "
+          + "/api/v1/cluster/accept-copy/" + databaseName + " on this node");
     }
     return true;
   }

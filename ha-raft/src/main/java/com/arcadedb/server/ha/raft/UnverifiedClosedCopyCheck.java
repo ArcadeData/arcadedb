@@ -58,7 +58,8 @@ import java.util.logging.Level;
  * position, or one this node holds quarantined (its position may be overstated), cannot be ordered, so it refuses.
  * <p>
  * Every refusal is recorded for the {@code unverified-closed-copy-refused} cluster alert, and dropped once the copy is
- * reopened or its marker is gone.
+ * reopened or its marker is gone. A refusal no peer can ever lift - a peer permanently gone but still in the
+ * configuration, a copy that cannot be ordered - is overridden by an operator through {@link #accept} (issue #8641).
  */
 final class UnverifiedClosedCopyCheck {
 
@@ -292,6 +293,56 @@ final class UnverifiedClosedCopyCheck {
   }
 
   /**
+   * What {@link #accept} did: the applied index of the copy accepted (or {@code -1} when it cannot be ordered), and the
+   * refusal that was standing for it when the operator accepted it, or {@code null} when none was recorded.
+   */
+  record Acceptance(long appliedIndex, String standingRefusal) {
+  }
+
+  /**
+   * The operator's override of issue #8641: accepts this leader's closed copy of {@code databaseName} as it is, without
+   * the peers' confirmation, by removing its {@link ArcadeDBServer#UNVERIFIED_CLOSED_COPY_FILE} marker. The next request
+   * that names the database reopens it, and with that it becomes the copy every follower installs from.
+   * <p>
+   * The way out of a refusal no peer can ever lift: a peer that is permanently gone but still in the configuration
+   * never answers, and a copy with no recorded applied index can never be ordered. Removing the marker by hand did the
+   * same and left no trace; this records who accepted which copy, at which index, over which standing refusal.
+   * <p>
+   * Taken under the database's round lock, so it never races a round in flight: a round that is asking the peers
+   * finishes first, and its verdict stands for the requests that waited on it. The role is checked again under the
+   * lock, right before the marker goes: on a follower
+   * the marker is what keeps a copy the leader does not hold from being reopened (issue #8589), so it is never removed
+   * there.
+   *
+   * @param acceptedBy who accepted it, for the log: the user, and where the request came from when known
+   *
+   * @return what was accepted, or {@code null} when this node holds no marked copy of {@code databaseName}
+   *
+   * @throws IllegalStateException when this node is not the leader
+   * @throws IOException           when the marker cannot be removed: the copy stays closed and marked
+   */
+  Acceptance accept(final String databaseName, final String acceptedBy) throws IOException {
+    synchronized (rounds.computeIfAbsent(databaseName, k -> new Object())) {
+      if (!hasMarker(databaseName))
+        return null;
+      if (!raftHAServer.isLeader())
+        throw new IllegalStateException("this server is not the leader");
+
+      final long appliedIndex = localCopyState(server, raftHAServer.getStateMachine(), databaseName).appliedIndex();
+      Files.delete(markerOf(databaseName));
+
+      final Refusal standing = refusals.remove(databaseName);
+      lastLogged.remove(databaseName);
+      LogManager.instance().log(this, Level.WARNING,
+          "Database '%s': %s accepted this leader's copy, which the last resync could not verify, as the cluster's copy "
+              + "WITHOUT the other servers' confirmation (applied index %d). The refusal standing for it was: %s. The "
+              + "next request that names the database reopens it, and every follower then installs it (issue #8641)",
+          null, databaseName, acceptedBy, appliedIndex, standing != null ? standing.reason() : "none recorded");
+      return new Acceptance(appliedIndex, standing != null ? standing.reason() : null);
+    }
+  }
+
+  /**
    * The databases a refusal is standing for, with its reason, for the cluster alert. A refusal whose marker has gone
    * since - an install replaced the copy, a drop removed it, an operator accepted it - no longer stands.
    */
@@ -307,8 +358,12 @@ final class UnverifiedClosedCopyCheck {
   }
 
   private boolean hasMarker(final String databaseName) {
-    return Files.exists(Path.of(server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY),
-        databaseName, ArcadeDBServer.UNVERIFIED_CLOSED_COPY_FILE));
+    return Files.exists(markerOf(databaseName));
+  }
+
+  private Path markerOf(final String databaseName) {
+    return Path.of(server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY), databaseName,
+        ArcadeDBServer.UNVERIFIED_CLOSED_COPY_FILE);
   }
 
   private String record(final String databaseName, final String refusal) {
@@ -320,9 +375,9 @@ final class UnverifiedClosedCopyCheck {
       lastLogged.put(databaseName, now);
       LogManager.instance().log(this, Level.SEVERE,
           "Database '%s' is NOT reopened on this leader: its copy was closed here and the last resync could not verify "
-              + "it, and %s. Transfer the leadership to the server holding the newer copy, or remove this node's '%s' "
-              + "marker to accept this copy as it is (issue #8605)", null, databaseName, refusal,
-          ArcadeDBServer.UNVERIFIED_CLOSED_COPY_FILE);
+              + "it, and %s. Transfer the leadership to the server holding the newer copy, or, only if this copy is known to be "
+              + "the right one, accept it as it is with POST %s%s on this node (issues #8605, #8641)", null,
+          databaseName, refusal, PostAcceptCopyHandler.ROUTE, databaseName);
     }
     return refusal;
   }
