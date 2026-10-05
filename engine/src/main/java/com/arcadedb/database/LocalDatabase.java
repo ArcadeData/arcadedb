@@ -213,6 +213,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   public final       AtomicLong                                indexCompactions          = new AtomicLong();
+  // #8649: count() recomputes not cached because a replicated apply wrote the bucket without its lock during the scan
+  public final       AtomicLong                                recountPublishesRefused   = new AtomicLong();
   protected final    String                                    name;
   protected final    ComponentFile.MODE                        mode;
   protected final    ContextConfiguration                      configuration;
@@ -616,6 +618,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   public Map<String, Object> getStats() {
     final Map<String, Object> map = stats.toMap();
     map.put("indexCompactions", indexCompactions.get());
+    map.put("recountPublishesRefused", recountPublishesRefused.get());
     return map;
   }
 

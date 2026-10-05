@@ -43,6 +43,7 @@ import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
@@ -51,6 +52,12 @@ import java.util.logging.Level;
 public class TransactionManager {
   private static final long MAX_LOG_FILE_SIZE = 64 * 1024 * 1024;
   private static final int  WRITE_WAL_TIMEOUT = 30_000;
+  // #8649: refused recomputes in a row after which the applies wait for a running recompute again. One is the normal
+  // cost of a catch-up; a second one means the replication is not leaving the bucket a quiet window by itself
+  static final         long PATIENT_AFTER_REFUSED_RECOMPUTES = 2;
+  // #8649: after a patient wait timed out, the applies stay impatient for this many recompute scans (and never less
+  // than the commit timeout), which bounds the share of the apply thread spent behind scans that outgrow the wait
+  private static final long PATIENT_BACKOFF_FACTOR           = 4;
   /**
    * On-disk record of the highest assigned transaction id, written on close and whenever a runtime
    * WAL rotation drops log files (issue #5277), read on open. Lets {@link #getLastTransactionId()}
@@ -825,11 +832,193 @@ public class TransactionManager {
   public boolean applyChanges(final WALFile.WALTransaction tx, final Map<Integer, Integer> bucketRecordDelta,
       final boolean ignoreErrors) {
     applyLock.readLock().lock();
+    final Object requester = Thread.currentThread();
+    BucketLocks bucketLocks = null;
     try {
+      // Null on the steady-state path (every counter known), which then allocates nothing. Inside the try: a throw
+      // from the lock phase must still release the shared apply lock, or the snapshot t0 barrier waits forever
+      bucketLocks = lockBucketsWithUnknownCount(bucketRecordDelta, requester);
       return applyChangesInternal(tx, bucketRecordDelta, ignoreErrors);
     } finally {
+      if (bucketLocks != null) {
+        // After the fold: a recompute that published while the pages were being written is discarded (#8640)
+        for (int i = 0; i < bucketLocks.timedOutCount; i++)
+          bucketLocks.timedOut[i].invalidateCachedRecordCountForUnlockedApply();
+        for (int i = 0; i < bucketLocks.lockedCount; i++)
+          unlockFile(bucketLocks.locked[i], requester);
+      }
       applyLock.readLock().unlock();
     }
+  }
+
+  private static final class BucketLocks {
+    private final int[]         locked;
+    private final LocalBucket[] timedOut;
+    private       int           lockedCount;
+    private       int           timedOutCount;
+
+    private BucketLocks(final int size) {
+      locked = new int[size];
+      timedOut = new LocalBucket[size];
+    }
+  }
+
+  /**
+   * Issue #8640: a bucket whose record counter is unknown (-1) is recounted by the first {@code count()} with a page
+   * scan that {@code LocalBucket.count()} publishes while holding the bucket's file lock (#5152), which excludes a LOCAL
+   * commit. After a leader snapshot install every counter is unknown - the archive ships no {@code statistics.json}
+   * and the swap moves the old one out with the rest of the previous copy - and the catch-up that follows applies
+   * entries through here, which wrote the pages and skipped the fold (counter still -1) without any file lock. A scan
+   * running meanwhile missed every such entry on a page it had already passed and counted it on a page it had not,
+   * then published the result: the counter was wrong for good, by as many records as the catch-up moved.
+   * <p>
+   * So the lock of every bucket the entry carries a delta for is taken while that bucket's counter is unknown, in
+   * ascending file-id order like a commit. A running recompute then finishes and publishes first, and the fold lands
+   * on top of its value; a later one sees the whole entry. A known counter is left alone, so the steady-state replay
+   * stays lock-free and never waits.
+   * <p>
+   * The wait is bounded by {@link GlobalConfiguration#COMMIT_LOCK_TIMEOUT} per bucket, on the apply thread and under
+   * the shared side of {@link #getApplyLock()}. On a timeout the apply goes ahead anyway - dropping a committed entry is
+   * worse - and the bucket is handed back as timed out: it is invalidated BEFORE the pages are written and again after
+   * the fold, so a recompute that overlapped the apply is never cached (see
+   * {@link LocalBucket#invalidateCachedRecordCountForUnlockedApply()}). The bucket is then marked contended, and the
+   * entries that follow only TRY its lock instead of each waiting the full timeout behind the same long scan: the
+   * catch-up pays one timeout per recompute, not one per entry. The first apply that gets the lock clears the mark.
+   * Recomputes that keep being refused turn the applies patient instead, so a recompute gets a quiet window (issue
+   * #8649, see {@link #lockBuckets}).
+   * <p>
+   * The unknown-counter check and the lock are not atomic. Known to unknown between the two (a {@code CHECK DATABASE
+   * FIX} or a corrupted-slot repair invalidating the counter while this entry is being applied) leaves this one entry
+   * applied without the lock and its fold skipped, the pre-#8640 behaviour, for that single overlap; the next entry
+   * sees the -1 and locks. Unknown to known costs at most one lock that turns out unneeded.
+   *
+   * @return the buckets locked or timed out, or null when no bucket in the entry has an unknown counter
+   */
+  private BucketLocks lockBucketsWithUnknownCount(final Map<Integer, Integer> bucketRecordDelta, final Object requester) {
+    if (bucketRecordDelta == null || bucketRecordDelta.isEmpty())
+      return null;
+
+    LocalBucket[] buckets = null;
+    int count = 0;
+    for (final Integer fileId : bucketRecordDelta.keySet())
+      if (database.getSchema().getFileByIdIfExists(fileId) instanceof LocalBucket bucket && bucket.getCachedRecordCount() < 0) {
+        if (buckets == null)
+          buckets = new LocalBucket[bucketRecordDelta.size()];
+        // Insertion in ascending file-id order, like a commit (tryLockFiles), so the two can never wait on each other in
+        // a cycle. An entry touches a handful of buckets, so this beats a sort with a comparator
+        int pos = count++;
+        while (pos > 0 && buckets[pos - 1].getFileId() > fileId) {
+          buckets[pos] = buckets[pos - 1];
+          --pos;
+        }
+        buckets[pos] = bucket;
+      }
+
+    if (count == 0)
+      return null;
+
+    final BucketLocks result = new BucketLocks(count);
+    final long timeout = database.getConfiguration().getValueAsLong(GlobalConfiguration.COMMIT_LOCK_TIMEOUT);
+    try {
+      lockBuckets(buckets, count, timeout, requester, result);
+    } catch (final RuntimeException | Error e) {
+      // The caller never receives the partially filled result, so the locks taken so far are released here
+      for (int i = 0; i < result.lockedCount; i++)
+        unlockFile(result.locked[i], requester);
+      throw e;
+    }
+    return result;
+  }
+
+  /**
+   * Takes the lock of each bucket, in order, with a wait that depends on the bucket's apply-lock state:
+   * <ul>
+   * <li>not contended: {@link GlobalConfiguration#COMMIT_LOCK_TIMEOUT};</li>
+   * <li>contended (an earlier apply timed out behind a recompute, issue #8640): 1ms, so the catch-up does not pay one
+   * timeout per entry behind the same long scan;</li>
+   * <li>patient (issue #8649): {@link #PATIENT_AFTER_REFUSED_RECOMPUTES} recomputes in a row were refused because an
+   * apply wrote the bucket without its lock under their scan. Left alone, that repeats for every recompute under
+   * sustained replication: the counter stays unknown and every {@code count(*)} is a full scan. A patient apply waits
+   * for a running recompute again, for up to {@link #patientWaitMs} - twice the last scan on top of the commit
+   * timeout - so the next recompute scans with no unlocked apply under it and publishes. The patient state holds until
+   * a publish clears it, or a patient wait still times out (the scan grew past the bound): the bucket is then contended
+   * again, and the applies do not turn patient for {@link #patientBackoffMs} - at least
+   * {@link #PATIENT_BACKOFF_FACTOR} scans - which bounds the share of the apply thread spent behind scans that keep
+   * outgrowing it. The next patient phase is sized on the longer scan.</li>
+   * </ul>
+   * A patient phase stalls the apply thread for about one scan, and only while the counter is unknown: once a recompute
+   * publishes, the applies skip the lock altogether. The trigger is the refusal count and not the age of the contended
+   * mark, because the first apply that gets the lock between two recomputes clears that mark.
+   */
+  private void lockBuckets(final LocalBucket[] buckets, final int count, final long timeout, final Object requester,
+      final BucketLocks result) {
+    for (int i = 0; i < count; i++) {
+      final LocalBucket bucket = buckets[i];
+      final int fileId = bucket.getFileId();
+      final boolean contended = bucket.isApplyLockContended();
+      boolean patient = bucket.isApplyLockPatient();
+      if (!patient && bucket.getConsecutiveRecountPublishesRefused() >= PATIENT_AFTER_REFUSED_RECOMPUTES
+          && !bucket.isApplyLockPatientBackingOff(System.nanoTime())) {
+        final long refusedInARow = bucket.turnApplyLockPatientIfRefused(PATIENT_AFTER_REFUSED_RECOMPUTES);
+        if (refusedInARow > 0) {
+          patient = true;
+          LogManager.instance().log(this, Level.INFO,
+              "Bucket '%s' refused %d record count recomputes in a row under replication: replicated transactions wait up"
+                  + " to %dms for a running recompute again, so it can cache its result", null, bucket.getName(),
+              refusedInARow, patientWaitMs(bucket, timeout));
+        }
+      }
+
+      // 1ms, not 0: LockManager reads a zero timeout as "wait forever"
+      final long waitMs = patient ? patientWaitMs(bucket, timeout) : contended ? 1L : timeout;
+      final long waitStart = patient ? System.nanoTime() : 0L;
+      final LockManager.LOCK_STATUS status = tryLockFile(fileId, waitMs, requester);
+      if (status == LockManager.LOCK_STATUS.YES) {
+        result.locked[result.lockedCount++] = fileId;
+        // A patient bucket stays patient until a recompute publishes: dropping back to the plain timeout here would
+        // let the next long scan time an apply out again and refuse itself
+        if (patient) {
+          final long waitedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - waitStart);
+          // The replication stalled behind the scan: say so, so a follower lag can be put down to it
+          if (waitedMs >= timeout)
+            LogManager.instance().log(this, Level.INFO,
+                "Replicated transaction waited %dms for a record count recompute on bucket '%s' to finish", null, waitedMs,
+                bucket.getName());
+        } else if (contended)
+          bucket.setApplyLockContended(false);
+      } else if (status == LockManager.LOCK_STATUS.NO) {
+        bucket.invalidateCachedRecordCountForUnlockedApply();
+        result.timedOut[result.timedOutCount++] = bucket;
+        if (patient) {
+          bucket.setApplyLockPatient(false);
+          bucket.setApplyLockContended(true);
+          final long backoffMs = patientBackoffMs(bucket, timeout);
+          bucket.startApplyLockPatientBackoff(backoffMs);
+          LogManager.instance().log(this, Level.WARNING,
+              "Cannot lock bucket '%s' within %dms (last record count scan took %dms) while applying a replicated"
+                  + " transaction: its record counter stays unknown and every count() on it scans the bucket; next"
+                  + " attempt in %dms", null, bucket.getName(), waitMs, bucket.getLastRecountScanMs(), backoffMs);
+        } else if (!contended) {
+          bucket.setApplyLockContended(true);
+          LogManager.instance().log(this, Level.WARNING,
+              "Cannot lock bucket '%s' within %dms while applying a replicated transaction: its record counter is left"
+                  + " unknown and recomputed on a later count(); following entries do not wait for the lock until one gets it",
+              null, bucket.getName(), timeout);
+        } else
+          LogManager.instance().log(this, Level.FINE,
+              "Bucket '%s' is still locked by a record count recompute: applying without the lock", null, bucket.getName());
+      }
+    }
+  }
+
+  /** How long the applies stay impatient after a patient wait timed out: {@link #PATIENT_BACKOFF_FACTOR} scans. */
+  static long patientBackoffMs(final LocalBucket bucket, final long timeout) {
+    return Math.max(timeout, PATIENT_BACKOFF_FACTOR * bucket.getLastRecountScanMs());
+  }
+
+  /** How long a patient apply waits for a running recompute: the commit timeout plus twice the last scan. */
+  static long patientWaitMs(final LocalBucket bucket, final long timeout) {
+    return timeout + 2 * bucket.getLastRecountScanMs();
   }
 
   /**
