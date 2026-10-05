@@ -25,6 +25,8 @@ import com.arcadedb.query.sql.executor.ResultSet;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -53,7 +55,7 @@ class Issue9254RebuildIndexFailureTest extends TestHelper {
 
     try (final ResultSet rs = database.command("sql", "REBUILD INDEX *")) {
       assertThat(rs.hasNext()).isTrue();
-      assertThat(rs.next().<java.util.List<String>>getProperty("failedIndexes")).hasSize(2);
+      assertThat(rs.next().<List<String>>getProperty("failedIndexes")).hasSize(2);
     }
 
     assertIndexesKept("A", true);

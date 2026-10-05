@@ -340,8 +340,9 @@ public class RebuildIndexStatement extends DDLStatement {
    * The index is created again with its own definition. When that is refused too, the cause is the stored data against
    * the definition (rows with a null key under a strategy that was switched to ERROR after they were stored): the index
    * is then created with the SKIP strategy, which accepts what the old index held, and the original strategy is set
-   * back on it, which is the state the old index was in. Index.setNullStrategy() is not persisted, so after a restart a
-   * restored index holds the strategy it was created with (SKIP), exactly as the index it replaces would have. A failure to restore is attached to the original error rather
+   * back on it, which is the state the old index was in. Index.setNullStrategy() is not persisted,
+   * so after a restart a restored index holds the strategy it was created with (SKIP), exactly as the index it replaces
+   * would have. A failure to restore is attached to the original error rather
    * than raised, so the caller still sees why the rebuild failed.
    */
   private static void restoreDroppedIndex(final Database database, final String indexName,
