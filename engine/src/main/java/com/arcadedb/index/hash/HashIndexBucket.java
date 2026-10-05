@@ -145,7 +145,8 @@ public class HashIndexBucket extends PaginatedComponent {
   // High bit of the local depth short (#9253): set when the page is known to hold no dead space, so the walk of an overflow
   // chain moves past a full page with one free-space check instead of decoding every entry on it. Clear means unknown: pages
   // written by older versions and freshly rebuilt ones start that way and are checked once. Whatever leaves a hole in the data
-  // area (removing an entry or a RID, relocating a grown entry) clears it; a compaction or a clean check sets it.
+  // area (removing an entry or a RID, relocating a grown entry) clears it, so a new writer that does the same must too (a miss
+  // costs space, never correctness: the page is just not compacted on this path); a compaction or a clean check sets it.
   // Files written with the flag set are not readable by a version that predates it (it reads the short as the depth), so
   // downgrading after this change is not supported.
   static final int NO_DEAD_SPACE_FLAG = 0x8000;
