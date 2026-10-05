@@ -300,6 +300,23 @@ async def test_transaction(connection, test_type_setup):
     assert len(rows) == 1
     row = rows[0]
     assert row['name'] == 'TxTest'
-    # Without a schema-typed property, ArcadeDB stores the integer literal as Long; it is now
-    # advertised as INT8 on the wire (#4201) so asyncpg returns it as a native int.
-    assert row['value'] == 999  # nosec B101
+    # `value` is not declared on AsyncpgTest. asyncpg runs every query as a described named statement, and
+    # such a statement sends an undeclared property as text (#9009): the rows of a schemaless type need not
+    # share one Java type per property, and a binary int8 column would misread a row holding a double.
+    assert str(row['value']) == '999'  # nosec B101
+
+
+@pytest.mark.asyncio
+async def test_declared_long_property_is_native_int(connection):
+    """A property declared LONG keeps its INT8 wire type (#4201) through a described named statement."""
+    try:
+        await connection.execute("CREATE DOCUMENT TYPE AsyncpgTyped")
+        await connection.execute("CREATE PROPERTY AsyncpgTyped.value LONG")
+    except Exception:
+        pass  # Type may already exist from previous run
+    await connection.execute("INSERT INTO AsyncpgTyped SET id = 'typed', value = 3000000000")
+
+    rows = await connection.fetch("SELECT FROM AsyncpgTyped WHERE id = $1", "typed")
+
+    assert len(rows) == 1
+    assert rows[0]['value'] == 3000000000  # nosec B101
