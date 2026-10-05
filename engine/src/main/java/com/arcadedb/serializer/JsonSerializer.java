@@ -378,6 +378,8 @@ public class JsonSerializer {
    * configured temporal type from the string through the element-type hint, the same conversion it applies to a scalar.
    */
   private static Object formatNestedTemporal(final Object value, final TemporalFormats formats) {
+    if (value instanceof Calendar calendar)
+      return formatNestedTemporal(calendar.getTime(), formats);
     if (!(value instanceof Temporal || value instanceof Date))
       return value;
     if (value instanceof LocalDate)

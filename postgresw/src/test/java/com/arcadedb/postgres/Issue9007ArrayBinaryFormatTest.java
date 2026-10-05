@@ -118,6 +118,12 @@ class Issue9007ArrayBinaryFormatTest {
   }
 
   @Test
+  void aNonArrayValueIsRefusedForAnArrayColumn() {
+    assertThatThrownBy(() -> encode(PostgresType.ARRAY_TEXT, "not a list")).isInstanceOf(PostgresProtocolException.class)
+        .hasMessageContaining("_text");
+  }
+
+  @Test
   void charAndNestedListArraysEncode() {
     assertRoundTrip(PostgresType.ARRAY_CHAR, List.of('a', 'b'), List.of("a", "b"));
     assertRoundTrip(PostgresType.ARRAY_JSON, List.of(List.of(1, 2)), List.of("[1,2]"));

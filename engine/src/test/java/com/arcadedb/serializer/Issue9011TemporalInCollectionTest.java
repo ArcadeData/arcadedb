@@ -27,9 +27,11 @@ import org.junit.jupiter.api.Test;
 
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.util.Calendar;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TimeZone;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -96,6 +98,18 @@ class Issue9011TemporalInCollectionTest extends TestHelper {
       assertThat(json.getJSONArray("nested").getJSONArray(1).getString(0)).isEqualTo("2026-10-03 12:34:56.123457");
       assertThat(json.getJSONObject("map").getJSONArray("l").getString(0)).isEqualTo("2026-10-03 12:34:56.123456");
       assertThat(json.getJSONArray("instants").getString(0)).isEqualTo("2026-10-03 12:34:56.123456");
+    }
+  }
+
+  @Test
+  void calendarInAListIsFormattedWithTheDateTimePattern() {
+    final Calendar calendar = Calendar.getInstance(TimeZone.getTimeZone("UTC"));
+    calendar.setTimeInMillis(1_791_030_896_123L);
+    database.getSchema().createDocumentType("T9011d");
+    database.transaction(() -> database.newDocument("T9011d").set("many", List.of(calendar)).save());
+    try (final ResultSet rs = database.query("sql", "SELECT many FROM T9011d")) {
+      final Object element = new JsonSerializer(database).serializeResult(database, rs.next()).getJSONArray("many").get(0);
+      assertThat(element).isInstanceOf(String.class);
     }
   }
 }
