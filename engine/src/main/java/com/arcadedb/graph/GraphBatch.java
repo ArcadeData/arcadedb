@@ -1538,6 +1538,7 @@ public class GraphBatch implements AutoCloseable {
     // and a guard left behind locks the database out of batching until the process restarts (issue #5666).
     try {
       RuntimeException flushFailure = null;
+      boolean refusedCallerTx = false;
 
       try {
         // Flush any remaining outgoing edges. Capture rather than rethrow so we can still drain the
@@ -1553,9 +1554,10 @@ public class GraphBatch implements AutoCloseable {
           // Refused up front, before the batch commits anything inside a transaction that is not its own (#9242). The
           // buffered work is dropped, as abandon() does: there is no way to write it without committing the caller's.
           if (database.isTransactionActive() && hasPendingWork()) {
+            refusedCallerTx = true;
             LogManager.instance().log(this, Level.WARNING,
-                "GraphBatch.close() was called inside a transaction the caller opened: dropping %d buffered edge(s) and %d deferred incoming edge(s) that cannot be written without committing it",
-                null, edgeCount, inEdgeCount);
+                "GraphBatch.close() was called inside a transaction the caller opened: dropping %d buffered edge(s), %d deferred incoming edge(s) and the head pointers of %d vertices that cannot be written without committing it",
+                null, edgeCount, inEdgeCount, deferredOutHead.size() + deferredInHead.size());
             throw callerTransactionRefusal("close");
           }
           flush();
@@ -1570,7 +1572,7 @@ public class GraphBatch implements AutoCloseable {
         // itself, so the wait is already accounted for.
         // Skipped only when the flush was refused because the caller's transaction is still open: the passes below
         // begin and commit their own transactions, which would commit the caller's (#9242)
-        if (flushFailure == null || !database.isTransactionActive()) {
+        if (!refusedCallerTx) {
           if (bidirectional && inEdgeCount > 0)
             connectDeferredIncomingEdges();
 
