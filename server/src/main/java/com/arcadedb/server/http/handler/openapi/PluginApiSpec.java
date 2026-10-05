@@ -322,7 +322,15 @@ public class PluginApiSpec implements OpenApiContributor {
     final Operation post = SpecBuilders.operation("acceptClusterDatabaseCopy", "Cluster",
         "Accept the leader's unverified copy of a database",
         """
-            Accepts this leader's closed copy of one database, which the last resync could not verify, as             the cluster's copy without the other servers' confirmation. Before reopening such a copy the             leader asks every peer about its own, and refuses while any peer is unanswered or holds a copy             that cannot be ordered (the critical unverified-closed-copy-refused alert); a peer that can             never answer again keeps the database closed on every node. This override removes the copy's             marker and logs who accepted it, at which applied index, over which refusal. The copy is not             reopened by this call: the next request that names the database reopens it, and every follower             then installs it. Root only. Answers 400 on a follower, and 404 when this server holds no             closed copy of the database marked unverified. The body is ignored. """ + RAFT_REQUIRED);
+            Accepts this leader's closed copy of one database, which the last resync could not verify, as \
+            the cluster's copy without the other servers' confirmation. Before reopening such a copy the \
+            leader asks every peer about its own, and refuses while any peer is unanswered or holds a copy \
+            that cannot be ordered (the critical unverified-closed-copy-refused alert); a peer that can \
+            never answer again keeps the database closed on every node. This override removes the copy's \
+            marker and logs who accepted it, at which applied index, over which refusal. The copy is not \
+            reopened by this call: the next request that names the database reopens it, and every follower \
+            then installs it. Root only. Answers 400 on a follower, and 404 when this server holds no \
+            closed copy of the database marked unverified. The body is ignored. """ + RAFT_REQUIRED);
     post.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
     post.setResponses(SpecBuilders.standardResponses("200",
         SpecBuilders.jsonResponse("Copy accepted", "ClusterActionResponse"),

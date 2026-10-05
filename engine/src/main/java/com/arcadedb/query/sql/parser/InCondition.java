@@ -243,7 +243,26 @@ public class InCondition extends BooleanExpression {
 
   // QueryOperatorEquals converts its 2nd argument to the class of the 1st, so try both directions
   private static boolean equalsEitherWay(final Object left, final Object item, final boolean convertOperand) {
-    return QueryOperatorEquals.equals(left, item) || (convertOperand && mayMatchByConversion(left, item) && QueryOperatorEquals.equals(item, left));
+    if (!convertOperand)
+      return QueryOperatorEquals.equals(left, subQueryRowScalar(item));
+    return QueryOperatorEquals.equals(left, item) || (mayMatchByConversion(left, item) && QueryOperatorEquals.equals(item, left));
+  }
+
+  /**
+   * The scalar a sub-query row stands for, or the item itself. QueryOperatorEquals compares a row through its first property
+   * converting either way, which would convert a record property on the left to the row's value type: unwrapped, the property is
+   * compared one way like {@code =} and the list forms (#8913). A row holding a collection keeps the IN-over-items behavior.
+   */
+  private static Object subQueryRowScalar(final Object item) {
+    if (item instanceof Result row && !row.isElement()) {
+      final Set<String> names = row.getPropertyNames();
+      if (names.size() == 1) {
+        final Object value = row.getProperty(names.iterator().next());
+        if (value != null && !MultiValue.isMultiValue(value))
+          return value;
+      }
+    }
+    return item;
   }
 
   // False where QueryOperatorEquals is symmetric (same class, two numbers, records, embedded documents), so the reverse call adds nothing
@@ -339,8 +358,9 @@ public class InCondition extends BooleanExpression {
           sawNull = true;
           continue;
         }
-        // A sub-query row is a Result: equals() compares its first property, converting either way inside comparesValues()/valueEquals()
-        if (QueryOperatorEquals.equals(iLeft, o))
+        // A sub-query row is a Result: equals() compares its first property, converting either way inside comparesValues()/valueEquals(),
+        // except for a record property on the left, which is not converted (#8913)
+        if (convertOperand ? QueryOperatorEquals.equals(iLeft, o) : QueryOperatorEquals.equals(iLeft, subQueryRowScalar(o)))
           return Boolean.TRUE;
       }
       if (empty)

@@ -99,7 +99,9 @@ public class TypeConversionTest extends TestHelper {
       assertThat(doc.get("decimal")).isEqualTo(new BigDecimal("33.33"));
       assertThat(doc.get("date")).isEqualTo(now);
 
-      assertThat(((LocalDateTime) doc.get("datetime_second")).getNano()).isEqualTo(0);
+      // DATETIME_SECOND is held as the configured datetime implementation (Date here), the class it reads back as (#9128)
+      assertThat(doc.get("datetime_second")).isInstanceOf(Date.class);
+      assertThat(doc.getLocalDateTime("datetime_second").getNano()).isEqualTo(0);
       assertThat(doc.get("datetime_millis")).isEqualTo(now);
       assertThat(DateUtils.getPrecision(doc.getLocalDateTime("datetime_millis").getNano())).isEqualTo(ChronoUnit.MILLIS);
       assertThat(DateUtils.getPrecision(((LocalDateTime) doc.get("datetime_micros")).getNano())).isEqualTo(ChronoUnit.MILLIS);
