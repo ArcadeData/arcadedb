@@ -83,6 +83,7 @@ class Issue9274CachedPlanNullEqualityTest extends TestHelper {
   @Test
   void selectCompositeValueThenNull() {
     final Object nul = null;
+    database.transaction(() -> database.newDocument("T").set("id", 4, "p", 1, "q", null).save());
     assertThat(ids("q = ? AND p = ?", 7, 1)).containsExactly(1);
     assertThat(ids("q = ? AND p = ?", 7, nul)).isEmpty();
     assertThat(ids("q = ? AND p = ?", nul, 1)).isEmpty();
@@ -117,6 +118,7 @@ class Issue9274CachedPlanNullEqualityTest extends TestHelper {
   @Test
   void selectNullOnRangeSideOfCompositeKey() {
     final Object nul = null;
+    database.transaction(() -> database.newDocument("T").set("id", 4, "p", 1, "q", null).save());
     assertThat(ids("q = ? AND p > ?", 7, 0)).containsExactly(1);
     assertThat(ids("q = ? AND p > ?", 7, nul)).isEmpty();
     assertThat(ids("q = ? AND p > ?", 7, 0)).containsExactly(1);
@@ -134,6 +136,7 @@ class Issue9274CachedPlanNullEqualityTest extends TestHelper {
   void selectUniqueIndexValueThenNull() {
     final Object nul = null;
     database.transaction(() -> database.newDocument("U").set("id", 1, "p", 5).save());
+    database.transaction(() -> database.newDocument("U").set("id", 2, "p", null).save());
     final String sql = "SELECT id FROM U WHERE p = ?";
     for (final Object value : new Object[] { 5, nul, 5, nul }) {
       final List<Integer> found = new ArrayList<>();
@@ -150,6 +153,7 @@ class Issue9274CachedPlanNullEqualityTest extends TestHelper {
     database.transaction(() -> database.command("sql", "DELETE FROM T WHERE p = ?", nul));
     database.transaction(() -> database.command("sql", "DELETE FROM T WHERE p = ?", 1));
     assertThat(database.countType("T", false)).isEqualTo(2);
+    assertThat(ids("id > ?", 0)).containsExactly(2, 3);
   }
 
   @Test
