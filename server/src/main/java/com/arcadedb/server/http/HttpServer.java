@@ -105,12 +105,19 @@ import javax.net.ssl.TrustManager;
 import javax.net.ssl.TrustManagerFactory;
 import java.io.IOException;
 import java.net.BindException;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.NetworkInterface;
+import java.net.ServerSocket;
+import java.net.SocketException;
+import java.net.UnknownHostException;
 import java.security.KeyStore;
 import java.security.KeyStoreException;
 import java.security.NoSuchAlgorithmException;
 import java.security.cert.CertificateException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -234,14 +241,30 @@ public class HttpServer implements ServerPlugin {
         httpsPortRange != null ? Arrays.toString(httpsPortRange) : "-");
 
     final PathHandler routes = setupRoutes();
+    // Every local address the host name resolves to, not only the first one: see resolveListenHosts() (issue #8692)
+    final List<String> listenHosts = resolveListenHosts(host);
 
     int httpsPortListening = httpsPortRange != null ? httpsPortRange[0] : 0;
     for (httpPortListening = httpPortRange[0]; httpPortListening <= httpPortRange[1]; ++httpPortListening) {
+      if (listenHosts.size() > 1) {
+        // Probe every port Undertow is about to bind, the HTTPS one included: a half-started Undertow cannot be cleaned up
+        String conflict = portConflict(listenHosts, httpPortListening);
+        if (conflict == null && httpsPortListening > 0 && configuration.getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL))
+          conflict = portConflict(listenHosts, httpsPortListening);
+        if (conflict != null) {
+          // The conflict names the port actually taken: the HTTPS one when that is the culprit
+          LogManager.instance().log(this, Level.WARNING, "- HTTP Port %s skipped, '%s' cannot listen on every address: %s",
+              httpPortListening, host, conflict);
+          continue;
+        }
+      }
+
       try {
-        undertow = buildUndertowServer(configuration, host, routes, httpsPortListening);
+        undertow = buildUndertowServer(configuration, listenHosts, routes, httpsPortListening);
         undertow.start();
 
-        LogManager.instance().log(this, Level.INFO, "- HTTP Server started (host=%s port=%d httpsPort=%s)", host, httpPortListening,
+        LogManager.instance().log(this, Level.INFO, "- HTTP Server started (host=%s port=%d httpsPort=%s)",
+            listenHosts.size() > 1 ? host + " " + listenHosts : host, httpPortListening,
             httpsPortListening > 0 ? httpsPortListening : "-");
 
         // Record the bound HTTPS port (when SSL is enabled) so the HA layer can advertise/derive
@@ -422,7 +445,75 @@ public class HttpServer implements ServerPlugin {
     return registeredRoutes;
   }
 
-  private Undertow buildUndertowServer(final ContextConfiguration configuration, final String host, final PathHandler routes,
+  /**
+   * The addresses the HTTP (and HTTPS) listeners bind for the configured {@code host} (issue #8692).
+   * <p>
+   * Undertow binds only the FIRST address a name resolves to: for {@code localhost} that is {@code 127.0.0.1}, so a
+   * port another process held on {@code [::1]} looked free, and {@code localhost:<port>} then reached either server
+   * depending on the family the client's resolver tried first. A name resolving to several addresses is therefore
+   * bound on each LOCAL one of them. Addresses no interface carries are left out ({@code /etc/hosts} commonly maps
+   * {@code localhost} to {@code ::1} where IPv6 is disabled, and binding it would fail on every port). A literal, a
+   * single-address name and an unresolvable name are passed through unchanged, so the listener behaves as before. A
+   * name with exactly one LOCAL address among several is returned as that address's literal, so the listener binds
+   * the address it can actually take rather than whichever one the resolver lists first.
+   */
+  static List<String> resolveListenHosts(final String host) {
+    if (host == null || host.isEmpty())
+      return Collections.singletonList(host);
+
+    final InetAddress[] resolved;
+    try {
+      resolved = InetAddress.getAllByName(host);
+    } catch (final UnknownHostException e) {
+      return List.of(host);
+    }
+    if (resolved.length < 2)
+      return List.of(host);
+
+    final List<String> hosts = new ArrayList<>(resolved.length);
+    for (final InetAddress address : resolved) {
+      if (!isLocalAddress(address))
+        continue;
+      final String literal = address.getHostAddress();
+      if (!hosts.contains(literal))
+        hosts.add(literal);
+    }
+    return hosts.isEmpty() ? List.of(host) : List.copyOf(hosts);
+  }
+
+  /**
+   * Why {@code port} cannot be bound on every one of {@code hosts} ({@code "<address>: <reason>"}), or {@code null} when
+   * it can. Asked before Undertow starts with more than one listener, because {@code Undertow.start()} binds them in
+   * order and, when a later one fails, shuts its worker down but leaves the earlier channels open, and
+   * {@code Undertow.stop()} on that half-started server spins forever waiting for the dead worker. The probe binds with
+   * {@code SO_REUSEADDR}, as XNIO does, so a port it calls free is one Undertow can take; only a stranger arriving
+   * between the probe and the bind can still fail the start.
+   */
+  static String portConflict(final List<String> hosts, final int port) {
+    for (final String host : hosts) {
+      try (final ServerSocket probe = new ServerSocket()) {
+        probe.setReuseAddress(true);
+        probe.bind(new InetSocketAddress(InetAddress.getByName(host), port));
+      } catch (final BindException e) {
+        return host + ":" + port + ": " + e.getMessage();
+      } catch (final IOException e) {
+        // Not a bind failure: leave this address to the listener, which reports it exactly as before, and probe the rest
+      }
+    }
+    return null;
+  }
+
+  private static boolean isLocalAddress(final InetAddress address) {
+    if (address.isAnyLocalAddress())
+      return true;
+    try {
+      return NetworkInterface.getByInetAddress(address) != null;
+    } catch (final SocketException e) {
+      return false;
+    }
+  }
+
+  private Undertow buildUndertowServer(final ContextConfiguration configuration, final List<String> hosts, final PathHandler routes,
       int httpsPortListening) throws Exception {
     // Undertow's own entity-size ceiling stays OFF, and arcadedb.server.httpBodyContentMaxSize is enforced by
     // AbstractServerHttpHandler.readRequestBody and PostBatchHandler's CountingInputStream instead - the two
@@ -445,17 +536,20 @@ public class HttpServer implements ServerPlugin {
     final Undertow.Builder builder = Undertow.builder()//
         .setServerOption(UndertowOptions.ENABLE_HTTP2, true)
         .setServerOption(UndertowOptions.MAX_ENTITY_SIZE, Long.MAX_VALUE)
-        .addHttpListener(httpPortListening, host)//
         .setHandler(createBodySizeLimitHandler(routes, configuration))//
         .setSocketOption(Options.READ_TIMEOUT, configuration.getValueAsInteger(GlobalConfiguration.NETWORK_SOCKET_TIMEOUT))
         .setIoThreads(configuration.getValueAsInteger(GlobalConfiguration.SERVER_HTTP_IO_THREADS))//
         .setWorkerThreads(configuration.getValueAsInteger(GlobalConfiguration.SERVER_HTTP_WORKER_THREADS))//
         .setServerOption(SHUTDOWN_TIMEOUT, 5000);
 
+    for (final String host : hosts)
+      builder.addHttpListener(httpPortListening, host);
+
     if (configuration.getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL)) {
       final SSLContext sslContext = createSSLContext();
-      builder.addHttpsListener(httpsPortListening, host, sslContext)
-          .setServerOption(UndertowOptions.ENABLE_HTTP2, true);
+      for (final String host : hosts)
+        builder.addHttpsListener(httpsPortListening, host, sslContext);
+      builder.setServerOption(UndertowOptions.ENABLE_HTTP2, true);
     }
 
     return builder.build();
