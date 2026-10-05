@@ -22,12 +22,15 @@ import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.query.sql.method.DefaultSQLMethodFactory;
 import com.arcadedb.query.sql.parser.FunctionCall;
 import com.arcadedb.query.sql.parser.MethodCall;
+import com.arcadedb.query.sql.parser.NamedParameter;
+import com.arcadedb.query.sql.parser.PositionalParameter;
 import com.arcadedb.query.sql.parser.SimpleNode;
 import com.arcadedb.query.sql.parser.Statement;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.IdentityHashMap;
 import java.util.List;
@@ -107,6 +110,40 @@ public final class SqlAstInspector {
           return false;
     }
     return true;
+  }
+
+  /**
+   * Suffix for a plan-cache key: empty when the parameters are numbered 0, 1, 2... as in a statement parsed alone, else their
+   * numbers, because the printed text hides them (issue #9247). Walk order is stable within a JVM only: never persist or
+   * compare the key across nodes.
+   */
+  public static String parameterNumbersSuffix(final Object root) {
+    final int[][] holder = { new int[4] };
+    final int[] size = { 0 };
+    allNodesMatch(root, node -> {
+      final int number;
+      if (node instanceof PositionalParameter p)
+        number = p.paramNumber;
+      else if (node instanceof NamedParameter p)
+        number = p.paramNumber;
+      else
+        return true;
+      if (size[0] == holder[0].length)
+        holder[0] = Arrays.copyOf(holder[0], size[0] * 2);
+      holder[0][size[0]++] = number;
+      return true;
+    });
+    final int[] numbers = holder[0];
+    final int count = size[0];
+    boolean sequential = true;
+    for (int i = 0; i < count && sequential; i++)
+      sequential = numbers[i] == i;
+    if (sequential)
+      return "";
+    final StringBuilder builder = new StringBuilder(" /*params:");
+    for (int i = 0; i < count; i++)
+      builder.append(i > 0 ? "," : "").append(numbers[i]);
+    return builder.append("*/").toString();
   }
 
   /**
