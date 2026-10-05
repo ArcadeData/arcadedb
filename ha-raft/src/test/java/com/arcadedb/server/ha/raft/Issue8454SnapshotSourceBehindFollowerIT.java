@@ -86,23 +86,23 @@ class Issue8454SnapshotSourceBehindFollowerIT extends BaseRaftHATest {
     });
     assertClusterConsistency();
 
-    // Hold the leader's apply thread off the database: the leader's own install lock is exactly the gate its apply
-    // thread takes before applying an entry for it.
+    // Hold the leader's apply thread off the database: the install apply gate is exactly the lock its apply thread takes
+    // before applying an entry for it. The gate alone, not runUnderInstallGate: that also registers the database as being
+    // replaced, and since #8022 a leader refuses every transaction on such a database, so the entry below would never
+    // reach the followers.
     final ArcadeStateMachine leaderMachine = getRaftPlugin(leaderIndex).getRaftHAServer().getStateMachine();
     final CountDownLatch leaderHeld = new CountDownLatch(1);
     final CountDownLatch releaseLeader = new CountDownLatch(1);
     final Thread leaderGateHolder = new Thread(() -> {
+      final ArcadeStateMachine.InstallApplyGate gate = leaderMachine.installApplyGate(dbName);
+      gate.lock();
       try {
-        leaderMachine.runUnderInstallGate(dbName, () -> {
-          leaderHeld.countDown();
-          try {
-            releaseLeader.await(180, TimeUnit.SECONDS);
-          } catch (final InterruptedException e) {
-            Thread.currentThread().interrupt();
-          }
-        });
-      } catch (final Exception e) {
         leaderHeld.countDown();
+        releaseLeader.await(180, TimeUnit.SECONDS);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      } finally {
+        gate.unlock();
       }
     }, "issue8454-leader-gate");
     leaderGateHolder.start();
