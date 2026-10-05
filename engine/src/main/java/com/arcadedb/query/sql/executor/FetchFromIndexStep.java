@@ -698,8 +698,8 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   }
 
   /**
-   * Which positions of the key {@link #indexKeyFrom}/{@link #indexKeyTo} build come from a non-negated {@code IN} or an equality. A sub-block
-   * that resolves to no key expression takes no position, so the mask is built with the same rule the key is, instead of
+   * Which positions of the key {@link #indexKeyFrom}/{@link #indexKeyTo} build come from a non-negated {@code IN} or an
+   * equality. A sub-block that resolves to no key expression takes no position, so the mask is built with the same rule the key is, instead of
    * assuming that position {@code i} belongs to sub-block {@code i}.
    */
   private boolean[] nullRejectingSlotMask(final boolean from) {
@@ -722,12 +722,12 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
    * seek matches nothing. Decided here, at execution, because the plan is cached by statement text and reused by runs with
    * another parameter value (#9274).
    */
-  private static boolean hasNullInRejectingSlot(final Object[] key, final boolean[] inSlots) {
+  private static boolean hasNullInRejectingSlot(final Object[] key, final boolean[] nullRejectingSlots) {
     if (key == null)
       return false;
-    final int slots = Math.min(key.length, inSlots.length);
+    final int slots = Math.min(key.length, nullRejectingSlots.length);
     for (int i = 0; i < slots; i++)
-      if (key[i] == null && inSlots[i])
+      if (key[i] == null && nullRejectingSlots[i])
         return true;
     return false;
   }
