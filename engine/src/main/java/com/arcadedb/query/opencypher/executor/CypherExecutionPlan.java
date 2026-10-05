@@ -1397,18 +1397,13 @@ public class CypherExecutionPlan {
       for (final ClauseEntry entry : clausesInOrder) {
         switch (entry.getType()) {
         case MATCH: {
-          // MATCH pattern is handled by the optimizer above, but WHERE clauses
-          // attached to MATCH clauses still need to be applied as filters.
+          // MATCH pattern AND its WHERE are handled by the optimizer above: the physical plan applies every MATCH-level
+          // WHERE (CypherOptimizer.applyFilterPushdown, or the disconnected-pattern join planner). Applying it again here
+          // evaluated each predicate twice per row (issue #9202)
           final MatchClause matchClause = entry.getTypedClause();
           currentSegmentMatchClauses.add(matchClause);
           eagerness.observeRead(matchClause);
           collectPatternVariables(matchClause, optimizerBoundVariables);
-          if (matchClause.hasWhereClause()) {
-            final FilterPropertiesStep filterStep =
-                new FilterPropertiesStep(matchClause.getWhereClause(), context);
-            filterStep.setPrevious(currentStep);
-            currentStep = filterStep;
-          }
           break;
         }
 
@@ -6803,6 +6798,7 @@ public class CypherExecutionPlan {
     // WHERE: allow simple inequality (var1 <> var2) or no WHERE
     String inequalityVar1 = null;
     String inequalityVar2 = null;
+    String inequalityProperty = null;
     final WhereClause whereClause = matchClause.hasWhereClause() ? matchClause.getWhereClause() : statement.getWhereClause();
     if (whereClause != null) {
       final String[] ineqPair = extractSimpleInequality(whereClause);
@@ -6810,6 +6806,7 @@ public class CypherExecutionPlan {
         return null;
       inequalityVar1 = ineqPair[0];
       inequalityVar2 = ineqPair[1];
+      inequalityProperty = ineqPair[2];
     }
 
     // Exactly one path pattern with at least one relationship
@@ -6819,6 +6816,8 @@ public class CypherExecutionPlan {
     if (pathPattern.getRelationshipCount() < 1)
       return null;
     if (pathPattern.hasPathVariable())
+      return null;
+    if (inequalityProperty != null && !propertyIdentifiesNode(db, pathPattern, inequalityVar1, inequalityVar2, inequalityProperty))
       return null;
 
     // All relationships must be fixed-length, anonymous, no properties
@@ -7596,12 +7595,7 @@ public class CypherExecutionPlan {
     final ComparisonExpression cmp = (ComparisonExpression) condition;
     if (cmp.getOperator() != ComparisonExpression.Operator.NOT_EQUALS)
       return null;
-    final Expression left = cmp.getLeft();
-    final Expression right = cmp.getRight();
-    if (!(left instanceof VariableExpression) || !(right instanceof VariableExpression))
-      return null;
-    return new String[]{((VariableExpression) left).getVariableName(),
-        ((VariableExpression) right).getVariableName()};
+    return nodeInequalityOperands(cmp.getLeft(), cmp.getRight());
   }
 
   /**
@@ -7641,6 +7635,9 @@ public class CypherExecutionPlan {
     if (pathPattern.getRelationshipCount() < 2) // need at least 2 hops for anti-join to make sense
       return null;
     if (pathPattern.hasPathVariable())
+      return null;
+    if (antiJoin.inequalityProperty != null
+        && !propertyIdentifiesNode(database, pathPattern, antiJoin.inequalityVar1, antiJoin.inequalityVar2, antiJoin.inequalityProperty))
       return null;
 
     // Extract chain structure
@@ -7734,16 +7731,18 @@ public class CypherExecutionPlan {
     final Vertex.DIRECTION antiJoinDirection;
     final String inequalityVar1; // null if no inequality
     final String inequalityVar2;
+    final String inequalityProperty; // null when the inequality compares the nodes themselves
 
     AntiJoinInfo(final String sourceVar, final String targetVar,
         final String antiJoinEdgeType, final Vertex.DIRECTION antiJoinDirection,
-        final String inequalityVar1, final String inequalityVar2) {
+        final String inequalityVar1, final String inequalityVar2, final String inequalityProperty) {
       this.sourceVar = sourceVar;
       this.targetVar = targetVar;
       this.antiJoinEdgeType = antiJoinEdgeType;
       this.antiJoinDirection = antiJoinDirection;
       this.inequalityVar1 = inequalityVar1;
       this.inequalityVar2 = inequalityVar2;
+      this.inequalityProperty = inequalityProperty;
     }
   }
 
@@ -7768,7 +7767,7 @@ public class CypherExecutionPlan {
     // or LogicalExpression(NOT, PatternPredicateExpression)
     final PatternPredicateExpression directNeg = extractNegatedPattern(condition);
     if (directNeg != null)
-      return extractFromPatternPredicate(directNeg, null, null);
+      return extractFromPatternPredicate(directNeg, null, null, null);
 
     // Case 2: AND of two conditions (anti-join + inequality, in either order)
     if (condition instanceof LogicalExpression) {
@@ -7784,7 +7783,7 @@ public class CypherExecutionPlan {
       if (leftNeg != null && right instanceof ComparisonExpression) {
         final String[] ineq = extractInequalityFromComparison((ComparisonExpression) right);
         if (ineq != null)
-          return extractFromPatternPredicate(leftNeg, ineq[0], ineq[1]);
+          return extractFromPatternPredicate(leftNeg, ineq[0], ineq[1], ineq[2]);
       }
 
       // Try: left = inequality, right = anti-join
@@ -7792,7 +7791,7 @@ public class CypherExecutionPlan {
       if (rightNeg != null && left instanceof ComparisonExpression) {
         final String[] ineq = extractInequalityFromComparison((ComparisonExpression) left);
         if (ineq != null)
-          return extractFromPatternPredicate(rightNeg, ineq[0], ineq[1]);
+          return extractFromPatternPredicate(rightNeg, ineq[0], ineq[1], ineq[2]);
       }
     }
 
@@ -7836,7 +7835,7 @@ public class CypherExecutionPlan {
    * a wrapping LogicalExpression(NOT, ...) — the caller ensures negation semantics.
    */
   private static AntiJoinInfo extractFromPatternPredicate(final PatternPredicateExpression ppe,
-      final String inequalityVar1, final String inequalityVar2) {
+      final String inequalityVar1, final String inequalityVar2, final String inequalityProperty) {
     final PathPattern pp = ppe.getPathPattern();
     if (pp == null || pp.getRelationshipCount() != 1)
       return null;
@@ -7858,7 +7857,7 @@ public class CypherExecutionPlan {
         : dir == Direction.IN ? Vertex.DIRECTION.IN : Vertex.DIRECTION.BOTH;
 
     return new AntiJoinInfo(sourceVar, targetVar, edgeType, direction,
-        inequalityVar1, inequalityVar2);
+        inequalityVar1, inequalityVar2, inequalityProperty);
   }
 
   /**
@@ -7868,12 +7867,65 @@ public class CypherExecutionPlan {
   private static String[] extractInequalityFromComparison(final ComparisonExpression cmp) {
     if (cmp.getOperator() != ComparisonExpression.Operator.NOT_EQUALS)
       return null;
-    final Expression left = cmp.getLeft();
-    final Expression right = cmp.getRight();
-    if (!(left instanceof VariableExpression) || !(right instanceof VariableExpression))
-      return null;
-    return new String[]{((VariableExpression) left).getVariableName(),
-        ((VariableExpression) right).getVariableName()};
+    return nodeInequalityOperands(cmp.getLeft(), cmp.getRight());
+  }
+
+  /**
+   * The two variables an inequality compares as nodes, as {@code [var1, var2, property]}, or null when it is not one. The
+   * property is null for {@code a <> b} and {@code id(a) <> id(b)}, which are the node inequality as written; it is the name
+   * for {@code a.p <> b.p}, which stands for the node inequality only when {@code p} is unique over the node's type (see
+   * {@link #propertyIdentifiesNode}), a proof the caller owes before it trusts the pair (issue #9203).
+   */
+  private static String[] nodeInequalityOperands(final Expression left, final Expression right) {
+    if (left instanceof VariableExpression l && right instanceof VariableExpression r)
+      return new String[] { l.getVariableName(), r.getVariableName(), null };
+    if (left instanceof FunctionCallExpression l && right instanceof FunctionCallExpression r && "id".equalsIgnoreCase(l.getFunctionName())
+        && "id".equalsIgnoreCase(r.getFunctionName()) && l.getArguments().size() == 1 && r.getArguments().size() == 1
+        && !l.isDistinct() && !r.isDistinct() && l.getArguments().get(0) instanceof VariableExpression lv
+        && r.getArguments().get(0) instanceof VariableExpression rv)
+      return new String[] { lv.getVariableName(), rv.getVariableName(), null };
+    if (left instanceof PropertyAccessExpression l && right instanceof PropertyAccessExpression r
+        && l.getPropertyName().equals(r.getPropertyName()))
+      return new String[] { l.getVariableName(), r.getVariableName(), l.getPropertyName() };
+    return null;
+  }
+
+  /**
+   * Whether {@code a.property <> b.property} says the same as {@code a <> b} for the two nodes of the pattern: both carry the
+   * one same label, and the property of that type is unique (a UNIQUE index on it alone) and never null (mandatory and not
+   * null), so two nodes share a value only when they are the same node, and a null never turns the comparison into null.
+   */
+  private static boolean propertyIdentifiesNode(final Database db, final PathPattern pathPattern, final String variableA,
+      final String variableB, final String property) {
+    final String label = uniqueLabelOf(pathPattern, variableA);
+    if (label == null || !label.equals(uniqueLabelOf(pathPattern, variableB)) || !db.getSchema().existsType(label))
+      return false;
+    final DocumentType type = db.getSchema().getType(label);
+    if (!type.existsProperty(property))
+      return false;
+    final Property prop = type.getProperty(property);
+    if (!prop.isMandatory() || !prop.isNotNull())
+      return false;
+    // any unique index on exactly this property. getAllIndexes(true) walks UP: the type's own indexes and its ancestors', which span
+    // (and enforce uniqueness across) the type's buckets, never an index that only a sub type has
+    for (final TypeIndex index : type.getAllIndexes(true))
+      if (index.isUnique() && index.getPropertyNames().size() == 1 && index.getPropertyNames().get(0).equals(property))
+        return true;
+    return false;
+  }
+
+  /** The single label every occurrence of the variable carries in the pattern, or null when it has none or several. */
+  private static String uniqueLabelOf(final PathPattern pathPattern, final String variable) {
+    String label = null;
+    for (int i = 0; i < pathPattern.getNodeCount(); i++) {
+      final NodePattern node = pathPattern.getNode(i);
+      if (!variable.equals(node.getVariable()) || !node.hasLabels())
+        continue;
+      if (!hasPushDownRepresentableLabel(node) || (label != null && !label.equals(node.getLabels().get(0))))
+        return null;
+      label = node.getLabels().get(0);
+    }
+    return label;
   }
 
   /**

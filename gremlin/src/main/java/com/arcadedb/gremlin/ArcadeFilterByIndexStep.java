@@ -23,8 +23,10 @@ import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.index.IndexCursor;
+import com.arcadedb.index.IntegralKeyBound;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
 import org.apache.tinkerpop.gremlin.process.traversal.Compare;
 import org.apache.tinkerpop.gremlin.process.traversal.Contains;
 import org.apache.tinkerpop.gremlin.process.traversal.Step;
@@ -104,16 +106,34 @@ public class ArcadeFilterByIndexStep<S, E extends Element> extends AbstractStep<
         || predicate == Compare.lte;
   }
 
+  /**
+   * Opens the cursor, or returns null when no key can satisfy the predicate. A bound no key of an integral index equals (29.5)
+   * is moved onto the key that bounds the same keys, inclusive (the {@code HasStep} after the step re-checks the exact
+   * predicate): the index would otherwise truncate it toward zero and drop a match for {@code lt} above zero and {@code gt}
+   * below zero (#9206).
+   */
   private IndexCursor openCursor() {
     if (predicate == Compare.eq)
       return index.get(keys);
-    if (predicate == Compare.gt)
-      return index.iterator(true, keys, false);
-    if (predicate == Compare.gte)
-      return index.iterator(true, keys, true);
-    if (predicate == Compare.lt)
-      return index.iterator(false, keys, false);
-    return index.iterator(false, keys, true);
+
+    final boolean lowerBound = predicate == Compare.gt || predicate == Compare.gte;
+    boolean inclusive = predicate == Compare.gte || predicate == Compare.lte;
+    Object[] bound = keys;
+
+    final Type[] keyTypes = index.getKeyTypes();
+    final byte leadingKeyType = IntegralKeyBound.binaryTypeOf(keyTypes != null && keyTypes.length > 0 ? keyTypes[0] : null);
+    // isInexact is true only for a Number, so the cast below is safe
+    if (bound.length > 0 && IntegralKeyBound.isInexact(leadingKeyType, bound[0])) {
+      final Number mapped = lowerBound ?
+          IntegralKeyBound.ceiling(leadingKeyType, (Number) bound[0]) :
+          IntegralKeyBound.floor(leadingKeyType, (Number) bound[0]);
+      if (mapped == null)
+        return null;
+      bound = bound.clone();
+      bound[0] = mapped;
+      inclusive = true;
+    }
+    return index.iterator(lowerBound, bound, inclusive);
   }
 
   /**
@@ -142,6 +162,8 @@ public class ArcadeFilterByIndexStep<S, E extends Element> extends AbstractStep<
     }
     final boolean[] allowed = allowedBuckets;
     final IndexCursor cursor = openCursor();
+    if (cursor == null)
+      return EmptyIterator.instance();
 
     return new CloseableIterator<>() {
       private E       next;

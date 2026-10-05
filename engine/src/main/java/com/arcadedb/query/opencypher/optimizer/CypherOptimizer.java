@@ -1402,6 +1402,10 @@ public class CypherOptimizer {
           filterExpression = pushAnchorOnlyConjuncts(filterExpression, anchorVariable, logicalPlan, seek::pushDownFilter);
       }
 
+      // The rest goes on the lowest hop that binds all it reads (issue #9203)
+      if (filterExpression != null && anchorVariable != null)
+        filterExpression = placeConjunctsOnBindingHop(filterExpression, currentOp, anchorVariable, anchorOperator, logicalPlan);
+
       if (filterExpression != null) {
         // Estimate cost and cardinality for this filter
         final long inputCardinality = currentOp.getEstimatedCardinality();
@@ -1421,6 +1425,115 @@ public class CypherOptimizer {
     }
 
     return currentOp;
+  }
+
+  /**
+   * Places every top-level conjunct that reads at least one pattern variable on the lowest hop of the expansion chain that has
+   * bound all of them, and returns what has to stay in the Filter above the plan (the conjuncts it could not place), or null.
+   * <p>
+   * A predicate on {@code p1} and {@code p3} of {@code (p1)-[:KNOWS]-(p2)-[:KNOWS]-(p3)-[:HAS_INTEREST]->(t)} is decidable once
+   * {@code p3} is bound: left above the last hop it ran once per row the last hop multiplies in, 24 times as often when
+   * every person has 24 interests, instead of once per path.
+   * <p>
+   * Only a plain chain of ExpandAll / ExpandInto hops above the anchor scan is rewritten. Anything else (a GAV chain, which the
+   * fusion below needs unbroken, a join, a variable-length hop) keeps the whole predicate at the top, and so does a conjunct
+   * that reads no pattern variable, or one that reads a variable the chain does not bind.
+   */
+  private BooleanExpression placeConjunctsOnBindingHop(final BooleanExpression expression, final PhysicalOperator root,
+      final String anchorVariable, final PhysicalOperator anchorOperator, final LogicalPlan logicalPlan) {
+    // root, then each operator below it, down to the anchor
+    final List<PhysicalOperator> chain = new ArrayList<>();
+    for (PhysicalOperator op = root; op != null; op = op.getChild()) {
+      chain.add(op);
+      if (op == anchorOperator)
+        break;
+      if (!(op instanceof ExpandAll || op instanceof ExpandInto || op instanceof FilterOperator))
+        return expression;
+    }
+    if (chain.size() < 2 || chain.getLast() != anchorOperator)
+      return expression;
+
+    // the variables bound at or below chain[i]: a hop adds its target and its relationship
+    final List<Set<String>> boundAt = new ArrayList<>(Collections.nCopies(chain.size(), (Set<String>) null));
+    final Set<String> bound = new HashSet<>();
+    for (int i = chain.size() - 1; i >= 0; i--) {
+      final PhysicalOperator op = chain.get(i);
+      if (op instanceof ExpandAll expand) {
+        addVariable(bound, expand.getTargetVariable());
+        addVariable(bound, expand.getEdgeVariable());
+      } else if (op instanceof ExpandInto into) {
+        addVariable(bound, into.getTargetVariable());
+        addVariable(bound, into.getEdgeVariable());
+      } else if (op == anchorOperator)
+        addVariable(bound, anchorVariable);
+      boundAt.set(i, new HashSet<>(bound));
+    }
+
+    final List<BooleanExpression> conjuncts = new ArrayList<>();
+    collectConjuncts(expression, conjuncts);
+
+    final List<BooleanExpression> kept = new ArrayList<>();
+    for (final BooleanExpression conjunct : conjuncts) {
+      final Set<String> reads = patternVariablesRead(conjunct, logicalPlan);
+      int target = -1;
+      if (reads != null && !reads.isEmpty())
+        for (int i = chain.size() - 1; i >= 1 && target < 0; i--)
+          if (boundAt.get(i).containsAll(reads))
+            target = i;
+      // chain[0] is the root: a filter above it is the Filter the caller builds
+      if (target < 1) {
+        kept.add(conjunct);
+        continue;
+      }
+
+      final PhysicalOperator below = chain.get(target);
+      final PhysicalOperator above = chain.get(target - 1);
+      final long outputCardinality = (long) (below.getEstimatedCardinality() * DEFAULT_FILTER_SELECTIVITY);
+      final FilterOperator filter = new FilterOperator(below, conjunct,
+          below.getEstimatedCost() + below.getEstimatedCardinality() * costModel.FILTER_COST_PER_ROW, outputCardinality);
+      above.setChild(filter);
+      // the next conjunct finds the chain with this filter in it
+      chain.add(target, filter);
+      // the filter binds nothing: it shares the set of the operator it sits on, and the sets are never mutated after this loop
+      boundAt.add(target, boundAt.get(target));
+    }
+
+    BooleanExpression rest = null;
+    for (final BooleanExpression conjunct : kept)
+      rest = rest == null ? conjunct : new LogicalExpression(LogicalExpression.Operator.AND, rest, conjunct);
+    return rest;
+  }
+
+  private static void addVariable(final Set<String> variables, final String variable) {
+    if (variable != null && !variable.isEmpty())
+      variables.add(variable);
+  }
+
+  private static void collectConjuncts(final BooleanExpression expression, final List<BooleanExpression> out) {
+    if (expression instanceof BooleanWrapperExpression wrapper)
+      collectConjuncts(wrapper.getBooleanExpression(), out);
+    else if (expression instanceof LogicalExpression logical && logical.getOperator() == LogicalExpression.Operator.AND) {
+      collectConjuncts(logical.getLeft(), out);
+      collectConjuncts(logical.getRight(), out);
+    } else
+      out.add(expression);
+  }
+
+  /**
+   * The pattern variables (nodes and named relationships) the predicate reads, or null when it reads one the chain would not
+   * bind, which is what a path variable is.
+   */
+  private static Set<String> patternVariablesRead(final BooleanExpression expression, final LogicalPlan logicalPlan) {
+    final Set<String> reads = new HashSet<>();
+    for (final String variable : logicalPlan.getPatternNodes().keySet())
+      if (CypherVariableUsage.expressionReferencesVariable(expression, variable))
+        reads.add(variable);
+    for (final LogicalRelationship relationship : logicalPlan.getRelationships()) {
+      final String variable = relationship.getVariable();
+      if (variable != null && !variable.isEmpty() && CypherVariableUsage.expressionReferencesVariable(expression, variable))
+        reads.add(variable);
+    }
+    return reads;
   }
 
   /**
