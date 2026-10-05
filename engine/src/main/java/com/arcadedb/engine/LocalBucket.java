@@ -23,6 +23,7 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.RecordEventsRegistry;
@@ -50,6 +51,7 @@ import com.arcadedb.utility.LongHashSet;
 import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 import java.util.logging.Level;
@@ -214,6 +216,21 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   // #8640: set when a replicated apply timed out on this bucket's lock, so the following ones do not wait again for the
   // same long recompute; cleared by the first apply that gets the lock
   private volatile       boolean                   applyLockContended;
+  // #8649: set once recomputes keep being refused: the applies then wait for a running recompute again, bounded by the
+  // length of the last scan, so the next recompute gets the quiet window it needs to publish. Cleared by a publish (or
+  // any known counter), or by a patient wait that still timed out, which also starts a back-off (below)
+  private volatile       boolean                   applyLockPatient;
+  // #8649: System.nanoTime() before which the applies do not turn patient again, set when a patient wait timed out so
+  // the apply thread is not stalled behind every scan of a bucket whose scans outgrew the bound. 0 = no back-off
+  private volatile       long                      applyLockPatientBackoffUntilNanos;
+  // #8649: wall time of the last count() recompute scan that ran under the bucket lock, in ms. Sizes the patient wait.
+  // A lock-free recompute (lock timeout) leaves it alone; while it is still 0 a patient wait is just the commit timeout,
+  // and a timed-out one is corrected by the back-off, which the next locked scan sizes
+  private volatile       long                      lastRecountScanMs;
+  // #8649: recomputes refused because an unlocked apply overlapped their scan, in total and since the last publish.
+  // Written under this bucket's monitor, like unlockedApplyStamp; the run is volatile so the applies read it lock-free
+  private                long                      recountPublishesRefused;
+  private volatile       long                      consecutiveRecountPublishesRefused;
 
   /**
    * Bucket purpose tag. Declared up here (next to the {@link #purpose} field that uses it) so the enum is the
@@ -1277,6 +1294,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       // #8640: read before the scan, so an apply that wrote pages without the lock while the scan ran is detected
       final long stampAtScanStart = getUnlockedApplyStamp();
+      final long scanStartNanos = System.nanoTime();
 
       final Runnable scanHook = recountScanHookForTesting;
       if (scanHook != null)
@@ -1335,10 +1353,19 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // already includes this transaction's pending delta. Cache the COMMITTED base (total - pending) so the
         // commit-time fold adds the delta exactly once instead of double-counting it; the caller still gets the
         // transaction-visible `total` below.
-        if (!publishRecomputedCount(transaction != null ? total - transaction.getBucketRecordDelta(fileId) : total, stampAtScanStart))
-          LogManager.instance().log(this, Level.FINE,
-              "count() recompute on bucket '%s' overlapped a replicated apply that could not take the bucket lock; result not cached",
-              componentName);
+        // #8649: the scan ran under the lock, so its length is what a replicated apply has to wait out to leave it alone
+        lastRecountScanMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - scanStartNanos);
+        final long refusedInARow = publishRecomputedCountOrRefusalRun(
+            transaction != null ? total - transaction.getBucketRecordDelta(fileId) : total, stampAtScanStart);
+        if (refusedInARow > 0) {
+          // #8649: one refusal is the expected cost of a catch-up, so it stays at FINE. A run of them means the
+          // replication never leaves this bucket a quiet window and every count(*) is a full scan: WARNING on 4, 8,
+          // 16... refusals in a row, so the condition is visible without one line per count()
+          LogManager.instance().log(this, isRefusalRunWorthAWarning(refusedInARow) ? Level.WARNING : Level.FINE,
+              "count() recompute on bucket '%s' overlapped a replicated apply that could not take the bucket lock; result not"
+                  + " cached (%d refused in a row, %d in total, last scan %dms)", null, componentName, refusedInARow,
+              getRecountPublishesRefused(), lastRecountScanMs);
+        }
       } else
         LogManager.instance().log(this, Level.FINE,
                 "count() recompute on bucket '%s' ran lock-free after a %dms lock-acquisition timeout; result not cached", componentName,
@@ -2469,6 +2496,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
   public void setCachedRecordCount(final long count) {
     cachedRecordCount.set(count);
+    // #8649: a counter made known some other way (statistics load, CHECK DATABASE) ends the episode too, or the next -1
+    // would start out patient. Three volatile reads on the commit fold, and the reset itself only once per episode
+    if (count > -1 && (applyLockPatient || applyLockContended || consecutiveRecountPublishesRefused != 0))
+      resetApplyLockState();
   }
 
   /**
@@ -2494,17 +2525,112 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     applyLockContended = contended;
   }
 
+  boolean isApplyLockPatient() {
+    return applyLockPatient;
+  }
+
+  void setApplyLockPatient(final boolean patient) {
+    applyLockPatient = patient;
+  }
+
+  /**
+   * Turns the applies patient if {@code minRefusals} recomputes in a row were refused, in one step with the publish
+   * that would reset the run, so a recompute publishing in between cannot leave a known counter with a patient flag
+   * that the next unknown-counter episode would inherit (issue #8649).
+   *
+   * @return the refusal run that made the bucket patient, or 0 when it did not
+   */
+  synchronized long turnApplyLockPatientIfRefused(final long minRefusals) {
+    final long run = consecutiveRecountPublishesRefused;
+    if (applyLockPatient || run < minRefusals)
+      return 0;
+    applyLockPatient = true;
+    return run;
+  }
+
+  /**
+   * Whether a patient wait timed out less than a back-off ago, so the applies must not turn patient yet (issue #8649).
+   */
+  boolean isApplyLockPatientBackingOff(final long nowNanos) {
+    final long until = applyLockPatientBackoffUntilNanos;
+    return until != 0L && nowNanos - until < 0;
+  }
+
+  /** Starts the back-off after a patient wait that timed out: no patient wait for {@code backoffMs} (issue #8649). */
+  void startApplyLockPatientBackoff(final long backoffMs) {
+    final long until = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(backoffMs);
+    // 0 is the "no back-off" sentinel, and nanoTime() may legitimately land on it
+    applyLockPatientBackoffUntilNanos = until != 0L ? until : 1L;
+  }
+
+  /** Wall time of the last {@code count()} recompute scan that ran under the bucket lock, in ms (issue #8649). */
+  long getLastRecountScanMs() {
+    return lastRecountScanMs;
+  }
+
+  /** Test seam: plants the length of the last recompute scan, which sizes the waits of the applies (#8649). */
+  void setLastRecountScanMs(final long scanMs) {
+    lastRecountScanMs = scanMs;
+  }
+
+  /**
+   * How many {@code count()} recomputes of this bucket were not cached because a replicated apply wrote the bucket
+   * without its lock while they scanned (issue #8649). A number that keeps growing means every {@code count(*)} on this
+   * bucket is a full scan.
+   */
+  public synchronized long getRecountPublishesRefused() {
+    return recountPublishesRefused;
+  }
+
+  /** The refused recomputes since the last one that published; 0 once a recompute is cached (issue #8649). */
+  public long getConsecutiveRecountPublishesRefused() {
+    return consecutiveRecountPublishesRefused;
+  }
+
+  /**
+   * Whether a run of refused recomputes is long enough to log at WARNING: 4, 8, 16... in a row (issue #8649). One or two
+   * are the expected cost of a catch-up; logging every one past that would add a line per {@code count()}.
+   */
+  static boolean isRefusalRunWorthAWarning(final long refusedInARow) {
+    return refusedInARow >= 4 && Long.bitCount(refusedInARow) == 1;
+  }
+
+  /**
+   * Forgets the apply-lock state of the last unknown-counter episode (issue #8649), so a later one starts clean.
+   * Synchronized with the refusal counting in {@link #publishRecomputedCount}.
+   */
+  private synchronized void resetApplyLockState() {
+    consecutiveRecountPublishesRefused = 0;
+    applyLockContended = false;
+    applyLockPatient = false;
+    applyLockPatientBackoffUntilNanos = 0L;
+  }
+
   /**
    * Publishes a recomputed counter unless an unlocked apply ran since {@code stampAtScanStart} was read (issue #8640).
    * Synchronized with {@link #invalidateCachedRecordCountForUnlockedApply()} so the check and the publish are one step.
    */
-  synchronized boolean publishRecomputedCount(final long count, final long stampAtScanStart) {
-    if (unlockedApplyStamp != stampAtScanStart)
-      return false;
+  boolean publishRecomputedCount(final long count, final long stampAtScanStart) {
+    return publishRecomputedCountOrRefusalRun(count, stampAtScanStart) == 0;
+  }
+
+  /**
+   * {@link #publishRecomputedCount} that tells a refusal by the run of refusals it brought the bucket to, read in the
+   * same step as the increment, so the log of a concurrent recompute cannot report this one's run (issue #8649).
+   *
+   * @return 0 when published, otherwise the refused recomputes in a row including this one
+   */
+  synchronized long publishRecomputedCountOrRefusalRun(final long count, final long stampAtScanStart) {
+    if (unlockedApplyStamp != stampAtScanStart) {
+      ++recountPublishesRefused;
+      if (database.getEmbedded() instanceof LocalDatabase local)
+        local.recountPublishesRefused.incrementAndGet();
+      return ++consecutiveRecountPublishesRefused;
+    }
     cachedRecordCount.set(count);
-    // A known counter makes the applies skip the lock, so nothing else would clear the mark before the next -1
-    applyLockContended = false;
-    return true;
+    // A known counter makes the applies skip the lock, so nothing else would clear the marks before the next -1
+    resetApplyLockState();
+    return 0;
   }
 
   private RID createRecordInternal(final Record record, final boolean isPlaceHolder, final boolean discardRecordAfter) {
