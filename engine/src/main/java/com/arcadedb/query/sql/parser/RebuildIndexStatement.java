@@ -348,6 +348,7 @@ public class RebuildIndexStatement extends DDLStatement {
   private static void restoreDroppedIndex(final Database database, final String indexName,
       final String typeName, final List<String> propertyNames, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy,
       final BiConsumer<LSMTreeIndexAbstract.NULL_STRATEGY, Index.BuildIndexCallback> createIndex, final RuntimeException failure) {
+    boolean created = false;
     try {
       try {
         createIndex.accept(nullStrategy, null);
@@ -357,7 +358,11 @@ public class RebuildIndexStatement extends DDLStatement {
           throw e;
         // a failed attempt cleans up after itself, so nothing of it is left to drop before trying again
       }
+      LogManager.instance().log(RebuildIndexStatement.class, Level.WARNING,
+          "Index '%s' cannot be rebuilt with null strategy %s over the stored data: it is restored with SKIP, which is what it "
+              + "held before the rebuild, and the strategy is set back in memory only", null, indexName, nullStrategy);
       createIndex.accept(LSMTreeIndexAbstract.NULL_STRATEGY.SKIP, null);
+      created = true;
       // by properties, not by name: a rebuilt bucket index gets a new unique name
       final TypeIndex restored = database.getSchema().getType(typeName).getIndexByProperties(propertyNames);
       for (final IndexInternal onBucket : restored.getIndexesOnBuckets())
@@ -365,7 +370,10 @@ public class RebuildIndexStatement extends DDLStatement {
     } catch (final RuntimeException restoreError) {
       failure.addSuppressed(restoreError);
       LogManager.instance().log(RebuildIndexStatement.class, Level.SEVERE,
-          "Cannot restore index '%s' after a failed rebuild. The index is now missing: create it again", restoreError, indexName);
+          created ?
+              "Index '%s' was restored after a failed rebuild but its null strategy could not be set back to " + nullStrategy :
+              "Cannot restore index '%s' after a failed rebuild. The index is now missing: create it again", restoreError,
+          indexName);
     }
   }
 

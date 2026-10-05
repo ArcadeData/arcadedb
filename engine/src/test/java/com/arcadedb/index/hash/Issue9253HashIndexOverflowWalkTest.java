@@ -25,6 +25,7 @@ import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PaginatedComponentFile;
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -111,7 +112,7 @@ class Issue9253HashIndexOverflowWalkTest extends TestHelper {
             final int depthAndFlag = page.readShort(HashIndexBucket.BUCKET_LOCAL_DEPTH) & 0xFFFF;
             page.writeShort(HashIndexBucket.BUCKET_LOCAL_DEPTH, (short) (depthAndFlag & HashIndexBucket.LOCAL_DEPTH_MASK));
           } catch (final IOException e) {
-            throw new RuntimeException(e);
+            throw new DatabaseOperationException("Cannot clear the mark of page " + p, e);
           }
       }
     });
