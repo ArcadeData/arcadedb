@@ -79,4 +79,22 @@ class Issue9011TemporalInCollectionTest extends TestHelper {
       assertThat(serializer.serializeResult(database, rs.next()).getJSONArray("many").getString(0)).isEqualTo("2026-10-03 12:34:56");
     }
   }
+
+  @Test
+  void temporalsInNestedContainersAndOtherTemporalClassesKeepTheirPrecision() {
+    database.getSchema().createDocumentType("T9011c");
+    database.transaction(() -> {
+      final Map<String, Object> byKey = new LinkedHashMap<>();
+      byKey.put("l", List.of(A, B));
+      database.newDocument("T9011c").set("nested", List.of(List.of(A), List.of(B))).set("map", byKey)
+          .set("instants", List.of(A.toInstant(java.time.ZoneOffset.UTC))).save();
+    });
+    final JsonSerializer serializer = new JsonSerializer(database);
+    try (final ResultSet rs = database.query("sql", "SELECT nested, map, instants FROM T9011c")) {
+      final JSONObject json = serializer.serializeResult(database, rs.next());
+      assertThat(json.getJSONArray("nested").getJSONArray(1).getString(0)).isEqualTo("2026-10-03 12:34:56.123457");
+      assertThat(json.getJSONObject("map").getJSONArray("l").getString(0)).isEqualTo("2026-10-03 12:34:56.123456");
+      assertThat(json.getJSONArray("instants").getString(0)).isEqualTo("2026-10-03 12:34:56.123456");
+    }
+  }
 }
