@@ -58,7 +58,8 @@ class PostgresStaleSessionRevalidationIT extends PostgresWireProtocolTestBase {
 
   @Test
   void revokedDatabaseGrantIsCutOff() throws Exception {
-    run(security -> security.updateUser(new JSONObject().put("name", USER).put("password", security.encodePassword(PASSWORD))
+    // the stored hash is kept, so only the grant changes: a re-salted hash would read as a password rotation
+    run(security -> security.updateUser(new JSONObject().put("name", USER).put("password", security.getUser(USER).getPassword())
         .put("databases", new JSONObject())));
   }
 
