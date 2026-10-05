@@ -50,11 +50,13 @@ on:
   # surfaced only when somebody dispatched it by hand. A nightly run turns "discovered at release
   # time" into "discovered the next morning".
   #
-  # A scheduled run is behaviourally identical to an ordinary dispatch: three free-runner legs
-  # (linux/amd64, linux/arm64, windows/amd64), no paid macOS leg, and every outward-facing step is
-  # gated on `github.event_name == 'release'` - no Docker Hub login, no image push (buildx runs
-  # --load, and the container is still smoke-tested locally), no release asset upload, and the
-  # `manifest` job does not run at all. So this costs free CI minutes and publishes nothing.
+  # A scheduled run builds like an ordinary dispatch - three free-runner legs (linux/amd64,
+  # linux/arm64, windows/amd64), no paid macOS leg, no release asset upload - with one outward-facing
+  # difference: once both Linux containers pass their smoke test it publishes main's nightly native
+  # image, the counterpart of the JVM image mvn-deploy.yml pushes as `latest` on every push to main.
+  # Tags: `latest-native` and `<x.y.z-SNAPSHOT>-native` (the multi-arch manifests), each over a
+  # `-amd64`/`-arm64` per-arch tag. Nightly rather than per push because a native build is far too
+  # slow to run on every merge. See the `docker` job for the push gating.
   #
   # 01:41 UTC is an otherwise empty slot: 00:00 already carries load-tests, ha-resilience-tests and
   # the Sunday benchmark, 03:00 bolt-nightly, 04:17 meterian. Off the hour on purpose - GitHub
@@ -406,22 +408,24 @@ jobs:
   # FROM gcr.io/distroless/base-debian12:nonroot) for why the two arches need different bases.
   #
   # Push gating: this workflow has no `push:` trigger at all (only workflow_dispatch, release and
-  # schedule), so a plain branch push can never reach this job. Within that, a further gate keeps
-  # scheduled runs and ordinary `workflow_dispatch` runs (e.g. to validate this job from a feature
-  # branch during review) from publishing anything: only a published `release`, or a dispatch that
-  # ticks `attach_to_release`, logs into Docker Hub and passes --push to buildx. Every other run
-  # builds with --load instead (loads the image into the runner's local Docker daemon, never
-  # touches the registry) and still runs the full smoke test against that locally-loaded image, so
-  # the Dockerfiles and build context are exercised end-to-end without publishing
-  # arcadedata/arcadedb:*-native-* to anyone. The same two cases feed the `manifest` job below.
+  # schedule), so a plain branch push can never reach this job. Every run builds with --load into
+  # the runner's local Docker daemon and smoke-tests THAT image; only afterwards, and only on a
+  # publishing run, are its tags pushed - so a broken image never reaches Docker Hub, which matters
+  # most for the nightly `latest-native` that nobody reviews before it ships. Publishing runs:
+  #   release                        - `<version>-native-<arch>`
+  #   dispatch + attach_to_release   - the same, for the release named by `ref` (recovery)
+  #   schedule (always main)         - `latest-native-<arch>` and `<x.y.z-SNAPSHOT>-native-<arch>`
+  # An ordinary dispatch (e.g. to validate this job from a feature branch during review) publishes
+  # nothing: it exercises the Dockerfiles and build context end-to-end and stops there.
   docker:
     name: docker-${{ matrix.arch }}
     needs: build
     runs-on: ${{ matrix.runner }}
-    # Both legs parse the same version out of the same pom-named tarball, so whichever leg writes
-    # this output last, `manifest` gets the version the per-arch tags were actually pushed under.
+    # The tag prefixes the per-arch images were pushed under ("26.9.1", or "latest 26.10.1-SNAPSHOT"
+    # on a nightly). Both legs derive it from the same event and the same pom-named tarball, so
+    # whichever leg writes it last, `manifest` stitches exactly what was pushed.
     outputs:
-      version: ${{ steps.stage.outputs.version }}
+      channels: ${{ steps.build.outputs.channels }}
     strategy:
       fail-fast: false
       matrix:
@@ -473,7 +477,7 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Login to Docker Hub
-        if: ${{ github.event_name == 'release' || inputs.attach_to_release }}
+        if: ${{ github.event_name == 'release' || github.event_name == 'schedule' || inputs.attach_to_release }}
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
@@ -485,25 +489,41 @@ jobs:
       # so that command is a bare `]` (not found) and every release silently built with --load - no
       # per-arch tag reached Docker Hub and `manifest` failed - while a dispatch pushed only because
       # `true ]` happens to exit 0. Lint's actionlint hook now rejects that shape in this file.
-      - name: Build (and push on release) per-arch image
+      #
+      # A nightly pushes its version tag only for a -SNAPSHOT version: main carries a release version
+      # just for the moment mvn-release.yml tags it, and a nightly landing in that window must not
+      # overwrite the release's own `<version>-native-<arch>`. `latest` is pushed regardless.
+      - name: Build per-arch image
         id: build
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
           ATTACH_TO_RELEASE: ${{ inputs.attach_to_release }}
+          VERSION: ${{ steps.stage.outputs.version }}
         run: |
           set -euo pipefail
-          TAG="arcadedata/arcadedb:${{ steps.stage.outputs.version }}-native-${{ matrix.arch }}"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          MODE="--load"
+          CHANNELS=""
           if [ "$EVENT_NAME" = "release" ] || [ "$ATTACH_TO_RELEASE" = "true" ]; then
-            MODE="--push"
+            CHANNELS="$VERSION"
+          elif [ "$EVENT_NAME" = "schedule" ]; then
+            CHANNELS="latest"
+            case "$VERSION" in
+              *-SNAPSHOT) CHANNELS="$CHANNELS $VERSION" ;;
+              *)          echo "::warning::nightly built non-SNAPSHOT version $VERSION - publishing latest-native only" ;;
+            esac
           fi
-          echo "[docker] $TAG: $MODE (event=$EVENT_NAME, attach_to_release=$ATTACH_TO_RELEASE)"
+          TAG="arcadedata/arcadedb:${VERSION}-native-${{ matrix.arch }}"
+          TAG_ARGS=(-t "$TAG")
+          for c in $CHANNELS; do
+            [ "$c" = "$VERSION" ] || TAG_ARGS+=(-t "arcadedata/arcadedb:${c}-native-${{ matrix.arch }}")
+          done
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "channels=$CHANNELS" >> "$GITHUB_OUTPUT"
+          echo "[docker] event=$EVENT_NAME attach_to_release=$ATTACH_TO_RELEASE channels='${CHANNELS:-none (local only)}'"
           docker buildx build --platform "linux/${{ matrix.arch }}" \
             -f "${{ matrix.dockerfile }}" \
-            -t "$TAG" \
-            $MODE ctx
+            "${TAG_ARGS[@]}" \
+            --load ctx
 
       - name: Smoke the container
         shell: bash
@@ -538,18 +558,29 @@ jobs:
             exit 1
           fi
 
-  # Stitches the two per-arch tags pushed by the `docker` job above into one multi-arch manifest.
-  # Guarded exactly like the `docker` job's push: only a published release, or a dispatch that
-  # ticks `attach_to_release`, reaches here. Every other run builds with --load, so the registry
-  # holds nothing from it for imagetools to stitch - deliberately, per the push-gating note on the
-  # `docker` job above.
+      # Runs only after the smoke above passed against this exact local image. Pushes the per-arch
+      # tag of every channel the build step chose; an empty list (ordinary dispatch) skips the step.
+      - name: Push per-arch image
+        if: ${{ steps.build.outputs.channels != '' }}
+        shell: bash
+        env:
+          CHANNELS: ${{ steps.build.outputs.channels }}
+        run: |
+          set -euo pipefail
+          for c in $CHANNELS; do
+            echo "[docker] pushing arcadedata/arcadedb:${c}-native-${{ matrix.arch }}"
+            docker push "arcadedata/arcadedb:${c}-native-${{ matrix.arch }}"
+          done
+
+  # Stitches the per-arch tags pushed by the `docker` job above into one multi-arch manifest per
+  # channel: `<version>-native` on a release or a recovery dispatch, `latest-native` and
+  # `<x.y.z-SNAPSHOT>-native` on the nightly. Guarded by the same three cases as the `docker` job's
+  # push; every other run leaves nothing in the registry for imagetools to stitch.
   manifest:
     needs: docker
-    if: ${{ github.event_name == 'release' || inputs.attach_to_release }}
+    if: ${{ github.event_name == 'release' || github.event_name == 'schedule' || inputs.attach_to_release }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
@@ -559,19 +590,22 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      # VERSION is the one the `docker` job parsed out of the artifact tarball name and pushed the
-      # per-arch tags under, not github.event.release.tag_name. On a release the two agree (tags
-      # are plain Maven versions with no "v" prefix - see mvn-release.yml), but a dispatch has no
-      # release event, and its `ref` may name a SHA or branch rather than the version itself.
-      - name: Create multi-arch manifest
+      # The channels come from the `docker` job, which parsed the version out of the artifact
+      # tarball name, not from github.event.release.tag_name. On a release the two agree (tags are
+      # plain Maven versions with no "v" prefix - see mvn-release.yml), but neither a dispatch nor
+      # the nightly has a release event, and a dispatch's `ref` may name a SHA or branch.
+      - name: Create multi-arch manifests
         env:
-          VERSION: ${{ needs.docker.outputs.version }}
+          CHANNELS: ${{ needs.docker.outputs.channels }}
         run: |
           set -euo pipefail
-          if [ -z "$VERSION" ]; then
-            echo "::error::the docker job reported no version - nothing to stitch"
+          if [ -z "$CHANNELS" ]; then
+            echo "::error::the docker job pushed no channel - nothing to stitch"
             exit 1
           fi
-          docker buildx imagetools create -t "arcadedata/arcadedb:${VERSION}-native" \
-            "arcadedata/arcadedb:${VERSION}-native-amd64" \
-            "arcadedata/arcadedb:${VERSION}-native-arm64"
+          for c in $CHANNELS; do
+            echo "[manifest] arcadedata/arcadedb:${c}-native"
+            docker buildx imagetools create -t "arcadedata/arcadedb:${c}-native" \
+              "arcadedata/arcadedb:${c}-native-amd64" \
+              "arcadedata/arcadedb:${c}-native-arm64"
+          done
