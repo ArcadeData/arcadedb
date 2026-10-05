@@ -108,6 +108,11 @@ import java.util.logging.Level;
  * {@code arcadedb.graph.supernodeThreshold=0} database-wide to disable promotion entirely if a bulk-loaded
  * super-node's degraded traversal performance is a concern.
  * <p>
+ * <b>Transactions (issue #9242):</b> the batch manages its own transactions (every flush is several durable steps), so
+ * {@code createVertices}, {@code flush} and {@code close} refuse to run inside a transaction the caller opened. For
+ * {@code close()} that means whatever is still buffered is DROPPED (a WARNING says how much) before the exception is
+ * thrown, so commit or roll back the caller's transaction before closing, including in a try-with-resources.
+ * <p>
  * Usage:
  * <pre>
  * try (final GraphBatch batch = database.batch()
@@ -1560,6 +1565,8 @@ public class GraphBatch implements AutoCloseable {
         // and the integrity checker trips (see #4113 above). That is why a rejected batch can take a while to answer
         // (86 seconds of the timeline on issue #5470); connectDeferredIncomingEdges logs the pass and its duration
         // itself, so the wait is already accounted for.
+        // Skipped only when the flush was refused because the caller's transaction is still open: the passes below
+        // begin and commit their own transactions, which would commit the caller's (#9242)
         if (flushFailure == null || !database.isTransactionActive()) {
           if (bidirectional && inEdgeCount > 0)
             connectDeferredIncomingEdges();
