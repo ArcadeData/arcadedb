@@ -185,4 +185,31 @@ class Issue9203AntiJoinPropertyInequalityTest {
     assertThat(pushedDown(query)).isFalse();
     assertThat(count(query)).isEqualTo(count("MATCH (p1:Person)-[r:KNOWS]-(p2:Person)-[:KNOWS]-(p3:Person) WHERE NOT (p1)-[:KNOWS]-(p3) RETURN count(*) AS n"));
   }
+
+  @Test
+  void secondMatchAndVariableLengthHopKeepTheirWhere() {
+    assertThat(count("MATCH (a:Person) WHERE a.id < 5 MATCH (a)-[:KNOWS]-(b:Person) WHERE a.id > 1000 RETURN count(*) AS n")).isZero();
+    assertThat(count("MATCH (a:Person) WHERE a.id < 5 MATCH (a)-[:KNOWS]-(b:Person) WHERE b.id < a.id RETURN count(*) AS n"))
+        .isEqualTo(count("MATCH (a:Person)-[:KNOWS]-(b:Person) WHERE a.id < 5 AND b.id < a.id RETURN count(*) AS n"));
+    assertThat(count("MATCH (a:Person)-[:KNOWS*1..2]-(b:Person) WHERE a.id < 5 AND b.id >= 1000 RETURN count(*) AS n")).isZero();
+    assertThat(count("MATCH (a:Person)-[:KNOWS*1..2]-(b:Person) WHERE a.id < 5 AND b.id < 5 RETURN count(*) AS n")).isPositive();
+  }
+
+  @Test
+  void patternPredicateHonoursEdgeSubTypesAndSelfLoops() {
+    database.command("sql", "CREATE EDGE TYPE BEST_FRIEND EXTENDS KNOWS");
+    database.begin();
+    final RID a = database.newVertex("Person").set("id", 1000L).set("loose", 1000L).set("plain", 1L).save().getIdentity();
+    final RID b = database.newVertex("Person").set("id", 1001L).set("loose", 1001L).set("plain", 1L).save().getIdentity();
+    a.asVertex().newEdge("BEST_FRIEND", b).save();
+    a.asVertex().newEdge("KNOWS", a).save();
+    database.commit();
+    // the sub type is found through its parent, in both directions, and a self loop connects a vertex to itself
+    assertThat(count("MATCH (a:Person {id: 1000}), (b:Person {id: 1001}) WHERE (a)-[:KNOWS]->(b) RETURN count(*) AS n")).isEqualTo(1);
+    assertThat(count("MATCH (a:Person {id: 1000}), (b:Person {id: 1001}) WHERE (b)<-[:KNOWS]-(a) RETURN count(*) AS n")).isEqualTo(1);
+    assertThat(count("MATCH (a:Person {id: 1000}), (b:Person {id: 1001}) WHERE (a)<-[:KNOWS]-(b) RETURN count(*) AS n")).isZero();
+    assertThat(count("MATCH (a:Person {id: 1000}), (b:Person {id: 1001}) WHERE (a)-[:BEST_FRIEND]->(b) RETURN count(*) AS n")).isEqualTo(1);
+    assertThat(count("MATCH (a:Person {id: 1000}) WHERE (a)-[:KNOWS]->(a) RETURN count(*) AS n")).isEqualTo(1);
+    assertThat(count("MATCH (a:Person {id: 1001}) WHERE (a)-[:KNOWS]->(a) RETURN count(*) AS n")).isZero();
+  }
 }

@@ -122,6 +122,7 @@ public class ArcadeFilterByIndexStep<S, E extends Element> extends AbstractStep<
 
     final Type[] keyTypes = index.getKeyTypes();
     final byte leadingKeyType = IntegralKeyBound.binaryTypeOf(keyTypes != null && keyTypes.length > 0 ? keyTypes[0] : null);
+    // isInexact is true only for a Number, so the cast below is safe
     if (bound.length > 0 && IntegralKeyBound.isInexact(leadingKeyType, bound[0])) {
       final Number mapped = lowerBound ?
           IntegralKeyBound.ceiling(leadingKeyType, (Number) bound[0]) :
