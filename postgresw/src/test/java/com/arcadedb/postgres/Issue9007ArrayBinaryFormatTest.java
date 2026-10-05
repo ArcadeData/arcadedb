@@ -103,6 +103,13 @@ class Issue9007ArrayBinaryFormatTest {
         .isEqualTo(List.of("1", "x", "[1,2]"));
   }
 
+  @Test
+  void mixedNumericListsAreConvertedToTheAnnouncedElementType() {
+    assertRoundTrip(PostgresType.ARRAY_LONG, List.of(1L, 2, (short) 3), List.of(1L, 2L, 3L));
+    assertRoundTrip(PostgresType.ARRAY_INT, List.of(1, 2L, (short) 3), List.of(1, 2, 3));
+    assertRoundTrip(PostgresType.ARRAY_DOUBLE, List.of(1.5d, 2, 3L), List.of(1.5d, 2.0d, 3.0d));
+  }
+
   private static void assertRoundTrip(final PostgresType arrayType, final List<?> value, final List<?> expected) {
     final Object decoded = PostgresType.deserialize(arrayType.code, 1, encode(arrayType, value));
     assertThat(decoded).as(arrayType.name()).isEqualTo(expected);

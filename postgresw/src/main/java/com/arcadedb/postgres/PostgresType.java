@@ -917,7 +917,8 @@ public enum PostgresType {
    * whether a NULL element is present, the element type OID, then for the dimension its length and lower bound (1), then every
    * element as a length-prefixed binary value (-1 for NULL). An empty array has no dimensions at all. A client that asks for the
    * binary format of an array column (pgjdbc does once a statement is server-prepared) decodes exactly this layout, and fails on
-   * the text literal (issue #9007).
+   * the text literal (issue #9007). A nested list or a document is one JSON-text element of the one-dimensional array, as in the text
+   * format; an element of a numeric array is converted to the element type, so a Long inside an int4[] is narrowed.
    */
   private void putArrayBinary(final PostgresType arrayType, final Binary typeBuffer, final Collection<?> elements) {
     final PostgresType elementType = elementTypeOf(arrayType);

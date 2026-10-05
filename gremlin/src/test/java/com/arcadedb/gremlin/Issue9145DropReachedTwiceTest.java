@@ -18,8 +18,8 @@
  */
 package com.arcadedb.gremlin;
 
-import com.arcadedb.utility.FileUtils;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.utility.FileUtils;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversal;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
 import org.apache.tinkerpop.gremlin.structure.Edge;

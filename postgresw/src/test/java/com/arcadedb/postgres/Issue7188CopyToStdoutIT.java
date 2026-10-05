@@ -42,6 +42,7 @@ import java.sql.DriverManager;
 import java.sql.Statement;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Properties;
 
@@ -217,7 +218,11 @@ class Issue7188CopyToStdoutIT extends PostgresWireProtocolTestBase {
       final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
       assertThat(copyManager(connection).copyOut("COPY (SELECT id, tags FROM " + LIST_TYPE + ") TO STDOUT (FORMAT binary)", bytes))
           .isEqualTo(1);
-      assertThat(bytes.toByteArray()).isNotEmpty();
+      // the tags field is a binary text[] (OID 1009): 1 dimension, no null, element OID 25, 2 elements, lower bound 1, then "a" and "b"
+      final ByteBuffer expectedArray = ByteBuffer.allocate(4 * 5 + 2 * 5);
+      expectedArray.putInt(1).putInt(0).putInt(25).putInt(2).putInt(1);
+      expectedArray.putInt(1).put((byte) 'a').putInt(1).put((byte) 'b');
+      assertThat(indexOf(bytes.toByteArray(), expectedArray.array())).as("the binary array payload is in the COPY stream").isGreaterThan(0);
       // The same column travels in text format.
       assertThat(copyOut(connection, "COPY (SELECT id, tags FROM " + LIST_TYPE + ") TO STDOUT")).isEqualTo("1\t{\"a\",\"b\"}\n");
       // The statement's result set was closed, not leaked: the type can be dropped, which a still-open
@@ -475,6 +480,13 @@ class Issue7188CopyToStdoutIT extends PostgresWireProtocolTestBase {
    * Decodes a binary COPY stream: the signature, flags and header extension, then per tuple an int16 field count
    * and per field an int32 length (-1 for NULL) followed by the value in the type's binary send format.
    */
+  private static int indexOf(final byte[] haystack, final byte[] needle) {
+    for (int i = 0; i + needle.length <= haystack.length; i++)
+      if (Arrays.equals(haystack, i, i + needle.length, needle, 0, needle.length))
+        return i;
+    return -1;
+  }
+
   private static List<List<Object>> decodeBinaryCopy(final byte[] bytes, final int[] oids) {
     final ByteBuffer buffer = ByteBuffer.wrap(bytes);
     final byte[] signature = new byte[11];
