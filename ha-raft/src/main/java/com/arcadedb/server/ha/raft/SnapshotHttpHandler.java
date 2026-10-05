@@ -26,6 +26,7 @@ import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.PageSnapshot;
 import com.arcadedb.engine.PaginatedComponent;
+import com.arcadedb.engine.timeseries.ListedSealedStore;
 import com.arcadedb.engine.timeseries.TimeSeriesCompactionPause;
 import com.arcadedb.engine.timeseries.TimeSeriesSealedStore;
 import com.arcadedb.exception.DatabaseOperationException;
@@ -456,9 +457,11 @@ public class SnapshotHttpHandler implements HttpHandler {
    * from the window's t0 barrier, and a {@code .ts.sealed} set listed at any later moment can disagree with it -
    * see {@link #streamThroughPointInTimeImage} for what listing them together buys and what it does not.
    * <p>
-   * {@code sealedFiles} is immutable and never {@code null}; it is empty for a database with no TimeSeries type.
+   * {@code sealedFiles} is immutable and never {@code null}; it is empty for a database with no TimeSeries type. Each
+   * entry carries the identity its file had at t0, so a same-named store recreated after t0 is not shipped as the t0
+   * one (issue #8738).
    */
-  record SnapshotImage(PageSnapshot snapshot, List<File> sealedFiles) {
+  record SnapshotImage(PageSnapshot snapshot, List<ListedSealedStore> sealedFiles) {
   }
 
   /**
@@ -767,7 +770,7 @@ public class SnapshotHttpHandler implements HttpHandler {
     // lock for this whole callback, so a listing taken here is already paired with the configuration files read
     // under that same lock; the window path has no such lock left, which is why its set was captured with the
     // window (see streamThroughPointInTimeImage)
-    final List<File> sealedFiles = image != null ?
+    final List<ListedSealedStore> sealedFiles = image != null ?
         image.sealedFiles() :
         listSealedStoresOrFail(new File(db.getDatabasePath()), databaseName);
     final long writeTimeoutMs = httpServer.getServer().getConfiguration().getValueAsLong(GlobalConfiguration.HA_SNAPSHOT_WRITE_TIMEOUT);
@@ -902,7 +905,7 @@ public class SnapshotHttpHandler implements HttpHandler {
    * still do was hand a future caller the answer #7671 is about (issue #7726).
    */
   static long estimateUncompressedBytes(final DatabaseInternal db, final PageSnapshot snapshot,
-      final List<File> sealedFiles) {
+      final List<ListedSealedStore> sealedFiles) {
     long total = 0L;
 
     // #7456: SIZED THE SAME WAY THE ENTRIES ARE PRODUCED - from the window when there is one, off the filesystem
@@ -929,8 +932,10 @@ public class SnapshotHttpHandler implements HttpHandler {
           total += file.getOSFile().length();
     }
 
-    for (final File sealedFile : sealedFiles)
-      total += sealedFile.length();
+    // THE SIZE AT t0, WHICH IS THE ONLY SIZE A SEALED ENTRY CAN SHIP WITH: addSealedStoresToZip fails the ship on a
+    // store whose size moved since (issue #8738)
+    for (final ListedSealedStore sealedFile : sealedFiles)
+      total += sealedFile.size();
 
     return total + Long.BYTES; // the last-tx-id marker
   }
@@ -951,15 +956,18 @@ public class SnapshotHttpHandler implements HttpHandler {
    * Refusing costs one retried transfer. Answering "none" costs a follower that installs a database whose schema
    * it cannot load, and reports success.
    * <p>
+   * Each store is listed with its file's identity at this moment, which {@link #addSealedStoresToZip} checks before
+   * and after streaming it (issue #8738).
+   * <p>
    * Package-private and static so the refusal can be driven from a test without an HTTP exchange.
    */
-  static List<File> listSealedStoresOrFail(final File databaseDirectory, final String databaseName) {
-    final File[] sealedFiles = TimeSeriesSealedStore.listSealedFilesOrNull(databaseDirectory);
+  static List<ListedSealedStore> listSealedStoresOrFail(final File databaseDirectory, final String databaseName) {
+    final List<ListedSealedStore> sealedFiles = ListedSealedStore.listOrNull(databaseDirectory);
     if (sealedFiles == null)
       throw new DatabaseOperationException("Cannot list the directory of database '" + databaseName
           + "' to archive its TimeSeries sealed stores: a snapshot taken on the assumption that there are none "
           + "would declare every TIMESERIES type without its data");
-    return List.of(sealedFiles);
+    return sealedFiles;
   }
 
   /**
@@ -981,6 +989,13 @@ public class SnapshotHttpHandler implements HttpHandler {
    * never missed. A symlinked store is refused for the same reason and by the same rule: what must not happen is
    * an archive that silently does not carry a store its schema declares.
    * <p>
+   * <b>A store whose path names a different file fails the ship too (issue #8738).</b> A TimeSeries type dropped and
+   * recreated under the same name after t0 leaves the listed path naming the NEW {@code .ts.sealed}: it reads cleanly,
+   * and archived next to the t0 {@code schema.json} and page files it ships the follower an empty (or foreign) sealed
+   * store for a type whose t0 data lives in the pages - an archive that describes no state the leader ever had, which
+   * the manifest would certify. So each store is checked against the identity it had when listed, once after it is
+   * opened and once after it is read; see {@link ListedSealedStore}.
+   * <p>
    * Failing lands on the path the ship already has for a transfer that dies mid-stream: the manifest is not
    * written, the follower rejects the download (#4831) and retries, and the retry opens its window AFTER the drop,
    * so the second attempt is coherent. The cost is one wasted transfer in the rare case; the alternative is a
@@ -988,23 +1003,45 @@ public class SnapshotHttpHandler implements HttpHandler {
    * <p>
    * Package-private and static so the pairing can be driven from a test without an HTTP exchange or a live cluster.
    */
-  static void addSealedStoresToZip(final ZipOutputStream zipOut, final List<File> sealedFiles,
+  static void addSealedStoresToZip(final ZipOutputStream zipOut, final List<ListedSealedStore> sealedFiles,
       final List<SnapshotManager.ManifestEntry> manifest) throws Exception {
-    for (final File sealedFile : sealedFiles)
+    for (final ListedSealedStore sealedFile : sealedFiles)
       try {
         // NO exists() PRE-CHECK: the open below is the check, so there is no window between asking and reading in
         // which the file can still go away silently
-        addFileToZip(zipOut, sealedFile, manifest, false);
+        addSealedStoreToZip(zipOut, sealedFile, manifest);
       } catch (final FileNotFoundException e) {
-        // ONLY FileNotFoundException, WHICH IS THE ONLY "GONE" THIS CALL CAN RAISE: addFileToZip reaches the file
-        // through Files.isSymbolicLink, which answers false rather than throwing on an I/O error, and then
-        // FileInputStream. A NoSuchFileException arm here would read as a second way for a store to vanish and
-        // there is none (code review on PR #7708). Any other IOException - a real disk error - already fails
-        // the ship, just without this sentence
-        throw new FileNotFoundException("TimeSeries sealed store '" + sealedFile.getName()
+        // ONLY FileNotFoundException, WHICH IS THE ONLY "GONE" THIS CALL CAN RAISE: addSealedStoreToZip reaches the
+        // file through Files.isSymbolicLink, which answers false rather than throwing on an I/O error, then
+        // FileInputStream, and ListedSealedStore maps its own NoSuchFileException to this type. A NoSuchFileException
+        // arm here would read as a second way for a store to vanish and there is none (code review on PR #7708). Any
+        // other IOException - a real disk error, or a store REPLACED since t0 (#8738), which carries its own
+        // message - already fails the ship, just without this sentence
+        throw new FileNotFoundException("TimeSeries sealed store '" + sealedFile.name()
             + "' went away after the snapshot's point in time: the archive would declare its type without its data ("
             + e.getMessage() + ")");
       }
+  }
+
+  /**
+   * Streams one sealed store into the ZIP, refusing a symlink and a file that is not the one listed at t0 (issues
+   * #7671, #8738). The manifest entry is added only once the identity has been re-checked AFTER the read, so a store
+   * rewritten while it streamed fails the ship rather than being certified. Its ZIP entry is already in the stream by
+   * then, which is acceptable only because the failure aborts the ship: the manifest is never written, so the follower
+   * rejects the whole download (#4831, pinned by {@code SnapshotManifestVerificationTest}).
+   */
+  private static void addSealedStoreToZip(final ZipOutputStream zipOut, final ListedSealedStore sealedFile,
+      final List<SnapshotManager.ManifestEntry> manifest) throws Exception {
+    final Path filePath = sealedFile.file().toPath();
+    if (Files.isSymbolicLink(filePath))
+      throw new IOException("Refusing to archive the symlink '" + filePath
+          + "': the entry's content would come from a path this archive does not name");
+
+    // OPENED - AND THE IDENTITY CHECKED - BEFORE THE ENTRY IS STARTED, so a store replaced before the read fails
+    // without leaving a half-written entry behind
+    final SnapshotManager.ManifestEntry entry = streamEntry(zipOut, sealedFile.name(), sealedFile.open());
+    sealedFile.verifyUnchanged(entry.size());
+    manifest.add(entry);
   }
 
   /**
@@ -1090,43 +1127,22 @@ public class SnapshotHttpHandler implements HttpHandler {
    * exact bytes streamed (via {@link CheckedInputStream}), so they describe what the follower actually
    * receives rather than a separate re-read of the file. Skipped files (absent or symlink) contribute no
    * manifest entry, matching what is sent.
+   * <p>
+   * Skipping is what the page files and the fallback configuration want: a page file absent at t0 has no content at
+   * t0, and the follower's manifest check is over what WAS added. It is not survivable for a TimeSeries sealed store,
+   * whose absence the archive's own {@code schema.json} contradicts, so those go through
+   * {@link #addSealedStoresToZip} instead, which refuses rather than skips (issues #7671, #8738).
    */
   private static void addFileToZip(final ZipOutputStream zipOut, final File inputFile,
       final List<SnapshotManager.ManifestEntry> manifest) throws Exception {
-    addFileToZip(zipOut, inputFile, manifest, true);
-  }
-
-  /**
-   * The same, with the two SKIPS made a caller's decision rather than this method's (issue #7671).
-   * <p>
-   * {@code skippable} is what the page files and the fallback configuration want: a file that is not there, or
-   * that is a symlink this method refuses to follow, is simply left out of the archive. That is survivable for
-   * them - a page file absent at t0 has no content at t0, and the follower's manifest check is over what WAS
-   * added. It is not survivable for a TimeSeries sealed store, whose absence the archive's own {@code schema.json}
-   * contradicts; {@link #addSealedStoresToZip} passes {@code false} and says why there.
-   */
-  private static void addFileToZip(final ZipOutputStream zipOut, final File inputFile,
-      final List<SnapshotManager.ManifestEntry> manifest, final boolean skippable) throws Exception {
-    if (skippable && !inputFile.exists())
+    if (!inputFile.exists())
       return;
     final Path filePath = inputFile.toPath();
     if (Files.isSymbolicLink(filePath)) {
-      if (!skippable)
-        throw new IOException("Refusing to archive the symlink '" + filePath
-            + "': the entry's content would come from a path this archive does not name");
       LogManager.instance().log(SnapshotHttpHandler.class, Level.WARNING, "Skipping symlink in snapshot: %s", filePath);
       return;
     }
-    final ZipEntry entry = new ZipEntry(inputFile.getName());
-    zipOut.putNextEntry(entry);
-    final CRC32 crc = new CRC32();
-    final long size;
-    try (final FileInputStream fis = new FileInputStream(inputFile);
-        final CheckedInputStream cis = new CheckedInputStream(fis, crc)) {
-      size = cis.transferTo(zipOut);
-    }
-    zipOut.closeEntry();
-    manifest.add(new SnapshotManager.ManifestEntry(inputFile.getName(), size, crc.getValue()));
+    addStreamToZip(zipOut, inputFile.getName(), new FileInputStream(inputFile), manifest);
   }
 
   /**
@@ -1135,15 +1151,24 @@ public class SnapshotHttpHandler implements HttpHandler {
    */
   private static void addStreamToZip(final ZipOutputStream zipOut, final String name, final InputStream input,
       final List<SnapshotManager.ManifestEntry> manifest) throws Exception {
-    final ZipEntry entry = new ZipEntry(name);
-    zipOut.putNextEntry(entry);
+    manifest.add(streamEntry(zipOut, name, input));
+  }
+
+  /**
+   * The one place a streamed ZIP entry is written: consumes and closes {@code input}, and returns the manifest record
+   * (name + uncompressed size + CRC32 of the exact bytes streamed) WITHOUT adding it, so a caller with a check to run
+   * after the read - a sealed store's identity (#8738) - can decide whether the entry is certified.
+   */
+  private static SnapshotManager.ManifestEntry streamEntry(final ZipOutputStream zipOut, final String name,
+      final InputStream input) throws Exception {
     final CRC32 crc = new CRC32();
     final long size;
     try (final InputStream in = input; final CheckedInputStream cis = new CheckedInputStream(in, crc)) {
+      zipOut.putNextEntry(new ZipEntry(name));
       size = cis.transferTo(zipOut);
     }
     zipOut.closeEntry();
-    manifest.add(new SnapshotManager.ManifestEntry(name, size, crc.getValue()));
+    return new SnapshotManager.ManifestEntry(name, size, crc.getValue());
   }
 
   /**
