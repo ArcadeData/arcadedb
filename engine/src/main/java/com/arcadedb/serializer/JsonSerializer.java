@@ -338,19 +338,9 @@ public class JsonSerializer {
         result = value.size();
       else {
         final JSONArray list = new JSONArray();
-        String dateTimeFormat = null;
-        String dateFormat = null;
-        for (final Object o : value) {
-          Object element = serializeObject(database, o);
-          if (isTemporalValue(element)) {
-            if (dateTimeFormat == null) {
-              dateTimeFormat = database.getSchema().getDateTimeFormat();
-              dateFormat = database.getSchema().getDateFormat();
-            }
-            element = formatNestedTemporal(element, dateTimeFormat, dateFormat);
-          }
-          list.put(element);
-        }
+        final TemporalFormats formats = new TemporalFormats(database);
+        for (final Object o : value)
+          list.put(formatNestedTemporal(serializeObject(database, o), formats));
 
         result = list;
       }
@@ -358,8 +348,27 @@ public class JsonSerializer {
     return result;
   }
 
-  private static boolean isTemporalValue(final Object value) {
-    return value instanceof Temporal || value instanceof Date;
+  /** The schema patterns, read once per container and only when it holds a temporal. */
+  private static final class TemporalFormats {
+    private final Database database;
+    private       String   dateTimeFormat;
+    private       String   dateFormat;
+
+    private TemporalFormats(final Database database) {
+      this.database = database;
+    }
+
+    private String dateTimeFormat() {
+      if (dateTimeFormat == null)
+        dateTimeFormat = database.getSchema().getDateTimeFormat();
+      return dateTimeFormat;
+    }
+
+    private String dateFormat() {
+      if (dateFormat == null)
+        dateFormat = database.getSchema().getDateFormat();
+      return dateFormat;
+    }
   }
 
   /**
@@ -368,14 +377,16 @@ public class JsonSerializer {
    * value) and {@link JSONObject} with the schema pattern only (the fractional seconds were cut). The client rebuilds the
    * configured temporal type from the string through the element-type hint, the same conversion it applies to a scalar.
    */
-  private static Object formatNestedTemporal(final Object value, final String baseDateTimeFormat, final String baseDateFormat) {
+  private static Object formatNestedTemporal(final Object value, final TemporalFormats formats) {
+    if (!(value instanceof Temporal || value instanceof Date))
+      return value;
     if (value instanceof LocalDate)
-      return DateUtils.format(value, baseDateFormat);
-    final Object formatted = formatTemporalForPrecision(value, null, baseDateTimeFormat, baseDateFormat);
+      return DateUtils.format(value, formats.dateFormat());
+    final Object formatted = formatTemporalForPrecision(value, null, formats.dateTimeFormat(), formats.dateFormat());
     // A whole-second value is handed back untouched by formatTemporalForPrecision, for the JSONObject that owns the schema pattern
     // to format. A container has no such owner, so it is formatted here.
     if (formatted instanceof Temporal || formatted instanceof Date) {
-      final String text = DateUtils.format(formatted, baseDateTimeFormat);
+      final String text = DateUtils.format(formatted, formats.dateTimeFormat());
       return text != null ? text : formatted;
     }
     return formatted;
@@ -406,19 +417,9 @@ public class JsonSerializer {
     } else {
       final JSONObject map = new JSONObject().setDateFormat(database.getSchema().getDateFormat())
           .setDateTimeFormat(database.getSchema().getDateTimeFormat());
-      String dateTimeFormat = null;
-      String dateFormat = null;
-      for (final Map.Entry<Object, Object> entry : value.entrySet()) {
-        Object o = serializeObject(database, entry.getValue());
-        if (isTemporalValue(o)) {
-          if (dateTimeFormat == null) {
-            dateTimeFormat = database.getSchema().getDateTimeFormat();
-            dateFormat = database.getSchema().getDateFormat();
-          }
-          o = formatNestedTemporal(o, dateTimeFormat, dateFormat);
-        }
-        map.put(entry.getKey().toString(), o);
-      }
+      final TemporalFormats formats = new TemporalFormats(database);
+      for (final Map.Entry<Object, Object> entry : value.entrySet())
+        map.put(entry.getKey().toString(), formatNestedTemporal(serializeObject(database, entry.getValue()), formats));
       result = map;
     }
     return result;
