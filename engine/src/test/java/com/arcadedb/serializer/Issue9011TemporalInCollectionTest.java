@@ -26,6 +26,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -87,7 +88,7 @@ class Issue9011TemporalInCollectionTest extends TestHelper {
       final Map<String, Object> byKey = new LinkedHashMap<>();
       byKey.put("l", List.of(A, B));
       database.newDocument("T9011c").set("nested", List.of(List.of(A), List.of(B))).set("map", byKey)
-          .set("instants", List.of(A.toInstant(java.time.ZoneOffset.UTC))).save();
+          .set("instants", List.of(A.toInstant(ZoneOffset.UTC))).save();
     });
     final JsonSerializer serializer = new JsonSerializer(database);
     try (final ResultSet rs = database.query("sql", "SELECT nested, map, instants FROM T9011c")) {

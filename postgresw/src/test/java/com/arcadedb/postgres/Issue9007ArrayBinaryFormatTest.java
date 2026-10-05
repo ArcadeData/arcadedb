@@ -28,6 +28,7 @@ import java.util.Arrays;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for issue #9007: an array column requested in binary format was sent as the text literal {@code {1,2,3}}
@@ -108,6 +109,18 @@ class Issue9007ArrayBinaryFormatTest {
     assertRoundTrip(PostgresType.ARRAY_LONG, List.of(1L, 2, (short) 3), List.of(1L, 2L, 3L));
     assertRoundTrip(PostgresType.ARRAY_INT, List.of(1, 2L, (short) 3), List.of(1, 2, 3));
     assertRoundTrip(PostgresType.ARRAY_DOUBLE, List.of(1.5d, 2, 3L), List.of(1.5d, 2.0d, 3.0d));
+  }
+
+  @Test
+  void anElementOfAnotherTypeFailsWithAClearError() {
+    assertThatThrownBy(() -> encode(PostgresType.ARRAY_LONG, List.of(1L, "x"))).isInstanceOf(PostgresProtocolException.class)
+        .hasMessageContaining("String element").hasMessageContaining("_int8");
+  }
+
+  @Test
+  void charAndNestedListArraysEncode() {
+    assertRoundTrip(PostgresType.ARRAY_CHAR, List.of('a', 'b'), List.of("a", "b"));
+    assertRoundTrip(PostgresType.ARRAY_JSON, List.of(List.of(1, 2)), List.of("[1,2]"));
   }
 
   private static void assertRoundTrip(final PostgresType arrayType, final List<?> value, final List<?> expected) {
