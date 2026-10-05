@@ -29,6 +29,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
@@ -348,6 +349,47 @@ public class MembershipSecuritySeeder implements AutoCloseable {
       throw new IllegalStateException("the security seed could not be scheduled; this node may be stopping");
 
     return report(seed, timeoutMs);
+  }
+
+  /**
+   * {@link #seedNowAndReport} for a request that has just changed what a seed would observe, and so must be answered
+   * by a seed that STARTED after that change (issue #8689).
+   * <p>
+   * The admission of a peer declared on a follower is the case: the membership change already scheduled a seed here,
+   * and that seed's capability probes dialled a derived address because the declared one had not reached this node
+   * yet. Folding into it, or reusing its result, would report the failure the declared address was sent to prevent.
+   * So a seed still in flight is waited out - its outcome is not this request's - and a fresh one is run after it,
+   * with no reuse. A seed that a third caller starts meanwhile is folded into, which is sound: it started after the
+   * change too.
+   * <p>
+   * "In flight" includes a seed that is queued but not yet running: it is waited for the same way, which costs nothing
+   * more, since it would read the new address when it ran.
+   * <p>
+   * One deadline covers both waits, so the caller's own timeout, which is sized for one seed plus a margin, still
+   * bounds the whole answer.
+   *
+   * @throws IllegalStateException when the in-flight seed did not finish within the deadline, or when no fresh seed
+   *                               could be run or awaited at all
+   */
+  public List<String> seedAfterInFlightAndReport(final String reason, final long timeoutMs) {
+    final long deadline = System.currentTimeMillis() + Math.max(1L, timeoutMs);
+    final CompletableFuture<List<String>> inFlight;
+    synchronized (this) {
+      inFlight = outstandingSeed;
+    }
+    if (inFlight != null && !inFlight.isDone())
+      try {
+        inFlight.get(Math.max(1L, deadline - System.currentTimeMillis()), TimeUnit.MILLISECONDS);
+      } catch (final ExecutionException | CancellationException ignored) {
+        // Its outcome is not this request's: whatever it failed with, the fresh seed below is the answer.
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw new IllegalStateException("interrupted while waiting for the cluster security seed in flight", e);
+      } catch (final TimeoutException e) {
+        throw new IllegalStateException("the cluster security seed already in flight did not finish within " + timeoutMs
+            + "ms, so no seed could be run for " + reason, e);
+      }
+    return seedNowAndReport(reason, Math.max(1L, deadline - System.currentTimeMillis()), false);
   }
 
   /** Waits for {@code seed} and turns every way that can fail into the one exception this class reports. */

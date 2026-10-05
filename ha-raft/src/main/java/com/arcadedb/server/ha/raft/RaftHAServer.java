@@ -229,6 +229,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // #6221, the resync executors before it), and the day an addPeer overload starts declaring an https port the
   // map type must not be the thing that has to be remembered.
   private final    Map<RaftPeerId, String> httpsAddresses     = new ConcurrentHashMap<>();
+  // The HTTP addresses THIS node's own HA_SERVER_LIST declared, as parsed at construction and never written again.
+  // httpAddresses starts from the same entries but is rewritten as peers join and leave, so it cannot say which of its
+  // entries the operator configured here; recordAdmittedPeerHttpAddress needs exactly that, to never let another node's
+  // declaration replace this node's own (issue #8689).
+  private final    Map<RaftPeerId, String> serverListHttpAddresses;
   // Logged at most once: warns operators that HTTP addresses are derived (not explicitly configured).
   private final    AtomicBoolean           httpFallbackWarned = new AtomicBoolean(false);
   // Logged at most once: notes that peer HTTPS endpoints are derived from this node's local HTTPS port.
@@ -477,6 +482,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final String serverName = arcadeServer.getServerName();
 
     this.httpAddresses.putAll(parsed.httpAddresses());
+    this.serverListHttpAddresses = Map.copyOf(parsed.httpAddresses());
     this.httpsAddresses.putAll(parsed.httpsAddresses());
     this.boltAddresses.putAll(parsed.boltAddresses());
     this.grpcAddresses.putAll(parsed.grpcAddresses());
@@ -3854,6 +3860,82 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       }
     }
     return null;
+  }
+
+  /**
+   * Records the HTTP address another node declared for a peer it admitted, so this node's probes of that peer dial the
+   * listener the operator named rather than a derived guess (issue #8689).
+   * <p>
+   * {@code connect cluster host:raftPort:httpPort} writes the declared address into the map of the node that served
+   * it (issue #8330). When that node is a follower nothing else carries it: the Raft configuration entry has no field
+   * for it, and the per-node map of the LEADER - where the security seed runs, and whose #7511 capability gate admits
+   * the group and API-token entries only after the new peer answers a probe - holds nothing for a brand-new peer, or
+   * for one it removed. The leader then derives the address from the peer's Raft host plus its own HTTP port, which on
+   * a cluster whose ports are not in step names the wrong listener or the leader itself. The admitting node therefore
+   * sends the address with its seed request, and the leader records it here.
+   * <p>
+   * Three refusals, each answering "not recorded":
+   * <ul>
+   * <li>the peer is not in the committed configuration - an address is never recorded for a node that is not a
+   * member, so a seed request cannot be used to plant entries for arbitrary ids;</li>
+   * <li>the peer is this node - its own address is its own listener, not somebody else's statement about it;</li>
+   * <li>the entry this node holds is the one its own {@code arcadedb.ha.serverList} declared - the operator said that
+   * here, and a declaration made on another node does not outrank it. A derived or runtime-written entry is replaced,
+   * exactly as a {@code connect cluster} served by this node would have replaced it.</li>
+   * </ul>
+   * <b>Trust.</b> The only caller is {@code PostSecuritySeedHandler}, behind the root / cluster-token check every
+   * peer-to-peer route has. A holder of the cluster token can therefore point this node's dials of a committed member
+   * that its server list does not declare at a {@code host:port} of its choosing - dials that carry the token. That is
+   * no wider than what the token already grants (the same caller can run {@code connect cluster} on this node, which
+   * writes the same map), and the address is refused unless it is a plain authority. The host is deliberately not
+   * required to equal the peer's Raft host: a node may serve HTTP on a different interface than Raft.
+   * <p>
+   * A node that has just become leader and not yet applied the configuration entry that added the peer refuses, as for
+   * any non-member: the request then degrades to the pre-#8689 behaviour - an ordinary admission seed - rather than
+   * failing, and a re-issued admission records the address once the entry is applied.
+   *
+   * @return {@code true} when the map now holds {@code httpAddress} for the peer and did not before, which is what
+   * tells the caller that a seed run earlier probed a different address
+   */
+  boolean recordAdmittedPeerHttpAddress(final RaftPeerId peerId, final String httpAddress) {
+    return recordAdmittedPeerHttpAddress(localPeerId, getCommittedPeersOrNull(), httpAddresses, serverListHttpAddresses,
+        peerId, httpAddress);
+  }
+
+  /**
+   * The body of {@link #recordAdmittedPeerHttpAddress(RaftPeerId, String)} over explicit state, so every refusal can be
+   * pinned without a running Raft server. The map write is lock-free: a conditional write against the value just read,
+   * retried if another writer got there in between, so a concurrent leave or add of the same peer is never overwritten
+   * with a decision made against the state before it.
+   *
+   * @param committedPeers the committed configuration, or {@code null} when it cannot be read - which refuses
+   */
+  // @VisibleForTesting
+  static boolean recordAdmittedPeerHttpAddress(final RaftPeerId localPeerId, final Collection<RaftPeer> committedPeers,
+      final Map<RaftPeerId, String> httpAddresses, final Map<RaftPeerId, String> serverListHttpAddresses,
+      final RaftPeerId peerId, final String httpAddress) {
+    if (peerId == null || httpAddress == null || peerId.equals(localPeerId) || committedPeers == null)
+      return false;
+    boolean member = false;
+    for (final RaftPeer peer : committedPeers)
+      if (peer.getId().equals(peerId)) {
+        member = true;
+        break;
+      }
+    if (!member)
+      return false;
+
+    final String declaredHere = serverListHttpAddresses.get(peerId);
+    while (true) {
+      final String current = httpAddresses.get(peerId);
+      if (httpAddress.equals(current))
+        return false;
+      if (current != null && current.equals(declaredHere))
+        return false;
+      if (current == null ? httpAddresses.putIfAbsent(peerId, httpAddress) == null
+          : httpAddresses.replace(peerId, current, httpAddress))
+        return true;
+    }
   }
 
   /**

@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
+import org.apache.ratis.protocol.RaftPeerId;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 
@@ -109,14 +110,29 @@ class Issue7401ConnectClusterJoinsPeerIT extends BaseRaftHATest {
     final int rejoining = (leader + 1) % getServerCount();
     final int follower = (leader + 2) % getServerCount();
 
-    dropFromConfigurationAndRestart(leader, rejoining);
+    // Issue #8689: the leader's map is NOT repaired here. removePeer dropped the rejoining node's entry, so the only
+    // place the right HTTP port can come from is the declaration typed on the follower - and the security seed, with
+    // the #7511 capability probe its group and API-token entries wait on, runs on the leader. Before the fix the
+    // leader derived the address from the peer's Raft host plus its OWN HTTP port, which on this fixture (Raft and
+    // HTTP ports not in step) is the leader itself, and the verb answered 503 with failedSeeds [groups, API tokens].
+    dropFromConfigurationAndRestart(leader, rejoining, false);
+    final RaftPeerId rejoiningId = RaftPeerId.valueOf(peerIdForIndex(rejoining));
+    assertThat(getRaftPlugin(leader).getRaftHAServer().getHttpAddresses())
+        .as("the leader holds no address for the peer it removed").doesNotContainKey(rejoiningId);
+    // A brand-new peer has never answered the leader's capability probe. This one did before it was removed, and
+    // until that answer ages out it would let the seed through whatever address the leader holds, so wait for the
+    // leader's own refresh to drop it - which it does because it can no longer reach the peer.
+    final PeerCapabilityRegistry leaderCapabilities = getRaftPlugin(leader).getRaftHAServer().getPeerCapabilityRegistry();
+    Awaitility.await().atMost(60, TimeUnit.SECONDS).pollInterval(500, TimeUnit.MILLISECONDS)
+        .until(() -> leaderCapabilities.freshAdvertisementOf(rejoiningId.toString()) == null);
 
-    // Passes only because the fixture restored the leader's HTTP-address map: the declared port reaches the
-    // follower's map, not the leader's, where the seed runs. Drop that restore once #8689 is fixed.
     final Response response = serverCommand(follower, "connect cluster " + joinAddressOf(rejoining));
 
     assertThat(response.status()).as("body: %s", response.body()).isEqualTo(200);
     assertThat(peerIds(leader)).as("the leader's committed configuration").contains(peerIdForIndex(rejoining));
+    assertThat(getRaftPlugin(leader).getRaftHAServer().getHttpAddresses().get(rejoiningId))
+        .as("the address declared on the follower, recorded by the leader")
+        .isEqualTo("localhost:" + getServerHttpPort(rejoining));
   }
 
   /**
@@ -146,6 +162,15 @@ class Issue7401ConnectClusterJoinsPeerIT extends BaseRaftHATest {
    * running non-member campaigning for an election nobody wants during the window.
    */
   private void dropFromConfigurationAndRestart(final int leader, final int rejoining) {
+    dropFromConfigurationAndRestart(leader, rejoining, true);
+  }
+
+  /**
+   * @param repairHttpAddresses whether to put the fixture's bound ports back into every node's HTTP-address map, which
+   *                            removePeer emptied on the leader for this node
+   */
+  private void dropFromConfigurationAndRestart(final int leader, final int rejoining,
+      final boolean repairHttpAddresses) {
     final RaftHAServer leaderRaft = getRaftPlugin(leader).getRaftHAServer();
     assertThat(leaderRaft.getLivePeers()).hasSize(getServerCount());
 
@@ -168,7 +193,8 @@ class Issue7401ConnectClusterJoinsPeerIT extends BaseRaftHATest {
 
     // Issue #8330: removePeer dropped this node's HTTP address from the leader's map, and the leader's security seed
     // probes it there; without it the seed's group and API-token entries are refused by the #7511 gate.
-    patchPeerHttpAddressesWithBoundPorts();
+    if (repairHttpAddresses)
+      patchPeerHttpAddressesWithBoundPorts();
   }
 
   /**
