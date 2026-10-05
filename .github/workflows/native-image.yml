@@ -40,6 +40,16 @@ on:
         description: "Upload the built archives to the GitHub release named by `ref` and push its native Docker images. Off by default. PUBLISHES PUBLICLY."
         type: boolean
         default: false
+      # Runs the nightly's publishing path from a dispatch. `schedule` fires only from the default
+      # branch, so without this the `latest-native` push could be exercised for the first time only
+      # by the first nightly after a merge - the same "untestable until it ships" trap that
+      # `attach_to_release` exists to close. Whatever tree the run builds becomes `latest-native`
+      # (and `<x.y.z-SNAPSHOT>-native`), so a dispatch from a feature branch publishes that branch;
+      # the next nightly overwrites it with main. `attach_to_release` wins if both are ticked.
+      publish_nightly:
+        description: "Push the Docker images as the nightly does (latest-native + <snapshot>-native). Off by default. PUBLISHES PUBLICLY."
+        type: boolean
+        default: false
   release:
     types: [published]
   # Daily, because nothing else exercises this workflow. It has no `push`/`pull_request` trigger -
@@ -415,6 +425,7 @@ jobs:
   #   release                        - `<version>-native-<arch>`
   #   dispatch + attach_to_release   - the same, for the release named by `ref` (recovery)
   #   schedule (always main)         - `latest-native-<arch>` and `<x.y.z-SNAPSHOT>-native-<arch>`
+  #   dispatch + publish_nightly     - the same as schedule, for whatever tree the run built
   # An ordinary dispatch (e.g. to validate this job from a feature branch during review) publishes
   # nothing: it exercises the Dockerfiles and build context end-to-end and stops there.
   docker:
@@ -477,7 +488,7 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Login to Docker Hub
-        if: ${{ github.event_name == 'release' || github.event_name == 'schedule' || inputs.attach_to_release }}
+        if: ${{ github.event_name == 'release' || github.event_name == 'schedule' || inputs.attach_to_release || inputs.publish_nightly }}
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
@@ -499,13 +510,14 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           ATTACH_TO_RELEASE: ${{ inputs.attach_to_release }}
+          PUBLISH_NIGHTLY: ${{ inputs.publish_nightly }}
           VERSION: ${{ steps.stage.outputs.version }}
         run: |
           set -euo pipefail
           CHANNELS=""
           if [ "$EVENT_NAME" = "release" ] || [ "$ATTACH_TO_RELEASE" = "true" ]; then
             CHANNELS="$VERSION"
-          elif [ "$EVENT_NAME" = "schedule" ]; then
+          elif [ "$EVENT_NAME" = "schedule" ] || [ "$PUBLISH_NIGHTLY" = "true" ]; then
             CHANNELS="latest"
             case "$VERSION" in
               *-SNAPSHOT) CHANNELS="$CHANNELS $VERSION" ;;
@@ -519,7 +531,7 @@ jobs:
           done
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "channels=$CHANNELS" >> "$GITHUB_OUTPUT"
-          echo "[docker] event=$EVENT_NAME attach_to_release=$ATTACH_TO_RELEASE channels='${CHANNELS:-none (local only)}'"
+          echo "[docker] event=$EVENT_NAME attach_to_release=$ATTACH_TO_RELEASE publish_nightly=$PUBLISH_NIGHTLY channels='${CHANNELS:-none (local only)}'"
           docker buildx build --platform "linux/${{ matrix.arch }}" \
             -f "${{ matrix.dockerfile }}" \
             "${TAG_ARGS[@]}" \
@@ -574,11 +586,11 @@ jobs:
 
   # Stitches the per-arch tags pushed by the `docker` job above into one multi-arch manifest per
   # channel: `<version>-native` on a release or a recovery dispatch, `latest-native` and
-  # `<x.y.z-SNAPSHOT>-native` on the nightly. Guarded by the same three cases as the `docker` job's
-  # push; every other run leaves nothing in the registry for imagetools to stitch.
+  # `<x.y.z-SNAPSHOT>-native` on the nightly (or a `publish_nightly` dispatch). Guarded by the same
+  # cases as the `docker` job's push; every other run leaves nothing in the registry to stitch.
   manifest:
     needs: docker
-    if: ${{ github.event_name == 'release' || github.event_name == 'schedule' || inputs.attach_to_release }}
+    if: ${{ github.event_name == 'release' || github.event_name == 'schedule' || inputs.attach_to_release || inputs.publish_nightly }}
     runs-on: ubuntu-latest
     steps:
       - name: Set up Docker Buildx
