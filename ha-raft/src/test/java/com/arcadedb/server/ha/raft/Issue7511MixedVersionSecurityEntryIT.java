@@ -106,9 +106,15 @@ class Issue7511MixedVersionSecurityEntryIT extends BaseRaftHATest {
         .isInstanceOf(ClusterCapabilityNotReadyException.class)
         .hasMessageContaining(PeerCapabilities.SECURITY_API_TOKENS_ENTRY);
 
-    // ---- and so does an UPGRADED FOLLOWER, which has no capability cache of its own ------------------------
+    // ---- and so does an UPGRADED FOLLOWER, which keeps a capability cache of its own ----------------------
     // The REST routes for groups and API tokens do not forward to the leader, so this is not a hypothetical
     // path: it is what happens whenever a load balancer sends the request to a node that is not the leader.
+    // Since #7549 the follower refreshes its own registry, and the gate only re-probes when that registry
+    // reports the capability MISSING: an advertisement recorded before the downgrade above stays fresh for up to
+    // PeerCapabilityRegistry.ADVERTISEMENT_TTL_MS and lets the change through. A real downgrade restarts the node,
+    // which fails the probes in between; the in-JVM flip does not, so wait for the follower to see it too.
+    awaitObserved(upgradedFollowerIndex, laggingPeerId, hasNeither(), "the upgraded follower must be told peer '"
+        + laggingPeerId + "' cannot decode either new entry type");
     assertThatThrownBy(() -> controlPlaneOn(upgradedFollowerIndex).saveGroup("*", "reader", readerGroup()))
         .as("a follower must reach the same answer, by asking the peers itself")
         .isInstanceOf(ClusterCapabilityNotReadyException.class)
@@ -190,19 +196,22 @@ class Issue7511MixedVersionSecurityEntryIT extends BaseRaftHATest {
   private void awaitObserved(final int observerIndex, final String peerId, final Predicate<Set<String>> settled,
       final String what) throws InterruptedException {
     final RaftHAServer observer = raftServerOf(observerIndex);
+    final boolean observerIsLeader = observer.isLeader();
     final long deadline = System.currentTimeMillis() + CAPABILITY_CONVERGENCE_TIMEOUT_MS;
     Set<String> observed = observedCapabilities(observer, peerId);
-    while (!settled.test(observed) && observer.isLeader() && System.currentTimeMillis() < deadline) {
+    while (!settled.test(observed) && (!observerIsLeader || observer.isLeader())
+        && System.currentTimeMillis() < deadline) {
       Thread.sleep(200);
       observed = observedCapabilities(observer, peerId);
     }
-    // Only the leader runs the background refresh, so a node that lost leadership mid-test stops asking and its
-    // advertisements go stale - which would read here as "the negotiation is broken" and cost the next reader an
-    // hour. This test pins the leader it elected, so an election is a failed PRECONDITION and says so.
-    assertThat(observer.isLeader())
-        .as("this test pins the leader it elected at the start; %s lost leadership mid-test, so the capability "
-            + "refresh it drives stopped", observer.getLocalPeerId())
-        .isTrue();
+    // The refresh runs in every role since #7549, but the leader-side assertions above address the node elected at
+    // the start: an election mid-test would make them assert on the wrong role, which would read as "the
+    // negotiation is broken" and cost the next reader an hour. So an election is a failed PRECONDITION and says so.
+    if (observerIsLeader)
+      assertThat(observer.isLeader())
+          .as("this test pins the leader it elected at the start; %s lost leadership mid-test",
+              observer.getLocalPeerId())
+          .isTrue();
     // A wall-clock bound used as a hang detector, not as a latency assertion: the refresh runs every
     // PeerCapabilityRegistry.REFRESH_PERIOD_MS, so a budget of several rounds only fires when it stopped asking.
     assertThat(settled.test(observed))
