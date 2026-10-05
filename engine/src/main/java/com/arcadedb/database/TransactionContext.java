@@ -768,9 +768,10 @@ public class TransactionContext implements Transaction {
 
   @Override
   public void rollback() {
-    LogManager.instance()
-        .log(this, Level.FINE, "Rollback transaction newPages=%s modifiedPages=%s (threadId=%d)", newPages, modifiedPages,
-            Thread.currentThread().threadId());
+    if (LogManager.instance().isLoggable(this, Level.FINE))
+      LogManager.instance()
+          .log(this, Level.FINE, "Rollback transaction newPages=%s modifiedPages=%s (threadId=%d)", newPages, modifiedPages,
+              Thread.currentThread().threadId());
 
     // #7931: FIRST, and only from here. The pages this transaction wrote are about to be dropped, so anything its
     // index replay published outside them has to come back with them - and the file locks that make that safe
@@ -2531,9 +2532,10 @@ public class TransactionContext implements Transaction {
         phase2WalAppended = true;
       }
 
-      LogManager.instance()
-          .log(this, Level.FINE, "TX committing pages newPages=%s modifiedPages=%s (threadId=%d)", newPages, modifiedPages,
-              Thread.currentThread().threadId());
+      if (LogManager.instance().isLoggable(this, Level.FINE))
+        LogManager.instance()
+            .log(this, Level.FINE, "TX committing pages newPages=%s modifiedPages=%s (threadId=%d)", newPages, modifiedPages,
+                Thread.currentThread().threadId());
 
       // From here the transaction is durable in the WAL: a failure below is repaired by recovery replay,
       // never by aborting.
