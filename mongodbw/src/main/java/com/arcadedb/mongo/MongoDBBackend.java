@@ -82,9 +82,19 @@ public class MongoDBBackend extends AbstractMongoBackend {
     // Handshake/diagnostic commands (hello, isMaster, ping, ...) target a virtual admin database and are
     // let through so drivers can complete the connection handshake before authenticating.
     if (isUserDatabase(databaseName)) {
-      final ServerSecurityUser user = authenticatedUsers.get(channel);
+      ServerSecurityUser user = authenticatedUsers.get(channel);
       if (user == null)
         throw new MongoServerError(UNAUTHORIZED, "Unauthorized", "Command '" + command + "' requires authentication");
+
+      try {
+        // The live principal: a user deleted, re-passworded or stripped of a grant since the SASL login must not keep
+        // the access it had when it authenticated.
+        user = server.getSecurity().revalidate(user);
+        authenticatedUsers.put(channel, user);
+      } catch (final ServerSecurityException e) {
+        authenticatedUsers.remove(channel);
+        throw new MongoServerError(UNAUTHORIZED, "Unauthorized", "Command '" + command + "' requires authentication");
+      }
 
       if (!user.canAccessToDatabase(databaseName))
         throw new MongoServerError(UNAUTHORIZED, "Unauthorized",

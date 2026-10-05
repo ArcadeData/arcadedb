@@ -220,6 +220,7 @@ public class PostgresNetworkExecutor extends Thread {
   private String   userName                   = null;
   private String   databaseName               = null;
   private String   userPassword               = null;
+  private ServerSecurityUser authenticatedUser = null;
   private int      consecutiveErrors          = 0;
   private long     processIdSequence          = 0;
   private boolean  explicitTransactionStarted = false;
@@ -361,6 +362,9 @@ public class PostgresNetworkExecutor extends Thread {
             if (!readMessage("any", (type, length) -> {
               consecutiveErrors = 0;
               currentMessageType = type;
+
+              if (type != 'X' && !revalidateUser())
+                return;
 
               switch (type) {
               case 'P' -> parseCommand();
@@ -3698,6 +3702,29 @@ public class PostgresNetworkExecutor extends Thread {
     }, 'S', length);
   }
 
+  /**
+   * Re-resolves the user this connection authenticated as against the live security state before each message, so a
+   * user deleted, re-passworded or stripped of the database grant while connected is cut off on its next request, as
+   * on HTTP. The connection is closed with a FATAL error when it is no longer valid.
+   */
+  private boolean revalidateUser() {
+    try {
+      final ServerSecurityUser current = server.getSecurity().revalidate(authenticatedUser);
+      if (!current.canAccessToDatabase(databaseName))
+        throw new ServerSecurityException("User '" + current.getName() + "' has not access to database '" + databaseName + "'");
+      if (current != authenticatedUser) {
+        authenticatedUser = current;
+        // Rebinds the principal the engine's per-type gates enforce against: the group refresh reaches this one.
+        DatabaseContext.INSTANCE.init((DatabaseInternal) database).setCurrentUser(current.getDatabaseUser(database));
+      }
+      return true;
+    } catch (final ServerSecurityException e) {
+      shutdown = true;
+      writeError(ERROR_SEVERITY.FATAL, "Credentials not valid", "28P01");
+      return false;
+    }
+  }
+
   private boolean openDatabase() {
     if (databaseName == null) {
       writeError(ERROR_SEVERITY.FATAL, "Database not selected", "HV00Q");
@@ -3706,6 +3733,7 @@ public class PostgresNetworkExecutor extends Thread {
 
     try {
       final ServerSecurityUser dbUser = server.getSecurity().authenticate(userName, userPassword, databaseName);
+      authenticatedUser = dbUser;
 
       database = server.getDatabase(databaseName);
 
