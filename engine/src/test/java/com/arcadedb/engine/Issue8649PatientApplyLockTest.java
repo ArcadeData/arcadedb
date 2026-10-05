@@ -202,6 +202,8 @@ class Issue8649PatientApplyLockTest extends TestHelper {
     // A recompute that outlasts even the patient wait
     final Object recompute = new Object();
     assertThat(txManager.tryLockFile(fileId, 1000, recompute)).isEqualTo(LockManager.LOCK_STATUS.YES);
+    // What count() does once it holds the lock: tells the applies a recompute, not a commit, is the holder
+    bucket.recountTookLock();
     try {
       final long stampBefore = bucket.getUnlockedApplyStamp();
       final long before = System.nanoTime();
@@ -224,6 +226,7 @@ class Issue8649PatientApplyLockTest extends TestHelper {
       applyInBackground(db, fileId, 5, 8653);
       assertThat(bucket.isApplyLockPatient()).isFalse();
     } finally {
+      bucket.recountReleasedLock();
       txManager.unlockFile(fileId, recompute);
       db.getConfiguration().setValue(GlobalConfiguration.COMMIT_LOCK_TIMEOUT, previousTimeout);
     }
@@ -246,6 +249,8 @@ class Issue8649PatientApplyLockTest extends TestHelper {
 
     final Object recompute = new Object();
     assertThat(txManager.tryLockFile(fileId, 1000, recompute)).isEqualTo(LockManager.LOCK_STATUS.YES);
+    // What count() does once it holds the lock: tells the applies a recompute, not a commit, is the holder
+    bucket.recountTookLock();
     try {
       final long start = System.nanoTime();
       applyInBackground(db, fileId, 5, 8654);
@@ -254,6 +259,7 @@ class Issue8649PatientApplyLockTest extends TestHelper {
       assertThat(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start)).isGreaterThanOrEqualTo(400L);
       assertThat(bucket.isApplyLockPatient()).isFalse();
     } finally {
+      bucket.recountReleasedLock();
       txManager.unlockFile(fileId, recompute);
       db.getConfiguration().setValue(GlobalConfiguration.COMMIT_LOCK_TIMEOUT, previousTimeout);
     }
