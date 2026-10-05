@@ -62,6 +62,10 @@ class Issue9233BuildVectorsByOrdinalTest {
 
     for (int i = 0; i < n; i++)
       assertThat(values.getVector(i)).as("ordinal %d", i).isSameAs(expected[i]);
+
+    // Served by the ordinal array, not the cache: the vector is still there once the cache has dropped it
+    cache.remove(ordinalToVectorId[0]);
+    assertThat(values.getVector(0)).isSameAs(expected[0]);
   }
 
   @Test
