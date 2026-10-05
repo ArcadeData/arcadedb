@@ -2466,7 +2466,7 @@ public class PostgresNetworkExecutor extends Thread {
       // The format code being used for the field (0=text, 1=binary). Comes from the Bind message's
       // result-column formats when present; defaults to 0 (text) otherwise. Types that lack a
       // binary encoder (arrays) are forced to text so the announced format and DataRow agree.
-      bufferDescription.putShort(effectiveResultFormat(resultFormats, colIndex++, columnType));
+      bufferDescription.putShort(resolveResultFormat(resultFormats, colIndex++));
     }
 
     bufferDescription.flip();
@@ -2491,18 +2491,6 @@ public class PostgresNetworkExecutor extends Thread {
     return 0;
   }
 
-  /**
-   * Same as {@link #resolveResultFormat} but forces text (0) for columns whose type lacks a
-   * binary encoder. Used by both RowDescription and DataRow so the announced format code and the
-   * written bytes always agree, even when the client requested binary.
-   */
-  private static short effectiveResultFormat(final List<Integer> resultFormats, final int colIndex,
-      final PostgresType columnType) {
-    if (!columnType.hasBinaryEncoding())
-      return 0;
-    return resolveResultFormat(resultFormats, colIndex);
-  }
-
   private void writeDataRows(final List<Result> resultSet, final Map<String, PostgresType> columns) throws IOException {
     writeDataRows(resultSet, columns, null);
   }
@@ -2524,7 +2512,7 @@ public class PostgresNetworkExecutor extends Thread {
         final Object value = columnValue(row, propertyName);
 
         final PostgresType columnType = postgresTypeEntry.getValue();
-        if (effectiveResultFormat(resultFormats, colIndex++, columnType) == 1)
+        if (resolveResultFormat(resultFormats, colIndex++) == 1)
           columnType.serializeAsBinary(columnType, bufferValues, value);
         else
           columnType.serializeAsText(columnType, bufferValues, value);
@@ -2693,15 +2681,6 @@ public class PostgresNetworkExecutor extends Thread {
     final String[] names = columns.keySet().toArray(new String[0]);
     final PostgresType[] types = columns.values().toArray(new PostgresType[0]);
     final boolean binary = copy.getFormat() == PostgresCopyStatement.Format.BINARY;
-    if (binary)
-      // Unlike a DataRow, whose columns each carry their own format code, a binary COPY stream is binary in every
-      // field, so a column with no binary encoding cannot be sent in it at all.
-      for (int i = 0; i < types.length; i++)
-        if (!types[i].hasBinaryEncoding())
-          throw new PostgresCopyStatement.CopyException("column \"" + names[i] + "\" has type " + types[i].name().toLowerCase(Locale.ENGLISH)
-              + ", which has no binary encoding on this server: use FORMAT text or csv, or project it as a string",
-              PostgresCopyStatement.SQLSTATE_FEATURE_NOT_SUPPORTED);
-
     if (DEBUG)
       LogManager.instance().log(this, Level.INFO, "PSQL:-> CopyOutResponse: %s, %d columns: %s (thread=%s)", copy.getFormat(),
           names.length, columns.keySet(), Thread.currentThread().threadId());

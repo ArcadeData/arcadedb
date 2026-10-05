@@ -28,6 +28,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.BufferUnderflowException;
 import java.nio.ByteBuffer;
+import java.nio.charset.Charset;
 import java.util.Arrays;
 import java.util.logging.Level;
 
@@ -294,12 +295,37 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
 
   @Override
   public int putString(final int index, final String value) {
-    return putBytes(index, value.getBytes(DatabaseFactory.getDefaultCharset()));
+    return putBytes(index, encodeString(value));
   }
 
   @Override
   public int putString(final String value) {
-    return putBytes(value.getBytes(DatabaseFactory.getDefaultCharset()));
+    return putBytes(encodeString(value));
+  }
+
+  /**
+   * Encodes the string with the database charset, refusing a value the charset cannot represent (a lone UTF-16 surrogate, or a
+   * character outside the charset). {@link String#getBytes(java.nio.charset.Charset)} silently replaces those with '?', which
+   * would store a different string and make it collide with a real "?" (issue #9054). The check costs one scan of the encoded
+   * bytes for '?'; only when one is found the characters are counted too, so a replacement is told from a genuine "?".
+   */
+  private static byte[] encodeString(final String value) {
+    final Charset charset = DatabaseFactory.getDefaultCharset();
+    final byte[] bytes = value.getBytes(charset);
+    int questionMarksInBytes = 0;
+    for (final byte b : bytes)
+      if (b == '?')
+        questionMarksInBytes++;
+    if (questionMarksInBytes > 0) {
+      int questionMarksInChars = 0;
+      for (int i = value.indexOf('?'); i >= 0; i = value.indexOf('?', i + 1))
+        questionMarksInChars++;
+      if (questionMarksInBytes > questionMarksInChars)
+        throw new SerializationException("The string cannot be stored with the " + charset
+            + " charset because it holds a lone UTF-16 surrogate or a character the charset cannot encode: it would be stored as '?' (string length "
+            + value.length() + ")");
+    }
+    return bytes;
   }
 
   @Override

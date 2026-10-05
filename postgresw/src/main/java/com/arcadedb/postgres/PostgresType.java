@@ -898,10 +898,90 @@ public enum PostgresType {
       final long secsFromPgEpoch = ldt.toEpochSecond(ZoneOffset.UTC) - POSTGRES_EPOCH_SECONDS;
       typeBuffer.putLong(secsFromPgEpoch * 1_000_000L + ldt.getNano() / 1000L);
     }
-    // Strings, JSON, and arrays do not have a separate binary representation: their wire format
-    // is identical to text for our purposes (length-prefixed UTF-8 bytes / array literal text).
+    case ARRAY_INT, ARRAY_CHAR, ARRAY_LONG, ARRAY_REAL, ARRAY_DOUBLE, ARRAY_TEXT, ARRAY_JSON, ARRAY_BOOLEAN, ARRAY_NUMERIC -> {
+      final Collection<?> elements = value instanceof Collection<?> collection ? collection
+          : value.getClass().isArray() ? convertPrimitiveArrayToCollection(value) : null;
+      if (elements == null)
+        serializeAsText(pgType, typeBuffer, value);
+      else
+        putArrayBinary(pgType, typeBuffer, elements);
+    }
+    // Strings and JSON do not have a separate binary representation: their wire format is identical to text
+    // for our purposes (length-prefixed UTF-8 bytes).
     default -> serializeAsText(pgType, typeBuffer, value);
     }
+  }
+
+  /**
+   * Writes a one-dimensional array in PostgreSQL's binary array format (array_send): the number of dimensions, a flag telling
+   * whether a NULL element is present, the element type OID, then for the dimension its length and lower bound (1), then every
+   * element as a length-prefixed binary value (-1 for NULL). An empty array has no dimensions at all. A client that asks for the
+   * binary format of an array column (pgjdbc does once a statement is server-prepared) decodes exactly this layout, and fails on
+   * the text literal (issue #9007).
+   */
+  private void putArrayBinary(final PostgresType arrayType, final Binary typeBuffer, final Collection<?> elements) {
+    final PostgresType elementType = elementTypeOf(arrayType);
+    final int lengthPosition = typeBuffer.position();
+    typeBuffer.putInt(0);  // the value length, patched once the elements are written
+
+    boolean hasNull = false;
+    for (final Object element : elements)
+      if (element == null) {
+        hasNull = true;
+        break;
+      }
+
+    typeBuffer.putInt(elements.isEmpty() ? 0 : 1);
+    typeBuffer.putInt(hasNull ? 1 : 0);
+    typeBuffer.putInt(elementType.code);
+    if (!elements.isEmpty()) {
+      typeBuffer.putInt(elements.size());
+      typeBuffer.putInt(1);
+      for (final Object element : elements) {
+        if (element == null)
+          typeBuffer.putInt(-1);
+        else if (elementType == TEXT || elementType == JSON)
+          writeString(typeBuffer, arrayElementToText(element));
+        else
+          serializeAsBinary(elementType, typeBuffer, element);
+      }
+    }
+    typeBuffer.putInt(lengthPosition, typeBuffer.position() - lengthPosition - 4);
+  }
+
+  private static PostgresType elementTypeOf(final PostgresType arrayType) {
+    return switch (arrayType) {
+      case ARRAY_INT -> INTEGER;
+      case ARRAY_CHAR -> CHAR;
+      case ARRAY_LONG -> LONG;
+      case ARRAY_REAL -> REAL;
+      case ARRAY_DOUBLE -> DOUBLE;
+      case ARRAY_TEXT -> TEXT;
+      case ARRAY_JSON -> JSON;
+      case ARRAY_BOOLEAN -> BOOLEAN;
+      case ARRAY_NUMERIC -> NUMERIC;
+      default -> throw new IllegalArgumentException("Not an array type: " + arrayType);
+    };
+  }
+
+  /** The text of one element of a text[] or json[] array: what {@link #serializeArrayToString} writes, without the literal quoting. */
+  @SuppressWarnings("unchecked")
+  private String arrayElementToText(final Object element) {
+    return switch (element) {
+      case String str -> str;
+      case Float f -> String.valueOf(f.floatValue());
+      case Double d -> String.valueOf(d.doubleValue());
+      case Date date -> LocalDateTime.ofInstant(date.toInstant(), ZoneOffset.UTC).format(POSTGRES_DATETIME_FORMATTER);
+      case LocalDateTime ldt -> ldt.format(POSTGRES_DATETIME_FORMATTER);
+      case Binary binary -> binary.getString();
+      case Collection<?> nested -> new JSONArray(nested).toString();
+      case Result result -> result.toJSON().toString();
+      case JSONObject json -> json.toString();
+      case Map<?, ?> map -> new JSONObject((Map<String, ?>) map).toString();
+      case EmbeddedDocument embeddedDocument -> embeddedDocument.toJSON(true).toString();
+      case Record record -> record.toJSON(true).toString();
+      default -> element.getClass().isArray() ? new JSONArray(convertPrimitiveArrayToCollection(element)).toString() : element.toString();
+    };
   }
 
   private void writeString(final Binary typeBuffer, final String value) {
@@ -1424,16 +1504,5 @@ public enum PostgresType {
         this == BOOLEAN ||
         this == DATE ||
         this == TIMESTAMP;
-  }
-
-  /**
-   * Returns true when {@link #serializeAsBinary} produces a wire payload that matches the type's
-   * binary protocol specification. Array types currently lack a binary encoder, so they MUST be
-   * advertised as text (0) in RowDescription regardless of what the client requested in Bind -
-   * otherwise the RowDescription format code and the DataRow bytes disagree and clients misparse.
-   * String/JSON types are safe because their text and binary wire formats are identical raw bytes.
-   */
-  public boolean hasBinaryEncoding() {
-    return !isArrayType();
   }
 }
