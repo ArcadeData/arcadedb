@@ -27,7 +27,8 @@ import com.arcadedb.server.security.ApiTokenConfiguration;
 import org.junit.jupiter.api.Test;
 
 import java.net.HttpURLConnection;
-import java.net.URL;
+import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -52,6 +53,15 @@ class GraphQLSchemaDefinitionAuthorizationTest extends BaseGraphServerTest {
   }
 
   @Test
+  void aDocumentMixingATypeDefinitionAndAQueryIsClassifiedAsSchemaChange() {
+    final QueryEngine.AnalyzedQuery analyzed = getServerDatabase(0, getDatabaseName()).getQueryEngine("graphql")
+        .analyze(SCHEMA + " { books { name } }");
+    assertThat(analyzed.isIdempotent()).isFalse();
+    assertThat(analyzed.isDDL()).isTrue();
+    assertThat(analyzed.getOperationTypes()).contains(OperationType.SCHEMA);
+  }
+
+  @Test
   void readOnlyUserCannotReplaceTheGraphQLSchema() throws Exception {
     testEachServer(serverIndex -> {
       assertThat(call(serverIndex, basicAuth(), "command", "sql", "CREATE DOCUMENT TYPE Book")).isEqualTo(200);
@@ -60,6 +70,7 @@ class GraphQLSchemaDefinitionAuthorizationTest extends BaseGraphServerTest {
 
       final String token = "Bearer " + createReadOnlyToken(serverIndex, "graphql-schema-token");
       try {
+        // by design: the read-only endpoint refuses a non-idempotent document (400), the command endpoint the missing right (403)
         assertThat(call(serverIndex, token, "query", "graphql", REPLACED)).as("query endpoint refuses a non-idempotent document").isEqualTo(400);
         assertThat(call(serverIndex, token, "command", "graphql", REPLACED)).as("command endpoint").isEqualTo(403);
 
@@ -103,7 +114,7 @@ class GraphQLSchemaDefinitionAuthorizationTest extends BaseGraphServerTest {
     final HttpURLConnection connection = open(serverIndex, "/api/v1/" + endpoint + "/" + getDatabaseName(), auth);
     connection.setDoOutput(true);
     connection.setRequestProperty("Content-Type", "application/json");
-    connection.getOutputStream().write(new JSONObject().put("language", language).put("command", text).toString().getBytes());
+    connection.getOutputStream().write(new JSONObject().put("language", language).put("command", text).toString().getBytes(StandardCharsets.UTF_8));
     connection.connect();
     return connection;
   }
@@ -117,7 +128,7 @@ class GraphQLSchemaDefinitionAuthorizationTest extends BaseGraphServerTest {
     connection.setDoOutput(true);
     connection.setRequestProperty("Content-Type", "application/json");
     connection.getOutputStream().write(new JSONObject().put("name", name).put("database", getDatabaseName()).put("expiresAt", 0)
-        .put("permissions", permissions).toString().getBytes());
+        .put("permissions", permissions).toString().getBytes(StandardCharsets.UTF_8));
     connection.connect();
     try {
       assertThat(connection.getResponseCode()).isEqualTo(201);
@@ -134,14 +145,14 @@ class GraphQLSchemaDefinitionAuthorizationTest extends BaseGraphServerTest {
   }
 
   private HttpURLConnection open(final int serverIndex, final String path, final String auth) throws Exception {
-    final HttpURLConnection connection = (HttpURLConnection) new URL(
-        "http://127.0.0.1:" + getServerHttpPort(serverIndex) + path).openConnection();
+    final HttpURLConnection connection = (HttpURLConnection) URI.create(
+        "http://127.0.0.1:" + getServerHttpPort(serverIndex) + path).toURL().openConnection();
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization", auth);
     return connection;
   }
 
   private String basicAuth() {
-    return "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes());
+    return "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes(StandardCharsets.UTF_8));
   }
 }
