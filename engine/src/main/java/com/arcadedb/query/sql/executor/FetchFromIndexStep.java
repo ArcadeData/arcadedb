@@ -516,8 +516,8 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     final List<PCollection> secondValueCombinations = cartesianProduct(fromKey);
     final List<PCollection> thirdValueCombinations = cartesianProduct(toKey);
 
-    final boolean[] fromInSlots = inSlotMask(true);
-    final boolean[] toInSlots = inSlotMask(false);
+    final boolean[] fromNullRejectingSlots = nullRejectingSlotMask(true);
+    final boolean[] toNullRejectingSlots = nullRejectingSlotMask(false);
     final List<Object[][]> seeks = new ArrayList<>(secondValueCombinations.size());
     for (int i = 0; i < secondValueCombinations.size(); i++) {
 
@@ -542,7 +542,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
       // x IN (..., null) and x = null are UNKNOWN, never true, as in a scan: the index must not answer them with the records whose
       // key is null (#9032, #9238). Checked per run, not at planning, as the plan is reused with other parameter values (#9274)
-      if (hasNullInKeySlot(convertedFrom, fromInSlots) || hasNullInKeySlot(convertedTo, toInSlots))
+      if (hasNullInRejectingSlot(convertedFrom, fromNullRejectingSlots) || hasNullInRejectingSlot(convertedTo, toNullRejectingSlots))
         continue;
 
       // A bound no integral key equals (12.5, 1e19) is moved onto the key that bounds the same keys, or matches none (#9021).
@@ -702,7 +702,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
    * that resolves to no key expression takes no position, so the mask is built with the same rule the key is, instead of
    * assuming that position {@code i} belongs to sub-block {@code i}.
    */
-  private boolean[] inSlotMask(final boolean from) {
+  private boolean[] nullRejectingSlotMask(final boolean from) {
     if (!(condition instanceof AndBlock andBlock))
       return new boolean[0];
     final List<BooleanExpression> subBlocks = andBlock.getSubBlocks();
@@ -722,7 +722,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
    * seek matches nothing. Decided here, at execution, because the plan is cached by statement text and reused by runs with
    * another parameter value (#9274).
    */
-  private static boolean hasNullInKeySlot(final Object[] key, final boolean[] inSlots) {
+  private static boolean hasNullInRejectingSlot(final Object[] key, final boolean[] inSlots) {
     if (key == null)
       return false;
     final int slots = Math.min(key.length, inSlots.length);
