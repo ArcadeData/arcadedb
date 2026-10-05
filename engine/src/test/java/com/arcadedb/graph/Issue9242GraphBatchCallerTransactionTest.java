@@ -112,7 +112,7 @@ class Issue9242GraphBatchCallerTransactionTest extends TestHelper {
   }
 
   @Test
-  void closeRefusedInsideCallerTransactionLeavesItAlone() {
+  void closeRefusedInsideCallerTransactionKeepsTheBatchOpenAndItsWork() {
     final GraphBatch batch = GraphBatch.builder(database).withBatchSize(100).build();
     final RID[] v = batch.createVertices("V", 2);
     batch.newEdge(v[0], "E", v[1]);
@@ -125,8 +125,14 @@ class Issue9242GraphBatchCallerTransactionTest extends TestHelper {
     database.rollback();
 
     assertThat(notes()).isZero();
+    assertThat(database.countType("E", true)).isZero();
 
-    // The database is usable for a new batch: the guard and the settings were released
+    // Nothing was dropped: closing again outside the caller's transaction writes the pending edge, in both directions
+    batch.close();
+    assertThat(database.countType("E", true)).isEqualTo(1);
+    assertThat(database.lookupByRID(v[1], true).asVertex().countEdges(Vertex.DIRECTION.IN, "E")).isEqualTo(1);
+
+    // The guard was released by the real close: a new batch can start
     try (final GraphBatch next = GraphBatch.builder(database).build()) {
       assertThat(next.createVertices("V", 1)).hasSize(1);
     }

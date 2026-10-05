@@ -110,8 +110,9 @@ import java.util.logging.Level;
  * <p>
  * <b>Transactions (issue #9242):</b> the batch manages its own transactions (every flush is several durable steps), so
  * {@code createVertices}, {@code flush} and {@code close} refuse to run inside a transaction the caller opened. For
- * {@code close()} that means whatever is still buffered is DROPPED (a WARNING says how much) before the exception is
- * thrown, so commit or roll back the caller's transaction before closing, including in a try-with-resources.
+ * {@code close()} that means nothing is dropped or released (a WARNING says how much is still pending): the batch stays
+ * open and a later {@code close()}, outside the caller's transaction, writes the pending work. In a try-with-resources
+ * the refusal is thrown out of the block, so end the caller's transaction before it exits.
  * <p>
  * Usage:
  * <pre>
@@ -678,10 +679,11 @@ public class GraphBatch implements AutoCloseable {
   private RID[] createVerticesWithRetry(final int count, final Consumer<RID[]> filler) {
     // Refused BEFORE anything is touched, so the caller's transaction keeps every setting it has (#9242)
     requireNoCallerTransaction("createVertices");
+    final WALFile.FlushType walFlushBefore = threadWalFlush();
     try {
       return createVerticesWithRetryInternal(count, filler);
     } finally {
-      restoreThreadWalFlush();
+      restoreThreadWalFlush(walFlushBefore);
     }
   }
 
@@ -875,10 +877,11 @@ public class GraphBatch implements AutoCloseable {
 
     // Refused BEFORE anything is touched, so the caller's transaction keeps every setting it has (#9242)
     requireNoCallerTransaction("flush");
+    final WALFile.FlushType walFlushBefore = threadWalFlush();
     try {
       flushInternal();
     } finally {
-      restoreThreadWalFlush();
+      restoreThreadWalFlush(walFlushBefore);
     }
   }
 
@@ -1536,11 +1539,21 @@ public class GraphBatch implements AutoCloseable {
 
   @Override
   public void close() {
+    // Refused BEFORE anything is released or discarded (#9242): the work still buffered, including the deferred incoming
+    // edges and head pointers of edges already committed, can only be written in transactions of the batch's own, and a
+    // batch that gave up its guard and settings here could never write it. The batch stays open: end the caller's
+    // transaction and call close() again.
+    if (database.isTransactionActive() && hasPendingWork()) {
+      LogManager.instance().log(this, Level.WARNING,
+          "GraphBatch.close() was called inside a transaction the caller opened: %d buffered edge(s), %d deferred incoming edge(s) and the head pointers of %d vertices are kept, the batch stays open until close() is called again outside it",
+          null, edgeCount, inEdgeCount, deferredOutHead.size() + deferredInHead.size());
+      throw callerTransactionRefusal("close");
+    }
+
     // The guard release sits in the outermost finally on purpose: every other exit of this method throws,
     // and a guard left behind locks the database out of batching until the process restarts (issue #5666).
     try {
       RuntimeException flushFailure = null;
-      boolean refusedCallerTx = false;
 
       try {
         // Flush any remaining outgoing edges. Capture rather than rethrow so we can still drain the
@@ -1553,15 +1566,6 @@ public class GraphBatch implements AutoCloseable {
         // this database with a relaxed WAL policy, read-your-writes off, and - since issue #7357 - the vector
         // indexes' background rebuilds suspended, silently, until the process reopened it.
         try {
-          // Refused up front, before the batch commits anything inside a transaction that is not its own (#9242). The
-          // buffered work is dropped, as abandon() does: there is no way to write it without committing the caller's.
-          if (database.isTransactionActive() && hasPendingWork()) {
-            refusedCallerTx = true;
-            LogManager.instance().log(this, Level.WARNING,
-                "GraphBatch.close() was called inside a transaction the caller opened: dropping %d buffered edge(s), %d deferred incoming edge(s) and the head pointers of %d vertices that cannot be written without committing it",
-                null, edgeCount, inEdgeCount, deferredOutHead.size() + deferredInHead.size());
-            throw callerTransactionRefusal("close");
-          }
           flush();
         } catch (final RuntimeException e) {
           flushFailure = e;
@@ -1572,16 +1576,12 @@ public class GraphBatch implements AutoCloseable {
         // and the integrity checker trips (see #4113 above). That is why a rejected batch can take a while to answer
         // (86 seconds of the timeline on issue #5470); connectDeferredIncomingEdges logs the pass and its duration
         // itself, so the wait is already accounted for.
-        // Skipped only when the flush was refused because the caller's transaction is still open: the passes below
-        // begin and commit their own transactions, which would commit the caller's (#9242)
-        if (!refusedCallerTx) {
-          if (bidirectional && inEdgeCount > 0)
-            connectDeferredIncomingEdges();
+        if (bidirectional && inEdgeCount > 0)
+          connectDeferredIncomingEdges();
 
-          // Batch-update all vertex head chunk pointers in one pass
-          if (!deferredOutHead.isEmpty() || !deferredInHead.isEmpty())
-            batchUpdateVertexHeadChunks();
-        }
+        // Batch-update all vertex head chunk pointers in one pass
+        if (!deferredOutHead.isEmpty() || !deferredInHead.isEmpty())
+          batchUpdateVertexHeadChunks();
       } finally {
         // Restore database settings, even on an exceptional exit (issue #5378)
         restoreDatabaseSettings();
@@ -1841,13 +1841,19 @@ public class GraphBatch implements AutoCloseable {
   }
 
   /**
-   * Puts back the thread's WAL flush strategy that {@link #beginTx()} relaxed, so a transaction the caller runs between
-   * two calls of the batch commits as configured (#9242).
+   * Puts back the thread's WAL flush strategy as it was when the call began, which {@link #beginTx()} relaxed, so a
+   * transaction the caller runs between two calls of the batch commits with whatever the caller selected (#9242).
    */
-  private void restoreThreadWalFlush() {
+  private void restoreThreadWalFlush(final WALFile.FlushType before) {
     final TransactionContext tx = database.getTransactionIfExists();
     if (tx != null)
-      tx.setWALFlush(savedThreadWALFlush);
+      tx.setWALFlush(before);
+  }
+
+  /** The thread's own WAL flush strategy as it stands now (null: it follows the database's), to put back after a call. */
+  private WALFile.FlushType threadWalFlush() {
+    final TransactionContext tx = database.getTransactionIfExists();
+    return tx != null ? tx.getThreadWALFlush() : null;
   }
 
   /**
