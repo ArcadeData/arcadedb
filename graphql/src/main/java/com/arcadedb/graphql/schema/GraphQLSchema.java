@@ -19,6 +19,7 @@
 package com.arcadedb.graphql.schema;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.graphql.parser.AbstractValue;
@@ -47,6 +48,7 @@ import com.arcadedb.graphql.parser.VariableLiteral;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
@@ -102,6 +104,8 @@ public class GraphQLSchema {
 
       for (final Definition definition : definitions) {
         if (definition instanceof TypeSystemDefinition typeSystemDefinition) {
+          // THE SCHEMA IS SHARED BY EVERY USER OF THE DATABASE: REPLACING A TYPE IS A SCHEMA CHANGE
+          ((DatabaseInternal) database).checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
           final TypeDefinition type = typeSystemDefinition.getTypeDefinition();
           if (type instanceof ObjectTypeDefinition obj) {

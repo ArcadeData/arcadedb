@@ -43,6 +43,13 @@
             <version>${project.parent.version}</version>
             <scope>provided</scope>
         </dependency>
+        <dependency>
+            <groupId>com.arcadedb</groupId>
+            <artifactId>arcadedb-server</artifactId>
+            <version>${project.parent.version}</version>
+            <scope>test</scope>
+            <type>test-jar</type>
+        </dependency>
         <!-- Consume the SHADED gremlin jar (antlr relocated to com.arcadedb.gremlin.shaded.org.antlr)
              rather than the plain one: this test classpath also carries the engine's antlr 4.13.2
              (via arcadedb-server), and the plain gremlin jar's antlr 4.9.1 would clash with it,
