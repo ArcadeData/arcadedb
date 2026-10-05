@@ -740,16 +740,18 @@ public class EdgeLinkedList {
       // relink write, so the modification lands on a tx-retained page and is MVCC-version-checked at commit.
       final EdgeSegment prevBrowsed = loadChunkForWrite(prevBrowsedRID);
       prevBrowsed.setPrevious(previousOf(current));
-      database.updateRecord(prevBrowsed);
+      // The pages are excluded BEFORE the writes: a write to a segment on an excluded page is replayed by the
+      // disjoint-slot merge, which keeps two transactions touching different segments of one page from failing (#9208)
       if (tx != null) {
         tx.poisonEdgeAppendPage(prevBrowsed.getIdentity());
         tx.poisonEdgeAppendPage(current.getIdentity());
       }
+      database.updateRecord(prevBrowsed);
       current.delete();
     } else {
-      database.updateRecord(current);
       if (tx != null)
         tx.poisonEdgeAppendPage(current.getIdentity());
+      database.updateRecord(current);
     }
   }
 

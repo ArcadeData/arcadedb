@@ -79,6 +79,15 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
   // query, so a resident working set is not thrown away when a query ends.
   private final VectorCache vectorCache;
 
+  /**
+   * Vectors by ordinal, only for a graph build whose cache holds the whole corpus (issue #9233). jvector asks for the
+   * operand of every distance evaluation, thousands of times per inserted vector, and answering from here is one array
+   * read instead of {@code ordinalToVectorId} + cache slot + {@code Entry} + vector. {@code null} for a search (the
+   * index-scoped cache is shared and bounded there) and for a build whose cache is smaller than the corpus, so the
+   * array never pins vectors the cache's budget has evicted. Slots left {@code null} fall through to the cache.
+   */
+  private VectorFloat<?>[] byOrdinal;
+
   private ArcadePageVectorValues(final DatabaseInternal database, final int dimensions,
       final String vectorPropertyName, final VectorLocationIndex locations, final boolean graphBuilding,
       final int[] ordinalToVectorId, final LSMVectorIndex lsmIndex, final VectorCache vectorCache) {
@@ -152,8 +161,16 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
   public static ArcadePageVectorValues forGraphBuild(final DatabaseInternal database, final int dimensions,
       final String vectorPropertyName, final VectorLocationIndex snapshot, final int[] ordinalToVectorId,
       final LSMVectorIndex lsmIndex, final VectorCache warmedCache) {
-    return new ArcadePageVectorValues(database, dimensions, vectorPropertyName, snapshot, true, ordinalToVectorId,
-        lsmIndex, warmedCache != null ? warmedCache : new VectorCache(DEFAULT_CACHE_SIZE));
+    final ArcadePageVectorValues values = new ArcadePageVectorValues(database, dimensions, vectorPropertyName, snapshot, true,
+        ordinalToVectorId, lsmIndex, warmedCache != null ? warmedCache : new VectorCache(DEFAULT_CACHE_SIZE));
+
+    if (warmedCache != null && ordinalToVectorId != null && warmedCache.capacity() >= ordinalToVectorId.length) {
+      final VectorFloat<?>[] flat = new VectorFloat<?>[ordinalToVectorId.length];
+      for (int i = 0; i < flat.length; i++)
+        flat[i] = warmedCache.get(ordinalToVectorId[i]);
+      values.byOrdinal = flat;
+    }
+    return values;
   }
 
   /**
@@ -185,6 +202,13 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
   public VectorFloat<?> getVector(final int ordinal) {
     if (ordinal < 0 || ordinalToVectorId == null || ordinal >= ordinalToVectorId.length)
       return deletedSentinelVector;
+
+    final VectorFloat<?>[] flat = byOrdinal;
+    if (flat != null) {
+      final VectorFloat<?> resident = flat[ordinal];
+      if (resident != null)
+        return resident;
+    }
 
     final int vectorId = ordinalToVectorId[ordinal];
 
