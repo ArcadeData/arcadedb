@@ -934,7 +934,7 @@ public enum PostgresType {
             serializeAsBinary(elementType, typeBuffer, element);
           } catch (final RuntimeException e) {
             throw new PostgresProtocolException("Cannot send a " + element.getClass().getSimpleName() + " element in a binary "
-                + arrayType.typeName + " array (the element type is announced from the first element of the list): " + e.getMessage(), e);
+                + arrayType.typeName + " array (the column was announced as that array type): " + e.getMessage(), e);
           }
       }
     }
