@@ -150,7 +150,6 @@ class Issue9274CachedPlanNullEqualityTest extends TestHelper {
     database.transaction(() -> database.command("sql", "DELETE FROM T WHERE p = ?", nul));
     database.transaction(() -> database.command("sql", "DELETE FROM T WHERE p = ?", 1));
     assertThat(database.countType("T", false)).isEqualTo(2);
-    reload();
   }
 
   @Test
@@ -167,5 +166,22 @@ class Issue9274CachedPlanNullEqualityTest extends TestHelper {
     assertThat(ids("p IN [?]", 1)).containsExactly(1);
     assertThat(ids("p IN [?]", nul)).isEmpty();
     assertThat(ids("p IN [?]", 1)).containsExactly(1);
+  }
+
+  @Test
+  void countValueThenNull() {
+    final Object nul = null;
+    for (final Object value : new Object[] { 1, nul, 1, nul }) {
+      try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM T WHERE p = ?", value)) {
+        assertThat(rs.next().<Long>getProperty("c")).isEqualTo(value == null ? 0L : 1L);
+      }
+    }
+  }
+
+  @Test
+  void selectNullFirstSlotWithRangeOnSecond() {
+    final Object nul = null;
+    assertThat(ids("q = ? AND p > ?", 7, 0)).containsExactly(1);
+    assertThat(ids("q = ? AND p > ?", nul, 0)).isEmpty();
   }
 }
