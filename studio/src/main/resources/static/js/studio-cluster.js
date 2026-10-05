@@ -123,6 +123,12 @@ var CLUSTER_SECURITY_CAPABILITIES = [
  * missing, since the leader's gate decides on its own probe. Elsewhere it is `unverified` and gates nothing (issue
  * #8540): security writes are forwarded to the leader, whose probe may reach a peer this node cannot.
  *
+ * Except when `capabilitiesUnknownKind` is `ROUTE_MISSING` (issue #8655): the peer answered 404 on the capability
+ * route, so its build predates it. That is the peer's own answer, not this node's view of the path to it, so the
+ * leader's probe gets it too and refuses - the row is `missing` on every node. The kind is read rather than the
+ * reason's text, and a payload without it (every other kind, or a server that predates the field) keeps the #8540
+ * reading.
+ *
  * `ready` means no peer is known to lack the capability, and is what gates. `determinable` means every peer was
  * judged; `ready && !determinable` is "nothing known to block, but not all verified from here".
  */
@@ -142,7 +148,8 @@ function clusterCapabilityReadiness(data, capability) {
     var advertised = Array.isArray(peer.capabilities) ? peer.capabilities : null;
     if (advertised !== null && advertised.indexOf(capability) >= 0) continue;
 
-    if (advertised === null && !isLeader) {
+    var routeMissing = advertised === null && peer.capabilitiesUnknownKind === "ROUTE_MISSING";
+    if (advertised === null && !isLeader && !routeMissing) {
       if (peer.capabilitiesUnknownReason) readiness.unverified.push({ id: peer.id, reason: peer.capabilitiesUnknownReason });
       else readiness.unjudged.push(peer.id);
       continue;
@@ -150,7 +157,9 @@ function clusterCapabilityReadiness(data, capability) {
 
     readiness.missing.push({
       id: peer.id,
-      reason: peer.capabilitiesUnknownReason
+      reason: routeMissing
+        ? "answers the capability probe with HTTP 404, so it runs a build that predates the probe"
+        : peer.capabilitiesUnknownReason
         ? peer.capabilitiesUnknownReason
         : advertised !== null
           ? "answers the capability probe but does not advertise '" + capability + "', so it runs a build that predates it"
@@ -193,8 +202,9 @@ function clusterCapabilityPeerList(peers) {
  * The paragraph naming the peers this node could not verify (issue #8540), or "" when there are none. It says the
  * verdict is this node's view and that the leader decides on its own probe, because a follower cut off from a peer
  * the leader still reaches is exactly the case in which the change goes through. It does not claim the peer is
- * merely unreachable: a peer on a build without the capability route answers 404 and lands here too, and on a
- * follower the client cannot tell the two apart without matching the server's message text.
+ * merely unreachable: a server that predates `capabilitiesUnknownKind` does not say whether its probe got a 404, so
+ * a peer listed here may still run a build that predates the question (issue #8655 lists such a peer as missing
+ * whenever the kind says so).
  */
 function clusterCapabilityUnverifiedNote(gap) {
   if (!gap || !gap.unverified || gap.unverified.length === 0) return "";

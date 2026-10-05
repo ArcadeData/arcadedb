@@ -143,14 +143,19 @@ class PluginApiSpecTest {
     // Pinned to the exact set (not .contains(...)): GetClusterHandler writes exactly these fields per peer, no
     // more, no fewer. 'capabilitiesUnknownReason' joined them with issue #7578's sweep - the leader writes it
     // when it knows WHY a peer's capabilities are unknown, and the two causes have nothing alike as remedies
-    // (issue #7256), so an undeclared one left a client unable to tell them apart.
+    // (issue #7256), so an undeclared one left a client unable to tell them apart. 'capabilitiesUnknownKind' joined
+    // with issue #8655, the same verdict for a client that has to act on it rather than show it.
     final Schema<?> peersProperty = schema.getProperties().get("peers");
     final Schema<?> peerItemSchema = peersProperty.getItems();
     assertThat(peerItemSchema.getProperties().keySet()).containsExactlyInAnyOrder(
         "id", "address", "httpAddress", "httpAddressAmbiguous", "role", "matchIndex", "nextIndex",
         "replicationLag", "lastContactMs", "replicaStatus", "laggingForMs", "lagging", "replicationRttMs",
-        "capabilitiesUnknownReason",
+        "capabilitiesUnknownReason", "capabilitiesUnknownKind",
         "replicationRttP99Ms", "capabilities", "version");
+    // The same four names PeerCapabilityRegistry.UnknownKind declares, which Issue8655CapabilityUnknownKindTest pins
+    // from the other side: Studio gates on the literal, so a renamed constant must break a test, not the gate.
+    assertThat(peerItemSchema.getProperties().get("capabilitiesUnknownKind").getEnum())
+        .containsExactly("ROUTE_MISSING", "UNREACHABLE", "ADDRESS_REFUSED", "STALE");
   }
 
   /**
