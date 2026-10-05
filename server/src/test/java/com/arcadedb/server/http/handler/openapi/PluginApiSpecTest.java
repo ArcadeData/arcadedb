@@ -159,6 +159,18 @@ class PluginApiSpecTest {
   }
 
   /**
+   * Issue #8689: an admission served by a follower sends the declared HTTP address of the admitted peer with its seed
+   * request, so the leader can record it. The two fields belong to the documented request, not to an undocumented one.
+   */
+  @Test
+  void securitySeedRequestDeclaresTheAdmittedPeersHttpAddress() {
+    final Schema<?> schema = openAPI.getComponents().getSchemas().get("SecuritySeedRequest");
+
+    assertThat(schema.getProperties().keySet()).containsExactlyInAnyOrder("reason", "catchUp", "fingerprints",
+        "admittedPeerId", "declaredHttpAddress");
+  }
+
+  /**
    * Issues #8408 and #8555: the two readiness inputs that were the last ones missing from the status document. The
    * members GetClusterHandler writes are pinned to the exact set, whole and required, so a member cannot reach the
    * response and not the contract - the defect #7741 and #7872 both had.

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -29,6 +30,7 @@ import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityUser;
 
 import io.undertow.server.HttpServerExchange;
+import org.apache.ratis.protocol.RaftPeerId;
 
 import java.util.List;
 import java.util.logging.Level;
@@ -78,6 +80,15 @@ public class PostSecuritySeedHandler extends AbstractServerHttpHandler {
 
   /** The route this handler is registered at. */
   public static final String ROUTE = "/api/v1/cluster/security-seed";
+
+  /** Request field: the id of the peer an admission request is for, sent with {@link #DECLARED_HTTP_ADDRESS}. */
+  public static final String ADMITTED_PEER_ID      = "admittedPeerId";
+  /** Request field: the {@code host:port} the admitting node was told the admitted peer's HTTP listener is on. */
+  public static final String DECLARED_HTTP_ADDRESS = "declaredHttpAddress";
+
+  /** The HTTP address an admitting node declared for the peer it admitted (issue #8689). */
+  record DeclaredPeerHttpAddress(String peerId, String httpAddress) {
+  }
 
   private final RaftHAPlugin plugin;
 
@@ -132,9 +143,12 @@ public class PostSecuritySeedHandler extends AbstractServerHttpHandler {
 
     final String reason = request.getString("reason", "a peer request");
 
+    final boolean catchUp = request.getBoolean("catchUp", false);
     final JSONObject fingerprints;
+    final DeclaredPeerHttpAddress declared;
     try {
       fingerprints = readFingerprints(request);
+      declared = readDeclaredPeerHttpAddress(request);
     } catch (final IllegalArgumentException e) {
       return new ExecutionResponse(400, new JSONObject().put("error", e.getMessage()).toString());
     }
@@ -153,14 +167,30 @@ public class PostSecuritySeedHandler extends AbstractServerHttpHandler {
 
     LogManager.instance().log(this, Level.INFO, "Seeding the cluster security documents, requested for %s", reason);
 
+    // Issue #8689: an admission served by a follower carries the HTTP address the operator declared for the peer, which
+    // only the follower's own map holds. Recorded before the seed is asked for, because the seed's capability gate probes
+    // the peer at whatever this node's map holds - and a catch-up is a node repairing itself, with no peer to declare.
+    final DeclaredPeerHttpAddress toRecord = declarationToRecord(declared, catchUp);
+    final boolean addressRecorded = toRecord != null
+        && raftHAServer.recordAdmittedPeerHttpAddress(RaftPeerId.valueOf(toRecord.peerId()), toRecord.httpAddress());
+    if (addressRecorded)
+      LogManager.instance().log(this, Level.INFO,
+          "Recorded HTTP address %s for peer '%s' as declared by the node that admitted it; seeding again so the "
+              + "capability probe dials it", toRecord.httpAddress(), toRecord.peerId());
+
     final List<String> failedSeeds;
     try {
       // Only an admission may be answered by a seed that just finished. A catch-up is a node repairing itself,
       // and answering it from an unrelated recent result would leave it stale (CodeRabbit on PR #7854). The
       // type is read from the request rather than inferred from whether it carried fingerprints: a catch-up on
       // a node with no security store has none to send, and would otherwise pass for an admission.
-      failedSeeds = raftHAServer.getStateMachine().seedSecurityNowAndReport(reason, seedReportTimeoutMs(),
-          !request.getBoolean("catchUp", false));
+      //
+      // Nor may an admission whose declared address was only recorded just now: the seed the membership change
+      // started probed the derived address and is the failure being repaired (issue #8689).
+      failedSeeds = addressRecorded
+          ? raftHAServer.getStateMachine().seedSecurityAfterInFlightAndReport(reason,
+              ClusterSecuritySeedQuery.declaredAdmissionReportTimeoutMs(httpServer.getServer().getConfiguration()))
+          : raftHAServer.getStateMachine().seedSecurityNowAndReport(reason, seedReportTimeoutMs(), !catchUp);
     } catch (final IllegalStateException e) {
       // The seed could not be run or its outcome could not be read. Reported as a failure of the REPORT, with
       // the documents unnamed, because that is exactly what is known: answering with an empty failedSeeds array
@@ -230,6 +260,68 @@ public class PostSecuritySeedHandler extends AbstractServerHttpHandler {
             "'fingerprints." + document + "' must be a document digest: " + e.getMessage(), e);
       }
     return fingerprints;
+  }
+
+  /**
+   * The peer id and HTTP address an admission request declared, or {@code null} when it declared none (issue #8689).
+   * <p>
+   * The two fields travel together or not at all, and the address must be a {@code host:port} with a port in range:
+   * this node records it in the map its peer-to-peer dials resolve from, so a value that is not an address is refused
+   * with 400 here rather than surfacing later as a probe of nonsense. The peer id is checked against the committed
+   * configuration by {@link RaftHAServer#recordAdmittedPeerHttpAddress}, not here.
+   * <p>
+   * Package-private so the refusals can be pinned without an exchange to drive.
+   *
+   * @throws IllegalArgumentException when only one of the two fields is present, or either is malformed
+   */
+  // @VisibleForTesting
+  static DeclaredPeerHttpAddress readDeclaredPeerHttpAddress(final JSONObject payload) {
+    final String peerId;
+    final String address;
+    try {
+      peerId = payload.getString(ADMITTED_PEER_ID, "").trim();
+      address = payload.getString(DECLARED_HTTP_ADDRESS, "").trim();
+    } catch (final RuntimeException e) {
+      throw new IllegalArgumentException("'" + ADMITTED_PEER_ID + "' and '" + DECLARED_HTTP_ADDRESS
+          + "' must be strings: " + e.getMessage(), e);
+    }
+    if (peerId.isEmpty() && address.isEmpty())
+      return null;
+    if (peerId.isEmpty() || address.isEmpty())
+      throw new IllegalArgumentException(
+          "'" + ADMITTED_PEER_ID + "' and '" + DECLARED_HTTP_ADDRESS + "' must be sent together");
+
+    try {
+      // The same host:port / [ipv6]:port rules every other peer address in this module is held to.
+      RaftPeerAddressResolver.validatePeerAddress(address);
+    } catch (final ConfigurationException e) {
+      throw new IllegalArgumentException("'" + DECLARED_HTTP_ADDRESS + "' is not a peer address: " + e.getMessage(), e);
+    }
+    // And nothing a URL could read as more than an authority: the address is stored and later dialled with the
+    // cluster token attached, so a '/', '@', '?' or whitespace must not get the chance to redirect that dial.
+    for (int i = 0; i < address.length(); i++)
+      if (!isAddressCharacter(address.charAt(i)))
+        throw new IllegalArgumentException("'" + DECLARED_HTTP_ADDRESS + "' contains '" + address.charAt(i)
+            + "', which no host:port does: '" + address + "'");
+    return new DeclaredPeerHttpAddress(peerId, address);
+  }
+
+  /**
+   * The declaration this request asks the leader to record: none for a catch-up, which is a node repairing itself and
+   * has no admitted peer to speak for, whatever its body carries. Package-private so the rule is pinned directly.
+   */
+  // @VisibleForTesting
+  static DeclaredPeerHttpAddress declarationToRecord(final DeclaredPeerHttpAddress declared, final boolean catchUp) {
+    return catchUp ? null : declared;
+  }
+
+  /**
+   * A host name, an IPv4 or bracketed IPv6 literal, and the port separator. No '%': an IPv6 zone id would have to be
+   * written {@code %25} to be a legal URI authority, and anywhere else it is a percent-escape the dial would decode.
+   */
+  private static boolean isAddressCharacter(final char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '-'
+        || c == '_' || c == ':' || c == '[' || c == ']';
   }
 
   /**

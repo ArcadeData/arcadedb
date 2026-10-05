@@ -1079,6 +1079,14 @@ public class PluginApiSpec implements OpenApiContributor {
             + "without anything being submitted - that is what the fingerprint comparison is for, and it "
             + "answers upToDate before any seeder is asked."));
     schema.addProperty("fingerprints", createSecuritySeedFingerprintsSchema());
+    schema.addProperty("admittedPeerId", SpecBuilders.string(
+        "The Raft id of the peer an admission request reports on, sent together with declaredHttpAddress when the "
+            + "admission declared that peer's HTTP port (issue #8689). Ignored on a catch-up."));
+    schema.addProperty("declaredHttpAddress", SpecBuilders.string(
+        "The host:port the admission declared for the admitted peer's HTTP listener. The leader records it for a "
+            + "peer of its committed configuration - never over an address its own server list declared - and then "
+            + "answers with a seed that started after the record, so the capability probe the seed waits on dials "
+            + "the declared listener rather than a derived one. Must be sent together with admittedPeerId."));
     return schema;
   }
 
