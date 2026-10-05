@@ -52,6 +52,7 @@ import com.arcadedb.security.SecurityDatabaseUser;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BiConsumer;
 import java.util.logging.Level;
 
 public class RebuildIndexStatement extends DDLStatement {
@@ -332,6 +333,40 @@ public class RebuildIndexStatement extends DDLStatement {
     return rs;
   }
 
+  /**
+   * Puts back the index a failed rebuild dropped (#9254), so the statement that reports an error leaves the schema as it
+   * found it: lookups keep using the index and a UNIQUE index keeps refusing duplicates.
+   * <p>
+   * The index is created again with its own definition. When that is refused too, the cause is the stored data against
+   * the definition (rows with a null key under a strategy that was switched to ERROR after they were stored): the index
+   * is then created with the SKIP strategy, which accepts what the old index held, and the original strategy is set
+   * back on it, which is the state the old index was in. A failure to restore is attached to the original error rather
+   * than raised, so the caller still sees why the rebuild failed.
+   */
+  private static void restoreDroppedIndex(final Database database, final String indexName,
+      final String typeName, final List<String> propertyNames, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy,
+      final BiConsumer<LSMTreeIndexAbstract.NULL_STRATEGY, Index.BuildIndexCallback> createIndex, final RuntimeException failure) {
+    try {
+      try {
+        createIndex.accept(nullStrategy, null);
+        return;
+      } catch (final RuntimeException e) {
+        if (nullStrategy == LSMTreeIndexAbstract.NULL_STRATEGY.SKIP)
+          throw e;
+        // a failed attempt cleans up after itself, so nothing of it is left to drop before trying again
+      }
+      createIndex.accept(LSMTreeIndexAbstract.NULL_STRATEGY.SKIP, null);
+      // by properties, not by name: a rebuilt bucket index gets a new unique name
+      final TypeIndex restored = database.getSchema().getType(typeName).getIndexByProperties(propertyNames);
+      for (final IndexInternal onBucket : restored.getIndexesOnBuckets())
+        onBucket.setNullStrategy(nullStrategy);
+    } catch (final RuntimeException restoreError) {
+      failure.addSuppressed(restoreError);
+      LogManager.instance().log(RebuildIndexStatement.class, Level.SEVERE,
+          "Cannot restore index '%s' after a failed rebuild. The index is now missing: create it again", restoreError, indexName);
+    }
+  }
+
   private static void buildIndex(final int maxAttempts, Database database, Index.BuildIndexCallback callback, Index idx,
       final int batchSize) {
     if (idx == null)
@@ -427,17 +462,16 @@ public class RebuildIndexStatement extends DDLStatement {
           bucketName = bucket.getName();
         }
 
-        ((DatabaseInternal) database).executeLockingFiles(((IndexInternal) idx).getFileIds(), () -> {
-          database.getSchema().dropIndex(idx.getName());
-          droppedThisAttempt[0] = true;
-
+        // Creates the index with the definition of the one being rebuilt. Used for the rebuild itself and, with the
+        // callback left out, to put the old index back when the rebuild fails (#9254)
+        final BiConsumer<LSMTreeIndexAbstract.NULL_STRATEGY, Index.BuildIndexCallback> createIndex = (strategy, buildCallback) -> {
           if (typeIndexRebuild) {
             // Preserve the logical index's own name (issue #5791, follow-up to #4732/#4139): without this the
             // builder falls back to the auto-derived "typeName[properties]" form, so a REBUILD silently renames
             // any explicitly-named index and every SEARCH_INDEX / name-based lookup against the old name breaks.
             database.getSchema().buildTypeIndex(typeName, propertyNames.toArray(new String[propertyNames.size()])).withType(type)
-                .withUnique(unique).withPageSize(pageSize).withCallback(callback).withBatchSize(batchSize)
-                .withMaxAttempts(maxAttempts).withNullStrategy(nullStrategy)
+                .withUnique(unique).withPageSize(pageSize).withCallback(buildCallback).withBatchSize(batchSize)
+                .withMaxAttempts(maxAttempts).withNullStrategy(strategy)
                 .withMetadata(rebuildMetadata)
                 .withIndexName(idx.getName())
                 .create();
@@ -446,14 +480,30 @@ public class RebuildIndexStatement extends DDLStatement {
             database.getSchema()
                 .buildBucketIndex(typeName, bucketName,
                     propertyNames.toArray(new String[propertyNames.size()])).withType(type).withUnique(unique)
-                .withPageSize(pageSize).withCallback(callback).withBatchSize(batchSize).withMaxAttempts(maxAttempts)
-                .withNullStrategy(nullStrategy)
+                .withPageSize(pageSize).withCallback(buildCallback).withBatchSize(batchSize).withMaxAttempts(maxAttempts)
+                .withNullStrategy(strategy)
                 .withMetadata(rebuildMetadata)
                 .withIndexName(ownerTypeIndex != null ? ownerTypeIndex.getName() : null)
                 .create();
           }
-          return null;
-        });
+        };
+
+        try {
+          ((DatabaseInternal) database).executeLockingFiles(((IndexInternal) idx).getFileIds(), () -> {
+            database.getSchema().dropIndex(idx.getName());
+            droppedThisAttempt[0] = true;
+            createIndex.accept(nullStrategy, callback);
+            return null;
+          });
+        } catch (final NeedRetryException e) {
+          throw e;
+        } catch (final RuntimeException e) {
+          // The drop and the build are two committed schema changes, so a build that fails for a reason that is not
+          // contention (the stored data refused by the index, #9254) has already cost the type its index
+          if (droppedThisAttempt[0])
+            restoreDroppedIndex(database, idx.getName(), typeName, propertyNames, nullStrategy, createIndex, e);
+          throw e;
+        }
 
         // OK
         return;
