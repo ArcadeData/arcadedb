@@ -2563,10 +2563,13 @@ public enum GlobalConfiguration {
       arcadedb.server.httpStreamingReadTimeout (the budget this node grants the INCOMING side of the same load) \
       applies here to the OUTGOING hop instead - a short control-plane deadline would abort large loads that are \
       working correctly. On the non-streaming path it bounds the wait for the leader's answer. On the streaming \
-      encoding it bounds the wait for the leader's first response line and then, separately, every later wait \
-      for the leader's data (issue #7738): it is a limit on how long the leader may stay SILENT, not on the \
-      length of the load, so a leader that keeps emitting progress lines is never cut off, and one that stalls \
-      mid-stream is given up on and its connection closed. 0 or a negative value does not disable it - an \
+      encoding it is a limit on how long the forward may stay SILENT, not on the length of the load. It bounds the \
+      wait for the leader's first response line, counted from the last byte of the upload relayed to the leader \
+      rather than from the start of the forward (issue #8719). It then bounds, separately, every later wait for the \
+      leader's data (issue #7738). An upload that keeps moving and a leader that keeps emitting progress lines are \
+      therefore never cut off, and one that stalls mid-stream is given up on and its connection closed. A client \
+      that trickles its upload is not cut off by this setting either: its pauses are bounded on the incoming side \
+      by arcadedb.server.httpStreamingReadTimeout. 0 or a negative value does not disable it - an \
       outgoing forward must never be unbounded - it is clamped to 1 ms instead, so set a positive value. \
       Re-read on every forward.""",
       Long.class, 600_000L),
