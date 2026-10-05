@@ -62,7 +62,7 @@ public class MongoDBProtocolPlugin implements ServerPlugin, DatabaseResolver {
     mongoDBBackend = new MongoDBBackend(server, this);
     // Every local address the host resolves to, not only the first one: a port held on [::1] must not look free for "localhost"
     // (issue #9224). The library binds one address per server, so each further address gets a server of its own on the same port.
-    // They share the backend: MongoServer.shutdown() only clears its database map, which is harmless to repeat. A name resolving to
+    // They share the backend: MongoServer.shutdown() only clears its database map, which is harmless to repeat (the backend opens its databases lazily, so it stays usable for the next attempt). A name resolving to
     // several local addresses is bound by their literals (the configured name is not what the sockets show)
     final List<String> hosts = MultiAddressServerSocket.resolveListenHosts(host);
     // an ephemeral port picked on the first address can be taken on another one: the whole set is tried again, with fresh servers
@@ -90,7 +90,8 @@ public class MongoDBProtocolPlugin implements ServerPlugin, DatabaseResolver {
     for (final MongoServer additional : additionalServers)
       additional.shutdown();
     additionalServers.clear();
-    mongoDBServer.shutdown();
+    if (mongoDBServer != null)
+      mongoDBServer.shutdown();
   }
 
   /**

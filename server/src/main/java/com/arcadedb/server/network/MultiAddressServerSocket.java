@@ -198,7 +198,7 @@ public final class MultiAddressServerSocket implements AutoCloseable {
           return;
         // handed to the caller like the error of a single socket, unless it has not consumed the previous one; either way a pause,
         // so a persistent failure (no file descriptors left) is not retried in a hot loop
-        accepted.offer(e);
+        accepted.offer(e); // dropped on purpose when the caller has not consumed the previous one: the backoff bounds the rate
         try {
           Thread.sleep(ERROR_BACKOFF_MS);
         } catch (final InterruptedException ie) {
@@ -233,7 +233,7 @@ public final class MultiAddressServerSocket implements AutoCloseable {
     return closed || sockets.getFirst().isClosed();
   }
 
-  public List<ServerSocket> getServerSockets() {
+  List<ServerSocket> getServerSockets() {
     return Collections.unmodifiableList(sockets);
   }
 
