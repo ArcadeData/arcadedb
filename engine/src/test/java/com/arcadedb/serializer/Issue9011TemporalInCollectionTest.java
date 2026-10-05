@@ -110,6 +110,7 @@ class Issue9011TemporalInCollectionTest extends TestHelper {
     try (final ResultSet rs = database.query("sql", "SELECT many FROM T9011d")) {
       final Object element = new JsonSerializer(database).serializeResult(database, rs.next()).getJSONArray("many").get(0);
       assertThat(element).isInstanceOf(String.class);
+      assertThat((String) element).startsWith("2026-10-03 12:34:56");
     }
   }
 }

@@ -308,7 +308,7 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
    * Encodes the string with the database charset (a constant, UTF-8, see {@link DatabaseFactory#getDefaultCharset()}), refusing a value the charset cannot represent (a lone UTF-16 surrogate, or a
    * character outside the charset). {@link String#getBytes(java.nio.charset.Charset)} silently replaces those with '?', which
    * would store a different string and make it collide with a real "?" (issue #9054). The check costs one scan of the encoded
-   * bytes for '?'; only when one is found the characters are counted too and, if the counts differ, the charset encoder decides exactly, so a replacement is told from a genuine "?" for any charset.
+   * bytes for '?'; only when one is found the characters are counted too and, if the counts differ, the charset encoder decides exactly. The charset is UTF-8, where a 0x3F byte is always a '?'.
    */
   private static byte[] encodeString(final String value) {
     final Charset charset = DatabaseFactory.getDefaultCharset();
