@@ -605,7 +605,8 @@ public class GraphBatch implements AutoCloseable {
    * Creates multiple vertices in a single transaction. Edge segments are NOT pre-allocated;
    * they will be created on-demand at flush time with exactly the right size based on the
    * actual edges buffered for each vertex.
-   * Handles transaction begin/commit internally.
+   * Handles transaction begin/commit internally, so it must NOT be called inside a transaction the caller opened
+   * (an {@link IllegalStateException} is thrown and that transaction is left untouched, issue #9242).
    *
    * @param typeName vertex type name
    * @param count    number of vertices to create
@@ -625,6 +626,7 @@ public class GraphBatch implements AutoCloseable {
   /**
    * Creates multiple vertices with properties in a single transaction. Edge segments are NOT
    * pre-allocated; they will be created on-demand at flush time with the exact size needed.
+   * Like {@link #createVertices(String, int)} it manages its own transaction and refuses to run inside the caller's.
    *
    * @param typeName   vertex type name
    * @param properties per-vertex properties, may contain nulls for vertices with no properties
@@ -669,11 +671,19 @@ public class GraphBatch implements AutoCloseable {
    * @return RIDs of the durably-committed vertices
    */
   private RID[] createVerticesWithRetry(final int count, final Consumer<RID[]> filler) {
+    try {
+      return createVerticesWithRetryInternal(count, filler);
+    } finally {
+      restoreThreadWalFlush();
+    }
+  }
+
+  private RID[] createVerticesWithRetryInternal(final int count, final Consumer<RID[]> filler) {
+    // THE UNIT BELOW COMMITS AND, ON A RETRYABLE FAILURE, ROLLS BACK: IT CAN ONLY RUN IN A TRANSACTION IT BEGAN ITSELF (#9242)
+    requireNoCallerTransaction("createVertices");
     int attempt = 0;
     while (true) {
       final RID[] rids = new RID[count];
-      // A TRANSACTION THE CALLER OPENED IS JOINED, NOT OWNED: ONLY ONE THIS METHOD BEGAN IS ROLLED BACK ON A NON-RETRYABLE FAILURE (#9040)
-      final boolean ownsTx = !database.isTransactionActive();
       try {
         beginTx();
         filler.accept(rids);
@@ -705,7 +715,7 @@ public class GraphBatch implements AutoCloseable {
         backoffBeforeRetry(attempt);
       } catch (final RuntimeException | Error e) {
         // NOT RETRYABLE: DO NOT LEAVE THE TRANSACTION THIS METHOD BEGAN OPEN (#9040)
-        if (ownsTx && database.isTransactionActive()) {
+        if (database.isTransactionActive()) {
           try {
             database.rollback();
           } catch (final RuntimeException rollbackError) {
@@ -853,12 +863,18 @@ public class GraphBatch implements AutoCloseable {
     if (edgeCount == 0)
       return;
 
-    final long startNs = System.nanoTime();
+    try {
+      flushInternal();
+    } finally {
+      restoreThreadWalFlush();
+    }
+  }
 
-    // Track whether this flush started the transaction so a failure (e.g. DuplicatedKeyException
-    // surfaced by the bulk-edge index update introduced for issue #4113) doesn't leave the
-    // database with the half-written batch visible to the next caller.
-    final boolean startedTx = !database.isTransactionActive();
+  private void flushInternal() {
+    // A FLUSH COMMITS SEVERAL TIMES BY DESIGN: IT CANNOT JOIN A TRANSACTION THE CALLER OPENED (#9242)
+    requireNoCallerTransaction("flush");
+
+    final long startNs = System.nanoTime();
 
     // Number of buffered edges this flush is about to write. Read after the buffer is reset below, so it cannot
     // be replaced by edgeCount there.
@@ -962,7 +978,9 @@ public class GraphBatch implements AutoCloseable {
       // Clear property references to allow GC
       Arrays.fill(edgeProperties, 0, edgeProperties.length, null);
     } catch (final RuntimeException e) {
-      if (startedTx && database.isTransactionActive())
+      // A failure (e.g. DuplicatedKeyException surfaced by the bulk-edge index update introduced for issue #4113)
+      // must not leave the half-written batch of the transaction this flush began visible to the next caller.
+      if (database.isTransactionActive())
         database.rollback();
 
       // A flush that died after PHASE 3 (in the deferred-incoming drain) still created every edge it counted:
@@ -1524,6 +1542,10 @@ public class GraphBatch implements AutoCloseable {
         // this database with a relaxed WAL policy, read-your-writes off, and - since issue #7357 - the vector
         // indexes' background rebuilds suspended, silently, until the process reopened it.
         try {
+          // Refused up front, before the batch commits anything inside a transaction that is not its own (#9242). The
+          // buffered work is dropped, as abandon() does: there is no way to write it without committing the caller's.
+          if (database.isTransactionActive() && hasPendingWork())
+            throw callerTransactionRefusal("close");
           flush();
         } catch (final RuntimeException e) {
           flushFailure = e;
@@ -1534,12 +1556,14 @@ public class GraphBatch implements AutoCloseable {
         // and the integrity checker trips (see #4113 above). That is why a rejected batch can take a while to answer
         // (86 seconds of the timeline on issue #5470); connectDeferredIncomingEdges logs the pass and its duration
         // itself, so the wait is already accounted for.
-        if (bidirectional && inEdgeCount > 0)
-          connectDeferredIncomingEdges();
+        if (flushFailure == null || !database.isTransactionActive()) {
+          if (bidirectional && inEdgeCount > 0)
+            connectDeferredIncomingEdges();
 
-        // Batch-update all vertex head chunk pointers in one pass
-        if (!deferredOutHead.isEmpty() || !deferredInHead.isEmpty())
-          batchUpdateVertexHeadChunks();
+          // Batch-update all vertex head chunk pointers in one pass
+          if (!deferredOutHead.isEmpty() || !deferredInHead.isEmpty())
+            batchUpdateVertexHeadChunks();
+        }
       } finally {
         // Restore database settings, even on an exceptional exit (issue #5378)
         restoreDatabaseSettings();
@@ -1791,9 +1815,41 @@ public class GraphBatch implements AutoCloseable {
   private void beginTx() {
     if (!database.isTransactionActive())
       database.begin();
-    // Apply WAL settings to the current transaction
-    database.getTransaction().setUseWAL(useWAL);
-    database.getTransaction().setWALFlush(walFlush);
+    // Apply WAL settings to the current transaction. The WAL switch is a one-transaction override: the thread's own
+    // setting, which a later transaction of the caller would inherit, is left alone (#9242)
+    final TransactionContext tx = database.getTransaction();
+    tx.setUseWALForThisTransaction(useWAL);
+    tx.setWALFlush(walFlush);
+  }
+
+  /**
+   * Puts back the thread's WAL flush strategy that {@link #beginTx()} relaxed, so a transaction the caller runs between
+   * two calls of the batch commits as configured (#9242).
+   */
+  private void restoreThreadWalFlush() {
+    final TransactionContext tx = database.getTransactionIfExists();
+    if (tx != null)
+      tx.setWALFlush(savedThreadWALFlush);
+  }
+
+  /**
+   * The batch commits internally (every flush is several durable steps, and a retried vertex commit rolls back), so it
+   * can only run in a transaction it began itself. A transaction the caller opened would be committed together with
+   * the batch's writes, under the batch's WAL policy, or rolled back on a retry (#9242).
+   */
+  private void requireNoCallerTransaction(final String operation) {
+    if (database.isTransactionActive())
+      throw callerTransactionRefusal(operation);
+  }
+
+  private IllegalStateException callerTransactionRefusal(final String operation) {
+    return new IllegalStateException(
+        "GraphBatch." + operation + "() manages its own transactions and cannot run inside a transaction the caller opened: "
+            + "commit or roll back that transaction first");
+  }
+
+  private boolean hasPendingWork() {
+    return edgeCount > 0 || inEdgeCount > 0 || !deferredOutHead.isEmpty() || !deferredInHead.isEmpty();
   }
 
   /**

@@ -38,11 +38,14 @@ import java.util.concurrent.atomic.AtomicReferenceArray;
  * <li>a hard bound on the retained footprint: capacity is allocated once and entries are evicted on
  * collision, instead of the previous "stop inserting when full" policy that froze the cache on whatever
  * happened to be loaded first;</li>
- * <li>one indirection per probe, so a hit costs two array reads at most.</li>
+ * <li>one indirection per probe: a hit costs two slot reads at most, each followed by the dereference of the
+ * {@code Entry} it returns (a build that holds the whole corpus bypasses all of this, see
+ * {@code ArcadePageVectorValues#forGraphBuild}, issue #9233).</li>
  * </ul>
  * Vector ids are dense and monotonic, so the identity mapping {@code id -&gt; bucket} spreads them
- * perfectly: with a capacity at least as large as the id range every vector stays resident with no
- * collisions at all. Hashing them would only add collisions.
+ * perfectly: with a capacity at least as large as the id range every vector stays resident and nothing is evicted.
+ * Ids at or above the bucket count (half the capacity) share a bucket with a lower id, which sits in the second way,
+ * so those lookups cost the extra probe. Hashing them would only add collisions.
  * <p>
  * Thread-safe. Entries are immutable and published through an {@link AtomicReferenceArray}, so a
  * concurrent {@code put} can only ever cost a later miss, never a mismatched vector.
