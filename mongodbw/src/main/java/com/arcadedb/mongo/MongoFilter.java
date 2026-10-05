@@ -301,9 +301,14 @@ final class MongoFilter {
         result.put(key, converted);
         continue;
       }
-      if ("$expr".equals(key))
-        // an aggregation expression can carry a regular expression of its own, out of reach of the time bound
-        throw new IllegalArgumentException("The operator $expr is not supported");
+      if ("$expr".equals(key)) {
+        // in a find filter the expression is evaluated through SQL, where it can carry a regular expression out of reach of the time
+        // bound. An aggregation $match evaluates it with the library, whose expressions have no regular expression operator
+        if (!deadline.allowsExpr)
+          throw new IllegalArgumentException("The operator $expr is not supported");
+        result.put(key, value);
+        continue;
+      }
       if (key.startsWith("$")) {
         result.put(key, value);
         continue;
@@ -448,6 +453,69 @@ final class MongoFilter {
     return rest;
   }
 
+  /**
+   * Bounds the regular expressions of an aggregation pipeline: the mongo-java-server aggregation filters a {@code $match} stage with
+   * its own matcher, whose expressions run with no deadline. Each {@code $match} query (also the ones of {@code $facet} branches,
+   * {@code $lookup} and {@code $unionWith} sub-pipelines, and {@code $graphLookup.restrictSearchWithMatch}) is prepared as a find
+   * filter is, so every regular expression of the pipeline draws on one budget. The library evaluates no other regular expression: it has no
+   * {@code $expr}, {@code $regexMatch} or {@code $regexFind}, and {@code $merge}/{@code $out} cannot resolve a collection here. The stages are copied, the pipeline of the request is
+   * left as it is.
+   */
+  static List<Document> boundPipeline(final List<Document> pipeline, final RegexBudget budget) {
+    final List<Document> bounded = new ArrayList<>(pipeline.size());
+    for (final Document stage : pipeline)
+      bounded.add(boundStage(stage, budget));
+    return bounded;
+  }
+
+  private static Document boundStage(final Document stage, final RegexBudget budget) {
+    final Document result = new Document();
+    for (final Map.Entry<String, Object> entry : stage.entrySet()) {
+      final String name = entry.getKey();
+      final Object value = entry.getValue();
+      switch (name) {
+      // inside a pipeline the _id is the one the previous stage produced, not the stored identity of a record: never the "top" form
+      case "$match" -> result.put(name, value instanceof Document query ? normalizeQuery(query, budget, false) : value);
+      case "$facet" -> {
+        if (value instanceof Document branches) {
+          final Document converted = new Document();
+          for (final Map.Entry<String, Object> branch : branches.entrySet())
+            converted.put(branch.getKey(), boundStages(branch.getValue(), budget));
+          result.put(name, converted);
+        } else
+          result.put(name, value);
+      }
+      case "$lookup", "$unionWith" -> {
+        if (value instanceof Document options && options.containsKey("pipeline")) {
+          final Document converted = new Document(options);
+          converted.put("pipeline", boundStages(options.get("pipeline"), budget));
+          result.put(name, converted);
+        } else
+          result.put(name, value);
+      }
+      case "$graphLookup" -> {
+        if (value instanceof Document options && options.get("restrictSearchWithMatch") instanceof Document query) {
+          final Document converted = new Document(options);
+          converted.put("restrictSearchWithMatch", normalizeQuery(query, budget, false));
+          result.put(name, converted);
+        } else
+          result.put(name, value);
+      }
+      default -> result.put(name, value);
+      }
+    }
+    return result;
+  }
+
+  private static Object boundStages(final Object stages, final RegexBudget budget) {
+    if (!(stages instanceof List<?> list))
+      return stages;
+    final List<Object> converted = new ArrayList<>(list.size());
+    for (final Object stage : list)
+      converted.add(stage instanceof Document document ? boundStage(document, budget) : stage);
+    return converted;
+  }
+
   private static boolean isOperatorDocument(final Document document) {
     return !document.isEmpty() && document.keySet().iterator().next().startsWith("$");
   }
@@ -460,18 +528,25 @@ final class MongoFilter {
    */
   static final class RegexBudget {
     private final long    timeoutNanos;
+    private final boolean allowsExpr;
     private       long    remainingNanos;
     private       boolean exhausted;
 
     static RegexBudget ofMillis(final long timeoutMillis) {
-      return new RegexBudget(timeoutMillis);
+      return new RegexBudget(timeoutMillis, false);
     }
 
     static RegexBudget of(final Database database) {
-      return new RegexBudget(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(database));
+      return new RegexBudget(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(database), false);
     }
 
-    private RegexBudget(final long timeoutMillis) {
+    /** The budget of an aggregation pipeline, whose {@code $match} may carry {@code $expr}. */
+    static RegexBudget ofAggregation(final Database database) {
+      return new RegexBudget(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(database), true);
+    }
+
+    private RegexBudget(final long timeoutMillis, final boolean allowsExpr) {
+      this.allowsExpr = allowsExpr;
       // an oversized timeout saturates (it never expires) instead of wrapping around into a deadline in the past
       long nanos = 0;
       if (timeoutMillis > 0)

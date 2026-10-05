@@ -56,6 +56,7 @@ options {
   	STATIC=false;
   	USER_CHAR_STREAM = true ;
   	JAVA_UNICODE_ESCAPE=false;
+  	UNICODE_INPUT=true;
   	NODE_PREFIX="";
 }
 PARSER_BEGIN(GraphQLParser)

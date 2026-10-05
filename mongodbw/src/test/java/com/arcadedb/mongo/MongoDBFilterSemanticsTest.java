@@ -331,6 +331,40 @@ class MongoDBFilterSemanticsTest extends BaseMongoServerTest {
   }
 
   @Test
+  void aCatastrophicRegexInAnAggregationMatchIsBoundedToo() {
+    final MongoCollection<Document> c = collection("redosagg", new Document("_id", 1).append("s", "a".repeat(40) + "!").toJson());
+    final long previous = GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong();
+    GlobalConfiguration.COMMAND_REGEX_TIMEOUT.setValue(200);
+    try {
+      // countDocuments(filter) is an aggregate with a $match stage
+      assertThatThrownBy(() -> c.countDocuments(Document.parse("{s:{$regex:'(.*a){20}$'}}"))).isInstanceOf(MongoException.class)
+          .satisfies(e -> assertThat(((MongoException) e).getCode()).isEqualTo(50));
+      assertThatThrownBy(() -> c.aggregate(List.of(Document.parse("{$match:{s:{$regex:'(.*a){20}$'}}}"))).into(new ArrayList<>()))
+          .isInstanceOf(MongoException.class).satisfies(e -> assertThat(((MongoException) e).getCode()).isEqualTo(50));
+      assertThatThrownBy(() -> c.aggregate(List.of(Document.parse("{$match:{$or:[{s:{$regex:'(.*a){20}$'}}]}}"))).into(new ArrayList<>()))
+          .isInstanceOf(MongoException.class).satisfies(e -> assertThat(((MongoException) e).getCode()).isEqualTo(50));
+      assertThatThrownBy(() -> c.aggregate(List.of(new Document("$match", new Document("s", new Document("$in", List.of(Pattern.compile("(.*a){20}$"))))))).into(new ArrayList<>()))
+          .isInstanceOf(MongoException.class).satisfies(e -> assertThat(((MongoException) e).getCode()).isEqualTo(50));
+      assertThatThrownBy(() -> c.aggregate(List.of(Document.parse("{$facet:{f:[{$match:{s:{$regex:'(.*a){20}$'}}}]}}")))
+          .into(new ArrayList<>())).isInstanceOf(MongoException.class).satisfies(e -> assertThat(((MongoException) e).getCode()).isEqualTo(50));
+    } finally {
+      GlobalConfiguration.COMMAND_REGEX_TIMEOUT.setValue(previous);
+    }
+    assertThat(c.countDocuments(Document.parse("{s:{$regex:'^a'}}"))).isEqualTo(1);
+    assertThat(c.countDocuments(Document.parse("{s:{$regex:'^b'}}"))).isZero();
+    assertThat(c.aggregate(List.of(Document.parse("{$match:{s:{$regex:'^A', $options:'i'}}}"))).into(new ArrayList<>())).hasSize(1);
+    assertThat(c.aggregate(List.of(Document.parse("{$group:{_id:'$s', n:{$sum:1}}}"), Document.parse("{$match:{_id:{$regex:'^a'}}}")))
+        .into(new ArrayList<>())).hasSize(1);
+  }
+
+  @Test
+  void anExprInAnAggregationMatchStillWorks() {
+    final MongoCollection<Document> c = collection("expragg", "{_id:1, spent:5, budget:3}", "{_id:2, spent:1, budget:3}");
+    assertThat(c.aggregate(List.of(Document.parse("{$match:{$expr:{$gt:['$spent','$budget']}}}"))).into(new ArrayList<>())).hasSize(1);
+    assertThat(c.countDocuments(Document.parse("{$expr:{$gt:['$spent','$budget']}}"))).isEqualTo(1);
+  }
+
+  @Test
   void aCatastrophicRegexOnIdInAMixedFilterIsBoundedToo() {
     final MongoCollection<Document> c = collection("redosid", new Document("_id", "a".repeat(40) + "!").append("n", 1).toJson());
     final long previous = GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong();

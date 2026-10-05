@@ -23,14 +23,12 @@ import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
+import com.arcadedb.server.network.MultiAddressServerSocket;
 import com.arcadedb.server.network.PreAuthConnectionGate;
 import com.arcadedb.server.network.ServerSocketFactory;
 
 import java.io.IOException;
 import java.net.BindException;
-import java.net.InetAddress;
-import java.net.InetSocketAddress;
-import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketException;
 import java.util.Set;
@@ -47,7 +45,7 @@ public class BoltNetworkListener extends Thread {
   private final    ArcadeDBServer                      server;
   private final    ServerSocketFactory                 socketFactory;
   private final    BoltSslHelper                       sslHelper;
-  private volatile ServerSocket                        serverSocket;
+  private volatile MultiAddressServerSocket            serverSocket;
   private volatile boolean                             active = true;
   private final    Set<BoltNetworkExecutor>            activeConnections = ConcurrentHashMap.newKeySet();
   private final    int                                 maxConnections;
@@ -132,12 +130,8 @@ public class BoltNetworkListener extends Thread {
         }
       }
     } finally {
-      try {
-        if (serverSocket != null && !serverSocket.isClosed())
-          serverSocket.close();
-      } catch (final IOException e) {
-        // Ignore
-      }
+      if (serverSocket != null)
+        serverSocket.close();
     }
   }
 
@@ -151,13 +145,8 @@ public class BoltNetworkListener extends Thread {
   public void close() {
     this.active = false;
 
-    if (serverSocket != null) {
-      try {
-        serverSocket.close();
-      } catch (final IOException e) {
-        // Ignore
-      }
-    }
+    if (serverSocket != null)
+      serverSocket.close();
   }
 
   /**
@@ -166,13 +155,13 @@ public class BoltNetworkListener extends Thread {
    * avoids colliding with anything already listening (issue #8209).
    */
   public int getPort() {
-    final ServerSocket socket = serverSocket;
-    return socket != null && socket.isBound() && !socket.isClosed() ? socket.getLocalPort() : -1;
+    final MultiAddressServerSocket socket = serverSocket;
+    return socket != null ? socket.getLocalPort() : -1;
   }
 
   @Override
   public String toString() {
-    return serverSocket != null ? serverSocket.getLocalSocketAddress().toString() : "BOLT (not bound)";
+    return serverSocket != null ? serverSocket.toString() : "BOLT (not bound)";
   }
 
   /**
@@ -180,14 +169,12 @@ public class BoltNetworkListener extends Thread {
    */
   private void listen(final String hostName, final String hostPortRange) {
     for (final int tryPort : getPorts(hostPortRange)) {
-      final InetSocketAddress inboundAddr = new InetSocketAddress(hostName, tryPort);
       try {
-        serverSocket = socketFactory.createServerSocket(tryPort, 0, InetAddress.getByName(hostName));
+        serverSocket = MultiAddressServerSocket.bind(socketFactory, hostName, tryPort);
 
-        if (serverSocket.isBound()) {
+        if (serverSocket.getLocalPort() > 0) {
           LogManager.instance().log(this, Level.INFO,
-              "Listening for incoming BOLT connections on $ANSI{green " + inboundAddr.getAddress().getHostAddress() + ":"
-                  + inboundAddr.getPort() + "} (protocol v." + BOLT_PROTOCOL_VERSION + ", TLS: " + sslHelper.getTlsMode() + ")");
+              "Listening for incoming BOLT connections on $ANSI{green " + serverSocket + "} (protocol v." + BOLT_PROTOCOL_VERSION + ", TLS: " + sslHelper.getTlsMode() + ")");
 
           return;
         }

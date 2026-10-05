@@ -255,7 +255,8 @@ public class BinaryCondition extends BooleanExpression {
             if (vl instanceof Collection<?> collection) {
               return !collection.isEmpty();
             }
-            return true;
+            // An equality with null is never true, as in a scan: the index must not answer it with the records whose key is null (#9238)
+            return vl != null;
           } else if (operator instanceof ContainsKeyOperator
               && info.isMap()
               && info.isIndexByKey()) {
@@ -272,7 +273,8 @@ public class BinaryCondition extends BooleanExpression {
     if (info.isCaseInsensitive() && isFieldWithLowerCaseMethod(left, info.getField())) {
       if (right.isEarlyCalculated(info.getContext())) {
         if (operator instanceof EqualsCompareOperator)
-          return true;
+          // an equality with null is never true, as in a scan: left to the scan, like the case sensitive one above (#9238)
+          return right.execute((Result) null, info.getContext()) != null;
         // A CI index probes with the lower-cased bound, so a range is the one the user wrote only when the bound is
         // already lower case: name.toLowerCase() >= 'C' matches "anne", the probe >= 'c' does not (issue #8560)
         return info.allowsRange() && operator.isRangeOperator() && isLowerCaseLiteral(right, info.getContext());

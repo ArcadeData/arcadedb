@@ -22,6 +22,7 @@ import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
+import com.arcadedb.server.network.MultiAddressServerSocket;
 import com.arcadedb.server.network.PreAuthConnectionGate;
 import com.arcadedb.server.network.ServerSocketFactory;
 
@@ -32,7 +33,7 @@ import java.util.logging.Level;
 public class RedisNetworkListener extends Thread {
   private final        ArcadeDBServer      server;
   private final        ServerSocketFactory socketFactory;
-  private volatile     ServerSocket        serverSocket;
+  private volatile     MultiAddressServerSocket serverSocket;
   private volatile     boolean             active          = true;
   private static final int                 protocolVersion = -1;
   private              ClientConnected     callback;
@@ -99,11 +100,8 @@ public class RedisNetworkListener extends Thread {
         }
       }
     } finally {
-      try {
-        if (serverSocket != null && !serverSocket.isClosed())
-          serverSocket.close();
-      } catch (final IOException ignored) {
-      }
+      if (serverSocket != null)
+        serverSocket.close();
     }
   }
 
@@ -111,11 +109,7 @@ public class RedisNetworkListener extends Thread {
     this.active = false;
 
     if (serverSocket != null)
-      try {
-        serverSocket.close();
-      } catch (final IOException e) {
-        // IGNORE IT
-      }
+      serverSocket.close();
   }
 
   public void setCallback(final ClientConnected callback) {
@@ -128,14 +122,14 @@ public class RedisNetworkListener extends Thread {
    * avoids colliding with anything already listening (issue #8209).
    */
   public int getPort() {
-    final ServerSocket socket = serverSocket;
-    return socket != null && socket.isBound() && !socket.isClosed() ? socket.getLocalPort() : -1;
+    final MultiAddressServerSocket socket = serverSocket;
+    return socket != null ? socket.getLocalPort() : -1;
   }
 
   @Override
   public String toString() {
-    final ServerSocket socket = serverSocket;
-    return socket != null ? String.valueOf(socket.getLocalSocketAddress()) : getName();
+    final MultiAddressServerSocket socket = serverSocket;
+    return socket != null ? String.valueOf(socket) : getName();
   }
 
   /**
@@ -146,13 +140,12 @@ public class RedisNetworkListener extends Thread {
    */
   private void listen(final String hostName, final String hostPortRange) {
     for (final int tryPort : getPorts(hostPortRange)) {
-      final InetSocketAddress inboundAddr = new InetSocketAddress(hostName, tryPort);
       try {
-        serverSocket = socketFactory.createServerSocket(tryPort, 0, InetAddress.getByName(hostName));
+        serverSocket = MultiAddressServerSocket.bind(socketFactory, hostName, tryPort);
 
-        if (serverSocket.isBound()) {
+        if (serverSocket.getLocalPort() > 0) {
           LogManager.instance().log(this, Level.INFO,
-              "Listening for incoming connections on $ANSI{green " + inboundAddr.getAddress().getHostAddress() + ":" + inboundAddr.getPort() + "} (protocol v."
+              "Listening for incoming connections on $ANSI{green " + serverSocket + "} (protocol v."
                   + protocolVersion + ")");
 
           return;
