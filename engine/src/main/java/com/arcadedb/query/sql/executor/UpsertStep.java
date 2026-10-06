@@ -73,7 +73,7 @@ public class UpsertStep extends AbstractExecutionStep {
 
     if (!fetchFromIndexFound)
       throw new CommandSQLParsingException(
-          "Upsert must involve an index to retrieve the records. Check the where condition is using the index for the upsert");
+          "Upsert must involve a UNIQUE index on a single property to retrieve the records. Check that the where condition is an equality on a property covered by a UNIQUE index (non-unique, full-text and composite indexes are not usable for the upsert)");
 
     applied = true;
     final ResultSet upstream = getPrev().syncPull(context, nRecords);
