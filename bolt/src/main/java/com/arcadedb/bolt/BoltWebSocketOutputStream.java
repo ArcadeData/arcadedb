@@ -45,6 +45,8 @@ class BoltWebSocketOutputStream extends OutputStream {
   @Override
   public void write(final int b) throws IOException {
     buffer.write(b);
+    if (buffer.size() >= MAX_BUFFERED_BYTES)
+      emitFrame();
   }
 
   @Override

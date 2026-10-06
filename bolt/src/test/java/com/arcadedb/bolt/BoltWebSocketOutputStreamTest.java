@@ -96,6 +96,17 @@ class BoltWebSocketOutputStreamTest {
     assertThat(payloadOf(wire)).hasSize(100_000);
   }
 
+  @Test
+  void singleByteWritesAreCappedToo() throws Exception {
+    final ByteArrayOutputStream sink = new ByteArrayOutputStream();
+    final BoltWebSocketOutputStream out = new BoltWebSocketOutputStream(sink);
+
+    for (int i = 0; i < 200_000; i++)
+      out.write(i);
+
+    assertThat(sink.size()).isGreaterThan(190_000);
+  }
+
   /** Decodes consecutive unmasked binary frames and concatenates their payloads. */
   private static byte[] payloadOf(final byte[] wire) throws IOException {
     final DataInputStream in = new DataInputStream(new ByteArrayInputStream(wire));
