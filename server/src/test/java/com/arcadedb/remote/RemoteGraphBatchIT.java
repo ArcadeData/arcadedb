@@ -101,7 +101,7 @@ class RemoteGraphBatchIT extends BaseGraphServerTest {
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
     database.command("sql", "CREATE VERTEX TYPE City IF NOT EXISTS");
-    database.command("sql", "CREATE EDGE TYPE ROAD IF NOT EXISTS");
+    database.command("sql", "CREATE EDGE TYPE ROAD LIGHTWEIGHT");
 
     final RemoteGraphBatch batch = database.batch()
         .withLightEdges(true)

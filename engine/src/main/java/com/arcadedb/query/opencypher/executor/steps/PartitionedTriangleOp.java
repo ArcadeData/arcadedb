@@ -72,6 +72,8 @@ public final class PartitionedTriangleOp implements CountOp {
   public long execute(final GraphTraversalProvider provider, final Database db, final WorkGuard guard) {
     final int nodeIdUpperBound = provider.getNodeIdUpperBound();
     final int[] personPartition = buildPartitionMapping(provider, nodeIdUpperBound, guard);
+    if (personPartition == null)
+      return executeWeighted(provider, nodeIdUpperBound, guard);
 
     final NeighborView knowsView = provider.getNeighborView(Vertex.DIRECTION.BOTH, triangleEdgeType);
     if (knowsView == null)
@@ -187,6 +189,11 @@ public final class PartitionedTriangleOp implements CountOp {
     return end;
   }
 
+  /**
+   * One partition per node, or {@code null} when some node on a partition chain has more than one neighbour: such a node is
+   * in several partitions (or reaches one through several paths), and a single partition per node would count it in one
+   * only (issue #9350). The caller then takes {@link #executeWeighted}.
+   */
   private int[] buildPartitionMapping(final GraphTraversalProvider provider, final int nodeIdUpperBound,
       final WorkGuard guard) {
     final int[] partition = new int[nodeIdUpperBound];
@@ -224,6 +231,8 @@ public final class PartitionedTriangleOp implements CountOp {
             valid = false;
             break;
           }
+          if (hNbrs.length > 1)
+            return null;
           current = hNbrs[0];
         }
         if (valid)
@@ -243,6 +252,8 @@ public final class PartitionedTriangleOp implements CountOp {
       final int fEnd = firstView.offsetEnd(p);
       if (fStart == fEnd)
         continue;
+      if (fEnd - fStart > 1)
+        return null;
 
       int current = firstNbrs[fStart];
       boolean valid = true;
@@ -253,12 +264,104 @@ public final class PartitionedTriangleOp implements CountOp {
           valid = false;
           break;
         }
+        if (hEnd - hStart > 1)
+          return null;
         current = views[h].neighbors()[hStart];
       }
       if (valid)
         partition[p] = current;
     }
     return partition;
+  }
+
+  /**
+   * Exact count for a partition chain that is not a function (a person with two cities, a city in two countries): every path
+   * of the chain from a node to a country is a match of its own, so a node carries a weight per country, the number of paths
+   * that reach it, and a triangle counts the product of the three weights of each country they share (issue #9350).
+   */
+  private long executeWeighted(final GraphTraversalProvider provider, final int nodeIdUpperBound, final WorkGuard guard) {
+    final int[][] countries = new int[nodeIdUpperBound][];
+    final long[][] weights = new long[nodeIdUpperBound][];
+    for (int p = 0; p < nodeIdUpperBound; p++) {
+      guard.checkPeriodically(p);
+      if (!provider.isNodeLive(p))
+        continue;
+      Map<Integer, Long> current = new HashMap<>();
+      current.put(p, 1L);
+      for (int h = 0; h < partitionEdgeTypes.length && !current.isEmpty(); h++) {
+        final Map<Integer, Long> next = new HashMap<>();
+        for (final Map.Entry<Integer, Long> e : current.entrySet())
+          for (final int n : provider.getNeighborIds(e.getKey(), partitionDirections[h], partitionEdgeTypes[h]))
+            next.merge(n, e.getValue(), Long::sum);
+        current = next;
+      }
+      if (current.isEmpty())
+        continue;
+      final int[] keys = new int[current.size()];
+      int i = 0;
+      for (final Integer k : current.keySet())
+        keys[i++] = k;
+      Arrays.sort(keys);
+      final long[] w = new long[keys.length];
+      for (i = 0; i < keys.length; i++)
+        w[i] = current.get(keys[i]);
+      countries[p] = keys;
+      weights[p] = w;
+    }
+
+    long total = 0;
+    for (int u = 0; u < nodeIdUpperBound; u++) {
+      guard.check();
+      if (countries[u] == null)
+        continue;
+      final int[] uNeighbors = provider.getNeighborIds(u, Vertex.DIRECTION.BOTH, triangleEdgeType);
+      for (final int v : uNeighbors) {
+        if (countries[v] == null)
+          continue;
+        final int[] vNeighbors = provider.getNeighborIds(v, Vertex.DIRECTION.BOTH, triangleEdgeType);
+        int iu = 0, iv = 0;
+        while (iu < uNeighbors.length && iv < vNeighbors.length) {
+          if (uNeighbors[iu] < vNeighbors[iv])
+            iu++;
+          else if (uNeighbors[iu] > vNeighbors[iv])
+            iv++;
+          else {
+            final int w = uNeighbors[iu];
+            final int ue = runEnd(uNeighbors, iu, uNeighbors.length), ve = runEnd(vNeighbors, iv, vNeighbors.length);
+            if (countries[w] != null)
+              total += (long) (ue - iu) * (ve - iv) * sharedWeight(countries[u], weights[u], countries[v], weights[v], countries[w],
+                  weights[w]);
+            iu = ue;
+            iv = ve;
+          }
+        }
+      }
+    }
+    return total;
+  }
+
+  /** Sum over the countries the three sorted arrays share of the product of the three weights. */
+  private static long sharedWeight(final int[] ca, final long[] wa, final int[] cb, final long[] wb, final int[] cc, final long[] wc) {
+    long sum = 0;
+    int ia = 0, ib = 0, ic = 0;
+    while (ia < ca.length && ib < cb.length && ic < cc.length) {
+      final int a = ca[ia], b = cb[ib], c = cc[ic];
+      if (a == b && b == c) {
+        sum += wa[ia] * wb[ib] * wc[ic];
+        ia++;
+        ib++;
+        ic++;
+      } else {
+        final int max = Math.max(a, Math.max(b, c));
+        if (a < max)
+          ia++;
+        if (b < max)
+          ib++;
+        if (c < max)
+          ic++;
+      }
+    }
+    return sum;
   }
 
   private long countTrianglesPerNode(final GraphTraversalProvider provider,
@@ -298,7 +401,8 @@ public final class PartitionedTriangleOp implements CountOp {
 
   @Override
   public long executeOLTP(final Database db, final WorkGuard guard) {
-    final HashMap<RID, RID> personToPartition = new HashMap<>();
+    // every path of the partition chain is a match of its own, so a vertex carries the number of paths per country (issue #9350)
+    final HashMap<RID, HashMap<RID, Long>> personToPartitions = new HashMap<>();
 
     for (final DocumentType dt : db.getSchema().getTypes()) {
       if (!(dt instanceof VertexType))
@@ -306,18 +410,18 @@ public final class PartitionedTriangleOp implements CountOp {
       for (final Iterator<? extends Identifiable> it = db.iterateType(dt.getName(), false); it.hasNext(); ) {
         guard.check();
         final Vertex v = it.next().asVertex();
-        Vertex cursor = v;
-        boolean valid = true;
-        for (int h = 0; h < partitionEdgeTypes.length; h++) {
-          final Iterator<Vertex> neighbors = cursor.getVertices(partitionDirections[h], partitionEdgeTypes[h]).iterator();
-          if (!neighbors.hasNext()) {
-            valid = false;
-            break;
-          }
-          cursor = neighbors.next();
+        HashMap<RID, Long> current = new HashMap<>();
+        current.put(v.getIdentity(), 1L);
+        for (int h = 0; h < partitionEdgeTypes.length && !current.isEmpty(); h++) {
+          final HashMap<RID, Long> next = new HashMap<>();
+          for (final Map.Entry<RID, Long> e : current.entrySet())
+            for (final RID n : ((Vertex) db.lookupByRID(e.getKey(), true)).getConnectedVertexRIDs(partitionDirections[h],
+                partitionEdgeTypes[h]))
+              next.merge(n, e.getValue(), Long::sum);
+          current = next;
         }
-        if (valid)
-          personToPartition.put(v.getIdentity(), cursor.getIdentity());
+        if (!current.isEmpty())
+          personToPartitions.put(v.getIdentity(), current);
       }
     }
 
@@ -325,30 +429,36 @@ public final class PartitionedTriangleOp implements CountOp {
     final GraphTraversalProvider gavProvider = GraphTraversalProviderRegistry.findProvider(db, triangleEdgeType);
 
     long total = 0;
-    for (final Map.Entry<RID, RID> entry : personToPartition.entrySet()) {
+    for (final Map.Entry<RID, HashMap<RID, Long>> entry : personToPartitions.entrySet()) {
       guard.check();
       final RID uRid = entry.getKey();
-      final RID uCountry = entry.getValue();
+      final HashMap<RID, Long> uCountries = entry.getValue();
 
       final RID[] uNeighbors = getNeighborRIDs(db, gavProvider, uRid, Vertex.DIRECTION.BOTH, triangleEdgeType);
       for (final RID vRid : uNeighbors) {
-        final RID vCountry = personToPartition.get(vRid);
-        if (vCountry == null || !vCountry.equals(uCountry))
+        final HashMap<RID, Long> vCountries = personToPartitions.get(vRid);
+        if (vCountries == null)
           continue;
 
-        // multiplicity of each in-country neighbour of u: a parallel edge is a match of its own (issue #9298). The boxing is
+        // multiplicity of each in-partition neighbour of u: a parallel edge is a match of its own (issue #9298). The boxing is
         // deliberate: this is the no-view fallback, which already materializes RIDs and a RID-keyed partition map per call
         final HashMap<RID, Integer> uNeighborCounts = new HashMap<>();
-        for (final RID nRid : uNeighbors) {
-          final RID nCountry = personToPartition.get(nRid);
-          if (nCountry != null && nCountry.equals(uCountry))
+        for (final RID nRid : uNeighbors)
+          if (personToPartitions.containsKey(nRid))
             uNeighborCounts.merge(nRid, 1, Integer::sum);
-        }
         final RID[] vNeighbors = getNeighborRIDs(db, gavProvider, vRid, Vertex.DIRECTION.BOTH, triangleEdgeType);
         for (final RID wRid : vNeighbors) {
           final Integer multiplicity = uNeighborCounts.get(wRid);
-          if (multiplicity != null)
-            total += multiplicity;
+          if (multiplicity == null)
+            continue;
+          final HashMap<RID, Long> wCountries = personToPartitions.get(wRid);
+          long shared = 0;
+          for (final Map.Entry<RID, Long> c : uCountries.entrySet()) {
+            final Long wv = vCountries.get(c.getKey()), ww = wCountries.get(c.getKey());
+            if (wv != null && ww != null)
+              shared += c.getValue() * wv * ww;
+          }
+          total += multiplicity * shared;
         }
       }
     }

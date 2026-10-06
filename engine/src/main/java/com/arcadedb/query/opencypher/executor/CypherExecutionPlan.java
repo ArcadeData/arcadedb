@@ -6401,12 +6401,13 @@ public class CypherExecutionPlan {
       if (type != ClauseEntry.ClauseType.RETURN)
         return false; // There's a WITH, ORDER BY, etc. between CALL and RETURN
     }
-    // Check that ALL return items are aggregation functions (count, sum, avg, etc.)
-    // and none access individual row properties
+    // Check that ALL return items are count(*): the fast path replaces the procedure rows with empty ones, so any
+    // aggregate that reads a yielded column (count(DISTINCT x), max(x), sum(x)...) would see nothing (issue #9341)
     for (final ReturnClause.ReturnItem item : returnClause.getReturnItems()) {
       if (!(item.getExpression() instanceof FunctionCallExpression func))
         return false;
-      if (!func.isAggregation())
+      if (!"count".equalsIgnoreCase(func.getFunctionName()) || func.isDistinct() || func.getArguments().size() != 1
+          || !(func.getArguments().get(0) instanceof StarExpression))
         return false;
     }
     return true;

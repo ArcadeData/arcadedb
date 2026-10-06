@@ -802,6 +802,13 @@ public class GraphBatch implements AutoCloseable {
     if (edgeCount + 1 >= batchSize)
       requireNoCallerTransaction("newEdge");
 
+    // A light edge has no record, so the type's record counter, which the count push-downs answer from, would read 0 for
+    // edges that exist (issue #9378): the type has to declare it, and a batch no longer decides it on its own
+    if (!typeIsLightweight && lightEdges && !GraphEngine.describesProperties(edgeProperties) && !typeAppliesSchemaToEmptyEdge(edgeTypeName))
+      throw new IllegalArgumentException("Edge type '" + edgeTypeName
+          + "' does not declare LIGHTWEIGHT, so a batch built with withLightEdges(true) cannot store its property-less edges as light edges. "
+          + "Declare the type with CREATE EDGE TYPE " + edgeTypeName + " LIGHTWEIGHT, or build the batch without withLightEdges(true)");
+
     final int idx = edgeCount;
     edgeSrcBucketIds[idx] = sourceVertexRID.getBucketId();
     edgeSrcPositions[idx] = sourceVertexRID.getPosition();
@@ -3602,7 +3609,9 @@ public class GraphBatch implements AutoCloseable {
      * (no record stored, only connectivity pointers). Saves ~33% I/O for property-less edges.
      *
      * @deprecated Declare {@code LIGHTWEIGHT} on the edge type instead. An edge type that declares it is stored
-     * lightweight whatever this flag says; this flag remains only for types that declare nothing.
+     * lightweight whatever this flag says; with the flag set, a property-less edge of a type that does not declare it is
+     * refused with an {@link IllegalArgumentException}, because its light edges would be invisible to the count push-downs
+     * (issue #9378).
      */
     @Deprecated
     public Builder withLightEdges(final boolean lightEdges) {
