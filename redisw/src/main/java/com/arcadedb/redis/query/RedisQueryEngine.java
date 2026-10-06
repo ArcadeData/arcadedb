@@ -336,20 +336,16 @@ public class RedisQueryEngine implements QueryEngine {
     @SuppressWarnings("unchecked")
     final List<Object>[] committed = new List[1];
 
-    // Deliberately OUTSIDE the retried block, unlike `committed`: one slot per command, surviving the attempts, so a
-    // retry answers with the value the first attempt already took from the shared map instead of taking another.
-    // This array covers the retries executeTransaction performs itself; a block that joined an outer transaction is
-    // retried by its owner (the HTTP command endpoint), which re-parses the batch and calls in again, so there the
-    // slots come from the owner's RetryScope instead (issue #9322).
-    final RamSlot[] ownSlots = new RamSlot[commands.size()];
-    Arrays.setAll(ownSlots, i -> new RamSlot());
-
+    // One slot per command, taken from the RetryScope of the transaction() call below or, when this block joined an outer
+    // transaction, of the call that owns it (the HTTP command endpoint, which re-parses the batch and calls in again on a
+    // retry): the slots outlive the attempts, so a retry answers with the value the first attempt already took from the
+    // shared map instead of taking another (issue #9322).
     database.transaction(() -> {
       final RetryScope scope = retryScope();
       final List<Object> attemptResults = new ArrayList<>(commands.size());
       for (int i = 0; i < commands.size(); i++) {
         final String command = commands.get(i);
-        attemptResults.add(executeSingleCommandInternal(command, scope != null ? scope.nextSlot(command, RamSlot::new) : ownSlots[i]));
+        attemptResults.add(executeSingleCommandInternal(command, scope != null ? scope.nextSlot(command, RamSlot::new) : null));
       }
       committed[0] = attemptResults;
     });
