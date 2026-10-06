@@ -151,7 +151,7 @@ class RetryScopeTest extends TestHelper {
   }
 
   @Test
-  void aDivergedRetryThatReconvergesGetsFreshSlotsAndANullKeyIsAccepted() {
+  void aDivergedRetryGetsFreshSlotsFromTheFirstMismatchOnAndANullKeyIsAccepted() {
     final AtomicInteger attempts = new AtomicInteger();
     final AtomicInteger created = new AtomicInteger();
     final List<Integer> seen = new ArrayList<>();
@@ -166,8 +166,9 @@ class RetryScopeTest extends TestHelper {
         throw new ConcurrentModificationException("retry");
     }, false, 2);
 
-    // a: reused (1). position 1: key changed, so a fresh slot (4), never the slot of "b" (2). null key: reused (3)
-    assertThat(seen).containsExactly(1, 2, 3, 1, 4, 3);
+    // a: reused (1). position 1: key changed, so a fresh slot (4), never the slot of "b" (2). Position 2 comes after the
+    // divergence: fresh (5) even though its key (null) matches what the first attempt used
+    assertThat(seen).containsExactly(1, 2, 3, 1, 4, 5);
   }
 
   @Test

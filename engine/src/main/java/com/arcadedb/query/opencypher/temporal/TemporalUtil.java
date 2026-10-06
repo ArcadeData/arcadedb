@@ -550,6 +550,19 @@ public final class TemporalUtil {
     return property != null && property.getType() == Type.STRING;
   }
 
+  /**
+   * The cheap shape of an ISO duration: {@code P} followed by a digit, a sign or {@code T}, ending in a digit or a unit
+   * letter. It keeps ordinary text that merely starts with {@code P} ("Paris", "Peter") away from the parse and its
+   * exception (issue #9338).
+   */
+  private static boolean looksLikeIsoDuration(final String str) {
+    final char second = str.charAt(1);
+    if (!(second >= '0' && second <= '9') && second != 'T' && second != '-' && second != '+')
+      return false;
+    final char last = str.charAt(str.length() - 1);
+    return last >= '0' && last <= '9' || last == 'Y' || last == 'M' || last == 'W' || last == 'D' || last == 'H' || last == 'S';
+  }
+
   public static boolean mayBeTemporalString(final String str) {
     final int length = str.length();
     if (length == 0)
@@ -558,7 +571,7 @@ public final class TemporalUtil {
     // An ISO duration is recognised by its leading 'P' and is as short as "P1D": the length floor must not apply to it
     // (issue #9338). Every other temporal text is at least 5 characters long.
     if (first == 'P')
-      return length >= 3;
+      return length >= 3 && looksLikeIsoDuration(str);
     return length >= 5 && Character.isDigit(first);
   }
 

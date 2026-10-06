@@ -212,4 +212,18 @@ class Issue9338DurationFamilyTest {
     expectError("RETURN duration({days: 1}) * (1 / 0.0)");
     expectError("RETURN duration({days: 1}) / (1 / 0.0)");
   }
+
+  @Test
+  void plainTextStartingWithPStaysAString() {
+    database.transaction(() -> {
+      database.command("cypher", "CREATE (:W {w: 'Paris'})");
+      database.command("cypher", "CREATE (:W {w: 'Peter'})");
+      database.command("cypher", "CREATE (:W {w: 'P'})");
+      database.command("cypher", "CREATE (:W {w: 'P1D'})");
+    });
+    for (final String text : new String[] { "Paris", "Peter", "P" })
+      assertThat(scalar("MATCH (n:W) WHERE n.w = '" + text + "' RETURN count(n) AS r")).as(text + " stays a string").isEqualTo(1L);
+    assertThat(scalar("MATCH (n:W) WHERE n.w = duration('P1D') RETURN count(n) AS r")).as("a valid short duration is restored")
+        .isEqualTo(1L);
+  }
 }

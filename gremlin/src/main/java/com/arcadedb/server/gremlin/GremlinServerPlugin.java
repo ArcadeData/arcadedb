@@ -31,8 +31,8 @@ import org.apache.tinkerpop.gremlin.server.Settings;
 
 import java.io.File;
 import java.io.FileInputStream;
-import java.net.InetSocketAddress;
 import java.lang.reflect.Field;
+import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -156,6 +156,10 @@ public class GremlinServerPlugin implements ServerPlugin {
       final Throwable cause = e.getCause() != null ? e.getCause() : e;
       throw new ServerException("Error on starting GremlinServer plugin on " + settings.host + ":" + settings.port + ": "
           + cause.getMessage(), cause);
+    } catch (final TimeoutException e) {
+      releaseAfterFailedStart();
+      throw new ServerException("The GremlinServer plugin did not finish starting on " + settings.host + ":" + settings.port
+          + " within " + START_TIMEOUT_SECONDS + " seconds", e);
     } catch (final Exception e) {
       releaseAfterFailedStart();
       throw new ServerException("Error on starting GremlinServer plugin", e);
