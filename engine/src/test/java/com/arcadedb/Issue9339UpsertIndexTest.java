@@ -18,7 +18,6 @@
  */
 package com.arcadedb;
 
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -157,7 +156,8 @@ public class Issue9339UpsertIndexTest extends TestHelper {
 
     assertThatThrownBy(() -> database.transaction(
         () -> database.command("sql", "UPDATE OrCond SET name = ? UPSERT WHERE code = ? OR code = ?", "x", "a", "b")))
-        .isInstanceOf(CommandSQLParsingException.class);
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("UNIQUE index");
     assertThat(database.countType("OrCond", false)).isZero();
   }
 
@@ -176,35 +176,23 @@ public class Issue9339UpsertIndexTest extends TestHelper {
   }
 
   @Test
-  void upsertWithReversedEqualityNeverCreatesDuplicates() {
-    database.command("sql", "CREATE DOCUMENT TYPE Rev");
-    database.command("sql", "CREATE PROPERTY Rev.code STRING");
-    database.command("sql", "CREATE INDEX ON Rev (code) UNIQUE");
+  void upsertWithNonPlainKeyShapesIsRejected() {
+    database.command("sql", "CREATE DOCUMENT TYPE Shapes");
+    database.command("sql", "CREATE PROPERTY Shapes.code STRING");
+    database.command("sql", "CREATE INDEX ON Shapes (code) UNIQUE");
 
-    // whether the planner accepts the reversed form or rejects it, two runs must leave at most one record
-    for (int i = 0; i < 2; i++) {
-      try {
-        database.transaction(() -> database.command("sql", "UPDATE Rev SET name = ? UPSERT WHERE ? = code", "x", "c1"));
-      } catch (final CommandSQLParsingException e) {
-        assertThat(e.getMessage()).contains("UNIQUE index");
-      }
+    // reversed equality, null key, and a modified/wrapped left side are not a plain full-key lookup
+    final String[] where = { "? = code", "code = ?", "code.toLowerCase() = ?", "code.length() = ?" };
+    final Object[] value = { "c1", null, "c1", 2 };
+    for (int k = 0; k < where.length; k++) {
+      final String condition = where[k];
+      final Object parameter = value[k];
+      assertThatThrownBy(() -> database.transaction(
+          () -> database.command("sql", "UPDATE Shapes SET name = ? UPSERT WHERE " + condition, "x", parameter)))
+          .as(condition)
+          .isInstanceOf(CommandSQLParsingException.class)
+          .hasMessageContaining("UNIQUE index");
     }
-    assertThat(database.countType("Rev", false)).isLessThanOrEqualTo(1);
-  }
-
-  @Test
-  void upsertWithNullKeyNeverCreatesDuplicates() {
-    database.command("sql", "CREATE DOCUMENT TYPE NullKey");
-    database.command("sql", "CREATE PROPERTY NullKey.code STRING");
-    database.command("sql", "CREATE INDEX ON NullKey (code) UNIQUE");
-
-    for (int i = 0; i < 2; i++) {
-      try {
-        database.transaction(() -> database.command("sql", "UPDATE NullKey SET name = ? UPSERT WHERE code = ?", "x", null));
-      } catch (final CommandSQLParsingException | CommandExecutionException e) {
-        // rejecting a null key is as safe as updating the single matching record
-      }
-    }
-    assertThat(database.countType("NullKey", false)).isLessThanOrEqualTo(1);
+    assertThat(database.countType("Shapes", false)).isZero();
   }
 }
