@@ -122,6 +122,11 @@ class CypherAntiJoinChainGAVIssue9282Test extends TestHelper {
       assertThat(both).isNotSameAs(first);
       assertThat(view.getNeighborView(Vertex.DIRECTION.BOTH, "HAS_INTEREST", "KNOWS")).isSameAs(both);
       assertThat(both.edgeCount()).isGreaterThan(first.edgeCount());
+      // every node's range is in ascending order: the sorted-intersection consumers depend on it
+      for (final NeighborView merged : new NeighborView[] { first, both })
+        for (int node = 0; node < merged.nodeCount(); node++)
+          for (int j = merged.offset(node) + 1; j < merged.offsetEnd(node); j++)
+            assertThat(merged.neighbors()[j]).isGreaterThanOrEqualTo(merged.neighbors()[j - 1]);
     } finally {
       view.drop();
     }
