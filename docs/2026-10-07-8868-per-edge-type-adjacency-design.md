@@ -75,7 +75,10 @@ What "fail closed" means concretely on an older release that opens a database co
 **Decision.** Per-type chains are keyed by the **bucket id of the entry's edge RID**. A lightweight edge's key is its
 marker's bucket, the type's first bucket. The reserved key `-1` holds any entry whose edge bucket is not a
 non-negative id. No current writer is known to produce one, but the key exists so that such an entry can never be
-dropped. A filtered walk never visits key `-1`, the same as `EdgeBucketMask`, which rejects negative ids today.
+dropped. A filtered walk never visits key `-1`, the same as `EdgeBucketMask`, which rejects negative ids today. An unfiltered
+walk, a count and every removal visit it like any other key, so its entries are never lost. `CHECK DATABASE` reports
+a key `-1` as a WARNING, because no known writer produces one: it means either a writer this document did not
+anticipate or a corrupt entry. #9267 tests it with the test-only writer.
 
 **Why not a type id.** The schema has no persistent numeric type id, and type names change on `ALTER TYPE ... NAME`.
 The bucket id is already what the filter matches on (`EdgeBucketMask.of` resolves type names, subtypes included, to
@@ -85,7 +88,9 @@ time and both look at the bucket the edge was written to.
 
 **Cost.** One key per edge bucket that has an edge at this vertex. With `arcadedb.typeDefaultBuckets` = 1 (the
 default) that is one key per edge type. A type created with N buckets gets up to N keys per vertex, and a filtered hop
-on it visits N small chains instead of one. This is accepted. Merging keys by type at write time would tie the on-disk
+on it visits N small chains instead of one. This document has no data on how often supernode edge types use more
+than one bucket. The default is 1, and the usual reason to raise it is parallel bulk import into one type. The cost
+is N chain heads per hop, independent of degree. This is accepted. Merging keys by type at write time would tie the on-disk
 key to the schema at write time, which is the property rejected above.
 
 **Inherited, not introduced.** `FileManager.newFileId()` appends to the in-memory file list, so ids are not reused
@@ -97,8 +102,8 @@ design neither fixes nor worsens it.
 #### 2.3.2 The root record (type 8)
 
 The vertex head pointer of a promoted direction points to the root. The root never holds a chain head itself, so it
-is rewritten only when a key is added, when a key's sub-directory is replaced (2.3.4), and when the drain (2.3.5)
-finishes. Plain appends and head flips never touch it.
+is rewritten only when a key is added and when the drain (2.3.5) empties the legacy part. Plain appends, head flips
+and key promotions (which rewrite the key's own sub-directory in place, 2.3.4) never touch it.
 
 ```
 offset  size  field
@@ -142,9 +147,10 @@ already allows an empty slot and any number of generations up to 127, so nothing
 **Why it stays fail closed.** An older release reaches a nested type-7 record only through a type-8 root, which it
 cannot read. A nested sub-directory is never a vertex head, so no older code path treats it as one.
 
-**Three implementation changes to type-7 code that this needs** (both internal, no format change):
+**Four implementation changes to type-7 code that this needs** (all internal, no format change):
 
 - A `StripeDirectory` constructor for a sub-directory: generation 0 with empty slots, generation 1 with one slot.
+- An in-place rewrite that appends a generation (key promotion, 2.3.4). Today's code never adds a generation.
 - An append that targets a given generation instead of the newest one, used only by the drain to fill generation 0.
   It is the existing `StripedEdgeList.add` logic with the generation as a parameter.
 - The pool bucket of a **single-slot** generation is chosen by a hash of the key's edge bucket id, not by the slot
@@ -160,25 +166,23 @@ All of these are lazy. No step moves existing entries, so every step is one boun
 | A classic vertex crosses the threshold with the setting ON (2.5) | Root, with legacy = the classic chain head. No keys yet. The vertex head is flipped to the root with the same stale-head guard as `tryPromoteToSuperNode`. | The classic chain: bounded by about one threshold (about 4096 entries). |
 | An append to a vertex already promoted to type 7, with the setting ON | Root, with legacy = the existing type-7 directory. The vertex head is flipped from the type-7 RID to the root. | The whole type-7 list, until it is drained (2.3.5). |
 | First append of an edge bucket that has no key yet (including any edge type created after promotion) | Root rewrite adding the key (anchored fresh copy, poisoned, as `loadDirectoryForWrite` does today), a new sub-directory, and its first chunk. | Unchanged. |
-| A key's generation-1 chain crosses the threshold | A **new** sub-directory with generations 0 and 1 copied and generation 2 added, the root's pointer for that key swapped, and the old sub-directory deleted. The old sub-directory is loaded through its anchored page, so a concurrent head flip on it conflicts instead of being lost. | Unchanged. |
+| A key's generation-1 chain crosses the threshold | The key's sub-directory is rewritten **in place**, under the same RID, with generation 2 appended. It is loaded through its anchored page, so a concurrent head flip on it conflicts instead of being lost. The root is not touched. | Unchanged. |
 
-A replacement sub-directory rather than growing the old one in place keeps the type-7 property that a directory's
-size never changes after creation.
+**No structure is ever deleted while it can still be reached through a stale RID.** An earlier draft replaced the
+sub-directory and deleted the old one. A reader holding the old RID could then, after slot reuse
+(`arcadedb.bucketReuseSpaceMode`), load an unrelated type-7 record under the same RID, for example another vertex's
+sub-directory. The 2.3.6 type check would pass and the reader would walk, or for `removeVertex` modify, the wrong
+chains. Growing in place removes the case. It gives up the type-7 habit that a directory's size never changes after
+creation. That habit is a convention: the type-7 format and `LocalBucket` both accept an update that grows a record,
+and the slot merge covers a growth the page can host. The rule for the whole design, which #9267 and #9268 must
+keep:
 
-**A reader holding a replaced or superseded RID.**
-
-- *Vertex head flip (conversion).* Nothing is deleted. A reader that resolved the vertex before the flip still holds
-  the classic chain or the type-7 directory, which stays valid and reachable as the legacy part. It sees the list as
-  it was before the conversion, the same as a reader that resolved the head before any concurrent append.
-- *Key promotion.* The old sub-directory **is** deleted, so a reader that took its RID from a root read before the
-  swap can get `RecordNotFoundException` when it loads it. The new list class handles this exactly as
-  `StripedEdgeList.addChain` handles a stripe head that is not visible: it re-reads the root once and follows the new
-  pointer. It re-reads the root a bounded number of times (three) while the pointer keeps changing. If the sub-directory still
-  cannot be resolved, **every** operation, read walks included, raises a retryable
-  `ConcurrentModificationException`. A read walk does not skip the key: unlike a single stripe head in a publication
-  window, a missing sub-directory would silently drop a whole edge type from the result. A write
-  never follows a stale sub-directory, because it loads the sub-directory through its anchored page, and the
-  promoting transaction's delete fails that version check.
+- a vertex head flip (conversion) deletes nothing: the old classic chain or type-7 directory stays reachable as the
+  legacy part, so a reader that resolved the vertex earlier sees the list as it was before the conversion;
+- a sub-directory and a root are deleted only by `deleteAll`, when the vertex itself goes, which anchors the whole
+  list first (`anchorForFullRemoval`, as on type 7);
+- the drain never deletes a legacy chunk or the legacy directory. It **seals** them (2.3.5) and leaves the deletion
+  to the orphan reclaim of `CHECK DATABASE FIX`.
 
 **Racing appenders are safe without moving anything.** A transaction that loaded the old structure before a
 conversion committed appends into chunks that stay reachable: the classic chain or the type-7 directory becomes the
@@ -217,9 +221,14 @@ One drain **step** is one transaction over one legacy chunk:
    creating the key first if needed (2.3.4).
 4. Unlink the tail: the predecessor's `previous` becomes null (a rewrite of a segment, so its page is poisoned for the
    edge-append merge), or, when the tail is the only chunk, the type-7 slot or the root's legacy pointer becomes
-   empty. Delete the tail.
-5. When the legacy part is empty, delete the type-7 directory if there was one and set the root's legacy pointer to
-   `(-1, -1)`.
+   empty. Then **seal** the tail instead of deleting it: rewrite it under the same RID as a header-only chunk
+   (`used` = `CONTENT_START_POSITION`, `previous` null, record size = `CONTENT_START_POSITION`). Readers see an empty
+   last chunk. `MutableEdgeSegment.add` sees a chunk with no room, because its capacity is the record size.
+5. When the legacy part is empty, set the root's legacy pointer to `(-1, -1)`. A type-7 legacy directory is sealed the
+   same way: every slot is rewritten to `(-1, -1)`, and it is not deleted.
+
+Sealed chunks and directories are unreachable, about 13 bytes each, and the `CHECK DATABASE FIX` orphan reclaim
+deletes them later. #9268 must check that the reclaim covers an unreachable type-7 directory as well as a segment.
 
 Since the drain takes the oldest entries first, everything in an archive is **older** than everything still in the
 legacy part.
@@ -228,22 +237,27 @@ legacy part.
 on a generic conflict. The two orders are handled by two different mechanisms:
 
 - *The appender commits first.* The drain loaded the tail and its predecessor through `loadChunkForWrite`, which
-  anchors their pages. The drain rewrites or deletes both records, so it has no tracked appends to replay there. Its
+  anchors their pages. The drain rewrites both records, so it has no tracked appends to replay there. Its
   commit fails the page version check, raises a `ConcurrentModificationException`, and the step is retried and sees
   the appended entry.
 - *The drain commits first.* The appender's commit conflicts on the tail's page and tries the edge-append rebase.
-  `TransactionContext.rebaseEdgeAppends` reloads the chunk by RID, gets `RecordNotFoundException` for the deleted tail,
-  and raises a `ConcurrentModificationException`. The retry re-resolves the vertex and appends to a live head.
-- *The open case, which #9268 must close.* The freed slot can be reused (`arcadedb.bucketReuseSpaceMode`) by a record
-  created before the appender's rebase runs, for example an archive chunk in the same pool bucket. The rebase would
-  then load an unrelated chunk under the same RID and append into it. The same ABA shape exists today wherever a chunk
-  is deleted while an append to it is in flight. #9268 must show that the rebase rejects it, for example by comparing
-  the reloaded chunk with the pre-image the appender started from, or make the drain keep the slot out of reuse until
-  the step's commit is no longer racing. A test must cover both orders and the reuse case: a stale-head appender
-  racing a drain step.
+  `TransactionContext.rebaseEdgeAppends` reloads the chunk by RID and finds the **sealed** tail under that same RID,
+  because it was not deleted. `segment.add` returns false (no room), so the rebase raises "chunk filled up
+  concurrently", a `ConcurrentModificationException`. The retry re-resolves the vertex and appends to a live head. An
+  append that raced into the predecessor instead rebases onto the predecessor's new content, which is still
+  reachable, so it is kept.
+- *Why sealing and not deleting.* If the tail were deleted, its slot could be reused (`arcadedb.bucketReuseSpaceMode`)
+  before the appender's rebase ran, for example by an archive chunk the drain itself created in the same pool bucket.
+  The rebase would then load that unrelated chunk under the same RID and append into it. That is silent corruption,
+  not a retry, and comparing content cannot reliably detect it, because an archive chunk can hold exactly the entries
+  the tail held. A sealed tail keeps its RID occupied until the orphan reclaim. The reclaim runs from an explicit
+  `CHECK DATABASE FIX`, long after any append that raced the drain step. Whether other chunk deletions that exist
+  today share this ABA shape is not verified here. #9268 should check.
+- **Acceptance criterion of #9268:** a test that races a stale-head appender against a drain step in both orders,
+  including an append into the tail and one into the predecessor, and asserts every edge is present exactly once.
 
 **Invariant: every committed state holds each entry exactly once**, either in the legacy part or in an archive, and
-never in both. Copying a tail's entries (step 3) and unlinking and deleting that tail (step 4) happen in **one**
+never in both. Copying a tail's entries (step 3) and unlinking and sealing that tail (step 4) happen in **one**
 transaction, so a commit publishes both and a rollback, a lost conflict or a crash publishes neither. WAL recovery
 replays only committed transactions. A drain step that loses a conflict is retried. A crash between steps leaves a
 valid, partly drained vertex, and the next drain resumes from the current tail.
@@ -318,6 +332,10 @@ which is the only step the setting gates. Without this, a one-release downgrade 
 read-only. Before 27.1.1, type-8 records can come only from the test-only writer. They exist in production only after
 a 27.1.1 node with the setting ON has converted a vertex, and that needs every peer to advertise the token.
 
+**The risk D3 takes on.** 26.12.1 ships a write path (key creation, head flips, key promotion) that no production
+data reaches until 27.1.1. Code that runs nowhere is the code most likely to break unnoticed. The mitigation is that
+its concurrency and model tests ship with it in #9267 (section 5), not with the writer in #9268.
+
 ### 2.6 HA: the capability that gates writing
 
 **Decision.**
@@ -344,6 +362,15 @@ ordered rolling upgrade. It cannot help in two cases, which the release note mus
   vertices, and so would a single-node downgrade.
 - A node below 26.12.1 that **joins** later, or installs a snapshot. Once any type-8 record exists, every node needs
   26.12.1 or later.
+- A peer downgraded **inside the window** in which the leader still believes its advertisement: up to the one-second
+  cache of `canWriteRecordType`, plus the registry's advertisement TTL (`ADVERTISEMENT_TTL_MS`, 20 s). Conversions
+  committed in that window reach a node that cannot read them. This is the same window every `PeerCapabilities`
+  consumer accepts.
+
+**Operator procedure for the release note** (#9268): before adding or rolling back a node in a cluster that has used
+the setting, check that the node runs 26.12.1 or later. If a node below that is already in the cluster, it fails only
+on the converted vertices (`Cannot find record type '8'`). Upgrade it in place; nothing needs repair. To leave the
+feature, use the export/import path of 2.7.
 
 Neither case causes a **divergence**. The pages are byte-identical on every node, and the older node fails closed
 with `Cannot find record type '8'` on the converted vertices only. Refusing such a node at join time would need a
@@ -381,7 +408,8 @@ in-place downgrade path, is a **prerequisite of #9263** (default ON), not a some
 | In-chunk appends, same or different type | The chunk only (root and sub-directory are read through the unanchored fast path, as `StripedEdgeList.add` does today) | Edge-append merge, as today. Different types write different chains, so they usually do not even share a page. |
 | Head flips of **different** keys | Different sub-directory records | Different slots. When they share a page, the slot merge rebases them (`LocalBucket.isSlotMergeCandidate` accepts anything that is not an `EdgeSegment`). With `arcadedb.txPageSlotMerge` OFF, a retryable conflict. |
 | Head flips of the **same** key and slot | Same sub-directory | A real conflict, retried. The same as type 7 today. |
-| First edge of two new types, or a key promotion, at the same time | The root | A real conflict, retried. Once per (vertex, edge bucket), plus once per key promotion. |
+| First edge of two new types at the same time | The root | A real conflict, retried. Once per (vertex, edge bucket). |
+| Key promotion and a head flip of the same key | That key's sub-directory | A real conflict, retried. Once per key promotion. |
 | A drain step and an append into the drained chunk | The chunk (anchored by the drain) | A real conflict, retried. |
 
 **Root size and the page merges.** The root grows by 16 bytes per key: 1,000 keys at one vertex is about 16 KB,
@@ -392,8 +420,8 @@ then become plain retries, which is correct and only slower. Every root rewrite 
 edge-append merge **for the rewriting transaction only**. Other vertices' chunks on that page lose the append merge
 for that one commit, which is at most one commit per root rewrite.
 
-**Root contention.** A root rewrite happens once per (vertex, edge bucket) when the key is created, once per key
-promotion, and once at the end of a drain. After a conversion, a burst of first appends of several new types on the
+**Root contention.** A root rewrite happens once per (vertex, edge bucket) when the key is created, and once at the
+end of a drain. After a conversion, a burst of first appends of several new types on the
 same hot vertex therefore conflicts on the root. Each loser gets a retryable `ConcurrentModificationException` and the
 normal transaction retry handles it. On the retry the key exists, so the append takes the fast path and does not
 touch the root again. The number of root conflicts is therefore bounded by the number of distinct edge buckets at the
@@ -435,7 +463,11 @@ read. The same holds for an unfiltered walk, which opens one cursor per chain.
 
 This is accepted because the operation the change exists for, a filtered hop, is the common shape in Cypher and SQL,
 and because the cost is bounded by the number of edge types at the vertex, not by its degree. #9268's benchmark must
-measure it: an unfiltered `isConnectedTo` and `removeVertex` on a hub with many edge types, type 7 against type 8.
+measure it: an unfiltered `isConnectedTo` and `removeVertex` on a hub with 50 edge types, type 7 against type 8.
+**Pass/fail:** the opt-in release (#9268) ships with whatever the number is, documented in the release note. Default
+ON (#9263) is **blocked** if either operation is more than 2x slower on type 8 than on type 7, until the cost is
+reduced, for example by the root caching of section 5. The 2x threshold is this document's proposal, and the
+maintainer may set it differently.
 
 ## 4. Code that must learn about type 8
 
@@ -466,8 +498,10 @@ behavior in 2.8 and 2.6.
 - **#9267 (reader):** type-8 records built by a test-only writer: every row of section 3, every rejection of 2.3.6, a
   root with a type-7 legacy part and one with a classic legacy part, a partly drained vertex, the checker walk, the
   `GraphDatabaseChecker` orphan reclaim on a database with type-8 roots (no live root, sub-directory, archive or legacy
-  chunk is reclaimed, and a real orphan still is), a reader holding a sub-directory RID that a key promotion deleted
-  (2.3.4), and the capability token present in `PeerCapabilities.LOCAL`.
+  chunk is reclaimed, and a real orphan still is), key promotion keeping the sub-directory's RID (2.3.4), key `-1` (2.3.1), and the capability token present in
+  `PeerCapabilities.LOCAL`. **Because of D3, the write-path tests that exercise maintaining a converted vertex ship in
+  #9267, not later:** the concurrency table of 2.8 and the model test below, run on vertices the test-only writer
+  converted. #9268 adds only what is specific to conversion and the drain.
 - **#9268 (writer):** fresh promotion and type-7 conversion under the setting; a type added after promotion; key
   promotion; the drain, interrupted and resumed; the concurrency table of 2.8; the HA gate in both directions
   (a peer without the token keeps the leader on type 7, all peers with it allow type 8); export/import with the
@@ -480,8 +514,9 @@ behavior in 2.8 and 2.6.
   several edge types, lightweight edges and vertex deletions, to a classic, a type-7 and a type-8 vertex (conversion
   and partial drains interleaved), and checks that filtered and unfiltered walks, counts, `isConnectedTo` and
   `containsVertex` agree as multisets.
-- **Crash recovery (#9268):** a drain step killed inside its transaction, by a process kill rather than a rollback,
-  then reopen with WAL recovery and `CHECK DATABASE`: each entry is present exactly once.
+- **Crash recovery (#9268):** a process kill (not a rollback) at each of these points, then reopen with WAL recovery,
+  `CHECK DATABASE`, and an exact count per type: inside a drain step's transaction; between two drain steps; between
+  a conversion's commit and the first key creation; inside a key creation. Each entry must be present exactly once.
 - **Checker (#9268):** `CHECK DATABASE` reports a key whose edge bucket no longer exists in the schema, a sign of a
   forcibly dropped edge type and of the reused-id exposure in 2.3.1. `FIX` leaves such a key alone unless asked,
   because its entries may still be referenced by edge records.
