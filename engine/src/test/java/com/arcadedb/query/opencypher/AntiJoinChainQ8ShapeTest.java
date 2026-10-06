@@ -174,6 +174,62 @@ class AntiJoinChainQ8ShapeTest {
         .isEqualTo(count(filtered + "WITH t1, m, c, t2 WHERE " + Q8_WHERE + " RETURN count(*) AS n"));
   }
 
+  @Test
+  void inlinePropertiesOnAnyNodeAnswerLikeTheRowPipeline() {
+    for (final boolean view : new boolean[] { false, true }) {
+      populate(21);
+      database.transaction(() -> {
+        int i = 0;
+        for (final String type : new String[] { "Tag", "Message", "Comment" })
+          for (final var it = database.iterateType(type, true); it.hasNext(); )
+            it.next().asVertex().modify().set("flag", i++ % 2 == 0).save();
+      });
+      if (view)
+        createView();
+      for (final String chain : new String[] {
+          "MATCH (t1:Tag {flag: true})<-[:HAS_TAG]-(m:Message)<-[:REPLY_OF]-(c:Comment)-[:HAS_TAG]->(t2:Tag) ",
+          "MATCH (t1:Tag)<-[:HAS_TAG]-(m:Message {flag: true})<-[:REPLY_OF]-(c:Comment)-[:HAS_TAG]->(t2:Tag) ",
+          "MATCH (t1:Tag)<-[:HAS_TAG]-(m:Message)<-[:REPLY_OF]-(c:Comment {flag: false})-[:HAS_TAG]->(t2:Tag) ",
+          "MATCH (t1:Tag)<-[:HAS_TAG]-(m:Message)<-[:REPLY_OF]-(c:Comment)-[:HAS_TAG]->(t2:Tag {flag: false}) " })
+        assertThat(count(chain + "WHERE " + Q8_WHERE + " RETURN count(*) AS n")).as(chain + (view ? " (view)" : ""))
+            .isEqualTo(count(chain + "WITH t1, m, c, t2 WHERE " + Q8_WHERE + " RETURN count(*) AS n"));
+      database.drop();
+      setUp();
+    }
+  }
+
+  @Test
+  void aSubTypeOfTheTagEdgeAnswersLikeTheRowPipeline() {
+    database.command("sql", "CREATE EDGE TYPE HAS_TAG_X EXTENDS HAS_TAG");
+    for (final boolean view : new boolean[] { false, true }) {
+      populate(22);
+      database.transaction(() -> {
+        final List<com.arcadedb.graph.Vertex> messages = new ArrayList<>(), tags = new ArrayList<>();
+        for (final var it = database.iterateType("Message", true); it.hasNext(); )
+          messages.add(it.next().asVertex());
+        for (final var it = database.iterateType("Tag", true); it.hasNext(); )
+          tags.add(it.next().asVertex());
+        final Random random = new Random(5);
+        for (int i = 0; i < 10; i++)
+          messages.get(random.nextInt(messages.size())).newEdge("HAS_TAG_X", tags.get(random.nextInt(tags.size()))).save();
+      });
+      if (view)
+        createView("gavq8x", "HAS_TAG, HAS_TAG_X, REPLY_OF, LIKES");
+      assertAgrees(Q8, "t1, m, c, t2", Q8_WHERE, true);
+      database.drop();
+      setUp();
+      database.command("sql", "CREATE EDGE TYPE HAS_TAG_X EXTENDS HAS_TAG");
+    }
+  }
+
+  @Test
+  void aLabelOnTheNegatedPatternAnswersLikeTheRowPipeline() {
+    populate(23);
+    final String text = Q8 + "WHERE NOT (c)-[:HAS_TAG]->(:Tag {flag: true}) AND t1 <> t2 RETURN count(*) AS n";
+    assertThat(count(text)).isEqualTo(count(Q8 + "WITH t1, m, c, t2 WHERE NOT (c)-[:HAS_TAG]->(:Tag {flag: true}) AND t1 <> t2 RETURN count(*) AS n"));
+    assertAgrees(Q8, "t1, m, c, t2", "NOT (c)-[:HAS_TAG]->(t1:Tag) AND t1 <> t2", true);
+  }
+
   // ===================================================================================================
   // helpers
   // ===================================================================================================
@@ -223,9 +279,13 @@ class AntiJoinChainQ8ShapeTest {
   }
 
   private void createView() {
-    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW gavq8 VERTEX TYPES (Tag, Other, Message, Post, Comment) "
-        + "EDGE TYPES (HAS_TAG, REPLY_OF, LIKES)");
-    final var view = GraphAnalyticalViewRegistry.get(database, "gavq8");
+    createView("gavq8", "HAS_TAG, REPLY_OF, LIKES");
+  }
+
+  private void createView(final String name, final String edgeTypes) {
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW " + name + " VERTEX TYPES (Tag, Other, Message, Post, Comment) "
+        + "EDGE TYPES (" + edgeTypes + ")");
+    final var view = GraphAnalyticalViewRegistry.get(database, name);
     final long deadline = System.currentTimeMillis() + 60_000;
     while (!view.isReady() && System.currentTimeMillis() < deadline)
       Thread.onSpinWait();
