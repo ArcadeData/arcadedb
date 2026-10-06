@@ -1146,6 +1146,13 @@ public class BoltNetworkExecutor extends Thread {
       return;
     }
 
+    // A user revoked while the transaction was open must not be able to commit what it wrote before
+    if (database != null && !authorizeDatabase(database.getName())) {
+      rollbackExplicitTransaction();
+      explicitTransaction = false;
+      return;
+    }
+
     try {
       if (database != null) {
         database.commit();

@@ -102,6 +102,26 @@ public class BoltStaleSessionRevalidationIT extends BaseBoltServerTest {
     }
   }
 
+  @Test
+  void revokedUserCannotCommitAnOpenTransaction() {
+    final ServerSecurity security = getServer(0).getSecurity();
+    security.createUser(new JSONObject().put("name", USER).put("password", security.encodePassword(PASSWORD))
+        .put("databases", new JSONObject().put(getDatabaseName(), new JSONArray().put("admin"))));
+
+    try (final Driver driver = GraphDatabase.driver(getServerBoltUrl(), AuthTokens.basic(USER, PASSWORD),
+        Config.builder().withoutEncryption().build());
+        final Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+      final Transaction transaction = session.beginTransaction();
+      transaction.run("CREATE (:StaleDoc {name:'before'})").consume();
+
+      security.dropUser(USER);
+
+      final Throwable thrown = catchThrowable(transaction::commit);
+      assertThat(thrown).as("a revoked user must not commit its open transaction").isNotNull();
+      assertThat(getServerDatabase(0, getDatabaseName()).countType("StaleDoc", false)).isEqualTo(0L);
+    }
+  }
+
   private void run(final Consumer<ServerSecurity> change) {
     final ServerSecurity security = getServer(0).getSecurity();
     security.createUser(new JSONObject().put("name", USER).put("password", security.encodePassword(PASSWORD))
