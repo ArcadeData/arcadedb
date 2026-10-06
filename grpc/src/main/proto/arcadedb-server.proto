@@ -859,6 +859,10 @@ message TimeSeriesWriteSummary {
   // The type IS a TIMESERIES type; its storage engine failed to load (see the server log for why).
   repeated string unavailable_types = 6;
   int64 execution_time_ms = 7;
+  // Tag or field keys a measurement's TIMESERIES type does not declare in that role, as
+  // '<measurement>.<key> (tag|field)'. The points carrying them were dropped (issue #8646) unless the database sets
+  // arcadedb.timeSeriesUndeclaredKeys=ignore. Capped at 100 entries; 'dropped' still counts every point.
+  repeated string undeclared_keys = 8;
 }
 
 // Mirrors com.arcadedb.engine.timeseries.AggregationType. UNSPECIFIED is the proto3 zero value and is

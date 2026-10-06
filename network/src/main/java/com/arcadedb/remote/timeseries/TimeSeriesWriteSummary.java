@@ -26,8 +26,9 @@ import java.util.List;
  * <p>
  * A write is <b>not</b> atomic on either protocol: each measurement's batch commits its own shard transaction
  * as it is appended, so {@code dropped &gt; 0} is a partial-write signal and not a rollback - the samples
- * counted in {@link #written()} are already durable. Every point is either written or named in exactly one of
- * the three type lists, so {@code written + dropped == received}.
+ * counted in {@link #written()} are already durable. Every point is either written or dropped, so
+ * {@code written + dropped == received}; a dropped point is accounted for by one of the three type lists or by
+ * {@link #undeclaredKeys()}.
  *
  * @param received           points handed to the server
  * @param written            samples appended
@@ -35,16 +36,26 @@ import java.util.List;
  * @param unknownTypes       measurements with no such type: create it first with CREATE TIMESERIES TYPE
  * @param nonTimeSeriesTypes measurements naming a type that is not a TIMESERIES type
  * @param unavailableTypes   measurements naming a TIMESERIES type whose storage engine failed to load
+ * @param undeclaredKeys     {@code <measurement>.<key> (tag|field)} for each key the type does not declare in that
+ *                           role; the points carrying one were dropped (issue #8646). Capped by the server at 100
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public record TimeSeriesWriteSummary(long received, long written, long dropped, List<String> unknownTypes,
-                                     List<String> nonTimeSeriesTypes, List<String> unavailableTypes) {
+                                     List<String> nonTimeSeriesTypes, List<String> unavailableTypes,
+                                     List<String> undeclaredKeys) {
 
   public TimeSeriesWriteSummary {
     unknownTypes = unknownTypes == null ? List.of() : List.copyOf(unknownTypes);
     nonTimeSeriesTypes = nonTimeSeriesTypes == null ? List.of() : List.copyOf(nonTimeSeriesTypes);
     unavailableTypes = unavailableTypes == null ? List.of() : List.copyOf(unavailableTypes);
+    undeclaredKeys = undeclaredKeys == null ? List.of() : List.copyOf(undeclaredKeys);
+  }
+
+  /** The summary of a write with no undeclared keys, the shape this record had before issue #8646. */
+  public TimeSeriesWriteSummary(final long received, final long written, final long dropped,
+      final List<String> unknownTypes, final List<String> nonTimeSeriesTypes, final List<String> unavailableTypes) {
+    this(received, written, dropped, unknownTypes, nonTimeSeriesTypes, unavailableTypes, List.of());
   }
 
   /** Whether every point handed in was appended. */
@@ -59,7 +70,7 @@ public record TimeSeriesWriteSummary(long received, long written, long dropped, 
   public TimeSeriesWriteSummary plus(final TimeSeriesWriteSummary other) {
     return new TimeSeriesWriteSummary(received + other.received, written + other.written, dropped + other.dropped,
         union(unknownTypes, other.unknownTypes), union(nonTimeSeriesTypes, other.nonTimeSeriesTypes),
-        union(unavailableTypes, other.unavailableTypes));
+        union(unavailableTypes, other.unavailableTypes), union(undeclaredKeys, other.undeclaredKeys));
   }
 
   private static List<String> union(final List<String> a, final List<String> b) {
@@ -74,6 +85,6 @@ public record TimeSeriesWriteSummary(long received, long written, long dropped, 
 
   /** The empty summary, the identity of {@link #plus(TimeSeriesWriteSummary)}. */
   public static TimeSeriesWriteSummary empty() {
-    return new TimeSeriesWriteSummary(0, 0, 0, List.of(), List.of(), List.of());
+    return new TimeSeriesWriteSummary(0, 0, 0, List.of(), List.of(), List.of(), List.of());
   }
 }

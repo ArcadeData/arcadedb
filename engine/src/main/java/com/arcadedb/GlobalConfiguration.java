@@ -249,6 +249,15 @@ public enum GlobalConfiguration {
       "Maximum number of distinct values one TimeSeries type's tag dictionary may hold. TAG columns are dictionary-encoded in the mutable row so each occupies a 4-byte id instead of a reserved 258-byte slot; the dictionary is kept in RAM, so this caps its footprint and turns a mis-declared high-cardinality TAG into a clear error instead of unbounded growth. Default is 1M distinct values, roughly 100MB",
       Integer.class, 1_000_000),
 
+  TIMESERIES_UNDECLARED_KEYS("arcadedb.timeSeriesUndeclaredKeys", SCOPE.DATABASE, """
+      What a time-series write (InfluxDB line protocol over HTTP, and the gRPC TimeSeriesWrite RPCs) does with a \
+      sample carrying a tag or field key its TIMESERIES type does not declare in that role. 'reject' (default) drops \
+      the sample and reports it as a partial write naming the key, because storing it would file the point under a \
+      different series than the client sent - a misspelled tag key leaves the declared tag null (issue #8646). \
+      'ignore' stores the sample with the undeclared keys discarded, which is what schema-less producers such as \
+      Telegraf, that send extra tags the type was never meant to hold, need.""",
+      String.class, "reject", Set.of("reject", "ignore")),
+
   TIMESERIES_DECODED_BLOCK_CACHE_RAM("arcadedb.timeSeriesDecodedBlockCacheRAM", SCOPE.DATABASE, """
       Memory budget, in MEGABYTES and PER SHARD, for caching decoded TimeSeries sealed-block columns. A sealed block \
       holds up to 65536 samples and is stored one compressed column at a time, so answering the same question twice \

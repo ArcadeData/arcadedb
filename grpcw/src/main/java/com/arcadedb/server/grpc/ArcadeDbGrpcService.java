@@ -3419,6 +3419,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     final Set<String> unknownTypes = new LinkedHashSet<>();
     final Set<String> nonTimeSeriesTypes = new LinkedHashSet<>();
     final Set<String> unavailableTypes = new LinkedHashSet<>();
+    final Set<String> undeclaredKeys = new LinkedHashSet<>();
 
     call.setOnCancelHandler(() -> {
       cancelled.set(true);
@@ -3458,6 +3459,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           unknownTypes.addAll(report.unknownTypes());
           nonTimeSeriesTypes.addAll(report.nonTimeSeriesTypes());
           unavailableTypes.addAll(report.unavailableTypes());
+          // Capped across the stream as the gateway caps it per call, so a long stream cannot grow the summary
+          for (final String key : report.undeclaredKeys())
+            if (undeclaredKeys.size() < TimeSeriesGateway.MAX_REPORTED_UNDECLARED_KEYS)
+              undeclaredKeys.add(key);
 
           call.request(1);
         } catch (final Exception e) {
@@ -3489,6 +3494,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             .addAllUnknownTypes(unknownTypes)
             .addAllNonTimeSeriesTypes(nonTimeSeriesTypes)
             .addAllUnavailableTypes(unavailableTypes)
+            .addAllUndeclaredKeys(undeclaredKeys)
             .setExecutionTimeMs(System.currentTimeMillis() - startedAt)
             .build());
         out.onCompleted();
@@ -3977,6 +3983,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         .addAllUnknownTypes(report.unknownTypes())
         .addAllNonTimeSeriesTypes(report.nonTimeSeriesTypes())
         .addAllUnavailableTypes(report.unavailableTypes())
+        .addAllUndeclaredKeys(report.undeclaredKeys())
         .setExecutionTimeMs(System.currentTimeMillis() - startedAt)
         .build();
   }

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
@@ -222,6 +223,11 @@ public class PostTimeSeriesWriteHandler extends DatabaseAbstractHandler {
           "Skipped line protocol samples for TimeSeries type(s) with no storage engine available: %s", null,
           report.unavailableTypes());
 
+    if (report != null && !report.undeclaredKeys().isEmpty())
+      LogManager.instance().log(this, Level.WARNING,
+          "Skipped line protocol samples carrying tag/field key(s) their timeseries type does not declare: %s", null,
+          report.undeclaredKeys());
+
     // Any dropped sample or line is a partial write: matching InfluxDB, return 400 naming the dropped
     // measurements and the lines that could not be parsed (with written/dropped counts) even when some samples
     // were inserted, so the client is not told 204 "all good" while data was silently discarded (issues #5036,
@@ -251,6 +257,15 @@ public class PostTimeSeriesWriteHandler extends DatabaseAbstractHandler {
             .append(String.join(", ", report.unavailableTypes()))
             .append(" (see the server log for why each failed to load).");
       }
+      if (report != null && !report.undeclaredKeys().isEmpty()) {
+        if (!malformedLines.isEmpty() || !report.unknownTypes().isEmpty() || !report.nonTimeSeriesTypes().isEmpty()
+            || !report.unavailableTypes().isEmpty())
+          msg.append(" ");
+        // Issue #8646: the point would otherwise be stored under a different series than the one sent
+        msg.append("undeclared tag/field key(s): ").append(String.join(", ", report.undeclaredKeys()))
+            .append(" (declare them on the type, fix the key, or set ")
+            .append(GlobalConfiguration.TIMESERIES_UNDECLARED_KEYS.getKey()).append("=ignore to discard them).");
+      }
 
       final JSONObject error = new JSONObject();
       error.put("error", msg.toString());
@@ -268,6 +283,8 @@ public class PostTimeSeriesWriteHandler extends DatabaseAbstractHandler {
         error.put("nonTimeSeriesTypes", new JSONArray(report.nonTimeSeriesTypes()));
       if (report != null && !report.unavailableTypes().isEmpty())
         error.put("unavailableTypes", new JSONArray(report.unavailableTypes()));
+      if (report != null && !report.undeclaredKeys().isEmpty())
+        error.put("undeclaredKeys", new JSONArray(report.undeclaredKeys()));
       return new ExecutionResponse(400, error.toString());
     }
 
