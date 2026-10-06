@@ -173,8 +173,10 @@ size never changes after creation.
 - *Key promotion.* The old sub-directory **is** deleted, so a reader that took its RID from a root read before the
   swap can get `RecordNotFoundException` when it loads it. The new list class handles this exactly as
   `StripedEdgeList.addChain` handles a stripe head that is not visible: it re-reads the root once and follows the new
-  pointer. If that still cannot be resolved, a strict operation (removal, neighbour-keyed dedup) raises a retryable
-  `ConcurrentModificationException`, and a read walk skips that key with the existing throttled warning. A write
+  pointer. It re-reads the root a bounded number of times (three) while the pointer keeps changing. If the sub-directory still
+  cannot be resolved, **every** operation, read walks included, raises a retryable
+  `ConcurrentModificationException`. A read walk does not skip the key: unlike a single stripe head in a publication
+  window, a missing sub-directory would silently drop a whole edge type from the result. A write
   never follows a stale sub-directory, because it loads the sub-directory through its anchored page, and the
   promoting transaction's delete fails that version check.
 
@@ -222,6 +224,24 @@ One drain **step** is one transaction over one legacy chunk:
 Since the drain takes the oldest entries first, everything in an archive is **older** than everything still in the
 legacy part.
 
+**What makes a racing append safe.** In-chunk appends normally merge rather than conflict, so the drain cannot rely
+on a generic conflict. The two orders are handled by two different mechanisms:
+
+- *The appender commits first.* The drain loaded the tail and its predecessor through `loadChunkForWrite`, which
+  anchors their pages. The drain rewrites or deletes both records, so it has no tracked appends to replay there. Its
+  commit fails the page version check, raises a `ConcurrentModificationException`, and the step is retried and sees
+  the appended entry.
+- *The drain commits first.* The appender's commit conflicts on the tail's page and tries the edge-append rebase.
+  `TransactionContext.rebaseEdgeAppends` reloads the chunk by RID, gets `RecordNotFoundException` for the deleted tail,
+  and raises a `ConcurrentModificationException`. The retry re-resolves the vertex and appends to a live head.
+- *The open case, which #9268 must close.* The freed slot can be reused (`arcadedb.bucketReuseSpaceMode`) by a record
+  created before the appender's rebase runs, for example an archive chunk in the same pool bucket. The rebase would
+  then load an unrelated chunk under the same RID and append into it. The same ABA shape exists today wherever a chunk
+  is deleted while an append to it is in flight. #9268 must show that the rebase rejects it, for example by comparing
+  the reloaded chunk with the pre-image the appender started from, or make the drain keep the slot out of reuse until
+  the step's commit is no longer racing. A test must cover both orders and the reuse case: a stale-head appender
+  racing a drain step.
+
 **Invariant: every committed state holds each entry exactly once**, either in the legacy part or in an archive, and
 never in both. Copying a tail's entries (step 3) and unlinking and deleting that tail (step 4) happen in **one**
 transaction, so a commit publishes both and a rollback, a lost conflict or a crash publishes neither. WAL recovery
@@ -231,7 +251,10 @@ valid, partly drained vertex, and the next drain resumes from the current tail.
 **Open decision D1 (surface).** How the drain is started: a Java API plus a SQL command (for example
 `REBUILD EDGE LISTS [TYPE <vertexType>]`), and/or `CHECK DATABASE FIX`. This document recommends an explicit command
 in #9268, and leaves automatic background draining out. A background task would be a new engine pool, and the
-`engine-concurrency` rules would apply to it.
+`engine-concurrency` rules would apply to it. The command is resumable by construction (each step is committed), and
+it takes a rate limit (steps per second, or a pause between steps), so it can run on a live hub. The #9268 release
+note must say that a type-7 vertex converted by the setting stays O(old degree) for filtered hops until the command
+has drained it.
 
 #### 2.3.6 Validation the reader must do from the first release
 
@@ -277,7 +300,7 @@ The maintenance walks (count, removal, checker, export) concatenate, as today.
 |---|---|---|---|
 | 26.10.1 | no (fails closed) | no | #9211: validates type-7 `HASH_VERSION` |
 | 26.11.1 | no (fails closed) | no | #9264 (this document), #9265 fixtures, #9266 |
-| 26.12.1 | **yes** | no (test-only writer) | #9267 |
+| 26.12.1 | **yes** | never converts a vertex; maintains vertices already converted (D3) | #9267 |
 | 27.1.1 | yes | **opt-in**, default OFF | #9268 |
 | later | yes | **default ON**, FORWARD-INCOMPATIBLE release note | #9263 |
 
@@ -288,11 +311,12 @@ conversions. It does not revert vertices that already converted: they keep being
 an append routed to type 7 over a type-8 root would have nowhere to go.
 
 **Downgrade by one release works by construction:** a database written by 27.1.1 with the setting ON opens on
-26.12.1, which reads type 8 and never writes it. A converted vertex on 26.12.1 is read-only in the sense that 26.12.1
-has no writer: **#9267 must decide** what an append to a type-8 vertex does there. This document recommends that
-26.12.1 ships the full append path behind the same code as 27.1.1 (only the conversion is gated by the setting), so
-that a downgraded node can keep writing to vertices that already converted. Otherwise a one-release downgrade makes
-those vertices read-only. This is **open decision D3**.
+26.12.1. **Decision D3 (taken in this document, the maintainer may overturn it): 26.12.1 ships the full type-8 list,
+read and write, and only the conversion is missing.** On 26.12.1, appending to a vertex that is already converted
+adds keys, flips heads and promotes keys exactly as on 27.1.1. 26.12.1 never converts a classic or type-7 vertex,
+which is the only step the setting gates. Without this, a one-release downgrade would make every converted vertex
+read-only. Before 27.1.1, type-8 records can come only from the test-only writer. They exist in production only after
+a 27.1.1 node with the setting ON has converted a vertex, and that needs every peer to advertise the token.
 
 ### 2.6 HA: the capability that gates writing
 
@@ -300,7 +324,9 @@ those vertices read-only. This is **open decision D3**.
 
 - New token in `PeerCapabilities`: `GRAPH_EDGE_TYPE_DIRECTORY = "graph-edge-type-directory"`, added to `LOCAL` in
   #9267 (26.12.1). Per that class's contract it states what the build can **decode**: "this node's `RecordFactory`
-  reads record type 8 and its `formatVersion` 0". It does not depend on the setting.
+  reads record type 8 and its `formatVersion` 0". Under D3 every build that advertises it can also maintain a
+  converted vertex (2.5), so a failover to any capable node keeps converted vertices writable. It does not depend on
+  the setting.
 - Engine hook: `DatabaseInternal.canWriteRecordType(byte recordType)`, default `true`. `RaftReplicatedDatabase`
   overrides it for type 8 with a cached `RaftHAServer.allPeersSupport(GRAPH_EDGE_TYPE_DIRECTORY)`, cached for one
   second like `TxPreparedAtCapabilityCache`, because conversion is decided inside a user transaction. The engine calls
@@ -446,7 +472,19 @@ behavior in 2.8 and 2.6.
   promotion; the drain, interrupted and resumed; the concurrency table of 2.8; the HA gate in both directions
   (a peer without the token keeps the leader on type 7, all peers with it allow type 8); export/import with the
   setting OFF (2.7); the benchmark on the #8417 shape (883k IN edges, one `Parent`), before conversion, after
-  conversion, and after the drain.
+  conversion, and after the drain. The benchmark also measures the constants the extra level adds (vertex, root,
+  sub-directory, chunk is one more hop than type 7, plus a binary search over the keys): plain append throughput and
+  a single filtered hop on a small type, type 7 against type 8, and the unfiltered operations of 3.1. If the hop shows
+  up, the remedy is to cache the parsed root key array per root record version, not a format change.
+- **Model test (#9268):** a randomized test that applies the same sequence of edge creations and removals, with
+  several edge types, lightweight edges and vertex deletions, to a classic, a type-7 and a type-8 vertex (conversion
+  and partial drains interleaved), and checks that filtered and unfiltered walks, counts, `isConnectedTo` and
+  `containsVertex` agree as multisets.
+- **Crash recovery (#9268):** a drain step killed inside its transaction, by a process kill rather than a rollback,
+  then reopen with WAL recovery and `CHECK DATABASE`: each entry is present exactly once.
+- **Checker (#9268):** `CHECK DATABASE` reports a key whose edge bucket no longer exists in the schema, a sign of a
+  forcibly dropped edge type and of the reused-id exposure in 2.3.1. `FIX` leaves such a key alone unless asked,
+  because its entries may still be referenced by edge records.
 - **Regression guards carried by #9267 and #9268** (structural assertions on the chains visited, never wall-clock
   time):
   - after a full drain, `isConnectedTo(n, X)` on the hot type X visits at most one chain per generation of X's key
@@ -467,7 +505,7 @@ behavior in 2.8 and 2.6.
 |---|---|
 | #9265 | Add the 26.10.1 fixture (section 5). |
 | #9266 | No change. The set of supported hash versions still matters for type 7, and type 8 needs no new hash version. |
-| #9267 | Add: format validation (2.3.6), the token name `graph-edge-type-directory`, `DatabaseInternal.canWriteRecordType`, decision D3 (whether the append path ships in the reader release), and the site table of section 4. |
+| #9267 | Add: format validation (2.3.6), the token name `graph-edge-type-directory`, `DatabaseInternal.canWriteRecordType`, the full type-8 append path without conversion (D3, 2.5), and the site table of section 4. Change "No production write path" accordingly. |
 | #9268 | Add: the drain (2.3.5) and its command (D1), key promotion (2.3.4), the export/import test (2.7), the concurrency tests (2.8), the missing-token WARNING (2.6), the regression guards of section 5, and the three benchmark points. |
 | #9263 | Add D4 (demote command) as a prerequisite, and D2 (weighted cross-type order) to decide after the soak. |
 
@@ -477,6 +515,6 @@ behavior in 2.8 and 2.6.
 |---|---|---|
 | D1 | How the drain is started | Explicit SQL command plus Java API in #9268, no background task |
 | D2 | Cross-type order of an unfiltered walk | Plain round-robin, weighted rotation only on demand |
-| D3 | Does 26.12.1 (reader) also append to an already converted vertex? | Yes. Otherwise a one-release downgrade makes converted vertices read-only |
+| D3 | Does 26.12.1 (reader) also append to an already converted vertex? | **Decided in 2.5: yes**, unless the maintainer overturns it. Otherwise a one-release downgrade makes converted vertices read-only |
 | D4 | Demote command | Not in 27.1.1, where export/import is the documented downgrade. A **prerequisite of #9263** (default ON) |
-| D5 | Is the whole project worth steps 3 to 5 at `severity:minor`? After #8870 the #8417 case is about 76 ms for 50 hops. | Maintainer's call. This document makes the design ready, not mandatory |
+| D5 | Is the whole project worth steps 3 to 5 at `severity:minor`? After #8870 the #8417 case is about 76 ms for 50 hops. | Maintainer's call, to make **before #9268 starts**. #9267 (read support) is cheap and harmless either way. The cost side is in 3.1 (unfiltered operations on converted hubs with many types) |
