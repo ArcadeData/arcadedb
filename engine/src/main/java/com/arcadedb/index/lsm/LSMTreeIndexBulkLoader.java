@@ -76,6 +76,8 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
   private       boolean                                                allKeysShared = true;
   /** Cleared for the rest of a run once its first entries show that keys hardly repeat. */
   private       boolean                                                sharingKeys   = true;
+  /** The group id {@link #shareKey} assigned to the key it was last asked about, {@link Entry#NO_GROUP} when the key is not shared. */
+  private       int                                                    lastKeyGroup  = Entry.NO_GROUP;
   private final BuildTestHook               buildTestHook;
   private final Map<Integer, LSMTreeIndex> indexesByBucket = new LinkedHashMap<>();
   private       LSMTreeIndexExternalSorter externalSorter;
@@ -140,8 +142,8 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
         return;
 
       registerIndex(index);
-      final SharedKey shared = shareKey(new TransactionIndexContext.ComparableKey(normalizedKeys));
-      entries.add(new Entry(index, shared.key, rid, shared.id));
+      final TransactionIndexContext.ComparableKey key = shareKey(new TransactionIndexContext.ComparableKey(normalizedKeys));
+      entries.add(new Entry(index, key, rid, lastKeyGroup));
       totalEntries++;
       if (entries.size() >= currentRunLimit())
         spillCurrentRun();
@@ -399,28 +401,31 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
    * {@link Entry#NO_GROUP} and the run falls back to comparing keys), which bounds the table for high-cardinality columns where
    * sharing would find nothing.
    */
-  private SharedKey shareKey(final TransactionIndexContext.ComparableKey key) {
+  private TransactionIndexContext.ComparableKey shareKey(final TransactionIndexContext.ComparableKey key) {
+    lastKeyGroup = Entry.NO_GROUP;
     if (!sharingKeys)
-      return new SharedKey(key, Entry.NO_GROUP);
+      return key;
     if (entries.size() == SHARING_PROBE_ENTRIES && sharedKeyList.size() > SHARING_PROBE_ENTRIES / 2) {
       // keys hardly repeat: stop paying a hash lookup per entry for the rest of the run
       sharingKeys = false;
       allKeysShared = false;
       sharedKeys.clear();
       sharedKeyList.clear();
-      return new SharedKey(key, Entry.NO_GROUP);
+      return key;
     }
     final SharedKey shared = sharedKeys.get(key);
-    if (shared != null)
-      return shared;
+    if (shared != null) {
+      lastKeyGroup = shared.id;
+      return shared.key;
+    }
     if (sharedKeys.size() < MAX_SHARED_KEYS_PER_RUN) {
-      final SharedKey created = new SharedKey(key, sharedKeyList.size());
-      sharedKeys.put(key, created);
+      lastKeyGroup = sharedKeyList.size();
+      sharedKeys.put(key, new SharedKey(key, lastKeyGroup));
       sharedKeyList.add(key);
-      return created;
+      return key;
     }
     allKeysShared = false;
-    return new SharedKey(key, Entry.NO_GROUP);
+    return key;
   }
 
   /**
