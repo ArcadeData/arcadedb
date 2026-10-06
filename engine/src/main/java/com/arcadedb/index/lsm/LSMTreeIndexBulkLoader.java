@@ -468,7 +468,7 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
         externalSorter = new LSMTreeIndexExternalSorter(database, binaryKeyTypes, indexesByBucket, spillDirectory,
             mergeFanIn, memoryBudgetBytes, spillWorkspace, requestedBuildParallelism);
       sortRun(entries);
-      externalSorter.addRun(entries, true);
+      externalSorter.addSortedRun(entries);
       entries.clear();
       resetSharedKeys();
     } catch (final IOException error) {

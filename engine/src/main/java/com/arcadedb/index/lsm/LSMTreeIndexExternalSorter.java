@@ -164,11 +164,15 @@ final class LSMTreeIndexExternalSorter implements AutoCloseable {
   }
 
   void addRun(final List<LSMTreeIndexBulkLoader.Entry> entries) throws IOException {
-    addRun(entries, false);
+    writeRun(entries, false);
   }
 
-  /** @param sorted true when the caller already ordered the entries by (key, rid) */
-  void addRun(final List<LSMTreeIndexBulkLoader.Entry> entries, final boolean sorted) throws IOException {
+  /** Writes a run the caller already ordered by (key, rid). */
+  void addSortedRun(final List<LSMTreeIndexBulkLoader.Entry> entries) throws IOException {
+    writeRun(entries, true);
+  }
+
+  private void writeRun(final List<LSMTreeIndexBulkLoader.Entry> entries, final boolean sorted) throws IOException {
     if (entries.isEmpty())
       return;
 

@@ -249,6 +249,8 @@ public final class AntiJoinChainOp implements CountOp {
     final NeighborView hop1Reverse = views[2];
     final NeighborView anti = views[3];
 
+    // tailViews[h - 2] is the view of hop h, and validBuckets[h + 1] the label of its target: the check position is 2 for every shape
+    // that gets here, and bucketIds is set whenever a position is labelled
     final NeighborView[] tailViews = new NeighborView[edgeTypes.length - 2];
     for (int h = 2; h < edgeTypes.length; h++) {
       tailViews[h - 2] = provider.getNeighborView(directions[h], edgeTypes[h]);
@@ -505,7 +507,6 @@ public final class AntiJoinChainOp implements CountOp {
     return false;
   }
 
-  /** Pre-computes bucket IDs for all live CSR nodes. One-time O(node ID space) cost. */
   /** The edges of {@code view} out of {@code node} that reach a vertex of the labelled bucket set (null: any vertex, the plain degree). */
   private static long targetDegree(final NeighborView view, final int node, final IntHashSet targetBuckets, final int[] bucketIds) {
     if (targetBuckets == null)
@@ -530,6 +531,7 @@ public final class AntiJoinChainOp implements CountOp {
     return degree;
   }
 
+  /** Pre-computes bucket IDs for all live CSR nodes. One-time O(node ID space) cost. */
   private static int[] precomputeBucketIds(final GraphTraversalProvider provider, final int nodeIdUpperBound,
       final WorkGuard guard) {
     final int[] bucketIds = new int[nodeIdUpperBound];
@@ -929,6 +931,9 @@ public final class AntiJoinChainOp implements CountOp {
    */
   private long executeOLTPRecursive(final Database db, final WorkGuard guard) {
     // An unlabelled anchor starts from every vertex in the schema (issue #5757).
+    final IntHashSet[] hopBuckets = new IntHashSet[edgeTypes.length + 1];
+    for (int i = 0; i < hopBuckets.length; i++)
+      hopBuckets[i] = CSRCountUtils.buildValidBuckets(db, nodeLabels[i]);
     long total = 0;
     for (final Iterator<? extends Identifiable> it = CSRCountUtils.iterateAnchors(db, nodeLabels[0]); it.hasNext(); ) {
       guard.check();
@@ -937,13 +942,13 @@ public final class AntiJoinChainOp implements CountOp {
       for (final RID rid : anchor.getConnectedVertexRIDs(antiJoinDirection, antiJoinEdgeType))
         antiJoinSet.add(rid);
 
-      total += countPathsRec(anchor, 0, db, anchor.getIdentity(), antiJoinSet);
+      total += countPathsRec(anchor, 0, db, anchor.getIdentity(), antiJoinSet, hopBuckets);
     }
     return total;
   }
 
   private long countPathsRec(final Vertex vertex, final int hopIndex, final Database db,
-      final RID sourceRid, final Set<RID> antiJoinSet) {
+      final RID sourceRid, final Set<RID> antiJoinSet, final IntHashSet[] hopBuckets) {
     if (hopIndex >= edgeTypes.length)
       return 1;
 
@@ -953,7 +958,7 @@ public final class AntiJoinChainOp implements CountOp {
     if (hopIndex >= checkPos) {
       long tailCount = 1;
       for (int h = hopIndex; h < edgeTypes.length; h++) {
-        final long degree = targetDegree(vertex, directions[h], edgeTypes[h], CSRCountUtils.buildValidBuckets(db, nodeLabels[h + 1]));
+        final long degree = targetDegree(vertex, directions[h], edgeTypes[h], hopBuckets[h + 1]);
         if (degree == 0)
           return 0;
         tailCount *= degree;
@@ -961,7 +966,7 @@ public final class AntiJoinChainOp implements CountOp {
       return tailCount;
     }
 
-    final IntHashSet targetBuckets = CSRCountUtils.buildValidBuckets(db, nodeLabels[hopIndex + 1]);
+    final IntHashSet targetBuckets = hopBuckets[hopIndex + 1];
 
     long count = 0;
     for (final RID neighborRid : vertex.getConnectedVertexRIDs(directions[hopIndex], edgeTypes[hopIndex])) {
@@ -973,7 +978,7 @@ public final class AntiJoinChainOp implements CountOp {
           && inequalityIdxA == antiJoinSourceIdx && (hopIndex + 1) == inequalityIdxB
           && neighborRid.equals(sourceRid))
         continue;
-      count += countPathsRec(neighborRid.asVertex(), hopIndex + 1, db, sourceRid, antiJoinSet);
+      count += countPathsRec(neighborRid.asVertex(), hopIndex + 1, db, sourceRid, antiJoinSet, hopBuckets);
     }
     return count;
   }
