@@ -711,13 +711,13 @@ public class TimeSeriesShard implements AutoCloseable {
 
       // The mutable tail alone can answer the query when it is complete and strictly newer than
       // anything already sealed: no block has to be decompressed.
-      if (mutableRows.size() >= need && (long) mutableRows.getLast()[0] > sealedStore.getGlobalMaxTimestamp())
+      if (mutableRows.size() >= need && (long) mutableRows.get(mutableRows.size() - 1)[0] > sealedStore.getGlobalMaxTimestamp())
         return mutableRows;
 
       // The mutable rows already found bound the sealed walk from below: no sealed block older than
       // the oldest row held can contribute (issue #5416). Inclusive, so ties stay eligible.
       final long sealedFromTs = mutableRows.size() >= need ?
-          Math.max(fromTs, (long) mutableRows.getLast()[0]) :
+          Math.max(fromTs, (long) mutableRows.get(mutableRows.size() - 1)[0]) :
           fromTs;
 
       final List<Object[]> results = sealedStore.scanRangeDescending(sealedFromTs, toTs, columnIndices, tagFilter,

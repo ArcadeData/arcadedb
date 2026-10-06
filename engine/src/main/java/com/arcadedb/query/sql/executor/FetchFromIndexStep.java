@@ -209,7 +209,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
           return;
         }
-        cursor = nextCursors.removeFirst();
+        cursor = nextCursors.remove(0);
       }
       if (cursor.hasNext()) {
         final Object value = cursor.next();
@@ -599,7 +599,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     }
 
     if (nextCursors.size() > 0) {
-      cursor = nextCursors.removeFirst();
+      cursor = nextCursors.remove(0);
       fetchNextEntry();
     }
   }
@@ -878,7 +878,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     if (key.getExpressions().isEmpty())
       return List.of(head);
 
-    final Expression nextElementInKey = key.getExpressions().getFirst();
+    final Expression nextElementInKey = key.getExpressions().get(0);
     final Object value = nextElementInKey.execute(new ResultInternal(context.getDatabase()), context);
     // A multi-value key expands into one index lookup per element. MultiValue covers every shape a
     // parameter can take, including primitive arrays (long[]/int[]/double[]) that are not Iterable,
@@ -891,7 +891,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       // sitting in a later slot - on every one of `value`'s elements, which made this loop quadratic in the
       // element count (#6640: a 15,000-value IN() on an indexed property took ~10s here alone).
       final PCollection tail = key.copy();
-      tail.getExpressions().removeFirst();
+      tail.getExpressions().remove(0);
       for (final Object elemInKey : MultiValue.getMultiValueIterable(value)) {
         final PCollection newHead = new PCollection();
         for (final Expression exp : head.getExpressions())
@@ -908,7 +908,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
       newHead.add(nextElementInKey);
       final PCollection tail = key.copy();
-      tail.getExpressions().removeFirst();
+      tail.getExpressions().remove(0);
       return cartesianProduct(newHead, tail);
     }
 

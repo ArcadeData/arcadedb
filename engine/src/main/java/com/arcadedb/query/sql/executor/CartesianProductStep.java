@@ -63,8 +63,11 @@ public class CartesianProductStep extends AbstractExecutionStep {
   private boolean inited = false;
   // THE ROWS OF AN INDEPENDENT LEVEL'S FIRST PASS, REPLAYED THROUGH reset() FOR EVERY LATER OUTER TUPLE
   private final List<InternalResultSet> preFetches = new ArrayList<>();
-  /** Every level's buffered rows count against queryMaxHeapElementsAllowedPerOp, as the OpenCypher product's do (#8585). */
-  private final HeapElementsLimit       heapLimit;
+  /**
+   * Every level's buffered rows count against queryMaxHeapElementsAllowedPerOp, as the OpenCypher product's do (#8585),
+   * and charge the heap they take to the budget all the running queries share (#8591).
+   */
+  private final OperationHeapLimit      heapLimit;
   private final List<Boolean>           firstPass  = new ArrayList<>();
 
   // ONE CACHE PER REMEMBERED LEVEL (A LEVEL'S ROWS ARE ITS OWN), CREATED WHEN THE LEVEL IS FIRST OPENED. NULL ENTRIES: NONE
@@ -80,7 +83,7 @@ public class CartesianProductStep extends AbstractExecutionStep {
 
   public CartesianProductStep(final CommandContext context) {
     super(context);
-    this.heapLimit = HeapElementsLimit.of(context, "MATCH Cartesian product");
+    this.heapLimit = OperationHeapLimit.of(context, "MATCH Cartesian product");
   }
 
   @Override
@@ -120,7 +123,7 @@ public class CartesianProductStep extends AbstractExecutionStep {
   @Override
   public void reset() {
     inited = false;
-    preFetches.clear();
+    releaseBuffers();
     firstPass.clear();
     resultSets.clear();
     outerTuples.clear();
@@ -201,7 +204,13 @@ public class CartesianProductStep extends AbstractExecutionStep {
         if (firstPass.get(level) && factories.get(level) == null) {
           final InternalResultSet buffered = preFetches.get(level);
           buffered.add(item);
-          heapLimit.check(buffered.countEntries());
+          try {
+            heapLimit.add(buffered.countEntries(), item);
+          } catch (final RuntimeException e) {
+            // The query fails: the rows buffered so far give their heap back now
+            releaseBuffers();
+            throw e;
+          }
         }
         return true;
       }
@@ -277,7 +286,13 @@ public class CartesianProductStep extends AbstractExecutionStep {
     for (int level = 0; level < subPlans.size(); level++)
       if (factories.get(level) == null)
         subPlans.get(level).close();
+    releaseBuffers();
     super.close();
+  }
+
+  private void releaseBuffers() {
+    preFetches.clear();
+    heapLimit.release();
   }
 
   private ResultInternal partialTuple(final int levels) {

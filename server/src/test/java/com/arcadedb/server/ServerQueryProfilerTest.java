@@ -707,6 +707,103 @@ class ServerQueryProfilerTest extends StaticBaseServerTest {
         .put("maxCostMs", costMs).put("p99CostMs", costMs);
   }
 
+  /**
+   * Issue #7329: a container step's cost used to be the sum of its children's, emitted as the container's own
+   * {@code cost} in the very node that also carries each child with its own {@code cost}. The recorder records the
+   * container and then recurses, so the same nanoseconds landed in the table twice and a plain type scan was
+   * counted twice over - which is what made the Studio caption ("contained in the Engine total") false.
+   * <p>
+   * A container has no self time, so it is now recorded as an occurrence with nothing measured, and the roll-up it
+   * used to claim travels separately as {@code totalCost}, which this table deliberately does not read.
+   */
+  @Test
+  void aContainerStepDoesNotDoubleCountItsChildrensTime() {
+    server.createDatabase("profiler-container-db", ComponentFile.MODE.READ_WRITE);
+    final ServerDatabase db = server.getDatabase("profiler-container-db");
+    try {
+      db.command("sql", "CREATE DOCUMENT TYPE Item");
+      db.transaction(() -> {
+        for (int i = 0; i < 200; i++)
+          db.command("sql", "INSERT INTO Item SET idx = " + i);
+      });
+
+      final ServerQueryProfiler profiler = server.getQueryProfiler();
+      profiler.start();
+      try (final ResultSet rs = db.query("sql", "SELECT FROM Item", Map.of())) {
+        while (rs.hasNext())
+          rs.next();
+      }
+
+      final JSONObject query = findQuery(profiler.stop(), "SELECT FROM Item");
+      assertThat(query).as("the profiled scan must have been recorded").isNotNull();
+      final JSONArray steps = query.getJSONArray("steps");
+
+      final JSONObject container = findStep(steps, "FetchFromTypeExecutionStep");
+      assertThat(container).as("the type scan container step must be in the aggregated table").isNotNull();
+      assertThat(container.getInt("executionCount")).as("the container is still an occurrence").isEqualTo(1);
+      assertThat(container.getInt("measuredCount")).as("but it times nothing of its own").isZero();
+      assertThat(container.getDouble("totalCostMs")).isZero();
+
+      final JSONObject buckets = findStep(steps, "FetchFromClusterExecutionStep");
+      assertThat(buckets).as("the bucket steps are the ones that carry the scan's time").isNotNull();
+      assertThat(buckets.getInt("measuredCount")).isPositive();
+
+      // The invariant the Studio caption states: the rows add up to at most the Engine total, never more. Before the
+      // fix the container claimed its children's time as well as the children, so the table came out roughly twice
+      // the scan's real cost and could exceed the total it is supposed to be contained in.
+      double stepsTotalMs = 0;
+      for (int i = 0; i < steps.length(); i++)
+        stepsTotalMs += steps.getJSONObject(i).getDouble("totalCostMs");
+
+      assertThat(stepsTotalMs).isGreaterThan(0d);
+      assertThat(query.getDouble("engineTotalTimeMs"))
+          .as("the summed step costs must be contained in the Engine total")
+          .isGreaterThanOrEqualTo(stepsTotalMs);
+    } finally {
+      db.getEmbedded().drop();
+      server.removeDatabase("profiler-container-db");
+    }
+  }
+
+  /**
+   * Issue #7330: while the profiler is recording, an OpenCypher statement used to be rerouted onto
+   * {@code CypherExecutionPlan.profile()}, which drains the whole plan into heap before returning. The reported
+   * cost then described a materialising execution the statement never performs otherwise, and every Cypher read on
+   * the server was materialised for the length of the recording window.
+   * <p>
+   * Probed by consuming exactly one row of many: a streaming run has produced one row at that point, a drained one
+   * had already produced them all before {@code query()} returned.
+   */
+  @Test
+  void recordingDoesNotTurnACypherReadIntoAnEagerDrain() {
+    server.createDatabase("profiler-cypher-streaming-db", ComponentFile.MODE.READ_WRITE);
+    final ServerDatabase db = server.getDatabase("profiler-cypher-streaming-db");
+    try {
+      db.command("sql", "CREATE VERTEX TYPE Item");
+      db.transaction(() -> {
+        for (int i = 0; i < 100; i++)
+          db.command("sql", "INSERT INTO Item SET idx = " + i);
+      });
+
+      final ServerQueryProfiler profiler = server.getQueryProfiler();
+      profiler.start();
+      try (final ResultSet rs = db.query("opencypher", "MATCH (i:Item) RETURN i.idx AS idx", Map.of())) {
+        assertThat(rs.hasNext()).isTrue();
+        rs.next();
+
+        assertThat(rs.getExecutionPlan()).isPresent();
+        assertThat(rs.getExecutionPlan().get().prettyPrint(0, 2))
+            .as("the profiled statement must describe the streaming run the caller drove, not a full drain")
+            .contains("Rows Returned: 1");
+      } finally {
+        profiler.stop();
+      }
+    } finally {
+      db.getEmbedded().drop();
+      server.removeDatabase("profiler-cypher-streaming-db");
+    }
+  }
+
   private static JSONObject findQuery(final JSONObject results, final String queryText) {
     final JSONArray queries = results.getJSONArray("queries");
     for (int i = 0; i < queries.length(); i++) {

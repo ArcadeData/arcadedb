@@ -26,7 +26,8 @@ import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.HeapElementsLimit;
+import com.arcadedb.query.sql.executor.HeapEstimator;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -58,6 +59,10 @@ public final class CountEdgesStep extends AbstractExecutionStep {
   private final String countOutputAlias;
   private final Map<String, String> passThroughAliases;
 
+  // THE GROUPS HELD, UNDER THE PER-OPERATION CAP AND THE HEAP BUDGET OF ALL THE QUERIES (ISSUES #8585, #8591). ON THE
+  // STEP: THE CLOSE() OF A QUERY REACHES THE STEPS
+  private OperationHeapLimit heapLimit;
+
   public CountEdgesStep(final String boundVertexVariable, final Vertex.DIRECTION direction,
       final String[] edgeTypes, final String countOutputAlias,
       final Map<String, String> passThroughAliases, final CommandContext context) {
@@ -83,7 +88,8 @@ public final class CountEdgesStep extends AbstractExecutionStep {
     // One accumulated count per distinct grouping-key combination (LinkedHashMap to keep the
     // first-seen group order, matching GroupByAggregationStep).
     final Map<GroupKeyValues, long[]> groups = new LinkedHashMap<>();
-    final HeapElementsLimit limit = HeapElementsLimit.of(context, "groups", "GROUP BY");
+    heapLimit = OperationHeapLimit.of(context, "groups", "GROUP BY");
+    final int groupOverhead = groupOverheadBytes(aliasOutputNames.length + 1);
 
     while (prevResult.hasNext()) {
       final Result inputRow = prevResult.next();
@@ -117,7 +123,7 @@ public final class CountEdgesStep extends AbstractExecutionStep {
         if (accumulator == null) {
           accumulator = new long[1];
           groups.put(groupKey, accumulator);
-          limit.check(groups.size());
+          heapLimit.add(groups.size(), keyValues, groupOverhead);
         }
         accumulator[0] += count;
       } finally {
@@ -137,6 +143,22 @@ public final class CountEdgesStep extends AbstractExecutionStep {
     }
 
     return new IteratorResultSet(results.iterator());
+  }
+
+  /**
+   * What a group holds besides its key values: the key that wraps them, its counter, its entry in the map - and the row
+   * it becomes, of {@code columns} columns, since the rows are built while the groups are still held.
+   */
+  static int groupOverheadBytes(final int columns) {
+    return HeapEstimator.HASH_ENTRY_BYTES + 2 * HeapEstimator.OBJECT_BYTES + HeapEstimator.RESULT_BYTES
+        + HeapEstimator.HASH_ENTRY_BYTES * columns;
+  }
+
+  @Override
+  public void close() {
+    if (heapLimit != null)
+      heapLimit.release();
+    super.close();
   }
 
   @Override

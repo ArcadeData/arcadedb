@@ -18,6 +18,7 @@
  */
 package com.arcadedb.integration.importer;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.utility.IPAddressBlocklist;
 import com.arcadedb.utility.SafeHttpFetcher;
@@ -92,7 +93,23 @@ public class ImportSecurityValidator {
    * @throws SecurityException if a scheme or address is refused on any hop
    */
   public static HttpURLConnection openRemoteConnection(final String url, final boolean blockLocalNetworks) throws IOException {
-    return SafeHttpFetcher.open(url, address -> blockLocalNetworks && isBlockedAddress(address), "IMPORT DATABASE");
+    return openRemoteConnection(url, blockLocalNetworks, null);
+  }
+
+  /**
+   * Same again, with the settings overlay the fetch's TIMEOUTS are read from.
+   * <p>
+   * {@code NETWORK_REMOTE_FETCH_READ_TIMEOUT} and its connect counterpart are {@code SCOPE.SERVER}, and a
+   * {@code ContextConfiguration} never writes through to the {@link GlobalConfiguration} enum, so a server-side
+   * import reading the enum alone would ignore an operator's configured timeout entirely (PR #7755 review). The
+   * same reason {@code blockLocalNetworks} is resolved by the caller rather than re-derived here (issue #6474).
+   *
+   * @param configuration the importing database's configuration, or null for a CLI/embedded caller with no overlay
+   */
+  public static HttpURLConnection openRemoteConnection(final String url, final boolean blockLocalNetworks,
+      final ContextConfiguration configuration) throws IOException {
+    return SafeHttpFetcher.open(url, address -> blockLocalNetworks && isBlockedAddress(address), "IMPORT DATABASE",
+        configuration);
   }
 
   /**

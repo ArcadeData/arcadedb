@@ -31,7 +31,7 @@ import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.HeapElementsLimit;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -71,6 +71,10 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
   private final String[]            groupingAliases;
   private final ExpressionEvaluator evaluator;
 
+  // THE GROUPS HELD, UNDER THE PER-OPERATION CAP AND THE HEAP BUDGET OF ALL THE QUERIES (ISSUES #8585, #8591). ON THE
+  // STEP: THE CLOSE() OF A QUERY REACHES THE STEPS
+  private OperationHeapLimit heapLimit;
+
   /**
    * @param sourceVariable      variable name of the source vertex in the MATCH pattern
    * @param direction           edge traversal direction
@@ -108,7 +112,7 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
     if (groupingExpressions.length == 1) {
       // Single-key fast path: use raw Object as map key
       final Map<Object, Long> groups = new LinkedHashMap<>();
-      final HeapElementsLimit limit = HeapElementsLimit.of(context, "groups", "GROUP BY");
+      heapLimit = OperationHeapLimit.of(context, "groups", "GROUP BY");
 
       while (prevResult.hasNext()) {
         final Result inputRow = prevResult.next();
@@ -131,10 +135,10 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
               ? evaluator.evaluate(groupingExpressions[0], inputRow, context)
               : inputRow.getProperty(groupingAliases[0]);
 
-          final int before = groups.size();
+          final int groupsBefore = groups.size();
           groups.merge(key, count, Long::sum);
-          if (groups.size() != before)
-            limit.check(groups.size());
+          if (groups.size() > groupsBefore)
+            heapLimit.add(groups.size(), key, CountEdgesStep.groupOverheadBytes(2));
         } finally {
           if (context.isProfiling())
             cost += System.nanoTime() - begin;
@@ -154,7 +158,7 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
 
     // Multi-key path
     final Map<GroupKey, Long> groups = new LinkedHashMap<>();
-    final HeapElementsLimit limit = HeapElementsLimit.of(context, "groups", "GROUP BY");
+    heapLimit = OperationHeapLimit.of(context, "groups", "GROUP BY");
     while (prevResult.hasNext()) {
       final Result inputRow = prevResult.next();
       final long begin = context.isProfiling() ? System.nanoTime() : 0;
@@ -178,10 +182,10 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
               ? evaluator.evaluate(groupingExpressions[i], inputRow, context)
               : inputRow.getProperty(groupingAliases[i]);
 
-        final int before = groups.size();
+        final int groupsBefore = groups.size();
         groups.merge(new GroupKey(keys), count, Long::sum);
-        if (groups.size() != before)
-          limit.check(groups.size());
+        if (groups.size() > groupsBefore)
+          heapLimit.add(groups.size(), keys, CountEdgesStep.groupOverheadBytes(groupingAliases.length + 1));
       } finally {
         if (context.isProfiling())
           cost += System.nanoTime() - begin;
@@ -313,6 +317,13 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
       }
       return true;
     }
+  }
+
+  @Override
+  public void close() {
+    if (heapLimit != null)
+      heapLimit.release();
+    super.close();
   }
 
   @Override

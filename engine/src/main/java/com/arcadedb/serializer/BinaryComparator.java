@@ -524,6 +524,9 @@ public class BinaryComparator {
    * looseness of {@link Type#numbersEqual} would let a Double key overwrite a Float one (issue #8882).
    */
   public static boolean equalsExact(final Object a, final Object b) {
+    if (a instanceof BigDecimal && b instanceof BigDecimal)
+      // scale-sensitive on purpose: BigDecimal.hashCode() is, and these keys pick their slot by hash
+      return a.equals(b);
     if (!(a != null && b != null && !a.getClass().equals(b.getClass()) && a instanceof Number number && b instanceof Number number1))
       return equals(a, b);
     final Number[] pair = Type.castComparableNumber(number, number1);

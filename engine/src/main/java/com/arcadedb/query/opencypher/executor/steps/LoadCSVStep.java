@@ -293,8 +293,12 @@ public class LoadCSVStep extends AbstractExecutionStep {
     // An empty block-list is the configured opt-out from the address check; scheme and redirect handling still apply.
     // body() and not getInputStream(): a source that stops sending mid-stream is bounded by the configured read
     // timeout, and body() is what turns the JDK's bare "Read timed out" into an error naming the setting (#7500).
+    // THE DATABASE'S OWN CONFIGURATION, NOT THE GlobalConfiguration ENUM: BOTH TIMEOUTS ARE SCOPE.SERVER AND A
+    // ContextConfiguration NEVER WRITES THROUGH TO THE ENUM, SO A SERVER-CONFIGURED VALUE IS INVISIBLE TO A FETCH
+    // THAT READS THE ENUM ALONE (PR #7755 REVIEW) - THE SAME OVERLAY THE BLOCK-LIST ABOVE IS READ FROM
     return SafeHttpFetcher.body(
-        SafeHttpFetcher.open(url, address -> !blocklist.isEmpty() && blocklist.isBlocked(address), "LOAD CSV"), "LOAD CSV");
+        SafeHttpFetcher.open(url, address -> !blocklist.isEmpty() && blocklist.isBlocked(address), "LOAD CSV",
+            context.getDatabase().getConfiguration()), "LOAD CSV");
   }
 
   /**

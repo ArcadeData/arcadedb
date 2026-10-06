@@ -236,7 +236,7 @@ public class SelectExecutionPlanner {
         return (InternalExecutionPlan) plan;
     }
 
-    final long planningStart = System.currentTimeMillis();
+    final long planningEpoch = db.getExecutionPlanCache().getInvalidationEpoch();
 
     init(context);
 
@@ -307,9 +307,9 @@ public class SelectExecutionPlanner {
 
     if (useCache && !context.isProfiling() && statement.executionPlanCanBeCached() && !planDependsOnInputParameters
         && selectExecutionPlan.canBeCached())
-      // The planningStart < lastInvalidation re-check happens atomically inside put(), under the same lock as
-      // invalidate(), so a DDL racing this call can never be missed the way two separately-locked calls could (#6671).
-      db.getExecutionPlanCache().put(statement.getOriginalStatement(), selectExecutionPlan, planningStart);
+      // The planningEpoch re-check happens atomically inside put(), under the same lock as invalidate(), so a DDL
+      // racing this call can never be missed the way two separately-locked calls could (#6671).
+      db.getExecutionPlanCache().put(statement.getOriginalStatement(), selectExecutionPlan, planningEpoch);
 
     return selectExecutionPlan;
   }

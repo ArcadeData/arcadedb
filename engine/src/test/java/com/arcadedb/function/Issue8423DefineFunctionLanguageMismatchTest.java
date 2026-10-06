@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.function.java.JavaClassFunctionLibraryDefinition;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.LocalSchema;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -81,6 +82,19 @@ class Issue8423DefineFunctionLanguageMismatchTest extends TestHelper {
 
     assertThat(database.getSchema().getFunctionLibrary("cy").hasFunction("double")).isTrue();
     assertThat(database.getSchema().getFunctionLibrary("cy").hasFunction("triple")).isTrue();
+  }
+
+  @Test
+  void schemaRefusesAMismatchOnADirectCall() {
+    // LocalSchema.defineFunction IS PUBLIC: THE CHECK MUST HOLD THERE TOO, NOT ONLY IN THE STATEMENT
+    database.command("sql", "DEFINE FUNCTION direct.one 'SELECT 1 AS result' LANGUAGE sql");
+    final FunctionDefinition js = FunctionLibraryFactory.createFunction(database, "js", "f", "return 1", new String[0]);
+
+    assertThatThrownBy(() -> ((LocalSchema) database.getSchema()).defineFunction("direct", null, js))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("'sql' library");
+
+    assertLibraryUnchanged("direct", "one");
   }
 
   @Test

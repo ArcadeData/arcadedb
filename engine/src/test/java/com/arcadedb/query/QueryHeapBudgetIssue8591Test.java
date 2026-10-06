@@ -147,6 +147,13 @@ class QueryHeapBudgetIssue8591Test extends TestHelper {
   }
 
   @Test
+  void aSqlMatchProductHoldsItsReplayedRowsUnderTheBudget() {
+    final String query = "MATCH {type: P, as: p, where: (id < 5)}, {type: Q, as: q} RETURN count(*) AS c";
+    assertRefusedWhileOthersHoldTheBudget("sql", query);
+    assertGivenBackOnClose("sql", query);
+  }
+
+  @Test
   void aParallelGroupByChargesTheGroupsOfItsWorkers() {
     final String query = "SELECT name, count(*) AS c FROM Doc GROUP BY name";
     try (final ResultSet rs = database.query("sql", "EXPLAIN " + query)) {

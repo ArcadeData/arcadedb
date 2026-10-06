@@ -25,6 +25,7 @@ import de.bwaldvogel.mongo.bson.BsonRegularExpression;
 import de.bwaldvogel.mongo.bson.Document;
 import de.bwaldvogel.mongo.bson.ObjectId;
 
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -50,7 +51,8 @@ public class MongoDBToSqlTranslator {
         buffer.append(" AND ");
 
       final Object key = entry.getKey();
-      final Object value = entry.getValue();
+      // a filter on _id matches the stored hex string; any other field matches the tagged ObjectId (see toBound)
+      final Object value = "_id".equals(key) ? MongoBsonValues.idFilter(entry.getValue()) : entry.getValue();
 
       if (key instanceof String string && string.startsWith("$"))
         buildExpression(buffer, params, null, string, value);
@@ -66,6 +68,26 @@ public class MongoDBToSqlTranslator {
       } else
         buildEquality(buffer, params, quoteFieldPath(entry.getKey()), true, value);
     }
+  }
+
+  /**
+   * Compares a non-{@code _id} field with an ObjectId. Data stored before ObjectIds were tagged holds the bare hex string, so both
+   * forms are matched (or, when negated, both excluded).
+   */
+  private static void appendObjectIdEquality(final StringBuilder buffer, final Map<String, Object> params, final String field,
+      final ObjectId objectId, final boolean positive) {
+    if (positive) {
+      buffer.append('(').append(field).append(" = ");
+      buildValue(buffer, params, objectId);
+      buffer.append(" OR ").append(field).append(" = ");
+    } else {
+      // like any $ne, it also matches a null or missing field
+      buffer.append('(').append(field).append(" IS NULL OR (").append(field).append(" <> ");
+      buildValue(buffer, params, objectId);
+      buffer.append(" AND ").append(field).append(" <> ");
+    }
+    bindStored(buffer, params, objectId.getHexData());
+    buffer.append(positive ? ")" : "))");
   }
 
   protected static void buildAnd(final StringBuilder sql, final Map<String, Object> params, final Object key, final Object value) {
@@ -357,23 +379,27 @@ public class MongoDBToSqlTranslator {
    */
   protected static void buildCollection(final StringBuilder buffer, final Map<String, Object> params, final Collection coll) {
     // avoid the copy on the common case where nothing needs normalizing
-    boolean hasObjectId = false;
+    boolean needsConversion = false;
     for (final Object element : coll)
-      if (element instanceof ObjectId) {
-        hasObjectId = true;
+      if (MongoBsonValues.needsConversion(element)) {
+        needsConversion = true;
         break;
       }
 
     Collection<?> normalized = coll;
-    if (hasObjectId) {
+    if (needsConversion) {
       final List<Object> converted = new ArrayList<>(coll.size());
-      for (final Object element : coll)
-        converted.add(element instanceof ObjectId objectId ? objectId.getHexData() : element);
+      for (final Object element : coll) {
+        converted.add(MongoBsonValues.toBound(element));
+        // a non-_id ObjectId also matches the bare hex string stored before ObjectIds were tagged
+        if (element instanceof ObjectId objectId)
+          converted.add(objectId.getHexData());
+      }
       normalized = converted;
     }
 
     buffer.append('(');
-    buildValue(buffer, params, normalized);
+    bindStored(buffer, params, normalized);
     buffer.append(')');
   }
 
@@ -395,6 +421,9 @@ public class MongoDBToSqlTranslator {
 
     if (value == null)
       buffer.append(field).append(positive ? " IS NULL" : " IS NOT NULL");
+    else if (value instanceof ObjectId objectId)
+      // an _id filter never gets here: its ObjectIds are already hex strings
+      appendObjectIdEquality(buffer, params, field, objectId, positive);
     else if (positive) {
       buffer.append(field).append(" = ");
       buildValue(buffer, params, value);
@@ -422,7 +451,17 @@ public class MongoDBToSqlTranslator {
    */
   protected static void buildValue(final StringBuilder buffer, final Map<String, Object> params, final Object value) {
     final String name = "p" + params.size();
-    params.put(name, value instanceof ObjectId objectId ? objectId.getHexData() : value);
+    params.put(name, MongoBsonValues.toBound(value));
+    buffer.append(':').append(name);
+  }
+
+  /**
+   * Binds a payload that is already in its stored form (see {@link MongoBsonValues#toStored}) as a named parameter, converting
+   * nothing: converting it again would take its type tags for a client-supplied reserved field.
+   */
+  protected static void bindStored(final StringBuilder buffer, final Map<String, Object> params, final Object value) {
+    final String name = "p" + params.size();
+    params.put(name, value);
     buffer.append(':').append(name);
   }
 
@@ -545,7 +584,17 @@ public class MongoDBToSqlTranslator {
   private static Object toBsonValue(final Object value) {
     if (value instanceof Instant)
       return value;
-    else if (value instanceof LocalDateTime dateTime)
+    else if (value instanceof BigDecimal)
+      return MongoBsonValues.toBson(value);
+    else if (value instanceof String string && MongoBsonValues.isEncodedString(string))
+      return MongoBsonValues.toBson(value);
+    else if (MongoBsonValues.isTagged(value)) {
+      final Object bson = MongoBsonValues.toBson(value);
+      // a malformed tag stays a plain map and is converted like any other embedded document
+      if (bson != value)
+        return bson;
+      return convertMapToMongoDB((Map<String, Object>) value);
+    } else if (value instanceof LocalDateTime dateTime)
       return dateTime.toInstant(ZoneOffset.UTC);
     else if (value instanceof LocalDate date)
       return date.atStartOfDay().toInstant(ZoneOffset.UTC);

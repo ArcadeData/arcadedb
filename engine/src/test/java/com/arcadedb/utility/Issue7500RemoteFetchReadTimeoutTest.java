@@ -18,6 +18,7 @@
  */
 package com.arcadedb.utility;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 
 import com.sun.net.httpserver.HttpServer;
@@ -213,20 +214,54 @@ class Issue7500RemoteFetchReadTimeoutTest {
    */
   @Test
   void theTimeoutComesFromTheConfigurationAndANegativeValueFallsBack() {
-    assertThat(SafeHttpFetcher.configuredReadTimeoutMs()).isEqualTo(TIMEOUT_MS);
+    assertThat(SafeHttpFetcher.configuredReadTimeoutMs(null)).isEqualTo(TIMEOUT_MS);
 
     GlobalConfiguration.NETWORK_REMOTE_FETCH_READ_TIMEOUT.setValue(-1);
-    assertThat(SafeHttpFetcher.configuredReadTimeoutMs()).isEqualTo(SafeHttpFetcher.DEFAULT_READ_TIMEOUT_MS);
+    assertThat(SafeHttpFetcher.configuredReadTimeoutMs(null)).isEqualTo(SafeHttpFetcher.DEFAULT_READ_TIMEOUT_MS);
 
     GlobalConfiguration.NETWORK_REMOTE_FETCH_READ_TIMEOUT.setValue(0);
-    assertThat(SafeHttpFetcher.configuredReadTimeoutMs()).as("0 is the JDK's 'no timeout', and is kept").isZero();
+    assertThat(SafeHttpFetcher.configuredReadTimeoutMs(null)).as("0 is the JDK's 'no timeout', and is kept").isZero();
 
     final Object previousConnect = GlobalConfiguration.NETWORK_REMOTE_FETCH_CONNECT_TIMEOUT.getValue();
     try {
       GlobalConfiguration.NETWORK_REMOTE_FETCH_CONNECT_TIMEOUT.setValue(1234);
-      assertThat(SafeHttpFetcher.configuredConnectTimeoutMs()).isEqualTo(1234);
+      assertThat(SafeHttpFetcher.configuredConnectTimeoutMs(null)).isEqualTo(1234);
     } finally {
       GlobalConfiguration.NETWORK_REMOTE_FETCH_CONNECT_TIMEOUT.setValue(previousConnect);
     }
   }
+
+  /**
+   * The channel an operator actually uses, and the reason the timeouts take a {@link ContextConfiguration} at all.
+   * <p>
+   * Both settings are {@code SCOPE.SERVER}, and a {@code ContextConfiguration} is an overlay that NEVER writes
+   * through to the {@link GlobalConfiguration} enum - a server configuration file, {@code ALTER SERVER SETTING} and
+   * {@code SET SERVER SETTING} all store there. So a fetch reading the enum alone goes on using the default while
+   * the operator's value sits in the overlay applied to nothing, which is what this pins (PR #7755 review).
+   */
+  @Test
+  @Timeout(60)
+  void aServerConfiguredTimeoutIsTheOneTheFetchUses() throws IOException {
+    final ContextConfiguration serverConfiguration = new ContextConfiguration();
+    serverConfiguration.setValue(GlobalConfiguration.NETWORK_REMOTE_FETCH_READ_TIMEOUT, 4321);
+    serverConfiguration.setValue(GlobalConfiguration.NETWORK_REMOTE_FETCH_CONNECT_TIMEOUT, 8765);
+
+    assertThat(GlobalConfiguration.NETWORK_REMOTE_FETCH_READ_TIMEOUT.getValueAsInteger())
+        .as("the overlay did not write through, which is the whole point")
+        .isEqualTo(TIMEOUT_MS);
+
+    assertThat(SafeHttpFetcher.configuredReadTimeoutMs(serverConfiguration)).isEqualTo(4321);
+    assertThat(SafeHttpFetcher.configuredConnectTimeoutMs(serverConfiguration)).isEqualTo(8765);
+
+    // And it reaches the connection, not just the accessor.
+    final HttpURLConnection connection = SafeHttpFetcher.open(baseUrl + "/content", BLOCK_LINK_LOCAL,
+        "IMPORT DATABASE", serverConfiguration);
+    assertThat(connection.getReadTimeout()).isEqualTo(4321);
+    assertThat(connection.getConnectTimeout()).isEqualTo(8765);
+    connection.disconnect();
+
+    // A caller with no overlay - the CLI importer, an embedded restore - still reads the enum.
+    assertThat(SafeHttpFetcher.configuredReadTimeoutMs(null)).isEqualTo(TIMEOUT_MS);
+  }
+
 }

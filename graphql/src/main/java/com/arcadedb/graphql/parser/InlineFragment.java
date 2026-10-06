@@ -39,5 +39,12 @@ public class InlineFragment extends SimpleNode {
   public SelectionSet getSelectionSet() {
     return selectionSet;
   }
+
+  /**
+   * The directives written on the inline fragment ({@code ... on T @skip(if: $x) { }}), or null when it carries none.
+   */
+  public Directives getDirectives() {
+    return directives;
+  }
 }
 /* ParserGeneratorCC - OriginalChecksum=b25dd549b07816d5a3cbcf5cf42f3a6f (do not edit this line) */

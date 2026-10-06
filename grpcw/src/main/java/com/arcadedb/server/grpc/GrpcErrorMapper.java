@@ -257,8 +257,8 @@ public final class GrpcErrorMapper {
    * @param trailers      the caller's own trailers, added to in place and carried by the returned exception
    */
   static StatusException toStatusException(final Throwable t, final String contextPrefix, final HAServerPlugin ha,
-      final Metadata trailers) {
-    final StatusRuntimeException mapped = toStatusRuntimeException(t, contextPrefix, ha);
+      final Metadata trailers, final boolean conceal) {
+    final StatusRuntimeException mapped = toStatusRuntimeException(t, contextPrefix, ha, conceal);
     if (mapped.getTrailers() != null)
       trailers.merge(mapped.getTrailers());
     return mapped.getStatus().asException(trailers);
