@@ -333,9 +333,10 @@ public class CypherDuration implements CypherTemporalValue {
     if (divisor == 1)
       return this;
     if (divisor == Math.rint(divisor) && Math.abs(divisor) < 0x1p62) {
-      // Integral divisor that divides every component evenly: exact in long arithmetic, no BigDecimal garbage
+      // Integral divisor that divides every component evenly: exact in long arithmetic, no BigDecimal garbage. -1 is left to
+      // scale(), which raises on Long.MIN_VALUE / -1 instead of wrapping
       final long d = (long) divisor;
-      if (months % d == 0 && days % d == 0 && seconds % d == 0 && nanosAdjustment % d == 0)
+      if (d != -1 && months % d == 0 && days % d == 0 && seconds % d == 0 && nanosAdjustment % d == 0)
         return new CypherDuration(months / d, days / d, seconds / d, nanosAdjustment / d);
     }
     return scale(BigDecimal.ONE, decimalOf(divisor));
@@ -348,10 +349,11 @@ public class CypherDuration implements CypherTemporalValue {
   }
 
   /**
-   * Scales every component by {@code numerator / denominator} in exact decimal arithmetic (the carry of a fractional month
-   * into days, 1 month = 365.2425/12 days, goes through a double, as it did before; the remainder is below one month) and fractional days carry to seconds, as Neo4j does. The previous implementation
-   * did it all in {@code double}, which saturated at {@code Long.MAX_VALUE} past the long range and lost nanoseconds
-   * past 2^53 (issue #9338); an unrepresentable result now raises an arithmetic error.
+   * Scales every component by {@code numerator / denominator} in exact decimal arithmetic. A fractional month carries to
+   * days (1 month = 365.2425/12 days) and a fractional day to seconds, as Neo4j does; the carry of the month remainder,
+   * which is below one month, goes through a double as it always did. The previous implementation did everything in
+   * {@code double}, which saturated at {@code Long.MAX_VALUE} past the long range and lost nanoseconds past 2^53
+   * (issue #9338); an unrepresentable result now raises an arithmetic error.
    */
   private CypherDuration scale(final BigDecimal numerator, final BigDecimal denominator) {
     try {

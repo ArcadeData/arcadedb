@@ -176,4 +176,10 @@ class Issue9338DurationFamilyTest {
     assertThat(scalar("RETURN toString(duration('PT0.0000000015S')) AS r")).isEqualTo("PT0.000000002S");
     assertThat(scalar("RETURN toString(duration('PT0.0000000014S')) AS r")).isEqualTo("PT0.000000001S");
   }
+
+  @Test
+  void dividingTheMostNegativeDurationByMinusOneRaisesInsteadOfWrapping() {
+    expectError("RETURN duration({days: -9223372036854775808}) / -1");
+    assertThat(scalar("RETURN toString(duration({days: 4}) / -1) AS r")).isEqualTo("P-4D");
+  }
 }
