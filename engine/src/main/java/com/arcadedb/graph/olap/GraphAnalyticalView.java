@@ -1231,13 +1231,19 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       Arrays.sort(sorted);
       key = direction + "|" + String.join("\u0000", sorted);
     }
-    final SoftReference<NeighborView> cached = snap.mergedNeighborViews.get(key);
-    final NeighborView hit = cached != null ? cached.get() : null;
-    if (hit != null)
-      return hit;
-    final NeighborView built = buildMergedNeighborView(indices, n, direction);
-    snap.mergedNeighborViews.put(key, new SoftReference<>(built));
-    return built;
+    // compute() so concurrent callers share one build of a large merge instead of each sorting the whole adjacency, and
+    // so a reference the GC cleared is replaced rather than left behind
+    final NeighborView[] result = new NeighborView[1];
+    snap.mergedNeighborViews.compute(key, (k, cached) -> {
+      final NeighborView hit = cached != null ? cached.get() : null;
+      if (hit != null) {
+        result[0] = hit;
+        return cached;
+      }
+      result[0] = buildMergedNeighborView(indices, n, direction);
+      return new SoftReference<>(result[0]);
+    });
+    return result[0];
   }
 
   private static NeighborView buildNeighborViewFromCSR(final CSRAdjacencyIndex csr, final int n,
