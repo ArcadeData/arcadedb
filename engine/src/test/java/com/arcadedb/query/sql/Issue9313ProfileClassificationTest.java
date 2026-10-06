@@ -111,4 +111,11 @@ class Issue9313ProfileClassificationTest extends TestHelper {
       rs.stream().count();
     }
   }
+
+  /** A separator other than a single space is not a PROFILE prefix on any path, so the write can never slip through as idempotent. */
+  @Test
+  void cypherProfileWithANewlineSeparatorNeverWritesThroughQuery() {
+    assertThatThrownBy(() -> database.query("opencypher", "PROFILE\nCREATE (:Person {name: 'x'})")).isInstanceOf(Exception.class);
+    assertThat(database.countType("Person", false)).isZero();
+  }
 }
