@@ -20,9 +20,9 @@ package com.arcadedb.bolt;
 
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
-import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.util.Arrays;
 
@@ -78,6 +78,22 @@ class BoltWebSocketOutputStreamTest {
     out.flush();
 
     assertThat(Arrays.equals(payloadOf(sink.toByteArray()), expected)).isTrue();
+  }
+
+  @Test
+  void singleWriteLargerThan64KbUsesTheEightByteLengthEncoding() throws Exception {
+    final ByteArrayOutputStream sink = new ByteArrayOutputStream();
+    final BoltWebSocketOutputStream out = new BoltWebSocketOutputStream(sink);
+
+    final byte[] big = new byte[100_000];
+    Arrays.fill(big, (byte) 7);
+    out.write(big, 0, big.length);
+    out.flush();
+
+    final byte[] wire = sink.toByteArray();
+    assertThat(wire[0]).isEqualTo((byte) 0x82);
+    assertThat(wire[1]).isEqualTo((byte) 127);
+    assertThat(payloadOf(wire)).hasSize(100_000);
   }
 
   /** Decodes consecutive unmasked binary frames and concatenates their payloads. */
