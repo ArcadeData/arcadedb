@@ -84,7 +84,7 @@ class Issue7260ResidentGraphDemotionTest {
       // Short of what the on-heap shape needs, by more than the demotion hands back.
       final long availableHeap = sizes.availableHeapJustBelow(sizes.estimateKeepingOnHeap());
 
-      assertThat(index.admitOnlineRebuild(availableHeap, 0L))
+      assertThat(index.admitOnlineRebuild(availableHeap, 0L, true))
           .as("the build fits once the on-heap graph is swapped for its on-disk twin, so it must be admitted "
               + "rather than deferred - a deferral is what left the delta scan unbounded in issue #7260")
           .isTrue();
@@ -104,7 +104,7 @@ class Issue7260ResidentGraphDemotionTest {
   void theRebuildAfterADemotionCompletesAndReplacesTheOnDiskGraph() {
     withIndex(index -> {
       final Sizes sizes = sizesOf(index);
-      assertThat(index.admitOnlineRebuild(sizes.availableHeapJustBelow(sizes.estimateKeepingOnHeap()), 0L)).isTrue();
+      assertThat(index.admitOnlineRebuild(sizes.availableHeapJustBelow(sizes.estimateKeepingOnHeap()), 0L, true)).isTrue();
       final ImmutableGraphIndex demoted = index.getGraphIndex();
       assertThat(demoted).isInstanceOf(OnDiskGraphIndex.class);
 
@@ -131,9 +131,29 @@ class Issue7260ResidentGraphDemotionTest {
   }
 
   @Test
+  void noCreditIsGivenForAnOnHeapGraphTheHeapReadingNeverCounted() {
+    withIndex(index -> {
+      final Sizes sizes = sizesOf(index);
+
+      // Short of even the demoted shape: only a credit for the on-heap graph's bytes could make it fit.
+      final long availableHeap = sizes.availableHeapJustBelow(sizes.estimateKeepingOnDisk());
+      assertThat(index.admitOnlineRebuild(availableHeap, 0L, true))
+          .as("control: with the credit the same reading is admitted")
+          .isTrue();
+    });
+    withIndex(index -> {
+      final Sizes sizes = sizesOf(index);
+      assertThat(index.admitOnlineRebuild(sizes.availableHeapJustBelow(sizes.estimateKeepingOnDisk()), 0L, false))
+          .as("no collection ended since the graph was published, so crediting its bytes would count them twice")
+          .isFalse();
+      assertThat(index.getGraphIndex()).isInstanceOf(OnHeapGraphIndex.class);
+    });
+  }
+
+  @Test
   void aRebuildThatFitsWithTheOnHeapGraphKeepsIt() {
     withIndex(index -> {
-      assertThat(index.admitOnlineRebuild(Long.MAX_VALUE / 4, 0L)).isTrue();
+      assertThat(index.admitOnlineRebuild(Long.MAX_VALUE / 4, 0L, true)).isTrue();
 
       assertThat(index.getGraphIndex())
           .as("demotion costs the search latency of reading pages: it is a fallback, never the first choice")
@@ -145,7 +165,7 @@ class Issue7260ResidentGraphDemotionTest {
   @Test
   void aRebuildThatDoesNotFitEvenDemotedIsDeferredAndTheGraphStaysOnHeap() {
     withIndex(index -> {
-      assertThat(index.admitOnlineRebuild(0L, 0L)).isFalse();
+      assertThat(index.admitOnlineRebuild(0L, 0L, true)).isFalse();
 
       assertThat(index.getGraphIndex())
           .as("a deferral must not have degraded the searches it was meant to protect")
@@ -161,7 +181,7 @@ class Issue7260ResidentGraphDemotionTest {
       final Sizes sizes = sizesOf(index);
       index.forgetPersistedGraphSourceForTest();
 
-      assertThat(index.admitOnlineRebuild(sizes.availableHeapJustBelow(sizes.estimateKeepingOnHeap()), 0L))
+      assertThat(index.admitOnlineRebuild(sizes.availableHeapJustBelow(sizes.estimateKeepingOnHeap()), 0L, true))
           .as("with no certified twin there is nothing to swap in, and guessing one would serve wrong ordinals")
           .isFalse();
       assertThat(index.getGraphIndex()).isInstanceOf(OnHeapGraphIndex.class);

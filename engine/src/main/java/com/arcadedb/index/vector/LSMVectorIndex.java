@@ -367,6 +367,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
   // (issue #7260), because the second line of a streak tells the operator nothing the first did not.
   private final AtomicInteger           rebuildDeferralStreak = new AtomicInteger();
   private volatile boolean             demotionFailureLogged;
+  // When the resident graph was published: a heap reading only counts it if a collection ended after this.
+  private volatile long                graphPublishedAtMs;
   // Incremented each time a graph build snapshots its start mutation counter. Lets callers (and tests) observe
   // that a build has passed the point after which further mutations are preserved rather than folded into the
   // build's own snapshot (issue #3683).
@@ -4024,6 +4026,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         this.graphIndex = builtGraph;
         // Not persisted yet: a failed persist below must leave no earlier generation vouching for this one (#7260).
         this.persistedGraphSource = null;
+        this.graphPublishedAtMs = System.currentTimeMillis();
         // Published together with the graph they describe, and unconditionally - an empty set is the answer for
         // almost every build, and leaving a previous build's set in place would make the manifest below vouch for
         // ordinals this graph does not orphan (issue #7190).
@@ -5338,7 +5341,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
   boolean admitOnlineRebuild() {
     final PageManager pageManager = getDatabase().getPageManager();
     return admitOnlineRebuild(VectorHeapBudget.availableHeapBytes(),
-        pageManager != null ? pageManager.getReadCacheRAM() : 0L);
+        pageManager != null ? pageManager.getReadCacheRAM() : 0L,
+        VectorHeapBudget.lastCollectionEndMillis() >= graphPublishedAtMs);
   }
 
   /**
@@ -5347,8 +5351,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
    *
    * @param availableHeap         what {@link VectorHeapBudget#availableHeapBytes()} would have answered
    * @param reclaimableCacheBytes what {@code PageManager.getReadCacheRAM()} would have answered
+   * @param heapReadingCountsResident whether a collection ended after the resident graph was published, i.e.
+   *                              whether {@code availableHeap} can have counted that graph as live
    */
-  boolean admitOnlineRebuild(final long availableHeap, final long reclaimableCacheBytes) {
+  boolean admitOnlineRebuild(final long availableHeap, final long reclaimableCacheBytes,
+      final boolean heapReadingCountsResident) {
     final int percent = getDatabase().getConfiguration()
         .getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_REBUILD_MAX_HEAP_PERCENT);
     if (percent <= 0)
@@ -5409,7 +5416,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // beside a second one, that refusal repeats at every later trigger, and the delta scan it was protecting
     // searches from grows without bound. The same graph is on disk: swap it in and price the build again.
     if (admitByDemotingResidentGraph(resident, nodes, buildCacheCapacity, availableHeap, reclaimableCacheBytes,
-        percent))
+        percent, heapReadingCountsResident))
       return true;
 
     metrics.incrementRebuildsDeferredForMemory();
@@ -5451,7 +5458,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * swap, so the graph's own bytes are credited to it for this decision.
    */
   private boolean admitByDemotingResidentGraph(final ImmutableGraphIndex resident, final long nodes,
-      final long buildCacheCapacity, final long availableHeap, final long reclaimableCacheBytes, final int percent) {
+      final long buildCacheCapacity, final long availableHeap, final long reclaimableCacheBytes, final int percent,
+      final boolean heapReadingCountsResident) {
     if (!(resident instanceof OnHeapGraphIndex) || resident != persistedGraphSource)
       return false;
 
@@ -5462,6 +5470,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     OnDiskGraphIndex twin = null;
     try {
       twin = gf.loadGraph();
+      // A cheap sanity check only: that the twin IS this graph is guaranteed by persistedGraphSource's identity.
       if (twin == null || twin.getIdUpperBound() != resident.getIdUpperBound())
         return false;
 
@@ -5470,11 +5479,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final long estimate = VectorHeapBudget.estimateOnlineRebuildHeapBytes(nodes, metadata.dimensions,
           buildCacheCapacity, onHeapBytes, resident.getIdUpperBound(), true, metadata.neighborOverflowFactor,
           twinBytes);
-      // The post-collection reading counts the on-heap graph only if a collection ran after it was published, which
-      // the long build that produced it makes the overwhelmingly common case; when none did, the reading is
-      // optimistic by that much. The credit is therefore capped at the heap ceiling, so it can never promise more
-      // than -Xmx holds, and the OutOfMemoryError handler plus the deferral cooldown stay the backstop.
-      final long creditedHeap = Math.min(availableHeap + onHeapBytes, VectorHeapBudget.maxHeapBytes());
+      // The post-collection reading counts the on-heap graph only if a collection ended after it was published.
+      // When none did, crediting its bytes would count them twice and admit a build that may not fit, so no credit
+      // is given: the estimate then has to fit on its own, which only the twin's smaller footprint can change. The
+      // credit is also capped at the heap ceiling, so it can never promise more than -Xmx holds.
+      final long creditedHeap = heapReadingCountsResident ?
+          Math.min(availableHeap + onHeapBytes, VectorHeapBudget.maxHeapBytes()) : availableHeap;
       final long reclaimNeeded = VectorHeapBudget.reclaimNeededFor(estimate, percent, creditedHeap,
           reclaimableCacheBytes);
       if (reclaimNeeded < 0L)
@@ -5495,8 +5505,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // is the same graph and ordinalToVectorId and graphUnreachableOrdinals stay valid untouched. Searchers
         // already checked out keep the old graph until they return and are then dropped by the pool's identity
         // check, exactly as when a build publishes.
+        // The twin is never closed on replacement, like every OnDiskGraphIndex this index has published (a
+        // reopened session, the storeVectorsInGraph reload): it reads through the page manager and holds no file
+        // handle or other resource that outlives the garbage collector's reach.
         graphIndex = twin;
         persistedGraphSource = null;
+        demotionFailureLogged = false;
         releasePooledSearchers();
       } finally {
         lock.writeLock().unlock();
@@ -5505,9 +5519,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       metrics.incrementResidentGraphDemotions();
       LogManager.instance().log(this, Level.INFO,
-          "Vector index %s keeps its graph on disk while it rebuilds: %d nodes plus the %d MB the on-heap graph "
-              + "occupies did not fit the %d MB of available heap that %s allows, and the persisted copy (%d MB on "
-              + "the heap) does, with about %d MB for the build. Searches read the topology from pages until a "
+          "Vector index %s keeps its graph on disk while it rebuilds: %d nodes did not fit beside the %d MB the "
+              + "on-heap graph occupies, and with that graph counted as freed (%d MB of heap that %s allows it) the "
+              + "build fits next to the persisted copy (%d MB on the heap), with about %d MB for the build. Searches read the topology from pages until a "
               + "rebuild publishes its replacement; if this one fails the next trigger retries it against the "
               + "much smaller on-disk graph (issue #7260)",
           indexName, nodes, onHeapBytes / (1024 * 1024), creditedHeap * Math.min(percent, 90) / 100 / (1024 * 1024),

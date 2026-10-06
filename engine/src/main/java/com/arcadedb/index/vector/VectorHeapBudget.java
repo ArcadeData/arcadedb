@@ -20,6 +20,7 @@ package com.arcadedb.index.vector;
 
 import com.arcadedb.log.LogManager;
 
+import java.lang.management.GarbageCollectorMXBean;
 import java.lang.management.ManagementFactory;
 import java.lang.management.MemoryPoolMXBean;
 import java.lang.management.MemoryType;
@@ -117,6 +118,28 @@ final class VectorHeapBudget {
               + "total heap. That is the pre-issue-#6503 behaviour and is safe, but a rebuild holding the old "
               + "graph resident will not ask for a smaller cache on account of it");
     return live;
+  }
+
+  /**
+   * Wall-clock time the most recent collection of any collector finished, or {@code -1} when the JVM does not
+   * publish it (issue #7260). Compared with the moment a graph was published, it says whether the post-collection
+   * reading of {@link #liveHeapBytes()} can have counted that graph: only a collection that ended after the
+   * publish saw it live.
+   */
+  static long lastCollectionEndMillis() {
+    long last = -1L;
+    try {
+      final long jvmStart = ManagementFactory.getRuntimeMXBean().getStartTime();
+      for (final GarbageCollectorMXBean gc : ManagementFactory.getGarbageCollectorMXBeans())
+        if (gc instanceof final com.sun.management.GarbageCollectorMXBean sunGc) {
+          final com.sun.management.GcInfo info = sunGc.getLastGcInfo();
+          if (info != null)
+            last = Math.max(last, jvmStart + info.getEndTime());
+        }
+    } catch (final RuntimeException | LinkageError e) {
+      return -1L; // indistinguishable from a JVM that does not publish it
+    }
+    return last;
   }
 
   /**
