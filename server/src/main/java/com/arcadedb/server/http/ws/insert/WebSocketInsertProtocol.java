@@ -27,8 +27,11 @@ import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.ws.WebSocketEventBus;
 import com.arcadedb.server.http.ws.WebSocketFrameSender;
+import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
+import io.undertow.websockets.core.CloseMessage;
 import io.undertow.websockets.core.WebSocketChannel;
+import io.undertow.websockets.core.WebSockets;
 
 import java.util.ArrayDeque;
 import java.util.Deque;
@@ -111,11 +114,13 @@ public class WebSocketInsertProtocol {
 
   private final WebSocketInsertSessionManager sessionManager;
   private final ContextConfiguration          configuration;
+  private final WebSocketEventBus             eventBus;
 
   public WebSocketInsertProtocol(final WebSocketInsertSessionManager sessionManager,
-      final ContextConfiguration configuration) {
+      final ContextConfiguration configuration, final WebSocketEventBus eventBus) {
     this.sessionManager = sessionManager;
     this.configuration = configuration;
+    this.eventBus = eventBus;
     sessionManager.setExpiryListener((session, reason) -> {
       final WebSocketChannel channel = session.getChannel();
       if (channel != null && channel.isOpen())
@@ -136,7 +141,6 @@ public class WebSocketInsertProtocol {
    * and must stay free to read the next frame.
    */
   public void dispatch(final WebSocketChannel channel, final String action, final JSONObject message) {
-    final ServerSecurityUser user = (ServerSecurityUser) channel.getAttribute(WebSocketEventBus.USER);
     final UUID channelId = (UUID) channel.getAttribute(WebSocketEventBus.CHANNEL_ID);
 
     registerCloseHook(channel, channelId);
@@ -148,7 +152,7 @@ public class WebSocketInsertProtocol {
     if (start)
       pendingStarts(channel).incrementAndGet();
 
-    if (!frameQueue(channel).submit(() -> execute(channel, channelId, user, action, message))) {
+    if (!frameQueue(channel).submit(() -> execute(channel, channelId, action, message))) {
       // Refused for a full queue: the frame will never reach a worker, so its grant is released here instead.
       if (start)
         pendingStarts(channel).decrementAndGet();
@@ -209,8 +213,18 @@ public class WebSocketInsertProtocol {
     }
   }
 
-  private void execute(final WebSocketChannel channel, final UUID channelId, final ServerSecurityUser user,
-      final String action, final JSONObject message) {
+  private void execute(final WebSocketChannel channel, final UUID channelId, final String action,
+      final JSONObject message) {
+    // The principal is re-resolved for EVERY frame, never trusted from the handshake (issue #9311): a user dropped, given a
+    // new password or stripped of the database since then must not keep writing for the life of the connection.
+    final ServerSecurityUser user;
+    try {
+      user = eventBus.revalidatedUser(channel);
+    } catch (final ServerSecurityException e) {
+      revoke(channel, channelId, action, message, e);
+      return;
+    }
+
     try {
       switch (action) {
       case "start" -> {
@@ -243,6 +257,7 @@ public class WebSocketInsertProtocol {
       case "chunk" -> {
         final WebSocketInsertSession session = sessionManager.resolve(user, channelId,
             message.getString("sessionId", null));
+        requireDatabaseAccess(session, user);
         final JSONArray records = message.getJSONArray("records", null);
         if (records == null)
           throw new IllegalArgumentException("Property 'records' is required and must be an array");
@@ -270,6 +285,9 @@ public class WebSocketInsertProtocol {
       case "commit", "rollback" -> {
         final WebSocketInsertSession session = sessionManager.resolve(user, channelId,
             message.getString("sessionId", null));
+        // A rollback is always allowed: it is how a client lets go of what it holds
+        if ("commit".equals(action))
+          requireDatabaseAccess(session, user);
         send(channel, sessionManager.finish(session, "commit".equals(action)));
       }
       // Unreachable through dispatch(), which only ever passes an action handles() claimed. It is here for the
@@ -290,6 +308,37 @@ public class WebSocketInsertProtocol {
       LogManager.instance().log(this, Level.FINE, "Error on /ws insert session action '%s'", e, action);
       send(channel, error("Internal error", e.getMessage(), message.getString("sessionId", null), e));
     }
+  }
+
+  /**
+   * The grant on the session's database is checked against the LIVE principal on every frame that writes or commits, not
+   * only at {@code start}. A revoked grant discards what the session holds, so nothing it applied can be committed later.
+   */
+  private void requireDatabaseAccess(final WebSocketInsertSession session, final ServerSecurityUser user) {
+    if (user.canAccessToDatabase(session.databaseName))
+      return;
+    try {
+      sessionManager.finish(session, false);
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(this, Level.FINE, "Cannot roll back /ws insert session %s after its grant was revoked", e,
+          session.id);
+    }
+    throw new SecurityException("User does not have access to database '" + session.databaseName + "'.");
+  }
+
+  /**
+   * The channel's principal is gone or its credentials changed: roll back what the connection holds, refuse every later
+   * {@code start}, say why and close the connection.
+   */
+  private void revoke(final WebSocketChannel channel, final UUID channelId, final String action, final JSONObject message,
+      final ServerSecurityException e) {
+    // The budget grant a start was given on the I/O thread is released even though the start is refused (issue #7909)
+    if ("start".equals(action))
+      pendingStarts(channel).decrementAndGet();
+
+    sessionManager.closeChannelSessions(channel, channelId);
+    send(channel, error("Security error", e.getMessage(), message.getString("sessionId", null), e));
+    WebSockets.sendClose(new CloseMessage(CloseMessage.MSG_VIOLATES_POLICY, "Principal is no longer valid"), channel, null);
   }
 
   private static JSONObject error(final String error, final String detail, final String sessionId, final Throwable e) {

@@ -25,6 +25,7 @@ import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.ws.insert.WebSocketInsertProtocol;
+import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.websockets.core.AbstractReceiveListener;
 import io.undertow.websockets.core.BufferedBinaryMessage;
@@ -194,7 +195,13 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
       switch (action) {
       case SUBSCRIBE:
         final var database = message.getString("database");
-        final var user = (ServerSecurityUser) channel.getAttribute(WebSocketEventBus.USER);
+        final ServerSecurityUser user;
+        try {
+          user = this.webSocketEventBus.revalidatedUser(channel);
+        } catch (final ServerSecurityException e) {
+          sendError(channel, "Security error", e.getMessage(), null);
+          break;
+        }
         if (user == null || !user.canAccessToDatabase(database)) {
           sendError(channel, "Security error", "User does not have access to database '%s'.".formatted(database), null);
           break;
