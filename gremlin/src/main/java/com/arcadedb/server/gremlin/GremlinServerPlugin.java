@@ -41,9 +41,12 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -146,7 +149,7 @@ public class GremlinServerPlugin implements ServerPlugin {
       // arrives as an exceptional completion of the returned future. Waiting on it makes a failed bind fail the start
       // like the Bolt, Postgres, Redis, MongoDB and HTTP listeners do, instead of leaving the plugin "started" and its
       // port advertised with nothing listening on it (issue #9319).
-      gremlinServer.start().get(START_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+      within(gremlinServer::start);
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
       releaseAfterFailedStart();
@@ -203,6 +206,37 @@ public class GremlinServerPlugin implements ServerPlugin {
           e.toString());
     }
     return configuredPort;
+  }
+
+  /**
+   * Runs a lifecycle operation of the Gremlin Server and waits for its future, the whole of it under one deadline: in
+   * TinkerPop 3.8.2 {@code start()} and {@code stop()} run hooks and close processors before they return the future, so a
+   * deadline applied only to the future never starts counting if the call itself blocks.
+   */
+  private static <T> T within(final Callable<CompletableFuture<T>> operation)
+      throws InterruptedException, ExecutionException, TimeoutException {
+    final ExecutorService executor = Executors.newSingleThreadExecutor(runnable -> {
+      final Thread thread = new Thread(runnable, "arcadedb-gremlin-lifecycle");
+      thread.setDaemon(true);
+      return thread;
+    });
+    try {
+      final Future<T> future = executor.submit(() -> operation.call().get());
+      try {
+        return future.get(START_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+      } catch (final TimeoutException e) {
+        future.cancel(true);
+        throw e;
+      } catch (final ExecutionException e) {
+        // the operation's own failure arrives wrapped once by each future
+        Throwable cause = e;
+        while (cause instanceof ExecutionException && cause.getCause() != null)
+          cause = cause.getCause();
+        throw new ExecutionException(cause);
+      }
+    } finally {
+      executor.shutdownNow();
+    }
   }
 
   /** The failed start leaves nothing running: the half-started server and its executor are stopped here, not left to the caller. */
@@ -416,7 +450,7 @@ public class GremlinServerPlugin implements ServerPlugin {
       boolean stopped = false;
       try {
         // Bounded like the start: a server whose bind failed must not be able to hang the shutdown
-        gremlinServer.stop().get(START_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        within(gremlinServer::stop);
         stopped = true;
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();

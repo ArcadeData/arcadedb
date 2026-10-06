@@ -64,11 +64,15 @@ class Issue9338DurationFamilyTest {
   }
 
   private void expectError(final String query) {
+    expectError(query, RuntimeException.class);
+  }
+
+  private void expectError(final String query, final Class<? extends RuntimeException> expectedType) {
     assertThatThrownBy(() -> {
       try (final ResultSet rs = database.query("cypher", query)) {
         rs.next();
       }
-    }).as(query).isInstanceOf(RuntimeException.class);
+    }).as(query).isInstanceOf(expectedType);
   }
 
   @Test
@@ -119,15 +123,15 @@ class Issue9338DurationFamilyTest {
 
   @Test
   void durationArithmeticRaisesOnOverflow() {
-    expectError("RETURN duration({months: 9223372036854775807}) + duration({months: 1})");
-    expectError("RETURN duration({seconds: 5000000000000000000}) + duration({seconds: 5000000000000000000})");
-    expectError("RETURN duration({days: -9223372036854775808}) - duration({days: 1})");
-    expectError("RETURN duration({hours: 1}) * 10000000000000000");
+    expectError("RETURN duration({months: 9223372036854775807}) + duration({months: 1})", ArithmeticErrorException.class);
+    expectError("RETURN duration({seconds: 5000000000000000000}) + duration({seconds: 5000000000000000000})", ArithmeticErrorException.class);
+    expectError("RETURN duration({days: -9223372036854775808}) - duration({days: 1})", ArithmeticErrorException.class);
+    expectError("RETURN duration({hours: 1}) * 10000000000000000", ArithmeticErrorException.class);
     // 3.6e15 seconds is representable, so the old nanosecond saturation is gone and the exact answer is returned
     assertThat(scalar("RETURN toString(duration({hours: 1}) * 1000000000000) AS r")).isEqualTo("PT1000000000000H");
-    expectError("RETURN duration({months: 9223372036854775807}) * 2");
-    expectError("RETURN duration({seconds: 9223372037}).nanoseconds");
-    expectError("RETURN duration({seconds: 9223372036854776}).milliseconds");
+    expectError("RETURN duration({months: 9223372036854775807}) * 2", ArithmeticErrorException.class);
+    expectError("RETURN duration({seconds: 9223372037}).nanoseconds", ArithmeticErrorException.class);
+    expectError("RETURN duration({seconds: 9223372036854776}).milliseconds", ArithmeticErrorException.class);
     assertThatThrownBy(() -> new CypherDuration(Long.MAX_VALUE, 0, 0, 0).multiply(2)).isInstanceOf(ArithmeticErrorException.class);
   }
 
@@ -179,7 +183,7 @@ class Issue9338DurationFamilyTest {
 
   @Test
   void dividingTheMostNegativeDurationByMinusOneRaisesInsteadOfWrapping() {
-    expectError("RETURN duration({days: -9223372036854775808}) / -1");
+    expectError("RETURN duration({days: -9223372036854775808}) / -1", ArithmeticErrorException.class);
     assertThat(scalar("RETURN toString(duration({days: 4}) / -1) AS r")).isEqualTo("P-4D");
   }
 
