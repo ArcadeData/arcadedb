@@ -1305,17 +1305,26 @@ public class MergeStep extends AbstractExecutionStep {
     return CypherVertexReload.latest(context.getDatabase(), anchor);
   }
 
+  // The storage text of the last temporal operand matchesTemporal compared against (see there)
+  private CypherTemporalValue wantedForText;
+  private String              wantedText;
+
   /**
    * A temporal operand against a stored value: text is compared with the operand's storage form, then restored to its
    * temporal type and compared by value; any other stored value is compared the way a MATCH compares it (a naive stored
    * datetime against a zoned operand by instant, issue #9334).
    */
-  private static boolean matchesTemporal(final Object actual, final CypherTemporalValue wanted) {
-    if (actual instanceof String text)
+  private boolean matchesTemporal(final Object actual, final CypherTemporalValue wanted) {
+    if (actual instanceof String text) {
+      // The storage text of the operand is the same for every candidate of one MERGE: computed once, not once per row
+      if (wanted != wantedForText) {
+        wantedText = String.valueOf(TemporalUtil.toCoreJavaType(wanted));
+        wantedForText = wanted;
+      }
       // The parse only runs for a text with the shape of a temporal: a scan over plain strings pays a character test
-      return text.equals(TemporalUtil.toCoreJavaType(wanted))
-          || TemporalUtil.mayBeTemporalString(text)
+      return text.equals(wantedText) || TemporalUtil.mayBeTemporalString(text)
           && InlineProperties.matchesResolvedValue(TemporalUtil.convertFromStorage(text), wanted);
+    }
     return InlineProperties.matchesResolvedValue(actual, wanted);
   }
 
