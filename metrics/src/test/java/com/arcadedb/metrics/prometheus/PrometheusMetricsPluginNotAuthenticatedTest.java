@@ -31,10 +31,17 @@ import java.net.http.HttpResponse;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class PrometheusMetricsPluginNotAuthenticatedTest extends BaseGraphServerTest {
+  private static final String REQUIRE_AUTHENTICATION = GlobalConfiguration.SERVER_METRICS_PROMETHEUS_REQUIRE_AUTHENTICATION.getKey();
+
+  private String previousRequireAuthentication;
+
   @Override
   public void setTestConfiguration() {
     super.setTestConfiguration();
-    System.setProperty("arcadedb.serverMetrics.prometheus.requireAuthentication", "false");
+    // Restored in endTest(): ContextConfiguration falls back to this system property, so leaving it set changes
+    // what every later test in the same JVM reads for the setting (issue #8736).
+    previousRequireAuthentication = System.getProperty(REQUIRE_AUTHENTICATION);
+    System.setProperty(REQUIRE_AUTHENTICATION, "false");
     GlobalConfiguration.SERVER_PLUGINS.setValue("PrometheusMetricsPlugin");
   }
 
@@ -42,7 +49,14 @@ class PrometheusMetricsPluginNotAuthenticatedTest extends BaseGraphServerTest {
   @Override
   public void endTest() {
     GlobalConfiguration.SERVER_PLUGINS.setValue("");
-    super.endTest();
+    try {
+      super.endTest();
+    } finally {
+      if (previousRequireAuthentication != null)
+        System.setProperty(REQUIRE_AUTHENTICATION, previousRequireAuthentication);
+      else
+        System.clearProperty(REQUIRE_AUTHENTICATION);
+    }
   }
 
   @Test
