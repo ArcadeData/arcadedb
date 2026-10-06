@@ -630,24 +630,17 @@ class GAVEligibilityTest {
 
   @Test
   void antiJoinWithoutInequalityCorrectCount() {
-    // Without inequality, p1 can equal p3 (self-loops through 2-hop KNOWS)
-    // Alice-Bob-Alice: NOT Alice-KNOWS-Alice? Alice's KNOWS = {Bob}. Alice not in {Bob} → passes.
-    //   But Alice has no HAS_INTEREST → contributes 0
-    // Alice-Bob-Charlie: NOT Alice-KNOWS-Charlie? Charlie not in {Bob} → passes.
-    //   Charlie has HAS_INTEREST Java → contributes 1
-    // Bob-Alice-Bob: NOT Bob-KNOWS-Bob? Bob's KNOWS = {Alice, Charlie}. Bob not in set → passes.
-    //   But Bob has no HAS_INTEREST → contributes 0
-    // Charlie-Bob-Alice: NOT Charlie-KNOWS-Alice? Alice not in {Bob} → passes.
-    //   Alice has no HAS_INTEREST → contributes 0
-    // Charlie-Bob-Charlie: NOT Charlie-KNOWS-Charlie? Charlie's KNOWS = {Bob}. Charlie not in {Bob} → passes.
-    //   Charlie has HAS_INTEREST → contributes 1
-    // Total: 2 (Alice-Bob-Charlie + Charlie-Bob-Charlie)
+    // Without the inequality p1 could equal p3, but only by walking the same KNOWS relationship back, and Cypher binds
+    // a relationship at most once per MATCH: Alice-Bob-Alice and Charlie-Bob-Charlie are not paths.
+    // Alice-Bob-Charlie: NOT Alice-KNOWS-Charlie? Charlie not in {Bob} -> passes, Charlie has HAS_INTEREST Java: 1
+    // Charlie-Bob-Alice: Alice has no HAS_INTEREST: 0
+    // Total: 1
     final ResultSet result = database.query("opencypher",
         "MATCH (p1:Person)-[:KNOWS]-(p2:Person)-[:KNOWS]-(p3:Person)-[:HAS_INTEREST]->(t:Tag) WHERE NOT (p1)-[:KNOWS]-(p3) RETURN count(*) AS count");
 
     assertThat(result.hasNext()).isTrue();
     final long count = result.next().getProperty("count");
-    assertThat(count).isEqualTo(2L);
+    assertThat(count).isEqualTo(1L);
     result.close();
   }
 
