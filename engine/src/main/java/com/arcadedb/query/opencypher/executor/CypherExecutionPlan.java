@@ -7721,7 +7721,11 @@ public class CypherExecutionPlan {
         return null;
     }
 
-    if (!isAntiJoinShapeCountedExactly(nodeLabels, edgeTypes, antiJoin, antiJoinSourceIdx, antiJoinTargetIdx, inequalityIdxA,
+    // a node variable named twice is one vertex, which the degree products of the operator cannot express (a closing hop back to the
+    // first node would be counted for any target)
+    if (repeatsNodeVariable(pathPattern))
+      return null;
+    if (!isAntiJoinShapeCountedExactly(database, nodeLabels, edgeTypes, antiJoin, antiJoinSourceIdx, antiJoinTargetIdx, inequalityIdxA,
         inequalityIdxB))
       return null;
 
@@ -7739,13 +7743,14 @@ public class CypherExecutionPlan {
    *   <li>the check position is 2 and both hops before it are of the anti-join's type, one end of the negated pattern being the
    *   first node, and the inequality is between the negated pattern's two nodes (a walk back over the same relationship is then
    *   excluded);</li>
-   *   <li>no hop after the check position is of a type used before it (it could reuse a relationship the operator does not track);</li>
+   *   <li>at most one hop follows the check position and its type does not overlap (same type or inheritance) a type used before it
+   *   (it could reuse a relationship the operator does not track);</li>
    *   <li>every node of the chain is labelled unless the negated pattern starts at the first node (an unlabelled node takes the
    *   recursive path, which never applies the anti-join set when the negated pattern ends at the first node).</li>
    * </ul>
    * Any other shape is declined and takes the row pipeline.
    */
-  private static boolean isAntiJoinShapeCountedExactly(final String[] nodeLabels, final String[] edgeTypes, final AntiJoinInfo antiJoin,
+  private static boolean isAntiJoinShapeCountedExactly(final Database database, final String[] nodeLabels, final String[] edgeTypes, final AntiJoinInfo antiJoin,
       final int sourceIdx, final int targetIdx, final int inequalityIdxA, final int inequalityIdxB) {
     // an unlabelled node makes the operator walk the chain recursively, which never applies the anti-join set when the negated
     // pattern starts at a later node and ends at the first one
@@ -7759,10 +7764,23 @@ public class CypherExecutionPlan {
       return false;
     if (!Objects.equals(antiJoin.antiJoinEdgeType, edgeTypes[0]) || !Objects.equals(antiJoin.antiJoinEdgeType, edgeTypes[1]))
       return false;
+    // the operator multiplies the degree of the check vertex for the hops after it, which is exact for one hop and not for a chain of them
+    if (edgeTypes.length > 3)
+      return false;
     for (int i = 2; i < edgeTypes.length; i++)
-      if (Objects.equals(edgeTypes[i], edgeTypes[0]) || Objects.equals(edgeTypes[i], edgeTypes[1]))
+      if (edgeTypesOverlap(database, edgeTypes[i], edgeTypes[0]) || edgeTypesOverlap(database, edgeTypes[i], edgeTypes[1]))
         return false;
     return true;
+  }
+
+  /** Whether one relationship can belong to both types: they are the same type or one inherits from the other. */
+  private static boolean edgeTypesOverlap(final Database database, final String a, final String b) {
+    if (Objects.equals(a, b))
+      return true;
+    if (!database.getSchema().existsType(a) || !database.getSchema().existsType(b))
+      return false;
+    final DocumentType typeA = database.getSchema().getType(a);
+    return typeA.instanceOf(b) || database.getSchema().getType(b).instanceOf(a);
   }
 
   /**
