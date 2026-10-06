@@ -96,6 +96,7 @@ import com.arcadedb.query.opencypher.ast.UnwindClause;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.ast.WhereClause;
 import com.arcadedb.query.opencypher.ast.WithClause;
+import com.arcadedb.query.opencypher.executor.operators.ExpandAll;
 import com.arcadedb.query.opencypher.executor.operators.FilterOperator;
 import com.arcadedb.query.opencypher.executor.operators.GAVExpandAll;
 import com.arcadedb.query.opencypher.executor.operators.GAVFusedChainOperator;
@@ -4922,7 +4923,11 @@ public class CypherExecutionPlan {
 
     final List<String> types = relationship.getTypes();
     final String[] edgeTypes = types != null && !types.isEmpty() ? types.toArray(new String[0]) : null;
-    final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(database, edgeTypes);
+    // Several views can hold the edge types: take the first one that holds both endpoints, not the first one
+    final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProviderAllowingPartialVertexCoverage(database,
+        candidate -> coveredVertexBuckets(candidate, source.getFirstLabel()) != null && (target.hasLabels()
+            ? coveredVertexBuckets(candidate, target.getFirstLabel()) != null : candidate.coversVertexType(null)),
+        edgeTypes);
     if (provider == null || provider.isStale())
       return null;
 
@@ -4967,7 +4972,7 @@ public class CypherExecutionPlan {
   private static String scannedLabelExpandedThroughView(final PhysicalOperator root) {
     int expansions = 0;
     for (PhysicalOperator current = root; current != null; current = current.getChild()) {
-      if (current instanceof GAVExpandAll)
+      if (current instanceof GAVExpandAll || current instanceof ExpandAll)
         ++expansions;
       else if (current instanceof NodeByLabelScan scan)
         return expansions == 1 && current.getChild() == null ? scan.getLabel() : null;

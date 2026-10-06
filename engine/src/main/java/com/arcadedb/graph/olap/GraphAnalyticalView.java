@@ -255,6 +255,13 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   // Per-view override of GlobalConfiguration.GAV_USE_WHEN_STALE; null follows the database's configuration, read
   // live on every isReady() so an ALTER DATABASE reaches views already built (and restored ones) - see #7875.
   private volatile Boolean useWhenStale;
+  // coversVertexType(null) answer with the schema version it was computed at: asked once per vertex by the SQL traversal
+  // functions, and the answer only changes with the schema, so the type list is not copied on every call
+  // one immutable holder behind one reference, so a reader never pairs a version with another thread's answer
+  private record VertexCoverage(long schemaVersion, boolean coversAll) {
+  }
+
+  private volatile VertexCoverage allVertexTypesCovered;
   private volatile UpdateMode updateMode;
 
   /** Single volatile reference for all mutable CSR state — ensures atomic visibility to readers. */
@@ -953,10 +960,19 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       if (vertexTypes == null)
         return true; // built without filter = all types
       // Check if explicit types cover all vertex types in the schema
+      // the version is read before the scan: a type created meanwhile leaves a cached entry for the older version
+      final long version = database.getSchema().getEmbedded().getVersion();
+      final VertexCoverage cached = allVertexTypesCovered;
+      if (cached != null && cached.schemaVersion() == version)
+        return cached.coversAll();
+      boolean covered = true;
       for (final DocumentType dt : database.getSchema().getTypes())
-        if (dt instanceof VertexType && !containsType(vertexTypes, dt.getName()))
-          return false;
-      return true;
+        if (dt instanceof VertexType && !containsType(vertexTypes, dt.getName())) {
+          covered = false;
+          break;
+        }
+      allVertexTypesCovered = new VertexCoverage(version, covered);
+      return covered;
     }
     if (vertexTypes == null)
       return true; // we include all vertex types
