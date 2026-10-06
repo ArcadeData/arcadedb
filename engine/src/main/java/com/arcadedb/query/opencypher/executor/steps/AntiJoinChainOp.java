@@ -264,6 +264,8 @@ public final class AntiJoinChainOp implements CountOp {
       return 0;
     final int[] bucketIds = anyLabelled(validBuckets) ? precomputeBucketIds(provider, nodeIdUpperBound, guard) : null;
 
+    // The snapshot's adjacency holds live nodes only (a view with a pending overlay hands out no NeighborView), so the
+    // liveness test on weight[] and tail[] and its absence in pathsBetween agree.
     // tail[x]: the paths the hops after the check position add to a walk that reaches x; 0 for a node that cannot be there
     final long[] tail = new long[nodeIdUpperBound];
     for (int x = 0; x < nodeIdUpperBound; x++) {
