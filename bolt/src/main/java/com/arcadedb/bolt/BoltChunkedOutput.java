@@ -47,6 +47,8 @@ public class BoltChunkedOutput {
   /**
    * Write a complete message with chunked framing. With {@code flush} false the bytes stay in the buffer until a later
    * flush, so a stream of RECORD messages is coalesced into a few large socket writes instead of three per record.
+   * The caller must end the batch with a flushing message (SUCCESS/FAILURE) or {@link #flush()}; a slow producer
+   * therefore shows its rows to the client only when the buffer fills or the PULL ends.
    */
   public void writeMessage(final byte[] messageData, final boolean flush) throws IOException {
     int offset = 0;
