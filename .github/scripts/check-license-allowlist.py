@@ -102,6 +102,8 @@ ALLOWED_CLAUSES = {
     "BSD New license",
     "The BSD License",
     "Go License",  # com.google.re2j:re2j - the Go project's own BSD-3-Clause-style license.
+    "Revised BSD",  # com.jcraft:jsch - JCraft's BSD-3-Clause-style license.
+    "BSD 3-clause",  # org.threeten:threeten-extra - BSD-3-Clause.
     # EPL 1.0 / 2.0.
     "EPL 1.0",
     "EPL-1.0",
