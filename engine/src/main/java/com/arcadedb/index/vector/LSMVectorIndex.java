@@ -4192,6 +4192,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // thing able to certify a graph nobody built.
           writeGraphManifest(gf, finalActiveVectorIds);
           graphCertified = true;
+          // Identity, not a flag: if graphIndex was replaced since publish, admitByDemotingResidentGraph() compares
+          // this reference against the then-resident graph and finds no match.
           persistedGraphSource = builtGraph;
 
           // The replacement is certified now, so the stale pre-compaction file it supersedes is safe to drop -
@@ -5351,8 +5353,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
    *
    * @param availableHeap         what {@link VectorHeapBudget#availableHeapBytes()} would have answered
    * @param reclaimableCacheBytes what {@code PageManager.getReadCacheRAM()} would have answered
-   * @param heapReadingCountsResident whether a collection ended after the resident graph was published, i.e.
-   *                              whether {@code availableHeap} can have counted that graph as live
+   * @param heapReadingCountsResident whether a tenured-pool collection ended after the resident graph was
+   *                                  published, i.e. whether {@code availableHeap} can have counted it as live
    */
   boolean admitOnlineRebuild(final long availableHeap, final long reclaimableCacheBytes,
       final boolean heapReadingCountsResident) {
@@ -5511,6 +5513,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         graphIndex = twin;
         persistedGraphSource = null;
         demotionFailureLogged = false;
+        rebuildDeferralStreak.set(0); // admitted: a later deferral is a new problem, worth its own WARNING
         releasePooledSearchers();
       } finally {
         lock.writeLock().unlock();
@@ -5519,9 +5522,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       metrics.incrementResidentGraphDemotions();
       LogManager.instance().log(this, Level.INFO,
-          "Vector index %s keeps its graph on disk while it rebuilds: %d nodes did not fit beside the %d MB the "
-              + "on-heap graph occupies, and with that graph counted as freed (%d MB of heap that %s allows it) the "
-              + "build fits next to the persisted copy (%d MB on the heap), with about %d MB for the build. Searches read the topology from pages until a "
+          "Vector index %s keeps its graph on disk while it rebuilds: %d nodes did not fit beside the %d MB "
+              + "the on-heap graph occupies, and with that graph counted as freed (%d MB of heap that %s allows "
+              + "it) the build fits next to the persisted copy (%d MB on the heap), with about %d MB for the build. Searches read the topology from pages until a "
               + "rebuild publishes its replacement; if this one fails the next trigger retries it against the "
               + "much smaller on-disk graph (issue #7260)",
           indexName, nodes, onHeapBytes / (1024 * 1024), creditedHeap * Math.min(percent, 90) / 100 / (1024 * 1024),
