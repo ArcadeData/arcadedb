@@ -29,7 +29,6 @@ import com.arcadedb.graph.olap.GraphAlgorithms;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.VertexType;
-import com.arcadedb.utility.RidHashSet;
 
 import com.arcadedb.query.QueryEngineManager;
 
@@ -166,15 +165,26 @@ public final class PartitionedTriangleOp implements CountOp {
           else if (nu > nv)
             iv++;
           else {
+            // a value occurring m times in one range and n times in the other is m * n matches (issue #9298)
+            final int ue = runEnd(nbrs, iu, uEnd), ve = runEnd(nbrs, iv, vEnd);
             if (personPartition[nu] == country)
-              count++;
-            iu++;
-            iv++;
+              count += (long) (ue - iu) * (ve - iv);
+            iu = ue;
+            iv = ve;
           }
         }
       }
     }
     return count;
+  }
+
+  /** End (exclusive) of the run of values equal to {@code a[from]} in the sorted range {@code [from, to)}. */
+  private static int runEnd(final int[] a, final int from, final int to) {
+    final int value = a[from];
+    int end = from + 1;
+    while (end < to && a[end] == value)
+      end++;
+    return end;
   }
 
   private int[] buildPartitionMapping(final GraphTraversalProvider provider, final int nodeIdUpperBound,
@@ -273,10 +283,12 @@ public final class PartitionedTriangleOp implements CountOp {
           else if (uNeighbors[iu] > vNeighbors[iv])
             iv++;
           else {
-            if (personPartition[uNeighbors[iu]] == country)
-              total++;
-            iu++;
-            iv++;
+            final int value = uNeighbors[iu];
+            final int ue = runEnd(uNeighbors, iu, uNeighbors.length), ve = runEnd(vNeighbors, iv, vNeighbors.length);
+            if (personPartition[value] == country)
+              total += (long) (ue - iu) * (ve - iv);
+            iu = ue;
+            iv = ve;
           }
         }
       }
@@ -324,16 +336,19 @@ public final class PartitionedTriangleOp implements CountOp {
         if (vCountry == null || !vCountry.equals(uCountry))
           continue;
 
-        final RidHashSet uNeighborSet = new RidHashSet();
+        // multiplicity of each in-country neighbour of u: a parallel edge is a match of its own (issue #9298). The boxing is
+        // deliberate: this is the no-view fallback, which already materializes RIDs and a RID-keyed partition map per call
+        final HashMap<RID, Integer> uNeighborCounts = new HashMap<>();
         for (final RID nRid : uNeighbors) {
           final RID nCountry = personToPartition.get(nRid);
           if (nCountry != null && nCountry.equals(uCountry))
-            uNeighborSet.add(nRid);
+            uNeighborCounts.merge(nRid, 1, Integer::sum);
         }
         final RID[] vNeighbors = getNeighborRIDs(db, gavProvider, vRid, Vertex.DIRECTION.BOTH, triangleEdgeType);
         for (final RID wRid : vNeighbors) {
-          if (uNeighborSet.contains(wRid))
-            total++;
+          final Integer multiplicity = uNeighborCounts.get(wRid);
+          if (multiplicity != null)
+            total += multiplicity;
         }
       }
     }

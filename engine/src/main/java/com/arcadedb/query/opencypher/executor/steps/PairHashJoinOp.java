@@ -251,6 +251,34 @@ public final class PairHashJoinOp implements CountOp {
   }
 
   /**
+   * Number of times {@code key} occurs in the sorted range {@code [from, to)}. A parallel edge, or the two directions of a
+   * reciprocal pair in a BOTH view, lists the same neighbour more than once, and each is a match of its own (issue #9298).
+   */
+  private static int countOccurrences(final int[] sorted, final int from, final int to, final int key) {
+    final int idx = Arrays.binarySearch(sorted, from, to, key);
+    if (idx < 0)
+      return 0;
+    // the run is bounded by a binary search on each side, so a hub with thousands of parallel edges stays O(log n)
+    int lo = from, hi = idx;
+    while (lo < hi) {
+      final int mid = (lo + hi) >>> 1;
+      if (sorted[mid] < key)
+        lo = mid + 1;
+      else
+        hi = mid;
+    }
+    int up = idx + 1, end = to;
+    while (up < end) {
+      final int mid = (up + end) >>> 1;
+      if (sorted[mid] <= key)
+        up = mid + 1;
+      else
+        end = mid;
+    }
+    return up - lo;
+  }
+
+  /**
    * Inline build+probe: for each build node, compute (ep1, ep2) pair and immediately
    * check if the probe edge exists via binary search. No HashMap at all.
    * <p>
@@ -309,8 +337,7 @@ public final class PairHashJoinOp implements CountOp {
             for (int k = a2h1Start; k < a2h1End; k++) {
               final int ep2 = arm2Nbrs1[k];
               if (arm2Filter1 != null && !arm2Filter1.contains(bucketIds[ep2])) continue;
-              if (Arrays.binarySearch(probeNbrs, pStart, pEnd, ep2) >= 0)
-                total++;
+              total += countOccurrences(probeNbrs, pStart, pEnd, ep2);
             }
           }
         }
@@ -338,8 +365,7 @@ public final class PairHashJoinOp implements CountOp {
         if (pStart == pEnd) continue;
 
         for (final int ep2 : ep2Ids) {
-          if (Arrays.binarySearch(probeNbrs, pStart, pEnd, ep2) >= 0)
-            total++;
+          total += countOccurrences(probeNbrs, pStart, pEnd, ep2);
         }
       }
     }

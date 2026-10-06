@@ -35,6 +35,7 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.IndexBuildMode;
 import com.arcadedb.schema.IndexBuilder;
 import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.schema.Schema;
@@ -80,7 +81,7 @@ public class CreateIndexStatement extends DDLStatement {
    * as one named set so a future "do X now" key on another index type has an obvious place to be declared instead of
    * being stripped at whichever site happens to notice (issue #5765 review).
    */
-  private static final Set<String> DIRECTIVE_METADATA_KEYS = Set.of("buildGraphNow");
+  private static final Set<String> DIRECTIVE_METADATA_KEYS = Set.of("buildGraphNow", "buildMode");
 
   public Identifier                         name;
   public Identifier                         typeName;
@@ -131,6 +132,28 @@ public class CreateIndexStatement extends DDLStatement {
       return null;
 
     return stripDirectives(new JSONObject(metadata.toMap((Result) null, context)));
+  }
+
+  /**
+   * Reads the {@code buildMode} directive of the {@code METADATA} clause: {@code SORTED} populates an index over existing records with
+   * a bounded external sort and writes the ordered stream straight into compacted LSM pages, {@code DEFAULT} (also when absent) adds
+   * the records one at a time. The sorted build is what a bulk build on a large type wants (issue #9291).
+   */
+  private IndexBuildMode readBuildMode(final CommandContext context, final Schema.INDEX_TYPE indexType) {
+    if (metadata == null)
+      return IndexBuildMode.DEFAULT;
+    final Object value = metadata.toMap((Result) null, context).get("buildMode");
+    if (value == null)
+      return IndexBuildMode.DEFAULT;
+    final IndexBuildMode mode;
+    try {
+      mode = IndexBuildMode.valueOf(value.toString().toUpperCase(Locale.ROOT));
+    } catch (final IllegalArgumentException e) {
+      throw new CommandSQLParsingException("Invalid METADATA buildMode '" + value + "': expected DEFAULT or SORTED");
+    }
+    if (mode == IndexBuildMode.SORTED && indexType != Schema.INDEX_TYPE.LSM_TREE)
+      throw new CommandSQLParsingException("METADATA buildMode SORTED is supported only by UNIQUE and NOTUNIQUE indexes");
+    return mode;
   }
 
   /** Removes the statement directives from a METADATA clause in place, and hands it back for chaining. */
@@ -298,6 +321,10 @@ public class CreateIndexStatement extends DDLStatement {
       throw new CommandSQLParsingException("Invalid COLLATE in CREATE INDEX: " + e.getMessage(), e);
     }
 
+    // Validated before the existsIndex guard for the same reason as the collation above: a statement the engine cannot read is wrong
+    // whether or not the index it asks for already exists.
+    final IndexBuildMode buildMode = readBuildMode(context, indexType);
+
     if (database.getSchema().existsIndex(name.getValue())) {
       if (ifNotExists) {
         // The name this matched on is derived from the indexed property set alone, so it says nothing about what the
@@ -385,6 +412,7 @@ public class CreateIndexStatement extends DDLStatement {
 
     // Already normalised and validated above, before the existsIndex guard could return.
     builder.withCollations(collations);
+    builder.withBuildMode(buildMode);
     builder.withCallback((document, totalIndexed) -> {
       total.incrementAndGet();
       // Progress goes to the log, not to stdout: this runs inside the server process, where a dot written to
@@ -499,7 +527,7 @@ public class CreateIndexStatement extends DDLStatement {
     } else {
       // Every index type whose settings live in METADATA is handled above. Reaching here with a METADATA clause means
       // the user configured something this index type cannot use: saying so beats dropping it on the floor (#5600).
-      if (metadata != null && !metadata.toMap((Result) null, context).isEmpty())
+      if (metadata != null && !readUserMetadata(context).isEmpty())
         throw new CommandSQLParsingException(
             "METADATA is not supported by index type '" + typeAsString + "'");
       resultingIndex = builder.create();

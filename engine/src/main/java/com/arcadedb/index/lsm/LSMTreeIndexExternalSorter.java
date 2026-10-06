@@ -163,12 +163,12 @@ final class LSMTreeIndexExternalSorter implements AutoCloseable {
     return Long.MAX_VALUE;
   }
 
-  void addRun(final List<LSMTreeIndexBulkLoader.Entry> entries) throws IOException {
+  /** Writes a run the caller already ordered by (key, rid). */
+  void addSortedRun(final List<LSMTreeIndexBulkLoader.Entry> entries) throws IOException {
     if (entries.isEmpty())
       return;
 
     final long started = System.nanoTime();
-    entries.sort(LSMTreeIndexBulkLoader::compareEntries);
     final Path run = directory.resolve("run-%06d.bin".formatted(runs.size()));
     boolean complete = false;
     try (DataOutputStream output = openRunOutput(run, entries.size())) {
