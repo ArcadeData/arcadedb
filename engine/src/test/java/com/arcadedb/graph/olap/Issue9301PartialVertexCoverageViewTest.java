@@ -108,6 +108,8 @@ class Issue9301PartialVertexCoverageViewTest extends TestHelper {
       database.getSchema().createVertexType("D");
       assertThat(view.coversVertexType(null)).as("a vertex type the view does not hold appeared").isFalse();
       assertThat(GraphTraversalProviderRegistry.findProvider(database, "E")).isNull();
+      database.getSchema().dropType("D");
+      assertThat(view.coversVertexType(null)).as("the uncovered vertex type is gone").isTrue();
     } finally {
       database.command("sql", "DROP GRAPH ANALYTICAL VIEW g9301");
     }
