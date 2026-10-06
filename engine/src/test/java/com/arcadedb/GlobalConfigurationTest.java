@@ -141,6 +141,16 @@ class GlobalConfigurationTest extends TestHelper {
   }
 
   @Test
+  void loadCsvReachSettingsAreSecuritySensitive() {
+    // Pins the settings ALTER DATABASE gates behind updateSecurity: dropping one from isSecuritySensitive() must be deliberate.
+    assertThat(GlobalConfiguration.OPENCYPHER_LOAD_CSV_ALLOW_FILE_URLS.isSecuritySensitive()).isTrue();
+    assertThat(GlobalConfiguration.OPENCYPHER_LOAD_CSV_IMPORT_DIRECTORY.isSecuritySensitive()).isTrue();
+    assertThat(GlobalConfiguration.OPENCYPHER_LOAD_CSV_ALLOW_REMOTE_URLS.isSecuritySensitive()).isTrue();
+    assertThat(GlobalConfiguration.OPENCYPHER_LOAD_CSV_BLOCKED_IP_RANGES.isSecuritySensitive()).isTrue();
+    assertThat(GlobalConfiguration.POLYGLOT_COMMAND_TIMEOUT.isSecuritySensitive()).isFalse();
+  }
+
+  @Test
   void productionModeDisablesLoadCsvFileUrls() {
     final String originalMode = GlobalConfiguration.SERVER_MODE.getValueAsString();
     final boolean originalLoadCsv = GlobalConfiguration.OPENCYPHER_LOAD_CSV_ALLOW_FILE_URLS.getValueAsBoolean();
