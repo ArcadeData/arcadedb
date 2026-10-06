@@ -26,6 +26,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -77,7 +79,7 @@ class Issue9334MergeZonedDatetimeTest {
     database.transaction(() -> database.command("cypher", "MERGE (p:" + type + " {d: datetime('2021-06-15T12:30:00Z')})"));
     assertThat(count(type)).as(type + " after literal MERGE").isEqualTo(1L);
     database.transaction(() -> database.command("cypher", "MERGE (p:" + type + " {d: $d})",
-        Map.of("d", java.time.ZonedDateTime.of(2021, 6, 15, 12, 30, 0, 0, java.time.ZoneOffset.UTC))));
+        Map.of("d", ZonedDateTime.of(2021, 6, 15, 12, 30, 0, 0, ZoneOffset.UTC))));
     assertThat(count(type)).as(type + " after parameter MERGE").isEqualTo(1L);
     database.transaction(() -> database.command("cypher", "WITH datetime('2021-06-15T12:30:00Z') AS x MERGE (p:" + type + " {d: x})"));
     assertThat(count(type)).as(type + " after WITH MERGE").isEqualTo(1L);
@@ -128,5 +130,20 @@ class Issue9334MergeZonedDatetimeTest {
   void naiveOperandControlStillMerges() {
     database.transaction(() -> database.command("cypher", "MERGE (p:Z {d: localdatetime('2021-06-15T12:30:00')})"));
     assertThat(count("Z")).isEqualTo(1L);
+  }
+
+  @Test
+  void mergeOnIndexedNonTemporalKeysStillMatches() {
+    database.getSchema().createVertexType("K");
+    database.command("sql", "CREATE PROPERTY K.i INTEGER");
+    database.command("sql", "CREATE PROPERTY K.s STRING");
+    database.command("sql", "CREATE PROPERTY K.b BOOLEAN");
+    database.command("sql", "CREATE INDEX ON K (i) NOTUNIQUE");
+    database.command("sql", "CREATE INDEX ON K (s) NOTUNIQUE");
+    database.command("sql", "CREATE INDEX ON K (b) NOTUNIQUE");
+    database.transaction(() -> database.command("cypher", "CREATE (:K {i: 7, s: 'x', b: true})"));
+    for (final String props : new String[] { "i: 7", "s: 'x'", "b: true" })
+      database.transaction(() -> database.command("cypher", "MERGE (k:K {" + props + "})"));
+    assertThat(count("K")).isEqualTo(1L);
   }
 }

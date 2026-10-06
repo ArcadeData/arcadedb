@@ -354,6 +354,10 @@ public class CypherDuration implements CypherTemporalValue {
    * which is below one month, goes through a double as it always did. The previous implementation did everything in
    * {@code double}, which saturated at {@code Long.MAX_VALUE} past the long range and lost nanoseconds past 2^53
    * (issue #9338); an unrepresentable result now raises an arithmetic error.
+   * <p>
+   * An inexact quotient is truncated toward zero (1 day / 3 is one nanosecond short of 8 hours), as the double based cascade
+   * always did, whereas {@link #parse} rounds the digits past the nanosecond half away from zero: text is a decimal the user
+   * wrote, a quotient is a value the engine computed.
    */
   private CypherDuration scale(final BigDecimal numerator, final BigDecimal denominator) {
     try {

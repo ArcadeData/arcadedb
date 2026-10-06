@@ -169,4 +169,20 @@ class RetryScopeTest extends TestHelper {
     // a: reused (1). position 1: key changed, so a fresh slot (4), never the slot of "b" (2). null key: reused (3)
     assertThat(seen).containsExactly(1, 2, 3, 1, 4, 3);
   }
+
+  @Test
+  void aThrowAfterAJoinedInnerCallRealignsTheCursorOnTheOuterRetry() {
+    final AtomicInteger attempts = new AtomicInteger();
+    final AtomicInteger created = new AtomicInteger();
+    final List<Integer> seen = new ArrayList<>();
+
+    database.transaction(() -> {
+      seen.add(scope().nextSlot("outer", created::incrementAndGet));
+      database.transaction(() -> seen.add(scope().nextSlot("inner", created::incrementAndGet)));
+      if (attempts.incrementAndGet() < 2)
+        throw new ConcurrentModificationException("outer retry after the inner call");
+    }, false, 2);
+
+    assertThat(seen).containsExactly(1, 2, 1, 2);
+  }
 }

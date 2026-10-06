@@ -32,11 +32,13 @@ import java.util.function.Supplier;
  * slot and answers from it instead of performing the effect again. Slots are handed out in call order and the order
  * restarts with every attempt, so the n-th request of a retry meets the slot the n-th request of the first attempt
  * filled, provided it carries the same key. A retry that diverges (a data-dependent branch) gets a fresh slot at each
- * position whose key changed, instead of the wrong one; the positions whose key is unchanged keep theirs.
+ * position whose key changed, instead of the wrong one; the positions whose key is unchanged keep theirs. Caveat: the effect
+ * of the replaced position is applied a second time (an INCR that ran in the lost attempt stays applied), so the guarantee
+ * of exactly-once is only as good as the determinism of the retried block.
  * <p>
- * Not thread-safe: it is reached through the thread context. The scope belongs to the outermost {@code transaction()} call of the thread on that database (one scope per database, as
- * the thread context is) and ends with it, whether it commits or
- * gives up. It is reachable through {@link DatabaseContext.DatabaseContextTL#getRetryScope()}.
+ * Not thread-safe: it is reached through the thread context. The scope belongs to the outermost {@code transaction()} call
+ * of the thread on that database (one scope per database, as the thread context is) and ends with it, whether it commits
+ * or gives up. It is reachable through {@link DatabaseContext.DatabaseContextTL#getRetryScope()}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
