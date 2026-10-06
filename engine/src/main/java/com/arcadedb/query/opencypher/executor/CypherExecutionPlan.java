@@ -7737,12 +7737,15 @@ public class CypherExecutionPlan {
     final String inequalityVar1; // null if no inequality
     final String inequalityVar2;
     final String inequalityProperty; // null when the inequality compares the nodes themselves
-    String sourceLabel; // label written on the negated pattern's end nodes, null when none
-    String targetLabel;
+    final String sourceLabel; // label written on the negated pattern's end nodes, null when none
+    final String targetLabel;
 
     AntiJoinInfo(final String sourceVar, final String targetVar,
         final String antiJoinEdgeType, final Vertex.DIRECTION antiJoinDirection,
-        final String inequalityVar1, final String inequalityVar2, final String inequalityProperty) {
+        final String inequalityVar1, final String inequalityVar2, final String inequalityProperty,
+        final String sourceLabel, final String targetLabel) {
+      this.sourceLabel = sourceLabel;
+      this.targetLabel = targetLabel;
       this.sourceVar = sourceVar;
       this.targetVar = targetVar;
       this.antiJoinEdgeType = antiJoinEdgeType;
@@ -7871,11 +7874,9 @@ public class CypherExecutionPlan {
     final Vertex.DIRECTION direction = dir == Direction.OUT ? Vertex.DIRECTION.OUT
         : dir == Direction.IN ? Vertex.DIRECTION.IN : Vertex.DIRECTION.BOTH;
 
-    final AntiJoinInfo info = new AntiJoinInfo(sourceVar, targetVar, edgeType, direction,
-        inequalityVar1, inequalityVar2, inequalityProperty);
-    info.sourceLabel = first.hasLabels() ? first.getLabels().get(0) : null;
-    info.targetLabel = last.hasLabels() ? last.getLabels().get(0) : null;
-    return info;
+    return new AntiJoinInfo(sourceVar, targetVar, edgeType, direction,
+        inequalityVar1, inequalityVar2, inequalityProperty,
+        first.hasLabels() ? first.getLabels().get(0) : null, last.hasLabels() ? last.getLabels().get(0) : null);
   }
 
   /**
