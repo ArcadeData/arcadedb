@@ -582,3 +582,6 @@ config/support.json
 config/instance.id
 config/mcp-config.json
 /chats
+
+# Backward-compatibility fixtures: databases written by older releases (#9265)
+!engine/src/test/resources/compat/*.zip
