@@ -1516,19 +1516,9 @@ public final class GraphAlgorithms {
 
     // Labels live in rank space so the sorted-mode search below keeps picking the smallest label on ties; the result is
     // translated back to dense indexes at the end.
-    int[] nodeOfRank = null;
-    if (rank != null) {
-      if (rank.length != n)
-        throw new IllegalArgumentException("rank has " + rank.length + " entries, expected " + n);
-      nodeOfRank = new int[n];
-      Arrays.fill(nodeOfRank, -1);
-      for (int i = 0; i < n; i++) {
-        final int r = rank[i];
-        if (r < 0 || r >= n || nodeOfRank[r] != -1)
-          throw new IllegalArgumentException("rank is not a permutation of 0.." + (n - 1));
-        nodeOfRank[r] = i;
-      }
-    }
+    if (rank != null && rank.length != n)
+      throw new IllegalArgumentException("rank has " + rank.length + " entries, expected " + n);
+    final int[] nodeOfRank = rank != null ? invertRank(rank) : null;
 
     final int[] labels = new int[n];
     final int[] newLabels = new int[n];
@@ -1647,6 +1637,24 @@ public final class GraphAlgorithms {
       for (int i = 0; i < n; i++)
         labels[i] = nodeOfRank[labels[i]];
     return labels;
+  }
+
+  /**
+   * Inverts a tie-break rank: {@code result[rank[i]] == i}.
+   *
+   * @throws IllegalArgumentException if {@code rank} is not a permutation of {@code 0..rank.length-1}
+   */
+  public static int[] invertRank(final int[] rank) {
+    final int n = rank.length;
+    final int[] nodeOfRank = new int[n];
+    Arrays.fill(nodeOfRank, -1);
+    for (int i = 0; i < n; i++) {
+      final int r = rank[i];
+      if (r < 0 || r >= n || nodeOfRank[r] != -1)
+        throw new IllegalArgumentException("rank is not a permutation of 0.." + (n - 1));
+      nodeOfRank[r] = i;
+    }
+    return nodeOfRank;
   }
 
   /**
