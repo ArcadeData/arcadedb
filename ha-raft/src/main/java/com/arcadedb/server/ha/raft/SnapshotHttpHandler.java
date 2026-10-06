@@ -81,6 +81,7 @@ import java.util.logging.Level;
 import java.util.zip.CRC32;
 import java.util.zip.CheckedInputStream;
 import java.util.zip.ZipEntry;
+import java.util.zip.Deflater;
 import java.util.zip.ZipOutputStream;
 
 /**
@@ -801,7 +802,8 @@ public class SnapshotHttpHandler implements HttpHandler {
 
     try (final OutputStream rawOut = exchange.getOutputStream();
         final OutputStream out = new ProgressTrackingOutputStream(rawOut, lastProgressMs);
-        final ZipOutputStream zipOut = new ZipOutputStream(out)) {
+        final ZipOutputStream zipOut = newSnapshotZipStream(out,
+            httpServer.getServer().getConfiguration().getValueAsInteger(GlobalConfiguration.HA_SNAPSHOT_COMPRESSION_LEVEL))) {
 
       // Accumulate one manifest record per file actually streamed (name + size + CRC32), written as the
       // final ZIP entry so the follower can detect a truncated download (issue #4831).
@@ -865,6 +867,22 @@ public class SnapshotHttpHandler implements HttpHandler {
       if (watchdog != null)
         watchdog.cancel(false);
     }
+  }
+
+  /**
+   * The ZIP stream a snapshot is written through, compressing at {@code configuredLevel}
+   * ({@link GlobalConfiguration#HA_SNAPSHOT_COMPRESSION_LEVEL}). A level outside {@code -1..9} is logged and
+   * replaced by the JDK default rather than failing the ship. Package-private for unit testing.
+   */
+  static ZipOutputStream newSnapshotZipStream(final OutputStream out, final int configuredLevel) {
+    final ZipOutputStream zipOut = new ZipOutputStream(out);
+    if (configuredLevel >= Deflater.DEFAULT_COMPRESSION && configuredLevel <= Deflater.BEST_COMPRESSION)
+      zipOut.setLevel(configuredLevel);
+    else
+      LogManager.instance().log(SnapshotHttpHandler.class, Level.WARNING,
+          "'%s' is set to %d, outside -1..9; using the default compression level",
+          GlobalConfiguration.HA_SNAPSHOT_COMPRESSION_LEVEL.getKey(), configuredLevel);
+    return zipOut;
   }
 
   /**
