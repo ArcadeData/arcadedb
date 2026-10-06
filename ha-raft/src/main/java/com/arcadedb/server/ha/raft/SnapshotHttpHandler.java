@@ -113,6 +113,7 @@ public class SnapshotHttpHandler implements HttpHandler {
 
   /** Bounds the misconfiguration warning in {@link #sanitizedMaxConcurrent} to once per JVM. */
   private static final AtomicBoolean WARNED_MISCONFIGURED_LIMIT = new AtomicBoolean();
+  private static final AtomicBoolean WARNED_MISCONFIGURED_COMPRESSION_LEVEL = new AtomicBoolean();
 
   /** Sub-path selecting the checksums view of a database instead of its snapshot ZIP. */
   static final String CHECKSUMS_SUFFIX = "/checksums";
@@ -350,6 +351,17 @@ public class SnapshotHttpHandler implements HttpHandler {
       // to be answerable. Once the zip headers are out and the exchange is blocking, the only way left to say
       // "no" is to drop the connection, which the follower reads as a transfer that died rather than as one
       // that never started.
+      // A server CONFIGURED for the frozen-files fallback (pageSnapshotEnabled=false) queues on the per-database lock
+      // BEFORE taking the pause, as it always did, so a queued ship does not hold compaction back while it waits
+      // (code review on PR #9296). The lock is reentrant, so the streamer's own take on the fallback branch is a
+      // no-op here. A window that fails to open at runtime and falls back lands on the streamer's take instead,
+      // AFTER the pause: rare, and the pause is shared so it only delays compaction, never another ship.
+      final ReentrantLock configuredFallbackLock = db.getConfiguration().getValueAsBoolean(GlobalConfiguration.PAGE_SNAPSHOT_ENABLED) ?
+          null :
+          suspendLockFor(databaseName);
+      if (configuredFallbackLock != null)
+        configuredFallbackLock.lock();
+      try {
       final TimeSeriesCompactionPause pause;
       try {
         pause = TimeSeriesCompactionPause.acquire(db, COMPACTION_PAUSE_TIMEOUT_MS);
@@ -394,6 +406,10 @@ public class SnapshotHttpHandler implements HttpHandler {
           else
             serveSnapshotZip(exchange, db, databaseName, image, heldPause);
         });
+      }
+      } finally {
+        if (configuredFallbackLock != null)
+          configuredFallbackLock.unlock();
       }
     } finally {
       concurrencySemaphore.release();
@@ -545,7 +561,7 @@ public class SnapshotHttpHandler implements HttpHandler {
         // serveSnapshotZip's swallow, because that code never runs. It propagates out of handleRequest, which
         // declares `throws Exception` and does not catch around handleSnapshot, so Undertow ends the exchange.
         // Every release still happens on the way out: handleSnapshot's `try (pause)` closes the compaction pause,
-        // its finally unlocks the per-database suspend lock, and the outer finally releases the concurrency
+        // its finally unlocks the per-database suspend lock (when taken), and the outer finally releases the concurrency
         // semaphore. The follower sees a response with no manifest, which is the #4831 check's whole job, and
         // retries - the same recovery as a transfer that dies mid-stream, reached before any bytes were sent.
         //
@@ -907,7 +923,8 @@ public class SnapshotHttpHandler implements HttpHandler {
     else {
       final int fallback = ((Number) GlobalConfiguration.HA_SNAPSHOT_COMPRESSION_LEVEL.getDefValue()).intValue();
       zipOut.setLevel(fallback);
-      LogManager.instance().log(SnapshotHttpHandler.class, Level.WARNING,
+      if (WARNED_MISCONFIGURED_COMPRESSION_LEVEL.compareAndSet(false, true))
+        LogManager.instance().log(SnapshotHttpHandler.class, Level.WARNING,
           "'%s' is set to %d, outside -1..9; using the default (%d)",
           GlobalConfiguration.HA_SNAPSHOT_COMPRESSION_LEVEL.getKey(), level, fallback);
     }
