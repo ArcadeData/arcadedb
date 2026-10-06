@@ -99,6 +99,9 @@ class Issue9291SortedBuildTest extends TestHelper {
         .isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("buildMode");
     assertThatThrownBy(() -> database.command("sql", "CREATE INDEX ON T (q) FULL_TEXT METADATA {\"buildMode\": \"SORTED\"}"))
         .isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("SORTED");
+    // an invalid directive fails whether or not the index already exists
+    assertThatThrownBy(() -> database.command("sql", "CREATE INDEX IF NOT EXISTS ON T (p) NOTUNIQUE METADATA {\"buildMode\": \"FAST\"}"))
+        .isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("buildMode");
     // the directive never reaches the index configuration, so a statement that only carries it is not "METADATA on an index that takes none"
     database.command("sql", "CREATE INDEX ON T (q) UNIQUE METADATA {\"buildMode\": \"SORTED\"}");
     assertThat(database.getSchema().getType("T").getPolymorphicIndexByProperties("q").countEntries()).isEqualTo(1);

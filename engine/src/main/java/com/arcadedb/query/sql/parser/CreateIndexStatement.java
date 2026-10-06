@@ -321,6 +321,10 @@ public class CreateIndexStatement extends DDLStatement {
       throw new CommandSQLParsingException("Invalid COLLATE in CREATE INDEX: " + e.getMessage(), e);
     }
 
+    // Validated before the existsIndex guard for the same reason as the collation above: a statement the engine cannot read is wrong
+    // whether or not the index it asks for already exists.
+    final IndexBuildMode buildMode = readBuildMode(context, indexType);
+
     if (database.getSchema().existsIndex(name.getValue())) {
       if (ifNotExists) {
         // The name this matched on is derived from the indexed property set alone, so it says nothing about what the
@@ -408,7 +412,7 @@ public class CreateIndexStatement extends DDLStatement {
 
     // Already normalised and validated above, before the existsIndex guard could return.
     builder.withCollations(collations);
-    builder.withBuildMode(readBuildMode(context, indexType));
+    builder.withBuildMode(buildMode);
     builder.withCallback((document, totalIndexed) -> {
       total.incrementAndGet();
       // Progress goes to the log, not to stdout: this runs inside the server process, where a dot written to

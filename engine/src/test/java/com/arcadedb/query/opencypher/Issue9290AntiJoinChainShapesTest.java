@@ -114,6 +114,43 @@ class Issue9290AntiJoinChainShapesTest {
         "NOT (p2)-[:KNOWS]-(p0) AND p2 <> p0", 4, false);
   }
 
+  @Test
+  void closingHopBackToTheFirstNodeIsNotPushedDown() {
+    final String chain = "MATCH (p0:Person)-[:KNOWS]-(p1:Person)-[:KNOWS]-(p2:Person)-[:HAS_INTEREST]->(p0) ";
+    final String where = "NOT (p0)-[:KNOWS]-(p2) AND p0 <> p2";
+    assertThat(count(chain + "WHERE " + where + " RETURN count(*) AS n")).isEqualTo(count(chain + "WITH p0, p1, p2 WHERE " + where + " RETURN count(*) AS n"));
+    assertNoPushDown(chain + "WHERE " + where + " RETURN count(*) AS n");
+  }
+
+  @Test
+  void twoHopSuffixIsNotPushedDown() {
+    final String chain = "MATCH (p0:Person)-[:KNOWS]-(p1:Person)-[:KNOWS]-(p2:Person)-[:HAS_INTEREST]->(t:Tag)<-[:HAS_INTEREST]-(q:Person) ";
+    final String where = "NOT (p0)-[:KNOWS]-(p2) AND p0 <> p2";
+    assertThat(count(chain + "WHERE " + where + " RETURN count(*) AS n"))
+        .isEqualTo(count(chain + "WITH p0, p1, p2, t, q WHERE " + where + " RETURN count(*) AS n"));
+    assertNoPushDown(chain + "WHERE " + where + " RETURN count(*) AS n");
+  }
+
+  @Test
+  void suffixHopOfASubTypeOfAnEarlierHopIsNotPushedDown() {
+    database.command("sql", "CREATE EDGE TYPE KNOWS_CHILD EXTENDS KNOWS");
+    database.transaction(() -> {
+      final var persons = database.query("sql", "SELECT FROM Person ORDER BY id").stream().map(r -> r.getVertex().get()).toList();
+      persons.get(0).newEdge("KNOWS_CHILD", persons.get(3)).save();
+    });
+    final String chain = "MATCH (p0:Person)-[:KNOWS]-(p1:Person)-[:KNOWS]-(p2:Person)-[:KNOWS_CHILD]-(p3:Person) ";
+    final String where = "NOT (p0)-[:KNOWS]-(p2) AND p0 <> p2";
+    assertThat(count(chain + "WHERE " + where + " RETURN count(*) AS n"))
+        .isEqualTo(count(chain + "WITH p0, p1, p2, p3 WHERE " + where + " RETURN count(*) AS n"));
+    assertNoPushDown(chain + "WHERE " + where + " RETURN count(*) AS n");
+  }
+
+  private void assertNoPushDown(final String query) {
+    try (final ResultSet rs = database.query("opencypher", "EXPLAIN " + query)) {
+      assertThat(rs.getExecutionPlan().map(x -> x.prettyPrint(0, 2)).orElse("")).doesNotContain("ANTI-JOIN");
+    }
+  }
+
   private void assertSame(final String chain, final String vars, final String where, final long expected, final boolean pushedDown) {
     final String text = chain + "WHERE " + where + " RETURN count(*) AS n";
     assertThat(count(text)).as("as written: " + text).isEqualTo(expected);
