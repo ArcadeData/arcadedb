@@ -418,7 +418,11 @@ public class RedisQueryEngine implements QueryEngine {
     return context != null ? context.getRetryScope() : null;
   }
 
-  /** The slot of a command run outside a MULTI/EXEC block: kept across the retries of the request, null when none. */
+  /**
+   * The slot of a command run outside a MULTI/EXEC block: kept across the retries of the request, null when none. It is
+   * keyed by the command text, so a retry that reaches this position with a different command gets a fresh slot and the
+   * effect of that command is applied again instead of answering with another command's value.
+   */
   private RamSlot looseSlot(final String command) {
     final RetryScope scope = retryScope();
     return scope != null ? scope.nextSlot(command, RamSlot::new) : null;

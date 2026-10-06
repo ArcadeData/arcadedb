@@ -23,10 +23,12 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.StaticBaseServerTest;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.net.ServerSocket;
-import java.nio.file.Files;
+import java.net.Socket;
 import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -42,8 +44,10 @@ import static org.mockito.Mockito.when;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue9319GremlinBindFailureTest {
+  @TempDir
+  Path configDirectory;
 
-  private GremlinServerPlugin newPlugin(final int port, final Path configDirectory) {
+  private GremlinServerPlugin newPlugin(final int port) {
     final ArcadeDBServer server = mock(ArcadeDBServer.class);
     when(server.getConfigPath()).thenReturn(configDirectory.toString());
     final ContextConfiguration configuration = new ContextConfiguration();
@@ -56,12 +60,11 @@ class Issue9319GremlinBindFailureTest {
 
   @Test
   void aPortAlreadyInUseFailsTheStartAndAdvertisesNothing() throws Exception {
-    final Path configDirectory = Files.createTempDirectory("issue9319");
     final int port = StaticBaseServerTest.allocateFreePorts(1)[0];
-    final GremlinServerPlugin plugin = newPlugin(port, configDirectory);
+    final GremlinServerPlugin plugin = newPlugin(port);
     try (final ServerSocket holder = new ServerSocket()) {
       holder.setReuseAddress(false);
-      holder.bind(new java.net.InetSocketAddress(InetAddress.getByName("127.0.0.1"), port));
+      holder.bind(new InetSocketAddress(InetAddress.getByName("127.0.0.1"), port));
 
       assertThatThrownBy(plugin::startService).isInstanceOf(ServerException.class).hasMessageContaining(String.valueOf(port));
 
@@ -69,8 +72,6 @@ class Issue9319GremlinBindFailureTest {
       assertThat(plugin.getAdvertisedPorts()).as("nothing listens, so nothing is advertised").isEmpty();
       assertThat(gremlinExecutorThreads()).as("a failed start leaves no Gremlin executor thread running").isZero();
       plugin.stopService(); // the PluginManager stops a plugin whose start failed too: it must cope with the released state
-    } finally {
-      Files.deleteIfExists(configDirectory);
     }
   }
 
@@ -89,20 +90,18 @@ class Issue9319GremlinBindFailureTest {
 
   @Test
   void anEphemeralPortIsAdvertisedAsTheOneTheChannelBoundTo() throws Exception {
-    final Path configDirectory = Files.createTempDirectory("issue9319");
-    final GremlinServerPlugin plugin = newPlugin(0, configDirectory);
+    final GremlinServerPlugin plugin = newPlugin(0);
     try {
       plugin.startService();
 
       assertThat(plugin.isActive()).isTrue();
       final Integer advertised = plugin.getAdvertisedPorts().get("gremlin");
       assertThat(advertised).as("the port the OS chose, not the 0 of the setting").isNotNull().isPositive();
-      try (final java.net.Socket socket = new java.net.Socket(InetAddress.getByName("127.0.0.1"), advertised)) {
+      try (final Socket socket = new Socket(InetAddress.getByName("127.0.0.1"), advertised)) {
         assertThat(socket.isConnected()).isTrue();
       }
     } finally {
       plugin.stopService();
-      Files.deleteIfExists(configDirectory);
     }
     assertThat(plugin.isActive()).as("not active after stopService()").isFalse();
     assertThat(plugin.getAdvertisedPorts()).isEmpty();
