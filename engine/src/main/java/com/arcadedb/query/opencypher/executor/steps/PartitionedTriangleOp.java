@@ -29,6 +29,7 @@ import com.arcadedb.graph.olap.GraphAlgorithms;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.utility.RidIntHashMap;
 
 import com.arcadedb.query.QueryEngineManager;
 
@@ -336,20 +337,17 @@ public final class PartitionedTriangleOp implements CountOp {
         if (vCountry == null || !vCountry.equals(uCountry))
           continue;
 
-        // multiplicity of each in-country neighbour of u: a parallel edge is a match of its own (issue #9298). The boxing is
-        // deliberate: this is the no-view fallback, which already materializes RIDs and a RID-keyed partition map per call
-        final HashMap<RID, Integer> uNeighborCounts = new HashMap<>();
+        // multiplicity of each in-country neighbour of u: a parallel edge is a match of its own (issue #9298). Primitive counts,
+        // no Integer or map node per neighbour: this map is rebuilt for every (u, v) pair
+        final RidIntHashMap uNeighborCounts = new RidIntHashMap();
         for (final RID nRid : uNeighbors) {
           final RID nCountry = personToPartition.get(nRid);
           if (nCountry != null && nCountry.equals(uCountry))
-            uNeighborCounts.merge(nRid, 1, Integer::sum);
+            uNeighborCounts.add(nRid, 1);
         }
         final RID[] vNeighbors = getNeighborRIDs(db, gavProvider, vRid, Vertex.DIRECTION.BOTH, triangleEdgeType);
-        for (final RID wRid : vNeighbors) {
-          final Integer multiplicity = uNeighborCounts.get(wRid);
-          if (multiplicity != null)
-            total += multiplicity;
-        }
+        for (final RID wRid : vNeighbors)
+          total += uNeighborCounts.get(wRid, 0);
       }
     }
     return total;
