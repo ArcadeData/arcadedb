@@ -107,7 +107,7 @@ class RetryScopeTest extends TestHelper {
   }
 
   @Test
-  void anInnerRetryDoesNotRealignTheOwnersPositionAndTheOwnerKeepsItsSlots() {
+  void aNestedCallThatRetriesReusesItsOwnSlotsAndLeavesTheOwnersAlone() {
     final AtomicInteger innerAttempts = new AtomicInteger();
     final AtomicInteger created = new AtomicInteger();
     final List<Integer> seen = new ArrayList<>();
@@ -116,16 +116,13 @@ class RetryScopeTest extends TestHelper {
       seen.add(scope().nextSlot("outer", created::incrementAndGet));
       // A nested, non-joining call that retries on its own
       database.transaction(() -> {
-        seen.add(scope().nextSlot("inner" + innerAttempts.get(), created::incrementAndGet));
+        seen.add(scope().nextSlot("inner", created::incrementAndGet));
         if (innerAttempts.incrementAndGet() < 2)
           throw new ConcurrentModificationException("inner retry");
       }, false, 2);
     }, false, 1);
 
-    assertThat(seen.getFirst()).isEqualTo(1);
-    assertThat(seen).as("the outer slot is untouched and the inner retry only ever gets fresh slots").hasSize(3);
-    assertThat(seen.get(1)).isNotEqualTo(seen.get(0));
-    assertThat(seen.get(2)).isNotEqualTo(seen.get(1));
+    assertThat(seen).as("the inner retry meets the slot its first attempt filled").containsExactly(1, 2, 2);
   }
 
   @Test

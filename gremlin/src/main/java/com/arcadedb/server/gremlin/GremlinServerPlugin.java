@@ -413,7 +413,7 @@ public class GremlinServerPlugin implements ServerPlugin {
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
       } catch (final ExecutionException | TimeoutException e) {
-        LogManager.instance().log(this, Level.WARNING, "Error stopping the Gremlin Server: %s", null, e.toString());
+        LogManager.instance().log(this, Level.WARNING, "Error or timeout stopping the Gremlin Server, which may still be running: %s", null, e.toString());
       }
       gremlinServer = null;
     }

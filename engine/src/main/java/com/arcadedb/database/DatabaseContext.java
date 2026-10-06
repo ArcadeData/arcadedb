@@ -453,10 +453,15 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
       }
     }
 
-    /** An attempt of the outermost transaction() call starts over. */
-    void restartRetryScopeAttempt() {
-      if (retryScopeDepth == 1 && retryScope != null)
-        retryScope.restartAttempt();
+    /** Where the next slot of the scope will be taken from: a transaction() call records it on entry (issue #9322). */
+    int retryScopeCursor() {
+      return retryScope != null ? retryScope.cursor() : 0;
+    }
+
+    /** An attempt of a transaction() call starts over: its requests meet the slots the previous attempt filled. */
+    void restoreRetryScopeCursor(final int cursor) {
+      if (retryScope != null)
+        retryScope.restoreCursor(cursor);
     }
 
     /** See {@link #firingReadEvents}. */

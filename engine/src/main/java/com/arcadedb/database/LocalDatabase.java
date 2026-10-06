@@ -2060,6 +2060,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
     ArcadeDBException lastException = null;
 
+    // Where this call's slots begin, so each of its own retries meets the slots its first attempt filled
+    final int retryScopeBase = context != null ? context.retryScopeCursor() : 0;
+
     if (attempts < 1)
       attempts = 1;
 
@@ -2072,7 +2075,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       boolean createdNewTx = true;
 
       if (retry > 0 && context != null)
-        context.restartRetryScopeAttempt();
+        context.restoreRetryScopeCursor(retryScopeBase);
 
       // Declared OUTSIDE the try so the catch can read them; sampled just after begin(), so they refer to the
       // transaction this attempt's block actually runs in. See the guard in the catch below (#7916).
