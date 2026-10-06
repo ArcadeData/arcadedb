@@ -145,9 +145,8 @@ public class MaterializedViewBuilder {
    */
   public String toSQL() {
     validate();
-    if (refreshMode != MaterializedViewRefreshMode.PERIODIC && refreshInterval > 0)
-      throw new SchemaException("A refresh interval of " + refreshInterval + "ms on a " + refreshMode
-          + " materialized view has no CREATE MATERIALIZED VIEW expression: only REFRESH EVERY (PERIODIC) carries an interval");
+    // Rendered first so an inexpressible refresh fails before anything else is built
+    final String refreshClause = renderRefreshClause(refreshMode, refreshInterval);
 
     final StringBuilder sql = new StringBuilder(64 + query.length());
     sql.append("CREATE MATERIALIZED VIEW ");
@@ -156,11 +155,7 @@ public class MaterializedViewBuilder {
     sql.append(Identifier.quote(name)).append(" AS ");
     appendQuery(sql, query);
 
-    switch (refreshMode) {
-    case MANUAL -> sql.append(" REFRESH MANUAL");
-    case INCREMENTAL -> sql.append(" REFRESH INCREMENTAL");
-    case PERIODIC -> sql.append(" REFRESH EVERY ").append(renderInterval(refreshInterval));
-    }
+    sql.append(' ').append(refreshClause);
 
     if (buckets > 0)
       sql.append(" BUCKETS ").append(buckets);
@@ -187,6 +182,38 @@ public class MaterializedViewBuilder {
   }
 
   /**
+   * Refuses a refresh mode and interval pair that no {@code REFRESH} clause can express: a null mode, a negative interval,
+   * and an interval on a mode other than {@link MaterializedViewRefreshMode#PERIODIC} (only {@code REFRESH EVERY} carries
+   * one). Shared by {@link #renderRefreshClause} and by the embedded {@code LocalSchema.alterMaterializedView()}, so an
+   * alter refuses the same arguments embedded and remotely (issue #8726) instead of storing an interval nothing reads.
+   */
+  public static void validateRefresh(final MaterializedViewRefreshMode mode, final long intervalMs) {
+    if (mode == null)
+      throw new IllegalArgumentException("Materialized view refresh mode is required");
+    if (intervalMs < 0)
+      throw new IllegalArgumentException("Materialized view refresh interval cannot be negative, was " + intervalMs + "ms");
+    if (mode != MaterializedViewRefreshMode.PERIODIC && intervalMs > 0)
+      throw new SchemaException("A refresh interval of " + intervalMs + "ms on a " + mode
+          + " materialized view has no SQL expression: only REFRESH EVERY (PERIODIC) carries an interval");
+  }
+
+  /**
+   * The {@code REFRESH MANUAL | INCREMENTAL | EVERY <count> <unit>} clause shared by {@code CREATE MATERIALIZED VIEW}
+   * ({@link #toSQL()}) and {@code ALTER MATERIALIZED VIEW} (the remote {@code Schema.alterMaterializedView()}, issue
+   * #8726). Throws, rather than rendering something the server would read differently, for every pair
+   * {@link #validateRefresh} refuses and for a PERIODIC interval that is not a whole number of seconds or does not fit
+   * the grammar's integer literal.
+   */
+  public static String renderRefreshClause(final MaterializedViewRefreshMode mode, final long intervalMs) {
+    validateRefresh(mode, intervalMs);
+    return switch (mode) {
+      case MANUAL -> "REFRESH MANUAL";
+      case INCREMENTAL -> "REFRESH INCREMENTAL";
+      case PERIODIC -> "REFRESH EVERY " + renderInterval(intervalMs);
+    };
+  }
+
+  /**
    * {@code <count> <unit>} using the largest of HOUR/MINUTE/SECOND that divides the interval exactly. Zero renders as
    * {@code 0 SECOND}, which the statement reads as PERIODIC with no schedule - what an embedded {@code create()} with a
    * zero interval builds.
@@ -202,7 +229,7 @@ public class MaterializedViewBuilder {
         return count + " " + SQL_UNIT_NAMES[i];
       }
     throw new SchemaException("A refresh interval of " + millis
-        + "ms has no CREATE MATERIALIZED VIEW expression: the value must be a whole number of seconds and fit REFRESH EVERY's integer literal");
+        + "ms has no SQL expression: the value must be a whole number of seconds and fit REFRESH EVERY's integer literal");
   }
 
   /**
