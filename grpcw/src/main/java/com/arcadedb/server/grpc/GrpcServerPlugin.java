@@ -107,7 +107,8 @@ public class GrpcServerPlugin implements ServerPlugin {
         startStandardServer(config);
         startXdsServer(config);
       }
-      default -> LogManager.instance().log(this, Level.SEVERE, "Invalid gRPC mode: %s. Use 'standard', 'xds', or 'both'", mode);
+      default -> throw new ConfigurationException(
+          "Invalid gRPC mode '" + mode + "' in " + GlobalConfiguration.GRPC_MODE.getKey() + ": use 'standard', 'xds' or 'both'");
       }
 
       registerShutdownHook();
