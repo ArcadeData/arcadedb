@@ -106,6 +106,30 @@ class GrpcTimeSeriesSupportTest {
         });
   }
 
+  /**
+   * Issue #8647, the gRPC sibling of the line protocol's empty-tag-value rule: an empty-string tag value is refused,
+   * as {@code cpu,host= value=1} is refused over HTTP, instead of being stored as {@code host=""}. An unset value is
+   * still an absent tag.
+   */
+  @Test
+  void anEmptyTagValueIsRefused() {
+    final TimeSeriesPoint emptyValue = point()
+        .putTags("host", GrpcValue.newBuilder().setStringValue("").build())
+        .build();
+
+    assertThatThrownBy(() -> GrpcTimeSeriesSupport.toSamples(List.of(emptyValue), "weather",
+        TimeSeriesPrecision.TS_PRECISION_MILLISECONDS))
+        .isInstanceOf(StatusRuntimeException.class)
+        .satisfies(e -> {
+          assertThat(((StatusRuntimeException) e).getStatus().getCode()).isEqualTo(Status.Code.INVALID_ARGUMENT);
+          assertThat(((StatusRuntimeException) e).getStatus().getDescription()).contains("Tag 'host'").contains("empty value");
+        });
+
+    final TimeSeriesPoint unsetValue = point().putTags("host", GrpcValue.getDefaultInstance()).build();
+    assertThat(GrpcTimeSeriesSupport.toSamples(List.of(unsetValue), "weather",
+        TimeSeriesPrecision.TS_PRECISION_MILLISECONDS).getFirst().getTags()).isEmpty();
+  }
+
   @Test
   void anEmptyFieldKeyIsRefused() {
     final TimeSeriesPoint emptyKey = point()

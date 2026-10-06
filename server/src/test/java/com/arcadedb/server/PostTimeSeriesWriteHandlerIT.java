@@ -244,6 +244,35 @@ class PostTimeSeriesWriteHandlerIT extends BaseGraphServerTest {
     });
   }
 
+  /**
+   * Issue #8647: a line with an empty tag value ({@code host=}) was stored with {@code host=""} and answered 204. The
+   * InfluxDB line protocol rejects it, so it must be reported as malformed and nothing stored for it.
+   */
+  @Test
+  void emptyTagValueIsReportedAsMalformedNotStored() throws Exception {
+    testEachServer(serverIndex -> {
+      command(serverIndex,
+          "CREATE TIMESERIES TYPE pw_emptytagvalue TIMESTAMP ts TAGS (host STRING) FIELDS (value DOUBLE)");
+
+      final HttpURLConnection connection = openWriteConnection(serverIndex, "ms");
+      try (final OutputStream os = connection.getOutputStream()) {
+        os.write("pw_emptytagvalue,host= value=1 1700000000000\n".getBytes(StandardCharsets.UTF_8));
+        os.flush();
+      }
+
+      assertThat(connection.getResponseCode()).isEqualTo(400);
+
+      final JSONObject error = new JSONObject(readError(connection));
+      assertThat(error.getString("error")).contains("unable to parse 1 line");
+      assertThat(error.getInt("written")).isEqualTo(0);
+      assertThat(error.getInt("dropped")).isEqualTo(1);
+      assertThat(error.getJSONArray("malformedLines").getInt(0)).isEqualTo(1);
+
+      final JSONObject result = executeCommand(serverIndex, "sql", "SELECT FROM pw_emptytagvalue");
+      assertThat(result.getJSONObject("result").getJSONArray("records").length()).isEqualTo(0);
+    });
+  }
+
   @Test
   void onlyMalformedLinesAreReportedNot204() throws Exception {
     testEachServer(serverIndex -> {
