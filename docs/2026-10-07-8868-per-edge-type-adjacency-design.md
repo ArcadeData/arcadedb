@@ -207,8 +207,13 @@ One drain **step** is one transaction over one legacy chunk:
    `(-1, -1)`.
 
 Since the drain takes the oldest entries first, everything in an archive is **older** than everything still in the
-legacy part. Each committed state holds every entry exactly once, in the legacy part or in an archive. A drain step
-that loses a conflict is retried. A crash between steps leaves a valid, partly drained vertex.
+legacy part.
+
+**Invariant: every committed state holds each entry exactly once**, either in the legacy part or in an archive, and
+never in both. Copying a tail's entries (step 3) and unlinking and deleting that tail (step 4) happen in **one**
+transaction, so a commit publishes both and a rollback, a lost conflict or a crash publishes neither. WAL recovery
+replays only committed transactions. A drain step that loses a conflict is retried. A crash between steps leaves a
+valid, partly drained vertex, and the next drain resumes from the current tail.
 
 **Open decision D1 (surface).** How the drain is started: a Java API plus a SQL command (for example
 `REBUILD EDGE LISTS [TYPE <vertexType>]`), and/or `CHECK DATABASE FIX`. This document recommends an explicit command
@@ -301,6 +306,14 @@ ordered rolling upgrade. It cannot help in two cases, which the release note mus
 - A node below 26.12.1 that **joins** later, or installs a snapshot. Once any type-8 record exists, every node needs
   26.12.1 or later.
 
+Neither case causes a **divergence**. The pages are byte-identical on every node, and the older node fails closed
+with `Cannot find record type '8'` on the converted vertices only. Refusing such a node at join time would need a
+membership gate that does not exist today, and the node usually still serves everything else. So the decision is a
+**loud warning** instead of a refusal. In #9268, whenever the setting is ON for a database, the capability monitor
+logs at WARNING, at most once per minute per peer, every configured peer that does not advertise
+`graph-edge-type-directory`. The message names the peer and says that it cannot read converted vertices. A join
+refusal stays possible later, if operators ask for it.
+
 Every unknown peer counts as "no" (`PeerCapabilityRegistry`), so an unreachable node keeps the cluster on type 7.
 That is safe, and a conversion is only an optimization.
 
@@ -316,9 +329,11 @@ Requirement for #9268: a test that exports a database containing converted verti
 OFF, and checks counts, filtered and unfiltered walks, and `isConnectedTo`. This is the closest an in-tree test can
 come to the older importer.
 
-**Rejected for now: a "demote" command** that rebuilds a type-7 directory from a type-8 root. It is O(degree) per
+**Not in 27.1.1: a "demote" command** that rebuilds a type-7 directory from a type-8 root. It is O(degree) per
 vertex, needs its own conflict handling, and is only useful for going below 26.12.1, which export/import already
-covers. **Open decision D4:** revisit it in #9263, when type 8 becomes the default and downgrades become common.
+covers while the feature is opt-in. Export/import is heavy for a whole database, however, and default-ON makes the
+format change reach users who never asked for it. **Open decision D4:** the demote command, or an equivalent
+in-place downgrade path, is a **prerequisite of #9263** (default ON), not a someday item.
 
 ### 2.8 `GRAPH_EDGE_APPEND_MERGE` and concurrent writers
 
@@ -329,6 +344,15 @@ covers. **Open decision D4:** revisit it in #9263, when type 8 becomes the defau
 | Head flips of the **same** key and slot | Same sub-directory | A real conflict, retried. The same as type 7 today. |
 | First edge of two new types, or a key promotion, at the same time | The root | A real conflict, retried. Once per (vertex, edge bucket), plus once per key promotion. |
 | A drain step and an append into the drained chunk | The chunk (anchored by the drain) | A real conflict, retried. |
+
+**Root contention.** A root rewrite happens once per (vertex, edge bucket) when the key is created, once per key
+promotion, and once at the end of a drain. After a conversion, a burst of first appends of several new types on the
+same hot vertex therefore conflicts on the root. Each loser gets a retryable `ConcurrentModificationException` and the
+normal transaction retry handles it. On the retry the key exists, so the append takes the fast path and does not
+touch the root again. The number of root conflicts is therefore bounded by the number of distinct edge buckets at the
+vertex, not by the append rate. If #9268's concurrency test shows this burst matters, the mitigation is to create, in
+the converting transaction itself, the keys of every edge bucket seen in the legacy part's head chunk. That is one
+bounded read, and it needs no format change.
 
 Every root and sub-directory rewrite poisons its page for the edge-append merge, as `StripedEdgeList.updateSlot` does,
 and a new root, sub-directory or archive chunk is poisoned on creation, as `LocalDatabase.createRecord` does for
@@ -397,6 +421,14 @@ or special-cases the type-7 directory today. #9267 (read) and #9268 (write) each
   (a peer without the token keeps the leader on type 7, all peers with it allow type 8); export/import with the
   setting OFF (2.7); the benchmark on the #8417 shape (883k IN edges, one `Parent`), before conversion, after
   conversion, and after the drain.
+- **Regression guards carried by #9267 and #9268** (structural assertions on the chains visited, never wall-clock
+  time):
+  - after a full drain, `isConnectedTo(n, X)` on the hot type X visits at most one chain per generation of X's key
+    plus none of the legacy part, the same O(degree/stripes) as type 7. This is the regression the adversarial pass
+    found in an earlier draft of this document;
+  - a filtered hop on a single-type key never opens a chain of another key;
+  - a drain killed between steps, and one killed inside a step (rollback), followed by `CHECK DATABASE`: no error,
+    and every edge counted exactly once by filtered and unfiltered walks.
 - **Old reader fails closed:** a test that writes the type-8 bytes and opens them through a `RecordFactory` that knows
   only types `0..7`, so the claim in 2.2 is executed, not only argued.
 
@@ -407,8 +439,8 @@ or special-cases the type-7 directory today. #9267 (read) and #9268 (write) each
 | #9265 | Add the 26.10.1 fixture (section 5). |
 | #9266 | No change. The set of supported hash versions still matters for type 7, and type 8 needs no new hash version. |
 | #9267 | Add: format validation (2.3.6), the token name `graph-edge-type-directory`, `DatabaseInternal.canWriteRecordType`, decision D3 (whether the append path ships in the reader release), and the site table of section 4. |
-| #9268 | Add: the drain (2.3.5) and its command (D1), key promotion (2.3.4), the export/import test (2.7), the concurrency tests (2.8), and the three benchmark points. |
-| #9263 | Add D4 (demote command) and D2 (weighted cross-type order), both to be decided after the soak. |
+| #9268 | Add: the drain (2.3.5) and its command (D1), key promotion (2.3.4), the export/import test (2.7), the concurrency tests (2.8), the missing-token WARNING (2.6), the regression guards of section 5, and the three benchmark points. |
+| #9263 | Add D4 (demote command) as a prerequisite, and D2 (weighted cross-type order) to decide after the soak. |
 
 ## 7. Open decisions for the maintainer
 
@@ -417,5 +449,5 @@ or special-cases the type-7 directory today. #9267 (read) and #9268 (write) each
 | D1 | How the drain is started | Explicit SQL command plus Java API in #9268, no background task |
 | D2 | Cross-type order of an unfiltered walk | Plain round-robin, weighted rotation only on demand |
 | D3 | Does 26.12.1 (reader) also append to an already converted vertex? | Yes. Otherwise a one-release downgrade makes converted vertices read-only |
-| D4 | Demote command | Not now. Export/import is the documented downgrade. Revisit in #9263 |
+| D4 | Demote command | Not in 27.1.1, where export/import is the documented downgrade. A **prerequisite of #9263** (default ON) |
 | D5 | Is the whole project worth steps 3 to 5 at `severity:minor`? After #8870 the #8417 case is about 76 ms for 50 hops. | Maintainer's call. This document makes the design ready, not mandatory |
