@@ -104,7 +104,7 @@ class Issue9319GremlinBindFailureTest {
       plugin.stopService();
       Files.deleteIfExists(configDirectory);
     }
-    assertThat(plugin.isActive()).isFalse();
+    assertThat(plugin.isActive()).as("not active after stopService()").isFalse();
     assertThat(plugin.getAdvertisedPorts()).isEmpty();
   }
 }

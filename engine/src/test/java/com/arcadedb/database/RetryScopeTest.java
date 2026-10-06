@@ -127,4 +127,29 @@ class RetryScopeTest extends TestHelper {
     assertThat(seen.get(1)).isNotEqualTo(seen.get(0));
     assertThat(seen.get(2)).isNotEqualTo(seen.get(1));
   }
+
+  @Test
+  void aThreadThatNeverTouchedTheDatabaseStillGetsTheScope() throws Exception {
+    final AtomicInteger attempts = new AtomicInteger();
+    final AtomicInteger created = new AtomicInteger();
+    final List<Integer> seen = new ArrayList<>();
+    final Throwable[] failure = new Throwable[1];
+
+    final Thread thread = new Thread(() -> {
+      try {
+        database.transaction(() -> {
+          seen.add(scope().nextSlot("k", created::incrementAndGet));
+          if (attempts.incrementAndGet() < 2)
+            throw new ConcurrentModificationException("retry");
+        }, false, 2);
+      } catch (final Throwable t) {
+        failure[0] = t;
+      }
+    });
+    thread.start();
+    thread.join();
+
+    assertThat(failure[0]).isNull();
+    assertThat(seen).as("the retry on a fresh thread meets the slot of its first attempt").containsExactly(1, 1);
+  }
 }

@@ -162,4 +162,18 @@ class Issue9338DurationFamilyTest {
     assertThat(scalar("RETURN toString(duration({hours: 1}) + localtime('12:00')) AS r")).isEqualTo("13:00");
     expectError("RETURN duration({days: 1}) - date('2024-01-01')");
   }
+
+  @Test
+  void divisionByAnIntegerKeepsExactnessAndTruncatesTheRemainder() {
+    assertThat(scalar("RETURN toString(duration({days: 4, hours: 2}) / 2) AS r")).isEqualTo("P2DT1H");
+    // an inexact quotient truncates (as the double based cascade always did): 1 day / 3 is one nanosecond short of 8h
+    assertThat(scalar("RETURN toString(duration({days: 1}) / 3) AS r")).isEqualTo("PT7H59M59.999999999S");
+    assertThat(scalar("RETURN toString(duration({seconds: 1}) / 3) AS r")).isEqualTo("PT0.333333333S");
+  }
+
+  @Test
+  void parsingRoundsTheDigitsBeyondTheNanosecondHalfUp() {
+    assertThat(scalar("RETURN toString(duration('PT0.0000000015S')) AS r")).isEqualTo("PT0.000000002S");
+    assertThat(scalar("RETURN toString(duration('PT0.0000000014S')) AS r")).isEqualTo("PT0.000000001S");
+  }
 }
