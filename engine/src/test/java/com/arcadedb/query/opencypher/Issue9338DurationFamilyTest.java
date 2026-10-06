@@ -248,4 +248,10 @@ class Issue9338DurationFamilyTest {
     expectError("RETURN duration({days: 1}) / 0", ArithmeticErrorException.class);
     expectError("RETURN duration({days: 1}) / 0.0", ArithmeticErrorException.class);
   }
+
+  @Test
+  void aFractionThatRoundsUpToAFullSecondIsCarried() {
+    assertThat(scalar("RETURN toString(duration('PT0.9999999999S')) AS r")).isEqualTo("PT1S");
+    assertThat(scalar("RETURN toString(duration('PT1.9999999999S')) AS r")).isEqualTo("PT2S");
+  }
 }
