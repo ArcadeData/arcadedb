@@ -32,7 +32,6 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.utility.IntIntHashMap;
 
 import java.math.BigDecimal;
-import java.math.BigInteger;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -230,24 +229,22 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
     });
   }
 
-  private static boolean isFixedIntegral(final Number n) {
-    return n instanceof Long || n instanceof Integer || n instanceof Short || n instanceof Byte;
-  }
-
-  private static boolean isFinite(final Number n) {
-    return !(n instanceof Double d && !Double.isFinite(d)) && !(n instanceof Float f && !Float.isFinite(f));
-  }
-
   /**
    * Ranks the {@code n} dense nodes by the value of {@code property}: {@code rank[i]} is the position of node {@code i}
    * in ascending property order. Nodes with a missing value sort last, and equal values fall back to the dense index so
    * the result is always a permutation. Reads one vertex record per node, so the cost is O(n) record loads on top of
    * the algorithm itself.
+   * <p>
+   * Every value is normalised to a single key type before sorting, so the comparator is a consistent total order whatever
+   * mix of numeric classes the property holds: fixed-width integrals sort on a {@code long}, any other numeric mix on
+   * (NaN/Infinity class, exact {@link BigDecimal}), and non-numbers must all share one {@link Comparable} class.
    */
   @SuppressWarnings("unchecked")
   private static int[] computeTieBreakRank(final int n, final IntFunction<Object> valueOf, final String property) {
     final Object[] values = new Object[n];
     Object first = null;
+    boolean allNumbers = true;
+    boolean allFixedIntegral = true;
     for (int i = 0; i < n; i++) {
       final Object value = valueOf.apply(i);
       if (value != null) {
@@ -255,11 +252,37 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
           throw new IllegalArgumentException("Property '" + property + "' of node " + i + " is not comparable, cannot be used as tieBreakProperty");
         if (first == null)
           first = value;
-        else if (!(first instanceof Number && value instanceof Number) && first.getClass() != value.getClass())
+        if (!(value instanceof Number num)) {
+          allNumbers = false;
+          allFixedIntegral = false;
+        } else if (!isFixedIntegral(num))
+          allFixedIntegral = false;
+        if ((first instanceof Number) != (value instanceof Number) || (!(first instanceof Number) && first.getClass() != value.getClass()))
           throw new IllegalArgumentException("Property '" + property + "' of node " + i + " is a " + value.getClass().getSimpleName()
               + " but others are " + first.getClass().getSimpleName() + ", cannot be used as tieBreakProperty");
       }
       values[i] = value;
+    }
+
+    // One normalised key per node, computed once: no per-comparison parsing or allocation
+    final long[] longKeys = allNumbers && allFixedIntegral ? new long[n] : null;
+    final byte[] numClass = allNumbers && !allFixedIntegral ? new byte[n] : null;
+    final BigDecimal[] decKeys = numClass != null ? new BigDecimal[n] : null;
+    for (int i = 0; i < n; i++) {
+      if (values[i] == null)
+        continue;
+      if (longKeys != null)
+        longKeys[i] = ((Number) values[i]).longValue();
+      else if (numClass != null) {
+        final Number num = (Number) values[i];
+        if (isFinite(num)) {
+          numClass[i] = 1;
+          decKeys[i] = new BigDecimal(num.toString());
+        } else {
+          final double d = num.doubleValue();
+          numClass[i] = (byte) (Double.isNaN(d) ? 3 : d > 0 ? 2 : 0);
+        }
+      }
     }
 
     final Integer[] order = new Integer[n];
@@ -273,19 +296,13 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
           return va == null ? 1 : -1;
       } else {
         final int cmp;
-        if (va instanceof Number na && vb instanceof Number nb) {
-          // Long.compare only for fixed-width integrals; anything else finite is compared exactly (a double cannot hold
-          // every long, longValue() drops fractions and overflows BigInteger). NaN/Infinity fall back to Double.compare.
-          if (isFixedIntegral(na) && isFixedIntegral(nb))
-            cmp = Long.compare(na.longValue(), nb.longValue());
-          else if (isFinite(na) && isFinite(nb) && (na.getClass() != nb.getClass() || na instanceof BigDecimal || na instanceof BigInteger))
-            cmp = new BigDecimal(na.toString()).compareTo(new BigDecimal(nb.toString()));
-          else
-            cmp = Double.compare(na.doubleValue(), nb.doubleValue());
-        } else if (va.getClass() == vb.getClass())
-          cmp = ((Comparable<Object>) va).compareTo(vb);
+        if (longKeys != null)
+          cmp = Long.compare(longKeys[a], longKeys[b]);
+        else if (numClass != null)
+          cmp = numClass[a] != numClass[b] ? Byte.compare(numClass[a], numClass[b]) :
+              numClass[a] == 1 ? decKeys[a].compareTo(decKeys[b]) : 0;
         else
-          throw new IllegalArgumentException("Property '" + property + "' has values of different types, cannot be used as tieBreakProperty");
+          cmp = ((Comparable<Object>) va).compareTo(vb);
         if (cmp != 0)
           return cmp;
       }
@@ -296,5 +313,13 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
     for (int r = 0; r < n; r++)
       rank[order[r]] = r;
     return rank;
+  }
+
+  private static boolean isFixedIntegral(final Number n) {
+    return n instanceof Long || n instanceof Integer || n instanceof Short || n instanceof Byte;
+  }
+
+  private static boolean isFinite(final Number n) {
+    return !(n instanceof Double d && !Double.isFinite(d)) && !(n instanceof Float f && !Float.isFinite(f));
   }
 }
