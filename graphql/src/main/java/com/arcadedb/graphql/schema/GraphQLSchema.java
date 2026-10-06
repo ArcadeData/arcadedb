@@ -495,17 +495,17 @@ public class GraphQLSchema {
         final String fieldName = sub.getFieldName();
         final String responseKey = sub.getName();
         if ("types".equals(fieldName))
-          schemaResult.setProperty(responseKey, buildTypeList(sub, fragments));
+          setMerged(schemaResult, responseKey, buildTypeList(sub, fragments));
         else if ("queryType".equals(fieldName))
-          schemaResult.setProperty(responseKey, buildQueryTypeResult(sub.getSelectionSet(), fragments, 0));
+          setMerged(schemaResult, responseKey, buildQueryTypeResult(sub.getSelectionSet(), fragments, 0));
         else if ("mutationType".equals(fieldName))
-          schemaResult.setProperty(responseKey, null);
+          setMerged(schemaResult, responseKey, null);
         else if ("subscriptionType".equals(fieldName))
-          schemaResult.setProperty(responseKey, null);
+          setMerged(schemaResult, responseKey, null);
         else if ("directives".equals(fieldName))
-          schemaResult.setProperty(responseKey, Collections.emptyList());
+          setMerged(schemaResult, responseKey, Collections.emptyList());
         else if ("__typename".equals(fieldName))
-          schemaResult.setProperty(responseKey, "__Schema");
+          setMerged(schemaResult, responseKey, "__Schema");
       }
     }
 
@@ -734,15 +734,15 @@ public class GraphQLSchema {
       final String fieldName = sub.getFieldName();
       final String responseKey = sub.getName();
       if ("name".equals(fieldName))
-        result.setProperty(responseKey, name);
+        setMerged(result, responseKey, name);
       else if ("kind".equals(fieldName))
-        result.setProperty(responseKey, kind);
+        setMerged(result, responseKey, kind);
       else if ("fields".equals(fieldName))
-        result.setProperty(responseKey, fields != null ? fields.apply(sub) : null);
+        setMerged(result, responseKey, fields != null ? fields.apply(sub) : null);
       else if ("ofType".equals(fieldName))
-        result.setProperty(responseKey, ofType != null ? ofType.apply(sub.getSelectionSet()) : null);
+        setMerged(result, responseKey, ofType != null ? ofType.apply(sub.getSelectionSet()) : null);
       else if ("__typename".equals(fieldName))
-        result.setProperty(responseKey, "__Type");
+        setMerged(result, responseKey, "__Type");
     }
     return result;
   }
@@ -770,11 +770,11 @@ public class GraphQLSchema {
     for (final Selection sub : fieldSelections) {
       final String fieldName = sub.getFieldName();
       if ("name".equals(fieldName))
-        result.setProperty(sub.getName(), name);
+        setMerged(result, sub.getName(), name);
       else if ("type".equals(fieldName))
-        result.setProperty(sub.getName(), type.apply(sub.getSelectionSet()));
+        setMerged(result, sub.getName(), type.apply(sub.getSelectionSet()));
       else if ("__typename".equals(fieldName))
-        result.setProperty(sub.getName(), "__Field");
+        setMerged(result, sub.getName(), "__Field");
     }
     return result;
   }
@@ -789,6 +789,36 @@ public class GraphQLSchema {
           "Introspection query nests 'fields' more than " + MAX_INTROSPECTION_FIELDS_DEPTH + " levels deep");
     final SelectionSet fieldSelectionSet = fieldsSelection.getSelectionSet();
     return fieldSelectionSet != null ? fragments.expand(fieldSelectionSet.getSelections(), "__Field"::equals) : null;
+  }
+
+  /**
+   * Writes one introspection value under its response key, merging it into what an earlier selection with the same key already
+   * wrote rather than replacing it (issue #8744). The specification (CollectFields / MergeSelectionSets) merges the
+   * sub-selections of fields sharing a response key, which a fragment spread makes ordinary: {@code fields { name } ...F} with
+   * {@code F} selecting {@code fields { type { name } }}. Every introspection value is a pure function of the schema and of the
+   * selection it was built from, so merging the two built values is the same as building once from the merged selections: two
+   * objects merge key by key, two lists (built over the same types or fields, in the same order) element by element.
+   * <p>
+   * Anything else is two selections under one key that do not resolve to the same field ({@code x: name x: kind}), a validation
+   * error in the specification that this module does not perform: the first one written is kept, as {@link GraphQLResultSet}
+   * does for data selections.
+   */
+  private static void setMerged(final ResultInternal target, final String responseKey, final Object value) {
+    if (!target.hasProperty(responseKey))
+      target.setProperty(responseKey, value);
+    else
+      mergeInto(target.getProperty(responseKey), value);
+  }
+
+  private static void mergeInto(final Object existing, final Object value) {
+    if (existing instanceof ResultInternal existingObject && value instanceof ResultInternal valueObject) {
+      for (final String key : valueObject.getPropertyNames())
+        setMerged(existingObject, key, valueObject.getProperty(key));
+    } else if (existing instanceof List<?> existingList && value instanceof List<?> valueList
+        && existingList.size() == valueList.size()) {
+      for (int i = 0; i < existingList.size(); i++)
+        mergeInto(existingList.get(i), valueList.get(i));
+    }
   }
 
   private static String mapDatabaseTypeToGraphQL(final Type type) {
