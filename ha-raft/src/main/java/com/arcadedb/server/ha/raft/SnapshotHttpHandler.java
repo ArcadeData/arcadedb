@@ -362,51 +362,51 @@ public class SnapshotHttpHandler implements HttpHandler {
       if (configuredFallbackLock != null)
         configuredFallbackLock.lock();
       try {
-      final TimeSeriesCompactionPause pause;
-      try {
-        pause = TimeSeriesCompactionPause.acquire(db, COMPACTION_PAUSE_TIMEOUT_MS);
-      } catch (final RuntimeException e) {
-        LogManager.instance().log(this, Level.WARNING,
-            "Snapshot of '%s' refused: TimeSeries compaction could not be paused (%s)", databaseName, e.getMessage());
-        exchange.setStatusCode(503);
-        exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
-        exchange.getResponseSender().send("{\"error\":\"TimeSeries compaction could not be paused for the snapshot\"}");
-        return;
-      }
+        final TimeSeriesCompactionPause pause;
+        try {
+          pause = TimeSeriesCompactionPause.acquire(db, COMPACTION_PAUSE_TIMEOUT_MS);
+        } catch (final RuntimeException e) {
+          LogManager.instance().log(this, Level.WARNING,
+              "Snapshot of '%s' refused: TimeSeries compaction could not be paused (%s)", databaseName, e.getMessage());
+          exchange.setStatusCode(503);
+          exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
+          exchange.getResponseSender().send("{\"error\":\"TimeSeries compaction could not be paused for the snapshot\"}");
+          return;
+        }
 
-      final String safeName = databaseName.replaceAll("[^a-zA-Z0-9._-]", "_");
-      exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/zip");
-      exchange.getResponseHeaders().put(Headers.CONTENT_DISPOSITION,
-          "attachment; filename=\"" + safeName + "-snapshot.zip\"");
-      // Advertise that this stream ends with a completeness manifest (issue #4831) so the follower
-      // requires it and rejects a download truncated at a ZIP-entry boundary.
-      exchange.getResponseHeaders().put(new HttpString(SnapshotManager.MANIFEST_HEADER), "1");
-      // The follower refuses a copy behind the entries it already applied to the one it is replacing (issue #8454),
-      // and does not re-apply any TX or schema entry at or below this index once it installs the copy (issue #8579):
-      // the index must never run ahead of what the captured copy carries.
-      if (appliedIndex != Long.MIN_VALUE)
-        exchange.getResponseHeaders().put(new HttpString(SnapshotManager.APPLIED_INDEX_HEADER), String.valueOf(appliedIndex));
-      exchange.startBlocking();
+        final String safeName = databaseName.replaceAll("[^a-zA-Z0-9._-]", "_");
+        exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/zip");
+        exchange.getResponseHeaders().put(Headers.CONTENT_DISPOSITION,
+            "attachment; filename=\"" + safeName + "-snapshot.zip\"");
+        // Advertise that this stream ends with a completeness manifest (issue #4831) so the follower
+        // requires it and rejects a download truncated at a ZIP-entry boundary.
+        exchange.getResponseHeaders().put(new HttpString(SnapshotManager.MANIFEST_HEADER), "1");
+        // The follower refuses a copy behind the entries it already applied to the one it is replacing (issue #8454),
+        // and does not re-apply any TX or schema entry at or below this index once it installs the copy (issue #8579):
+        // the index must never run ahead of what the captured copy carries.
+        if (appliedIndex != Long.MIN_VALUE)
+          exchange.getResponseHeaders().put(new HttpString(SnapshotManager.APPLIED_INDEX_HEADER), String.valueOf(appliedIndex));
+        exchange.startBlocking();
 
-      // CLOSED TWICE ON THE WINDOW PATH, DELIBERATELY: serveSnapshotZip releases the pause the moment the last
-      // sealed byte is read, and this is the safety net for every other way out - a throw, a client disconnect,
-      // the frozen-files path that never releases early. TimeSeriesCompactionPause.close() is idempotent, so the
-      // second close is a no-op rather than an unlock of a lock this thread no longer holds (code review on
-      // PR #7474).
-      try (pause) {
-        streamThroughPointInTimeImage(db, databaseName, pause, suspendLockFor(databaseName), (image, heldPause) -> {
-          // CHECKED AGAIN NOW THAT THE IMAGE IS CAPTURED (code review on PR #8484). A quarantine the apply thread
-          // recorded between the check above and the capture skipped an entry past the reported index, and on an
-          // APPLY_ERROR quarantine later entries can still land in the copy: the follower would then replay the
-          // skipped entry onto pages that are already newer and lose it. Nothing has been written yet, so this is
-          // still a clean 503.
-          final DivergenceCause late = servedDatabaseQuarantine(server, databaseName);
-          if (late != null)
-            refuseQuarantined(exchange, databaseName, late);
-          else
-            serveSnapshotZip(exchange, db, databaseName, image, heldPause);
-        });
-      }
+        // CLOSED TWICE ON THE WINDOW PATH, DELIBERATELY: serveSnapshotZip releases the pause the moment the last
+        // sealed byte is read, and this is the safety net for every other way out - a throw, a client disconnect,
+        // the frozen-files path that never releases early. TimeSeriesCompactionPause.close() is idempotent, so the
+        // second close is a no-op rather than an unlock of a lock this thread no longer holds (code review on
+        // PR #7474).
+        try (pause) {
+          streamThroughPointInTimeImage(db, databaseName, pause, suspendLockFor(databaseName), (image, heldPause) -> {
+            // CHECKED AGAIN NOW THAT THE IMAGE IS CAPTURED (code review on PR #8484). A quarantine the apply thread
+            // recorded between the check above and the capture skipped an entry past the reported index, and on an
+            // APPLY_ERROR quarantine later entries can still land in the copy: the follower would then replay the
+            // skipped entry onto pages that are already newer and lose it. Nothing has been written yet, so this is
+            // still a clean 503.
+            final DivergenceCause late = servedDatabaseQuarantine(server, databaseName);
+            if (late != null)
+              refuseQuarantined(exchange, databaseName, late);
+            else
+              serveSnapshotZip(exchange, db, databaseName, image, heldPause);
+          });
+        }
       } finally {
         if (configuredFallbackLock != null)
           configuredFallbackLock.unlock();
