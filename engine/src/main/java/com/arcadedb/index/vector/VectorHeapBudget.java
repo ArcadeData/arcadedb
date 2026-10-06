@@ -25,6 +25,7 @@ import java.lang.management.ManagementFactory;
 import java.lang.management.MemoryPoolMXBean;
 import java.lang.management.MemoryType;
 import java.lang.management.MemoryUsage;
+import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 
@@ -125,7 +126,7 @@ final class VectorHeapBudget {
    * the JVM does not publish it (issue #7260). Compared with the moment a graph was published, it says whether the
    * post-collection reading of {@link #liveHeapBytes()} can have counted that graph: a large graph lives in the old
    * generation, whose reading a young collection does not refresh (with G1 only a concurrent, mixed or full cycle
-   * does), so only a collector that manages such a pool counts. Conservative by construction: an unknown answers
+   * does), so only a collector that is not a young one counts (see {@link #isTenuredCollector}). Conservative by construction: an unknown answers
    * {@code -1}, which withholds the credit, and the cost of that is one more deferral rather than an OOM.
    */
   static long lastCollectionEndMillis() {
@@ -135,7 +136,7 @@ final class VectorHeapBudget {
       for (final GarbageCollectorMXBean gc : ManagementFactory.getGarbageCollectorMXBeans()) {
         // Fully qualified because the com.sun.management variant shares its simple name with the standard
         // java.lang.management interface imported above.
-        if (!managesTenuredPool(gc) || !(gc instanceof final com.sun.management.GarbageCollectorMXBean sunGc))
+        if (!isTenuredCollector(gc.getName()) || !(gc instanceof final com.sun.management.GarbageCollectorMXBean sunGc))
           continue;
         final com.sun.management.GcInfo info = sunGc.getLastGcInfo();
         if (info != null)
@@ -147,14 +148,19 @@ final class VectorHeapBudget {
     return last;
   }
 
-  private static boolean managesTenuredPool(final GarbageCollectorMXBean gc) {
-    for (final String pool : gc.getMemoryPoolNames()) {
-      final String name = pool.toLowerCase();
-      if (!name.contains("eden") && !name.contains("survivor") && !name.contains("young") && !name.contains("nursery")
-          && !name.contains("metaspace") && !name.contains("code") && !name.contains("class"))
-        return true;
-    }
-    return false;
+  /**
+   * Whether a collector's cycles refresh the old-generation reading. Keyed on the collector's NAME, not on the pools
+   * it lists: G1's young collector lists the old pool among its own (it manages every region), yet a young
+   * collection never refreshes that pool's post-collection usage. What is left after dropping the young
+   * collectors is the ones that do: G1 Old Generation and G1 Concurrent GC, the Parallel and Serial mark-sweep
+   * collectors, ZGC and Shenandoah cycles.
+   */
+  static boolean isTenuredCollector(final String collectorName) {
+    if (collectorName == null)
+      return false;
+    final String name = collectorName.toLowerCase(Locale.ROOT);
+    return !(name.contains("young") || name.contains("scavenge") || name.contains("copy") || name.contains("parnew")
+        || name.contains("minor"));
   }
 
   /**
@@ -222,9 +228,14 @@ final class VectorHeapBudget {
    * @return the budget in bytes, never negative
    */
   static long budgetBytes(final int percent) {
+    return budgetBytes(percent, availableHeapBytes());
+  }
+
+  /** {@link #budgetBytes(int)} against a supplied available-heap figure. */
+  static long budgetBytes(final int percent, final long availableHeap) {
     if (percent <= 0)
       return 0L;
-    return availableHeapBytes() / 100 * Math.min(percent, 90);
+    return availableHeap / 100 * Math.min(percent, 90);
   }
 
   /**
