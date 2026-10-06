@@ -92,7 +92,8 @@ public class WebSocketInsertSession {
 
   public final  String                        id;
   public final  String                        databaseName;
-  public final  ServerSecurityUser            user;
+  /** Replaced with the live principal on every frame (issue #9311); see {@code WebSocketInsertSessionManager.resolve}. */
+  public volatile ServerSecurityUser          user;
   public final  UUID                          channelId;
   public final  InsertSessionOptions          options;
   private final DatabaseInternal              database;

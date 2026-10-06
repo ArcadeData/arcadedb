@@ -26,6 +26,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.security.ServerSecurity;
+import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.websockets.core.WebSocketChannel;
 import org.junit.jupiter.api.AfterEach;
@@ -267,7 +268,7 @@ class Issue6762WebSocketEventBusTest {
     when(revoked.canAccessToDatabase(db)).thenReturn(false);
 
     final ServerSecurity security = mock(ServerSecurity.class);
-    when(security.getUser("someone")).thenReturn(revoked);
+    when(security.revalidate(revoked)).thenReturn(revoked);
 
     final ArcadeDBServer server = mock(ArcadeDBServer.class);
     when(server.getConfiguration()).thenReturn(new ContextConfiguration());
@@ -300,7 +301,7 @@ class Issue6762WebSocketEventBusTest {
     when(allowed.canAccessToDatabase(db)).thenReturn(true);
 
     final ServerSecurity security = mock(ServerSecurity.class);
-    when(security.getUser("someone")).thenReturn(allowed);
+    when(security.revalidate(allowed)).thenReturn(allowed);
 
     final ArcadeDBServer server = mock(ArcadeDBServer.class);
     when(server.getConfiguration()).thenReturn(new ContextConfiguration());
@@ -334,7 +335,7 @@ class Issue6762WebSocketEventBusTest {
     when(captured.canAccessToDatabase(db)).thenReturn(true); // the stale snapshot still says yes
 
     final ServerSecurity security = mock(ServerSecurity.class);
-    when(security.getUser("gone")).thenReturn(null); // ...but the principal no longer exists
+    when(security.revalidate(captured)).thenThrow(new ServerSecurityException("User 'gone' no longer exists")); // ...but the principal no longer exists
 
     final ArcadeDBServer server = mock(ArcadeDBServer.class);
     when(server.getConfiguration()).thenReturn(new ContextConfiguration());

@@ -22,6 +22,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.query.OperationType;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.ExecutionPlan;
@@ -31,6 +32,7 @@ import com.arcadedb.query.sql.executor.UpdateExecutionPlan;
 
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 public class ProfileStatement extends Statement {
 
@@ -123,7 +125,19 @@ public class ProfileStatement extends Statement {
 
   @Override
   public boolean isIdempotent() {
-    return true;
+    // PROFILE executes the wrapped statement, so it is exactly as idempotent as that statement (issue #9313).
+    // EXPLAIN, which only plans, is the one that stays idempotent whatever it wraps.
+    return statement.isIdempotent();
+  }
+
+  @Override
+  public boolean isDDL() {
+    return statement.isDDL();
+  }
+
+  @Override
+  public Set<OperationType> getOperationTypes() {
+    return statement.getOperationTypes();
   }
 
   /**

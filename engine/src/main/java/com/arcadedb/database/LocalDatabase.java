@@ -1816,6 +1816,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     if (mode == ComponentFile.MODE.READ_ONLY)
       throw new DatabaseIsReadOnlyException("Cannot delete record " + record.getIdentity());
 
+    // REFUSE UP FRONT (issue #9305). LocalBucket.deleteRecord checks DELETE_RECORD too, but it is the LAST thing a delete
+    // does: by then the index entries, the EXTERNAL values and the edges are already gone, and a caller that owns its
+    // transaction and carries on after the refusal would commit that half-applied delete. A record-less RID (a
+    // lightweight edge) owns no slot in any bucket, so there is nothing to check.
+    if (record.getIdentity().getPosition() >= 0)
+      checkPermissionsOnFile(schema.getBucketById(record.getIdentity().getBucketId()).getFileId(),
+          SecurityDatabaseUser.ACCESS.DELETE_RECORD);
+
     // INVOKE EVENT CALLBACKS. This is the ONE place the delete listeners are dispatched from: every caller, the
     // asynchronous delete task included, reaches the listeners through here (issue #7003).
     if (!events.onBeforeDelete(record))
@@ -1854,6 +1862,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           LogManager.instance().log(this, Level.WARNING,
               "Cannot read record %s for index/external cleanup on delete (corrupted buffer): %s. Deleting the record anyway; "
                   + "run a database check to repair any dangling index entries.", record.getIdentity(), e.getMessage());
+        } catch (final SecurityException e) {
+          // A user that is refused on the paired external bucket: the index entries are already gone (issue #9305)
+          getTransaction().setRollbackOnly("delete of " + record.getIdentity() + " was refused after it had started: " + e.getMessage());
+          throw e;
         } catch (final BrokenChunkChainException e) {
           // The loader itself confirmed the chunk chain is structurally broken (#6258), so there is nothing left to
           // disambiguate here: the body cannot be assembled and never will be. Same tolerant path as the branch below,
@@ -1913,6 +1925,13 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         }
       } catch (final RecordNotFoundException e) {
         throw asConcurrentDeleteIfReadHere(record, e);
+      } catch (final SecurityException e) {
+        // The up-front check above covers the record's own bucket; this refusal came from a bucket reached only after the
+        // delete had started (the edges of a vertex, say), so index entries, external values or links are already gone and
+        // nothing undoes them. Make the commit fail rather than let a caller that goes on publish the half-applied delete
+        // (issue #9305).
+        getTransaction().setRollbackOnly("delete of " + record.getIdentity() + " was refused after it had started: " + e.getMessage());
+        throw e;
       }
 
       success = true;

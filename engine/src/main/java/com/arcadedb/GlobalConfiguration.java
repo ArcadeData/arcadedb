@@ -3017,6 +3017,75 @@ public enum GlobalConfiguration {
       dialable address for it (see the 'grpc' field of arcadedb.ha.serverList). Default is 50051""",
       Integer.class, 50051),
 
+  // The remaining gRPC plugin keys are declared for the same reason GRPC_PORT is, and for a stronger one (issue #9316): a key
+  // that is not a constant of this enum is reachable from -D only. The server configuration file drops it with a warning
+  // (ContextConfiguration.fromJSON resolves every key through findByKey) and the environment-variable loop never asks for it,
+  // so 'arcadedb.grpc.tls.enabled=true' written in either left a plaintext endpoint listening.
+  GRPC_ENABLED("arcadedb.grpc.enabled", SCOPE.SERVER,
+      "Whether the gRPC plugin starts. Default is true", Boolean.class, true),
+
+  GRPC_HOST("arcadedb.grpc.host", SCOPE.SERVER,
+      "Host name or address the gRPC plugin binds to. Default is '0.0.0.0'", String.class, "0.0.0.0"),
+
+  GRPC_MODE("arcadedb.grpc.mode", SCOPE.SERVER,
+      "gRPC server mode: 'standard', 'xds' or 'both'. Default is 'standard'", String.class, "standard"),
+
+  GRPC_XDS_PORT("arcadedb.grpc.xds.port", SCOPE.SERVER,
+      "TCP/IP port number used by the xDS gRPC server when the mode is 'xds' or 'both'. Default is 50052", Integer.class, 50052),
+
+  GRPC_TLS_ENABLED("arcadedb.grpc.tls.enabled", SCOPE.SERVER, """
+      When true, the gRPC endpoint accepts only TLS connections, using the certificate and key set by \
+      arcadedb.grpc.tls.cert and arcadedb.grpc.tls.key. The plugin refuses to start, instead of falling back to cleartext, \
+      when either is missing or unreadable. Only true and false are accepted. Default is false""",
+      Boolean.class, false),
+
+  GRPC_TLS_CERT("arcadedb.grpc.tls.cert", SCOPE.SERVER,
+      "Path of the PEM certificate chain served by the gRPC endpoint when arcadedb.grpc.tls.enabled is true", String.class, null),
+
+  GRPC_TLS_KEY("arcadedb.grpc.tls.key", SCOPE.SERVER,
+      "Path of the PEM private key served by the gRPC endpoint when arcadedb.grpc.tls.enabled is true", String.class, null),
+
+  GRPC_MAX_MESSAGE_SIZE("arcadedb.grpc.maxMessageSize", SCOPE.SERVER,
+      "Maximum inbound gRPC message size, in megabytes (minimum 1). Default is 100", Integer.class, 100),
+
+  GRPC_MAX_METADATA_SIZE("arcadedb.grpc.maxMetadataSize", SCOPE.SERVER,
+      "Maximum inbound gRPC metadata (headers) size, in kilobytes (minimum 1). Default is 16", Integer.class, 16),
+
+  GRPC_MAX_CONCURRENT_TRANSACTIONS("arcadedb.grpc.maxConcurrentTransactions", SCOPE.SERVER,
+      "Maximum number of gRPC transactions open at the same time. A non-positive value disables the bound. Default is 1000",
+      Integer.class, 1000),
+
+  GRPC_MAX_CONCURRENT_TRANSACTIONS_PER_PRINCIPAL("arcadedb.grpc.maxConcurrentTransactionsPerPrincipal", SCOPE.SERVER,
+      "Maximum number of gRPC transactions one user may have open at the same time. A non-positive value disables the bound. "
+          + "Default is 100", Integer.class, 100),
+
+  GRPC_REFLECTION_ENABLED("arcadedb.grpc.reflection.enabled", SCOPE.SERVER,
+      "Whether the gRPC server reflection service is exposed. Default is true", Boolean.class, true),
+
+  GRPC_HEALTH_ENABLED("arcadedb.grpc.health.enabled", SCOPE.SERVER,
+      "Whether the standard gRPC health service is exposed. Default is true", Boolean.class, true),
+
+  GRPC_COMPRESSION_ENABLED("arcadedb.grpc.compression.enabled", SCOPE.SERVER,
+      "Whether the gRPC endpoint supports message compression. Default is true", Boolean.class, true),
+
+  GRPC_COMPRESSION_FORCE("arcadedb.grpc.compression.force", SCOPE.SERVER,
+      "Whether the gRPC endpoint compresses every response, whatever the client asked for. Default is false", Boolean.class,
+      false),
+
+  GRPC_COMPRESSION_TYPE("arcadedb.grpc.compression.type", SCOPE.SERVER,
+      "Compression algorithm used when arcadedb.grpc.compression.force is true. Default is 'gzip'", String.class, "gzip"),
+
+  GRPC_TX_MAX_IDLE_MS("arcadedb.grpc.tx.maxIdleMs", SCOPE.SERVER,
+      "Milliseconds a gRPC transaction may sit idle before the reaper rolls it back. Default is 300000 (5 minutes)", Long.class,
+      300_000L),
+
+  GRPC_TX_MAX_AGE_MS("arcadedb.grpc.tx.maxAgeMs", SCOPE.SERVER,
+      "Maximum age in milliseconds of a gRPC transaction, busy or not, before the reaper rolls it back. 0 disables the bound. "
+          + "Default is 0", Long.class, 0L),
+
+  GRPC_TX_REAPER_PERIOD_MS("arcadedb.grpc.tx.reaperPeriodMs", SCOPE.SERVER,
+      "Milliseconds between two runs of the gRPC idle-transaction reaper. Default is 30000", Long.class, 30_000L),
+
   // REDIS
   REDIS_PORT("arcadedb.redis.port", SCOPE.SERVER,
       "TCP/IP port number used for incoming connections for Redis plugin. Default is 6379", Integer.class, 6379),

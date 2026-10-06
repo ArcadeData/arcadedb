@@ -170,7 +170,7 @@ public class HttpServer implements ServerPlugin {
     // for reasons an HTTP command never does (issue #7382).
     this.insertSessionManager = new WebSocketInsertSessionManager(this.server, this.sessionManager,
         server.getConfiguration().getValueAsLong(GlobalConfiguration.SERVER_WS_INSERT_SESSION_EXPIRE_TIMEOUT) * 1_000L);
-    this.insertProtocol = new WebSocketInsertProtocol(this.insertSessionManager, server.getConfiguration());
+    this.insertProtocol = new WebSocketInsertProtocol(this.insertSessionManager, server.getConfiguration(), this.webSocketEventBus);
     final long ttlMs = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_IDEMPOTENCY_CACHE_TTL_MS);
     final int maxEntries = server.getConfiguration().getValueAsInteger(GlobalConfiguration.HA_IDEMPOTENCY_CACHE_MAX_ENTRIES);
     final long maxBytes = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_IDEMPOTENCY_CACHE_MAX_BYTES);
