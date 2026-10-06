@@ -70,12 +70,56 @@ class CypherWherePatternPredicateVariableTypeIssue9292Test extends TestHelper {
     }
   }
 
+  @Test
+  void patternComprehensionReusingNodeAsRelationshipIsRejected() {
+    assertRejected("MATCH (p) RETURN [(p)-[p]-() | 1] AS x");
+  }
+
+  @Test
+  void optionalMatchWherePredicateIsRejected() {
+    assertRejected("MATCH (p) OPTIONAL MATCH (p)-[]-(q) WHERE (p)-[p]-() RETURN q");
+  }
+
+  @Test
+  void withWhereAfterRenameIsRejected() {
+    assertRejected("MATCH (p)-[]-() WITH p AS q WHERE (q)-[q]-() RETURN q");
+  }
+
+  @Test
+  void validComprehensionAndRenameStillWork() {
+    assertThat(count("MATCH (p)-[r]-() RETURN [(p)-[r]-() | 1] AS x")).isEqualTo(2);
+    assertThat(count("MATCH (p)-[]-() WITH p AS q WHERE (q)-[]-() RETURN q")).isEqualTo(2);
+    assertThat(count("MATCH (a) WHERE (a)-[]-() WITH a AS x MATCH ()-[a]-() RETURN a")).isEqualTo(4);
+  }
+
+  @Test
+  void declaringPatternsAreStillSkipped() {
+    assertThat(count("MATCH (a:N) OPTIONAL MATCH (a)-[r:R]->(b) RETURN r")).isEqualTo(2);
+    assertThat(count("MATCH (a)-[r:R]->() WHERE (a)-[r]->() RETURN r")).isEqualTo(1);
+  }
+
+  @Test
+  void variableLengthRelationshipVariableReusedAsNodeIsRejected() {
+    assertRejected("MATCH ()-[r*1..2]-() WHERE (r)-[]-() RETURN r");
+  }
+
+  private int count(final String query) {
+    int count = 0;
+    try (final ResultSet rs = database.query("opencypher", query)) {
+      while (rs.hasNext()) {
+        rs.next();
+        count++;
+      }
+    }
+    return count;
+  }
+
   private void assertRejected(final String query) {
     assertThatThrownBy(() -> {
       try (final ResultSet rs = database.query("opencypher", query)) {
         while (rs.hasNext())
           rs.next();
       }
-    }).isInstanceOf(RuntimeException.class);
+    }).isInstanceOf(RuntimeException.class).hasMessageContaining("VariableTypeConflict");
   }
 }
