@@ -190,6 +190,11 @@ public class LineProtocolParser {
             throw new IllegalArgumentException("Missing tag key at position " + pos);
           pos += keyResult.length() + 1; // +1 for '='
           final ParsedString valResult = readTagValueWithLength(line, pos);
+          // An empty tag value ("cpu,host= value=1") is what the InfluxDB line protocol rejects as "missing tag
+          // value", and storing it as "" kept a tag the client most likely meant to omit (issue #8647): reject the
+          // line, as the empty tag key above is rejected
+          if (valResult.value().isEmpty())
+            throw new IllegalArgumentException("Missing value for tag '" + keyResult.value() + "' at position " + pos);
           pos += valResult.length();
           tags.put(keyResult.value(), valResult.value());
           if (pos < len && line.charAt(pos) == ',')

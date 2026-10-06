@@ -692,6 +692,26 @@ public final class TimeSeriesGateway {
   }
 
   /**
+   * The text a tag value is WRITTEN with: {@link #requireStorableTagValue}'s rule, plus the refusal of an empty text
+   * (issue #8647). Line protocol has no way to carry an empty tag value - the server rejects {@code host=} as a
+   * malformed line, as InfluxDB does - and the gRPC ingest path refuses it to match, so a client that encodes a
+   * write refuses it too, where the caller can still see which tag it was. A {@code null} value is not a tag at
+   * all: callers skip it before coming here.
+   * <p>
+   * Write-only on purpose: a read filter goes through {@link #requireStorableTagValue} alone, so a sample stored
+   * with an empty tag before this rule existed can still be selected.
+   *
+   * @throws IllegalArgumentException if the value cannot be stored as a tag, or its text form is empty
+   */
+  public static String requireWritableTagText(final String tagName, final Object value) {
+    final String text = String.valueOf(requireStorableTagValue(tagName, value));
+    if (text.isEmpty())
+      throw new IllegalArgumentException("Tag '" + tagName + "' has an empty value, which the server refuses. "
+          + "Leave the tag out (or set it to null) to write a sample without it.");
+    return text;
+  }
+
+  /**
    * Whether a sample value stands for "no measurement" rather than a number. A non-finite {@code double} or
    * {@code float} - what an absent MIN/MAX aggregate answers, and what a raw sample can carry too - is not a
    * value a client should read as zero, so every protocol renders it as its own null (JSON {@code null} over

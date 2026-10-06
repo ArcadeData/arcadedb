@@ -48,9 +48,11 @@ public record TimeSeriesPoint(String type, long timestampMs, Map<String, Object>
     tags = tags == null ? Map.of() : tags;
     // Checked here, at the boundary both clients build their request from, so a value that cannot be stored as
     // a tag is refused where the caller can still see which tag it was - rather than reaching the wire as the
-    // text of an object identity. Fields are not checked: they carry typed values into typed columns.
+    // text of an object identity, or as an empty value both protocols refuse (issue #8647). A null value is an
+    // absent tag and passes. Fields are not checked: they carry typed values into typed columns.
     for (final Map.Entry<String, Object> tag : tags.entrySet())
-      TimeSeriesGateway.requireStorableTagValue(tag.getKey(), tag.getValue());
+      if (tag.getValue() != null)
+        TimeSeriesGateway.requireWritableTagText(tag.getKey(), tag.getValue());
   }
 
   /** A point with no tags. */
