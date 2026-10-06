@@ -210,9 +210,10 @@ class CypherCountPushDownUnlabelledAnchorIssue5757Test extends TestHelper {
         .build();
     try {
       assertThat(GraphTraversalProviderRegistry.awaitAll(database, 30, TimeUnit.SECONDS)).isTrue();
-      // The view IS offered to the operator - it covers the edge type - so the count below is saved by the
-      // coverage test rather than by there being no provider at all.
-      assertThat(GraphTraversalProviderRegistry.findProvider(database, "LINKS")).isNotNull();
+      // The view covers the edge type but not every vertex type: the registry no longer hands it to a walk (#9301),
+      // and the count below is answered from the records.
+      assertThat(GraphTraversalProviderRegistry.findProvider(database, "LINKS")).isNull();
+      assertThat(GraphTraversalProviderRegistry.findProviderAllowingPartialVertexCoverage(database, "LINKS")).isNotNull();
 
       // No LINKS edge joins two Hubs, so a view holding only Hubs would count 0 for a pattern with five matches.
       assertThat(scalarOf("MATCH (a)-[:LINKS]->(b) RETURN count(*) AS c")).isEqualTo(5L);
