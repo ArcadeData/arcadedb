@@ -179,7 +179,8 @@ public class GremlinServerPlugin implements ServerPlugin {
   /**
    * The port the channel is really bound to, which is the only answer when the setting is {@code 0} (the OS picks one).
    * GremlinServer keeps the channel in a private field and never writes the port back to its settings, so it is read from
-   * there, falling back to the configured port if that cannot be done.
+   * there (verified against gremlin-server 3.8.2, field {@code serverSocketChannel}; {@code Issue9319GremlinBindFailureTest}
+   * fails if an upgrade renames it), falling back to the configured port if that cannot be done.
    */
   private static int resolveBoundPort(final GremlinServer gremlinServer, final int configuredPort) {
     try {
