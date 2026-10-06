@@ -22,6 +22,11 @@
 // reached or triggered from the keyboard and screen readers did not announce them as buttons. The run and delete icons
 // were also revealed on :hover only, so even a focusable control would have stayed invisible while focused.
 //
+// These tests check the rendered markup and the stylesheet. The keyboard behaviour itself (Tab order, Enter/Space
+// dispatching a click that bubbles into the entry's load handler) needs a real browser; the e2e-studio Playwright suite
+// runs against a released Docker image, so a spec there could not see this change before it ships. It was checked by
+// hand in Chromium, see PR #9376.
+//
 // Run with:
 //
 //     node --test studio/test/sidebar-keyboard-accessible.test.js
@@ -130,7 +135,7 @@ test("every saved entry gets its own focusable controls", () => {
 
 test("the controls carry an accessible name naming the saved query", () => {
   populateSavedQueriesPanel();
-  assert.match(panelHtml, /class='saved-query-load' aria-label='Load saved query Wipe logs into the editor'/);
+  assert.match(panelHtml, /class='saved-query-load' aria-label='Load saved query Wipe logs \(sql\) into the editor'/);
   assert.match(panelHtml, /class='saved-query-run'[^>]*aria-label='Run saved query Wipe logs'/);
   assert.match(panelHtml, /class='saved-query-delete'[^>]*aria-label='Delete saved query Wipe logs'/);
   assert.match(panelHtml, /<i class='fa fa-play' aria-hidden='true'>/, "the decorative icon must not be read out");
@@ -140,7 +145,7 @@ test("the controls carry an accessible name naming the saved query", () => {
 test("a name with quotes and markup cannot break out of the aria-label attribute", () => {
   storedQueries = [{ name: "O'Brien <b>x</b>", l: "sql", c: "SELECT 1", d: "db" }];
   populateSavedQueriesPanel();
-  assert.match(panelHtml, /aria-label='Load saved query O&#039;Brien &lt;b&gt;x&lt;\/b&gt; into the editor'/);
+  assert.match(panelHtml, /aria-label='Load saved query O&#039;Brien &lt;b&gt;x&lt;\/b&gt; \(sql\) into the editor'/);
   assert.ok(!panelHtml.includes("O'Brien"), "the raw single quote would end the attribute early");
 });
 
@@ -199,9 +204,15 @@ test("a history button only holds phrasing content, so the browser does not re-p
   assert.match(body, /<span class='history-cmd'>SELECT 1<\/span>/);
 });
 
-test("the history selection checkbox has an accessible name", () => {
-  const html = renderHistoryEntries([{ index: 3, q: { l: "sql", c: "SELECT 1", d: "db" } }]);
-  assert.match(html, /<input type='checkbox' class='history-checkbox history-item-check' data-index='3'[^>]*aria-label='Select history entry'>/);
+test("each history selection checkbox has an accessible name telling the rows apart", () => {
+  const html = renderHistoryEntries([
+    { index: 3, q: { l: "sql", c: "SELECT 1", d: "db" } },
+    { index: 4, q: { l: "sql", c: "SELECT 'x' FROM " + "V".repeat(100), d: "db" } },
+  ]);
+  assert.match(html, /<input type='checkbox' class='history-checkbox history-item-check' data-index='3'[^>]*aria-label='Select history entry: SELECT 1'>/);
+  // A LONG COMMAND IS CUT, AND ITS QUOTES ARE ESCAPED SO THEY CANNOT END THE ATTRIBUTE
+  const long = /data-index='4'[^>]*aria-label='([^']*)'/.exec(html)[1];
+  assert.equal(long, "Select history entry: SELECT &#039;x&#039; FROM " + "V".repeat(44) + "...");
 });
 
 // --- Stylesheet ----------------------------------------------------------------------------------------------------

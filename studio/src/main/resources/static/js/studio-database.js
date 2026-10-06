@@ -2188,7 +2188,7 @@ function populateSavedQueriesPanel() {
     // THE NAME, RUN AND DELETE CONTROLS ARE REAL BUTTONS SO THEY ARE REACHABLE WITH TAB AND TRIGGERED WITH ENTER/SPACE (ISSUE #8740).
     // THE NAME BUTTON HAS NO HANDLER OF ITS OWN: THE CLICK A KEYBOARD ACTIVATION DISPATCHES BUBBLES INTO THE ENTRY'S LOAD
     html += "<div class='saved-query-entry' title='Click to load into the editor' onclick='loadSavedQuery(" + i + ")'>";
-    html += "<div class='saved-query-name'><button type='button' class='saved-query-load' aria-label='Load saved query " + name + " into the editor'>" + name + "<span class='saved-query-lang'>" + lang + "</span></button>";
+    html += "<div class='saved-query-name'><button type='button' class='saved-query-load' aria-label='Load saved query " + name + " (" + lang + ") into the editor'>" + name + "<span class='saved-query-lang'>" + lang + "</span></button>";
     html += "<span class='saved-query-actions'>";
     html += "<button type='button' class='saved-query-run' onclick='event.stopPropagation(); executeSavedQuery(" + i + ")' title='Run' aria-label='Run saved query " + name + "'><i class='fa fa-play' aria-hidden='true'></i></button>";
     html += "<button type='button' class='saved-query-delete' onclick='event.stopPropagation(); deleteSavedQuery(" + i + ")' title='Delete' aria-label='Delete saved query " + name + "'><i class='fa fa-times' aria-hidden='true'></i></button>";
@@ -2344,6 +2344,9 @@ function renderHistoryEntries(entries) {
     let idx = entry.index;
     let lang = escapeHtml(q.l || "sql");
     let cmd = escapeHtml(q.c || "");
+    // EVERY CHECKBOX GETS ITS OWN NAME, OR A SCREEN READER HEARS THE SAME "SELECT HISTORY ENTRY" ON EVERY ROW (ISSUE #8740)
+    let rawCmd = q.c || "";
+    let checkLabel = escapeHtml("Select history entry: " + (rawCmd.length > 60 ? rawCmd.substring(0, 60) + "..." : rawCmd));
     let time = "";
     if (q.t) {
       let d = new Date(q.t);
@@ -2351,7 +2354,7 @@ function renderHistoryEntries(entries) {
     }
 
     html += "<div class='history-entry' data-index='" + idx + "' data-cmd='" + cmd.toLowerCase() + "'>";
-    html += "<input type='checkbox' class='history-checkbox history-item-check' data-index='" + idx + "' onclick='event.stopPropagation()' aria-label='Select history entry'>";
+    html += "<input type='checkbox' class='history-checkbox history-item-check' data-index='" + idx + "' onclick='event.stopPropagation()' aria-label='" + checkLabel + "'>";
     // A REAL BUTTON, SO THE ENTRY IS REACHABLE WITH TAB AND LOADED WITH ENTER/SPACE (ISSUE #8740). A BUTTON ONLY ADMITS
     // PHRASING CONTENT, HENCE THE SPANS: THEIR LAYOUT COMES FROM THE CSS CLASSES, NOT FROM THE ELEMENT
     html += "<button type='button' class='history-entry-content' title='Click to load into the editor' onclick='loadHistoryEntry(" + idx + ")'>";
