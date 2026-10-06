@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.procedures.algo;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.StallAwareStopwatch;
@@ -270,6 +271,13 @@ class Issue6302AlgoGraphDrivenWorkGuardTest {
           spoke.newEdge("LINK", hub, true, (Object[]) null).save();
         }
       });
+
+      // The whole margin rests on the hub being node index 0: anywhere else, every k before it skips all rows but
+      // one and the loop shrinks back to a size a fast runner can finish. algo.apsp numbers nodes in the order this
+      // iterator returns them, so check it here rather than trust the bucket layout.
+      assertThat(GraphEngine.getAllVertices(dense, null).next().getInteger("idx"))
+          .as("the hub must be the first node algo.apsp loads, or the triple loop skips most of its work")
+          .isEqualTo(0);
 
       // 4000 x 4000 doubles is 128 MB, over the 64 MB floor the default budget falls back to on a small heap.
       dense.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 256L * 1024 * 1024);
