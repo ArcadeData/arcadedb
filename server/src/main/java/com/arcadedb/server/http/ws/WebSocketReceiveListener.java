@@ -30,8 +30,10 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.websockets.core.AbstractReceiveListener;
 import io.undertow.websockets.core.BufferedBinaryMessage;
 import io.undertow.websockets.core.BufferedTextMessage;
+import io.undertow.websockets.core.CloseMessage;
 import io.undertow.websockets.core.StreamSourceFrameChannel;
 import io.undertow.websockets.core.WebSocketChannel;
+import io.undertow.websockets.core.WebSockets;
 
 import java.io.IOException;
 import java.util.Locale;
@@ -199,7 +201,9 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
         try {
           user = this.webSocketEventBus.revalidatedUser(channel);
         } catch (final ServerSecurityException e) {
-          sendError(channel, "Security error", e.getMessage(), null);
+          // The principal is gone or its credentials changed: say why and close, which also rolls back an insert session
+          sendError(channel, "Security error", e.getMessage(), e);
+          WebSockets.sendClose(new CloseMessage(CloseMessage.MSG_VIOLATES_POLICY, "Principal is no longer valid"), channel, null);
           break;
         }
         if (user == null || !user.canAccessToDatabase(database)) {

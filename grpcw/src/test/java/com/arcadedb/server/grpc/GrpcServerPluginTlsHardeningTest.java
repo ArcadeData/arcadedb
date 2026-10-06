@@ -173,4 +173,17 @@ class GrpcServerPluginTlsHardeningTest {
       System.clearProperty(key);
     }
   }
+
+  /** An unknown mode is refused instead of starting no listener and reporting success. */
+  @Test
+  void invalidModeRefusesToStart() {
+    final ContextConfiguration config = new ContextConfiguration();
+    config.setValue("arcadedb.grpc.mode", "stadnard");
+    final GrpcServerPlugin plugin = pluginWithConfig(config);
+
+    assertThatThrownBy(plugin::startService)
+        .isInstanceOf(ConfigurationException.class)
+        .hasMessageContaining("stadnard");
+    assertThat(plugin.getStatus().standardServerRunning).isFalse();
+  }
 }
