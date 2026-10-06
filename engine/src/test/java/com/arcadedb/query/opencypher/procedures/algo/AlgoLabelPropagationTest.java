@@ -309,4 +309,26 @@ class AlgoLabelPropagationTest {
       db.drop();
     }
   }
+
+  @Test
+  void tieBreakPropertyMixedNumericClassesIsATotalOrder() {
+    final DatabaseFactory factory = new DatabaseFactory("./target/databases/test-algo-lpa-tiebreak-mixed");
+    if (factory.exists())
+      factory.open().drop();
+    final Database db = factory.create();
+    try {
+      db.getSchema().createVertexType("T");
+      db.getSchema().createEdgeType("TE");
+      db.transaction(() -> {
+        // Long, Double (including -0.0/0.0 and NaN) and BigDecimal mixed: must sort without a comparator violation
+        final Object[] vids = { 5L, 2.5d, -0.0d, 0.0d, 0L, Double.NaN, new BigDecimal("1.5"), Double.POSITIVE_INFINITY, 7 };
+        final MutableVertex x = db.newVertex("T").set("name", "X").set("vid", 3).save();
+        for (int i = 0; i < vids.length; i++)
+          db.newVertex("T").set("name", "N" + i).set("vid", vids[i]).save().newEdge("TE", x, true, (Object[]) null).save();
+      });
+      assertThat(labels(db, "{maxIterations: 3, tieBreakProperty: 'vid'}")).hasSize(10);
+    } finally {
+      db.drop();
+    }
+  }
 }
