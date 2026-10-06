@@ -36,6 +36,7 @@ import com.arcadedb.query.sql.parser.BinaryCondition;
 import com.arcadedb.query.sql.parser.BooleanExpression;
 import com.arcadedb.query.sql.parser.ContainsTextCondition;
 import com.arcadedb.query.sql.parser.EqualsCompareOperator;
+import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.GeOperator;
 import com.arcadedb.query.sql.parser.GtOperator;
@@ -959,7 +960,8 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
    * equality, which is the safe answer for an UPSERT.
    */
   boolean isFullKeyEquality() {
-    final int keyCount = index.getPropertyNames().size();
+    final List<String> properties = index.getPropertyNames();
+    final int keyCount = properties.size();
     if (condition instanceof BinaryCondition binaryCondition)
       return keyCount == 1 && binaryCondition.getOperator() instanceof EqualsCompareOperator;
 
@@ -967,8 +969,18 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       final List<BooleanExpression> subBlocks = andBlock.getSubBlocks();
       if (subBlocks.size() != keyCount)
         return false;
-      for (final BooleanExpression exp : subBlocks)
+      final Set<String> covered = new HashSet<>(keyCount * 2);
+      for (final BooleanExpression exp : subBlocks) {
         if (!(exp instanceof BinaryCondition binaryCondition) || !(binaryCondition.getOperator() instanceof EqualsCompareOperator))
+          return false;
+        final Identifier alias = binaryCondition.getLeft().getDefaultAlias();
+        if (alias == null)
+          return false;
+        covered.add(alias.getStringValue());
+      }
+      // every index property must be bound by its own equality, not just as many equalities as properties
+      for (final String property : properties)
+        if (!covered.contains(Index.basePropertyName(property)))
           return false;
       return true;
     }

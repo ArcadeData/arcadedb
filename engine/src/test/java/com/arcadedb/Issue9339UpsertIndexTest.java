@@ -147,4 +147,30 @@ public class Issue9339UpsertIndexTest extends TestHelper {
         .hasMessageContaining("UNIQUE index");
     assertThat(database.countType("Dup", false)).isZero();
   }
+
+  @Test
+  void upsertWithOrConditionIsRejected() {
+    database.command("sql", "CREATE DOCUMENT TYPE OrCond");
+    database.command("sql", "CREATE PROPERTY OrCond.code STRING");
+    database.command("sql", "CREATE INDEX ON OrCond (code) UNIQUE");
+
+    assertThatThrownBy(() -> database.transaction(
+        () -> database.command("sql", "UPDATE OrCond SET name = ? UPSERT WHERE code = ? OR code = ?", "x", "a", "b")))
+        .isInstanceOf(CommandSQLParsingException.class);
+    assertThat(database.countType("OrCond", false)).isZero();
+  }
+
+  @Test
+  void upsertOnSubqueryTargetWithUniqueFullKeyLookup() {
+    database.command("sql", "CREATE DOCUMENT TYPE Sub");
+    database.command("sql", "CREATE PROPERTY Sub.code STRING");
+    database.command("sql", "CREATE INDEX ON Sub (code) UNIQUE");
+    database.transaction(() -> database.command("sql", "INSERT INTO Sub SET code = 'c1', name = 'old'"));
+
+    database.transaction(() -> database.command("sql", "UPDATE Sub SET name = 'new' UPSERT WHERE code = 'c1'"));
+    try (final ResultSet rs = database.query("sql", "SELECT name FROM Sub")) {
+      assertThat(rs.next().<String>getProperty("name")).isEqualTo("new");
+      assertThat(rs.hasNext()).isFalse();
+    }
+  }
 }
