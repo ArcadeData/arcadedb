@@ -86,6 +86,11 @@ class LSMVectorIndexMetrics {
   // number that keeps climbing is the signal to give the JVM more heap, lower graphBuildCacheMaxHeapPercent, or
   // split the index; one that climbed once and stopped is a transient the next trigger already recovered from.
   private final AtomicLong rebuildsDeferredForMemory = new AtomicLong(0);
+  // Online rebuilds that were admitted only because the resident on-heap graph was swapped for its persisted
+  // on-disk twin, so the build no longer had to fit beside a second full graph (issue #7260). Each one costs
+  // searches a page read per visited node until the rebuild publishes its replacement, which is the price of not
+  // deferring - and of a delta buffer that grows without bound.
+  private final AtomicLong residentGraphDemotions = new AtomicLong(0);
   // Searches that had to build this index's graph from scratch and found no JVM-wide rebuild permit free, so they
   // queued for one instead of rebuilding alongside every other index at once (issue #7814). A query that waits is
   // the gate working: the alternative it replaces is N large builds on N request threads, which is what pinned a
@@ -175,6 +180,10 @@ class LSMVectorIndexMetrics {
 
   void incrementRebuildsDeferredForMemory() {
     rebuildsDeferredForMemory.incrementAndGet();
+  }
+
+  void incrementResidentGraphDemotions() {
+    residentGraphDemotions.incrementAndGet();
   }
 
   void incrementSearchRebuildsQueuedForPermit() {
@@ -313,6 +322,7 @@ class LSMVectorIndexMetrics {
     stats.put("groupedSearchesMergingDelta", groupedSearchesMergingDelta.get());
     stats.put("unverifiedGraphReuses", unverifiedGraphReuses.get());
     stats.put("rebuildsDeferredForMemory", rebuildsDeferredForMemory.get());
+    stats.put("residentGraphDemotions", residentGraphDemotions.get());
     stats.put("searchRebuildsQueuedForPermit", searchRebuildsQueuedForPermit.get());
     stats.put("searchRebuildsWithoutPermit", searchRebuildsWithoutPermit.get());
     stats.put("smallRebuildsOverBudget", smallRebuildsOverBudget.get());
@@ -343,6 +353,7 @@ class LSMVectorIndexMetrics {
     groupedSearchesMergingDelta.set(0);
     unverifiedGraphReuses.set(0);
     rebuildsDeferredForMemory.set(0);
+    residentGraphDemotions.set(0);
     searchRebuildsQueuedForPermit.set(0);
     searchRebuildsWithoutPermit.set(0);
     smallRebuildsOverBudget.set(0);
