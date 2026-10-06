@@ -115,6 +115,18 @@ class Issue9290AntiJoinChainShapesTest {
   }
 
   @Test
+  void labelOfTheSuffixTargetFiltersTheEdgesItCounts() {
+    database.command("sql", "CREATE VERTEX TYPE Other");
+    database.transaction(() -> {
+      final var other = database.newVertex("Other").save();
+      for (final var row : database.query("sql", "SELECT FROM Person").stream().map(r -> r.getVertex().get()).toList())
+        row.newEdge("HAS_INTEREST", other).save();
+    });
+    // every person now also has a HAS_INTEREST edge to a vertex that is not a Tag: the (t:Tag) label must not count it
+    assertSame(P3, "p0, p1, p2, t", "NOT (p0)-[:KNOWS]-(p2) AND p0 <> p2", 4, true);
+  }
+
+  @Test
   void closingHopBackToTheFirstNodeIsNotPushedDown() {
     final String chain = "MATCH (p0:Person)-[:KNOWS]-(p1:Person)-[:KNOWS]-(p2:Person)-[:HAS_INTEREST]->(p0) ";
     final String where = "NOT (p0)-[:KNOWS]-(p2) AND p0 <> p2";
