@@ -29,9 +29,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Regression test for issue #9339: an UPSERT whose WHERE condition is not an equality on every property of a UNIQUE index
- * (non-unique, missing or partially matched composite index, range, IN, OR, duplicated predicate) must say so in the error, instead of the generic "must involve an index" wording that misled
- * users who did have an index on the property. A composite UNIQUE index is usable only when the WHERE matches all its properties.
+ * Regression test for issue #9339: an UPSERT whose WHERE condition is not an equality on every property of a UNIQUE
+ * index (non-unique, missing or partially matched composite index, range, IN, OR, duplicated predicate) must say so in
+ * the error, instead of the generic "must involve an index" wording that misled users who did have an index on the
+ * property. A composite UNIQUE index is usable only when the WHERE matches all its properties.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -100,6 +101,8 @@ public class Issue9339UpsertIndexTest extends TestHelper {
     database.transaction(() -> {
       database.command("sql", "UPDATE Comp SET name = ? UPSERT WHERE tenant = ? AND code = ?", "x", "t", "c1");
       database.command("sql", "UPDATE Comp SET name = ? UPSERT WHERE tenant = ? AND code = ?", "y", "t", "c1");
+      // the equalities may come in any order, they only have to cover every property of the index
+      database.command("sql", "UPDATE Comp SET name = ? UPSERT WHERE code = ? AND tenant = ?", "z", "c1", "t");
     });
     assertThat(database.countType("Comp", false)).isEqualTo(1);
   }
