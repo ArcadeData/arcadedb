@@ -291,11 +291,27 @@ final class VectorHeapBudget {
   static long estimateOnlineRebuildHeapBytes(final long nodes, final int dimensions, final long buildCacheCapacity,
       final long residentGraphBytes, final long residentGraphNodes, final boolean residentGraphOnHeap,
       final float neighborOverflowFactor) {
+    return estimateOnlineRebuildHeapBytes(nodes, dimensions, buildCacheCapacity, residentGraphBytes,
+        residentGraphNodes, residentGraphOnHeap, neighborOverflowFactor, residentGraphBytes);
+  }
+
+  /**
+   * Same estimate with the cost of what stays resident given separately from the measurement the new graph's
+   * per-node cost is learned from (issue #7260). They are the same graph unless the on-heap graph is about to be
+   * swapped for its persisted on-disk twin: the per-node cost still comes from the on-heap measurement, because
+   * that is the shape being built, but only the twin's far smaller {@code ramBytesUsed()} stays on the heap while
+   * the build runs.
+   *
+   * @param keptResidentBytes what the graph that stays resident during the build costs on the heap
+   */
+  static long estimateOnlineRebuildHeapBytes(final long nodes, final int dimensions, final long buildCacheCapacity,
+      final long residentGraphBytes, final long residentGraphNodes, final boolean residentGraphOnHeap,
+      final float neighborOverflowFactor, final long keptResidentBytes) {
     long estimate = nodes > 0 ?
         nodes * (buildBytesPerNode(residentGraphBytes, residentGraphNodes, residentGraphOnHeap,
             neighborOverflowFactor) + ORDINAL_MAP_BYTES_PER_NODE) : 0L;
     estimate += Math.max(0L, buildCacheCapacity) * bytesPerCachedVector(dimensions);
-    estimate += Math.max(0L, residentGraphBytes);
+    estimate += Math.max(0L, keptResidentBytes);
     return estimate;
   }
 
