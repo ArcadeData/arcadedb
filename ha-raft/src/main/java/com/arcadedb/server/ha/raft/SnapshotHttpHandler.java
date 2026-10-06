@@ -75,13 +75,14 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BiConsumer;
 import java.util.logging.Level;
 import java.util.zip.CRC32;
 import java.util.zip.CheckedInputStream;
-import java.util.zip.ZipEntry;
 import java.util.zip.Deflater;
+import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 /**
@@ -112,6 +113,7 @@ public class SnapshotHttpHandler implements HttpHandler {
 
   /** Bounds the misconfiguration warning in {@link #sanitizedMaxConcurrent} to once per JVM. */
   private static final AtomicBoolean WARNED_MISCONFIGURED_LIMIT = new AtomicBoolean();
+  private static final AtomicBoolean WARNED_MISCONFIGURED_COMPRESSION_LEVEL = new AtomicBoolean();
 
   /** Sub-path selecting the checksums view of a database instead of its snapshot ZIP. */
   static final String CHECKSUMS_SUFFIX = "/checksums";
@@ -153,8 +155,11 @@ public class SnapshotHttpHandler implements HttpHandler {
   // REFCOUNTED in the engine - flushing resumes only when the LAST suspender exits - so overlapping
   // suspendFlushAndExecute callers (this handler, SQL BACKUP DATABASE, database verify) each own their
   // whole window and the lock is NO LONGER needed for suspension correctness.
-  // DECISION (#5068): the lock STAYS, for resource discipline rather than correctness. It serializes the
-  // whole zip streaming per database: two followers resyncing the same multi-GB database at once would
+  // DECISION (#9295): since #6075 the default (point-in-time window) path suspends nothing, so the lock is taken
+  // by the flush-suspension FALLBACK only; two followers resyncing from the same leader no longer queue behind
+  // one another, which doubled each follower's cycle time on a multi-GB database.
+  // DECISION (#5068), now scoped to the fallback: the lock STAYS, for resource discipline rather than correctness.
+  // It serializes the zip streaming per database: two followers resyncing the same multi-GB database at once would
   // double the read I/O and, with refcounted suspension, keep flushing suspended for the UNION of both
   // windows, growing the deferred-page backlog toward the #4728 backpressure cap and throttling commits
   // for longer. Serializing keeps each suspension window as short as possible. Requests beyond the
@@ -329,8 +334,11 @@ public class SnapshotHttpHandler implements HttpHandler {
 
       final DatabaseInternal db = server.getDatabase(databaseName);
 
-      final ReentrantLock dbSuspendLock = suspendLockFor(databaseName);
-      dbSuspendLock.lock();
+      // NO PER-DATABASE LOCK HERE (issue #9295): the point-in-time window path suspends nothing, so two followers
+      // of the same database are served side by side, each bounded by the concurrencySemaphore. Only the
+      // flush-suspension fallback takes suspendLockFor (see streamThroughPointInTimeImage), as it is the one that
+      // parks the flush thread.
+      //
       // Hold TimeSeries compaction back while the sealed stores are paired with the page image (issue #7337),
       // the same guard FullBackupFormat takes for the same reason (issue #7280) - a snapshot ship is a copy of
       // the database, and it reads .ts.sealed outside every window the page files get. Taken HERE, outside
@@ -343,53 +351,65 @@ public class SnapshotHttpHandler implements HttpHandler {
       // to be answerable. Once the zip headers are out and the exchange is blocking, the only way left to say
       // "no" is to drop the connection, which the follower reads as a transfer that died rather than as one
       // that never started.
-      final TimeSeriesCompactionPause pause;
+      // A server CONFIGURED for the frozen-files fallback (pageSnapshotEnabled=false) queues on the per-database lock
+      // BEFORE taking the pause, as it always did, so a queued ship does not hold compaction back while it waits
+      // (code review on PR #9296). The lock is reentrant, so the streamer's own take on the fallback branch is a
+      // no-op here. A window that fails to open at runtime and falls back lands on the streamer's take instead,
+      // AFTER the pause: rare, and the pause is shared so it only delays compaction, never another ship.
+      final ReentrantLock configuredFallbackLock = db.getConfiguration().getValueAsBoolean(GlobalConfiguration.PAGE_SNAPSHOT_ENABLED) ?
+          null :
+          suspendLockFor(databaseName);
+      if (configuredFallbackLock != null)
+        configuredFallbackLock.lock();
       try {
-        pause = TimeSeriesCompactionPause.acquire(db, COMPACTION_PAUSE_TIMEOUT_MS);
-      } catch (final RuntimeException e) {
-        dbSuspendLock.unlock();
-        LogManager.instance().log(this, Level.WARNING,
-            "Snapshot of '%s' refused: TimeSeries compaction could not be paused (%s)", databaseName, e.getMessage());
-        exchange.setStatusCode(503);
-        exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
-        exchange.getResponseSender().send("{\"error\":\"TimeSeries compaction could not be paused for the snapshot\"}");
-        return;
-      }
+        final TimeSeriesCompactionPause pause;
+        try {
+          pause = TimeSeriesCompactionPause.acquire(db, COMPACTION_PAUSE_TIMEOUT_MS);
+        } catch (final RuntimeException e) {
+          LogManager.instance().log(this, Level.WARNING,
+              "Snapshot of '%s' refused: TimeSeries compaction could not be paused (%s)", databaseName, e.getMessage());
+          exchange.setStatusCode(503);
+          exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
+          exchange.getResponseSender().send("{\"error\":\"TimeSeries compaction could not be paused for the snapshot\"}");
+          return;
+        }
 
-      final String safeName = databaseName.replaceAll("[^a-zA-Z0-9._-]", "_");
-      exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/zip");
-      exchange.getResponseHeaders().put(Headers.CONTENT_DISPOSITION,
-          "attachment; filename=\"" + safeName + "-snapshot.zip\"");
-      // Advertise that this stream ends with a completeness manifest (issue #4831) so the follower
-      // requires it and rejects a download truncated at a ZIP-entry boundary.
-      exchange.getResponseHeaders().put(new HttpString(SnapshotManager.MANIFEST_HEADER), "1");
-      // The follower refuses a copy behind the entries it already applied to the one it is replacing (issue #8454),
-      // and does not re-apply any TX or schema entry at or below this index once it installs the copy (issue #8579):
-      // the index must never run ahead of what the captured copy carries.
-      if (appliedIndex != Long.MIN_VALUE)
-        exchange.getResponseHeaders().put(new HttpString(SnapshotManager.APPLIED_INDEX_HEADER), String.valueOf(appliedIndex));
-      exchange.startBlocking();
+        final String safeName = databaseName.replaceAll("[^a-zA-Z0-9._-]", "_");
+        exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/zip");
+        exchange.getResponseHeaders().put(Headers.CONTENT_DISPOSITION,
+            "attachment; filename=\"" + safeName + "-snapshot.zip\"");
+        // Advertise that this stream ends with a completeness manifest (issue #4831) so the follower
+        // requires it and rejects a download truncated at a ZIP-entry boundary.
+        exchange.getResponseHeaders().put(new HttpString(SnapshotManager.MANIFEST_HEADER), "1");
+        // The follower refuses a copy behind the entries it already applied to the one it is replacing (issue #8454),
+        // and does not re-apply any TX or schema entry at or below this index once it installs the copy (issue #8579):
+        // the index must never run ahead of what the captured copy carries.
+        if (appliedIndex != Long.MIN_VALUE)
+          exchange.getResponseHeaders().put(new HttpString(SnapshotManager.APPLIED_INDEX_HEADER), String.valueOf(appliedIndex));
+        exchange.startBlocking();
 
-      // CLOSED TWICE ON THE WINDOW PATH, DELIBERATELY: serveSnapshotZip releases the pause the moment the last
-      // sealed byte is read, and this is the safety net for every other way out - a throw, a client disconnect,
-      // the frozen-files path that never releases early. TimeSeriesCompactionPause.close() is idempotent, so the
-      // second close is a no-op rather than an unlock of a lock this thread no longer holds (code review on
-      // PR #7474).
-      try (pause) {
-        streamThroughPointInTimeImage(db, databaseName, pause, (image, heldPause) -> {
-          // CHECKED AGAIN NOW THAT THE IMAGE IS CAPTURED (code review on PR #8484). A quarantine the apply thread
-          // recorded between the check above and the capture skipped an entry past the reported index, and on an
-          // APPLY_ERROR quarantine later entries can still land in the copy: the follower would then replay the
-          // skipped entry onto pages that are already newer and lose it. Nothing has been written yet, so this is
-          // still a clean 503.
-          final DivergenceCause late = servedDatabaseQuarantine(server, databaseName);
-          if (late != null)
-            refuseQuarantined(exchange, databaseName, late);
-          else
-            serveSnapshotZip(exchange, db, databaseName, image, heldPause);
-        });
+        // CLOSED TWICE ON THE WINDOW PATH, DELIBERATELY: serveSnapshotZip releases the pause the moment the last
+        // sealed byte is read, and this is the safety net for every other way out - a throw, a client disconnect,
+        // the frozen-files path that never releases early. TimeSeriesCompactionPause.close() is idempotent, so the
+        // second close is a no-op rather than an unlock of a lock this thread no longer holds (code review on
+        // PR #7474).
+        try (pause) {
+          streamThroughPointInTimeImage(db, databaseName, pause, suspendLockFor(databaseName), (image, heldPause) -> {
+            // CHECKED AGAIN NOW THAT THE IMAGE IS CAPTURED (code review on PR #8484). A quarantine the apply thread
+            // recorded between the check above and the capture skipped an entry past the reported index, and on an
+            // APPLY_ERROR quarantine later entries can still land in the copy: the follower would then replay the
+            // skipped entry onto pages that are already newer and lose it. Nothing has been written yet, so this is
+            // still a clean 503.
+            final DivergenceCause late = servedDatabaseQuarantine(server, databaseName);
+            if (late != null)
+              refuseQuarantined(exchange, databaseName, late);
+            else
+              serveSnapshotZip(exchange, db, databaseName, image, heldPause);
+          });
+        }
       } finally {
-        dbSuspendLock.unlock();
+        if (configuredFallbackLock != null)
+          configuredFallbackLock.unlock();
       }
     } finally {
       concurrencySemaphore.release();
@@ -508,6 +528,20 @@ public class SnapshotHttpHandler implements HttpHandler {
    */
   static void streamThroughPointInTimeImage(final DatabaseInternal db, final String databaseName,
       final TimeSeriesCompactionPause pause, final BiConsumer<SnapshotImage, TimeSeriesCompactionPause> streamer) {
+    streamThroughPointInTimeImage(db, databaseName, pause, null, streamer);
+  }
+
+  /**
+   * As above, with the lock that serializes the flush-suspension FALLBACK (issue #9295), or {@code null} for none.
+   * <p>
+   * The lock is taken on the fallback branch only. The window path suspends nothing, so two followers of the same
+   * database are served concurrently there; the fallback parks the flush thread for the whole transfer, and with the
+   * refcounted suspension (#5068) two overlapping ships keep it parked for the union of both windows, which is what
+   * serializing them avoids.
+   */
+  static void streamThroughPointInTimeImage(final DatabaseInternal db, final String databaseName,
+      final TimeSeriesCompactionPause pause, final Lock fallbackLock,
+      final BiConsumer<SnapshotImage, TimeSeriesCompactionPause> streamer) {
     // #6075: stream the page files through a point-in-time snapshot. Shipping a multi-GB snapshot used to park the
     // flush thread for the whole transfer, which is the longest-lived suspension in the product: dirty pages piled
     // up until FLUSH_SUSPEND_MAX_DEFERRED_RAM and the leader's committers were throttled (issue #4728). The window
@@ -527,7 +561,7 @@ public class SnapshotHttpHandler implements HttpHandler {
         // serveSnapshotZip's swallow, because that code never runs. It propagates out of handleRequest, which
         // declares `throws Exception` and does not catch around handleSnapshot, so Undertow ends the exchange.
         // Every release still happens on the way out: handleSnapshot's `try (pause)` closes the compaction pause,
-        // its finally unlocks the per-database suspend lock, and the outer finally releases the concurrency
+        // its finally unlocks the per-database suspend lock (when taken), and the outer finally releases the concurrency
         // semaphore. The follower sees a response with no manifest, which is the #4831 check's whole job, and
         // retries - the same recovery as a transfer that dies mid-stream, reached before any bytes were sent.
         //
@@ -573,13 +607,21 @@ public class SnapshotHttpHandler implements HttpHandler {
       } finally {
         openWindow.snapshot().close();
       }
-    } else
-      db.executeInReadLock(() -> {
-        // The refcounted suspension (#5068) guarantees the flush thread is parked for this whole read;
-        // perDatabaseSuspendLock additionally serializes same-database zip streams (see its comment).
-        db.getPageManager().suspendFlushAndExecute(db, () -> streamer.accept(null, null));
-        return null;
-      });
+    } else {
+      // The refcounted suspension (#5068) guarantees the flush thread is parked for this whole read;
+      // the lock additionally serializes same-database fallback streams (see perDatabaseSuspendLock).
+      if (fallbackLock != null)
+        fallbackLock.lock();
+      try {
+        db.executeInReadLock(() -> {
+          db.getPageManager().suspendFlushAndExecute(db, () -> streamer.accept(null, null));
+          return null;
+        });
+      } finally {
+        if (fallbackLock != null)
+          fallbackLock.unlock();
+      }
+    }
   }
 
   private void handleChecksums(final HttpServerExchange exchange, final String databaseName) throws Exception {
@@ -802,8 +844,7 @@ public class SnapshotHttpHandler implements HttpHandler {
 
     try (final OutputStream rawOut = exchange.getOutputStream();
         final OutputStream out = new ProgressTrackingOutputStream(rawOut, lastProgressMs);
-        final ZipOutputStream zipOut = newSnapshotZipStream(out,
-            httpServer.getServer().getConfiguration().getValueAsInteger(GlobalConfiguration.HA_SNAPSHOT_COMPRESSION_LEVEL))) {
+        final ZipOutputStream zipOut = newSnapshotZipStream(out, httpServer.getServer().getConfiguration())) {
 
       // Accumulate one manifest record per file actually streamed (name + size + CRC32), written as the
       // final ZIP entry so the follower can detect a truncated download (issue #4831).
@@ -870,18 +911,23 @@ public class SnapshotHttpHandler implements HttpHandler {
   }
 
   /**
-   * The ZIP stream a snapshot is written through, compressing at {@code configuredLevel}
-   * ({@link GlobalConfiguration#HA_SNAPSHOT_COMPRESSION_LEVEL}). A level outside {@code -1..9} is logged and
-   * replaced by the JDK default rather than failing the ship. Package-private for unit testing.
+   * The ZIP stream a snapshot is written through, compressing at {@link GlobalConfiguration#HA_SNAPSHOT_COMPRESSION_LEVEL}.
+   * A level outside {@code -1..9} is logged and replaced by the default rather than failing the ship. Package-private
+   * for unit testing.
    */
-  static ZipOutputStream newSnapshotZipStream(final OutputStream out, final int configuredLevel) {
+  static ZipOutputStream newSnapshotZipStream(final OutputStream out, final ContextConfiguration configuration) {
     final ZipOutputStream zipOut = new ZipOutputStream(out);
-    if (configuredLevel >= Deflater.DEFAULT_COMPRESSION && configuredLevel <= Deflater.BEST_COMPRESSION)
-      zipOut.setLevel(configuredLevel);
-    else
-      LogManager.instance().log(SnapshotHttpHandler.class, Level.WARNING,
-          "'%s' is set to %d, outside -1..9; using the default compression level",
-          GlobalConfiguration.HA_SNAPSHOT_COMPRESSION_LEVEL.getKey(), configuredLevel);
+    final int level = configuration.getValueAsInteger(GlobalConfiguration.HA_SNAPSHOT_COMPRESSION_LEVEL);
+    if (level >= Deflater.DEFAULT_COMPRESSION && level <= Deflater.BEST_COMPRESSION)
+      zipOut.setLevel(level);
+    else {
+      final int fallback = ((Number) GlobalConfiguration.HA_SNAPSHOT_COMPRESSION_LEVEL.getDefValue()).intValue();
+      zipOut.setLevel(fallback);
+      if (WARNED_MISCONFIGURED_COMPRESSION_LEVEL.compareAndSet(false, true))
+        LogManager.instance().log(SnapshotHttpHandler.class, Level.WARNING,
+          "'%s' is set to %d, outside -1..9; using the default (%d)",
+          GlobalConfiguration.HA_SNAPSHOT_COMPRESSION_LEVEL.getKey(), level, fallback);
+    }
     return zipOut;
   }
 
