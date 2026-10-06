@@ -365,10 +365,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private volatile ImmutableGraphIndex persistedGraphSource;
   // Deferrals since a rebuild last got through: the WARNING is worth one line per streak, not one per attempt
   // (issue #7260), because the second line of a streak tells the operator nothing the first did not.
-  private final AtomicInteger           rebuildDeferralStreak = new AtomicInteger();
-  private volatile boolean             demotionFailureLogged;
+  private final AtomicInteger          rebuildDeferralStreak = new AtomicInteger();
+  private volatile boolean            demotionFailureLogged;
   // When the resident graph was published: a heap reading only counts it if a collection ended after this.
-  private volatile long                graphPublishedAtMs;
+  private volatile long               graphPublishedAtMs;
   // Incremented each time a graph build snapshots its start mutation counter. Lets callers (and tests) observe
   // that a build has passed the point after which further mutations are preserved rather than folded into the
   // build's own snapshot (issue #3683).
@@ -5468,6 +5468,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
     final LSMVectorIndexGraphFile gf = graphFile;
     if (gf == null || !gf.hasPersistedGraph())
       return false;
+    if (graphIndex != resident)
+      return false; // cheap early exit, before anything is loaded or reclaimed; re-checked under the lock below
 
     OnDiskGraphIndex twin = null;
     try {
@@ -5524,7 +5526,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
       LogManager.instance().log(this, Level.INFO,
           "Vector index %s keeps its graph on disk while it rebuilds: %d nodes did not fit beside the %d MB "
               + "the on-heap graph occupies, and with that graph counted as freed (%d MB of heap that %s allows "
-              + "it) the build fits next to the persisted copy (%d MB on the heap), with about %d MB for the build. Searches read the topology from pages until a "
+              + "it) the build fits next to the persisted copy (%d MB on the heap), with about %d MB for the "
+              + "build. Searches read the topology from pages until a "
               + "rebuild publishes its replacement; if this one fails the next trigger retries it against the "
               + "much smaller on-disk graph (issue #7260)",
           indexName, nodes, onHeapBytes / (1024 * 1024), VectorHeapBudget.budgetBytes(percent, creditedHeap) / (1024 * 1024),

@@ -147,6 +147,7 @@ class Issue6503VectorHeapBudgetTest {
     assertThat(VectorHeapBudget.isTenuredCollector("ParNew")).isFalse();
     assertThat(VectorHeapBudget.isTenuredCollector("ZGC Minor Cycles")).isFalse();
     assertThat(VectorHeapBudget.isTenuredCollector(null)).isFalse();
+    assertThat(VectorHeapBudget.isTenuredCollector("SomeFutureCollector")).as("unknown withholds the credit").isFalse();
     assertThat(VectorHeapBudget.isTenuredCollector("G1 Old Generation")).isTrue();
     assertThat(VectorHeapBudget.isTenuredCollector("G1 Concurrent GC")).isTrue();
     assertThat(VectorHeapBudget.isTenuredCollector("PS MarkSweep")).isTrue();
