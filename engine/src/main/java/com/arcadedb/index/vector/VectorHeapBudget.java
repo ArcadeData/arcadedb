@@ -20,10 +20,12 @@ package com.arcadedb.index.vector;
 
 import com.arcadedb.log.LogManager;
 
+import java.lang.management.GarbageCollectorMXBean;
 import java.lang.management.ManagementFactory;
 import java.lang.management.MemoryPoolMXBean;
 import java.lang.management.MemoryType;
 import java.lang.management.MemoryUsage;
+import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 
@@ -120,6 +122,50 @@ final class VectorHeapBudget {
   }
 
   /**
+   * Wall-clock time the most recent collection of the TENURED pools finished, or {@code -1} when one has not run or
+   * the JVM does not publish it (issue #7260). Compared with the moment a graph was published, it says whether the
+   * post-collection reading of {@link #liveHeapBytes()} can have counted that graph: a large graph lives in the old
+   * generation, whose reading a young collection does not refresh (with G1 only a concurrent, mixed or full cycle
+   * does), so only a collector that is not a young one counts (see {@link #isTenuredCollector}). Conservative by construction: an unknown answers
+   * {@code -1}, which withholds the credit, and the cost of that is one more deferral rather than an OOM.
+   */
+  static long lastCollectionEndMillis() {
+    long last = -1L;
+    try {
+      final long jvmStart = ManagementFactory.getRuntimeMXBean().getStartTime();
+      for (final GarbageCollectorMXBean gc : ManagementFactory.getGarbageCollectorMXBeans()) {
+        // Fully qualified because the com.sun.management variant shares its simple name with the standard
+        // java.lang.management interface imported above.
+        if (!isTenuredCollector(gc.getName()) || !(gc instanceof final com.sun.management.GarbageCollectorMXBean sunGc))
+          continue;
+        final com.sun.management.GcInfo info = sunGc.getLastGcInfo();
+        if (info != null)
+          last = Math.max(last, jvmStart + info.getEndTime());
+      }
+    } catch (final RuntimeException | LinkageError e) {
+      return -1L; // indistinguishable from a JVM that does not publish it
+    }
+    return last;
+  }
+
+  /**
+   * Whether a collector's cycles refresh the old-generation reading. A WHITELIST on the collector's name, so a
+   * collector this has never heard of withholds the credit rather than granting it: G1 Old Generation and G1
+   * Concurrent GC, the mark-sweep collectors of Parallel and Serial, and the full cycles of ZGC and Shenandoah.
+   * G1's young collector is deliberately absent although it lists the old pool among its own (it manages every
+   * region): a young collection never refreshes that pool's post-collection usage.
+   */
+  static boolean isTenuredCollector(final String collectorName) {
+    if (collectorName == null)
+      return false;
+    final String name = collectorName.toLowerCase(Locale.ROOT);
+    if (name.contains("young") || name.contains("minor"))
+      return false;
+    return name.contains("old") || name.contains("marksweep") || name.contains("concurrent")
+        || name.contains("major") || name.contains("cycles");
+  }
+
+  /**
    * Heap a new allocation can realistically expect to get: the ceiling minus what is live after the last
    * collection. Falls back to the whole ceiling when live occupancy is unknown, which reproduces exactly the
    * total-heap budgeting this class replaces - a conservative default in the sense that it changes nothing.
@@ -184,9 +230,14 @@ final class VectorHeapBudget {
    * @return the budget in bytes, never negative
    */
   static long budgetBytes(final int percent) {
+    return budgetBytes(percent, availableHeapBytes());
+  }
+
+  /** {@link #budgetBytes(int)} against a supplied available-heap figure. */
+  static long budgetBytes(final int percent, final long availableHeap) {
     if (percent <= 0)
       return 0L;
-    return availableHeapBytes() / 100 * Math.min(percent, 90);
+    return availableHeap / 100 * Math.min(percent, 90);
   }
 
   /**
@@ -291,11 +342,27 @@ final class VectorHeapBudget {
   static long estimateOnlineRebuildHeapBytes(final long nodes, final int dimensions, final long buildCacheCapacity,
       final long residentGraphBytes, final long residentGraphNodes, final boolean residentGraphOnHeap,
       final float neighborOverflowFactor) {
+    return estimateOnlineRebuildHeapBytes(nodes, dimensions, buildCacheCapacity, residentGraphBytes,
+        residentGraphNodes, residentGraphOnHeap, neighborOverflowFactor, residentGraphBytes);
+  }
+
+  /**
+   * Same estimate with the cost of what stays resident given separately from the measurement the new graph's
+   * per-node cost is learned from (issue #7260). They are the same graph unless the on-heap graph is about to be
+   * swapped for its persisted on-disk twin: the per-node cost still comes from the on-heap measurement, because
+   * that is the shape being built, but only the twin's far smaller {@code ramBytesUsed()} stays on the heap while
+   * the build runs.
+   *
+   * @param keptResidentBytes what the graph that stays resident during the build costs on the heap
+   */
+  static long estimateOnlineRebuildHeapBytes(final long nodes, final int dimensions, final long buildCacheCapacity,
+      final long residentGraphBytes, final long residentGraphNodes, final boolean residentGraphOnHeap,
+      final float neighborOverflowFactor, final long keptResidentBytes) {
     long estimate = nodes > 0 ?
         nodes * (buildBytesPerNode(residentGraphBytes, residentGraphNodes, residentGraphOnHeap,
             neighborOverflowFactor) + ORDINAL_MAP_BYTES_PER_NODE) : 0L;
     estimate += Math.max(0L, buildCacheCapacity) * bytesPerCachedVector(dimensions);
-    estimate += Math.max(0L, residentGraphBytes);
+    estimate += Math.max(0L, keptResidentBytes);
     return estimate;
   }
 

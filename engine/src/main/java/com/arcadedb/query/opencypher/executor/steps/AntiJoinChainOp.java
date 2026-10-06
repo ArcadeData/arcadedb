@@ -710,7 +710,9 @@ public final class AntiJoinChainOp implements CountOp {
       for (int prev = 0; prev < h; prev++) {
         if (Objects.equals(nodeLabels[h], nodeLabels[prev])
             && Objects.equals(edgeTypes[h], edgeTypes[prev])
-            && directions[h] == directions[prev]) {
+            && directions[h] == directions[prev]
+            // THE MAP KEEPS ONLY TARGETS OF THE NEXT POSITION'S LABEL, SO THE TARGET LABEL MUST MATCH TOO (issue #9277)
+            && Objects.equals(nodeLabels[h + 1], nodeLabels[prev + 1])) {
           hopMaps[h] = hopMaps[prev];
           reused = true;
           break;
@@ -720,9 +722,10 @@ public final class AntiJoinChainOp implements CountOp {
         hopMaps[h] = buildNeighborRIDMap(db, nodeLabels[h], edgeTypes[h], directions[h], validBuckets[h + 1], guard);
     }
 
-    // Build anti-join neighbor map (reuse hop map if parameters match)
+    // Build anti-join neighbor map (reuse hop map if parameters match; hopMaps[0] keeps only targets of nodeLabels[1], hence the label test)
     final Map<RID, RID[]> antiJoinMap;
-    if (anchorIsSource && checkPos > 0 && antiJoinEdgeType.equals(edgeTypes[0]) && antiJoinDirection == directions[0])
+    if (anchorIsSource && checkPos > 0 && antiJoinEdgeType.equals(edgeTypes[0]) && antiJoinDirection == directions[0]
+        && Objects.equals(nodeLabels[antiJoinTargetIdx], nodeLabels[1]))
       antiJoinMap = hopMaps[0];
     else if (anchorIsSource)
       antiJoinMap = buildNeighborRIDMap(db, anchorLabel, antiJoinEdgeType, antiJoinDirection,
