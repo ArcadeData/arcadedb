@@ -132,27 +132,10 @@ public final class AntiJoinChainOp implements CountOp {
     if (earlierIdx != 0)
       return executeGenericAntiJoin(db, guard);
 
-    // FAST PATH: Edge-scan with algebraic computation for 3-hop chains where:
-    // - Chain is (A) ←[E0]- (B) ←[E1]- (C) -[E2]→ (D)
-    // - Anti-join is NOT (C)-[E_anti]->(A) with E_anti == E0 (same edge type)
-    // - Inequality A ≠ D
-    // Formula: count = sum over E1 edges (B,C): (|E0_rev(B)| - |E0_rev(B) ∩ E2(C)|) × |E2(C)|
-    // This avoids all per-anchor iteration.
-    // Additional condition: the inequality must span the full chain (positions 0 and hops),
-    // and the anti-join later endpoint must be at the second-to-last position (laterIdx == hops - 1).
-    // This ensures the algebraic formula correctly computes the anti-join + inequality together.
-    // Q8 matches: hops=3, anti-join (c at pos2, t1 at pos0), inequality (t1 at pos0, t2 at pos3)
-    // Q9 does NOT match: hops=3, anti-join (p1 at pos0, p3 at pos2), inequality (p1 at pos0, p3 at pos2)
-    //   — Q9's inequality endpoints don't span the full chain.
-    final int ineqMin = Math.min(inequalityIdxA, inequalityIdxB);
-    final int ineqMax = Math.max(inequalityIdxA, inequalityIdxB);
-    if (hops == 3 && laterIdx == hops - 1 && earlierIdx == 0
-        && antiJoinEdgeType.equals(edgeTypes[0])
-        && inequalityIdxA >= 0 && inequalityIdxB >= 0
-        && ineqMin == 0 && ineqMax == hops) {
+    // The Q8 shape (see isOverlapShape) has its own exact count: one pass over the middle hop's edges.
+    if (isOverlapShape()) {
       final long result = executeEdgeScanAlgebraic(provider, nodeIdUpperBound, validBuckets, guard);
-      if (result >= 0)
-        return result;
+      return result >= 0 ? result : executeOverlapOLTP(db, guard);
     }
 
     // Per-source iteration from anchor (position 0). null accepts every vertex, empty accepts none (issue #5757).
@@ -418,82 +401,135 @@ public final class AntiJoinChainOp implements CountOp {
   }
 
   /**
-   * Edge-scan algebraic computation for 3-hop anti-join chains.
+   * Whether the chain is the one shape {@link #executeEdgeScanAlgebraic} and {@link #executeOverlapOLTP} count exactly (LSQB Q8):
+   * <pre>
+   *   (t1:T)&lt;-[:E]-(m:M)&lt;-[:R]-(c:C)-[:E]-&gt;(t2:T)  WHERE NOT (c)-[:E]-&gt;(t1) AND t1 &lt;&gt; t2
+   * </pre>
+   * Three hops, every position labelled, hops 0 and 2 of the negated pattern's type {@code E} and pointing the same way from
+   * {@code m} and from {@code c}, the negated pattern running from {@code c} to {@code t1} in that same direction, and the
+   * inequality between the two ends. The planner only builds the operator for this shape after checking that {@code R} is a
+   * type that cannot be {@code E} (see CypherExecutionPlan#isOverlapShapeCountedExactly).
+   */
+  private boolean isOverlapShape() {
+    if (edgeTypes.length != 3)
+      return false;
+    for (final String label : nodeLabels)
+      if (label == null)
+        return false;
+    for (final Vertex.DIRECTION direction : directions)
+      if (direction == Vertex.DIRECTION.BOTH)
+        return false;
+    if (Math.min(antiJoinSourceIdx, antiJoinTargetIdx) != 0 || Math.max(antiJoinSourceIdx, antiJoinTargetIdx) != 2)
+      return false;
+    if (Math.min(inequalityIdxA, inequalityIdxB) != 0 || Math.max(inequalityIdxA, inequalityIdxB) != 3)
+      return false;
+    if (!antiJoinEdgeType.equals(edgeTypes[0]) || !antiJoinEdgeType.equals(edgeTypes[2]) || antiJoinEdgeType.equals(edgeTypes[1]))
+      return false;
+    final Vertex.DIRECTION antiFromC = antiJoinSourceIdx == 2 ? antiJoinDirection : reverse(antiJoinDirection);
+    return antiFromC == directions[2] && reverse(directions[0]) == directions[2];
+  }
+
+  /**
+   * Exact count of the Q8 shape (see {@link #isOverlapShape}) on the CSR: one pass over the middle hop's edges (c, m).
    * <p>
-   * For Q8: (t1:Tag) ←[HAS_TAG]- (m) ←[REPLY_OF]- (c) -[HAS_TAG]→ (t2:Tag)
-   *         WHERE NOT (c)-[:HAS_TAG]->(t1) AND t1 <> t2
-   * <p>
-   * For each REPLY_OF edge (c → m):
-   *   tags_m = reverse_E0 neighbors of m (tags of m)
-   *   tags_c = E2 neighbors of c (tags of c)
-   *   common = |tags_m ∩ tags_c| (sorted merge)
-   *   contribution = (|tags_m| - common) × |tags_c|
-   *   (tags of m that c doesn't have × tags of c — satisfies both anti-join and inequality)
+   * A row is a choice of an {@code E} edge from m to t1, the {@code R} edge, and an {@code E} edge from c to t2. The negated
+   * pattern removes every t1 that c has an {@code E} edge to; a t2 is such a target, so t1 differs from t2 whenever the row
+   * survives, and the two {@code E} edges (m's and c's) are different edges. Hence for every pair (m, c)
+   * <pre>
+   *   rows(m, c) = #{ E edges m-&gt;t1 : t1 in T0 and t1 not in targets(c) } * #{ E edges c-&gt;t2 : t2 in T3 }
+   * </pre>
+   * where T0 and T3 are the labels of positions 0 and 3, targets(c) is every target of c's {@code E} edges (the negated pattern
+   * has no label), and parallel edges count once per edge on both sides, as the row pipeline does.
    *
-   * @return count, or -1 if NeighborViews unavailable (caller should fall back)
+   * @return count, or -1 if a NeighborView is unavailable (the caller counts through the vertices instead)
    */
   private long executeEdgeScanAlgebraic(final GraphTraversalProvider provider,
       final int nodeIdUpperBound, final IntHashSet[] validBuckets, final WorkGuard guard) {
-    final Vertex.DIRECTION revDir0 = directions[0] == Vertex.DIRECTION.OUT ? Vertex.DIRECTION.IN
-        : directions[0] == Vertex.DIRECTION.IN ? Vertex.DIRECTION.OUT : Vertex.DIRECTION.BOTH;
-    final NeighborView viewA = provider.getNeighborView(revDir0, edgeTypes[0]);
-    final NeighborView viewE1 = provider.getNeighborView(directions[1], edgeTypes[1]);
-    final NeighborView viewC = provider.getNeighborView(directions[2], edgeTypes[2]);
-
-    if (viewA == null || viewE1 == null || viewC == null)
-      return -1; // fall back to per-source
+    for (final IntHashSet buckets : validBuckets)
+      if (buckets.isEmpty())
+        return 0;
+    final NeighborView viewA = provider.getNeighborView(reverse(directions[0]), edgeTypes[0]);   // m -> t1
+    final NeighborView viewC = provider.getNeighborView(directions[2], edgeTypes[2]);            // c -> t2 (and the negated pattern)
+    final NeighborView viewR = provider.getNeighborView(reverse(directions[1]), edgeTypes[1]);   // c -> m
+    if (viewA == null || viewC == null || viewR == null)
+      return -1;
 
     final int[] aNbrs = viewA.neighbors();
-    final int[] e1Nbrs = viewE1.neighbors();
     final int[] cNbrs = viewC.neighbors();
-
-    // Optional type filtering. null is "no label, so no filter"; an empty set is a label that matches nothing.
-    final IntHashSet pos1Buckets = validBuckets[1];
-    final IntHashSet pos2Buckets = validBuckets[2];
-    if ((pos1Buckets != null && pos1Buckets.isEmpty()) || (pos2Buckets != null && pos2Buckets.isEmpty()))
-      return 0;
-    final int[] bucketIds = (pos1Buckets != null || pos2Buckets != null)
-        ? precomputeBucketIds(provider, nodeIdUpperBound, guard) : null;
+    final int[] rNbrs = viewR.neighbors();
+    final int[] bucketIds = precomputeBucketIds(provider, nodeIdUpperBound, guard);
+    final IntHashSet t1Buckets = validBuckets[0], mBuckets = validBuckets[1], cBuckets = validBuckets[2], t2Buckets = validBuckets[3];
 
     long total = 0;
-
-    // Scan all E1 (middle) edges by iterating pos1 nodes
-    for (int b = 0; b < nodeIdUpperBound; b++) {
-      guard.check();
-      if (!provider.isNodeLive(b))
+    int[] targets = new int[16];
+    for (int c = 0; c < nodeIdUpperBound; c++) {
+      guard.checkPeriodically(c);
+      if (!provider.isNodeLive(c) || !cBuckets.contains(bucketIds[c]))
         continue;
-      if (pos1Buckets != null && !pos1Buckets.contains(bucketIds[b]))
+      final int cStart = viewC.offset(c), cEnd = viewC.offsetEnd(c);
+      if (cStart == cEnd)
         continue;
+      long t2 = 0;
+      for (int k = cStart; k < cEnd; k++)
+        if (t2Buckets.contains(bucketIds[cNbrs[k]]))
+          t2++;
+      if (t2 == 0)
+        continue;
+      final int rStart = viewR.offset(c), rEnd = viewR.offsetEnd(c);
+      if (rStart == rEnd)
+        continue;
+      final int n = cEnd - cStart;
+      if (targets.length < n)
+        targets = new int[Math.max(n, targets.length * 2)];
+      System.arraycopy(cNbrs, cStart, targets, 0, n);
+      Arrays.sort(targets, 0, n);
 
-      final int e1Start = viewE1.offset(b);
-      final int e1End = viewE1.offsetEnd(b);
-      if (e1Start == e1End) continue;
-
-      // Get setA size = reverse-E0 neighbors of b (tags of message b)
-      final int aStart = viewA.offset(b);
-      final int aEnd = viewA.offsetEnd(b);
-      if (aStart == aEnd) continue;
-      final int tagsOfB = aEnd - aStart;
-
-      // For each E1 neighbor c (pos2 node):
-      for (int j = e1Start; j < e1End; j++) {
-        final int c = e1Nbrs[j];
-
-        if (pos2Buckets != null && !pos2Buckets.contains(bucketIds[c]))
+      for (int j = rStart; j < rEnd; j++) {
+        final int m = rNbrs[j];
+        if (!mBuckets.contains(bucketIds[m]))
           continue;
+        long t1 = 0;
+        for (int k = viewA.offset(m), end = viewA.offsetEnd(m); k < end; k++) {
+          final int a = aNbrs[k];
+          if (t1Buckets.contains(bucketIds[a]) && Arrays.binarySearch(targets, 0, n, a) < 0)
+            t1++;
+        }
+        total += t1 * t2;
+      }
+    }
+    return total;
+  }
 
-        // Get setC = E2 neighbors of c (tags of comment c)
-        final int cStart = viewC.offset(c);
-        final int cEnd = viewC.offsetEnd(c);
-        if (cStart == cEnd) continue;
-        final int tagsOfC = cEnd - cStart;
-
-        // Count |setA ∩ setC| via sorted merge
-        final long common = sortedIntersectionCount(aNbrs, aStart, aEnd, cNbrs, cStart, cEnd);
-
-        // Contribution: (tags of m that c DOESN'T have) × (tags of c)
-        // Anti-join ensures t1 ∉ tags(c). Inequality t1≠t2 is auto-satisfied since t1 ∉ tags(c) but t2 ∈ tags(c).
-        total += (tagsOfB - common) * tagsOfC;
+  /** The same count as {@link #executeEdgeScanAlgebraic}, read through the vertices (no CSR view available). */
+  private long executeOverlapOLTP(final Database db, final WorkGuard guard) {
+    final IntHashSet[] buckets = new IntHashSet[4];
+    for (int i = 0; i < 4; i++) {
+      buckets[i] = CSRCountUtils.buildValidBuckets(db, nodeLabels[i]);
+      if (buckets[i].isEmpty())
+        return 0;
+    }
+    final Vertex.DIRECTION cToTags = directions[2], cToM = reverse(directions[1]), mToTags = reverse(directions[0]);
+    long total = 0;
+    for (final Iterator<? extends Identifiable> it = CSRCountUtils.iterateAnchors(db, nodeLabels[2]); it.hasNext(); ) {
+      guard.check();
+      final Vertex c = it.next().asVertex();
+      final Set<RID> targets = new HashSet<>();
+      long t2 = 0;
+      for (final RID tag : c.getConnectedVertexRIDs(cToTags, edgeTypes[2])) {
+        targets.add(tag);
+        if (buckets[3].contains(tag.getBucketId()))
+          t2++;
+      }
+      if (t2 == 0)
+        continue;
+      for (final RID m : c.getConnectedVertexRIDs(cToM, edgeTypes[1])) {
+        if (!buckets[1].contains(m.getBucketId()))
+          continue;
+        long t1 = 0;
+        for (final RID a : m.asVertex().getConnectedVertexRIDs(mToTags, edgeTypes[0]))
+          if (buckets[0].contains(a.getBucketId()) && !targets.contains(a))
+            t1++;
+        total += t1 * t2;
       }
     }
     return total;
@@ -542,18 +578,6 @@ public final class AntiJoinChainOp implements CountOp {
       bucketIds[v] = provider.getRID(v).getBucketId();
     }
     return bucketIds;
-  }
-
-  private static long sortedIntersectionCount(final int[] a, int aStart, final int aEnd,
-      final int[] b, int bStart, final int bEnd) {
-    long count = 0;
-    while (aStart < aEnd && bStart < bEnd) {
-      final int av = a[aStart], bv = b[bStart];
-      if (av < bv) aStart++;
-      else if (av > bv) bStart++;
-      else { count++; aStart++; bStart++; }
-    }
-    return count;
   }
 
   /**
@@ -718,6 +742,8 @@ public final class AntiJoinChainOp implements CountOp {
 
   @Override
   public long executeOLTP(final Database db, final WorkGuard guard) {
+    if (isOverlapShape())
+      return executeOverlapOLTP(db, guard);
     final String anchorLabel = nodeLabels[0];
     final int hops = edgeTypes.length;
     final int checkPos = Math.max(antiJoinSourceIdx, antiJoinTargetIdx);
