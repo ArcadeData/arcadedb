@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.security.ServerSecurity;
+import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.websockets.core.WebSocketCallback;
 import io.undertow.websockets.core.WebSocketChannel;
@@ -231,14 +232,36 @@ public class WebSocketEventBus {
     final WebSocketChannel channel = subscription.getChannel();
     if (channel == null || this.arcadeServer == null)
       return true;
-    final var connectedUser = (ServerSecurityUser) channel.getAttribute(USER);
-    if (connectedUser == null)
-      return true;
+    try {
+      final ServerSecurityUser current = revalidatedUser(channel);
+      return current == null || current.canAccessToDatabase(databaseName);
+    } catch (final ServerSecurityException e) {
+      return false;
+    }
+  }
+
+  /**
+   * The identity attached to {@code channel}, replaced by the one currently registered under its name (issue #9311). The
+   * principal captured at the handshake is a snapshot that nothing refreshes, so EVERY use of it on a long-lived
+   * {@code /ws} channel - SUBSCRIBE, delivery, insert frames - goes through here: one rule for the transport, the one
+   * {@link ServerSecurity#revalidate} applies to the wire protocols. The fresh instance is written back, so a caller
+   * that reads the channel attribute afterwards sees it too.
+   *
+   * @return the live principal, or the attached one untouched when the channel has none or no security is installed
+   *
+   * @throws ServerSecurityException when the user was dropped, or its password changed since the handshake
+   */
+  public ServerSecurityUser revalidatedUser(final WebSocketChannel channel) {
+    final ServerSecurityUser held = (ServerSecurityUser) channel.getAttribute(USER);
+    if (held == null || this.arcadeServer == null)
+      return held;
     final ServerSecurity security = this.arcadeServer.getSecurity();
     if (security == null)
-      return true;
-    final ServerSecurityUser current = security.getUser(connectedUser.getName());
-    return current != null && current.canAccessToDatabase(databaseName);
+      return held;
+    final ServerSecurityUser live = security.revalidate(held);
+    if (live != held)
+      channel.setAttribute(USER, live);
+    return live;
   }
 
   private Object lockFor(final String database) {

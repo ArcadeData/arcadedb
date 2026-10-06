@@ -21,6 +21,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.query.OperationType;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.ExplainExecutionPlan;
@@ -29,6 +30,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 public class ExplainStatement extends Statement {
 
@@ -114,7 +116,19 @@ public class ExplainStatement extends Statement {
 
   @Override
   public boolean isIdempotent() {
+    // EXPLAIN never executes the wrapped statement, so it stays idempotent whatever it wraps. This is the opposite of
+    // PROFILE, which executes it and therefore follows it (issue #9313). The pair was already confused once (#7789).
     return true;
+  }
+
+  @Override
+  public boolean isDDL() {
+    return statement.isDDL();
+  }
+
+  @Override
+  public Set<OperationType> getOperationTypes() {
+    return statement.getOperationTypes();
   }
 
   /**
