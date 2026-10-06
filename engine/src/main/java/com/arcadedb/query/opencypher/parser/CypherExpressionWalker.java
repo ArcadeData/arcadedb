@@ -182,6 +182,17 @@ public final class CypherExpressionWalker {
     default Visitor forClauseEntry(final ClauseEntry entry) {
       return this;
     }
+
+    /**
+     * Called before the walk descends into the part of an expression that sees variables the expression binds
+     * itself - the iterator of a list comprehension, quantifier or {@code reduce()}, and a {@code reduce()}
+     * accumulator. Inside it those names shadow whatever the enclosing scope called them, so a check reading
+     * variable kinds re-binds itself here, the way it does for {@link #forNestedStatement}. Returning {@code this}
+     * is right for a check that carries no positional state.
+     */
+    default Visitor forLocalBindings(final String... variables) {
+      return this;
+    }
   }
 
   private CypherExpressionWalker() {
@@ -435,23 +446,29 @@ public final class CypherExpressionWalker {
       walk(slice.getToExpression(), visitor);
     } else if (expr instanceof ListComprehensionExpression comprehension) {
       walk(comprehension.getListExpression(), visitor);
-      walk(comprehension.getWhereExpression(), visitor);
-      walk(comprehension.getMapExpression(), visitor);
-    } else if (expr instanceof ListPredicateExpression predicate) {
+      final Visitor local = visitor.forLocalBindings(comprehension.getVariable());
+      walk(comprehension.getWhereExpression(), local);
+      walk(comprehension.getMapExpression(), local);
+    }
+    case ListPredicateExpression predicate -> {
       walk(predicate.getListExpression(), visitor);
-      walk(predicate.getWhereExpression(), visitor);
-    } else if (expr instanceof CypherExpressionBuilder.ChainedPropertyAccessExpression chained) {
-      walk(chained.getBaseExpression(), visitor);
-    } else if (expr instanceof ReduceExpression reduce) {
+      walk(predicate.getWhereExpression(), visitor.forLocalBindings(predicate.getVariable()));
+    }
+    case CypherExpressionBuilder.ChainedPropertyAccessExpression chained -> walk(chained.getBaseExpression(), visitor);
+    case ReduceExpression reduce -> {
       walk(reduce.getInitialValue(), visitor);
       walk(reduce.getListExpression(), visitor);
-      walk(reduce.getReduceExpression(), visitor);
-    } else if (expr instanceof AllReduceExpression reduce) {
+      walk(reduce.getReduceExpression(),
+          visitor.forLocalBindings(reduce.getAccumulatorVariable(), reduce.getIteratorVariable()));
+    }
+    case AllReduceExpression reduce -> {
       walk(reduce.getInitialValue(), visitor);
       walk(reduce.getListExpression(), visitor);
-      walk(reduce.getReduceExpression(), visitor);
-      walk(reduce.getPredicateExpression(), visitor);
-    } else if (expr instanceof TernaryLogicalExpression ternary) {
+      final Visitor local = visitor.forLocalBindings(reduce.getAccumulatorVariable(), reduce.getIteratorVariable());
+      walk(reduce.getReduceExpression(), local);
+      walk(reduce.getPredicateExpression(), local);
+    }
+    case TernaryLogicalExpression ternary -> {
       walk(ternary.getLeft(), visitor);
       walk(ternary.getRight(), visitor);
     } else if (expr instanceof BooleanWrapperExpression wrapper) {
