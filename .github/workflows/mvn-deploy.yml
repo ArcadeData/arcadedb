@@ -12,6 +12,14 @@ on:
 permissions:
   contents: read
 
+# One deploy at a time, never cancelled: a cancel could stop a Maven Central or Docker Hub push
+# halfway. While one runs, GitHub keeps only the NEWEST pending run and drops older pending ones,
+# which is what a deploy wants - an older run can no longer finish last and overwrite `latest`
+# with a staler build.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest

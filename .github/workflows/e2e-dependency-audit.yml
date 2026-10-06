@@ -34,6 +34,12 @@ on:
     - cron: "0 6 * * 1"  # Every Monday at 6 AM UTC
   workflow_dispatch:
 
+# Cancel this PR's superseded run on a new push; other events are keyed by SHA and never cancel
+# each other. Rationale in mvn-test.yml.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   audit:
     name: "Audit ${{ matrix.project }}"
