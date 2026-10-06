@@ -84,6 +84,10 @@ class Issue9301PartialVertexCoverageViewTest extends TestHelper {
       assertSameAnswers(state);
       // the one-hop scan, the one path that accepts a partial view, answers the same
       assertThat(count("opencypher", "MATCH (a:A)-[:E]->(b:B) RETURN count(*) AS n")).as(state + " Cypher one hop").isEqualTo(2);
+      assertThat(count("opencypher", "MATCH (a:A)-[:E]->(b:B) RETURN max(b.id) AS n")).as(state + " Cypher one hop max").isEqualTo(12);
+      if ("A, B".equals(vertexTypes))
+        assertThat(database.query("opencypher", "PROFILE MATCH (a:A)-[:E]->(b:B) RETURN max(b.id) AS n").getExecutionPlan().get()
+            .prettyPrint(0, 2)).as(state + " one hop plan").contains("GAV ONE-HOP SCAN");
     } finally {
       database.command("sql", "DROP GRAPH ANALYTICAL VIEW g9301");
     }
