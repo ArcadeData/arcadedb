@@ -76,6 +76,13 @@ class CypherAntiJoinChainGAVIssue9282Test extends TestHelper {
           continue;
         a.newEdge("KNOWS", b).save();
       }
+      // a hub knowing everyone, over parallel edges: its adjacency is more than 16 times a leaf's, which is what sends the
+      // anti-join correction through the binary-search side of the intersection
+      final MutableVertex hub = people.get(1);
+      for (int copy = 0; copy < 5; copy++)
+        for (final MutableVertex other : people)
+          if (!other.getIdentity().equals(hub.getIdentity()))
+            hub.newEdge("KNOWS", other).save();
       for (int i = 0; i < 150; i++)
         people.get(random.nextInt(persons)).newEdge("HAS_INTEREST", tags.get(random.nextInt(tags.size()))).save();
     });
