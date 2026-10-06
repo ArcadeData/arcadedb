@@ -25,12 +25,15 @@ import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.URISyntaxException;
+import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -38,6 +41,7 @@ import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
@@ -81,6 +85,19 @@ class BackwardCompatibilityFixturesTest {
     if (database != null && database.isOpen())
       database.close();
     TestHelper.checkActiveDatabases();
+  }
+
+  /** A fixture added without its version in {@link #versions()} would silently never be tested. */
+  @Test
+  void everyFixtureIsTested() throws IOException, URISyntaxException {
+    final URL dir = BackwardCompatibilityFixturesTest.class.getResource("/compat");
+    assertThat(dir).isNotNull();
+    final Set<String> onDisk = new HashSet<>();
+    try (final Stream<Path> files = Files.list(Path.of(dir.toURI()))) {
+      files.map(f -> f.getFileName().toString()).filter(n -> n.startsWith("db-") && n.endsWith(".zip"))
+          .forEach(n -> onDisk.add(n.substring("db-".length(), n.length() - ".zip".length())));
+    }
+    assertThat(onDisk).containsExactlyInAnyOrderElementsOf(versions());
   }
 
   @ParameterizedTest
@@ -333,7 +350,8 @@ class BackwardCompatibilityFixturesTest {
     return n;
   }
 
-  private static void unzip(final String resource, final Path target) throws IOException {
+  private static void unzip(final String resource, final Path dir) throws IOException {
+    final Path target = dir.toAbsolutePath().normalize();
     Files.createDirectories(target);
     try (final InputStream in = BackwardCompatibilityFixturesTest.class.getResourceAsStream(resource)) {
       assertThat(in).as("fixture " + resource).isNotNull();
@@ -341,8 +359,13 @@ class BackwardCompatibilityFixturesTest {
         ZipEntry entry;
         while ((entry = zip.getNextEntry()) != null) {
           final Path file = target.resolve(entry.getName()).normalize();
-          assertThat(file.startsWith(target)).isTrue();
-          Files.copy(zip, file);
+          assertThat(file.startsWith(target)).as("zip entry " + entry.getName()).isTrue();
+          if (entry.isDirectory())
+            Files.createDirectories(file);
+          else {
+            Files.createDirectories(file.getParent());
+            Files.copy(zip, file);
+          }
         }
       }
     }

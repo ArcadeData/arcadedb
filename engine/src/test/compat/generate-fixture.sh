@@ -57,7 +57,8 @@ cat > "$WORK/pom.xml" <<EOF
 </project>
 EOF
 
-mvn -q -f "$WORK/pom.xml" "$@" dependency:build-classpath -Dmdep.outputFile="$WORK/classpath.txt" -Dmdep.includeScope=runtime
+# Pinned so a later regeneration resolves the classpath the same way.
+mvn -q -f "$WORK/pom.xml" "$@" org.apache.maven.plugins:maven-dependency-plugin:3.11.0:build-classpath -Dmdep.outputFile="$WORK/classpath.txt" -Dmdep.includeScope=runtime
 
 java --add-opens java.base/java.nio=ALL-UNNAMED --add-opens java.base/sun.nio.ch=ALL-UNNAMED \
   -cp "$(cat "$WORK/classpath.txt")" \

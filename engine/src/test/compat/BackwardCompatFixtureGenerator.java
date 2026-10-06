@@ -80,20 +80,23 @@ public class BackwardCompatFixtureGenerator {
     final Path work = Files.createTempDirectory("arcadedb-compat-fixture");
     final File dbDir = work.resolve("compat").toFile();
 
+    // Process-global setting: fine for this standalone launcher, but it would leak into anything else sharing the JVM.
     GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.setValue(SUPERNODE_THRESHOLD);
 
-    try (final DatabaseFactory factory = new DatabaseFactory(dbDir.getAbsolutePath())) {
-      final Database db = factory.create();
-      try {
-        populate(db);
-        verifyPromoted(db);
-      } finally {
-        db.close();
+    try {
+      try (final DatabaseFactory factory = new DatabaseFactory(dbDir.getAbsolutePath())) {
+        final Database db = factory.create();
+        try {
+          populate(db);
+          verifyPromoted(db);
+        } finally {
+          db.close();
+        }
       }
+      zipDirectory(dbDir.toPath(), outputZip);
+    } finally {
+      deleteRecursively(work);
     }
-
-    zipDirectory(dbDir.toPath(), outputZip);
-    deleteRecursively(work);
     System.out.println("Fixture written by ArcadeDB " + Constants.getVersion() + " -> " + outputZip);
   }
 
