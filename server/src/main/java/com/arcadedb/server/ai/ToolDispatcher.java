@@ -87,23 +87,31 @@ public class ToolDispatcher {
    * gateway's model loop stays paused on the call until it arrives: a tool that threw instead of returning left that loop
    * waiting for its own timeout (issue #8721). {@link #execute} already turns an {@link Exception} into an error result, but
    * not an {@link Error} (a {@link StackOverflowError} on a deeply nested query, an {@link AssertionError}), nor what an
-   * override of it throws or returns. Only an {@link OutOfMemoryError} still escapes.
+   * override of it throws or returns. A {@link VirtualMachineError} other than a {@link StackOverflowError} (which the
+   * unwinding has already recovered from) still escapes: the JVM is in no state to go on.
    *
    * @param args the tool's arguments, or {@code null} when the call carried arguments that are not a JSON object (see
    *             {@link #arguments}): answered with an error result, without running the tool
    */
   public final String executeSafely(final String toolName, final JSONObject args) {
     if (args == null)
-      return errorJson("The arguments of tool '" + toolName + "' are not a JSON object");
+      return errorJson("The arguments of tool '" + toolName
+          + "' are not a JSON object, nor a string holding valid JSON for one: send them as a JSON object");
     try {
       final String result = execute(toolName, args);
       return result != null ? result : errorJson("Tool '" + toolName + "' returned no result");
-    } catch (final OutOfMemoryError e) {
+    } catch (final StackOverflowError e) {
+      return failed(toolName, e);
+    } catch (final VirtualMachineError e) {
       throw e;
     } catch (final Throwable e) {
-      LogManager.instance().log(this, Level.WARNING, "AI tool '%s' threw instead of returning an error result", e, toolName);
-      return errorJson("Tool '" + toolName + "' failed: " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()));
+      return failed(toolName, e);
     }
+  }
+
+  private String failed(final String toolName, final Throwable e) {
+    LogManager.instance().log(this, Level.WARNING, "AI tool '%s' threw instead of returning an error result", e, toolName);
+    return errorJson("Tool '" + toolName + "' failed: " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()));
   }
 
   /**

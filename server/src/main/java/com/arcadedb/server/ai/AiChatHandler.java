@@ -660,7 +660,7 @@ public class AiChatHandler extends AbstractServerHttpHandler {
         LogManager.instance().log(this, Level.WARNING, "AI gateway sent tool_call before session event; cannot deliver result");
       else
         postToolResult(gatewaySessionId, toolId,
-            toolResult != null ? toolResult : new JSONObject().put("error", "The tool was not run: the chat stream ended").toString());
+            toolResult != null ? toolResult : new JSONObject().put("error", "The tool did not complete").toString());
     }
   }
 
@@ -685,15 +685,17 @@ public class AiChatHandler extends AbstractServerHttpHandler {
    * own timeout-driven error response).
    */
   private void postToolResult(final String sessionId, final String toolId, final String resultJson) {
-    final JSONObject body = new JSONObject().put("id", toolId).put("result", resultJson);
-    final HttpRequest req = HttpRequest.newBuilder()
-        .uri(URI.create(config.getGatewayUrl() + "/api/chat/tool_result/" + sessionId))
-        .header("Content-Type", "application/json")
-        .header("Authorization", "Bearer " + config.getSubscriptionToken())
-        .POST(HttpRequest.BodyPublishers.ofString(body.toString()))
-        .timeout(Duration.ofMillis(toolResultTimeoutMs))
-        .build();
     try {
+      // Built inside the try: a session id the URI refuses must not throw out of relayToolCall's finally, where it would
+      // replace the failure that is ending the stream
+      final JSONObject body = new JSONObject().put("id", toolId).put("result", resultJson);
+      final HttpRequest req = HttpRequest.newBuilder()
+          .uri(URI.create(config.getGatewayUrl() + "/api/chat/tool_result/" + sessionId))
+          .header("Content-Type", "application/json")
+          .header("Authorization", "Bearer " + config.getSubscriptionToken())
+          .POST(HttpRequest.BodyPublishers.ofString(body.toString()))
+          .timeout(Duration.ofMillis(toolResultTimeoutMs))
+          .build();
       final HttpResponse<String> resp = BoundedHttpExchange.send(HTTP_CLIENT, req, HttpResponse.BodyHandlers.ofString(),
           toolResultTimeoutMs);
       if (resp.statusCode() != 200) {

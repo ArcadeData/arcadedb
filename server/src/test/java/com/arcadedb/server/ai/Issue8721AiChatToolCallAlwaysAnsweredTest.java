@@ -66,7 +66,10 @@ class Issue8721AiChatToolCallAlwaysAnsweredTest extends BaseGraphServerTest {
   /** A hang detector, not a latency bound: how long the fake gateway waits for each tool result. */
   private static final int HANG_DETECT_MS = 30_000;
 
+  /** The tool results POSTed by the relay, not yet consumed by the fake gateway. */
   private final BlockingQueue<JSONObject> toolResults = new LinkedBlockingQueue<>();
+  /** The tool results the fake gateway consumed, in the order they arrived. */
+  private final List<JSONObject>          received    = new CopyOnWriteArrayList<>();
   private       Undertow                  gateway;
 
   @AfterEach
@@ -89,7 +92,7 @@ class Issue8721AiChatToolCallAlwaysAnsweredTest extends BaseGraphServerTest {
 
     final List<JSONObject> events = chatWith(call);
 
-    final JSONObject delivered = toolResults.poll();
+    final JSONObject delivered = delivered(0);
     assertThat(delivered).as("the gateway got a result for the call").isNotNull();
     assertThat(delivered.getString("id")).isEqualTo("tc-1");
     assertThat(new JSONObject(delivered.getString("result")).getString("error", "")).contains("not a JSON object");
@@ -106,7 +109,7 @@ class Issue8721AiChatToolCallAlwaysAnsweredTest extends BaseGraphServerTest {
 
     final List<JSONObject> events = chatWith(call);
 
-    final JSONObject delivered = toolResults.poll();
+    final JSONObject delivered = delivered(0);
     assertThat(delivered).isNotNull();
     final JSONObject result = new JSONObject(delivered.getString("result"));
     assertThat(result.has("error")).as("result: %s", result).isFalse();
@@ -124,7 +127,7 @@ class Issue8721AiChatToolCallAlwaysAnsweredTest extends BaseGraphServerTest {
 
     final List<JSONObject> events = chatWith(call);
 
-    final JSONObject delivered = toolResults.poll();
+    final JSONObject delivered = delivered(0);
     assertThat(delivered).isNotNull();
     assertThat(delivered.getString("id")).isEqualTo("tc-1");
     assertThat(new JSONObject(delivered.getString("result")).getString("error", "")).contains("Unknown tool");
@@ -141,8 +144,8 @@ class Issue8721AiChatToolCallAlwaysAnsweredTest extends BaseGraphServerTest {
 
     final List<JSONObject> events = chatWith(bad, good);
 
-    final JSONObject first = toolResults.poll();
-    final JSONObject second = toolResults.poll();
+    final JSONObject first = delivered(0);
+    final JSONObject second = delivered(1);
     assertThat(first).isNotNull();
     assertThat(second).isNotNull();
     assertThat(first.getString("id")).isEqualTo("tc-1");
@@ -150,6 +153,11 @@ class Issue8721AiChatToolCallAlwaysAnsweredTest extends BaseGraphServerTest {
     assertThat(second.getString("id")).isEqualTo("tc-2");
     assertThat(new JSONObject(second.getString("result")).getString("version", null)).isNotBlank();
     assertAnswerCompleted(events, 2);
+  }
+
+  /** The index-th tool result the gateway got, or {@code null} when it got fewer. */
+  private JSONObject delivered(final int index) {
+    return index < received.size() ? received.get(index) : null;
   }
 
   private static JSONObject toolEnd(final List<JSONObject> events) {
@@ -174,7 +182,6 @@ class Issue8721AiChatToolCallAlwaysAnsweredTest extends BaseGraphServerTest {
    * model loop waits), then answers 'done'. A result that never comes ends the gateway's stream without 'done'.
    */
   private List<JSONObject> chatWith(final JSONObject... toolCalls) throws Exception {
-    final List<JSONObject> received = new CopyOnWriteArrayList<>();
     gateway = Undertow.builder().addHttpListener(0, "127.0.0.1").setHandler(Handlers.path()//
         .addExactPath("/api/chat", exchange -> exchange.dispatch(() -> {
           try {
@@ -217,10 +224,7 @@ class Issue8721AiChatToolCallAlwaysAnsweredTest extends BaseGraphServerTest {
     field.setAccessible(true);
     field.set(config, "http://127.0.0.1:" + ((InetSocketAddress) gateway.getListenerInfo().get(0).getAddress()).getPort());
 
-    final List<JSONObject> events = streamedChat();
-    // The results the gateway consumed are handed back for the assertions, in the order they arrived
-    toolResults.addAll(received);
-    return events;
+    return streamedChat();
   }
 
   private List<JSONObject> streamedChat() throws Exception {

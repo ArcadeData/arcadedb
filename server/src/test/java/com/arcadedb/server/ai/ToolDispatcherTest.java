@@ -195,6 +195,8 @@ class ToolDispatcherTest extends BaseGraphServerTest {
     final ToolDispatcher dispatcher = throwing(new OutOfMemoryError("test"));
 
     assertThatThrownBy(() -> dispatcher.executeSafely("get_schema", new JSONObject())).isInstanceOf(OutOfMemoryError.class);
+    assertThatThrownBy(() -> throwing(new InternalError("test")).executeSafely("get_schema", new JSONObject()))
+        .isInstanceOf(InternalError.class);
   }
 
   @Test
