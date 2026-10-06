@@ -326,7 +326,10 @@ class AlgoLabelPropagationTest {
         for (int i = 0; i < vids.length; i++)
           db.newVertex("T").set("name", "N" + i).set("vid", vids[i]).save().newEdge("TE", x, true, (Object[]) null).save();
       });
-      assertThat(labels(db, "{maxIterations: 3, tieBreakProperty: 'vid'}")).hasSize(10);
+      // With direction IN only X has neighbours: the winner must be one of the zero-valued nodes (-0.0, 0.0, 0L)
+      final Map<String, Integer> result = labels(db, "{maxIterations: 1, direction: 'IN', tieBreakProperty: 'vid'}");
+      assertThat(result).hasSize(10);
+      assertThat(result.get("X")).isIn(result.get("N2"), result.get("N3"), result.get("N4"));
     } finally {
       db.drop();
     }
