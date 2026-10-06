@@ -70,7 +70,7 @@ class Issue9298CountPushDownMultiplicityTest extends TestHelper {
   }
 
   @Test
-  void q2ParallelAndReciprocalKnowsCountPerRelationship() {
+  void q2ParallelAndReciprocalKnowsCountPerRelationship() throws InterruptedException {
     knows(0, 1);
     assertAllAgree(Q2, "person1, person2, comment, post", 1L);
     knows(0, 1);
@@ -80,7 +80,7 @@ class Issue9298CountPushDownMultiplicityTest extends TestHelper {
   }
 
   @Test
-  void q3ParallelKnowsCountPerRelationship() {
+  void q3ParallelKnowsCountPerRelationship() throws InterruptedException {
     knows(0, 1);
     knows(1, 2);
     knows(2, 0);
@@ -90,7 +90,7 @@ class Issue9298CountPushDownMultiplicityTest extends TestHelper {
   }
 
   @Test
-  void q3ReciprocalKnowsCountPerRelationship() {
+  void q3ReciprocalKnowsCountPerRelationship() throws InterruptedException {
     knows(0, 1);
     knows(1, 0);
     knows(1, 2);
@@ -98,7 +98,7 @@ class Issue9298CountPushDownMultiplicityTest extends TestHelper {
     assertAllAgree(Q3, "country, person1, person2, person3, city1, city2, city3", 12L);
   }
 
-  private void assertAllAgree(final String match, final String withVars, final long expected) {
+  private void assertAllAgree(final String match, final String withVars, final long expected) throws InterruptedException {
     assertThat(count(match + " WITH " + withVars + " RETURN count(*) AS n")).as("row pipeline").isEqualTo(expected);
     final String written = match + " RETURN count(*) AS n";
     assertThat(count(written)).as("no view").isEqualTo(expected);
@@ -112,12 +112,12 @@ class Issue9298CountPushDownMultiplicityTest extends TestHelper {
     database.command("sql", "DROP GRAPH ANALYTICAL VIEW wide");
   }
 
-  private void createView(final String name, final String definition) {
+  private void createView(final String name, final String definition) throws InterruptedException {
     database.command("sql", "CREATE GRAPH ANALYTICAL VIEW " + name + " " + definition);
     final GraphAnalyticalView view = GraphAnalyticalViewRegistry.get(database, name);
     final long deadline = System.currentTimeMillis() + 60_000;
     while (!view.isReady() && System.currentTimeMillis() < deadline)
-      Thread.onSpinWait();
+      Thread.sleep(20);
     assertThat(view.isReady()).isTrue();
   }
 
