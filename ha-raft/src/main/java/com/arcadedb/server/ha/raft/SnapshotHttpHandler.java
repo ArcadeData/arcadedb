@@ -75,11 +75,13 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BiConsumer;
 import java.util.logging.Level;
 import java.util.zip.CRC32;
 import java.util.zip.CheckedInputStream;
+import java.util.zip.Deflater;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -152,8 +154,11 @@ public class SnapshotHttpHandler implements HttpHandler {
   // REFCOUNTED in the engine - flushing resumes only when the LAST suspender exits - so overlapping
   // suspendFlushAndExecute callers (this handler, SQL BACKUP DATABASE, database verify) each own their
   // whole window and the lock is NO LONGER needed for suspension correctness.
-  // DECISION (#5068): the lock STAYS, for resource discipline rather than correctness. It serializes the
-  // whole zip streaming per database: two followers resyncing the same multi-GB database at once would
+  // DECISION (#9295): since #6075 the default (point-in-time window) path suspends nothing, so the lock is taken
+  // by the flush-suspension FALLBACK only; two followers resyncing from the same leader no longer queue behind
+  // one another, which doubled each follower's cycle time on a multi-GB database.
+  // DECISION (#5068), now scoped to the fallback: the lock STAYS, for resource discipline rather than correctness.
+  // It serializes the zip streaming per database: two followers resyncing the same multi-GB database at once would
   // double the read I/O and, with refcounted suspension, keep flushing suspended for the UNION of both
   // windows, growing the deferred-page backlog toward the #4728 backpressure cap and throttling commits
   // for longer. Serializing keeps each suspension window as short as possible. Requests beyond the
@@ -328,8 +333,11 @@ public class SnapshotHttpHandler implements HttpHandler {
 
       final DatabaseInternal db = server.getDatabase(databaseName);
 
-      final ReentrantLock dbSuspendLock = suspendLockFor(databaseName);
-      dbSuspendLock.lock();
+      // NO PER-DATABASE LOCK HERE (issue #9295): the point-in-time window path suspends nothing, so two followers
+      // of the same database are served side by side, each bounded by the concurrencySemaphore. Only the
+      // flush-suspension fallback takes suspendLockFor (see streamThroughPointInTimeImage), as it is the one that
+      // parks the flush thread.
+      //
       // Hold TimeSeries compaction back while the sealed stores are paired with the page image (issue #7337),
       // the same guard FullBackupFormat takes for the same reason (issue #7280) - a snapshot ship is a copy of
       // the database, and it reads .ts.sealed outside every window the page files get. Taken HERE, outside
@@ -346,7 +354,6 @@ public class SnapshotHttpHandler implements HttpHandler {
       try {
         pause = TimeSeriesCompactionPause.acquire(db, COMPACTION_PAUSE_TIMEOUT_MS);
       } catch (final RuntimeException e) {
-        dbSuspendLock.unlock();
         LogManager.instance().log(this, Level.WARNING,
             "Snapshot of '%s' refused: TimeSeries compaction could not be paused (%s)", databaseName, e.getMessage());
         exchange.setStatusCode(503);
@@ -375,7 +382,7 @@ public class SnapshotHttpHandler implements HttpHandler {
       // second close is a no-op rather than an unlock of a lock this thread no longer holds (code review on
       // PR #7474).
       try (pause) {
-        streamThroughPointInTimeImage(db, databaseName, pause, (image, heldPause) -> {
+        streamThroughPointInTimeImage(db, databaseName, pause, suspendLockFor(databaseName), (image, heldPause) -> {
           // CHECKED AGAIN NOW THAT THE IMAGE IS CAPTURED (code review on PR #8484). A quarantine the apply thread
           // recorded between the check above and the capture skipped an entry past the reported index, and on an
           // APPLY_ERROR quarantine later entries can still land in the copy: the follower would then replay the
@@ -387,8 +394,6 @@ public class SnapshotHttpHandler implements HttpHandler {
           else
             serveSnapshotZip(exchange, db, databaseName, image, heldPause);
         });
-      } finally {
-        dbSuspendLock.unlock();
       }
     } finally {
       concurrencySemaphore.release();
@@ -507,6 +512,20 @@ public class SnapshotHttpHandler implements HttpHandler {
    */
   static void streamThroughPointInTimeImage(final DatabaseInternal db, final String databaseName,
       final TimeSeriesCompactionPause pause, final BiConsumer<SnapshotImage, TimeSeriesCompactionPause> streamer) {
+    streamThroughPointInTimeImage(db, databaseName, pause, null, streamer);
+  }
+
+  /**
+   * As above, with the lock that serializes the flush-suspension FALLBACK (issue #9295), or {@code null} for none.
+   * <p>
+   * The lock is taken on the fallback branch only. The window path suspends nothing, so two followers of the same
+   * database are served concurrently there; the fallback parks the flush thread for the whole transfer, and with the
+   * refcounted suspension (#5068) two overlapping ships keep it parked for the union of both windows, which is what
+   * serializing them avoids.
+   */
+  static void streamThroughPointInTimeImage(final DatabaseInternal db, final String databaseName,
+      final TimeSeriesCompactionPause pause, final Lock fallbackLock,
+      final BiConsumer<SnapshotImage, TimeSeriesCompactionPause> streamer) {
     // #6075: stream the page files through a point-in-time snapshot. Shipping a multi-GB snapshot used to park the
     // flush thread for the whole transfer, which is the longest-lived suspension in the product: dirty pages piled
     // up until FLUSH_SUSPEND_MAX_DEFERRED_RAM and the leader's committers were throttled (issue #4728). The window
@@ -572,13 +591,21 @@ public class SnapshotHttpHandler implements HttpHandler {
       } finally {
         openWindow.snapshot().close();
       }
-    } else
-      db.executeInReadLock(() -> {
-        // The refcounted suspension (#5068) guarantees the flush thread is parked for this whole read;
-        // perDatabaseSuspendLock additionally serializes same-database zip streams (see its comment).
-        db.getPageManager().suspendFlushAndExecute(db, () -> streamer.accept(null, null));
-        return null;
-      });
+    } else {
+      // The refcounted suspension (#5068) guarantees the flush thread is parked for this whole read;
+      // the lock additionally serializes same-database fallback streams (see perDatabaseSuspendLock).
+      if (fallbackLock != null)
+        fallbackLock.lock();
+      try {
+        db.executeInReadLock(() -> {
+          db.getPageManager().suspendFlushAndExecute(db, () -> streamer.accept(null, null));
+          return null;
+        });
+      } finally {
+        if (fallbackLock != null)
+          fallbackLock.unlock();
+      }
+    }
   }
 
   private void handleChecksums(final HttpServerExchange exchange, final String databaseName) throws Exception {
@@ -801,7 +828,7 @@ public class SnapshotHttpHandler implements HttpHandler {
 
     try (final OutputStream rawOut = exchange.getOutputStream();
         final OutputStream out = new ProgressTrackingOutputStream(rawOut, lastProgressMs);
-        final ZipOutputStream zipOut = new ZipOutputStream(out)) {
+        final ZipOutputStream zipOut = newSnapshotZipStream(out, httpServer.getServer().getConfiguration())) {
 
       // Accumulate one manifest record per file actually streamed (name + size + CRC32), written as the
       // final ZIP entry so the follower can detect a truncated download (issue #4831).
@@ -865,6 +892,26 @@ public class SnapshotHttpHandler implements HttpHandler {
       if (watchdog != null)
         watchdog.cancel(false);
     }
+  }
+
+  /**
+   * The ZIP stream a snapshot is written through, compressing at {@link GlobalConfiguration#HA_SNAPSHOT_COMPRESSION_LEVEL}.
+   * A level outside {@code -1..9} is logged and replaced by the default rather than failing the ship. Package-private
+   * for unit testing.
+   */
+  static ZipOutputStream newSnapshotZipStream(final OutputStream out, final ContextConfiguration configuration) {
+    final ZipOutputStream zipOut = new ZipOutputStream(out);
+    final int level = configuration.getValueAsInteger(GlobalConfiguration.HA_SNAPSHOT_COMPRESSION_LEVEL);
+    if (level >= Deflater.DEFAULT_COMPRESSION && level <= Deflater.BEST_COMPRESSION)
+      zipOut.setLevel(level);
+    else {
+      final int fallback = ((Number) GlobalConfiguration.HA_SNAPSHOT_COMPRESSION_LEVEL.getDefValue()).intValue();
+      zipOut.setLevel(fallback);
+      LogManager.instance().log(SnapshotHttpHandler.class, Level.WARNING,
+          "'%s' is set to %d, outside -1..9; using the default (%d)",
+          GlobalConfiguration.HA_SNAPSHOT_COMPRESSION_LEVEL.getKey(), level, fallback);
+    }
+    return zipOut;
   }
 
   /**

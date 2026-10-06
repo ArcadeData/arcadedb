@@ -2483,6 +2483,16 @@ public enum GlobalConfiguration {
       "Maximum number of concurrent snapshot downloads served by the leader. Requests over this limit receive HTTP 503.",
       Integer.class, 2),
 
+  HA_SNAPSHOT_COMPRESSION_LEVEL("arcadedb.ha.snapshotCompressionLevel", SCOPE.SERVER,
+      """
+      DEFLATE compression level the leader applies to the ZIP stream of a database snapshot shipped to a follower: \
+      0 (stored, no compression) to 9 (smallest, slowest), or -1 for the JDK default (level 6). The compression runs \
+      on a single HTTP worker thread per transfer, so at the JDK default it can cap a resync at a few MB/s on a fast \
+      private network. The default 1 (fastest DEFLATE) keeps most of the size reduction of database pages at a \
+      fraction of the CPU; 0 sends the files stored. A value outside -1..9 is ignored and the default is used. \
+      Only the serving side reads it, the follower accepts any level.""",
+      Integer.class, 1),
+
   HA_SNAPSHOT_DOWNLOAD_TIMEOUT("arcadedb.ha.snapshotDownloadTimeout", SCOPE.SERVER,
       "Read timeout in ms for downloading a database snapshot from the leader during follower resync.",
       Integer.class, 300_000),
