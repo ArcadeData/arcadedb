@@ -21,6 +21,7 @@ package com.arcadedb.metrics.prometheus;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -43,9 +44,26 @@ class Issue7159PrometheusRequireAuthenticationLiveTest {
   private final ContextConfiguration          configuration = new ContextConfiguration();
   private final GetPrometheusMetricsHandler   handler       = new GetPrometheusMetricsHandler(null, null, configuration);
 
+  private String previousSystemProperty;
+
+  /**
+   * Issue #8736: an "empty overlay" is not enough for the enum to be authoritative.
+   * {@link ContextConfiguration#getValue(String, Object)} falls back to the system property of the same name before
+   * the plugin ever looks at the enum, so a property left behind by an earlier test in the same JVM (the server
+   * tests configure the flag that way) shadowed every {@code setValue} below and the test failed only when the whole
+   * module ran. Hide it for the duration of each test and put it back afterwards.
+   */
+  @BeforeEach
+  void hideTheSystemProperty() {
+    previousSystemProperty = System.getProperty(KEY);
+    System.clearProperty(KEY);
+  }
+
   @AfterEach
   void tearDown() {
     GlobalConfiguration.SERVER_METRICS_PROMETHEUS_REQUIRE_AUTHENTICATION.reset();
+    if (previousSystemProperty != null)
+      System.setProperty(KEY, previousSystemProperty);
   }
 
   @Test
