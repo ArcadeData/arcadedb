@@ -804,6 +804,8 @@ public class GraphQLSchema {
    * does for data selections.
    */
   private static void setMerged(final ResultInternal target, final String responseKey, final Object value) {
+    // A KEY WRITTEN WITH null (mutationType, THE ofType OF A NAMED TYPE) IS PRESENT TOO: hasProperty() READS THE CONTENT MAP'S
+    // KEYS, SO A LATER SELECTION UNDER THE SAME KEY NEVER REPLACES IT
     if (!target.hasProperty(responseKey))
       target.setProperty(responseKey, value);
     else
@@ -819,6 +821,8 @@ public class GraphQLSchema {
       for (int i = 0; i < existingList.size(); i++)
         mergeInto(existingList.get(i), valueList.get(i));
     }
+    // ANY OTHER PAIR (A LEAF, A null, AN OBJECT AGAINST A LEAF, OR TWO LISTS OF DIFFERENT SIZES, WHICH TWO BUILDS OF THE SAME
+    // FIELD IN ONE EXECUTION CANNOT PRODUCE) KEEPS THE FIRST VALUE WRITTEN
   }
 
   private static String mapDatabaseTypeToGraphQL(final Type type) {

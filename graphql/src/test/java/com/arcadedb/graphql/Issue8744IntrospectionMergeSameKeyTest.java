@@ -121,6 +121,48 @@ class Issue8744IntrospectionMergeSameKeyTest extends AbstractGraphQLTest {
   }
 
   @Test
+  void duplicatesAtTwoNestedLevelsAndThreeTimesAreMerged() {
+    executeTest(database -> {
+      defineTypes(database);
+
+      final Result record = single(database, "{ __type(name: \"Book\") { fields { name } fields { type { ofType { name } } "
+          + "type { ofType { kind } } } fields { type { kind } } } }");
+      final List<Result> fields = record.getProperty("fields");
+      for (final Result field : fields) {
+        assertThat(field.getPropertyNames()).containsExactly("name", "type");
+        assertThat(field.<Result>getProperty("type").getPropertyNames()).containsExactly("ofType", "kind");
+      }
+      final Result authors = fields.stream().filter(f -> "authors".equals(f.getProperty("name"))).findFirst().orElseThrow();
+      final Result authorsType = authors.getProperty("type");
+      assertThat(authorsType.<String>getProperty("kind")).isEqualTo("LIST");
+      final Result ofType = authorsType.getProperty("ofType");
+      assertThat(ofType.getPropertyNames()).containsExactly("name", "kind");
+      assertThat(ofType.<String>getProperty("name")).isEqualTo("Author");
+      assertThat(ofType.<String>getProperty("kind")).isEqualTo("OBJECT");
+      return null;
+    });
+  }
+
+  @Test
+  void nullValueSelectedTwiceStaysPresentAndNull() {
+    executeTest(database -> {
+      defineTypes(database);
+
+      // A NAMED TYPE HAS NO ofType: BOTH SELECTIONS WRITE null, AND THE KEY IS STILL RETURNED ONCE
+      final Result record = single(database, "{ __type(name: \"Book\") { ofType { name } ofType { kind } } }");
+      assertThat(record.getPropertyNames()).containsExactly("ofType");
+      assertThat(record.<Object>getProperty("ofType")).isNull();
+
+      // A null WRITTEN FIRST UNDER A KEY IS KEPT AGAINST A LATER, CONFLICTING, NON-null SELECTION (INVALID PER THE
+      // SPECIFICATION, SEE conflictingLeavesUnderOneKeyKeepTheFirstOneWritten)
+      final Result conflicting = single(database, "{ __type(name: \"Book\") { x: ofType { name } x: name } }");
+      assertThat(conflicting.getPropertyNames()).containsExactly("x");
+      assertThat(conflicting.<Object>getProperty("x")).isNull();
+      return null;
+    });
+  }
+
+  @Test
   void queryTypeSelectedTwiceIsMerged() {
     executeTest(database -> {
       defineTypes(database);
