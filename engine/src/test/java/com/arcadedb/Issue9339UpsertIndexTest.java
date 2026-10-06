@@ -19,6 +19,8 @@
 package com.arcadedb;
 
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
@@ -46,6 +48,12 @@ public class Issue9339UpsertIndexTest extends TestHelper {
       database.command("sql", "UPDATE Doc SET name = ?, code = ? UPSERT WHERE code = ?", "y", "c1", "c1");
     });
     assertThat(database.countType("Doc", false)).isEqualTo(1);
+    try (final ResultSet rs = database.query("sql", "SELECT code, name FROM Doc")) {
+      final Result row = rs.next();
+      assertThat(row.<String>getProperty("code")).isEqualTo("c1");
+      assertThat(row.<String>getProperty("name")).isEqualTo("y");
+      assertThat(rs.hasNext()).isFalse();
+    }
   }
 
   @Test
