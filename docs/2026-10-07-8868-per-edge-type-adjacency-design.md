@@ -142,7 +142,7 @@ already allows an empty slot and any number of generations up to 127, so nothing
 **Why it stays fail closed.** An older release reaches a nested type-7 record only through a type-8 root, which it
 cannot read. A nested sub-directory is never a vertex head, so no older code path treats it as one.
 
-**Two implementation changes to type-7 code that this needs** (both internal, no format change):
+**Three implementation changes to type-7 code that this needs** (both internal, no format change):
 
 - A `StripeDirectory` constructor for a sub-directory: generation 0 with empty slots, generation 1 with one slot.
 - An append that targets a given generation instead of the newest one, used only by the drain to fill generation 0.
@@ -164,6 +164,19 @@ All of these are lazy. No step moves existing entries, so every step is one boun
 
 A replacement sub-directory rather than growing the old one in place keeps the type-7 property that a directory's
 size never changes after creation.
+
+**A reader holding a replaced or superseded RID.**
+
+- *Vertex head flip (conversion).* Nothing is deleted. A reader that resolved the vertex before the flip still holds
+  the classic chain or the type-7 directory, which stays valid and reachable as the legacy part. It sees the list as
+  it was before the conversion, the same as a reader that resolved the head before any concurrent append.
+- *Key promotion.* The old sub-directory **is** deleted, so a reader that took its RID from a root read before the
+  swap can get `RecordNotFoundException` when it loads it. The new list class handles this exactly as
+  `StripedEdgeList.addChain` handles a stripe head that is not visible: it re-reads the root once and follows the new
+  pointer. If that still cannot be resolved, a strict operation (removal, neighbour-keyed dedup) raises a retryable
+  `ConcurrentModificationException`, and a read walk skips that key with the existing throttled warning. A write
+  never follows a stale sub-directory, because it loads the sub-directory through its anchored page, and the
+  promoting transaction's delete fails that version check.
 
 **Racing appenders are safe without moving anything.** A transaction that loaded the old structure before a
 conversion committed appends into chunks that stay reachable: the classic chain or the type-7 directory becomes the
@@ -345,6 +358,14 @@ in-place downgrade path, is a **prerequisite of #9263** (default ON), not a some
 | First edge of two new types, or a key promotion, at the same time | The root | A real conflict, retried. Once per (vertex, edge bucket), plus once per key promotion. |
 | A drain step and an append into the drained chunk | The chunk (anchored by the drain) | A real conflict, retried. |
 
+**Root size and the page merges.** The root grows by 16 bytes per key: 1,000 keys at one vertex is about 16 KB,
+inside the default 64 KB page. A rewrite that grows the root is still a single-slot change while the page can host
+it, so the slot merge covers it (`TX_PAGE_SLOT_MERGE` handles a record growth the page can host). A root that outgrows
+its page becomes a multi-page record. Its continuation chunks are outside the slot merge, so concurrent root rewrites
+then become plain retries, which is correct and only slower. Every root rewrite also poisons the root's page for the
+edge-append merge **for the rewriting transaction only**. Other vertices' chunks on that page lose the append merge
+for that one commit, which is at most one commit per root rewrite.
+
 **Root contention.** A root rewrite happens once per (vertex, edge bucket) when the key is created, once per key
 promotion, and once at the end of a drain. After a conversion, a burst of first appends of several new types on the
 same hot vertex therefore conflicts on the root. Each loser gets a retryable `ConcurrentModificationException` and the
@@ -411,11 +432,16 @@ or special-cases the type-7 directory today. #9267 (read) and #9268 (write) each
 
 ## 5. Tests the sub-issues must carry
 
+Section 6 maps these to the sub-issue edits. The concurrency and HA mixed-version tests are specified with their
+behavior in 2.8 and 2.6.
+
 - **#9265 (fixtures):** keep green through every later step. Add a **26.10.1** fixture next to 26.8.1 and 26.9.1: it is
   released, and it is the first release that validates `HASH_VERSION`.
 - **#9267 (reader):** type-8 records built by a test-only writer: every row of section 3, every rejection of 2.3.6, a
-  root with a type-7 legacy part and one with a classic legacy part, a partly drained vertex, the checker walk, and
-  the capability token present in `PeerCapabilities.LOCAL`.
+  root with a type-7 legacy part and one with a classic legacy part, a partly drained vertex, the checker walk, the
+  `GraphDatabaseChecker` orphan reclaim on a database with type-8 roots (no live root, sub-directory, archive or legacy
+  chunk is reclaimed, and a real orphan still is), a reader holding a sub-directory RID that a key promotion deleted
+  (2.3.4), and the capability token present in `PeerCapabilities.LOCAL`.
 - **#9268 (writer):** fresh promotion and type-7 conversion under the setting; a type added after promotion; key
   promotion; the drain, interrupted and resumed; the concurrency table of 2.8; the HA gate in both directions
   (a peer without the token keeps the leader on type 7, all peers with it allow type 8); export/import with the
@@ -429,6 +455,9 @@ or special-cases the type-7 directory today. #9267 (read) and #9268 (write) each
   - a filtered hop on a single-type key never opens a chain of another key;
   - a drain killed between steps, and one killed inside a step (rollback), followed by `CHECK DATABASE`: no error,
     and every edge counted exactly once by filtered and unfiltered walks.
+- **Compatibility, all releases:** the #9265 fixtures (26.8.1, 26.9.1, 26.10.1) open and pass on every later build.
+  The opposite direction, an older release opening type 8, cannot run in-tree against old binaries, so it is
+  covered by the next item and by the per-release facts of 2.2, which were checked against the release tags.
 - **Old reader fails closed:** a test that writes the type-8 bytes and opens them through a `RecordFactory` that knows
   only types `0..7`, so the claim in 2.2 is executed, not only argued.
 
