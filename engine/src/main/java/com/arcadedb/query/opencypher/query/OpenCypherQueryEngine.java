@@ -108,9 +108,8 @@ public class OpenCypherQueryEngine implements QueryEngine {
       // PROFILE executes what it wraps, so it is classified exactly as the wrapped statement; EXPLAIN only plans, so
       // it stays idempotent while still reporting the wrapped statement's operation types (issue #9313).
       final String stripped = stripLeadingComments(query);
-      final String upper = stripped.toUpperCase(Locale.ROOT);
-      final boolean explain = upper.startsWith("EXPLAIN ");
-      final String actual = explain || upper.startsWith("PROFILE ") ? stripped.substring(8).trim() : query;
+      final boolean explain = stripped.regionMatches(true, 0, "EXPLAIN ", 0, 8);
+      final String actual = explain || stripped.regionMatches(true, 0, "PROFILE ", 0, 8) ? stripped.substring(8).trim() : query;
 
       // Use statement cache to avoid re-parsing
       final CypherStatement statement = database.getCypherStatementCache().get(actual);
