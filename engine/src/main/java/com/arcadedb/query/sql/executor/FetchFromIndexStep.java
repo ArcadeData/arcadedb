@@ -954,7 +954,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
   /**
    * True when the index lookup is an equality on EVERY property of the index, so a unique index returns at most one
-   * record (an UPSERT must not run on a key prefix, a range or an IN list). The planner only hands an index the
+   * record (an UPSERT must not run on a key prefix, a range, an IN list or a null value). The planner only hands an index the
    * conditions on its own properties, one per property, so counting the equality sub-blocks is enough; any other
    * predicate stays in a separate filter step. Any other condition shape (BETWEEN, CONTAINS, ...) is not a full-key
    * equality, which is the safe answer for an UPSERT.
@@ -963,7 +963,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     final List<String> properties = index.getPropertyNames();
     final int keyCount = properties.size();
     if (condition instanceof BinaryCondition binaryCondition)
-      return keyCount == 1 && binaryCondition.getOperator() instanceof EqualsCompareOperator;
+      return keyCount == 1 && binaryCondition.getOperator() instanceof EqualsCompareOperator && hasNonNullValue(binaryCondition);
 
     if (condition instanceof AndBlock andBlock) {
       final List<BooleanExpression> subBlocks = andBlock.getSubBlocks();
@@ -972,6 +972,8 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       final Set<String> covered = new HashSet<>(keyCount * 2);
       for (final BooleanExpression exp : subBlocks) {
         if (!(exp instanceof BinaryCondition binaryCondition) || !(binaryCondition.getOperator() instanceof EqualsCompareOperator))
+          return false;
+        if (!hasNonNullValue(binaryCondition))
           return false;
         final Identifier alias = binaryCondition.getLeft().getDefaultAlias();
         if (alias == null)
@@ -985,6 +987,11 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       return true;
     }
     return false;
+  }
+
+  /** A null key is not unique even on a UNIQUE index (null strategy), so it cannot identify a single record. */
+  private boolean hasNonNullValue(final BinaryCondition binaryCondition) {
+    return binaryCondition.getRight().execute((Result) null, context) != null;
   }
 
   private boolean allEqualities(final AndBlock condition) {
