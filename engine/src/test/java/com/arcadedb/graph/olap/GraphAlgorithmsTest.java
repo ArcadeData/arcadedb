@@ -31,6 +31,7 @@ import java.util.List;
 import java.util.Random;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests for graph algorithms operating on the CSR-based GraphAnalyticalView.
@@ -792,6 +793,102 @@ class GraphAlgorithmsTest extends TestHelper {
 
     final int[] labels = GraphAlgorithms.labelPropagation(gav, "LINK");
     assertThat(labels).isEmpty();
+  }
+
+  @Test
+  void labelPropagationTieBreakRankFollowsExternalOrder() {
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    // Hub X is linked to P and Q, which hold different labels: a 1-1 tie
+    database.begin();
+    final MutableVertex p = database.newVertex("Node").set("vid", 200).save();
+    final MutableVertex q = database.newVertex("Node").set("vid", 100).save();
+    final MutableVertex x = database.newVertex("Node").set("vid", 300).save();
+    x.newEdge("LINK", p);
+    x.newEdge("LINK", q);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node")
+        .withEdgeTypes("LINK")
+        .build();
+
+    // The dense order is the view's business, so work out which of P and Q it puts first and make the other one win
+    final int xId = gav.getNodeId(x.getIdentity());
+    final int low = Math.min(gav.getNodeId(p.getIdentity()), gav.getNodeId(q.getIdentity()));
+    final int high = Math.max(gav.getNodeId(p.getIdentity()), gav.getNodeId(q.getIdentity()));
+
+    assertThat(GraphAlgorithms.labelPropagation(gav, 1, WorkCheckpoint.NONE, "LINK")[xId]).isEqualTo(low);
+
+    final int[] rank = new int[3];
+    rank[high] = 0;
+    rank[low] = 1;
+    rank[xId] = 2;
+    final int[] labels = GraphAlgorithms.labelPropagation(gav, 1, rank, WorkCheckpoint.NONE, "LINK");
+    assertThat(labels[xId]).isEqualTo(high);
+    // P and Q only see X, so they adopt X's label
+    assertThat(labels[low]).isEqualTo(xId);
+    assertThat(labels[high]).isEqualTo(xId);
+  }
+
+  @Test
+  void labelPropagationTieBreakRankOnHighDegreeHub() {
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    final int leafCount = 40;
+    database.begin();
+    final MutableVertex hub = database.newVertex("Node").save();
+    for (int i = 0; i < leafCount; i++)
+      hub.newEdge("LINK", database.newVertex("Node").save());
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node")
+        .withEdgeTypes("LINK")
+        .build();
+
+    final int n = leafCount + 1;
+    final int hubId = gav.getNodeId(hub.getIdentity());
+    final int[] reversed = new int[n];
+    int expectedLowest = -1;
+    int expectedHighest = -1;
+    for (int i = 0; i < n; i++) {
+      reversed[i] = n - 1 - i;
+      if (i != hubId) {
+        if (expectedLowest == -1)
+          expectedLowest = i;
+        expectedHighest = i;
+      }
+    }
+
+    // every leaf holds a different label, so the hub sees a leafCount-way tie
+    assertThat(GraphAlgorithms.labelPropagation(gav, 1, WorkCheckpoint.NONE, "LINK")[hubId]).isEqualTo(expectedLowest);
+    assertThat(GraphAlgorithms.labelPropagation(gav, 1, reversed, WorkCheckpoint.NONE, "LINK")[hubId]).isEqualTo(expectedHighest);
+  }
+
+  @Test
+  void labelPropagationRejectsInvalidRank() {
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+    database.begin();
+    final MutableVertex a = database.newVertex("Node").save();
+    final MutableVertex b = database.newVertex("Node").save();
+    a.newEdge("LINK", b);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node")
+        .withEdgeTypes("LINK")
+        .build();
+
+    assertThatThrownBy(() -> GraphAlgorithms.labelPropagation(gav, 1, new int[] { 0, 0 }, WorkCheckpoint.NONE, "LINK"))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> GraphAlgorithms.labelPropagation(gav, 1, new int[] { 0 }, WorkCheckpoint.NONE, "LINK"))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> GraphAlgorithms.labelPropagation(gav, 1, new int[] { 0, 5 }, WorkCheckpoint.NONE, "LINK"))
+        .isInstanceOf(IllegalArgumentException.class);
   }
 
   // --- Compaction Threshold (builder) ---

@@ -1494,14 +1494,36 @@ public final class GraphAlgorithms {
    */
   public static int[] labelPropagation(final GraphAnalyticalView view, final int maxIters,
       final WorkCheckpoint checkpoint, final String... edgeTypes) {
+    return labelPropagation(view, maxIters, null, checkpoint, edgeTypes);
+  }
+
+  /**
+   * {@link #labelPropagation(GraphAnalyticalView, int, WorkCheckpoint, String...)} with a caller-defined tie-break order.
+   * <p>
+   * When several labels are equally frequent among a node's neighbours the plain kernel adopts the one with the smallest
+   * dense index, which follows load order. Benchmarks that fix the tie-break on an external identifier (LDBC Graphalytics
+   * CDLP: the smallest vertex id wins) need the order of that identifier instead. {@code rank[i]} is the position of dense
+   * node {@code i} in that order, and must be a permutation of {@code 0..n-1}. The result is still expressed as the dense
+   * index of the node whose label was adopted, so it is directly comparable with the plain kernel's output.
+   *
+   * @param rank tie-break rank of every dense node (lower wins), or {@code null} for the dense index order
+   */
+  public static int[] labelPropagation(final GraphAnalyticalView view, final int maxIters, final int[] rank,
+      final WorkCheckpoint checkpoint, final String... edgeTypes) {
     final int n = view.getNodeMapping().size();
     if (n == 0)
       return new int[0];
 
+    // Labels live in rank space so the sorted-mode search below keeps picking the smallest label on ties; the result is
+    // translated back to dense indexes at the end.
+    if (rank != null && rank.length != n)
+      throw new IllegalArgumentException("rank has " + rank.length + " entries, expected " + n);
+    final int[] nodeOfRank = rank != null ? invertRank(rank) : null;
+
     final int[] labels = new int[n];
     final int[] newLabels = new int[n];
     for (int i = 0; i < n; i++)
-      labels[i] = i;
+      labels[i] = rank != null ? rank[i] : i;
 
     final String[] types = resolveEdgeTypes(view, edgeTypes);
 
@@ -1611,7 +1633,28 @@ public final class GraphAlgorithms {
       if (!anyChanged.get())
         break;
     }
+    if (nodeOfRank != null)
+      for (int i = 0; i < n; i++)
+        labels[i] = nodeOfRank[labels[i]];
     return labels;
+  }
+
+  /**
+   * Inverts a tie-break rank: {@code result[rank[i]] == i}.
+   *
+   * @throws IllegalArgumentException if {@code rank} is not a permutation of {@code 0..rank.length-1}
+   */
+  public static int[] invertRank(final int[] rank) {
+    final int n = rank.length;
+    final int[] nodeOfRank = new int[n];
+    Arrays.fill(nodeOfRank, -1);
+    for (int i = 0; i < n; i++) {
+      final int r = rank[i];
+      if (r < 0 || r >= n || nodeOfRank[r] != -1)
+        throw new IllegalArgumentException("rank is not a permutation of 0.." + (n - 1));
+      nodeOfRank[r] = i;
+    }
+    return nodeOfRank;
   }
 
   /**

@@ -31,8 +31,11 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 
 import com.arcadedb.utility.IntIntHashMap;
 
+import java.math.BigDecimal;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.function.IntFunction;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
@@ -52,6 +55,10 @@ import java.util.stream.Stream;
  * <ul>
  *   <li>maxIterations (int, default 10): maximum number of propagation iterations</li>
  *   <li>direction (string, default "BOTH"): edge direction to follow (IN, OUT, BOTH)</li>
+ *   <li>tieBreakProperty (string, optional): vertex property used to break ties between equally frequent labels, the
+ *   smallest value wins (LDBC Graphalytics CDLP breaks ties by the smallest vertex id). Without it the smallest
+ *   internal node index wins, which follows load order. Values must be mutually comparable (numbers with numbers, or
+ *   the same class); a vertex without the property loses every tie</li>
  * </ul>
  * </p>
  * <p>
@@ -101,6 +108,9 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
     final int maxIterations = config != null && config.get("maxIterations") instanceof Number n ?
         extractInt(n, "maxIterations", 1) : 10;
 
+    final Object tieBreakConfig = config != null ? config.get("tieBreakProperty") : null;
+    final String tieBreakProperty = tieBreakConfig != null ? extractString(tieBreakConfig, "tieBreakProperty") : null;
+
     final Database db = context.getDatabase();
     final WorkGuard guard = newWorkGuard(context);
 
@@ -111,24 +121,27 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
     // as wide as the id space the view now reports - see GraphTraversalProvider#hasPendingChanges (issue #6792).
     if (provider instanceof GraphAnalyticalView gav && !gav.hasPendingChanges()) {
       context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
-      return executeWithCSR(context, gav, maxIterations, guard);
+      return executeWithCSR(context, gav, maxIterations, tieBreakProperty, guard);
     }
 
     // Fall back to OLTP path
     final String directionStr = config != null && config.get("direction") instanceof String s ? s : "BOTH";
     final Vertex.DIRECTION direction = parseDirection(directionStr);
-    return executeWithOLTP(db, maxIterations, direction, guard);
+    return executeWithOLTP(db, maxIterations, direction, tieBreakProperty, guard);
   }
 
   private Stream<Result> executeWithCSR(final CommandContext context, final GraphAnalyticalView gav,
-      final int maxIterations, final WorkGuard guard) {
+      final int maxIterations, final String tieBreakProperty, final WorkGuard guard) {
     final int n = gav.getNodeCount();
     if (n == 0)
       return Stream.empty();
 
+    final int[] rank = tieBreakProperty != null ? computeTieBreakRank(n,
+        i -> context.getDatabase().lookupByRID(gav.getRID(i), true).asVertex().get(tieBreakProperty), tieBreakProperty) : null;
+
     // The kernel's "nothing moved" break only fires if the labelling settles - a graph that oscillates between two
     // labellings never converges - so maxIterations is what ends the run, and the guard is what can abort it.
-    final int[] labels = GraphAlgorithms.labelPropagation(gav, maxIterations, guard::check);
+    final int[] labels = GraphAlgorithms.labelPropagation(gav, maxIterations, rank, guard::check);
     context.setVariable(CommandContext.RESULT_COUNT_HINT_VAR, (long) n);
 
     return IntStream.range(0, n).mapToObj(i -> {
@@ -140,21 +153,24 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
   }
 
   private Stream<Result> executeWithOLTP(final Database db, final int maxIterations,
-      final Vertex.DIRECTION direction, final WorkGuard guard) {
+      final Vertex.DIRECTION direction, final String tieBreakProperty, final WorkGuard guard) {
     final List<Vertex> vertices = loadVertices(db, null, newMemoryBudget(db));
     if (vertices.isEmpty())
       return Stream.empty();
 
     final int n = vertices.size();
+    final int[] rank = tieBreakProperty != null ? computeTieBreakRank(n,
+        i -> vertices.get(i).get(tieBreakProperty), tieBreakProperty) : null;
     final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
 
     // Build adjacency once to avoid repeated OLTP traversal
     final int[][] adj = buildAdjacencyList(vertices, ridToIdx, direction, null);
 
-    // Initialize: each node gets its own index as label
+    // Initialize: each node gets its own index as label. With a tie-break property labels live in rank space, so the
+    // "smallest label wins" rule below follows the property order; they are translated back to indexes at the end.
     int[] label = new int[n];
     for (int i = 0; i < n; i++)
-      label[i] = i;
+      label[i] = rank != null ? rank[i] : i;
 
     // Synchronous label propagation: compute all new labels, then apply
     for (int iter = 0; iter < maxIterations; iter++) {
@@ -199,6 +215,11 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
     }
 
     // Return raw label values (no sequential remapping)
+    if (rank != null) {
+      final int[] nodeOfRank = GraphAlgorithms.invertRank(rank);
+      for (int i = 0; i < n; i++)
+        label[i] = nodeOfRank[label[i]];
+    }
     final int[] finalLabel = label;
     return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal result = new ResultInternal();
@@ -206,5 +227,99 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
       result.setProperty("communityId", finalLabel[i]);
       return (Result) result;
     });
+  }
+
+  /**
+   * Ranks the {@code n} dense nodes by the value of {@code property}: {@code rank[i]} is the position of node {@code i}
+   * in ascending property order. Nodes with a missing value sort last, and equal values fall back to the dense index so
+   * the result is always a permutation. Reads one vertex record per node, so the cost is O(n) record loads on top of
+   * the algorithm itself.
+   * <p>
+   * Every value is normalised to a single key type before sorting, so the comparator is a consistent total order whatever
+   * mix of numeric classes the property holds: fixed-width integrals sort on a {@code long}, any other numeric mix on
+   * (NaN/Infinity class, exact {@link BigDecimal}), and non-numbers must all share one {@link Comparable} class.
+   */
+  @SuppressWarnings("unchecked")
+  private static int[] computeTieBreakRank(final int n, final IntFunction<Object> valueOf, final String property) {
+    final Object[] values = new Object[n];
+    Object first = null;
+    boolean allNumbers = true;
+    boolean allFixedIntegral = true;
+    for (int i = 0; i < n; i++) {
+      final Object value = valueOf.apply(i);
+      if (value != null) {
+        if (!(value instanceof Comparable))
+          throw new IllegalArgumentException("Property '" + property + "' of node " + i + " is not comparable, cannot be used as tieBreakProperty");
+        if (first == null)
+          first = value;
+        if (!(value instanceof Number num)) {
+          allNumbers = false;
+          allFixedIntegral = false;
+        } else if (!isFixedIntegral(num))
+          allFixedIntegral = false;
+        if ((first instanceof Number) != (value instanceof Number) || (!(first instanceof Number) && first.getClass() != value.getClass()))
+          throw new IllegalArgumentException("Property '" + property + "' of node " + i + " is a " + value.getClass().getSimpleName()
+              + " but others are " + first.getClass().getSimpleName() + ", cannot be used as tieBreakProperty");
+      }
+      values[i] = value;
+    }
+
+    // One normalised key per node, computed once: no per-comparison parsing or allocation
+    final long[] longKeys = allNumbers && allFixedIntegral ? new long[n] : null;
+    final byte[] numClass = allNumbers && !allFixedIntegral ? new byte[n] : null;
+    final BigDecimal[] decKeys = numClass != null ? new BigDecimal[n] : null;
+    for (int i = 0; i < n; i++) {
+      if (values[i] == null)
+        continue;
+      if (longKeys != null)
+        longKeys[i] = ((Number) values[i]).longValue();
+      else if (numClass != null) {
+        final Number num = (Number) values[i];
+        if (isFinite(num)) {
+          numClass[i] = 1;
+          decKeys[i] = new BigDecimal(num.toString());
+        } else {
+          final double d = num.doubleValue();
+          numClass[i] = (byte) (Double.isNaN(d) ? 3 : d > 0 ? 2 : 0);
+        }
+      }
+    }
+
+    final Integer[] order = new Integer[n];
+    for (int i = 0; i < n; i++)
+      order[i] = i;
+    Arrays.sort(order, (a, b) -> {
+      final Object va = values[a];
+      final Object vb = values[b];
+      if (va == null || vb == null) {
+        if (va != vb)
+          return va == null ? 1 : -1;
+      } else {
+        final int cmp;
+        if (longKeys != null)
+          cmp = Long.compare(longKeys[a], longKeys[b]);
+        else if (numClass != null)
+          cmp = numClass[a] != numClass[b] ? Byte.compare(numClass[a], numClass[b]) :
+              numClass[a] == 1 ? decKeys[a].compareTo(decKeys[b]) : 0;
+        else
+          cmp = ((Comparable<Object>) va).compareTo(vb);
+        if (cmp != 0)
+          return cmp;
+      }
+      return Integer.compare(a, b);
+    });
+
+    final int[] rank = new int[n];
+    for (int r = 0; r < n; r++)
+      rank[order[r]] = r;
+    return rank;
+  }
+
+  private static boolean isFixedIntegral(final Number n) {
+    return n instanceof Long || n instanceof Integer || n instanceof Short || n instanceof Byte;
+  }
+
+  private static boolean isFinite(final Number n) {
+    return !(n instanceof Double d && !Double.isFinite(d)) && !(n instanceof Float f && !Float.isFinite(f));
   }
 }
