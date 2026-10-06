@@ -166,11 +166,7 @@ public final class PartitionedTriangleOp implements CountOp {
             iv++;
           else {
             // a value occurring m times in one range and n times in the other is m * n matches (issue #9298)
-            int ue = iu + 1, ve = iv + 1;
-            while (ue < uEnd && nbrs[ue] == nu)
-              ue++;
-            while (ve < vEnd && nbrs[ve] == nv)
-              ve++;
+            final int ue = runEnd(nbrs, iu, uEnd), ve = runEnd(nbrs, iv, vEnd);
             if (personPartition[nu] == country)
               count += (long) (ue - iu) * (ve - iv);
             iu = ue;
@@ -180,6 +176,15 @@ public final class PartitionedTriangleOp implements CountOp {
       }
     }
     return count;
+  }
+
+  /** End (exclusive) of the run of values equal to {@code a[from]} in the sorted range {@code [from, to)}. */
+  private static int runEnd(final int[] a, final int from, final int to) {
+    final int value = a[from];
+    int end = from + 1;
+    while (end < to && a[end] == value)
+      end++;
+    return end;
   }
 
   private int[] buildPartitionMapping(final GraphTraversalProvider provider, final int nodeIdUpperBound,
@@ -279,11 +284,7 @@ public final class PartitionedTriangleOp implements CountOp {
             iv++;
           else {
             final int value = uNeighbors[iu];
-            int ue = iu + 1, ve = iv + 1;
-            while (ue < uNeighbors.length && uNeighbors[ue] == value)
-              ue++;
-            while (ve < vNeighbors.length && vNeighbors[ve] == value)
-              ve++;
+            final int ue = runEnd(uNeighbors, iu, uNeighbors.length), ve = runEnd(vNeighbors, iv, vNeighbors.length);
             if (personPartition[value] == country)
               total += (long) (ue - iu) * (ve - iv);
             iu = ue;
@@ -335,7 +336,8 @@ public final class PartitionedTriangleOp implements CountOp {
         if (vCountry == null || !vCountry.equals(uCountry))
           continue;
 
-        // multiplicity of each in-country neighbour of u: a parallel edge is a match of its own (issue #9298)
+        // multiplicity of each in-country neighbour of u: a parallel edge is a match of its own (issue #9298). The boxing is
+        // deliberate: this is the no-view fallback, which already materializes RIDs and a RID-keyed partition map per call
         final HashMap<RID, Integer> uNeighborCounts = new HashMap<>();
         for (final RID nRid : uNeighbors) {
           final RID nCountry = personToPartition.get(nRid);
