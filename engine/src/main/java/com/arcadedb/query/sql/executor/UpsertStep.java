@@ -73,7 +73,7 @@ public class UpsertStep extends AbstractExecutionStep {
 
     if (!fetchFromIndexFound)
       throw new CommandSQLParsingException(
-          "Upsert must involve a UNIQUE index to retrieve the records. Check that the where condition is an equality on all"
+          "Upsert must involve a UNIQUE index to retrieve the records. Check that the where condition is a non-null equality on all"
               + " the properties of a UNIQUE index (non-unique, full-text and partially matched composite indexes cannot be used)");
 
     applied = true;

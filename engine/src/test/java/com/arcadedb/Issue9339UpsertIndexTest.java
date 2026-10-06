@@ -18,6 +18,7 @@
  */
 package com.arcadedb;
 
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -29,8 +30,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Regression test for issue #9339: an UPSERT whose WHERE condition cannot use a unique single-property index (non-unique,
- * composite or missing index) must say so in the error, instead of the generic "must involve an index" wording that misled
+ * Regression test for issue #9339: an UPSERT whose WHERE condition is not an equality on every property of a UNIQUE index
+ * (non-unique, missing or partially matched composite index, range, IN, OR, duplicated predicate) must say so in the error, instead of the generic "must involve an index" wording that misled
  * users who did have an index on the property. A composite UNIQUE index is usable only when the WHERE matches all its properties.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -189,5 +190,21 @@ public class Issue9339UpsertIndexTest extends TestHelper {
       }
     }
     assertThat(database.countType("Rev", false)).isLessThanOrEqualTo(1);
+  }
+
+  @Test
+  void upsertWithNullKeyNeverCreatesDuplicates() {
+    database.command("sql", "CREATE DOCUMENT TYPE NullKey");
+    database.command("sql", "CREATE PROPERTY NullKey.code STRING");
+    database.command("sql", "CREATE INDEX ON NullKey (code) UNIQUE");
+
+    for (int i = 0; i < 2; i++) {
+      try {
+        database.transaction(() -> database.command("sql", "UPDATE NullKey SET name = ? UPSERT WHERE code = ?", "x", null));
+      } catch (final CommandSQLParsingException | CommandExecutionException e) {
+        // rejecting a null key is as safe as updating the single matching record
+      }
+    }
+    assertThat(database.countType("NullKey", false)).isLessThanOrEqualTo(1);
   }
 }
