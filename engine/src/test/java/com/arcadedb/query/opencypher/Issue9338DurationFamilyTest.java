@@ -182,4 +182,20 @@ class Issue9338DurationFamilyTest {
     expectError("RETURN duration({days: -9223372036854775808}) / -1");
     assertThat(scalar("RETURN toString(duration({days: 4}) / -1) AS r")).isEqualTo("P-4D");
   }
+
+  @Test
+  void parseBoundaryCases() {
+    assertThat(scalar("RETURN toString(duration('PT9223372036854775807S')) AS r")).isEqualTo("PT2562047788015215H30M7S");
+    expectError("RETURN duration('PT9223372036854775808S')");
+    assertThat(scalar("RETURN toString(duration('P-1DT-2H-3M-4S')) AS r")).isEqualTo("P-1DT-2H-3M-4S");
+    assertThat(scalar("RETURN toString(duration('PT1.100000000S')) AS r")).isEqualTo("PT1.1S");
+    assertThat(scalar("RETURN toString(duration('PT0.000000001S')) AS r")).isEqualTo("PT0.000000001S");
+  }
+
+  @Test
+  void durationTimesATemporalIsATypeError() {
+    for (final String t : new String[] { "date('2024-01-01')", "datetime('2024-01-01T00:00Z')", "localtime('12:00')" })
+      for (final String op : new String[] { "*", "/", "%", "-" })
+        expectError("RETURN duration({days: 1}) " + op + " " + t);
+  }
 }

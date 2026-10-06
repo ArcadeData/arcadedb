@@ -34,7 +34,8 @@ import java.util.function.Supplier;
  * filled, provided it carries the same key. A retry that diverges (a data-dependent branch) gets a fresh slot at each
  * position whose key changed, instead of the wrong one; the positions whose key is unchanged keep theirs.
  * <p>
- * The scope belongs to the outermost {@code transaction()} call of the thread and ends with it, whether it commits or
+ * The scope belongs to the outermost {@code transaction()} call of the thread on that database (one scope per database, as
+ * the thread context is) and ends with it, whether it commits or
  * gives up. It is reachable through {@link DatabaseContext.DatabaseContextTL#getRetryScope()}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
