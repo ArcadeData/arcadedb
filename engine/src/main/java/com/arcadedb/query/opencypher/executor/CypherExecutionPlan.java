@@ -7845,6 +7845,13 @@ public class CypherExecutionPlan {
       return null;
     if (!rel.hasTypes() || rel.getTypes().size() != 1)
       return null;
+    // THE PUSH-DOWN ONLY LOOKS AT THE EXISTENCE OF AN EDGE OF THE TYPE: ANYTHING THAT NEEDS THE EDGE OR END NODE RECORDS IS LEFT TO
+    // THE ROW PIPELINE (issue #9278)
+    if (rel.hasProperties() || rel.hasWhereExpression() || rel.getVariable() != null)
+      return null;
+    final NodePattern first = pp.getFirstNode(), last = pp.getLastNode();
+    if (first.hasLabels() || first.hasProperties() || last.hasLabels() || last.hasProperties())
+      return null;
 
     final String sourceVar = pp.getFirstNode().getVariable();
     final String targetVar = pp.getLastNode().getVariable();

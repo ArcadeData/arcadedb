@@ -1407,8 +1407,14 @@ public enum Type {
     if (a == null || b == null)
       throw new IllegalArgumentException("Cannot increment a null value");
 
-    if (a instanceof Integer) {
-      if (b instanceof Integer) {
+    // A BYTE has no case of its own below: widen it to SHORT so that it combines like any other integral type (issue #9281)
+    if (a instanceof Byte || b instanceof Byte)
+      return increment(a instanceof Byte ? Short.valueOf(a.shortValue()) : a, b instanceof Byte ? Short.valueOf(b.shortValue()) : b);
+
+    switch (a) {
+    case Integer i -> {
+      switch (b) {
+      case Integer integer -> {
         try {
           return Math.addExact(a.intValue(), b.intValue());
         } catch (final ArithmeticException e) {
@@ -1522,8 +1528,14 @@ public enum Type {
     if (a == null || b == null)
       throw new IllegalArgumentException("Cannot decrement a null value");
 
-    if (a instanceof Integer) {
-      if (b instanceof Integer) {
+    // A BYTE has no case of its own below: widen it to SHORT so that it combines like any other integral type (issue #9281)
+    if (a instanceof Byte || b instanceof Byte)
+      return decrement(a instanceof Byte ? Short.valueOf(a.shortValue()) : a, b instanceof Byte ? Short.valueOf(b.shortValue()) : b);
+
+    switch (a) {
+    case Integer i -> {
+      switch (b) {
+      case Integer integer -> {
         try {
           return Math.subtractExact(a.intValue(), b.intValue());
         } catch (final ArithmeticException e) {
