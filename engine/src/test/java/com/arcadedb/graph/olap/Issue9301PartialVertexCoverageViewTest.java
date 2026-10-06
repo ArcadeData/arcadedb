@@ -118,4 +118,22 @@ class Issue9301PartialVertexCoverageViewTest extends TestHelper {
       database.command("sql", "DROP GRAPH ANALYTICAL VIEW g9301");
     }
   }
+
+  @Test
+  void oneHopScanSkipsAViewThatLacksAnEndpointForALaterOne() throws Exception {
+    // the first view holds A and C, the second A and B: only the second can answer A -> B
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW g9301ac VERTEX TYPES (A, C) EDGE TYPES (E) UPDATE MODE OFF");
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW g9301ab VERTEX TYPES (A, B) EDGE TYPES (E) UPDATE MODE OFF");
+    try {
+      assertThat(GraphAnalyticalViewRegistry.get(database, "g9301ac").awaitReady(60, TimeUnit.SECONDS)).isTrue();
+      assertThat(GraphAnalyticalViewRegistry.get(database, "g9301ab").awaitReady(60, TimeUnit.SECONDS)).isTrue();
+      assertThat(count("opencypher", "MATCH (a:A)-[:E]->(b:B) RETURN max(b.id) AS n")).isEqualTo(12);
+      assertThat(database.query("opencypher", "PROFILE MATCH (a:A)-[:E]->(b:B) RETURN max(b.id) AS n").getExecutionPlan().get()
+          .prettyPrint(0, 2)).contains("GAV ONE-HOP SCAN");
+      assertSameAnswers("two partial views");
+    } finally {
+      database.command("sql", "DROP GRAPH ANALYTICAL VIEW g9301ac");
+      database.command("sql", "DROP GRAPH ANALYTICAL VIEW g9301ab");
+    }
+  }
 }

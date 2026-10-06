@@ -4923,7 +4923,10 @@ public class CypherExecutionPlan {
 
     final List<String> types = relationship.getTypes();
     final String[] edgeTypes = types != null && !types.isEmpty() ? types.toArray(new String[0]) : null;
+    // Several views can hold the edge types: take the first one that holds both endpoints, not the first one
     final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProviderAllowingPartialVertexCoverage(database,
+        candidate -> coveredVertexBuckets(candidate, source.getFirstLabel()) != null && (target.hasLabels()
+            ? coveredVertexBuckets(candidate, target.getFirstLabel()) != null : candidate.coversVertexType(null)),
         edgeTypes);
     if (provider == null || provider.isStale())
       return null;
