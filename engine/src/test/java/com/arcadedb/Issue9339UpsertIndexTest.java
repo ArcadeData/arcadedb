@@ -103,4 +103,32 @@ public class Issue9339UpsertIndexTest extends TestHelper {
     });
     assertThat(database.countType("Comp", false)).isEqualTo(1);
   }
+
+  @Test
+  void upsertWithResidualPredicateStillUsesTheUniqueIndex() {
+    database.command("sql", "CREATE DOCUMENT TYPE Resid");
+    database.command("sql", "CREATE PROPERTY Resid.code STRING");
+    database.command("sql", "CREATE INDEX ON Resid (code) UNIQUE");
+
+    database.transaction(() -> {
+      database.command("sql", "UPDATE Resid SET name = ? UPSERT WHERE code = ? AND name = ?", "n1", "c1", "n1");
+      database.command("sql", "UPDATE Resid SET name = ? UPSERT WHERE code = ? AND name = ?", "n1", "c1", "n1");
+    });
+    assertThat(database.countType("Resid", false)).isEqualTo(1);
+  }
+
+  @Test
+  void upsertWithRangeOrInConditionIsRejected() {
+    database.command("sql", "CREATE DOCUMENT TYPE Rng");
+    database.command("sql", "CREATE PROPERTY Rng.code STRING");
+    database.command("sql", "CREATE INDEX ON Rng (code) UNIQUE");
+
+    assertThatThrownBy(() -> database.transaction(
+        () -> database.command("sql", "UPDATE Rng SET name = ? UPSERT WHERE code > ?", "x", "a")))
+        .isInstanceOf(CommandSQLParsingException.class);
+    assertThatThrownBy(() -> database.transaction(
+        () -> database.command("sql", "UPDATE Rng SET name = ? UPSERT WHERE code IN ['a','b']", "x")))
+        .isInstanceOf(CommandSQLParsingException.class);
+    assertThat(database.countType("Rng", false)).isZero();
+  }
 }

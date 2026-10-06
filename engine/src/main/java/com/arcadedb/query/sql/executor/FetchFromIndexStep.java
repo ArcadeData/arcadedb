@@ -953,7 +953,9 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
   /**
    * True when the index lookup is an equality on EVERY property of the index, so a unique index returns at most one
-   * record (an UPSERT must not run on a key prefix, a range or an IN list).
+   * record (an UPSERT must not run on a key prefix, a range or an IN list). The planner only hands an index the
+   * conditions on its own properties, one per property, so counting the equality sub-blocks is enough; any other
+   * predicate stays in a separate filter step.
    */
   boolean isFullKeyEquality() {
     final int keyCount = index.getPropertyNames().size();
