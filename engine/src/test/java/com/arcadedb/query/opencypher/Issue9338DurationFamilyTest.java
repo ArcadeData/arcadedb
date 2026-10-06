@@ -224,8 +224,10 @@ class Issue9338DurationFamilyTest {
       database.command("cypher", "CREATE (:W {w: 'Peter'})");
       database.command("cypher", "CREATE (:W {w: 'P'})");
       database.command("cypher", "CREATE (:W {w: 'P1D'})");
+      database.command("cypher", "CREATE (:W {w: 'Paris1'})");
+      database.command("cypher", "CREATE (:W {w: 'P-'})");
     });
-    for (final String text : new String[] { "Paris", "Peter", "P" })
+    for (final String text : new String[] { "Paris", "Peter", "P", "Paris1", "P-" })
       assertThat(scalar("MATCH (n:W) WHERE n.w = '" + text + "' RETURN count(n) AS r")).as(text + " stays a string").isEqualTo(1L);
     assertThat(scalar("MATCH (n:W) WHERE n.w = duration('P1D') RETURN count(n) AS r")).as("a valid short duration is restored")
         .isEqualTo(1L);
@@ -239,5 +241,11 @@ class Issue9338DurationFamilyTest {
     assertThat(scalar("RETURN toString(duration('PT0.0000000015S')) AS r")).isEqualTo("PT0.000000002S");
     assertThat(scalar("RETURN toString(duration('PT-0.0000000015S')) AS r")).isEqualTo("PT-0.000000002S");
     assertThat(scalar("RETURN toString(duration('PT0.1234567891234S')) AS r")).isEqualTo("PT0.123456789S");
+  }
+
+  @Test
+  void dividingADurationByZeroIsAnArithmeticError() {
+    expectError("RETURN duration({days: 1}) / 0", ArithmeticErrorException.class);
+    expectError("RETURN duration({days: 1}) / 0.0", ArithmeticErrorException.class);
   }
 }

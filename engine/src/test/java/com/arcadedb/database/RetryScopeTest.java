@@ -27,6 +27,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * The state of a retried {@code transaction()} call survives the rollback between its attempts and ends with the call
@@ -78,14 +79,10 @@ class RetryScopeTest extends TestHelper {
 
   @Test
   void theScopeEndsWhenTheOwnerGivesUp() {
-    try {
-      database.transaction(() -> {
-        scope().nextSlot("k", Object::new);
-        throw new ConcurrentModificationException("always");
-      }, false, 2);
-    } catch (final ConcurrentModificationException expected) {
-      // GIVES UP AFTER THE LAST ATTEMPT
-    }
+    assertThatThrownBy(() -> database.transaction(() -> {
+      scope().nextSlot("k", Object::new);
+      throw new ConcurrentModificationException("always");
+    }, false, 2)).isInstanceOf(ConcurrentModificationException.class);
     assertThat(scope()).isNull();
   }
 

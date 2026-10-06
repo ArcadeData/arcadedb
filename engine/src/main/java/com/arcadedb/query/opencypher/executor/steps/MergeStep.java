@@ -1306,8 +1306,11 @@ public class MergeStep extends AbstractExecutionStep {
   }
 
   // The storage text of the last temporal operand matchesTemporal compared against (see there)
-  private CypherTemporalValue wantedForText;
-  private String              wantedText;
+  private WantedText wantedText;
+
+  /** One immutable pair, so the operand and its text can never be read out of step. */
+  private record WantedText(CypherTemporalValue wanted, String text) {
+  }
 
   /**
    * A temporal operand against a stored value: text is compared with the operand's storage form, then restored to its
@@ -1318,14 +1321,16 @@ public class MergeStep extends AbstractExecutionStep {
       final CypherTemporalValue wanted) {
     if (actual instanceof String text) {
       // The storage text of the operand is the same for every candidate of one MERGE: computed once, not once per row
-      if (wanted != wantedForText) {
-        wantedText = String.valueOf(TemporalUtil.toCoreJavaType(wanted));
-        wantedForText = wanted;
+      WantedText cached = wantedText;
+      if (cached == null || cached.wanted != wanted) {
+        cached = new WantedText(wanted, String.valueOf(TemporalUtil.toCoreJavaType(wanted)));
+        wantedText = cached;
       }
+      final String wantedStorageText = cached.text;
       // The parse only runs for a text with the shape of a temporal: a scan over plain strings pays a character test
       // A declared STRING property holds text by contract (issue #8384): it only matches the operand's own text, never a
       // differently formatted rendering of the same instant, exactly like MATCH
-      return text.equals(wantedText) || TemporalUtil.mayBeTemporalString(text) && !TemporalUtil.isDeclaredString(doc, propertyName)
+      return text.equals(wantedStorageText) || TemporalUtil.mayBeTemporalString(text) && !TemporalUtil.isDeclaredString(doc, propertyName)
           && InlineProperties.matchesResolvedValue(TemporalUtil.convertFromStorage(text), wanted);
     }
     return InlineProperties.matchesResolvedValue(actual, wanted);
