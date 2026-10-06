@@ -520,6 +520,7 @@ public class GraphDatabaseChecker {
         return null;
       return StripeDirectory.describeUnreadableContent(raw);
     } catch (final Exception e) {
+      LogManager.instance().log(this, Level.FINE, "Cannot read the raw edge list head %s to classify it: %s", null, head, e);
       return null;
     }
   }

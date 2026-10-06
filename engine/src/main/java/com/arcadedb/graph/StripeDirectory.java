@@ -207,6 +207,9 @@ public class StripeDirectory extends BaseRecord implements RecordInternal {
    * its slots are never decoded.
    *
    * @param content the record content, starting with the record type byte, sized to the record
+   *
+   * @return {@code null} when readable, otherwise a PREDICATE with no subject ("is truncated: ...", "uses placement hash
+   * version ..."): callers prefix it with the directory they name, e.g. {@code "Stripe directory " + rid + " " + problem}
    */
   public static String describeUnreadableContent(final Binary content) {
     final int size = content.size();
@@ -221,7 +224,7 @@ public class StripeDirectory extends BaseRecord implements RecordInternal {
 
     final int generations = content.getByte(2);
     if (generations < 1)
-      return "is corrupt: its header declares " + generations + " generations";
+      return "is corrupt: its header declares " + generations + " generations, outside the valid range 1..127";
 
     int offset = HEADER_SIZE;
     for (int g = 0; g < generations; g++) {
