@@ -31,6 +31,9 @@ package com.arcadedb.graph;
  *   }
  * </pre>
  * <p>
+ * Each node's neighbour range is in ascending id order (parallel edges repeat the id), which the sorted-intersection and
+ * binary-search consumers rely on.
+ * <p>
  * For single-edge-type CSR, this is a zero-copy wrapper over the internal arrays.
  * For multi-edge-type or overlay scenarios, a merged structure is built once (O(E) total,
  * not O(N) individual arrays).
