@@ -97,6 +97,7 @@ class Issue9295SnapshotShipConcurrencyAndCompressionTest {
 
     assertThat(stored.length).as("level 0 stores").isGreaterThanOrEqualTo(payload.length);
     assertThat(fast.length).as("level 1 compresses").isLessThan(payload.length / 2);
+    // a soft claim: tied to the seeded payload, DEFLATE does not guarantee it for arbitrary input
     assertThat(defaulted.length).as("-1 is the JDK default (6)").isLessThanOrEqualTo(fast.length);
     assertThat(unzip(stored)).isEqualTo(payload);
     assertThat(unzip(fast)).isEqualTo(payload);
