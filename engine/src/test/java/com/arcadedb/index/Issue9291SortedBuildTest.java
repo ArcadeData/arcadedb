@@ -24,6 +24,7 @@ import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -124,6 +125,24 @@ class Issue9291SortedBuildTest extends TestHelper {
     final List<String> plain = entries(database.getSchema().getType("CiPlain").getPolymorphicIndexByProperties("p"));
     assertThat(sorted).hasSize(5_000);
     assertThat(keysOnly(sorted)).isEqualTo(keysOnly(plain));
+    assertThat(sorted.stream().sorted().toList()).isEqualTo(plain.stream().sorted().toList());
+  }
+
+  @Test
+  void decimalKeysOfDifferentScaleAreOneKeyAndStayOrderedByRid() {
+    for (final String type : new String[] { "DecSorted", "DecPlain" }) {
+      database.command("sql", "CREATE DOCUMENT TYPE " + type);
+      database.command("sql", "CREATE PROPERTY " + type + ".d DECIMAL");
+      database.transaction(() -> {
+        for (int i = 0; i < 3_000; i++)
+          database.newDocument(type).set("d", i % 2 == 0 ? new BigDecimal("1.0") : new BigDecimal("1.00")).save();
+      });
+    }
+    database.command("sql", "CREATE INDEX ON DecSorted (d) NOTUNIQUE METADATA {\"buildMode\": \"SORTED\"}");
+    database.command("sql", "CREATE INDEX ON DecPlain (d) NOTUNIQUE");
+    final List<String> sorted = entries(database.getSchema().getType("DecSorted").getPolymorphicIndexByProperties("d"));
+    final List<String> plain = entries(database.getSchema().getType("DecPlain").getPolymorphicIndexByProperties("d"));
+    assertThat(sorted).hasSize(3_000);
     assertThat(sorted.stream().sorted().toList()).isEqualTo(plain.stream().sorted().toList());
   }
 
