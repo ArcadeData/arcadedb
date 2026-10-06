@@ -32,6 +32,7 @@ import java.util.WeakHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.LockSupport;
+import java.util.function.Predicate;
 import java.util.logging.Level;
 
 /**
@@ -136,7 +137,7 @@ public class GraphTraversalProviderRegistry {
    * @return a matching ready provider, or null if none found
    */
   public static GraphTraversalProvider findProvider(final Database database, final String... edgeTypes) {
-    return findReadyProvider(database, true, edgeTypes);
+    return findReadyProvider(database, provider -> provider.coversVertexType(null), edgeTypes);
   }
 
   /**
@@ -146,11 +147,22 @@ public class GraphTraversalProviderRegistry {
    */
   public static GraphTraversalProvider findProviderAllowingPartialVertexCoverage(final Database database,
       final String... edgeTypes) {
-    return findReadyProvider(database, false, edgeTypes);
+    return findReadyProvider(database, provider -> true, edgeTypes);
   }
 
-  private static GraphTraversalProvider findReadyProvider(final Database database, final boolean requireAllVertexTypes,
-      final String[] edgeTypes) {
+  /**
+   * Like {@link #findProviderAllowingPartialVertexCoverage(Database, String...)}, but only a provider accepted by
+   * {@code coversWalk} is selected, so that with several views over the edge types one that cannot answer the walk
+   * (it lacks an endpoint type) does not hide a later one that can. The predicate is a pure coverage check and runs
+   * before {@link GraphTraversalProvider#isReady()}.
+   */
+  public static GraphTraversalProvider findProviderAllowingPartialVertexCoverage(final Database database,
+      final Predicate<GraphTraversalProvider> coversWalk, final String... edgeTypes) {
+    return findReadyProvider(database, coversWalk, edgeTypes);
+  }
+
+  private static GraphTraversalProvider findReadyProvider(final Database database,
+      final Predicate<GraphTraversalProvider> coversVertexTypes, final String[] edgeTypes) {
     // Fast path: single volatile read avoids lock, unwrap, and WeakHashMap lookup
     // when no providers are registered (the common case for most databases)
     if (!hasAnyProviders)
@@ -176,8 +188,7 @@ public class GraphTraversalProviderRegistry {
       // while isReady()'s dispatch is not. Checking coverage first means isReady() - and its cost - only
       // ever runs on a provider that could actually be selected, not on every registered one #6632's
       // "a view a session never actually needs shouldn't cost anything" goal for a multi-view database.
-      if (coversEdgeTypes(provider, edgeTypes) && (!requireAllVertexTypes || provider.coversVertexType(null))
-          && provider.isReady())
+      if (coversEdgeTypes(provider, edgeTypes) && coversVertexTypes.test(provider) && provider.isReady())
         found = provider;
     }
     if (found != null && found.isStale())
