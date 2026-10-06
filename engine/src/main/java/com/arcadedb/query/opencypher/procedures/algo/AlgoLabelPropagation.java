@@ -135,7 +135,8 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
     if (n == 0)
       return Stream.empty();
 
-    final int[] rank = tieBreakProperty != null ? computeTieBreakRank(n, i -> context.getDatabase().lookupByRID(gav.getRID(i), true).asVertex().get(tieBreakProperty), tieBreakProperty) : null;
+    final int[] rank = tieBreakProperty != null ? computeTieBreakRank(n,
+        i -> context.getDatabase().lookupByRID(gav.getRID(i), true).asVertex().get(tieBreakProperty), tieBreakProperty) : null;
 
     // The kernel's "nothing moved" break only fires if the labelling settles - a graph that oscillates between two
     // labellings never converges - so maxIterations is what ends the run, and the guard is what can abort it.
@@ -157,7 +158,8 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
       return Stream.empty();
 
     final int n = vertices.size();
-    final int[] rank = tieBreakProperty != null ? computeTieBreakRank(n, i -> vertices.get(i).get(tieBreakProperty), tieBreakProperty) : null;
+    final int[] rank = tieBreakProperty != null ? computeTieBreakRank(n,
+        i -> vertices.get(i).get(tieBreakProperty), tieBreakProperty) : null;
     final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
 
     // Build adjacency once to avoid repeated OLTP traversal
@@ -266,7 +268,8 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
       } else {
         final int cmp;
         if (va instanceof Number na && vb instanceof Number nb) {
-          if ((na instanceof BigDecimal || nb instanceof BigDecimal) && isFinite(na) && isFinite(nb))
+          // exact when the kinds are mixed (a double cannot hold every long), unless NaN/Infinity make that impossible
+          if (isFinite(na) && isFinite(nb) && (na.getClass() != nb.getClass()))
             cmp = new BigDecimal(na.toString()).compareTo(new BigDecimal(nb.toString()));
           else if (na instanceof Double || na instanceof Float || nb instanceof Double || nb instanceof Float)
             cmp = Double.compare(na.doubleValue(), nb.doubleValue());

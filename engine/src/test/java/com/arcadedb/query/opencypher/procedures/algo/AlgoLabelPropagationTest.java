@@ -261,7 +261,7 @@ class AlgoLabelPropagationTest {
   }
 
   @Test
-  void tieBreakPropertyMissingValuesSortLastAndIterationsConverge() {
+  void tieBreakPropertyMissingValueLosesTie() {
     final DatabaseFactory factory = new DatabaseFactory("./target/databases/test-algo-lpa-tiebreak-null");
     if (factory.exists())
       factory.open().drop();
@@ -270,16 +270,14 @@ class AlgoLabelPropagationTest {
       db.getSchema().createVertexType("T");
       db.getSchema().createEdgeType("TE");
       db.transaction(() -> {
-        final MutableVertex a = db.newVertex("T").set("name", "A").save();
-        final MutableVertex b = db.newVertex("T").set("name", "B").set("vid", 5).save();
-        final MutableVertex c = db.newVertex("T").set("name", "C").set("vid", 5).save();
-        a.newEdge("TE", b, true, (Object[]) null).save();
-        b.newEdge("TE", c, true, (Object[]) null).save();
-        c.newEdge("TE", a, true, (Object[]) null).save();
+        final MutableVertex p = db.newVertex("T").set("name", "P").save();
+        final MutableVertex q = db.newVertex("T").set("name", "Q").set("vid", 900).save();
+        final MutableVertex x = db.newVertex("T").set("name", "X").set("vid", 1).save();
+        p.newEdge("TE", x, true, (Object[]) null).save();
+        q.newEdge("TE", x, true, (Object[]) null).save();
       });
-      // a null and two equal values must still produce a total order, and the triangle ends up in one community
-      final Map<String, Integer> byName = labels(db, "{maxIterations: 20, tieBreakProperty: 'vid'}");
-      assertThat(byName).hasSize(3);
+      // P has no vid and sorts last, so Q wins the tie even though 900 is a larger value than anything else
+      assertThat(labelOwnerOfX(db, "{maxIterations: 1, direction: 'IN', tieBreakProperty: 'vid'}")).isEqualTo("Q");
     } finally {
       db.drop();
     }
