@@ -44,6 +44,8 @@ public class CypherDuration implements CypherTemporalValue {
   private static final Pattern DATE_BASED_PATTERN = Pattern.compile(
       "P(\\d+)-(\\d+)-(\\d+)T(\\d+):(\\d+):(\\d+(?:\\.\\d+)?)");
 
+  private static final String[] WHOLE_UNIT_KEYS = { "years", "quarters", "months", "weeks", "days", "hours", "minutes", "seconds" };
+
   private final long months;
   private final long days;
   private final long seconds;
@@ -116,11 +118,17 @@ public class CypherDuration implements CypherTemporalValue {
       long seconds = Math.addExact(Math.multiplyExact(longOf(m.group(5)), 3600L), Math.multiplyExact(longOf(m.group(6)), 60L));
       long nanos = 0;
       if (m.group(7) != null) {
-        final BigDecimal secs = new BigDecimal(m.group(7));
-        final BigInteger whole = secs.toBigInteger();
-        seconds = Math.addExact(seconds, whole.longValueExact());
-        // Digits beyond the nanosecond round half away from zero
-        nanos = secs.subtract(new BigDecimal(whole)).movePointRight(9).setScale(0, RoundingMode.HALF_UP).longValueExact();
+        final String text = m.group(7);
+        if (text.indexOf('.') < 0)
+          // The common stored shape ("PT30S"): no fraction, no BigDecimal
+          seconds = Math.addExact(seconds, Long.parseLong(text));
+        else {
+          final BigDecimal secs = new BigDecimal(text);
+          final BigInteger whole = secs.toBigInteger();
+          seconds = Math.addExact(seconds, whole.longValueExact());
+          // Digits beyond the nanosecond round half away from zero
+          nanos = secs.subtract(new BigDecimal(whole)).movePointRight(9).setScale(0, RoundingMode.HALF_UP).longValueExact();
+        }
       }
       return new CypherDuration(months, days, seconds, nanos);
     } catch (final ArithmeticException e) {
@@ -211,8 +219,6 @@ public class CypherDuration implements CypherTemporalValue {
     }
     return true;
   }
-
-  private static final String[] WHOLE_UNIT_KEYS = { "years", "quarters", "months", "weeks", "days", "hours", "minutes", "seconds" };
 
   private static CypherDuration fromIntegralMap(final Map<String, Object> map) {
     try {

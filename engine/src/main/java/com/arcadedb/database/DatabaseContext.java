@@ -433,7 +433,6 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
      */
     private      DeferredExistenceChecks  deferredExistenceChecks = null;
 
-    /** See {@link #firingReadEvents}. */
     /**
      * The state that survives the attempts of the outermost retried {@code transaction()} call on this thread, or null
      * when none is running (see {@link RetryScope}).
@@ -463,6 +462,7 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
         retryScope.restartAttempt();
     }
 
+    /** See {@link #firingReadEvents}. */
     public boolean isFiringReadEvents() {
       return firingReadEvents;
     }
