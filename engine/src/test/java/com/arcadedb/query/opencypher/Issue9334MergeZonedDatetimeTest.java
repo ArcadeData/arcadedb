@@ -146,4 +146,15 @@ class Issue9334MergeZonedDatetimeTest {
       database.transaction(() -> database.command("cypher", "MERGE (k:K {" + props + "})"));
     assertThat(count("K")).isEqualTo(1L);
   }
+
+  @Test
+  void aDeclaredStringPropertyIsNotMatchedByAnotherRenderingOfTheInstant() {
+    database.getSchema().createVertexType("T2");
+    database.command("sql", "CREATE PROPERTY T2.d STRING");
+    database.transaction(() -> database.command("cypher", "CREATE (:T2 {d: '2021-06-15T12:30:00.000Z'})"));
+    database.transaction(() -> database.command("cypher", "MERGE (p:T2 {d: datetime('2021-06-15T12:30:00Z')})"));
+    assertThat(count("T2")).as("MATCH keeps the text and does not match it either: a second node").isEqualTo(2L);
+    database.transaction(() -> database.command("cypher", "MERGE (p:T2 {d: datetime('2021-06-15T12:30:00Z')})"));
+    assertThat(count("T2")).as("the node MERGE created is found again").isEqualTo(2L);
+  }
 }

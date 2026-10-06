@@ -1314,7 +1314,8 @@ public class MergeStep extends AbstractExecutionStep {
    * temporal type and compared by value; any other stored value is compared the way a MATCH compares it (a naive stored
    * datetime against a zoned operand by instant, issue #9334).
    */
-  private boolean matchesTemporal(final Object actual, final CypherTemporalValue wanted) {
+  private boolean matchesTemporal(final Document doc, final String propertyName, final Object actual,
+      final CypherTemporalValue wanted) {
     if (actual instanceof String text) {
       // The storage text of the operand is the same for every candidate of one MERGE: computed once, not once per row
       if (wanted != wantedForText) {
@@ -1322,7 +1323,9 @@ public class MergeStep extends AbstractExecutionStep {
         wantedForText = wanted;
       }
       // The parse only runs for a text with the shape of a temporal: a scan over plain strings pays a character test
-      return text.equals(wantedText) || TemporalUtil.mayBeTemporalString(text)
+      // A declared STRING property holds text by contract (issue #8384): it only matches the operand's own text, never a
+      // differently formatted rendering of the same instant, exactly like MATCH
+      return text.equals(wantedText) || TemporalUtil.mayBeTemporalString(text) && !TemporalUtil.isDeclaredString(doc, propertyName)
           && InlineProperties.matchesResolvedValue(TemporalUtil.convertFromStorage(text), wanted);
     }
     return InlineProperties.matchesResolvedValue(actual, wanted);
@@ -1344,7 +1347,7 @@ public class MergeStep extends AbstractExecutionStep {
       if (actualValue == null)
         return false;
       if (expectedValue instanceof CypherTemporalValue wanted) {
-        if (!matchesTemporal(actualValue, wanted))
+        if (!matchesTemporal(doc, key, actualValue, wanted))
           return false;
         continue;
       }
