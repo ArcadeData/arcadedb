@@ -18,6 +18,7 @@
  */
 package com.arcadedb.engine.timeseries;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.LineProtocolParser.Sample;
 import com.arcadedb.schema.DocumentType;
@@ -27,6 +28,7 @@ import com.arcadedb.security.SecurityDatabaseUser;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -95,16 +97,27 @@ public final class TimeSeriesGateway {
   }
 
   /**
+   * At most this many entries are kept in {@link WriteReport#undeclaredKeys()}. The keys come from the client, so
+   * a producer sending a fresh key per sample would otherwise grow the report - and the response rendering it -
+   * without bound. The entries locate the problem; {@code dropped} still counts every sample.
+   */
+  public static final int MAX_REPORTED_UNDECLARED_KEYS = 100;
+
+  /**
    * What a {@link #write(DatabaseInternal, List)} call did. {@code dropped} counts individual samples, and every
-   * parsed sample is either inserted or skipped into exactly one of the three sets, so
-   * {@code written + dropped == samples.size()}.
+   * parsed sample is either inserted or skipped for exactly one reason, so {@code written + dropped == samples.size()}.
    * <p>
-   * The three sets are kept apart on purpose: an unknown type means "create the type first", a non-TimeSeries
+   * The three type sets are kept apart on purpose: an unknown type means "create the type first", a non-TimeSeries
    * type means "only TIMESERIES types take samples", and an unavailable one means the type is right but its
    * storage failed to load (issue #6356 follow-up). They preserve first-occurrence order.
+   * <p>
+   * {@code undeclaredKeys} names the keys that made a sample of an otherwise valid type be dropped under
+   * {@link GlobalConfiguration#TIMESERIES_UNDECLARED_KEYS} {@code = reject} (issue #8646), each rendered as
+   * {@code <measurement>.<key> (tag|field)}, in first-occurrence order and capped at
+   * {@link #MAX_REPORTED_UNDECLARED_KEYS}.
    */
   public record WriteReport(int written, int dropped, Set<String> unknownTypes, Set<String> nonTimeSeriesTypes,
-                            Set<String> unavailableTypes) {
+                            Set<String> unavailableTypes, Set<String> undeclaredKeys) {
 
     /** Whether every sample handed in was appended. */
     public boolean isComplete() {
@@ -116,7 +129,42 @@ public final class TimeSeriesGateway {
    * The samples of one measurement in a single request, paired with the type they resolved to so the schema
    * lookup and the {@code instanceof} narrowing happen once per measurement, not per sample.
    */
-  private record MeasurementBatch(LocalTimeSeriesType type, List<Sample> samples) {
+  private record MeasurementBatch(LocalTimeSeriesType type, List<Sample> samples, Set<String> tagNames,
+                                  Set<String> fieldNames) {
+
+    private static MeasurementBatch of(final LocalTimeSeriesType type) {
+      final Set<String> tagNames = new HashSet<>();
+      final Set<String> fieldNames = new HashSet<>();
+      for (final ColumnDefinition col : type.getTsColumns())
+        if (col.getRole() == ColumnDefinition.ColumnRole.TAG)
+          tagNames.add(col.getName());
+        else if (col.getRole() == ColumnDefinition.ColumnRole.FIELD)
+          fieldNames.add(col.getName());
+      return new MeasurementBatch(type, new ArrayList<>(), tagNames, fieldNames);
+    }
+
+    /**
+     * Whether every tag and field key of {@code sample} names a column of this type IN THAT ROLE. A key declared
+     * as a field but sent as a tag (or the reverse) is undeclared too: the column loop in {@code write} reads a
+     * TAG column only from the sample's tags and a FIELD column only from its fields, so the value would be
+     * discarded exactly like a misspelled key. Offending keys are added to {@code undeclared} up to the cap.
+     */
+    private boolean acceptsKeysOf(final Sample sample, final Set<String> undeclared) {
+      boolean accepted = true;
+      for (final String key : sample.getTags().keySet())
+        if (!tagNames.contains(key)) {
+          accepted = false;
+          if (undeclared.size() < MAX_REPORTED_UNDECLARED_KEYS)
+            undeclared.add(sample.getMeasurement() + "." + key + " (tag)");
+        }
+      for (final String key : sample.getFields().keySet())
+        if (!fieldNames.contains(key)) {
+          accepted = false;
+          if (undeclared.size() < MAX_REPORTED_UNDECLARED_KEYS)
+            undeclared.add(sample.getMeasurement() + "." + key + " (field)");
+        }
+      return accepted;
+    }
   }
 
   /**
@@ -131,6 +179,12 @@ public final class TimeSeriesGateway {
    * append - because {@code TimeSeriesShard.appendSamples} commits its own shard transaction: a denial
    * discovered mid-write would leave the measurements before it already durable. It is also applied before the
    * engine-availability check so a denied caller cannot learn from the report that the type exists.
+   * <p>
+   * A sample carrying a tag or field key its type does not declare in that role is dropped and named in
+   * {@link WriteReport#undeclaredKeys()} unless {@link GlobalConfiguration#TIMESERIES_UNDECLARED_KEYS} is
+   * {@code ignore} for the database (issue #8646). Storing it would file the point under another series than the
+   * one the client sent: a misspelled tag key leaves the declared tag column null, and the write used to be
+   * answered as complete. The check runs during grouping, so a sample is never half-appended.
    * <p>
    * <b>This call is not atomic.</b> The transaction opened here does not make it so: every {@code appendBatch}
    * below has already committed its own shard writes by the time it returns, so a failure on a later
@@ -149,7 +203,10 @@ public final class TimeSeriesGateway {
     final Set<String> unknownTypes = new LinkedHashSet<>();
     final Set<String> nonTimeSeriesTypes = new LinkedHashSet<>();
     final Set<String> unavailableTypes = new LinkedHashSet<>();
+    final Set<String> undeclaredKeys = new LinkedHashSet<>();
     final Map<String, MeasurementBatch> byMeasurement = new LinkedHashMap<>();
+    final boolean rejectUndeclared = !"ignore".equalsIgnoreCase(
+        database.getConfiguration().getValueAsString(GlobalConfiguration.TIMESERIES_UNDECLARED_KEYS));
 
     for (final Sample sample : samples) {
       final String measurement = sample.getMeasurement();
@@ -158,31 +215,32 @@ public final class TimeSeriesGateway {
           || unavailableTypes.contains(measurement))
         continue;
 
-      final MeasurementBatch batch = byMeasurement.get(measurement);
-      if (batch != null) {
-        batch.samples().add(sample);
-        continue;
+      MeasurementBatch batch = byMeasurement.get(measurement);
+      if (batch == null) {
+        if (!database.getSchema().existsType(measurement)) {
+          unknownTypes.add(measurement);
+          continue;
+        }
+
+        final DocumentType docType = database.getSchema().getType(measurement);
+        if (!(docType instanceof LocalTimeSeriesType tsType)) {
+          nonTimeSeriesTypes.add(measurement);
+          continue;
+        }
+        tsType.checkAccess(SecurityDatabaseUser.ACCESS.CREATE_RECORD);
+        if (!tsType.isEngineAvailable()) {
+          unavailableTypes.add(measurement);
+          continue;
+        }
+
+        batch = MeasurementBatch.of(tsType);
+        byMeasurement.put(measurement, batch);
       }
 
-      if (!database.getSchema().existsType(measurement)) {
-        unknownTypes.add(measurement);
+      if (rejectUndeclared && !batch.acceptsKeysOf(sample, undeclaredKeys))
         continue;
-      }
 
-      final DocumentType docType = database.getSchema().getType(measurement);
-      if (!(docType instanceof LocalTimeSeriesType tsType)) {
-        nonTimeSeriesTypes.add(measurement);
-        continue;
-      }
-      tsType.checkAccess(SecurityDatabaseUser.ACCESS.CREATE_RECORD);
-      if (!tsType.isEngineAvailable()) {
-        unavailableTypes.add(measurement);
-        continue;
-      }
-
-      final MeasurementBatch created = new MeasurementBatch(tsType, new ArrayList<>());
-      created.samples().add(sample);
-      byMeasurement.put(measurement, created);
+      batch.samples().add(sample);
     }
 
     int inserted = 0;
@@ -203,6 +261,9 @@ public final class TimeSeriesGateway {
         final List<ColumnDefinition> columns = batch.type().getTsColumns();
         final List<Sample> group = batch.samples();
         final int count = group.size();
+        if (count == 0)
+          // Every sample of this measurement was dropped for an undeclared key
+          continue;
 
         final long[] timestamps = new long[count];
         final Object[][] columnValues = new Object[columns.size() - 1][count]; // exclude timestamp
@@ -239,7 +300,8 @@ public final class TimeSeriesGateway {
       throw e;
     }
 
-    return new WriteReport(inserted, samples.size() - inserted, unknownTypes, nonTimeSeriesTypes, unavailableTypes);
+    return new WriteReport(inserted, samples.size() - inserted, unknownTypes, nonTimeSeriesTypes, unavailableTypes,
+        undeclaredKeys);
   }
 
   /**

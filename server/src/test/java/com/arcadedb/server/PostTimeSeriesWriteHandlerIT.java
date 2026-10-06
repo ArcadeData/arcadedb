@@ -244,6 +244,68 @@ class PostTimeSeriesWriteHandlerIT extends BaseGraphServerTest {
     });
   }
 
+  /**
+   * Issue #8646: a tag or field key the type does not declare used to be ignored, so a misspelled tag stored the
+   * point with the declared tag null - under another series than the one sent - and answered 204. It must be
+   * reported as a partial write naming the key, and the sample not stored.
+   */
+  @Test
+  void undeclaredTagAndFieldKeysAreReportedNotStoredUnderAnotherSeries() throws Exception {
+    testEachServer(serverIndex -> {
+      command(serverIndex, "CREATE TIMESERIES TYPE pw_undeclared TIMESTAMP ts TAGS (city STRING) FIELDS (temp DOUBLE)");
+
+      final HttpURLConnection connection = openWriteConnection(serverIndex, "ms");
+      try (final OutputStream os = connection.getOutputStream()) {
+        os.write("""
+            pw_undeclared,city=rome temp=21.5 1700000000000
+            pw_undeclared,citty=rome temp=21.5 1700000000001
+            pw_undeclared,city=rome tmp=21.5 1700000000002
+            """.getBytes(StandardCharsets.UTF_8));
+        os.flush();
+      }
+
+      assertThat(connection.getResponseCode()).isEqualTo(400);
+
+      final JSONObject error = new JSONObject(readError(connection));
+      assertThat(error.getString("error")).contains("undeclared tag/field key(s)").contains("pw_undeclared.citty (tag)")
+          .contains("arcadedb.timeSeriesUndeclaredKeys");
+      assertThat(error.getInt("written")).isEqualTo(1);
+      assertThat(error.getInt("dropped")).isEqualTo(2);
+      final JSONArray undeclared = error.getJSONArray("undeclaredKeys");
+      assertThat(undeclared.length()).isEqualTo(2);
+      assertThat(undeclared.getString(0)).isEqualTo("pw_undeclared.citty (tag)");
+      assertThat(undeclared.getString(1)).isEqualTo("pw_undeclared.tmp (field)");
+
+      final JSONObject result = executeCommand(serverIndex, "sql", "SELECT FROM pw_undeclared");
+      final JSONArray records = result.getJSONObject("result").getJSONArray("records");
+      assertThat(records.length()).isEqualTo(1);
+      assertThat(records.getJSONObject(0).getString("city")).isEqualTo("rome");
+    });
+  }
+
+  /**
+   * Issue #8646: a schema-less producer such as Telegraf sends extra tags the type was never meant to hold. With the
+   * database set to {@code ignore} it keeps the pre-#8646 behaviour - the sample stored, the extra keys discarded.
+   */
+  @Test
+  void undeclaredKeysAreDiscardedWhenTheDatabaseIgnoresThem() throws Exception {
+    testEachServer(serverIndex -> {
+      command(serverIndex, "CREATE TIMESERIES TYPE pw_ignore TIMESTAMP ts TAGS (city STRING) FIELDS (temp DOUBLE)");
+      command(serverIndex, "ALTER DATABASE `arcadedb.timeSeriesUndeclaredKeys` 'ignore'");
+      try {
+        assertThat(postLineProtocol(serverIndex, "pw_ignore,city=rome,host=telegraf-1 temp=21.5,uptime=3i 1700000000000\n",
+            "ms")).isEqualTo(204);
+
+        final JSONObject result = executeCommand(serverIndex, "sql", "SELECT FROM pw_ignore");
+        final JSONArray records = result.getJSONObject("result").getJSONArray("records");
+        assertThat(records.length()).isEqualTo(1);
+        assertThat(records.getJSONObject(0).getString("city")).isEqualTo("rome");
+      } finally {
+        command(serverIndex, "ALTER DATABASE `arcadedb.timeSeriesUndeclaredKeys` 'reject'");
+      }
+    });
+  }
+
   @Test
   void onlyMalformedLinesAreReportedNot204() throws Exception {
     testEachServer(serverIndex -> {

@@ -1231,7 +1231,8 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
         if (error.has("written") && error.has("dropped"))
           return new TimeSeriesWriteSummary(points.size(), error.getLong("written"), error.getLong("dropped"),
               stringList(error.getJSONArray("unknownTypes", null)), stringList(error.getJSONArray("nonTimeSeriesTypes", null)),
-              stringList(error.getJSONArray("unavailableTypes", null)));
+              stringList(error.getJSONArray("unavailableTypes", null)),
+              stringList(error.getJSONArray("undeclaredKeys", null)));
       }
 
       // The server's sentence in the message, for the reason postToTimeSeriesEndpoint gives (issue #7716).
