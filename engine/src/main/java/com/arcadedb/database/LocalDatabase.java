@@ -1864,7 +1864,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
                   + "run a database check to repair any dangling index entries.", record.getIdentity(), e.getMessage());
         } catch (final SecurityException e) {
           // A user that is refused on the paired external bucket: the index entries are already gone (issue #9305)
-          getTransaction().setRollbackOnly("delete of " + record.getIdentity() + " was refused after it had started: " + e.getMessage());
+          doomAfterRefusedDelete(record, e);
           throw e;
         } catch (final BrokenChunkChainException e) {
           // The loader itself confirmed the chunk chain is structurally broken (#6258), so there is nothing left to
@@ -1930,7 +1930,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         // delete had started (the edges of a vertex, say), so index entries, external values or links are already gone and
         // nothing undoes them. Make the commit fail rather than let a caller that goes on publish the half-applied delete
         // (issue #9305).
-        getTransaction().setRollbackOnly("delete of " + record.getIdentity() + " was refused after it had started: " + e.getMessage());
+        doomAfterRefusedDelete(record, e);
         throw e;
       }
 
@@ -1958,6 +1958,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       }
     }
     return true;
+  }
+
+  private void doomAfterRefusedDelete(final Record record, final SecurityException e) {
+    getTransaction().setRollbackOnly("delete of " + record.getIdentity() + " was refused after it had started: " + e.getMessage());
   }
 
   /** The INDEX/EXTERNAL cleanup could not read the record, so the delete proceeds without it. */
