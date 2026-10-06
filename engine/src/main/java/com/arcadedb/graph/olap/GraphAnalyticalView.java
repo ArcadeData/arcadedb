@@ -1229,7 +1229,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     else {
       final String[] sorted = edgeTypes.clone();
       Arrays.sort(sorted);
-      key = direction + "|" + String.join(",", sorted);
+      key = direction + "|" + String.join("\u0000", sorted);
     }
     final SoftReference<NeighborView> cached = snap.mergedNeighborViews.get(key);
     final NeighborView hit = cached != null ? cached.get() : null;
