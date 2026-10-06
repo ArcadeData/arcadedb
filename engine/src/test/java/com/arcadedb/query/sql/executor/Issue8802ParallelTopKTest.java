@@ -103,7 +103,7 @@ class Issue8802ParallelTopKTest extends TestHelper {
       final String[] plan = new String[1];
       final List<String> rows = run("SELECT id, x FROM OneBucket ORDER BY x DESC LIMIT 1", true, plan);
       assertThat(plan[0]).doesNotContain("parallel: ");
-      assertThat(rows.getFirst()).contains("x=1000");
+      assertThat(rows.get(0)).contains("x=1000");
     } finally {
       database.rollback();
     }

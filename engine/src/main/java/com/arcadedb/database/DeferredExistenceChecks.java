@@ -496,7 +496,7 @@ public class DeferredExistenceChecks {
   private void register(final MutableDocument document) {
     // One document, one registration: validate() walks the properties, so a record missing two mandatory ones
     // defers twice in a row for the same instance.
-    if (!unresolved.isEmpty() && unresolved.getLast() == document)
+    if (!unresolved.isEmpty() && unresolved.get(unresolved.size() - 1) == document)
       return;
 
     resolve();

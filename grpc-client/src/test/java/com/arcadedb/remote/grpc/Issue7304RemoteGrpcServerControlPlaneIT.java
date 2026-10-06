@@ -131,8 +131,8 @@ class Issue7304RemoteGrpcServerControlPlaneIT extends BaseGrpcClientServerTest {
 
     // Stopping saves the run, so the listing reports it with its file metadata.
     assertThat(server.profilerList()).isNotEmpty();
-    assertThat(server.profilerList().getFirst().getFileName()).startsWith("profiler-run-");
-    assertThat(server.profilerLoad(server.profilerList().getFirst().getFileName())).isNotNull();
+    assertThat(server.profilerList().get(0).getFileName()).startsWith("profiler-run-");
+    assertThat(server.profilerLoad(server.profilerList().get(0).getFileName())).isNotNull();
 
     server.profilerReset();
   }

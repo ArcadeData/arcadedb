@@ -311,7 +311,7 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
 
       // PARTITION p OF EVERY WORKER HOLDS THE SAME KEYS, AND NO OTHER PARTITION DOES: EACH ONE IS MERGED ON ITS OWN, IN
       // PARALLEL WHEN THERE ARE ENOUGH GROUPS FOR IT TO PAY
-      final PartialAggregation merged = partials.getFirst();
+      final PartialAggregation merged = partials.get(0);
       long partialGroups = 0;
       for (final PartialAggregation partial : partials)
         partialGroups += partial.groupCount;

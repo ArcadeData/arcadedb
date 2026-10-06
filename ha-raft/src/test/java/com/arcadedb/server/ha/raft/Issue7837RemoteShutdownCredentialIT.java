@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.network.HttpClientLifecycle;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -140,8 +141,12 @@ class Issue7837RemoteShutdownCredentialIT extends BaseRaftHATest {
   }
 
   private static HttpResponse<String> send(final HttpRequest request) throws Exception {
-    try (final HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build()) {
+    // JDK17: HttpClient is AutoCloseable only since Java 21
+    final HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
+    try {
       return client.send(request, HttpResponse.BodyHandlers.ofString());
+    } finally {
+      HttpClientLifecycle.close(client);
     }
   }
 }

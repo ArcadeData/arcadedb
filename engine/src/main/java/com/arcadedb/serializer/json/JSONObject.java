@@ -126,20 +126,31 @@ public class JSONObject implements Map<String, Object> {
     if (name == null)
       throw new IllegalArgumentException("Property name is null");
 
-    switch (value) {
-    case null -> object.add(name, NULL);
-    case JsonNull jsonNull -> object.add(name, NULL);
-    case JsonElement jsonElement -> object.add(name, jsonElement);
-    case String string -> put(name, string);
-    case Number number -> put(name, number); // HANDLE CONVERSION OF NaN/INF
-    case Boolean bool -> put(name, bool);
-    case Character character -> put(name, character);
-    case JSONObject nObject -> object.add(name, nObject.getInternal());
-    case JSONArray array -> put(name, array.getInternal());
-    case Document doc -> object.add(name, doc.toJSON(false).getInternal());
-    case String[] string1s -> object.add(name, new JSONArray(string1s).getInternal());
-    case Object[] objects -> object.add(name, new JSONArray(objects).getInternal());
-    case Iterable<?> iterable -> {
+    if (value == null) {
+      object.add(name, NULL);
+    } else if (value instanceof JsonNull) {
+      object.add(name, NULL);
+    } else if (value instanceof JsonElement jsonElement) {
+      object.add(name, jsonElement);
+    } else if (value instanceof String string) {
+      put(name, string);
+    } else if (value instanceof Number number) {
+      put(name, number); // HANDLE CONVERSION OF NaN/INF
+    } else if (value instanceof Boolean bool) {
+      put(name, bool);
+    } else if (value instanceof Character character) {
+      put(name, character);
+    } else if (value instanceof JSONObject nObject) {
+      object.add(name, nObject.getInternal());
+    } else if (value instanceof JSONArray array) {
+      put(name, array.getInternal());
+    } else if (value instanceof Document doc) {
+      object.add(name, doc.toJSON(false).getInternal());
+    } else if (value instanceof String[] string1s) {
+      object.add(name, new JSONArray(string1s).getInternal());
+    } else if (value instanceof Object[] objects) {
+      object.add(name, new JSONArray(objects).getInternal());
+    } else if (value instanceof Iterable<?> iterable) {
       // RETRY UP TO 10 TIMES IN CASE OF CONCURRENT UPDATE
       for (int i = 0; i < 10; i++) {
         final JSONArray array = new JSONArray();
@@ -152,25 +163,23 @@ public class JSONObject implements Map<String, Object> {
           // RETRY
         }
       }
-    }
-    case Enum<?> enumValue -> object.addProperty(name, enumValue.name());
-    case Date date -> {
+    } else if (value instanceof Enum<?> enumValue) {
+      object.addProperty(name, enumValue.name());
+    } else if (value instanceof Date date) {
       if (dateFormatAsString == null)
         // SAVE AS TIMESTAMP
         object.addProperty(name, date.getTime());
       else
         // SAVE AS STRING
         object.addProperty(name, dateFormat.format(date.toInstant().atZone(ZoneId.systemDefault())));
-    }
-    case LocalDate localDate -> {
+    } else if (value instanceof LocalDate localDate) {
       if (dateFormatAsString == null)
         // SAVE AS TIMESTAMP: a DATE is a calendar day, anchored at UTC midnight so the number never depends on the JVM time zone (#9037)
         object.addProperty(name, localDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli());
       else
         // SAVE AS STRING
         object.addProperty(name, dateFormat.format(localDate.atStartOfDay()));
-    }
-    case TemporalAccessor temporalAccessor -> {
+    } else if (value instanceof TemporalAccessor temporalAccessor) {
       if (dateFormatAsString == null)
         // SAVE AS TIMESTAMP
         object.addProperty(name,
@@ -182,15 +191,19 @@ public class JSONObject implements Map<String, Object> {
       else
         // SAVE AS STRING
         object.addProperty(name, dateTimeFormat.format(temporalAccessor));
-    }
-    case Duration duration -> object.addProperty(name, duration.toSeconds() + (duration.toNanosPart() / 1_000_000_000.0));
-    case Identifiable identifiable -> object.addProperty(name, identifiable.getIdentity().toString());
-    case Map map -> object.add(name, new JSONObject(map).getInternal());
-    case Class<?> clazz -> object.addProperty(name, clazz.getName());
-    case Object o when o.getClass().isArray() -> object.add(name, primitiveArrayToElement(o));
-    default ->
+    } else if (value instanceof Duration duration) {
+      object.addProperty(name, duration.toSeconds() + (duration.toNanosPart() / 1_000_000_000.0));
+    } else if (value instanceof Identifiable identifiable) {
+      object.addProperty(name, identifiable.getIdentity().toString());
+    } else if (value instanceof Map map) {
+      object.add(name, new JSONObject(map).getInternal());
+    } else if (value instanceof Class<?> clazz) {
+      object.addProperty(name, clazz.getName());
+    } else if (value.getClass().isArray()) {
+      object.add(name, primitiveArrayToElement(value));
+    } else {
       // GENERIC CASE: TRANSFORM IT TO STRING
-        object.addProperty(name, value.toString());
+      object.addProperty(name, value.toString());
     }
     return this;
   }
@@ -809,69 +822,79 @@ public class JSONObject implements Map<String, Object> {
   private static JsonElement primitiveArrayToElement(final Object array) {
     // TYPED LOOPS FOR THE COMMON CASES (EMBEDDINGS, BINARY): NO REFLECTION AND NO TYPE SWITCH PER ELEMENT
     final JsonArray result;
-    switch (array) {
-    case float[] floats -> {
+    if (array instanceof float[] floats) {
       result = new JsonArray(floats.length);
       for (final float f : floats)
         result.add(Float.isFinite(f) ? new JsonPrimitive(f) : JsonNull.INSTANCE);
-    }
-    case double[] doubles -> {
+    } else if (array instanceof double[] doubles) {
       result = new JsonArray(doubles.length);
       for (final double d : doubles)
         result.add(Double.isFinite(d) ? new JsonPrimitive(d) : JsonNull.INSTANCE);
-    }
-    case int[] ints -> {
+    } else if (array instanceof int[] ints) {
       result = new JsonArray(ints.length);
       for (final int i : ints)
         result.add(i);
-    }
-    case long[] longs -> {
+    } else if (array instanceof long[] longs) {
       result = new JsonArray(longs.length);
       for (final long l : longs)
         result.add(l);
-    }
-    case byte[] bytes -> {
+    } else if (array instanceof byte[] bytes) {
       result = new JsonArray(bytes.length);
       for (final byte b : bytes)
         result.add(b);
-    }
-    default -> {
+    } else {
       final int length = Array.getLength(array);
       result = new JsonArray(length);
       for (int i = 0; i < length; i++)
         result.add(objectToElement(Array.get(array, i)));
     }
-    }
     return result;
   }
 
   protected static JsonElement objectToElement(final Object object) {
-    return switch (object) {
-      case null -> JsonNull.INSTANCE;
-      case JsonElement jsonElement -> jsonElement;
-      case String string -> new JsonPrimitive(string);
-      case Number number -> isNonFinite(number) ? JsonNull.INSTANCE : new JsonPrimitive(number);
-      case Boolean boolean1 -> new JsonPrimitive(boolean1);
-      case Character character -> new JsonPrimitive(character);
-      case JSONObject nObject -> nObject.getInternal();
-      case JSONArray array -> array.getInternal();
-      case Collection collection -> new JSONArray(collection).getInternal();
-      case Object[] objects -> new JSONArray(objects).getInternal();
-      case Map map -> new JSONObject(map).getInternal();
-      case Document document -> document.toJSON(false).getInternal();
-      case Identifiable identifiable -> new JsonPrimitive(identifiable.getIdentity().toString());
-      case Enum<?> enumValue -> new JsonPrimitive(enumValue.name());
-      case Object o when o.getClass().isArray() -> primitiveArrayToElement(o);
-      case Date date -> new JsonPrimitive(date.getTime());
-      case LocalDate localDate -> new JsonPrimitive(localDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli());
-      case TemporalAccessor temporalAccessor -> {
-        final Long timestamp = DateUtils.dateTimeToTimestamp(temporalAccessor, ChronoUnit.MILLIS);
-        yield timestamp != null ? new JsonPrimitive(timestamp) : new JsonPrimitive(temporalAccessor.toString());
-      }
-      case Duration duration -> new JsonPrimitive(duration.toSeconds() + (duration.toNanosPart() / 1_000_000_000.0));
-      case Class<?> clazz -> new JsonPrimitive(clazz.getName());
-      default -> new JsonPrimitive(object.toString());
-    };
+    if (object == null)
+      return JsonNull.INSTANCE;
+    else if (object instanceof JsonElement jsonElement)
+      return jsonElement;
+    else if (object instanceof String string)
+      return new JsonPrimitive(string);
+    else if (object instanceof Number number)
+      return isNonFinite(number) ? JsonNull.INSTANCE : new JsonPrimitive(number);
+    else if (object instanceof Boolean boolean1)
+      return new JsonPrimitive(boolean1);
+    else if (object instanceof Character character)
+      return new JsonPrimitive(character);
+    else if (object instanceof JSONObject nObject)
+      return nObject.getInternal();
+    else if (object instanceof JSONArray array)
+      return array.getInternal();
+    else if (object instanceof Collection collection)
+      return new JSONArray(collection).getInternal();
+    else if (object instanceof Object[] objects)
+      return new JSONArray(objects).getInternal();
+    else if (object instanceof Map map)
+      return new JSONObject(map).getInternal();
+    else if (object instanceof Document document)
+      return document.toJSON(false).getInternal();
+    else if (object instanceof Identifiable identifiable)
+      return new JsonPrimitive(identifiable.getIdentity().toString());
+    else if (object instanceof Enum<?> enumValue)
+      return new JsonPrimitive(enumValue.name());
+    else if (object.getClass().isArray())
+      return primitiveArrayToElement(object);
+    else if (object instanceof Date date)
+      return new JsonPrimitive(date.getTime());
+    else if (object instanceof LocalDate localDate)
+      return new JsonPrimitive(localDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli());
+    else if (object instanceof TemporalAccessor temporalAccessor) {
+      final Long timestamp = DateUtils.dateTimeToTimestamp(temporalAccessor, ChronoUnit.MILLIS);
+      return timestamp != null ? new JsonPrimitive(timestamp) : new JsonPrimitive(temporalAccessor.toString());
+    } else if (object instanceof Duration duration)
+      return new JsonPrimitive(duration.toSeconds() + (duration.toNanosPart() / 1_000_000_000.0));
+    else if (object instanceof Class<?> clazz)
+      return new JsonPrimitive(clazz.getName());
+    else
+      return new JsonPrimitive(object.toString());
   }
 
   private JsonElement getElement(final String name) {

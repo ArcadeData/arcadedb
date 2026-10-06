@@ -157,7 +157,7 @@ public class GraphQLSchema {
     String queryName = null;
 
     try {
-      final Selection selection = operationSelections.getFirst();
+      final Selection selection = operationSelections.get(0);
       queryName = selection.getFieldName();
 
       // HANDLE INTROSPECTION QUERIES

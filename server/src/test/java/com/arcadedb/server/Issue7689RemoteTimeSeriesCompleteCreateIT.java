@@ -99,7 +99,7 @@ class Issue7689RemoteTimeSeriesCompleteCreateIT extends BaseGraphServerTest {
       final List<String> statements = restoreRecipe(database.getSchema(), "SingleStatement").toSQL();
 
       assertThat(statements).hasSize(1);
-      assertThat(statements.getFirst())
+      assertThat(statements.get(0))
           .startsWith("CREATE TIMESERIES TYPE `SingleStatement`")
           .contains("CODEC")
           .contains("DOWNSAMPLING POLICY")

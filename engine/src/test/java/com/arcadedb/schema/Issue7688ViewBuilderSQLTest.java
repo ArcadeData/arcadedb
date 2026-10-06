@@ -84,8 +84,8 @@ class Issue7688ViewBuilderSQLTest extends TestHelper {
     final DocumentType createdBacking = database.getSchema().getType("ViaCreate");
     final DocumentType sqlBacking = database.getSchema().getType("ViaSQL");
     assertThat(sqlBacking.getBuckets(false)).as(sql).hasSameSizeAs(createdBacking.getBuckets(false));
-    assertThat(((LocalBucket) sqlBacking.getBuckets(false).getFirst()).getPageSize()).as(sql)
-        .isEqualTo(((LocalBucket) createdBacking.getBuckets(false).getFirst()).getPageSize());
+    assertThat(((LocalBucket) sqlBacking.getBuckets(false).get(0)).getPageSize()).as(sql)
+        .isEqualTo(((LocalBucket) createdBacking.getBuckets(false).get(0)).getPageSize());
     assertThat(database.countType("ViaSQL", false)).as(sql).isEqualTo(database.countType("ViaCreate", false));
 
     database.getSchema().dropMaterializedView("ViaCreate");

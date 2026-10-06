@@ -118,8 +118,8 @@ class Issue8615SkipIncludeDirectivesTest extends AbstractGraphQLTest {
     assertSingleBook(query, Map.of("brief", true), record -> {
       final List<Result> authors = record.getProperty("authors");
       assertThat(authors).hasSize(1);
-      assertThat(authors.getFirst().<String>getProperty("firstName")).isEqualTo("Joanne");
-      assertThat(authors.getFirst().getPropertyNames()).doesNotContain("lastName");
+      assertThat(authors.get(0).<String>getProperty("firstName")).isEqualTo("Joanne");
+      assertThat(authors.get(0).getPropertyNames()).doesNotContain("lastName");
     });
 
     assertSingleBook("{ bookById(id: \"book-1\") { id authors @skip(if: true) { firstName } } }", null,

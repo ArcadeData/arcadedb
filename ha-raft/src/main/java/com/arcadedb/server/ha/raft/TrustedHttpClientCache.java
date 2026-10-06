@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.network.HttpClientLifecycle;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
@@ -128,9 +129,9 @@ final class TrustedHttpClientCache {
       LogManager.instance().log(this, Level.FINE,
           "The truststore backing the cluster's peer HTTPS client changed; the client was rebuilt");
       // Non-blocking: in-flight exchanges on it finish on their own, and it terminates after the last one.
-      previous.shutdown();
-      retired.removeIf(HttpClient::isTerminated);
-      if (!previous.isTerminated())
+      HttpClientLifecycle.shutdown(previous);
+      retired.removeIf(HttpClientLifecycle::isTerminated);
+      if (!HttpClientLifecycle.isTerminated(previous))
         retired.add(previous);
     }
     return client;

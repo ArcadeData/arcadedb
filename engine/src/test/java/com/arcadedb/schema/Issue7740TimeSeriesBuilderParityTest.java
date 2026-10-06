@@ -77,7 +77,7 @@ class Issue7740TimeSeriesBuilderParityTest extends TestHelper {
   @Test
   void aBackslashInANameIsEscapedRatherThanPassedThrough() {
     final String odd = "a\\b";
-    final String sql = builder("Backslash").withField(odd, Type.DOUBLE).toSQL().getFirst();
+    final String sql = builder("Backslash").withField(odd, Type.DOUBLE).toSQL().get(0);
 
     assertThatNoException().as(sql).isThrownBy(() -> new SQLAntlrParser(null).parse(sql));
     assertThat(sql).as("the backslash is escaped, so the name survives the round trip").contains("`a\\\\b`");
@@ -91,7 +91,7 @@ class Issue7740TimeSeriesBuilderParityTest extends TestHelper {
   /** A name ENDING with a backslash used to be a parse error: unescaped, it swallowed the closing back-quote. */
   @Test
   void aTrailingBackslashDoesNotSwallowTheClosingQuote() {
-    final String sql = builder("TrailingBackslash").withField("weird\\", Type.DOUBLE).toSQL().getFirst();
+    final String sql = builder("TrailingBackslash").withField("weird\\", Type.DOUBLE).toSQL().get(0);
 
     assertThatNoException().as(sql).isThrownBy(() -> new SQLAntlrParser(null).parse(sql));
     database.command("sql", sql);
@@ -102,7 +102,7 @@ class Issue7740TimeSeriesBuilderParityTest extends TestHelper {
   /** And the back-quote, which used to be refused outright, is escaped like any other special character. */
   @Test
   void aBackQuoteInANameIsEscapedInsteadOfRefused() {
-    final String sql = builder("BackQuote").withField("we`ird", Type.DOUBLE).toSQL().getFirst();
+    final String sql = builder("BackQuote").withField("we`ird", Type.DOUBLE).toSQL().get(0);
 
     assertThatNoException().as(sql).isThrownBy(() -> new SQLAntlrParser(null).parse(sql));
     database.command("sql", sql);
@@ -113,7 +113,7 @@ class Issue7740TimeSeriesBuilderParityTest extends TestHelper {
   /** An ordinary name renders exactly as it always did: the escaping is not a new quoting style. */
   @Test
   void anOrdinaryNameIsUnchanged() {
-    assertThat(builder("Ordinary").withTag("host", Type.STRING).withField("value", Type.DOUBLE).toSQL().getFirst())
+    assertThat(builder("Ordinary").withTag("host", Type.STRING).withField("value", Type.DOUBLE).toSQL().get(0))
         .isEqualTo("CREATE TIMESERIES TYPE `Ordinary` TIMESTAMP `ts` TAGS (`host` STRING) FIELDS (`value` DOUBLE)");
   }
 
@@ -134,7 +134,7 @@ class Issue7740TimeSeriesBuilderParityTest extends TestHelper {
         .withTimestamp("ts")
         .withTag("host", Type.STRING)
         .withField("cpu", Type.DOUBLE)
-        .toSQL().getFirst());
+        .toSQL().get(0));
     final TimeSeriesType rendered = (TimeSeriesType) database.getSchema().getType("Rendered");
 
     assertThat(columnNames(embedded)).containsExactly("ts", "host", "cpu");
@@ -160,7 +160,7 @@ class Issue7740TimeSeriesBuilderParityTest extends TestHelper {
         .withField("cpu", Type.DOUBLE)
         .withTimestamp("ts")
         .withTag("host", Type.STRING)
-        .toSQL().getFirst();
+        .toSQL().get(0);
 
     assertThat(sql).isEqualTo("CREATE TIMESERIES TYPE `FieldFirst` FIELDS (`cpu` DOUBLE) TIMESTAMP `ts` "
         + "TAGS (`host` STRING)");

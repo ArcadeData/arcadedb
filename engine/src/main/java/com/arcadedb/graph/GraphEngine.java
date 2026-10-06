@@ -774,10 +774,12 @@ public class GraphEngine {
    */
   public void deleteEdge(final Edge edge, final RID skipEndpoint) {
     final Database database = edge.getDatabase();
-    if (edge.getType() instanceof EdgeType edgeType && !edgeType.isBidirectional()
-        && this.database.getTransactionIfExists() instanceof TransactionContext tx
-        && tx.getUnidirectionalEdgeChangesIfAny() instanceof UnidirectionalEdgeChanges changes && changes.isRecording())
-      changes.edgeDeleted(edge.getIdentity());
+    if (edge.getType() instanceof EdgeType edgeType && !edgeType.isBidirectional()) {
+      final TransactionContext tx = this.database.getTransactionIfExists();
+      final UnidirectionalEdgeChanges changes = tx != null ? tx.getUnidirectionalEdgeChangesIfAny() : null;
+      if (changes != null && changes.isRecording())
+        changes.edgeDeleted(edge.getIdentity());
+    }
 
     disconnectEndpoint(edge, Vertex.DIRECTION.OUT, skipEndpoint);
     disconnectEndpoint(edge, Vertex.DIRECTION.IN, skipEndpoint);

@@ -47,12 +47,13 @@ class Issue8813CompactedOldestSampleTest extends TestHelper {
   private long ts(final String sql) {
     try (final ResultSet rs = database.query("sql", sql)) {
       final Object o = rs.next().getProperty("ts");
-      return switch (o) {
-        case Date d -> d.getTime();
-        case Instant i -> i.toEpochMilli();
-        case LocalDateTime l -> l.toInstant(ZoneOffset.UTC).toEpochMilli();
-        default -> ((Number) o).longValue();
-      };
+      if (o instanceof Date d)
+        return d.getTime();
+      else if (o instanceof Instant i)
+        return i.toEpochMilli();
+      else if (o instanceof LocalDateTime l)
+        return l.toInstant(ZoneOffset.UTC).toEpochMilli();
+      return ((Number) o).longValue();
     }
   }
 

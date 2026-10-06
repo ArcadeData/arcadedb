@@ -285,7 +285,7 @@ public class Issue8042TruncateTypeGraphGuardTest extends TestHelper {
     database.command("sql", "CREATE VERTEX TYPE Person BUCKETS 1").close();
     database.transaction(() -> database.command("sql", "INSERT INTO Person SET name = 'a'").close());
 
-    final String bucketName = database.getSchema().getType("Person").getBuckets(false).getFirst().getName();
+    final String bucketName = database.getSchema().getType("Person").getBuckets(false).get(0).getName();
 
     assertThatThrownBy(() -> database.command("sql", "TRUNCATE BUCKET `" + bucketName + "`").close())
         .isInstanceOf(CommandExecutionException.class).hasMessageContaining("not empty vertex bucket");

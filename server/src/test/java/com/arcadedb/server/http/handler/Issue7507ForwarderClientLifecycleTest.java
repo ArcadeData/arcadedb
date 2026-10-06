@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.network.HttpClientLifecycle;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
@@ -63,14 +64,14 @@ class Issue7507ForwarderClientLifecycleTest {
       assertThat(forwarder.transport().client().connectTimeout())
           .as("the forwarder dials the leader with a bounded client")
           .isPresent();
-      assertThat(forwarder.transport().client().isTerminated())
+      assertThat(HttpClientLifecycle.isTerminated(forwarder.transport().client()))
           .as("the client is live while the server is up")
           .isFalse();
     } finally {
       server.stop();
     }
 
-    assertThat(forwarder.transport().client().isTerminated())
+    assertThat(HttpClientLifecycle.isTerminated(forwarder.transport().client()))
         .as("stopping the server releases the forwarder's HTTP client")
         .isTrue();
 

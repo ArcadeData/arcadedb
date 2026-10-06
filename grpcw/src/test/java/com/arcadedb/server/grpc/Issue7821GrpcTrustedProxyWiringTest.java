@@ -72,7 +72,7 @@ class Issue7821GrpcTrustedProxyWiringTest {
           .map(GrpcTransportSecurityInterceptor.class::cast)
           .toList();
       assertThat(security).hasSize(1);
-      final GrpcTransportSecurityInterceptor interceptor = security.getFirst();
+      final GrpcTransportSecurityInterceptor interceptor = security.get(0);
 
       assertThat(decisionFor(interceptor, proxy(), false, forwardedProto("https"))).isFalse();
 

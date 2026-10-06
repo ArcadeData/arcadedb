@@ -64,7 +64,7 @@ class Issue7126BucketCountReplayTest extends TestHelper {
         db.newDocument("Counted").set("name", "record-" + i).save();
     });
 
-    final LocalBucket bucket = (LocalBucket) db.getSchema().getType("Counted").getBuckets(false).getFirst();
+    final LocalBucket bucket = (LocalBucket) db.getSchema().getType("Counted").getBuckets(false).get(0);
     // Materialize the cached counter: the fold is a no-op while it is still -1, which is what makes an
     // UNCLEAN restart safe and a CLEAN one not (issue #7126).
     final long baseline = bucket.count();

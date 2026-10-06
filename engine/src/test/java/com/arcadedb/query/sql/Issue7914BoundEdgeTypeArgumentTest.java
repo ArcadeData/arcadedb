@@ -145,7 +145,7 @@ class Issue7914BoundEdgeTypeArgumentTest extends TestHelper {
     database.command("sql", "create document type Bkt");
     database.transaction(() -> database.command("sql", "insert into Bkt set n = 1"));
 
-    final String bucket = database.getSchema().getType("Bkt").getBuckets(false).getFirst().getName();
+    final String bucket = database.getSchema().getType("Bkt").getBuckets(false).get(0).getName();
 
     final long bare = count("select count(*) as count from bucket:" + bucket, Map.of());
     final long quotedList = count("select count(*) as count from bucket:[`" + bucket + "`]", Map.of());

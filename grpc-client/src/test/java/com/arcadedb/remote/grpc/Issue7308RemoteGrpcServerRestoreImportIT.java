@@ -150,7 +150,7 @@ class Issue7308RemoteGrpcServerRestoreImportIT extends BaseGrpcClientServerTest 
     client.restoreBackup(getDatabaseName(), archive, target, false, events::add);
 
     assertThat(events).isNotEmpty();
-    assertThat(events.getLast().getCompleted()).isTrue();
+    assertThat(events.get(events.size() - 1).getCompleted()).isTrue();
     assertThat(getServer(0).getDatabase(target).countType(VERTEX1_TYPE_NAME, false)).isEqualTo(sourceCount);
   }
 
@@ -168,8 +168,8 @@ class Issue7308RemoteGrpcServerRestoreImportIT extends BaseGrpcClientServerTest 
     // Progress before the terminator, not only the terminator: this method blocks for the length of
     // the restore, and reporting nothing until it ends would defeat the point of it streaming.
     assertThat(events).hasSizeGreaterThan(1);
-    assertThat(events.getFirst().getCompleted()).isFalse();
-    assertThat(events.getLast().getCompleted()).isTrue();
+    assertThat(events.get(0).getCompleted()).isFalse();
+    assertThat(events.get(events.size() - 1).getCompleted()).isTrue();
     assertThat(getServer(0).getDatabase(target).countType(VERTEX1_TYPE_NAME, false)).isEqualTo(sourceCount);
   }
 
@@ -202,7 +202,7 @@ class Issue7308RemoteGrpcServerRestoreImportIT extends BaseGrpcClientServerTest 
     final JSONObject report = client.importDatabase(target, "file://" + source.getAbsolutePath(), events::add);
 
     assertThat(events).isNotEmpty();
-    assertThat(events.getLast().getCompleted()).isTrue();
+    assertThat(events.get(events.size() - 1).getCompleted()).isTrue();
     // The importer's report is returned rather than left for the caller to dig out of the last
     // message: that is the only piece of the stream a synchronous caller usually wants.
     assertThat(report.toMap()).isNotEmpty();
@@ -248,7 +248,7 @@ class Issue7308RemoteGrpcServerRestoreImportIT extends BaseGrpcClientServerTest 
     client.triggerBackup(getDatabaseName());
     final List<BackupInfo> backups = client.listBackups(getDatabaseName());
     assertThat(backups).isNotEmpty();
-    return backups.getLast().getFileName();
+    return backups.get(backups.size() - 1).getFileName();
   }
 
   private Path backupPath(final String fileName) {

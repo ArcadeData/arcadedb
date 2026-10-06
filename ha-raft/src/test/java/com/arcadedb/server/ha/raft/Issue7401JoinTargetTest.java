@@ -115,8 +115,8 @@ class Issue7401JoinTargetTest {
 
       assertThat(joined.peer().getId())
           .as("connect cluster '%s' must derive the id the server list derives", entry)
-          .isEqualTo(declared.peers().getFirst().getId());
-      assertThat(joined.peer().getAddress()).isEqualTo(declared.peers().getFirst().getAddress());
+          .isEqualTo(declared.peers().get(0).getId());
+      assertThat(joined.peer().getAddress()).isEqualTo(declared.peers().get(0).getAddress());
     }
   }
 

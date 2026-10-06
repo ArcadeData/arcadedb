@@ -94,8 +94,7 @@ public final class SecurityDocumentFingerprint {
    * themselves are written by this method, not taken from the value. Do not reuse this output as JSON.
    */
   private static void canonicalize(final Object value, final StringBuilder out) {
-    switch (value) {
-    case final JSONObject object -> {
+    if (value instanceof final JSONObject object) {
       out.append('{');
       boolean first = true;
       for (final String key : new TreeSet<>(object.keySet())) {
@@ -107,8 +106,7 @@ public final class SecurityDocumentFingerprint {
         canonicalize(object.get(key), out);
       }
       out.append('}');
-    }
-    case final JSONArray array -> {
+    } else if (value instanceof final JSONArray array) {
       final List<String> elements = new ArrayList<>(array.length());
       for (int i = 0; i < array.length(); i++) {
         final StringBuilder element = new StringBuilder();
@@ -123,11 +121,12 @@ public final class SecurityDocumentFingerprint {
         out.append(elements.get(i));
       }
       out.append(']');
-    }
-    case null -> out.append("null");
-    case final String string -> appendString(string, out);
-    default -> out.append(value);
-    }
+    } else if (value == null)
+      out.append("null");
+    else if (value instanceof final String string)
+      appendString(string, out);
+    else
+      out.append(value);
   }
 
   /** See {@link #canonicalize}: this closes the string so its contents cannot be mistaken for structure. */

@@ -149,7 +149,7 @@ class Issue7305TimeSeriesGrpcIT extends BaseGrpcClientServerTest {
 
     // gRPC carries the value types, so a DOUBLE column arrives as a Double rather than as whatever a JSON
     // parser chose for its text.
-    assertThat(result.rows().getFirst()[2]).isInstanceOf(Double.class).isEqualTo(22.5);
+    assertThat(result.rows().get(0)[2]).isInstanceOf(Double.class).isEqualTo(22.5);
   }
 
   @Test
@@ -173,8 +173,8 @@ class Issue7305TimeSeriesGrpcIT extends BaseGrpcClientServerTest {
     final TimeSeriesQueryResult result = grpcClient().timeSeriesQuery(new TimeSeriesQuery(TYPE).limit(10_000));
     assertThat(result.count()).isEqualTo(2_500);
     assertThat(result.truncated()).isFalse();
-    assertThat(timestampsOf(result).getFirst()).isEqualTo(100_000L);
-    assertThat(timestampsOf(result).getLast()).isEqualTo(102_499L);
+    assertThat(timestampsOf(result).get(0)).isEqualTo(100_000L);
+    assertThat(timestampsOf(result).get(timestampsOf(result).size() - 1)).isEqualTo(102_499L);
   }
 
   @Test
@@ -207,7 +207,7 @@ class Issue7305TimeSeriesGrpcIT extends BaseGrpcClientServerTest {
 
     // The values must line up with those names: the projection's indices count non-timestamp columns, and a
     // resolver using full-schema ones answered [ts, location, null] under the header [ts, temperature].
-    final Object[] first = projected.rows().getFirst();
+    final Object[] first = projected.rows().get(0);
     assertThat(first).hasSize(2);
     assertThat(((Number) first[0]).longValue()).isEqualTo(1_000L);
     assertThat(first[1]).isEqualTo(22.5);
@@ -228,7 +228,7 @@ class Issue7305TimeSeriesGrpcIT extends BaseGrpcClientServerTest {
     assertThat(result.aggregations()).containsExactly("avg_temp", "temperature_max");
     assertThat(result.buckets()).isNotEmpty();
 
-    final TimeSeriesBucket bucket = result.buckets().getFirst();
+    final TimeSeriesBucket bucket = result.buckets().get(0);
     assertThat(((Number) bucket.value(0)).doubleValue()).isCloseTo((22.5 + 18.3 + 23.1) / 3, within(1e-9));
     assertThat(((Number) bucket.value(1)).doubleValue()).isCloseTo(23.1, within(1e-9));
   }
@@ -368,7 +368,7 @@ class Issue7305TimeSeriesGrpcIT extends BaseGrpcClientServerTest {
 
     final TimeSeriesQueryResult result = grpcClient().timeSeriesQuery(new TimeSeriesQuery(TYPE));
     assertThat(timestampsOf(result)).containsExactly(1_000L, 2_000L, 3_000L);
-    assertThat(result.rows().getFirst()[2]).isEqualTo(22.5);
+    assertThat(result.rows().get(0)[2]).isEqualTo(22.5);
 
     // The tag filter and the latest RPC read the sealed layer through their own code paths, so both are worth
     // driving once the data is no longer where the earlier tests left it.

@@ -95,7 +95,7 @@ class Issue8710RemoteServerSecurityRoutesFailoverTest {
         try {
           entry.call().accept(client);
           assertThat(server.requestLines()).as(entry.name()).hasSize(1);
-          assertThat(server.requestLines().getFirst()).as(entry.name()).startsWith(entry.requestLine() + " ");
+          assertThat(server.requestLines().get(0)).as(entry.name()).startsWith(entry.requestLine() + " ");
         } finally {
           client.close();
         }

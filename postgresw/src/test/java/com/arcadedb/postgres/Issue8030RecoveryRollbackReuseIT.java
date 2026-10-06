@@ -256,7 +256,7 @@ class Issue8030RecoveryRollbackReuseIT extends PostgresWireProtocolTestBase {
         sendSync(out);
         final List<WireMessage> replay = readUntilReadyForQuery(in);
         assertThat(messageTypesOf(replay)).containsExactly('E', 'Z');
-        assertThat(errorFields(replay.getFirst()).get('C')).as("portal does not exist").isEqualTo("34000");
+        assertThat(errorFields(replay.get(0)).get('C')).as("portal does not exist").isEqualTo("34000");
         assertThat(readyForQueryStatusOf(replay)).isEqualTo('E');
 
         final List<WireMessage> commit = runAndRead(out, in, "c2", "COMMIT");

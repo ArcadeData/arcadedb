@@ -148,16 +148,16 @@ class Issue7899NonFirstTimestampReadSurfacesTest extends BaseGraphServerTest {
         new Query(0, TS + 1, List.of(new LabelMatcher(MatchType.EQ, "__name__", TYPE_NAME))))));
 
     assertThat(response.getResults()).hasSize(1);
-    assertThat(response.getResults().getFirst().getTimeSeries()).hasSize(1);
-    final TimeSeries series = response.getResults().getFirst().getTimeSeries().getFirst();
+    assertThat(response.getResults().get(0).getTimeSeries()).hasSize(1);
+    final TimeSeries series = response.getResults().get(0).getTimeSeries().get(0);
 
     assertThat(series.getLabels().stream().filter(l -> "host".equals(l.name())).findFirst())
         .as("the 'host' label must carry the TAG column's value, not the neighbouring column's")
         .hasValueSatisfying(label -> assertThat(label.value()).isEqualTo("srv-1"));
 
     assertThat(series.getSamples()).hasSize(1);
-    assertThat(series.getSamples().getFirst().timestampMs()).isEqualTo(TS);
-    assertThat(series.getSamples().getFirst().value())
+    assertThat(series.getSamples().get(0).timestampMs()).isEqualTo(TS);
+    assertThat(series.getSamples().get(0).value())
         .as("the sample must be the 'value' FIELD, not the timestamp read off its schema position")
         .isEqualTo(42.5);
   }

@@ -378,7 +378,8 @@ class GrpcTransportSecurityInterceptorTest {
         headers,
         (call, received) -> {
           published.set(GrpcTransportSecurityInterceptor.SECRET_SAFE_TRANSPORT_KEY.get());
-          return new ServerCall.Listener<>() {
+          // JDK17: an explicit type argument, the diamond on this anonymous class crashes javac 17's inference
+          return new ServerCall.Listener<Object>() {
           };
         });
 

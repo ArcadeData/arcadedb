@@ -110,7 +110,7 @@ class NdJsonResultStreamTest {
     try (final NdJsonResultStream stream = new NdJsonResultStream(out)) {
       stream.writeStats(0, 7, false);
     }
-    assertThat(new JSONObject(out.lines().getFirst()).getJSONObject("stats").getInt("limit")).isEqualTo(-1);
+    assertThat(new JSONObject(out.lines().get(0)).getJSONObject("stats").getInt("limit")).isEqualTo(-1);
   }
 
   @Test
@@ -159,7 +159,7 @@ class NdJsonResultStreamTest {
       stream.writeError("failed", 500, null, null);
     }
 
-    final JSONObject error = new JSONObject(out.lines().getFirst()).getJSONObject("error");
+    final JSONObject error = new JSONObject(out.lines().get(0)).getJSONObject("error");
     assertThat(error.getInt("status")).isEqualTo(500);
     assertThat(error.has("exception")).isFalse();
     assertThat(error.has("exceptionArgs")).isFalse();
@@ -178,7 +178,7 @@ class NdJsonResultStreamTest {
     assertThat(out.flushes)
         .as("the first row must reach the client before anything else is produced")
         .hasSize(1);
-    assertThat(out.flushes.getFirst()).isEqualTo(out.bytes.size());
+    assertThat(out.flushes.get(0)).isEqualTo(out.bytes.size());
   }
 
   /**
@@ -233,7 +233,7 @@ class NdJsonResultStreamTest {
     stream.close();
 
     assertThat(out.flushes).hasSize(2);
-    assertThat(out.flushes.getLast()).isEqualTo(out.bytes.size());
+    assertThat(out.flushes.get(out.flushes.size() - 1)).isEqualTo(out.bytes.size());
     assertThat(out.closed).isTrue();
   }
 

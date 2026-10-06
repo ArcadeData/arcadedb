@@ -771,7 +771,7 @@ public class TransactionContext implements Transaction {
     if (LogManager.instance().isLoggable(this, Level.FINE))
       LogManager.instance()
           .log(this, Level.FINE, "Rollback transaction newPages=%s modifiedPages=%s (threadId=%d)", newPages, modifiedPages,
-              Thread.currentThread().threadId());
+              Thread.currentThread().getId());
 
     // #7931: FIRST, and only from here. The pages this transaction wrote are about to be dropped, so anything its
     // index replay published outside them has to come back with them - and the file locks that make that safe
@@ -2438,7 +2438,7 @@ public class TransactionContext implements Transaction {
       throw e;
     } catch (final Exception e) {
       LogManager.instance()
-          .log(this, Level.FINE, "Unknown exception during commit (threadId=%d)", e, Thread.currentThread().threadId());
+          .log(this, Level.FINE, "Unknown exception during commit (threadId=%d)", e, Thread.currentThread().getId());
       rollback();
       throw new TransactionException("Transaction error on commit", e);
     }
@@ -2472,7 +2472,7 @@ public class TransactionContext implements Transaction {
       // below logs this SAME cause at SEVERE alongside fenceForRecovery when it also crossed the WAL point of
       // no return, so the one commit failure serious enough to fence the whole database is never invisible.
       LogManager.instance()
-          .log(this, Level.FINE, "Unknown exception during commit (threadId=%d)", e, Thread.currentThread().threadId());
+          .log(this, Level.FINE, "Unknown exception during commit (threadId=%d)", e, Thread.currentThread().getId());
       throw new TransactionException("Transaction error on commit", e);
     } finally {
       concludePhase2(committed, commitFailureCause);
@@ -2535,7 +2535,7 @@ public class TransactionContext implements Transaction {
       if (LogManager.instance().isLoggable(this, Level.FINE))
         LogManager.instance()
             .log(this, Level.FINE, "TX committing pages newPages=%s modifiedPages=%s (threadId=%d)", newPages, modifiedPages,
-                Thread.currentThread().threadId());
+                Thread.currentThread().getId());
 
       // From here the transaction is durable in the WAL: a failure below is repaired by recovery replay,
       // never by aborting.
@@ -2567,7 +2567,7 @@ public class TransactionContext implements Transaction {
     } catch (final IOException | InterruptedException e) {
       fenceIfPastPointOfNoReturn(e);
       LogManager.instance()
-          .log(this, Level.FINE, "Unknown exception during commit (threadId=%d)", e, Thread.currentThread().threadId());
+          .log(this, Level.FINE, "Unknown exception during commit (threadId=%d)", e, Thread.currentThread().getId());
       throw new TransactionException("Transaction error on commit", e);
     } catch (final RuntimeException | Error e) {
       fenceIfPastPointOfNoReturn(e);
@@ -2597,7 +2597,7 @@ public class TransactionContext implements Transaction {
     } catch (final Exception e) {
       commitFailureCause = e;
       LogManager.instance()
-          .log(this, Level.FINE, "Unknown exception during commit (threadId=%d)", e, Thread.currentThread().threadId());
+          .log(this, Level.FINE, "Unknown exception during commit (threadId=%d)", e, Thread.currentThread().getId());
       throw new TransactionException("Transaction error on commit", e);
     } finally {
       concludePhase2(committed, commitFailureCause);
@@ -3168,7 +3168,7 @@ public class TransactionContext implements Transaction {
 
       LogManager.instance().log(this, Level.FINE,
           "Retrying lock acquisition after compaction migrated file '%d' to '%d' (attempt %d/%d, threadId=%d)", missingFile, migrated,
-          attempt + 1, MAX_LOCK_MIGRATION_RETRIES, Thread.currentThread().threadId());
+          attempt + 1, MAX_LOCK_MIGRATION_RETRIES, Thread.currentThread().getId());
 
       // RE-RESOLVE THE MIGRATED FILE ID AND RETRY TRANSPARENTLY. IntHashSet has no remove(), so rebuild the set
       // replacing the migrated id (rare path: only taken when a compaction raced this commit).

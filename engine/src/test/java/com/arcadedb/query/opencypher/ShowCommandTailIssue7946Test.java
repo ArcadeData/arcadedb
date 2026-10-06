@@ -76,7 +76,7 @@ class ShowCommandTailIssue7946Test {
 
     assertThat(table.fields()).isEqualTo(FIELDS);
     assertThat(table.rows()).hasSize(1);
-    assertThat(table.rows().getFirst().getFirst()).isEqualTo("beer");
+    assertThat(table.rows().get(0).get(0)).isEqualTo("beer");
   }
 
   /**
@@ -114,7 +114,7 @@ class ShowCommandTailIssue7946Test {
 
     assertThat(table.fields()).containsExactly("name", "type");
     assertThat(table.rows()).hasSize(3);
-    assertThat(table.rows().getFirst()).containsExactly("pipeshub_test", "standard");
+    assertThat(table.rows().get(0)).containsExactly("pipeshub_test", "standard");
   }
 
   @Test
@@ -123,7 +123,7 @@ class ShowCommandTailIssue7946Test {
 
     assertThat(table.fields()).containsExactly("db");
     assertThat(table.rows()).hasSize(1);
-    assertThat(table.rows().getFirst()).containsExactly("beer");
+    assertThat(table.rows().get(0)).containsExactly("beer");
   }
 
   @Test
@@ -131,7 +131,7 @@ class ShowCommandTailIssue7946Test {
     final ShowCommandTail.Table table = apply("SHOW DATABASES YIELD name ORDER BY name SKIP 1 LIMIT 1", Map.of());
 
     assertThat(table.rows()).hasSize(1);
-    assertThat(table.rows().getFirst()).containsExactly("pipeshub_test");
+    assertThat(table.rows().get(0)).containsExactly("pipeshub_test");
   }
 
   @Test
@@ -140,7 +140,7 @@ class ShowCommandTailIssue7946Test {
 
     assertThat(table.fields()).containsExactly("total");
     assertThat(table.rows()).hasSize(1);
-    assertThat(((Number) table.rows().getFirst().getFirst()).longValue()).isEqualTo(3L);
+    assertThat(((Number) table.rows().get(0).get(0)).longValue()).isEqualTo(3L);
   }
 
   @Test
@@ -168,7 +168,7 @@ class ShowCommandTailIssue7946Test {
 
     assertThat(table.fields()).containsExactly("name");
     assertThat(table.rows()).hasSize(2);
-    assertThat(table.rows().getFirst()).containsExactly("system");
+    assertThat(table.rows().get(0)).containsExactly("system");
   }
 
   /**
@@ -195,7 +195,7 @@ class ShowCommandTailIssue7946Test {
     final ShowCommandTail.Table byParameter = ShowCommandTail.apply(database, "SHOW DATABASES WHERE name = $__showRows",
         FIELDS, ROWS, Map.of("__showRows", "beer"));
     assertThat(byParameter.rows()).hasSize(1);
-    assertThat(byParameter.rows().getFirst().getFirst()).isEqualTo("beer");
+    assertThat(byParameter.rows().get(0).get(0)).isEqualTo("beer");
 
     // A tail naming the row variable must not see the synthetic binding. Unbound, it evaluates to null, so the
     // predicate holds for no row at all - where a tail that reached the rows would have matched every one of them.
@@ -215,7 +215,7 @@ class ShowCommandTailIssue7946Test {
 
     assertThat(table.fields()).isEqualTo(FIELDS);
     assertThat(table.rows()).hasSize(1);
-    assertThat(table.rows().getFirst().getFirst()).isEqualTo("beer");
+    assertThat(table.rows().get(0).get(0)).isEqualTo("beer");
 
     assertThat(apply("SHOW DATABASES YIELD name ORDER BY name;", Map.of()).rows()).hasSize(3);
   }

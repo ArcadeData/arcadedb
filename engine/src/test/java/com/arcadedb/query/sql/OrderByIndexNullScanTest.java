@@ -87,7 +87,7 @@ class OrderByIndexNullScanTest extends TestHelper {
     assertThat(plan("SELECT x FROM D ORDER BY x LIMIT 3")).contains("FETCH FROM TYPE");
     final List<Integer> asc = values("SELECT x FROM D ORDER BY x LIMIT 3");
     assertThat(asc).hasSize(3);
-    assertThat(asc.getFirst()).isNull();
+    assertThat(asc.get(0)).isNull();
     assertThat(values("SELECT x FROM D WHERE x IS NULL OR x < 3 ORDER BY x")).hasSize(3);
   }
 

@@ -275,7 +275,7 @@ public class CypherOptimizer {
             }));
       }
       if (units.size() == 1 && isolatedNodes.isEmpty())
-        rootOperator = units.getFirst().operator;
+        rootOperator = units.get(0).operator;
     }
 
     // 5a. The parts of a disconnected pattern - relationship components, and single-node MATCH clause patterns
@@ -377,7 +377,7 @@ public class CypherOptimizer {
       final List<String> indexProperties = rangeScan.getIndexProperties();
       if (orderedProperties.size() > indexProperties.size()
           || !indexProperties.subList(0, orderedProperties.size()).equals(orderedProperties)
-          || !rangeScan.getPropertyName().equals(indexProperties.getFirst()))
+          || !rangeScan.getPropertyName().equals(indexProperties.get(0)))
         return null;
       rangeScan.setIndexOrder(ascending, NodeIndexRangeScan.NullKeys.NONE);
       return rootOperator;
@@ -386,7 +386,7 @@ public class CypherOptimizer {
     // A whole label: nothing may filter it but the exclusion of the null keys, and the index must hold every non-null key
     if (orderedProperties.size() != 1 || !logicalPlan.getNodes().get(variable).getProperties().isEmpty())
       return null;
-    final String property = orderedProperties.getFirst();
+    final String property = orderedProperties.get(0);
     final boolean excludesNulls = onlyExcludesNullKeys(logicalPlan, variable, property);
     if (!excludesNulls && ((NodeByLabelScan) anchorOperator).getWhereFilter() != null)
       return null;
@@ -1450,7 +1450,7 @@ public class CypherOptimizer {
       if (!(op instanceof ExpandAll || op instanceof ExpandInto || op instanceof FilterOperator))
         return expression;
     }
-    if (chain.size() < 2 || chain.getLast() != anchorOperator)
+    if (chain.size() < 2 || chain.get(chain.size() - 1) != anchorOperator)
       return expression;
 
     // the variables bound at or below chain[i]: a hop adds its target and its relationship

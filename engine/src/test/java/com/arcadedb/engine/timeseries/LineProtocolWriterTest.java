@@ -45,7 +45,7 @@ class LineProtocolWriterTest {
     // The endpoint that reads this body is called with precision=ms, which is what the writer emits.
     final List<Sample> parsed = LineProtocolParser.parse(out.toString(), Precision.MILLISECONDS);
     assertThat(parsed).as("the writer must emit exactly one parseable line: %s", out).hasSize(1);
-    return parsed.getFirst();
+    return parsed.get(0);
   }
 
   @Test

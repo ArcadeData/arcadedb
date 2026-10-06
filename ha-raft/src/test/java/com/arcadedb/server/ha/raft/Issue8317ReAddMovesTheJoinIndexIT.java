@@ -55,7 +55,7 @@ class Issue8317ReAddMovesTheJoinIndexIT extends BaseMiniRaftTest {
 
     final List<RaftPeer> added = new ArrayList<>(getCluster().addNewPeers(1, true).getAddedPeers());
     assertThat(added).hasSize(1);
-    final RaftPeer joining = added.getFirst();
+    final RaftPeer joining = added.get(0);
     setConfiguration(leaderId, List.of(joining), SetConfigurationRequest.Mode.ADD);
 
     final long firstJoin = awaitJoinIndexAbove(joining.getId(), 0L);

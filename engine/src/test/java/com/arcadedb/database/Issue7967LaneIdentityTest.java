@@ -110,7 +110,7 @@ class Issue7967LaneIdentityTest {
     // which is the same reason List.remove(Object) could not, and is the whole defect.
     final var remaining = changes.getIndexKeyLanes(index);
     assertThat(remaining).hasSize(1);
-    assertThat(remaining.getFirst())
+    assertThat(remaining.get(0))
         .as("the lane dropped by name is the one that goes, not whichever happened to look like it")
         .isSameAs(firstLane);
     assertThat(changes.getTotalEntries())

@@ -122,7 +122,7 @@ class Issue7338VerifyChecksumsSealedStoresTest {
   void aDivergedSealedStoreChangesTheChecksum() throws Exception {
     try (final Database database = createDatabaseWithSealedStore()) {
       final DatabaseInternal db = (DatabaseInternal) database;
-      final String sealedName = sealedFileNames(db).getFirst();
+      final String sealedName = sealedFileNames(db).get(0);
 
       final JSONObject before = localChecksums(db);
       assertThat(localChecksums(db).getLong(sealedName))
@@ -150,7 +150,7 @@ class Issue7338VerifyChecksumsSealedStoresTest {
   void aSealedStoreIsReportedAsATimeSeriesFileRatherThanAnIndex() throws Exception {
     try (final Database database = createDatabaseWithSealedStore()) {
       final DatabaseInternal db = (DatabaseInternal) database;
-      final String sealedName = sealedFileNames(db).getFirst();
+      final String sealedName = sealedFileNames(db).get(0);
 
       final JSONArray files = new JSONArray();
       handler.computeLocalChecksums(db, new JSONObject(), files);
@@ -224,7 +224,7 @@ class Issue7338VerifyChecksumsSealedStoresTest {
   void aSealedStoreThatCannotBeReadIsReportedRatherThanSwallowed() throws Exception {
     try (final Database database = createDatabaseWithSealedStore()) {
       final DatabaseInternal db = (DatabaseInternal) database;
-      final String sealedName = sealedFileNames(db).getFirst();
+      final String sealedName = sealedFileNames(db).get(0);
       final File sealed = new File(db.getDatabasePath(), sealedName);
 
       final JSONObject checksums = new JSONObject();

@@ -65,7 +65,7 @@ public class MultiIndexCursor implements IndexCursor {
       // CURSOR, OR ANY CURSOR THAT DOES NOT KNOW ITS INDEX) USED TO HAND THE MERGE AN EMPTY keyTypes ARRAY, AND THE
       // FIRST COMPARISON BETWEEN TWO REAL KEYS INDEXED PAST ITS END
       final IndexCursor keyed = firstKeyed(cursors);
-      this.keyTypes = keyed != null ? keyed.getBinaryKeyTypes() : cursors.getFirst().getBinaryKeyTypes();
+      this.keyTypes = keyed != null ? keyed.getBinaryKeyTypes() : cursors.get(0).getBinaryKeyTypes();
       this.comparator = keyed != null ? keyed.getComparator() : firstComparator(cursors);
       initCursors();
     } catch (final RuntimeException e) {
@@ -88,7 +88,7 @@ public class MultiIndexCursor implements IndexCursor {
 
         this.cursors.add(((RangeIndex) i).iterator(ascendingOrder));
       }
-      this.keyTypes = indexes.getFirst().getBinaryKeyTypes();
+      this.keyTypes = indexes.get(0).getBinaryKeyTypes();
       this.comparator = firstComparator(this.cursors);
       initCursors();
     } catch (final RuntimeException e) {
@@ -110,7 +110,7 @@ public class MultiIndexCursor implements IndexCursor {
 
         this.cursors.add(((RangeIndex) i).iterator(ascendingOrder, fromKeys, includeFrom));
       }
-      this.keyTypes = indexes.getFirst().getBinaryKeyTypes();
+      this.keyTypes = indexes.get(0).getBinaryKeyTypes();
       this.comparator = firstComparator(this.cursors);
       initCursors();
     } catch (final RuntimeException e) {

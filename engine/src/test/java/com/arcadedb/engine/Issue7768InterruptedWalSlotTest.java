@@ -428,7 +428,7 @@ class Issue7768InterruptedWalSlotTest extends TestHelper {
       final WALFile closed = new WALFile(database.getDatabasePath() + "/txlog_7768_fallback.wal");
       closed.close();
 
-      final int slot = (int) (Thread.currentThread().threadId() % 2);
+      final int slot = (int) (Thread.currentThread().getId() % 2);
       final WALFile displaced = txManager.replaceActiveWALFileForTesting(slot, closed);
       try {
         final StallAwareStopwatch watch = StallAwareStopwatch.start();

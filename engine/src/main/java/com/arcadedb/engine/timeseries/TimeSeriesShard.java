@@ -758,13 +758,13 @@ public class TimeSeriesShard implements AutoCloseable {
 
       // The sealed head alone can answer the query when it is complete and strictly older than anything still
       // mutable: no page has to be read. An empty bucket answers Long.MAX_VALUE, so it takes this path too.
-      if (sealedRows.size() >= need && (long) sealedRows.getLast()[0] < mutableBucket.getMinTimestamp())
+      if (sealedRows.size() >= need && (long) sealedRows.get(sealedRows.size() - 1)[0] < mutableBucket.getMinTimestamp())
         return sealedRows;
 
       // The sealed rows already found bound the mutable walk from above: no row newer than the newest one held
       // can contribute. Inclusive, so ties stay eligible.
       final long mutableToTs = sealedRows.size() >= need ?
-          Math.min(toTs, (long) sealedRows.getLast()[0]) :
+          Math.min(toTs, (long) sealedRows.get(sealedRows.size() - 1)[0]) :
           toTs;
 
       // The WHOLE limit, never `need - sealedRows.size()`. A late arrival carries an OLD timestamp, so every

@@ -70,7 +70,7 @@ public class RWLockContext {
     if (!enableLocking)
       return null;
 
-    final ReentrantReadWriteLock.ReadLock rl = stripes[(int) Thread.currentThread().threadId() & stripeMask].readLock();
+    final ReentrantReadWriteLock.ReadLock rl = stripes[(int) Thread.currentThread().getId() & stripeMask].readLock();
     rl.lock();
     return rl;
   }

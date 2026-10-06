@@ -90,7 +90,7 @@ class LedgerTest {
     final List<Thread> threads = new ArrayList<>();
     for (int w = 0; w < 4; w++) {
       final int writer = w;
-      threads.add(Thread.ofPlatform().start(() -> {
+      threads.add(startThread(() -> {
         for (int i = 0; i < 10_000; i++)
           ledger.record(ledger.reserve(writer, i % 5 == 0), Ledger.ACKED);
       }));
@@ -100,5 +100,12 @@ class LedgerTest {
     assertThat(ledger.count(Ledger.ACKED)).isEqualTo(40_000);
     assertThat(ledger.count(Ledger.IN_FLIGHT)).isZero();
     assertThat(ledger.size(3)).isEqualTo(10_000);
+  }
+
+  // JDK17: Thread.ofPlatform() is Java 21
+  private static Thread startThread(final Runnable task) {
+    final Thread thread = new Thread(task);
+    thread.start();
+    return thread;
   }
 }

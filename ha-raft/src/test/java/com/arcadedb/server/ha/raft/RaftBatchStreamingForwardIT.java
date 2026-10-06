@@ -91,7 +91,7 @@ class RaftBatchStreamingForwardIT extends BaseRaftHATest {
             + "by it and replaced with a single object")
         .isGreaterThan(1);
 
-    final JSONObject last = events.getLast();
+    final JSONObject last = events.get(events.size() - 1);
     assertThat(last.has("summary")).as("a relayed stream still ends with its terminal line, got " + last).isTrue();
 
     final JSONObject summary = last.getJSONObject("summary");
@@ -137,7 +137,7 @@ class RaftBatchStreamingForwardIT extends BaseRaftHATest {
 
     final List<JSONObject> events = postStreamedBatch(followerIndex, body.toString(), "vertexBatchSize=2");
 
-    final JSONObject last = events.getLast();
+    final JSONObject last = events.get(events.size() - 1);
     assertThat(last.has("error")).as("expected a terminal error line, got " + last).isTrue();
 
     final JSONObject error = last.getJSONObject("error");

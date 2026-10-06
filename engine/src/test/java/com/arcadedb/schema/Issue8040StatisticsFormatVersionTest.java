@@ -113,7 +113,7 @@ class Issue8040StatisticsFormatVersionTest extends TestHelper {
   }
 
   private LocalBucket bucket() {
-    return (LocalBucket) database.getSchema().getType(TYPE).getBuckets(false).getFirst();
+    return (LocalBucket) database.getSchema().getType(TYPE).getBuckets(false).get(0);
   }
 
   private JSONObject statisticsFile() throws IOException {

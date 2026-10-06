@@ -254,16 +254,16 @@ class Issue8043SealedWalkAcrossInstallTest {
 
     final long retainedId;
     try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(FOLLOWER_PATH, columns)) {
-      retainedId = store.snapshotBlockDirectory(5000L, 6000L).blocks().getFirst().blockId;
+      retainedId = store.snapshotBlockDirectory(5000L, 6000L).blocks().get(0).blockId;
       // Drops the first block and copies the second verbatim - into the current layout, which records the id.
       store.truncateBefore(5000L);
       assertThat(store.getBlockCount()).isEqualTo(1);
-      assertThat(store.snapshotBlockDirectory(0L, Long.MAX_VALUE).blocks().getFirst().blockId)
+      assertThat(store.snapshotBlockDirectory(0L, Long.MAX_VALUE).blocks().get(0).blockId)
           .as("a verbatim copy keeps the id, derived or not").isEqualTo(retainedId);
     }
 
     try (final TimeSeriesSealedStore reopened = new TimeSeriesSealedStore(FOLLOWER_PATH, columns)) {
-      assertThat(reopened.snapshotBlockDirectory(0L, Long.MAX_VALUE).blocks().getFirst().blockId)
+      assertThat(reopened.snapshotBlockDirectory(0L, Long.MAX_VALUE).blocks().get(0).blockId)
           .as("and the rewrite wrote it down, so the reopen reads it back rather than deriving it at a new offset")
           .isEqualTo(retainedId);
     }

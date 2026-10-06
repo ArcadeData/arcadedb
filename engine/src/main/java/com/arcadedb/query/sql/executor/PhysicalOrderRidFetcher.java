@@ -214,7 +214,7 @@ public final class PhysicalOrderRidFetcher {
       // The entries that are not record addresses, in no particular order (removeLast() is only the cheap end of the
       // list): the fetcher serves only statements whose output cannot show the order rows arrive in
       if (passThrough != null && !passThrough.isEmpty())
-        return passThrough.removeLast();
+        return passThrough.remove(passThrough.size() - 1);
 
       if (!nextChunk())
         return null;

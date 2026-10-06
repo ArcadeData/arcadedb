@@ -18,6 +18,8 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.network.HttpClientLifecycle;
+
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.BootstrapFingerprint;
 import com.arcadedb.database.DatabaseInternal;
@@ -368,7 +370,9 @@ class BootstrapElection {
           LogManager.instance().log(this, Level.INFO,
               "Bootstrap: cannot build the HTTPS client to tell peers the pass concluded: %s", e.getMessage());
         }
-      try (final HttpClient client = httpsClient) {
+      // JDK17: HttpClient is AutoCloseable only since Java 21
+      final HttpClient client = httpsClient;
+      try {
         final List<CompletableFuture<HttpResponse<String>>> sends = new ArrayList<>(urls.size());
         final List<List<RaftPeerId>> sentTo = new ArrayList<>(urls.size());
         for (final String url : urls) {
@@ -393,6 +397,8 @@ class BootstrapElection {
           for (final CompletableFuture<HttpResponse<String>> send : sends)
             send.cancel(true);
         }
+      } finally {
+        HttpClientLifecycle.close(client);
       }
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
@@ -568,11 +574,15 @@ class BootstrapElection {
 
     final List<RaftPeerId> assumedEmpty = new ArrayList<>();
     final Map<RaftPeerId, Map<String, PeerState>> remoteStates;
-    try (final HttpClient probeClient = httpsClient) {
+    // JDK17: HttpClient is AutoCloseable only since Java 21
+    final HttpClient probeClient = httpsClient;
+    try {
       remoteStates = collectRemoteStatesWithRetry(
           peerAddresses, (pid, url, attemptMs) -> queryPeer(pid, url, dbFilter, attemptMs, probeClient, announceBody),
           timeoutMs, Math.min(timeoutMs, probeAttemptTimeoutMs), probeRetryBackoffMs,
           haServer::isLeader, assumedEmpty);
+    } finally {
+      HttpClientLifecycle.close(probeClient);
     }
 
     // Any configured peer that never returned a usable state after retries: warn loudly and state
@@ -860,11 +870,15 @@ class BootstrapElection {
       // headers: a leader that stalls inside its body would otherwise park the state-machine thread asking for its
       // bootstrap baselines with no bound at all (issue #8472).
       final HttpResponse<String> response;
-      if (url.startsWith("https://"))
-        try (final HttpClient client = newTrustingClient(server)) {
+      if (url.startsWith("https://")) {
+        // JDK17: HttpClient is AutoCloseable only since Java 21
+        final HttpClient client = newTrustingClient(server);
+        try {
           response = LeaderDial.sendBounded(client, request, HttpResponse.BodyHandlers.ofString(), timeoutMs);
+        } finally {
+          HttpClientLifecycle.close(client);
         }
-      else
+      } else
         response = LeaderDial.sendBounded(HTTP, request, HttpResponse.BodyHandlers.ofString(), timeoutMs);
       if (response.statusCode() != 200) {
         LogManager.instance().log(BootstrapElection.class, Level.INFO,

@@ -175,7 +175,7 @@ class GremlinScriptingAuthorizationIT extends AbstractGremlinServerIT {
       final Client client = cluster.connect();
       final List<Result> results = client.submit("g.V().hasLabel('Probe').count()",
           RequestOptions.build().language("gremlin-lang").create()).all().get();
-      assertThat(results.getFirst().getLong()).isEqualTo(1L);
+      assertThat(results.get(0).getLong()).isEqualTo(1L);
     } finally {
       cluster.close();
     }

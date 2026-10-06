@@ -127,7 +127,7 @@ class RaftVectorSharedIdCheckFix3NodesIT extends BaseRaftHATest {
       for (int k = 0; k < LIVE; k++) {
         final int record = k;
         final RID found = withResyncRetry(server,
-            db -> vectorIndex((DatabaseInternal) db).findNeighborsFromVector(embedding(record), 1, 64).getFirst().getFirst());
+            db -> vectorIndex((DatabaseInternal) db).findNeighborsFromVector(embedding(record), 1, 64).get(0).getFirst());
         assertThat(found)
             .as("server %d must find record %d by its own embedding, the ones that lost a vector id included", server, record)
             .isEqualTo(owners[k]);

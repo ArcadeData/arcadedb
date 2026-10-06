@@ -59,7 +59,7 @@ class Issue7703ExplicitCodecSurvivesDefaultTableChangeTest extends TestHelper {
 
     final String sql = builder("NamedDefaultCodec")
         .withColumn(new ColumnDefinition("v", Type.LONG, ColumnDefinition.ColumnRole.FIELD, todaysDefault))
-        .toSQL().getFirst();
+        .toSQL().get(0);
 
     assertThat(sql)
         .as("the codec was NAMED, so the statement must carry it instead of leaving it to the receiver's table")
@@ -78,7 +78,7 @@ class Issue7703ExplicitCodecSurvivesDefaultTableChangeTest extends TestHelper {
   @Test
   void aDerivedCodecStillRendersWithoutAClause() {
     final String sql = builder("DerivedCodecs").withField("v", Type.DOUBLE).withTag("host", Type.STRING)
-        .toSQL().getFirst();
+        .toSQL().get(0);
 
     assertThat(sql).doesNotContain("CODEC");
   }
@@ -129,9 +129,9 @@ class Issue7703ExplicitCodecSurvivesDefaultTableChangeTest extends TestHelper {
     final String named = database.getSchema().buildTimeSeriesType().withName("NamedTsCodec")
         .withColumn(new ColumnDefinition("ts", Type.LONG, ColumnDefinition.ColumnRole.TIMESTAMP, todaysDefault))
         .withField("v", Type.DOUBLE)
-        .toSQL().getFirst();
+        .toSQL().get(0);
 
     assertThat(named).contains("TIMESTAMP `ts` CODEC " + todaysDefault.name());
-    assertThat(builder("DerivedTsCodec").withField("v", Type.DOUBLE).toSQL().getFirst()).doesNotContain("CODEC");
+    assertThat(builder("DerivedTsCodec").withField("v", Type.DOUBLE).toSQL().get(0)).doesNotContain("CODEC");
   }
 }

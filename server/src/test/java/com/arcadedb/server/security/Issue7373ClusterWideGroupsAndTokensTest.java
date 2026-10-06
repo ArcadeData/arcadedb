@@ -125,7 +125,7 @@ class Issue7373ClusterWideGroupsAndTokensTest {
     assertThat(ha.groupDocuments)
         .as("the group document must reach the cluster, not only this node's file")
         .hasSize(1);
-    assertThat(new JSONObject(ha.groupDocuments.getFirst()).getJSONObject("databases").getJSONObject("*")
+    assertThat(new JSONObject(ha.groupDocuments.get(0)).getJSONObject("databases").getJSONObject("*")
         .getJSONObject("groups").has("reader")).isTrue();
 
     // And the serving node has it too, because it applied the entry it submitted.
@@ -137,7 +137,7 @@ class Issue7373ClusterWideGroupsAndTokensTest {
   void aPeerApplyingTheReplicatedGroupDocumentGetsTheGroup() {
     joinCluster();
     controlPlane.saveGroup("*", "reader", readerGroup());
-    final String replicated = ha.groupDocuments.getFirst();
+    final String replicated = ha.groupDocuments.get(0);
 
     final ServerSecurity peer = peerSecurity("peer-groups");
     try {
@@ -164,7 +164,7 @@ class Issue7373ClusterWideGroupsAndTokensTest {
     controlPlane.deleteGroup("*", "reader");
 
     assertThat(ha.groupDocuments).hasSize(1);
-    assertThat(new JSONObject(ha.groupDocuments.getFirst()).getJSONObject("databases").getJSONObject("*")
+    assertThat(new JSONObject(ha.groupDocuments.get(0)).getJSONObject("databases").getJSONObject("*")
         .getJSONObject("groups").has("reader"))
         .as("a deletion must replicate the document WITHOUT the group")
         .isFalse();
@@ -205,7 +205,7 @@ class Issue7373ClusterWideGroupsAndTokensTest {
     final String plaintext = created.getString("token");
 
     assertThat(ha.apiTokenDocuments).as("the token must reach the cluster").hasSize(1);
-    assertThat(ha.apiTokenDocuments.getFirst())
+    assertThat(ha.apiTokenDocuments.get(0))
         .as("the replicated document carries the hash, never the token material")
         .doesNotContain(plaintext)
         .contains(ApiTokenConfiguration.hashToken(plaintext));
@@ -218,7 +218,7 @@ class Issue7373ClusterWideGroupsAndTokensTest {
       assertThat(peer.getApiTokenConfiguration().getToken(plaintext))
           .as("the peer starts without the token").isNull();
 
-      peer.applyReplicatedApiTokens(ha.apiTokenDocuments.getFirst());
+      peer.applyReplicatedApiTokens(ha.apiTokenDocuments.get(0));
 
       assertThat(peer.getApiTokenConfiguration().getToken(plaintext))
           .as("after the entry is applied the same token authenticates on the peer too").isNotNull();
@@ -236,7 +236,7 @@ class Issue7373ClusterWideGroupsAndTokensTest {
 
     final ServerSecurity peer = peerSecurity("peer-revoke");
     try {
-      peer.applyReplicatedApiTokens(ha.apiTokenDocuments.getFirst());
+      peer.applyReplicatedApiTokens(ha.apiTokenDocuments.get(0));
       assertThat(peer.getApiTokenConfiguration().getToken(plaintext)).isNotNull();
 
       ha.apiTokenDocuments.clear();
@@ -246,7 +246,7 @@ class Issue7373ClusterWideGroupsAndTokensTest {
       assertThat(security.getApiTokenConfiguration().getToken(plaintext))
           .as("gone on the node that revoked it").isNull();
 
-      peer.applyReplicatedApiTokens(ha.apiTokenDocuments.getFirst());
+      peer.applyReplicatedApiTokens(ha.apiTokenDocuments.get(0));
       assertThat(peer.getApiTokenConfiguration().getToken(plaintext))
           .as("and gone on the peer: a revocation that applies to one third of the cluster is not a revocation")
           .isNull();
@@ -411,7 +411,7 @@ class Issue7373ClusterWideGroupsAndTokensTest {
     assertThat(security.seedSecurityStateClusterWide()).as("all three documents seeded").isEmpty();
 
     assertThat(ha.apiTokenDocuments).hasSize(1);
-    assertThat(ha.apiTokenDocuments.getFirst())
+    assertThat(ha.apiTokenDocuments.get(0))
         .as("the seed must not resurrect the revoked token on every node")
         .doesNotContain(hash);
     assertThat(ha.groupDocuments).as("the group document is seeded too").hasSize(1);

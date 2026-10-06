@@ -561,7 +561,7 @@ class ExpandStepTest extends TestHelper {
 
     // a list nested in a list is NOT flattened further: one row per nested list, each holding the whole nested list
     assertThat(fromNestedLists).hasSize(2);
-    assertThat(fromNestedLists.getFirst()).isInstanceOf(List.class);
+    assertThat(fromNestedLists.get(0)).isInstanceOf(List.class);
 
     final DocumentType type = database.getSchema().createDocumentType("NestedArrayExpand");
     type.createProperty("outer", Type.LIST);

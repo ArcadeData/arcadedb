@@ -128,7 +128,7 @@ class Issue7357DeltaBufferHeapBoundTest {
           assertThat(hits)
               .as("a search for the exact vector of record %d must find it", probe)
               .isNotEmpty();
-          assertThat(idOf(db, hits.getFirst().getFirst()))
+          assertThat(idOf(db, hits.get(0).getFirst()))
               .as("record %d is the nearest neighbour of its own vector, payload on the heap or not", probe)
               .isEqualTo(probe);
         }

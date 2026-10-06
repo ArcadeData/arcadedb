@@ -441,7 +441,7 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
 
   private static TypeIndex findUniqueIdIndex(final DocumentType type) {
     for (final TypeIndex index : type.getAllIndexes(false))
-      if (index.isUnique() && index.getPropertyNames().size() == 1 && "_id".equals(index.getPropertyNames().getFirst()))
+      if (index.isUnique() && index.getPropertyNames().size() == 1 && "_id".equals(index.getPropertyNames().get(0)))
         return index;
     return null;
   }

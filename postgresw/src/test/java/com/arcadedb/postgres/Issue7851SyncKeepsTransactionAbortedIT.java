@@ -335,7 +335,7 @@ class Issue7851SyncKeepsTransactionAbortedIT extends PostgresWireProtocolTestBas
         sendSync(out);
         final List<WireMessage> replay = readUntilReadyForQuery(in);
         assertThat(messageTypesOf(replay)).containsExactly('E', 'Z');
-        assertThat(errorFields(replay.getFirst()).get('C')).as("portal does not exist").isEqualTo("34000");
+        assertThat(errorFields(replay.get(0)).get('C')).as("portal does not exist").isEqualTo("34000");
         assertThat(readyForQueryStatusOf(replay)).as("the refusal aborts the second block").isEqualTo('E');
 
         sendSimpleQuery(out, "ROLLBACK");

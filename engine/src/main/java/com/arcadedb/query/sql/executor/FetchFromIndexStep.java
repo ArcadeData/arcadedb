@@ -745,7 +745,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       return true;
     if (!(condition instanceof AndBlock andBlock) || andBlock.getSubBlocks().isEmpty())
       return false;
-    final BooleanExpression last = andBlock.getSubBlocks().getLast();
+    final BooleanExpression last = andBlock.getSubBlocks().get(andBlock.getSubBlocks().size() - 1);
     if (last instanceof BetweenCondition)
       return true;
     if (!(last instanceof BinaryCondition binary))

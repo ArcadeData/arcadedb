@@ -192,7 +192,7 @@ class CypherLabelExpressionIssue8992Test {
     try (final ResultSet rs = database.query("opencypher", "MATCH (:!A)-[r:T]->(:!%) RETURN *")) {
       final List<Result> rows = rs.stream().toList();
       assertThat(rows).hasSize(1);
-      assertThat(rows.getFirst().getPropertyNames()).containsExactly("r");
+      assertThat(rows.get(0).getPropertyNames()).containsExactly("r");
     }
   }
 
@@ -201,7 +201,7 @@ class CypherLabelExpressionIssue8992Test {
     try (final ResultSet rs = database.query("opencypher", "MATCH (:!A)-[r:T]->(:!%) WITH * RETURN *")) {
       final List<Result> rows = rs.stream().toList();
       assertThat(rows).hasSize(1);
-      assertThat(rows.getFirst().getPropertyNames()).containsExactly("r");
+      assertThat(rows.get(0).getPropertyNames()).containsExactly("r");
     }
   }
 
@@ -217,7 +217,7 @@ class CypherLabelExpressionIssue8992Test {
     assertThat(column("MATCH (n {id: 2}) OPTIONAL MATCH (n)-->(m:!%&!A) RETURN m.id AS id", "id")).containsExactly(4);
     final List<Object> ids = column("MATCH (n {id: 2}) OPTIONAL MATCH (n)-->(m:%) RETURN m.id AS id", "id");
     assertThat(ids).hasSize(1);
-    assertThat(ids.getFirst()).isNull();
+    assertThat(ids.get(0)).isNull();
   }
 
   @Test

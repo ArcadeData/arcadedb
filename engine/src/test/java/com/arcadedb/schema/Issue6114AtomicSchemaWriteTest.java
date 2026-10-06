@@ -233,7 +233,9 @@ class Issue6114AtomicSchemaWriteTest extends TestHelper {
     final Path primary = schemaPath();
     final AtomicBoolean finished = new AtomicBoolean();
     final CountDownLatch reading = new CountDownLatch(1);
-    try (final var executor = Executors.newSingleThreadExecutor()) {
+    // JDK17: ExecutorService is AutoCloseable only since Java 19
+    final var executor = Executors.newSingleThreadExecutor();
+    try {
       final var reader = executor.submit(() -> {
         int reads = 0;
         try {
@@ -260,6 +262,8 @@ class Issue6114AtomicSchemaWriteTest extends TestHelper {
       }
       awaitCompletion(reader::isDone, 30_000, "a reader finishing versus a hung reader");
       assertThat(reader.get()).isGreaterThan(0);
+    } finally {
+      executor.shutdownNow();
     }
     assertNoTemporaryFiles();
   }
@@ -299,7 +303,7 @@ class Issue6114AtomicSchemaWriteTest extends TestHelper {
       final var temporary = files.filter(path -> path.getFileName().toString().startsWith("schema.json.")
           && path.getFileName().toString().endsWith(".tmp")).toList();
       assertThat(temporary).hasSize(1);
-      assertThat(new JSONObject(Files.readString(temporary.getFirst())).getString("testMarker"))
+      assertThat(new JSONObject(Files.readString(temporary.get(0))).getString("testMarker"))
           .isEqualTo("not-published");
     }
     database = factory.open();

@@ -55,7 +55,7 @@ class ReplicatedApplyStaleReadCacheTest extends TestHelper {
         db.newDocument("TestType").set("name", "record-" + i).save();
     });
 
-    final int fileId = db.getSchema().getType("TestType").getBuckets(false).getFirst().getFileId();
+    final int fileId = db.getSchema().getType("TestType").getBuckets(false).get(0).getFileId();
     final int pageSize = ((PaginatedComponentFile) db.getFileManager().getFile(fileId)).getPageSize();
     final PageId pageId = new PageId(db, fileId, 0);
     final PageManager pageManager = db.getPageManager();

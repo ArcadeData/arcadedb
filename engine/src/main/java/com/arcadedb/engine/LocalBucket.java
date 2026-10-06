@@ -2720,7 +2720,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       if (LogManager.instance().isLoggable(this, Level.FINE))
         LogManager.instance()
                 .log(this, Level.FINE, "Creating record (%s records=%d threadId=%d)", selectedPage, availablePositionIndex,
-                        Thread.currentThread().threadId());
+                        Thread.currentThread().getId());
       final RID rid = new RID(file.getFileId(),
               ((long) selectedPage.getPageId().getPageNumber()) * maxRecordsInPage + availablePositionIndex);
 
@@ -2777,7 +2777,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       if (LogManager.instance().isLoggable(this, Level.FINE))
         LogManager.instance()
                 .log(this, Level.FINE, "Created record %s (%s records=%d threadId=%d)", rid, selectedPage, recordCountInPage,
-                        Thread.currentThread().threadId());
+                        Thread.currentThread().getId());
 
       // DISJOINT-SLOT MERGE (#5381): a brand-new record inserted into a FREE slot of an EXISTING (reused) page
       // commutes with concurrent writes to other slots of that page. Track it so a commit-time page-version
@@ -2860,7 +2860,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       LogManager.instance()
               .log(this, Level.WARNING, "Restoring record %s at its original position (records=%d threadId=%d)", rid,
-                      positionInPage, Thread.currentThread().threadId());
+                      positionInPage, Thread.currentThread().getId());
 
       // Out-of-band write: always poison, never attempt a disjoint-slot-merge replay of this insert (see javadoc).
       final int previousCoverage = selectedPage.beginCoveredWrite(0);
@@ -3932,7 +3932,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           if (LogManager.instance().isLoggable(this, Level.FINE))
             LogManager.instance()
                     .log(this, Level.FINE, "Updated record %s by allocating new space on the same page (%s threadId=%d)", null, rid, page,
-                            Thread.currentThread().threadId());
+                            Thread.currentThread().getId());
 
         } else {
           // THE RECORD MUST SPILL OUT OF THE PAGE.
@@ -3979,7 +3979,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             if (LogManager.instance().isLoggable(this, Level.FINE))
               LogManager.instance()
                       .log(this, Level.FINE, "Updated record %s by allocating new space with a placeholder (%s threadId=%d)", null, rid,
-                              page, Thread.currentThread().threadId());
+                              page, Thread.currentThread().getId());
           } else {
             // SPLIT THE RECORD IN CHUNKS AS LINKED LIST AND STORE THE FIRST PART ON CURRENT PAGE ISSUE https://github.com/ArcadeData/arcadedb/issues/332
             //
@@ -4039,7 +4039,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             if (LogManager.instance().isLoggable(this, Level.FINE))
               LogManager.instance().log(this, Level.FINE,
                       "Updated record %s by splitting it in multiple chunks to be saved in multiple pages (%s threadId=%d)", null, rid,
-                      page, Thread.currentThread().threadId());
+                      page, Thread.currentThread().getId());
           }
         }
       } else {
@@ -4099,7 +4099,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         if (LogManager.instance().isLoggable(this, Level.FINE))
           LogManager.instance()
                   .log(this, Level.FINE, "Updated record %s with the same size or less as before (%s threadId=%d)", null, rid, page,
-                          Thread.currentThread().threadId());
+                          Thread.currentThread().getId());
       }
 
       if (!discardRecordAfter)
@@ -4565,7 +4565,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       if (LogManager.instance().isLoggable(this, Level.FINE))
         LogManager.instance()
-                .log(this, Level.FINE, "Deleted record %s (%s threadId=%d)", null, rid, page, Thread.currentThread().threadId());
+                .log(this, Level.FINE, "Deleted record %s (%s threadId=%d)", null, rid, page, Thread.currentThread().getId());
 
     } catch (final RecordNotFoundException e) {
       throw e;
@@ -4778,7 +4778,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     if (orderedRecordsInPage.isEmpty())
       return page.getMaxContentSize() - contentHeaderSize;
 
-    final int[] lastRecord = orderedRecordsInPage.getLast();
+    final int[] lastRecord = orderedRecordsInPage.get(orderedRecordsInPage.size() - 1);
     return page.getMaxContentSize() - (lastRecord[0] + lastRecord[1]);
   }
 
@@ -4911,7 +4911,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final int[] pointer = orderedRecordContentInPage.get(i);
       final int lastPointerEnd = lastPointer[0] + lastPointer[1];
       if (pointer[0] != lastPointerEnd) {
-        final int[] lastHole = holes.isEmpty() ? null : holes.getLast();
+        final int[] lastHole = holes.isEmpty() ? null : holes.get(holes.size() - 1);
         if (lastHole != null && lastHole[0] + lastHole[1] == pointer[0]) {
           // UPDATE PREVIOUS HOLE
           lastHole[1] += pointer[1];
@@ -6198,7 +6198,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     if (LogManager.instance().isLoggable(this, Level.FINE))
       LogManager.instance().log(this, Level.FINE,
               "Updated record %s by collapsing its chunk chain back into a plain %srecord (%s threadId=%d)", null, rid,
-              isPlaceHolderContent ? "placeholder content " : "", page, Thread.currentThread().threadId());
+              isPlaceHolderContent ? "placeholder content " : "", page, Thread.currentThread().getId());
 
     return true;
   }

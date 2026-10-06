@@ -71,12 +71,12 @@ public class Issue7946ShowDatabasesWhereIT extends BaseBoltServerTest {
 
       final List<Record> all = session.run("SHOW DATABASES").list();
       assertThat(all).isNotEmpty();
-      final String existing = all.getFirst().get("name").asString();
+      final String existing = all.get(0).get("name").asString();
 
       final List<Record> matching = session.run("SHOW DATABASES WHERE name = $dbName", Map.of("dbName", existing))
           .list();
       assertThat(matching).hasSize(1);
-      assertThat(matching.getFirst().get("name").asString()).isEqualTo(existing);
+      assertThat(matching.get(0).get("name").asString()).isEqualTo(existing);
     }
   }
 
@@ -103,8 +103,8 @@ public class Issue7946ShowDatabasesWhereIT extends BaseBoltServerTest {
           Map.of("dbName", "system")).list();
 
       assertThat(rows).hasSize(1);
-      assertThat(rows.getFirst().keys()).containsExactly("name", "currentStatus");
-      assertThat(rows.getFirst().get("currentStatus").asString()).isEqualTo("online");
+      assertThat(rows.get(0).keys()).containsExactly("name", "currentStatus");
+      assertThat(rows.get(0).get("currentStatus").asString()).isEqualTo("online");
     }
   }
 
@@ -118,7 +118,7 @@ public class Issue7946ShowDatabasesWhereIT extends BaseBoltServerTest {
 
       final List<Record> rows = session.run("SHOW DATABASES").list();
       assertThat(rows).isNotEmpty();
-      assertThat(rows.getFirst().keys()).contains("name", "type", "access", "currentStatus");
+      assertThat(rows.get(0).keys()).contains("name", "type", "access", "currentStatus");
     }
   }
 }

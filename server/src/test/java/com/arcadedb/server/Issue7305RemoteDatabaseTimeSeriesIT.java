@@ -115,7 +115,7 @@ class Issue7305RemoteDatabaseTimeSeriesIT extends BaseGraphServerTest {
       // projection's indices count non-timestamp columns, and the resolver was producing full-schema ones, so
       // the row came back as [ts, location, null] - the neighbouring column's value under 'temperature', and a
       // trailing null - while the column names looked right. Asserting only the row's width would have passed.
-      final Object[] first = projected.rows().getFirst();
+      final Object[] first = projected.rows().get(0);
       assertThat(first).hasSize(2);
       assertThat(((Number) first[0]).longValue()).isEqualTo(1_000L);
       assertThat(((Number) first[1]).doubleValue()).isEqualTo(22.5);
@@ -153,7 +153,7 @@ class Issue7305RemoteDatabaseTimeSeriesIT extends BaseGraphServerTest {
       assertThat(result.aggregations()).containsExactly("avg_temp");
       assertThat(result.buckets()).isNotEmpty();
 
-      final TimeSeriesBucket bucket = result.buckets().getFirst();
+      final TimeSeriesBucket bucket = result.buckets().get(0);
       assertThat(bucket.values()).hasSize(1);
       assertThat(((Number) bucket.value(0)).doubleValue()).isCloseTo((22.5 + 18.3 + 23.1) / 3, within(1e-9));
     }

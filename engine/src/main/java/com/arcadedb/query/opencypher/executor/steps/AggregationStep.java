@@ -267,7 +267,7 @@ public class AggregationStep extends AbstractExecutionStep {
         return null;
       parallelWorkers = merged.workers();
       final ResultInternal row = new ResultInternal();
-      final ParallelAggregation.Group group = merged.groups().getFirst();
+      final ParallelAggregation.Group group = merged.groups().get(0);
       for (int i = 0; i < outputNames.size(); i++)
         row.setProperty(outputNames.get(i), group.aggregators[i].getAggregatedResult());
       return row;

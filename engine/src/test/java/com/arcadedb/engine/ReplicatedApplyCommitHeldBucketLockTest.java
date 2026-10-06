@@ -65,7 +65,7 @@ class ReplicatedApplyCommitHeldBucketLockTest extends TestHelper {
         db.newDocument("Counted").set("name", "record-" + i).save();
     });
 
-    final LocalBucket bucket = (LocalBucket) db.getSchema().getType("Counted").getBuckets(false).getFirst();
+    final LocalBucket bucket = (LocalBucket) db.getSchema().getType("Counted").getBuckets(false).get(0);
     final int fileId = bucket.getFileId();
     final TransactionManager txManager = db.getTransactionManager();
 

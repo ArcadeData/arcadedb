@@ -176,7 +176,7 @@ class Issue7521SecuritySeedRetryTest {
     assertThat(security.seedSecurityStateClusterWide(BUDGET_MS)).isEmpty();
 
     assertThat(ha.apiTokenDocuments).hasSize(1);
-    assertThat(ha.apiTokenDocuments.getFirst())
+    assertThat(ha.apiTokenDocuments.get(0))
         .as("the retry must not resurrect a token revoked between the two attempts")
         .doesNotContain(hash);
   }
@@ -287,7 +287,7 @@ class Issue7521SecuritySeedRetryTest {
     controlPlane.connectCluster("db2:2435");
 
     assertThat(ha.apiTokenDocuments).hasSize(1);
-    assertThat(ha.apiTokenDocuments.getFirst())
+    assertThat(ha.apiTokenDocuments.get(0))
         .as("the seed must not resurrect the revoked token on the joining peer")
         .doesNotContain(hash);
   }

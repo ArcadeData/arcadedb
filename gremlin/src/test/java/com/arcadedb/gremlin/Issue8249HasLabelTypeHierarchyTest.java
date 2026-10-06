@@ -150,7 +150,7 @@ class Issue8249HasLabelTypeHierarchyTest {
 
   @Test
   void aBucketLabelCountsThatBucket() {
-    final String bucket = graph.getDatabase().getSchema().getType("Employee").getBuckets(false).getFirst().getName();
+    final String bucket = graph.getDatabase().getSchema().getType("Employee").getBuckets(false).get(0).getName();
     final long inBucket = graph.getDatabase().countBucket(bucket);
     assertThat(g().V().hasLabel("bucket:" + bucket).count().next()).isEqualTo(inBucket);
     assertThat(g().V().hasLabel("bucket:" + bucket).toList()).hasSize((int) inBucket);

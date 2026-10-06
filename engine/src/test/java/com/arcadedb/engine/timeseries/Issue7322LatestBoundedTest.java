@@ -95,7 +95,7 @@ class Issue7322LatestBoundedTest extends TestHelper {
     if (all.isEmpty())
       return null;
 
-    final Object[] newest = all.getLast();
+    final Object[] newest = all.get(all.size() - 1);
     assertThat(all).as("this oracle is only valid where the newest timestamp is unique")
         .filteredOn(row -> (long) row[0] == (long) newest[0]).hasSize(1);
     return newest;
@@ -201,8 +201,8 @@ class Issue7322LatestBoundedTest extends TestHelper {
     // And it is NOT what the whole-series ascending scan used to answer. This assertion is the regression
     // guard: restoring engine.query(...).get(size - 1) makes it fail.
     final List<Object[]> everything = engine.query(Long.MIN_VALUE, Long.MAX_VALUE, null, null);
-    assertThat(everything.getLast()[1]).isEqualTo("in_shard_1");
-    assertThat(content(latest)).isNotEqualTo(content(everything.getLast()));
+    assertThat(everything.get(everything.size() - 1)[1]).isEqualTo("in_shard_1");
+    assertThat(content(latest)).isNotEqualTo(content(everything.get(everything.size() - 1)));
   }
 
   /**

@@ -95,7 +95,7 @@ public class Issue8908CallUnionLoadCsvIT extends BaseBoltServerTest {
       final List<Record> rows = session.run(
           "CALL dbms.components() YIELD name, versions, edition UNWIND versions AS version RETURN name, version, edition").list();
       assertThat(rows).isNotEmpty();
-      assertThat(rows.getFirst().get("name").asString()).isEqualTo("Neo4j Kernel");
+      assertThat(rows.get(0).get("name").asString()).isEqualTo("Neo4j Kernel");
 
       assertThat(session.run("// probe\nCALL db.ping()").list()).hasSize(1);
       assertThat(session.run("// x\nCALL dbms.components() YIELD name WHERE name = 'Neo4j Kernel'").list()).hasSize(1);
@@ -108,7 +108,7 @@ public class Issue8908CallUnionLoadCsvIT extends BaseBoltServerTest {
         Config.builder().withoutEncryption().build()); final Session session = driver.session()) {
       final List<Record> rows = session.run("RETURN 'show current user dbms.components db.ping' AS s").list();
       assertThat(rows).hasSize(1);
-      assertThat(rows.getFirst().get("s").asString()).isEqualTo("show current user dbms.components db.ping");
+      assertThat(rows.get(0).get("s").asString()).isEqualTo("show current user dbms.components db.ping");
 
       // Shapes the engine now answers for the schema procedures
       session.run("CREATE (:Zzz8908Label {a: 1})").consume();

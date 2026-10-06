@@ -18,6 +18,8 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.network.HttpClientLifecycle;
+
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.TransactionException;
@@ -951,7 +953,10 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     // and a cached client would outlive the peer it was built to reach. The connect timeout is the same one
     // every other forward is bounded by; the response deadline is deliberately left off, matching the
     // HttpURLConnection this replaced, because a node answering slowly while it shuts down is not a failure.
-    try (final HttpClient client = newShutdownClient(url.startsWith("https://"))) {
+    // JDK17: HttpClient is AutoCloseable only since Java 21
+    HttpClient client = null;
+    try {
+      client = newShutdownClient(url.startsWith("https://"));
       final int status = client.send(request, HttpResponse.BodyHandlers.discarding()).statusCode();
       if (status < 200 || status >= 300)
         // Raised, not logged (issue #7837). The operator asked for a node to stop; an answer that is not a
@@ -964,6 +969,8 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
       throw new ServerException("Interrupted while shutting down remote server '" + serverName + "'", e);
     } catch (final IOException e) {
       throw new RuntimeException("Failed to shutdown remote server '" + serverName + "'", e);
+    } finally {
+      HttpClientLifecycle.close(client);
     }
   }
 
@@ -1026,7 +1033,7 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     if (matches.size() > 1)
       throw new ServerException("Server name '" + serverName + "' matches " + matches.size() + " peers " + matches
           + "; name one of them exactly");
-    return matches.getFirst();
+    return matches.get(0);
   }
 
   /**

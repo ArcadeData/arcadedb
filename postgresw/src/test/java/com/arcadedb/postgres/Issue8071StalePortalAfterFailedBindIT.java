@@ -273,7 +273,7 @@ class Issue8071StalePortalAfterFailedBindIT extends PostgresWireProtocolTestBase
   }
 
   private static char readyForQueryStatusOf(final List<WireMessage> messages) {
-    final WireMessage last = messages.getLast();
+    final WireMessage last = messages.get(messages.size() - 1);
     return (char) last.body()[0];
   }
 

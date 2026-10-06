@@ -366,7 +366,7 @@ public class TransactionManager {
 
     while (true) {
       final WALFile[] pool = activeWALFilePool;
-      final int slot = (int) (Thread.currentThread().threadId() % pool.length);
+      final int slot = (int) (Thread.currentThread().getId() % pool.length);
 
       if (tryWriteTransactionToWALFile(pool[slot], pages, sync, txId, bufferChanges))
         break;
@@ -1444,7 +1444,7 @@ public class TransactionManager {
 
     // OK: ALL LOCKED
     LogManager.instance()
-        .log(this, Level.FINE, "Locked files %s (threadId=%d)", null, orderedFilesIds, Thread.currentThread().threadId());
+        .log(this, Level.FINE, "Locked files %s (threadId=%d)", null, orderedFilesIds, Thread.currentThread().getId());
     // RETURN ONLY THE LOCKED FILES
     return lockedFiles;
   }
@@ -1481,7 +1481,7 @@ public class TransactionManager {
     // OK: ALL LOCKED
     if (LogManager.instance().isDebugEnabled())
       LogManager.instance().log(this, Level.FINE, "Locked files %s (threadId=%d)", null, Arrays.toString(fileIds),
-          Thread.currentThread().threadId());
+          Thread.currentThread().getId());
     return lockedFiles;
   }
 
@@ -1511,7 +1511,7 @@ public class TransactionManager {
         unlockFile(fileId, requester);
 
       LogManager.instance()
-          .log(this, Level.FINE, "Unlocked files %s (threadId=%d)", null, lockedFileIds, Thread.currentThread().threadId());
+          .log(this, Level.FINE, "Unlocked files %s (threadId=%d)", null, lockedFileIds, Thread.currentThread().getId());
     }
   }
 

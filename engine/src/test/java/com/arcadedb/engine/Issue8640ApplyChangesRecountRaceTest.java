@@ -71,7 +71,7 @@ class Issue8640ApplyChangesRecountRaceTest extends TestHelper {
         db.newDocument("Counted").set("name", "record-" + i).save();
     });
 
-    final LocalBucket bucket = (LocalBucket) db.getSchema().getType("Counted").getBuckets(false).getFirst();
+    final LocalBucket bucket = (LocalBucket) db.getSchema().getType("Counted").getBuckets(false).get(0);
     final int fileId = bucket.getFileId();
     final TransactionManager txManager = db.getTransactionManager();
 
@@ -131,7 +131,7 @@ class Issue8640ApplyChangesRecountRaceTest extends TestHelper {
         db.newDocument("Counted").set("name", "record-" + i).save();
     });
 
-    final LocalBucket bucket = (LocalBucket) db.getSchema().getType("Counted").getBuckets(false).getFirst();
+    final LocalBucket bucket = (LocalBucket) db.getSchema().getType("Counted").getBuckets(false).get(0);
     final int fileId = bucket.getFileId();
     final TransactionManager txManager = db.getTransactionManager();
 
@@ -169,7 +169,7 @@ class Issue8640ApplyChangesRecountRaceTest extends TestHelper {
         db.newDocument("Counted").set("name", "record-" + i).save();
     });
 
-    final LocalBucket bucket = (LocalBucket) db.getSchema().getType("Counted").getBuckets(false).getFirst();
+    final LocalBucket bucket = (LocalBucket) db.getSchema().getType("Counted").getBuckets(false).get(0);
     final int fileId = bucket.getFileId();
     final TransactionManager txManager = db.getTransactionManager();
 
@@ -220,7 +220,7 @@ class Issue8640ApplyChangesRecountRaceTest extends TestHelper {
         db.newDocument("Counted").set("name", "record-" + i).save();
     });
 
-    final LocalBucket bucket = (LocalBucket) db.getSchema().getType("Counted").getBuckets(false).getFirst();
+    final LocalBucket bucket = (LocalBucket) db.getSchema().getType("Counted").getBuckets(false).get(0);
     final int fileId = bucket.getFileId();
     bucket.setCachedRecordCount(-1);
     final Object previousTimeout = db.getConfiguration().setValue(GlobalConfiguration.COMMIT_LOCK_TIMEOUT, 200L);
@@ -264,7 +264,7 @@ class Issue8640ApplyChangesRecountRaceTest extends TestHelper {
   @Test
   void aFailingLockPhaseReleasesTheApplyLock() throws Exception {
     final DatabaseInternal db = (DatabaseInternal) database;
-    final LocalBucket bucket = (LocalBucket) db.getSchema().getType("Counted").getBuckets(false).getFirst();
+    final LocalBucket bucket = (LocalBucket) db.getSchema().getType("Counted").getBuckets(false).get(0);
     final int fileId = bucket.getFileId();
     bucket.setCachedRecordCount(-1);
 
@@ -296,7 +296,7 @@ class Issue8640ApplyChangesRecountRaceTest extends TestHelper {
 
   @Test
   void aSuccessfulRecomputeClearsTheContendedMark() {
-    final LocalBucket bucket = (LocalBucket) database.getSchema().getType("Counted").getBuckets(false).getFirst();
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getType("Counted").getBuckets(false).get(0);
     bucket.setCachedRecordCount(-1);
     bucket.setApplyLockContended(true);
 
@@ -322,7 +322,7 @@ class Issue8640ApplyChangesRecountRaceTest extends TestHelper {
 
   @Test
   void anApplyWithoutTheLockDiscardsARecomputePublishedWhileItRan() {
-    final LocalBucket bucket = (LocalBucket) database.getSchema().getType("Counted").getBuckets(false).getFirst();
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getType("Counted").getBuckets(false).get(0);
     bucket.setCachedRecordCount(-1);
 
     // Scan started, then the apply (unable to lock) invalidates before writing its pages ...

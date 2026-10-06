@@ -240,7 +240,7 @@ public final class ChaosRunner {
 
   private static ChaosResult fromViolations(final List<Violation> violations, final int step) {
     final Violation first = violations.stream().filter(v -> v.kind() == ResultKind.SAFETY).findFirst()
-        .orElse(violations.getFirst());
+        .orElse(violations.get(0));
     final String message = first.describe() + (violations.size() > 1 ? " (+" + (violations.size() - 1) + " more)" : "");
     return new ChaosResult(first.kind(), message, step, violations);
   }

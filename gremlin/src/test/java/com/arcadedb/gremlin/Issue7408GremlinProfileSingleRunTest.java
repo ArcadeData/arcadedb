@@ -145,7 +145,7 @@ class Issue7408GremlinProfileSingleRunTest {
         .setParameters(Map.of("$profileExecution", true)).execute()) {
       final List<Result> rows = drain(rs);
       assertThat(rows).hasSize(1);
-      assertThat(rows.getFirst().getProperty("result").toString()).contains("Traversal Metrics");
+      assertThat(rows.get(0).getProperty("result").toString()).contains("Traversal Metrics");
     }
   }
 

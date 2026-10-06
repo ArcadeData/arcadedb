@@ -99,7 +99,7 @@ class OpenCypherUserManagementIT extends BaseGraphServerTest {
         results.add(matching.next());
 
       assertThat(results).hasSize(1);
-      assertThat(results.getFirst().<String>getProperty("user")).isEqualTo("root");
+      assertThat(results.get(0).<String>getProperty("user")).isEqualTo("root");
     }
 
     try (final ResultSet none = database.command("opencypher", "SHOW USERS WHERE user = 'nobody_here'")) {

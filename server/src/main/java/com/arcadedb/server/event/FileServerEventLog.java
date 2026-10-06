@@ -132,7 +132,7 @@ public class FileServerEventLog implements ServerEventLog {
   static void retainNewest(final File logDirectory, final List<String> files) {
     files.sort(Comparator.comparingInt(FileServerEventLog::fileCounter).reversed());
     while (files.size() > KEEP_FILES) {
-      final String removed = files.removeLast();
+      final String removed = files.remove(files.size() - 1);
       FileUtils.deleteFile(new File(logDirectory, removed));
       LogManager.instance().log(FileServerEventLog.class, Level.FINE, "Deleted server event log file %s (keep max %d files)", removed, KEEP_FILES);
     }

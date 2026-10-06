@@ -305,7 +305,7 @@ class Issue8798TimeBucketOriginTest extends TestHelper {
     assertThat(((DatabaseInternal) database).getStatementCache().get(printed)).isEqualTo(parsed);
     database.command("sql", "ALTER TIMESERIES TYPE D DROP DOWNSAMPLING POLICY");
     database.command("sql", "ALTER TIMESERIES TYPE D ADD DOWNSAMPLING POLICY AFTER 1 HOURS GRANULARITY 1 DAYS OFFSET -8 HOURS");
-    assertThat(type.getDownsamplingTiers().getFirst().offsetMs()).isEqualTo(-8 * HOUR);
+    assertThat(type.getDownsamplingTiers().get(0).offsetMs()).isEqualTo(-8 * HOUR);
 
     // a sample every 30 minutes over three UTC days, sealed
     final long start = ms("2024-03-01T00:00:00Z");
@@ -329,7 +329,7 @@ class Issue8798TimeBucketOriginTest extends TestHelper {
 
     // and the schema keeps it across a reopen
     reopenDatabase();
-    assertThat(((LocalTimeSeriesType) database.getSchema().getType("D")).getDownsamplingTiers().getFirst().offsetMs())
+    assertThat(((LocalTimeSeriesType) database.getSchema().getType("D")).getDownsamplingTiers().get(0).offsetMs())
         .isEqualTo(-8 * HOUR);
   }
 
@@ -338,10 +338,10 @@ class Issue8798TimeBucketOriginTest extends TestHelper {
     final List<String> sql = database.getSchema().buildTimeSeriesType().withName("B").withTimestamp("ts")
         .withTag("host", Type.STRING).withField("v", Type.DOUBLE)
         .withDownsamplingTiers(List.of(new DownsamplingTier(HOUR, DAY, -8 * HOUR))).toSQL();
-    assertThat(sql.getFirst()).contains("GRANULARITY 1 DAYS OFFSET -8 HOURS");
+    assertThat(sql.get(0)).contains("GRANULARITY 1 DAYS OFFSET -8 HOURS");
     sql.forEach(statement -> database.command("sql", statement));
     final LocalTimeSeriesType type = (LocalTimeSeriesType) database.getSchema().getType("B");
-    assertThat(type.getDownsamplingTiers().getFirst().offsetMs()).isEqualTo(-8 * HOUR);
+    assertThat(type.getDownsamplingTiers().get(0).offsetMs()).isEqualTo(-8 * HOUR);
     assertThat(type.toJSON().getJSONArray("downsamplingTiers").getJSONObject(0).getLong("offsetMs")).isEqualTo(-8 * HOUR);
   }
 

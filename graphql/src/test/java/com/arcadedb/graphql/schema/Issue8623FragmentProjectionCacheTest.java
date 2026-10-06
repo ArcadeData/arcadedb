@@ -160,7 +160,7 @@ class Issue8623FragmentProjectionCacheTest extends AbstractGraphQLTest {
           final Result record = resultSet.next();
           final List<Result> authors = record.getProperty("authors");
           assertThat(record.<List<Result>>getProperty("related")).hasSize(1);
-          assertThat(authors.getFirst().<List<Result>>getProperty("related")).hasSize(BOOKS + 2);
+          assertThat(authors.get(0).<List<Result>>getProperty("related")).hasSize(BOOKS + 2);
           count++;
         }
         assertThat(count).isEqualTo(BOOKS + 2);

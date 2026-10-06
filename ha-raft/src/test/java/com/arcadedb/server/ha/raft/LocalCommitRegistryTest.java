@@ -99,12 +99,12 @@ class LocalCommitRegistryTest {
       final CountDownLatch start = new CountDownLatch(1);
       final long walTxId = round;
       final List<Thread> threads = new ArrayList<>();
-      threads.add(Thread.ofPlatform().unstarted(() -> {
+      threads.add(new Thread(() -> {
         await(start);
         if (registry.claim(DB, walTxId, wal(walTxId)) != null)
           claims.incrementAndGet();
       }));
-      threads.add(Thread.ofPlatform().unstarted(() -> {
+      threads.add(new Thread(() -> {
         await(start);
         if (registry.withdraw(commit))
           withdrawals.incrementAndGet();

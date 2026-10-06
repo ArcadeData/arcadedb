@@ -177,7 +177,7 @@ class Issue8523ParallelScanAggregationTest extends TestHelper {
       final List<String> rows = new ArrayList<>();
       final String plan = rowsAndPlan(query, rows);
       assertThat(plan).doesNotContain("(parallel");
-      assertThat(rows.getFirst()).contains("1000");
+      assertThat(rows.get(0)).contains("1000");
       database.rollback();
     });
   }

@@ -109,6 +109,6 @@ class Issue7121BucketReuseSpaceModeTest {
   }
 
   private static LocalBucket bucketOf(final Database db) {
-    return (LocalBucket) db.getSchema().getType("Reuse").getBuckets(false).getFirst();
+    return (LocalBucket) db.getSchema().getType("Reuse").getBuckets(false).get(0);
   }
 }

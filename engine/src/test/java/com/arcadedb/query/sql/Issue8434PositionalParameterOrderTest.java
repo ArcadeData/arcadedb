@@ -115,7 +115,7 @@ class Issue8434PositionalParameterOrderTest extends TestHelper {
   /** The {@code bucket:?} of an INSERT target is numbered by the bucket-identifier visitor, before the SET values. */
   @Test
   void insertIntoBucketParameterComesBeforeSetParameter() {
-    final String bucketName = database.getSchema().getType("T").getBuckets(false).getFirst().getName();
+    final String bucketName = database.getSchema().getType("T").getBuckets(false).get(0).getName();
     database.transaction(() -> database.command("sql", "INSERT INTO bucket:? SET uuid = ?", bucketName, "u9").close());
     try (final ResultSet rs = database.query("sql", "SELECT uuid FROM bucket:? WHERE uuid = ?", bucketName, "u9")) {
       assertThat(collect(rs)).containsExactly("u9");

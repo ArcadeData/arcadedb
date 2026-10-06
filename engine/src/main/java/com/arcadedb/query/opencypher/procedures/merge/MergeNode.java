@@ -236,24 +236,18 @@ public class MergeNode implements CypherProcedure {
    * inside {@code OPTIONAL CALL} too.
    */
   private List<String> extractLabels(final Object arg) {
-    switch (arg) {
-      case null -> {
-        return List.of();
-      }
-      case List<?> list -> {
-        final List<String> result = new ArrayList<>();
-        for (final Object item : list) {
-          if (item != null) {
-            result.add(requireUsableLabel(item));
-          }
+    if (arg == null) {
+      return List.of();
+    } else if (arg instanceof List<?> list) {
+      final List<String> result = new ArrayList<>();
+      for (final Object item : list) {
+        if (item != null) {
+          result.add(requireUsableLabel(item));
         }
-        return result;
       }
-      case String s -> {
-        return List.of(requireUsableLabel(s));
-      }
-      default -> {
-      }
+      return result;
+    } else if (arg instanceof String s) {
+      return List.of(requireUsableLabel(s));
     }
 
     throw new IllegalArgumentException(

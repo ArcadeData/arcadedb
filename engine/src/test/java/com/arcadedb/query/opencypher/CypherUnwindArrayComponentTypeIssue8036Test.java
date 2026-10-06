@@ -109,8 +109,8 @@ class CypherUnwindArrayComponentTypeIssue8036Test {
     final List<Object> values = unwindProperty("blob");
 
     assertThat(values).hasSize(1);
-    assertThat(values.getFirst()).isInstanceOf(byte[].class);
-    assertThat((byte[]) values.getFirst()).containsExactly((byte) 10, (byte) 11, (byte) 12, (byte) 13);
+    assertThat(values.get(0)).isInstanceOf(byte[].class);
+    assertThat((byte[]) values.get(0)).containsExactly((byte) 10, (byte) 11, (byte) 12, (byte) 13);
   }
 
   /**
@@ -164,7 +164,7 @@ class CypherUnwindArrayComponentTypeIssue8036Test {
     // A byte[] parameter is a BINARY blob, so it stays a single opaque value, exactly as in SQL.
     final List<Object> blob = unwindParameter(new byte[] { 1, 2, 3 });
     assertThat(blob).hasSize(1);
-    assertThat(blob.getFirst()).isInstanceOf(byte[].class);
+    assertThat(blob.get(0)).isInstanceOf(byte[].class);
   }
 
   /**

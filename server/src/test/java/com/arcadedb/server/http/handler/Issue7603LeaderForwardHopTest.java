@@ -530,7 +530,7 @@ class Issue7603LeaderForwardHopTest {
       server.setExecutor(executor);
       server.createContext("/", exchange -> {
         requests++;
-        exchange.getRequestHeaders().forEach((name, values) -> headers.put(name.toLowerCase(), values.getFirst()));
+        exchange.getRequestHeaders().forEach((name, values) -> headers.put(name.toLowerCase(), values.get(0)));
         exchange.getRequestBody().readAllBytes();
         try {
           answer.write(exchange);

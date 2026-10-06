@@ -192,7 +192,7 @@ final class MongoBsonValues {
       final Object stored = toStored(original);
       if (stored != original && converted == null) {
         // first change: copy what was seen unchanged so far
-        converted = LinkedHashMap.newLinkedHashMap(map.size());
+        converted = new LinkedHashMap<>(map.size() * 4 / 3 + 1);
         int j = 0;
         for (final Map.Entry<String, Object> previous : map.entrySet()) {
           if (j++ >= i)
@@ -338,7 +338,7 @@ final class MongoBsonValues {
   }
 
   private static Map<String, Object> tagged(final String kind, final Object... keyValues) {
-    final Map<String, Object> map = LinkedHashMap.newLinkedHashMap(keyValues.length / 2 + 1);
+    final Map<String, Object> map = new LinkedHashMap<>((keyValues.length / 2 + 1) * 4 / 3 + 1);
     map.put(TAG, kind);
     for (int i = 0; i < keyValues.length; i += 2)
       map.put((String) keyValues[i], keyValues[i + 1]);

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.network.HttpClientLifecycle;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
@@ -94,7 +95,7 @@ class Issue7985StopServiceReleasesForwarderOnFailureTest {
 
       final HttpServer httpServer = server.getHttpServer();
       forwarder = httpServer.getLeaderCommandForwarder();
-      assertThat(forwarder.transport().client().isTerminated())
+      assertThat(HttpClientLifecycle.isTerminated(forwarder.transport().client()))
           .as("the client is live while the server is up")
           .isFalse();
 
@@ -105,7 +106,7 @@ class Issue7985StopServiceReleasesForwarderOnFailureTest {
       server.stop();
     }
 
-    assertThat(forwarder.transport().client().isTerminated())
+    assertThat(HttpClientLifecycle.isTerminated(forwarder.transport().client()))
         .as("a failing step earlier in stopService() must not skip the release of the forwarder's HTTP client")
         .isTrue();
 

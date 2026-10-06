@@ -94,7 +94,7 @@ class Issue7963FullSchemaLoadKeepsPreviousGenerationTest extends TestHelper {
     final int bucketFileId = bucketBefore.getFileId();
     final Index indexBefore = schema.getIndexByName(INDEX_NAME);
     final IndexInternal bucketIndexBefore = bucketLevelVectorIndex(schema);
-    final int vectorIndexFileId = bucketIndexBefore.getFileIds().getFirst();
+    final int vectorIndexFileId = bucketIndexBefore.getFileIds().get(0);
     final Component vectorFileBefore = schema.getFileById(vectorIndexFileId);
     final int indexesBefore = schema.getIndexes().length;
     final int bucketsBefore = schema.getBuckets().size();
@@ -322,7 +322,7 @@ class Issue7963FullSchemaLoadKeepsPreviousGenerationTest extends TestHelper {
   }
 
   private static String firstBucketNameOf(final LocalSchema schema) {
-    return schema.getType(TYPE_NAME).getBuckets(false).getFirst().getName();
+    return schema.getType(TYPE_NAME).getBuckets(false).get(0).getName();
   }
 
   private LocalSchema schema() {

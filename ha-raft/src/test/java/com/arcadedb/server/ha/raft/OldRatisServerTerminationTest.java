@@ -158,7 +158,7 @@ class OldRatisServerTerminationTest {
         assertThat(OldRatisServerTermination.serversOf(new OtherRpcWithServers(server))).isEmpty();
       });
       assertThat(warnings).hasSize(1);
-      assertThat(warnings.getFirst()).contains("will not verify");
+      assertThat(warnings.get(0)).contains("will not verify");
     } finally {
       OldRatisServerTermination.resetForTesting();
     }

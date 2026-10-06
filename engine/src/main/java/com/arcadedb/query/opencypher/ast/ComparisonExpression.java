@@ -506,13 +506,15 @@ public class ComparisonExpression implements BooleanExpression {
    * an integer ({@code binary}) it reads the exact binary value instead.
    */
   private static BigDecimal toExactDecimal(final Number value, final boolean binary) {
-    return switch (value) {
-      case BigDecimal bigDecimal -> bigDecimal;
-      case BigInteger bigInteger -> new BigDecimal(bigInteger);
-      case Double d -> binary ? new BigDecimal(d) : BigDecimal.valueOf(d);
-      case Float f -> binary ? new BigDecimal(Type.widenFloat(f)) : BigDecimal.valueOf(Type.widenFloat(f));
-      default -> BigDecimal.valueOf(value.longValue());
-    };
+    if (value instanceof BigDecimal bigDecimal)
+      return bigDecimal;
+    else if (value instanceof BigInteger bigInteger)
+      return new BigDecimal(bigInteger);
+    else if (value instanceof Double d)
+      return binary ? new BigDecimal(d) : BigDecimal.valueOf(d);
+    else if (value instanceof Float f)
+      return binary ? new BigDecimal(Type.widenFloat(f)) : BigDecimal.valueOf(Type.widenFloat(f));
+    return BigDecimal.valueOf(value.longValue());
   }
 
   /** Cypher equality where a FLOAT also equals the double that narrows to it (issue #8882): 0 equals -0, NaN equals nothing. */

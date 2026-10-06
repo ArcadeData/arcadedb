@@ -390,7 +390,7 @@ class Issue8649PatientApplyLockTest extends TestHelper {
   }
 
   private LocalBucket bucket() {
-    return (LocalBucket) database.getSchema().getType("Counted").getBuckets(false).getFirst();
+    return (LocalBucket) database.getSchema().getType("Counted").getBuckets(false).get(0);
   }
 
   private static int currentVersion(final DatabaseInternal db, final int fileId) throws Exception {

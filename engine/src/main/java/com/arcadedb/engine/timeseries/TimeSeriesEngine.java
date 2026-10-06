@@ -378,7 +378,7 @@ public class TimeSeriesEngine implements AutoCloseable {
       if (merged.size() >= need) {
         TimeSeriesSealedStore.trimToAscendingLimit(merged, need);
         // Inclusive: rows sharing the cut-off timestamp are still eligible, ties are broken by the merge.
-        upperBound = Math.min(upperBound, (long) merged.getLast()[0]);
+        upperBound = Math.min(upperBound, (long) merged.get(merged.size() - 1)[0]);
       }
     }
 

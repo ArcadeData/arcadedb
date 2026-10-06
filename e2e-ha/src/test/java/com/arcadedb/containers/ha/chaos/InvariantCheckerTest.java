@@ -61,9 +61,9 @@ class InvariantCheckerTest {
     final long acked = op(0, false, Ledger.ACKED);
     final List<Violation> violations = checker.check(snapshot());
     assertThat(violations).hasSize(1);
-    assertThat(violations.getFirst().invariant()).isEqualTo("I1");
-    assertThat(violations.getFirst().kind()).isEqualTo(ResultKind.SAFETY);
-    assertThat(violations.getFirst().keys()).containsExactly(acked);
+    assertThat(violations.get(0).invariant()).isEqualTo("I1");
+    assertThat(violations.get(0).kind()).isEqualTo(ResultKind.SAFETY);
+    assertThat(violations.get(0).keys()).containsExactly(acked);
   }
 
   @Test
@@ -74,7 +74,7 @@ class InvariantCheckerTest {
     snapshot.add(Ledger.key(7, 0), 0);
     final List<Violation> violations = checker.check(snapshot);
     assertThat(violations).extracting(Violation::invariant).containsExactly("I2");
-    assertThat(violations.getFirst().keys()).containsExactlyInAnyOrder(Ledger.key(0, 999), Ledger.key(7, 0));
+    assertThat(violations.get(0).keys()).containsExactlyInAnyOrder(Ledger.key(0, 999), Ledger.key(7, 0));
   }
 
   @Test
@@ -82,7 +82,7 @@ class InvariantCheckerTest {
     final long acked = op(0, false, Ledger.ACKED);
     final List<Violation> violations = checker.check(snapshot(acked, acked));
     assertThat(violations).extracting(Violation::invariant).containsExactly("I2");
-    assertThat(violations.getFirst().keys()).containsExactly(acked);
+    assertThat(violations.get(0).keys()).containsExactly(acked);
   }
 
   @Test
@@ -98,7 +98,7 @@ class InvariantCheckerTest {
     assertThat(checker.check(snapshot(unknown))).isEmpty();
     final List<Violation> violations = checker.check(snapshot());
     assertThat(violations).extracting(Violation::invariant).containsExactly("I1");
-    assertThat(violations.getFirst().keys()).containsExactly(unknown);
+    assertThat(violations.get(0).keys()).containsExactly(unknown);
   }
 
   @Test
@@ -122,8 +122,8 @@ class InvariantCheckerTest {
     snapshot.add(pairWithTwoEdges, 2);
     final List<Violation> violations = checker.check(snapshot);
     assertThat(violations).extracting(Violation::invariant).containsExactly("I5");
-    assertThat(violations.getFirst().message()).contains("applied partially").contains("stale read");
-    assertThat(violations.getFirst().keys()).containsExactlyInAnyOrder(pairWithTwoEdges, pairWithoutEdge, singleWithEdge);
+    assertThat(violations.get(0).message()).contains("applied partially").contains("stale read");
+    assertThat(violations.get(0).keys()).containsExactlyInAnyOrder(pairWithTwoEdges, pairWithoutEdge, singleWithEdge);
   }
 
   @Test
@@ -131,14 +131,14 @@ class InvariantCheckerTest {
     ledger.reserve(0, false);
     final List<Violation> violations = checker.check(snapshot());
     assertThat(violations).extracting(Violation::invariant).containsExactly("QUIESCE");
-    assertThat(violations.getFirst().kind()).isEqualTo(ResultKind.HARNESS);
+    assertThat(violations.get(0).kind()).isEqualTo(ResultKind.HARNESS);
   }
 
   @Test
   void reportedKeysAreCappedButTheCountIsNot() {
     for (int i = 0; i < 150; i++)
       op(0, false, Ledger.ACKED);
-    final Violation violation = checker.check(snapshot()).getFirst();
+    final Violation violation = checker.check(snapshot()).get(0);
     assertThat(violation.keys()).hasSize(InvariantChecker.MAX_KEYS);
     assertThat(violation.message()).startsWith("150 ");
   }

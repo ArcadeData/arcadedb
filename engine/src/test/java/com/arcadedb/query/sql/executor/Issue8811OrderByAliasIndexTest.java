@@ -82,7 +82,7 @@ class Issue8811OrderByAliasIndexTest extends TestHelper {
         expected.add(rs.next().<Number>getProperty("b").longValue());
     }
     assertThat(expected).hasSize(5);
-    assertThat(expected.getFirst()).isEqualTo(1000L);
+    assertThat(expected.get(0)).isEqualTo(1000L);
     assertIndexOrdered("SELECT b FROM V ORDER BY a ASC LIMIT 5", "b", expected);
   }
 

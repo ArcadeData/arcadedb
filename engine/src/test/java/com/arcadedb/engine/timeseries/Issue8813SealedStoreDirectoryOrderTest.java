@@ -88,7 +88,7 @@ class Issue8813SealedStoreDirectoryOrderTest {
 
   private static long oldest(final TimeSeriesSealedStore store, final long fromTs, final int limit) throws IOException {
     final List<Object[]> rows = store.scanRangeAscending(fromTs, Long.MAX_VALUE, null, null, limit, null);
-    return rows.isEmpty() ? -1 : (long) rows.getFirst()[0];
+    return rows.isEmpty() ? -1 : (long) rows.get(0)[0];
   }
 
   private void assertServedInOrder(final TimeSeriesSealedStore store) throws IOException {

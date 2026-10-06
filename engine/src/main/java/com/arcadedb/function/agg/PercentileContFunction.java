@@ -96,9 +96,9 @@ public class PercentileContFunction implements StatelessFunction, HeapBufferingF
       return null;
     values.sort((a, b) -> Double.compare(a.doubleValue(), b.doubleValue()));
     if (percentile == 1.0)
-      return values.getLast().doubleValue();
+      return values.get(values.size() - 1).doubleValue();
     if (percentile == 0.0)
-      return values.getFirst().doubleValue();
+      return values.get(0).doubleValue();
     final double pos = percentile * (values.size() - 1);
     final int lower = (int) Math.floor(pos);
     final int upper = (int) Math.ceil(pos);

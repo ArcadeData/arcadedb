@@ -44,8 +44,9 @@ class Issue8021MockSeenThroughJitCompiledDelegateTest {
 
   @Test
   void aSubclassMockIsAnsweredThroughADelegateTheJitCompiledAgainstTheRealClass() throws InterruptedException {
-    try (final HttpClient httpClient = HttpClient.newHttpClient();
-        final DatabaseFactory factory = new DatabaseFactory(tempDir.resolve("db").toString())) {
+    // JDK17: HttpClient is AutoCloseable only since Java 21, and this test never sends anything through it
+    final HttpClient httpClient = HttpClient.newHttpClient();
+    try (final DatabaseFactory factory = new DatabaseFactory(tempDir.resolve("db").toString())) {
       final LocalDatabase real = (LocalDatabase) factory.create();
       try {
         final RaftReplicatedDatabase warm = new RaftReplicatedDatabase(null, real, null, httpClient);

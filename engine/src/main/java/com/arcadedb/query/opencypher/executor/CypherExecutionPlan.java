@@ -1033,7 +1033,7 @@ public class CypherExecutionPlan {
    * {@link GAVOneHopScanStep}) leaves no wrapper in the chain, and then the whole chain is what runs (issue #8335).
    */
   private static void appendStepsAfterTheOptimizedMatch(final StringBuilder output, final List<ExecutionStep> chain) {
-    final boolean startsWithOperators = !chain.isEmpty() && OPTIMIZED_MATCH_STEP_NAME.equals(chain.getFirst().getName());
+    final boolean startsWithOperators = !chain.isEmpty() && OPTIMIZED_MATCH_STEP_NAME.equals(chain.get(0).getName());
     if (!startsWithOperators) {
       if (chain.isEmpty())
         return;
@@ -4884,7 +4884,7 @@ public class CypherExecutionPlan {
         || matchClause.getPathPatterns().size() != 1)
       return null;
 
-    final PathPattern path = matchClause.getPathPatterns().getFirst();
+    final PathPattern path = matchClause.getPathPatterns().get(0);
     if (path instanceof ShortestPathPattern || path.hasPathVariable() || path.getRelationshipCount() != 1)
       return null;
 
@@ -4991,7 +4991,7 @@ public class CypherExecutionPlan {
     pending.add(type);
     final Set<String> visited = new HashSet<>();
     while (!pending.isEmpty()) {
-      final DocumentType current = pending.removeLast();
+      final DocumentType current = pending.remove(pending.size() - 1);
       if (!visited.add(current.getName()))
         continue;
       if (!provider.coversVertexType(current.getName()))
@@ -5432,13 +5432,13 @@ public class CypherExecutionPlan {
   private AbstractExecutionStep tryCreateIndexMinMaxOptimization(final CommandContext context) {
     if (statement.getMatchClauses() == null || statement.getMatchClauses().size() != 1)
       return null;
-    final MatchClause matchClause = statement.getMatchClauses().getFirst();
+    final MatchClause matchClause = statement.getMatchClauses().get(0);
     // A WHERE is taken only as a range of the aggregated property (issue #8812), checked below once the property is known
     if (matchClause.isOptional() || (matchClause.hasWhereClause() && statement.getWhereClause() != null)
         || !matchClause.hasPathPatterns() || matchClause.getPathPatterns().size() != 1)
       return null;
     final WhereClause whereClause = matchClause.hasWhereClause() ? matchClause.getWhereClause() : statement.getWhereClause();
-    final PathPattern pathPattern = matchClause.getPathPatterns().getFirst();
+    final PathPattern pathPattern = matchClause.getPathPatterns().get(0);
     if (!pathPattern.isSingleNode())
       return null;
     final NodePattern nodePattern = pathPattern.getFirstNode();
@@ -5453,9 +5453,9 @@ public class CypherExecutionPlan {
     final ReturnClause returnClause = statement.getReturnClause();
     if (returnClause == null || returnClause.isDistinct() || returnClause.getReturnItems().size() != 1)
       return null;
-    final ReturnClause.ReturnItem returnItem = returnClause.getReturnItems().getFirst();
+    final ReturnClause.ReturnItem returnItem = returnClause.getReturnItems().get(0);
     if (!(returnItem.getExpression() instanceof FunctionCallExpression function) || function.getArguments().size() != 1
-        || !(function.getArguments().getFirst() instanceof PropertyAccessExpression access)
+        || !(function.getArguments().get(0) instanceof PropertyAccessExpression access)
         || !nodePattern.getVariable().equals(access.getVariableName()))
       return null;
     final boolean max;
@@ -5466,7 +5466,7 @@ public class CypherExecutionPlan {
     else
       return null;
 
-    final String typeName = nodePattern.getLabels().getFirst();
+    final String typeName = nodePattern.getLabels().get(0);
     final String propertyName = access.getPropertyName();
     final Schema schema = context.getDatabase().getSchema();
     if (!schema.existsType(typeName) || !(schema.getType(typeName) instanceof VertexType type))

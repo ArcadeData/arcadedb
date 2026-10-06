@@ -52,10 +52,10 @@ class Issue8926PromQLConformanceTest extends TestHelper {
 
     final List<VectorSample> samples = vectorOf("m8926_errors / m8926_total");
     assertThat(samples).hasSize(1);
-    assertThat(samples.getFirst().value()).isEqualTo(0.25);
-    assertThat(samples.getFirst().labels()).doesNotContainKey("__name__").containsEntry("host", "api");
+    assertThat(samples.get(0).value()).isEqualTo(0.25);
+    assertThat(samples.get(0).labels()).doesNotContainKey("__name__").containsEntry("host", "api");
 
-    assertThat(vectorOf("m8926_errors + m8926_total").getFirst().value()).isEqualTo(15.0);
+    assertThat(vectorOf("m8926_errors + m8926_total").get(0).value()).isEqualTo(15.0);
     assertThat(vectorOf("rate(m8926_errors[5m]) / rate(m8926_total[5m])")).hasSize(1);
   }
 
@@ -76,10 +76,10 @@ class Issue8926PromQLConformanceTest extends TestHelper {
     createSeries("m8926_w2", new String[] { "api" }, new double[] { 12.0 });
 
     final List<VectorSample> one = vectorOf("sum without (instance) (m8926_w1)");
-    assertThat(one.getFirst().labels()).doesNotContainKey("__name__");
+    assertThat(one.get(0).labels()).doesNotContainKey("__name__");
     final List<VectorSample> ratio = vectorOf("sum without (instance) (m8926_w1) / sum without (instance) (m8926_w2)");
     assertThat(ratio).hasSize(1);
-    assertThat(ratio.getFirst().value()).isEqualTo(0.25);
+    assertThat(ratio.get(0).value()).isEqualTo(0.25);
   }
 
   @Test
@@ -90,7 +90,7 @@ class Issue8926PromQLConformanceTest extends TestHelper {
     // api is matched (left wins), web is the unmatched right-hand sample
     final List<VectorSample> samples = vectorOf("m8926_o1 or m8926_o2");
     assertThat(samples).hasSize(2);
-    assertThat(samples.getFirst().value()).isEqualTo(3.0);
+    assertThat(samples.get(0).value()).isEqualTo(3.0);
     assertThat(samples.get(1).labels()).containsEntry("host", "web");
   }
 
@@ -121,7 +121,7 @@ class Issue8926PromQLConformanceTest extends TestHelper {
     final List<VectorSample> byHost = vectorOf("topk by (host) (1, m8927_g)");
     assertThat(byHost).hasSize(2);
     assertThat(vectorOf("bottomk without (host) (1, m8927_g)")).hasSize(1);
-    assertThat(vectorOf("bottomk without (host) (1, m8927_g)").getFirst().value()).isEqualTo(1.0);
+    assertThat(vectorOf("bottomk without (host) (1, m8927_g)").get(0).value()).isEqualTo(1.0);
     assertThatThrownBy(() -> vectorOf("topk(0/0, m8927_g{host=\"nobody\"})")).isInstanceOf(IllegalArgumentException.class);
   }
 
@@ -131,11 +131,11 @@ class Issue8926PromQLConformanceTest extends TestHelper {
 
     final List<VectorSample> top = vectorOf("topk(1, m8927_k)");
     assertThat(top).hasSize(1);
-    assertThat(top.getFirst().labels()).containsEntry("host", "a");
+    assertThat(top.get(0).labels()).containsEntry("host", "a");
 
     final List<VectorSample> bottom = vectorOf("bottomk(1, m8927_k)");
     assertThat(bottom).hasSize(1);
-    assertThat(bottom.getFirst().labels()).containsEntry("host", "c");
+    assertThat(bottom.get(0).labels()).containsEntry("host", "c");
 
     // the absent sample only fills a slot when there is nothing else, as Prometheus does
     final List<VectorSample> top3 = vectorOf("topk(3, m8927_k)");
@@ -179,7 +179,7 @@ class Issue8926PromQLConformanceTest extends TestHelper {
   @Test
   void roundKeepsAnAbsentSampleAbsent() throws Exception {
     createSeries("m8928_r", new String[] { "a" }, new double[] { Double.NaN });
-    assertThat(vectorOf("round(m8928_r)").getFirst().value()).isNaN();
+    assertThat(vectorOf("round(m8928_r)").get(0).value()).isNaN();
   }
 
   // ---- #8929

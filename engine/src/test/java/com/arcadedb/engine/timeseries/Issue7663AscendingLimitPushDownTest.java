@@ -198,7 +198,7 @@ class Issue7663AscendingLimitPushDownTest extends TestHelper {
 
     final List<Result> rows = query(sql);
     assertThat(rows).hasSize(1);
-    assertThat(rows.getFirst().<String>getProperty("host")).isEqualTo("host_1");
+    assertThat(rows.get(0).<String>getProperty("host")).isEqualTo("host_1");
   }
 
   /**
@@ -215,7 +215,7 @@ class Issue7663AscendingLimitPushDownTest extends TestHelper {
     final List<Result> rows = query(sql);
     assertThat(rows).hasSize(3);
     // host_0 carries the samples 0, TAGS, 2*TAGS ... so its largest value is at the newest timestamp.
-    assertThat(epochMillis(rows.getFirst())).isEqualTo(BASE_TS + (PER_TAG - 1) * STEP_MS);
+    assertThat(epochMillis(rows.get(0))).isEqualTo(BASE_TS + (PER_TAG - 1) * STEP_MS);
   }
 
   /**
@@ -230,7 +230,7 @@ class Issue7663AscendingLimitPushDownTest extends TestHelper {
 
     final List<Result> rows = query(sql);
     assertThat(rows).hasSize(1);
-    assertThat(((Number) rows.getFirst().getProperty("c")).intValue()).isEqualTo(PER_TAG);
+    assertThat(((Number) rows.get(0).getProperty("c")).intValue()).isEqualTo(PER_TAG);
   }
 
   /**
@@ -257,8 +257,8 @@ class Issue7663AscendingLimitPushDownTest extends TestHelper {
 
     final List<Result> rows = query(sql);
     assertThat(rows).hasSize(5);
-    assertThat(epochMillis(rows.getFirst())).isEqualTo(BASE_TS);
-    assertThat(epochMillis(rows.getLast())).isEqualTo(cutoff);
+    assertThat(epochMillis(rows.get(0))).isEqualTo(BASE_TS);
+    assertThat(epochMillis(rows.get(rows.size() - 1))).isEqualTo(cutoff);
   }
 
   /**
@@ -276,7 +276,7 @@ class Issue7663AscendingLimitPushDownTest extends TestHelper {
 
     final List<Result> rows = query("SELECT ts, value FROM Fresh WHERE host = 'a' ORDER BY ts ASC LIMIT 2");
     assertThat(rows).hasSize(2);
-    assertThat(((Number) rows.getFirst().getProperty("value")).doubleValue()).isEqualTo(1.0);
+    assertThat(((Number) rows.get(0).getProperty("value")).doubleValue()).isEqualTo(1.0);
     assertThat(((Number) rows.get(1).getProperty("value")).doubleValue()).isEqualTo(2.0);
   }
 
@@ -331,7 +331,7 @@ class Issue7663AscendingLimitPushDownTest extends TestHelper {
         results.add(rs.next());
     }
     assertThat(results).hasSize(4);
-    assertThat(epochMillis(results.getFirst())).isEqualTo(BASE_TS);
+    assertThat(epochMillis(results.get(0))).isEqualTo(BASE_TS);
   }
 
   private List<Result> query(final String sql) {

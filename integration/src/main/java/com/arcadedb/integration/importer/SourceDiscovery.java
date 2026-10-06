@@ -457,7 +457,7 @@ public class SourceDiscovery {
           return o1.getValue().get() < o2.getValue().get() ? 1 : -1;
         });
 
-        final Map.Entry<Character, AtomicInteger> bestSeparator = list.getFirst();
+        final Map.Entry<Character, AtomicInteger> bestSeparator = list.get(0);
 
         // A DELIMITER THE USER SUPPLIED SETTLES THE QUESTION THE SNIFFING IS ASKING: THE FILE IS DELIMITED TEXT WITH
         // THAT DELIMITER, SO THE SPACE-SEPARATED VECTOR FORMATS ARE NOT A CANDIDATE HOWEVER MANY SPACES THE FIRST LINE

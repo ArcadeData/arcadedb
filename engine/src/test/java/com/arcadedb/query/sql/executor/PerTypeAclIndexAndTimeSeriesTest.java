@@ -199,7 +199,7 @@ class PerTypeAclIndexAndTimeSeriesTest {
     final List<Result> rows = new ArrayList<>();
     database.query("sql", "SELECT FROM schema:types WHERE name = 'SecretChild'").forEachRemaining(rows::add);
     assertThat(rows).hasSize(1);
-    final List<String> parents = rows.getFirst().getProperty("parentTypes");
+    final List<String> parents = rows.get(0).getProperty("parentTypes");
     assertThat(parents).doesNotContain(SECRET_TYPE);
 
     unbindUser();

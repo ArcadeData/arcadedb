@@ -112,8 +112,8 @@ class Issue7688RemoteViewBuildersIT extends BaseGraphServerTest {
     final DocumentType expected = embedded().getSchema().getType(expectedName);
     final DocumentType actual = embedded().getSchema().getType(actualName);
     assertThat(actual.getBuckets(false)).hasSameSizeAs(expected.getBuckets(false));
-    assertThat(((LocalBucket) actual.getBuckets(false).getFirst()).getPageSize())
-        .isEqualTo(((LocalBucket) expected.getBuckets(false).getFirst()).getPageSize());
+    assertThat(((LocalBucket) actual.getBuckets(false).get(0)).getPageSize())
+        .isEqualTo(((LocalBucket) expected.getBuckets(false).get(0)).getPageSize());
     assertThat(embedded().countType(actualName, false)).isEqualTo(embedded().countType(expectedName, false));
   }
 

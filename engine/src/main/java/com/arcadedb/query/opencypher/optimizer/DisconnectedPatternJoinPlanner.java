@@ -173,7 +173,7 @@ final class DisconnectedPatternJoinPlanner {
     final List<Unit> remaining = new ArrayList<>(units);
     Unit joined = null;
     if (remaining.size() == 1) {
-      joined = remaining.removeFirst();
+      joined = remaining.remove(0);
       driver = joined;
     }
     while (!remaining.isEmpty()) {
@@ -510,7 +510,7 @@ final class DisconnectedPatternJoinPlanner {
   }
 
   private static BooleanExpression and(final List<BooleanExpression> conjuncts) {
-    BooleanExpression result = conjuncts.getFirst();
+    BooleanExpression result = conjuncts.get(0);
     for (int i = 1; i < conjuncts.size(); i++)
       result = new LogicalExpression(LogicalExpression.Operator.AND, result, conjuncts.get(i));
     return result;

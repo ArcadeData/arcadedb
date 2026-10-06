@@ -477,43 +477,39 @@ public class JsonSerializer {
   }
 
   private void setMetadata(final Document document, final JSONObject object) {
-    switch (document) {
-      case DetachedDocument doc -> {
-        final DocumentType docType = doc.getType();
-        if (docType instanceof VertexType)
-          object.put(CAT_PROPERTY, "v");
-        else if (docType instanceof EdgeType)
-          object.put(CAT_PROPERTY, "e");
-        else
-          object.put(CAT_PROPERTY, "d");
-      }
-      case Vertex vertex -> {
+    if (document instanceof DetachedDocument doc) {
+      final DocumentType docType = doc.getType();
+      if (docType instanceof VertexType)
         object.put(CAT_PROPERTY, "v");
-        if (includeVertexEdges) {
-          if (useVertexEdgeSize) {
-            object.put(OUT_PROPERTY, vertex.countEdges(Vertex.DIRECTION.OUT));
-            object.put(IN_PROPERTY, vertex.countEdges(Vertex.DIRECTION.IN));
+      else if (docType instanceof EdgeType)
+        object.put(CAT_PROPERTY, "e");
+      else
+        object.put(CAT_PROPERTY, "d");
+    } else if (document instanceof Vertex vertex) {
+      object.put(CAT_PROPERTY, "v");
+      if (includeVertexEdges) {
+        if (useVertexEdgeSize) {
+          object.put(OUT_PROPERTY, vertex.countEdges(Vertex.DIRECTION.OUT));
+          object.put(IN_PROPERTY, vertex.countEdges(Vertex.DIRECTION.IN));
 
-          } else {
-            final JSONArray outEdges = new JSONArray();
-            for (final Edge e : vertex.getEdges(Vertex.DIRECTION.OUT))
-              outEdges.put(e.getIdentity().toString());
-            object.put(OUT_PROPERTY, outEdges);
+        } else {
+          final JSONArray outEdges = new JSONArray();
+          for (final Edge e : vertex.getEdges(Vertex.DIRECTION.OUT))
+            outEdges.put(e.getIdentity().toString());
+          object.put(OUT_PROPERTY, outEdges);
 
-            final JSONArray inEdges = new JSONArray();
-            for (final Edge e : vertex.getEdges(Vertex.DIRECTION.IN))
-              inEdges.put(e.getIdentity().toString());
-            object.put(IN_PROPERTY, inEdges);
-          }
+          final JSONArray inEdges = new JSONArray();
+          for (final Edge e : vertex.getEdges(Vertex.DIRECTION.IN))
+            inEdges.put(e.getIdentity().toString());
+          object.put(IN_PROPERTY, inEdges);
         }
       }
-      case Edge edge -> {
-        object.put(CAT_PROPERTY, "e");
-        object.put(IN_PROPERTY, edge.getIn());
-        object.put(OUT_PROPERTY, edge.getOut());
-      }
-      case null, default -> object.put(CAT_PROPERTY, "d");
-    }
+    } else if (document instanceof Edge edge) {
+      object.put(CAT_PROPERTY, "e");
+      object.put(IN_PROPERTY, edge.getIn());
+      object.put(OUT_PROPERTY, edge.getOut());
+    } else
+      object.put(CAT_PROPERTY, "d");
 
   }
 
@@ -627,47 +623,38 @@ public class JsonSerializer {
       return Array.getLength(array);
 
     final JSONArray json = new JSONArray(Array.getLength(array));
-    switch (array) {
-    case float[] floats -> {
+    if (array instanceof float[] floats) {
       for (final float v : floats)
         if (Float.isFinite(v))
           json.put(v);
         else
           json.put(nonFiniteName(v));
-    }
-    case double[] doubles -> {
+    } else if (array instanceof double[] doubles) {
       for (final double v : doubles)
         if (Double.isFinite(v))
           json.put(v);
         else
           json.put(nonFiniteName(v));
-    }
-    case int[] ints -> {
+    } else if (array instanceof int[] ints) {
       for (final int v : ints)
         json.put(v);
-    }
-    case long[] longs -> {
+    } else if (array instanceof long[] longs) {
       for (final long v : longs)
         json.put(v);
-    }
-    case short[] shorts -> {
+    } else if (array instanceof short[] shorts) {
       for (final short v : shorts)
         json.put(v);
-    }
-    case byte[] bytes -> {
+    } else if (array instanceof byte[] bytes) {
       for (final byte v : bytes)
         json.put(v);
-    }
-    case boolean[] booleans -> {
+    } else if (array instanceof boolean[] booleans) {
       for (final boolean v : booleans)
         json.put(v);
-    }
-    case char[] chars -> {
+    } else if (array instanceof char[] chars) {
       for (final char v : chars)
         json.put(v);
-    }
-    default -> throw new IllegalArgumentException("Unsupported primitive array " + array.getClass().getName());
-    }
+    } else
+      throw new IllegalArgumentException("Unsupported primitive array " + array.getClass().getName());
     return json;
   }
 

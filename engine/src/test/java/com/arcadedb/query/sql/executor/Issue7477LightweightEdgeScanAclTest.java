@@ -108,7 +108,7 @@ class Issue7477LightweightEdgeScanAclTest {
     }
 
     assertThat(pairs).hasSize(1);
-    assertThat(pairs.getFirst()).startsWith(workSource + "->");
+    assertThat(pairs.get(0)).startsWith(workSource + "->");
   }
 
   /**
@@ -136,7 +136,7 @@ class Issue7477LightweightEdgeScanAclTest {
 
     // The denied bucket's edge is dropped, the Secret vertex's is still reached, and nothing threw.
     assertThat(pairs).hasSize(1);
-    assertThat(pairs.getFirst()).startsWith(secretSource + "->");
+    assertThat(pairs.get(0)).startsWith(secretSource + "->");
   }
 
   /**

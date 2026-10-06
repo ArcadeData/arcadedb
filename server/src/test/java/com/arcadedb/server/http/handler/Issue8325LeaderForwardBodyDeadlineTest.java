@@ -109,8 +109,9 @@ class Issue8325LeaderForwardBodyDeadlineTest {
   /** The defect at its root: a buffered read of a body the leader stops writing half-way. */
   @Test
   void sendBoundedGivesUpOnALeaderThatStallsInsideItsBody() throws Exception {
-    try (final FakeLeader leader = FakeLeader.scripted(out -> write(out, STALLED_BODY));
-        final HttpClient client = HttpClient.newHttpClient()) {
+    try (final FakeLeader leader = FakeLeader.scripted(out -> write(out, STALLED_BODY))) {
+      // JDK17: HttpClient is AutoCloseable only since Java 21
+      final HttpClient client = HttpClient.newHttpClient();
       // No request timeout at all: the bound under test is sendBounded's own, on every JDK.
       final HttpRequest request = HttpRequest.newBuilder(URI.create("http://" + leader.address() + "/")).GET().build();
 
@@ -131,8 +132,9 @@ class Issue8325LeaderForwardBodyDeadlineTest {
   void sendBoundedReturnsAWholeAnswer() throws Exception {
     final String body = "{\"result\":[1,2,3]}";
     try (final FakeLeader leader = FakeLeader.scripted(out -> write(out,
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + body.length() + "\r\n\r\n" + body));
-        final HttpClient client = HttpClient.newHttpClient()) {
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + body.length() + "\r\n\r\n" + body))) {
+      // JDK17: HttpClient is AutoCloseable only since Java 21
+      final HttpClient client = HttpClient.newHttpClient();
       final HttpRequest request = HttpRequest.newBuilder(URI.create("http://" + leader.address() + "/")).GET().build();
 
       final HttpResponse<String> response = LeaderDial.sendBounded(client, request, HttpResponse.BodyHandlers.ofString(),
@@ -150,7 +152,8 @@ class Issue8325LeaderForwardBodyDeadlineTest {
     try (final ServerSocket probe = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
       unreachable = probe.getInetAddress().getHostAddress() + ":" + probe.getLocalPort();
     }
-    try (final HttpClient client = HttpClient.newHttpClient()) {
+    { // JDK17: HttpClient is AutoCloseable only since Java 21
+      final HttpClient client = HttpClient.newHttpClient();
       final HttpRequest request = HttpRequest.newBuilder(URI.create("http://" + unreachable + "/")).GET().build();
 
       assertThatThrownBy(() -> LeaderDial.sendBounded(client, request, HttpResponse.BodyHandlers.ofString(), BUDGET_MS * 10))
@@ -161,8 +164,9 @@ class Issue8325LeaderForwardBodyDeadlineTest {
   /** An interrupt while waiting reaches the caller as itself, and the exchange it abandons is cancelled. */
   @Test
   void sendBoundedInterruptedWhileWaitingThrowsTheInterruptAndCancelsTheExchange() throws Exception {
-    try (final FakeLeader leader = FakeLeader.scripted(out -> write(out, STALLED_BODY));
-        final HttpClient client = HttpClient.newHttpClient()) {
+    try (final FakeLeader leader = FakeLeader.scripted(out -> write(out, STALLED_BODY))) {
+      // JDK17: HttpClient is AutoCloseable only since Java 21
+      final HttpClient client = HttpClient.newHttpClient();
       final HttpRequest request = HttpRequest.newBuilder(URI.create("http://" + leader.address() + "/")).GET().build();
       final AtomicReference<Throwable> thrown = new AtomicReference<>();
       final CountDownLatch done = new CountDownLatch(1);

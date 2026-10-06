@@ -83,12 +83,13 @@ public class FunctionLibraryFactory {
    * other kind of function (e.g. a Java method registered programmatically).
    */
   public static String languageOf(final FunctionDefinition function) {
-    return switch (function) {
-      case JavascriptFunctionDefinition ignored -> "js";
-      case SQLFunctionDefinition ignored -> "sql";
-      case CypherFunctionDefinition ignored -> "opencypher";
-      case null, default -> null;
-    };
+    if (function instanceof JavascriptFunctionDefinition)
+      return "js";
+    else if (function instanceof SQLFunctionDefinition)
+      return "sql";
+    else if (function instanceof CypherFunctionDefinition)
+      return "opencypher";
+    return null;
   }
 
   private static String languageOrFail(final String language) {

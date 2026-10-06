@@ -70,13 +70,13 @@ class Issue8211Issue8212PortalLifecycleIT extends PostgresWireProtocolTestBase {
       sendSync(out);
       final List<WireMessage> named = readUntilReadyForQuery(in);
       assertThat(messageTypesOf(named)).as("ErrorResponse, then the Execute discarded").containsExactly('E', 'Z');
-      assertError(named.getFirst(), "26000", "prepared statement \"missing8211\" does not exist");
+      assertError(named.get(0), "26000", "prepared statement \"missing8211\" does not exist");
 
       sendBind(out, "", "");
       sendSync(out);
       final List<WireMessage> unnamed = readUntilReadyForQuery(in);
       assertThat(messageTypesOf(unnamed)).containsExactly('E', 'Z');
-      assertError(unnamed.getFirst(), "26000", "unnamed prepared statement does not exist");
+      assertError(unnamed.get(0), "26000", "unnamed prepared statement does not exist");
     });
   }
 
@@ -88,19 +88,19 @@ class Issue8211Issue8212PortalLifecycleIT extends PostgresWireProtocolTestBase {
       sendSync(out);
       final List<WireMessage> execute = readUntilReadyForQuery(in);
       assertThat(messageTypesOf(execute)).as("never NoData: that is a Describe-only reply").containsExactly('E', 'Z');
-      assertError(execute.getFirst(), "34000", "portal \"missing8211\" does not exist");
+      assertError(execute.get(0), "34000", "portal \"missing8211\" does not exist");
 
       sendDescribe(out, 'P', "missing8211");
       sendSync(out);
       final List<WireMessage> describePortal = readUntilReadyForQuery(in);
       assertThat(messageTypesOf(describePortal)).containsExactly('E', 'Z');
-      assertError(describePortal.getFirst(), "34000", "portal \"missing8211\" does not exist");
+      assertError(describePortal.get(0), "34000", "portal \"missing8211\" does not exist");
 
       sendDescribe(out, 'S', "missing8211");
       sendSync(out);
       final List<WireMessage> describeStatement = readUntilReadyForQuery(in);
       assertThat(messageTypesOf(describeStatement)).containsExactly('E', 'Z');
-      assertError(describeStatement.getFirst(), "26000", "prepared statement \"missing8211\" does not exist");
+      assertError(describeStatement.get(0), "26000", "prepared statement \"missing8211\" does not exist");
 
       // The connection is healthy afterwards
       sendParse(out, "", "SELECT id FROM " + TYPE);
@@ -134,7 +134,7 @@ class Issue8211Issue8212PortalLifecycleIT extends PostgresWireProtocolTestBase {
       sendSync(out);
       final List<WireMessage> stale = readUntilReadyForQuery(in);
       assertThat(messageTypesOf(stale)).as("A's portal must not answer again").containsExactly('E', 'Z');
-      assertError(stale.getFirst(), "34000", "portal \"\" does not exist");
+      assertError(stale.get(0), "34000", "portal \"\" does not exist");
     });
   }
 
@@ -152,7 +152,7 @@ class Issue8211Issue8212PortalLifecycleIT extends PostgresWireProtocolTestBase {
       sendSync(out);
       final List<WireMessage> resumed = readUntilReadyForQuery(in);
       assertThat(messageTypesOf(resumed)).containsExactly('E', 'Z');
-      assertError(resumed.getFirst(), "34000", "portal \"p1\" does not exist");
+      assertError(resumed.get(0), "34000", "portal \"p1\" does not exist");
 
       // The prepared statement is session-scoped and survives: a new Bind from it works.
       sendBind(out, "p1", "s1");
@@ -193,7 +193,7 @@ class Issue8211Issue8212PortalLifecycleIT extends PostgresWireProtocolTestBase {
       sendSync(out);
       final List<WireMessage> afterCommit = readUntilReadyForQuery(in);
       assertThat(messageTypesOf(afterCommit)).as("the portal ended with the block it was bound in").containsExactly('E', 'Z');
-      assertError(afterCommit.getFirst(), "34000", "portal \"p2\" does not exist");
+      assertError(afterCommit.get(0), "34000", "portal \"p2\" does not exist");
     });
   }
 

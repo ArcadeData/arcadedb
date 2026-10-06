@@ -176,7 +176,7 @@ class Issue7914RemoteIdentifierQuotingTest {
       final AlterTypeStatement statement = (AlterTypeStatement) parse(commandSent(db));
       assertThat(statement.name.getStringValue()).isEqualTo(hostile);
       assertThat(statement.items).hasSize(1);
-      assertThat(statement.items.getFirst().identifierListValue.getFirst().getStringValue()).isEqualTo(hostile + "super");
+      assertThat(statement.items.get(0).identifierListValue.get(0).getStringValue()).isEqualTo(hostile + "super");
     }
   }
 
@@ -254,7 +254,7 @@ class Issue7914RemoteIdentifierQuotingTest {
     final CreateIndexStatement statement = (CreateIndexStatement) parse(commandSent(db));
     assertThat(statement.propertyList).hasSize(2);
 
-    final CreateIndexStatement.Property byKey = statement.propertyList.getFirst();
+    final CreateIndexStatement.Property byKey = statement.propertyList.get(0);
     assertThat(byKey.name.getStringValue())
         .as("the modifier must not end up inside the property NAME")
         .isEqualTo("my`map");
@@ -333,7 +333,7 @@ class Issue7914RemoteIdentifierQuotingTest {
   private String commandSent(final RemoteDatabase db) {
     final ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
     verify(db, atLeastOnce()).command(anyString(), captor.capture());
-    return captor.getAllValues().getFirst();
+    return captor.getAllValues().get(0);
   }
 
   private Statement parse(final String sql) {

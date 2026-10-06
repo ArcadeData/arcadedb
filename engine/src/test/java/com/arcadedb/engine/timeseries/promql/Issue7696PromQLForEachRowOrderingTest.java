@@ -91,7 +91,7 @@ class Issue7696PromQLForEachRowOrderingTest extends TestHelper {
     assertThat(result).isInstanceOf(InstantVector.class);
     final InstantVector iv = (InstantVector) result;
     assertThat(iv.samples()).hasSize(1);
-    final VectorSample sample = iv.samples().getFirst();
+    final VectorSample sample = iv.samples().get(0);
     assertThat(sample.timestampMs()).as("the true latest timestamp").isEqualTo(4_000L);
     assertThat(sample.value()).as("the value paired with the true latest sample, not the last one scanned")
         .isEqualTo(104.0);
@@ -122,7 +122,7 @@ class Issue7696PromQLForEachRowOrderingTest extends TestHelper {
     assertThat(result).isInstanceOf(InstantVector.class);
     final InstantVector iv = (InstantVector) result;
     assertThat(iv.samples()).hasSize(1);
-    assertThat(iv.samples().getFirst().value())
+    assertThat(iv.samples().get(0).value())
         .as("the 1-second, chronologically-correct gap, not the 2-second scan-order gap")
         .isEqualTo(100.0);
   }

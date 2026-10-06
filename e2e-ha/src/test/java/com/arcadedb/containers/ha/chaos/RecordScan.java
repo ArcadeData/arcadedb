@@ -109,7 +109,7 @@ public final class RecordScan {
     });
 
     if (!lines.isEmpty())
-      lines.addFirst(prefix + size + " records, " + distinct + " distinct ids, " + index.rows() + " index entries");
+      lines.add(0, prefix + size + " records, " + distinct + " distinct ids, " + index.rows() + " index entries");
     return lines;
   }
 }

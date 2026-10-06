@@ -118,7 +118,7 @@ class MultiAddressServerSocketTest {
   void connectionsAcceptedButNeverHandedOutAreClosedOnClose() throws Exception {
     assumeThat(MultiAddressServerSocket.resolveListenHosts("localhost").size()).isGreaterThan(1);
     final MultiAddressServerSocket socket = MultiAddressServerSocket.bind(FACTORY, "localhost", 0);
-    try (final Socket client = new Socket(InetAddress.getByName(MultiAddressServerSocket.resolveListenHosts("localhost").getFirst()),
+    try (final Socket client = new Socket(InetAddress.getByName(MultiAddressServerSocket.resolveListenHosts("localhost").get(0)),
         socket.getLocalPort())) {
       Thread.sleep(300); // the acceptor thread has queued it, nobody calls accept()
       socket.close();

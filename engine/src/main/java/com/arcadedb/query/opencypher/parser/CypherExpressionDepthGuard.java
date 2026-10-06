@@ -97,8 +97,8 @@ final class CypherExpressionDepthGuard implements ParseTreeListener {
   private static boolean isNestingLevel(final ParserRuleContext ctx) {
     return switch (ctx.getRuleIndex()) {
       case Cypher25Parser.RULE_expression, Cypher25Parser.RULE_parenthesizedPath -> true;
-      case Cypher25Parser.RULE_queryWithLocalDefinitions -> ctx.getParent() instanceof ParserRuleContext parent
-          && parent.getRuleIndex() != Cypher25Parser.RULE_statement;
+      case Cypher25Parser.RULE_queryWithLocalDefinitions -> ctx.getParent() != null
+          && ctx.getParent().getRuleIndex() != Cypher25Parser.RULE_statement;
       default -> false;
     };
   }

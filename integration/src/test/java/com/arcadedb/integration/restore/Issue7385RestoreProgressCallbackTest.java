@@ -100,7 +100,7 @@ class Issue7385RestoreProgressCallbackTest {
     });
 
     assertThat(samples).extracting(Sample::done).contains(0L, (long) entries);
-    assertThat(samples.getLast().done()).as("the closing report is authoritative").isEqualTo(entries);
+    assertThat(samples.get(samples.size() - 1).done()).as("the closing report is authoritative").isEqualTo(entries);
     assertThat(samples).extracting(Sample::done).allMatch(done -> done >= 0 && done <= entries);
   }
 

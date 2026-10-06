@@ -70,7 +70,7 @@ public class MongoDBProtocolPlugin implements ServerPlugin, DatabaseResolver {
     for (int attempt = 1; ; attempt++)
       try {
         mongoDBServer = new MongoServer(mongoDBBackend);
-        mongoDBServer.bind(hosts.getFirst(), port);
+        mongoDBServer.bind(hosts.get(0), port);
         final int boundPort = getPort();
         for (final String address : hosts.subList(1, hosts.size())) {
           final MongoServer additional = new MongoServer(mongoDBBackend);

@@ -30,6 +30,7 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -164,7 +165,7 @@ class Issue8179DecodedBlockCacheTest extends TestHelper {
     final List<List<Object>> afterRetention = rows(engine.query(Long.MIN_VALUE, Long.MAX_VALUE, TS_AND_VALUE, host1));
     assertThat(afterRetention)
         .as("no row older than the cutoff may come back, from the cache or from anywhere else")
-        .allSatisfy(row -> assertThat((long) row.getFirst()).isGreaterThanOrEqualTo(cutoff));
+        .allSatisfy(row -> assertThat((long) row.get(0)).isGreaterThanOrEqualTo(cutoff));
     assertThat(afterRetention).isEqualTo(coldReadOfTheSameStore(engine, host1));
   }
 
@@ -292,6 +293,9 @@ class Issue8179DecodedBlockCacheTest extends TestHelper {
 
     final List<List<Object>> expected = rows(engine.query(Long.MIN_VALUE, Long.MAX_VALUE, TS_AND_VALUE, host4));
     assertThat(expected).isNotEmpty();
+    // JDK17: no List.reversed()
+    final List<List<Object>> lastThreeDescending = new ArrayList<>(expected.subList(expected.size() - 3, expected.size()));
+    Collections.reverse(lastThreeDescending);
 
     final int threads = 8;
     final int readsPerThread = 25;
@@ -302,7 +306,7 @@ class Issue8179DecodedBlockCacheTest extends TestHelper {
         running.add(pool.submit(() -> {
           for (int i = 0; i < readsPerThread; i++) {
             assertThat(rows(engine.queryDescending(Long.MIN_VALUE, Long.MAX_VALUE, TS_AND_VALUE, host4, 3, null)))
-                .isEqualTo(expected.subList(expected.size() - 3, expected.size()).reversed());
+                .isEqualTo(lastThreeDescending);
             assertThat(rows(engine.query(Long.MIN_VALUE, Long.MAX_VALUE, TS_AND_VALUE, host4))).isEqualTo(expected);
           }
           return null;

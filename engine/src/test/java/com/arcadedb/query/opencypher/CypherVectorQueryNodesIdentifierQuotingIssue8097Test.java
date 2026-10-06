@@ -162,7 +162,7 @@ class CypherVectorQueryNodesIdentifierQuotingIssue8097Test extends TestHelper {
     }
 
     assertThat(ids).as("vector.neighbors must resolve a vertex-identifier key on type '%s'", typeName).isNotEmpty();
-    assertThat(ids.getFirst()).as("a vertex is its own nearest neighbour").isEqualTo(id);
+    assertThat(ids.get(0)).as("a vertex is its own nearest neighbour").isEqualTo(id);
   }
 
   /**
@@ -186,7 +186,7 @@ class CypherVectorQueryNodesIdentifierQuotingIssue8097Test extends TestHelper {
 
     assertThat(ids).as("a vertex-identifier key on type '%s' must resolve to that vertex's vector", typeName)
         .isNotEmpty();
-    assertThat(ids.getFirst()).as("a vertex is its own nearest neighbour").isEqualTo(id);
+    assertThat(ids.get(0)).as("a vertex is its own nearest neighbour").isEqualTo(id);
   }
 
   private void createVectorType(final String typeName, final String idProperty, final String vectorProperty) {

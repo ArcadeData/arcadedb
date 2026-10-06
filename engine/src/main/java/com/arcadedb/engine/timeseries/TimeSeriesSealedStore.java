@@ -1441,7 +1441,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
         if (results.size() >= need) {
           trimToAscendingLimit(results, need);
-          cutoffTs = (long) results.getLast()[0];
+          cutoffTs = (long) results.get(results.size() - 1)[0];
         }
       }
 
@@ -1458,7 +1458,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   static void trimToAscendingLimit(final List<Object[]> rows, final int need) {
     rows.sort(Comparator.comparingLong(row -> (long) row[0]));
     while (rows.size() > need)
-      rows.removeLast();
+      rows.remove(rows.size() - 1);
   }
 
   /**
@@ -2352,7 +2352,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
     final BlockEntry merged = writeNewBlockToFile(tempFile, total, ts[0], ts[total - 1], compressedCols,
         new BlockStats(mins, maxs, sums, counts), colCount, tagDistinctValues, newBlockId());
-    merged.downsampledGranularityMs = run.getFirst().downsampledGranularityMs;
+    merged.downsampledGranularityMs = run.get(0).downsampledGranularityMs;
     target.add(merged);
     return true;
   }
@@ -3839,7 +3839,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         // The image holds nothing, so nothing this node held survives it - and "removed" is the honest word for
         // every one of those blocks, not "replaced".
         ? Long.MAX_VALUE
-        : Math.max(retentionRemovedBelowTs, blockDirectory.getFirst().minTimestamp);
+        : Math.max(retentionRemovedBelowTs, blockDirectory.get(0).minTimestamp);
   }
 
   /**

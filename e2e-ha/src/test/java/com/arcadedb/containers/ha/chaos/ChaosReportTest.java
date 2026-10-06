@@ -48,7 +48,7 @@ class ChaosReportTest {
 
       final List<String> trends = Files.readAllLines(dir.resolve("trends.csv"));
       assertThat(trends).hasSize(4);
-      assertThat(trends.getFirst()).isEqualTo(TrendRow.CSV_HEADER);
+      assertThat(trends.get(0)).isEqualTo(TrendRow.CSV_HEADER);
       assertThat(trends.get(3)).isEqualTo("2,2,3,6,9,12.50,400");
     }
   }

@@ -297,11 +297,11 @@ class PageVersionLedgerTest {
       final CountDownLatch start = new CountDownLatch(1);
       final boolean[] delayedConfirmed = new boolean[1];
       final boolean[] newcomerAccepted = new boolean[1];
-      final Thread confirmer = Thread.ofPlatform().unstarted(() -> {
+      final Thread confirmer = new Thread(() -> {
         awaitLatch(start);
         delayedConfirmed[0] = contended.confirmAppended(DB, PageVersionLedger.parse(delayed), entry(1));
       });
-      final Thread validator = Thread.ofPlatform().unstarted(() -> {
+      final Thread validator = new Thread(() -> {
         awaitLatch(start);
         try {
           contended.validateAndReserve(DB, PageVersionLedger.parse(newcomer), entry(2), localVersions);

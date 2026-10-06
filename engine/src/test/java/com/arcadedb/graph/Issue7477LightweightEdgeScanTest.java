@@ -85,7 +85,7 @@ class Issue7477LightweightEdgeScanTest extends TestHelper {
 
     // The count push-down reads countType(), which counts records: it has to decline on a type that keeps none, or
     // it answers 0 for a scan that returns 2.
-    assertThat(query("select count(*) as c from Cite").getFirst().<Long>getProperty("c")).isEqualTo(2L);
+    assertThat(query("select count(*) as c from Cite").get(0).<Long>getProperty("c")).isEqualTo(2L);
     assertThat(query("select from Cite")).hasSize(2);
     // ...while the record count of the type itself is still, correctly, zero
     assertThat(database.countType("Cite", true)).isZero();
@@ -102,12 +102,12 @@ class Issue7477LightweightEdgeScanTest extends TestHelper {
     connect("Cite", works[0], works[1]);
     connect("Cite", works[1], works[2]);
 
-    assertThat(varTargetQuery("SELECT count(*) as c FROM $t").getFirst().<Long>getProperty("c")).isEqualTo(2L);
+    assertThat(varTargetQuery("SELECT count(*) as c FROM $t").get(0).<Long>getProperty("c")).isEqualTo(2L);
     assertThat(varTargetQuery("SELECT FROM $t")).hasSize(2);
 
     // ...and a regular edge type reached the same way is unaffected
     connect("Wrote", works[0], works[2]);
-    assertThat(varTargetQuery("SELECT count(*) as c FROM $t", "Wrote").getFirst().<Long>getProperty("c")).isEqualTo(1L);
+    assertThat(varTargetQuery("SELECT count(*) as c FROM $t", "Wrote").get(0).<Long>getProperty("c")).isEqualTo(1L);
   }
 
   /** SKIP/LIMIT and the page boundary of the step's own {@code nRecords} batching. */
@@ -129,7 +129,7 @@ class Issue7477LightweightEdgeScanTest extends TestHelper {
     connect("Wrote", works[0], works[1]);
 
     assertThat(query("select from Wrote")).hasSize(1);
-    assertThat(query("select count(*) as c from Wrote").getFirst().<Long>getProperty("c")).isEqualTo(1L);
+    assertThat(query("select count(*) as c from Wrote").get(0).<Long>getProperty("c")).isEqualTo(1L);
     assertThat(explain("select from Wrote")).contains("FETCH FROM TYPE Wrote");
   }
 
@@ -151,7 +151,7 @@ class Issue7477LightweightEdgeScanTest extends TestHelper {
 
     assertThat(pairs("select from Mentions")).containsExactlyInAnyOrder(
         works[0] + "->" + works[1], works[0] + "->" + works[2], works[1] + "->" + works[2]);
-    assertThat(query("select count(*) as c from Mentions").getFirst().<Long>getProperty("c")).isEqualTo(3L);
+    assertThat(query("select count(*) as c from Mentions").get(0).<Long>getProperty("c")).isEqualTo(3L);
 
     assertThat(pairs("select from Quotes")).containsExactlyInAnyOrder(
         works[0] + "->" + works[2], works[1] + "->" + works[2]);
@@ -226,7 +226,7 @@ class Issue7477LightweightEdgeScanTest extends TestHelper {
 
     assertThat(pairs("select from Follows")).containsExactlyInAnyOrder(
         works[0] + "->" + works[1], works[0] + "->" + works[2], works[1] + "->" + works[2]);
-    assertThat(query("select count(*) as c from Follows").getFirst().<Long>getProperty("c")).isEqualTo(3L);
+    assertThat(query("select count(*) as c from Follows").get(0).<Long>getProperty("c")).isEqualTo(3L);
   }
 
   /**
@@ -308,11 +308,11 @@ class Issue7477LightweightEdgeScanTest extends TestHelper {
     connect("Knows", authors[0], authors[1]);
 
     assertThat(pairs("select from Cite")).containsExactly(works[0] + "->" + works[1]);
-    assertThat(query("select count(*) as c from Cite").getFirst().<Long>getProperty("c")).isEqualTo(1L);
+    assertThat(query("select count(*) as c from Cite").get(0).<Long>getProperty("c")).isEqualTo(1L);
 
     // ...and symmetrically, from the other type's point of view
     assertThat(pairs("select from Knows")).containsExactly(authors[0] + "->" + authors[1]);
-    assertThat(query("select count(*) as c from Knows").getFirst().<Long>getProperty("c")).isEqualTo(1L);
+    assertThat(query("select count(*) as c from Knows").get(0).<Long>getProperty("c")).isEqualTo(1L);
   }
 
   /**
@@ -572,7 +572,7 @@ class Issue7477LightweightEdgeScanTest extends TestHelper {
   @Test
   void anEmptyGraphStillAnswersEmpty() {
     assertThat(query("select from Cite")).isEmpty();
-    assertThat(query("select count(*) as c from Cite").getFirst().<Long>getProperty("c")).isZero();
+    assertThat(query("select count(*) as c from Cite").get(0).<Long>getProperty("c")).isZero();
   }
 
   /** A filter on the endpoints is applied on top of the walk, not lost by it. */
@@ -597,7 +597,7 @@ class Issue7477LightweightEdgeScanTest extends TestHelper {
     connect("Cite", works[0], works[1]);
     connect("Cite", works[1], works[2]);
 
-    assertThat(query("delete from Cite where @in = " + works[2]).getFirst().<Long>getProperty("count")).isEqualTo(1L);
+    assertThat(query("delete from Cite where @in = " + works[2]).get(0).<Long>getProperty("count")).isEqualTo(1L);
 
     database.transaction(() -> {
       assertThat(database.lookupByRID(works[1], true).asVertex().countEdges(Vertex.DIRECTION.OUT, "Cite"))

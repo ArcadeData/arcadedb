@@ -114,6 +114,6 @@ class Issue7899NonFirstTimestampRowMappingTest extends TestHelper {
 
     final List<Object[]> rows = tsType.getEngine().query(Long.MIN_VALUE, Long.MAX_VALUE, null, null);
     assertThat(rows).hasSize(1);
-    assertThat(rows.getFirst()).containsExactly(TS, "srv-1", 42.5);
+    assertThat(rows.get(0)).containsExactly(TS, "srv-1", 42.5);
   }
 }

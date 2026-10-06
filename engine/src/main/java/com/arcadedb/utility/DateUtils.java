@@ -212,22 +212,27 @@ public class DateUtils {
    * value (issue #4601).
    */
   public static Long dateToEpochDays(final Object value) {
-    return switch (value) {
-      case null -> null;
-      case LocalDate localDate -> localDate.toEpochDay();
-      case LocalDateTime localDateTime -> localDateTime.toLocalDate().toEpochDay();
-      // floorDiv, NOT '/': integer division truncates TOWARDS ZERO, so any pre-epoch instant that is not exactly
-      // midnight lands on the day AFTER the one it belongs to - 1969-12-31T12:00Z became day 0, 1970-01-01. Every
-      // other arm here floors (LocalDate.toEpochDay and friends), and so does the DATE branch of BinarySerializer
-      // since #7638, so these two were the ones left disagreeing with the rest (found in review).
-      case Date date -> Math.floorDiv(date.getTime(), MS_IN_A_DAY);
-      case Calendar calendar -> Math.floorDiv(calendar.getTimeInMillis(), MS_IN_A_DAY);
-      case Instant instant -> instant.atZone(UTC_ZONE_ID).toLocalDate().toEpochDay();
-      case ZonedDateTime zonedDateTime -> zonedDateTime.toLocalDate().toEpochDay();
-      case Number number -> numberToEpochUnits(number);
-      default ->
-          throw new IllegalArgumentException("Cannot convert value of type '" + value.getClass() + "' to epoch days for a DATE value");
-    };
+    if (value == null)
+      return null;
+    else if (value instanceof LocalDate localDate)
+      return localDate.toEpochDay();
+    else if (value instanceof LocalDateTime localDateTime)
+      return localDateTime.toLocalDate().toEpochDay();
+    // floorDiv, NOT '/': integer division truncates TOWARDS ZERO, so any pre-epoch instant that is not exactly
+    // midnight lands on the day AFTER the one it belongs to - 1969-12-31T12:00Z became day 0, 1970-01-01. Every
+    // other arm here floors (LocalDate.toEpochDay and friends), and so does the DATE branch of BinarySerializer
+    // since #7638, so these two were the ones left disagreeing with the rest (found in review).
+    else if (value instanceof Date date)
+      return Math.floorDiv(date.getTime(), MS_IN_A_DAY);
+    else if (value instanceof Calendar calendar)
+      return Math.floorDiv(calendar.getTimeInMillis(), MS_IN_A_DAY);
+    else if (value instanceof Instant instant)
+      return instant.atZone(UTC_ZONE_ID).toLocalDate().toEpochDay();
+    else if (value instanceof ZonedDateTime zonedDateTime)
+      return zonedDateTime.toLocalDate().toEpochDay();
+    else if (value instanceof Number number)
+      return numberToEpochUnits(number);
+    throw new IllegalArgumentException("Cannot convert value of type '" + value.getClass() + "' to epoch days for a DATE value");
   }
 
   /**
@@ -252,29 +257,32 @@ public class DateUtils {
    * @throws IllegalArgumentException when the number is not finite or outside the {@code long} range
    */
   public static long numberToEpochUnits(final Number number) {
-    return switch (number) {
-      // INTEGRAL: longValue() IS EXACT
-      case Long l -> l;
-      case Integer i -> i;
-      case Short s -> s;
-      case Byte b -> b;
-      case AtomicLong a -> a.get();
-      case AtomicInteger a -> a.get();
-      case BigInteger bigInteger -> {
-        if (bigInteger.bitLength() > 63)
-          throw new IllegalArgumentException("Timestamp value " + bigInteger + " is outside the supported range");
-        yield bigInteger.longValue();
+    // INTEGRAL: longValue() IS EXACT
+    if (number instanceof Long l)
+      return l;
+    else if (number instanceof Integer i)
+      return i;
+    else if (number instanceof Short s)
+      return s;
+    else if (number instanceof Byte b)
+      return b;
+    else if (number instanceof AtomicLong a)
+      return a.get();
+    else if (number instanceof AtomicInteger a)
+      return a.get();
+    else if (number instanceof BigInteger bigInteger) {
+      if (bigInteger.bitLength() > 63)
+        throw new IllegalArgumentException("Timestamp value " + bigInteger + " is outside the supported range");
+      return bigInteger.longValue();
+    } else if (number instanceof BigDecimal bigDecimal) {
+      try {
+        return bigDecimal.setScale(0, RoundingMode.FLOOR).longValueExact();
+      } catch (final ArithmeticException e) {
+        throw new IllegalArgumentException("Timestamp value " + bigDecimal + " is outside the supported range");
       }
-      case BigDecimal bigDecimal -> {
-        try {
-          yield bigDecimal.setScale(0, RoundingMode.FLOOR).longValueExact();
-        } catch (final ArithmeticException e) {
-          throw new IllegalArgumentException("Timestamp value " + bigDecimal + " is outside the supported range");
-        }
-      }
-      // Double, Float and any other Number: read through the double value, floored, a non-finite one refused
-      default -> floorToLong(number.doubleValue());
-    };
+    }
+    // Double, Float and any other Number: read through the double value, floored, a non-finite one refused
+    return floorToLong(number.doubleValue());
   }
 
   private static long floorToLong(final double value) {
@@ -828,13 +836,15 @@ public class DateUtils {
   }
 
   public static byte getBestBinaryTypeForPrecision(final ChronoUnit precision) {
-    return switch (precision) {
-      case SECONDS -> BinaryTypes.TYPE_DATETIME_SECOND;
-      case MILLIS -> BinaryTypes.TYPE_DATETIME;
-      case MICROS -> BinaryTypes.TYPE_DATETIME_MICROS;
-      case NANOS -> BinaryTypes.TYPE_DATETIME_NANOS;
-      case null, default -> throw new IllegalArgumentException("Not supported precision '" + precision + "'");
-    };
+    if (precision == ChronoUnit.SECONDS)
+      return BinaryTypes.TYPE_DATETIME_SECOND;
+    else if (precision == ChronoUnit.MILLIS)
+      return BinaryTypes.TYPE_DATETIME;
+    else if (precision == ChronoUnit.MICROS)
+      return BinaryTypes.TYPE_DATETIME_MICROS;
+    else if (precision == ChronoUnit.NANOS)
+      return BinaryTypes.TYPE_DATETIME_NANOS;
+    throw new IllegalArgumentException("Not supported precision '" + precision + "'");
   }
 
   public static final ChronoUnit getPrecisionFromType(final Type type) {
@@ -858,14 +868,17 @@ public class DateUtils {
   }
 
   public static int getNanos(final Object obj) {
-    return switch (obj) {
-      case null -> throw new IllegalArgumentException("Object is null");
-      case LocalDateTime time -> time.getNano();
-      case ZonedDateTime time -> time.getNano();
-      case OffsetDateTime time -> time.getNano();
-      case Instant instant -> instant.getNano();
-      default -> throw new IllegalArgumentException("Object of class '" + obj.getClass() + "' is not supported");
-    };
+    if (obj == null)
+      throw new IllegalArgumentException("Object is null");
+    else if (obj instanceof LocalDateTime time)
+      return time.getNano();
+    else if (obj instanceof ZonedDateTime time)
+      return time.getNano();
+    else if (obj instanceof OffsetDateTime time)
+      return time.getNano();
+    else if (obj instanceof Instant instant)
+      return instant.getNano();
+    throw new IllegalArgumentException("Object of class '" + obj.getClass() + "' is not supported");
   }
 
   /**

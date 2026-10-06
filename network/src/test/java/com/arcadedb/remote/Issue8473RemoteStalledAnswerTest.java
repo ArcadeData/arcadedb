@@ -87,8 +87,8 @@ class Issue8473RemoteStalledAnswerTest {
 
   @AfterEach
   void closeAll() throws Exception {
-    for (final AutoCloseable c : toClose.reversed())
-      c.close();
+    for (int i = toClose.size() - 1; i >= 0; i--)
+      toClose.get(i).close();
   }
 
   // ------------------------------------------------------------------------------------------------------------
@@ -98,7 +98,8 @@ class Issue8473RemoteStalledAnswerTest {
   @Test
   void sendGivesUpOnAServerThatStallsInsideItsBody() throws Exception {
     final ScriptedServer server = server(out -> write(out, STALLED_BODY));
-    try (final HttpClient client = HttpClient.newHttpClient()) {
+    { // JDK17: HttpClient is AutoCloseable only since Java 21
+      final HttpClient client = HttpClient.newHttpClient();
       // No request timeout at all: the bound under test is the helper's own, on every JDK.
       final HttpRequest request = HttpRequest.newBuilder(URI.create("http://" + server.address() + "/")).GET().build();
 

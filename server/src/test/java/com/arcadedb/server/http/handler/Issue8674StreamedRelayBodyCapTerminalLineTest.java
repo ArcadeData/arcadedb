@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.network.HttpClientLifecycle;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONObject;
@@ -248,7 +249,7 @@ class Issue8674StreamedRelayBodyCapTerminalLineTest {
             .as("and handed back once it has been published").isEqualTo(200);
       } finally {
         release.countDown();
-        client.shutdownNow();
+        HttpClientLifecycle.shutdownNow(client);
       }
     }
   }

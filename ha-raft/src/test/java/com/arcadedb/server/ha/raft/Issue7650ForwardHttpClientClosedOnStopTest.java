@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.network.HttpClientLifecycle;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
@@ -54,11 +55,11 @@ class Issue7650ForwardHttpClientClosedOnStopTest {
 
     final RaftHAServer raft = new RaftHAServer(mockServer, config);
     final HttpClient client = raft.getForwardHttpClient();
-    assertThat(client.isTerminated()).as("not yet closed before stop()").isFalse();
+    assertThat(HttpClientLifecycle.isTerminated(client)).as("not yet closed before stop()").isFalse();
 
     raft.stop();
 
-    assertThat(client.awaitTermination(Duration.ofSeconds(10)))
+    assertThat(HttpClientLifecycle.awaitTermination(client, Duration.ofSeconds(10)))
         .as("stop() must close the shared forward client, not just the ones it already closed").isTrue();
   }
 }

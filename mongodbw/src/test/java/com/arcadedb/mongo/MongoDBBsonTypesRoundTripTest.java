@@ -376,7 +376,7 @@ public class MongoDBBsonTypesRoundTripTest extends BaseMongoServerTest {
     collection.insertOne(new Document("_id", 72).append("ref", new ObjectId("507f1f77bcf86cd799439018")));
     final List<Document> found = collection.find(new Document("ref", new Document("$not", new Document("$eq", oid)))).into(new ArrayList<>());
     assertThat(found).hasSize(1);
-    assertThat(found.getFirst().get("_id")).isEqualTo(72);
+    assertThat(found.get(0).get("_id")).isEqualTo(72);
   }
 
   @Test

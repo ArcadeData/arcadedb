@@ -133,7 +133,7 @@ public final class WeightCodec {
     if (Float.isNaN(f))
       throw new IllegalArgumentException("NaN weight is not supported by fp16 quantization (tombstone sentinel collision)");
 
-    final short h = Float.floatToFloat16(f);
+    final short h = floatToFloat16(f);
     if ((h & FP16_ABS_MASK) == FP16_INFINITY && !Float.isInfinite(f))
       // Finite but out of range: saturate to the largest finite half instead of overflowing to infinity.
       return (short) ((h & 0x8000) | FP16_MAX_FINITE);
@@ -142,7 +142,46 @@ public final class WeightCodec {
 
   /** Exact inverse of the IEEE 754 half-precision encoding, subnormals included. See {@link #toFp16}. */
   public static float fromFp16(final short fp16) {
-    return Float.float16ToFloat(fp16);
+    return float16ToFloat(fp16);
+  }
+
+  // JDK17: Float.floatToFloat16/float16ToFloat only exist since Java 20. These two implement the same IEEE 754
+  // binary16 conversions: round-to-nearest-even, subnormals, signed zeros, infinities and NaN.
+  static short floatToFloat16(final float f) {
+    final int bits = Float.floatToRawIntBits(f);
+    final int sign = (bits >>> 16) & 0x8000;
+    if (Float.isNaN(f))
+      return (short) (sign | 0x7e00 | ((bits >>> 13) & 0x3ff));
+
+    final float abs = Math.abs(f);
+    if (abs >= 0x1.ffep15f)
+      // AT OR ABOVE THE MIDPOINT BETWEEN THE LARGEST FINITE HALF (65504) AND 2^16: ROUNDS TO INFINITY
+      return (short) (sign | 0x7c00);
+
+    if (abs < 0x1p-14f)
+      // SUBNORMAL RANGE: THE SCALING IS EXACT AND Math.rint ROUNDS HALF TO EVEN. A RESULT OF 1024 IS THE SMALLEST
+      // NORMAL, WHICH HAS THE SAME BITS
+      return (short) (sign | (int) Math.rint(abs * 0x1p24));
+
+    final int exponent = Math.getExponent(abs);
+    final int mantissa = (int) Math.rint(Math.scalb((double) abs, 10 - exponent));
+    // A MANTISSA ROUNDED UP TO 2048 CARRIES INTO THE EXPONENT FIELD BY PLAIN ADDITION
+    return (short) (sign | (((exponent + 15) << 10) + (mantissa - 1024)));
+  }
+
+  static float float16ToFloat(final short fp16) {
+    final int h = fp16 & 0xffff;
+    final int sign = (h & 0x8000) << 16;
+    final int exponent = (h >>> 10) & 0x1f;
+    final int mantissa = h & 0x3ff;
+    if (exponent == 0x1f)
+      // INFINITY, OR A NaN MADE QUIET AS THE JDK DOES
+      return Float.intBitsToFloat(sign | 0x7f800000 | (mantissa << 13) | (mantissa != 0 ? 0x400000 : 0));
+    if (exponent == 0) {
+      final float value = mantissa * 0x1p-24f;
+      return sign != 0 ? -value : value;
+    }
+    return Float.intBitsToFloat(sign | ((exponent + 112) << 23) | (mantissa << 13));
   }
 
   // ---------- fp32 ----------

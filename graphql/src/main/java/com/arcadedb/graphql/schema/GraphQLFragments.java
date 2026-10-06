@@ -166,7 +166,7 @@ public final class GraphQLFragments {
             throw tooDeep(name);
           path.add(name);
           fragmentHeight = 1 + validate(fragment.getSelectionSet(), path, heights);
-          path.removeLast();
+          path.remove(path.size() - 1);
           heights.put(name, fragmentHeight);
         }
         if (path.size() + fragmentHeight > MAX_FRAGMENT_DEPTH)

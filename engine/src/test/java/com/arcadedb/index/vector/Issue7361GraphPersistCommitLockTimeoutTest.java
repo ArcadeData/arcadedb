@@ -77,7 +77,7 @@ class Issue7361GraphPersistCommitLockTimeoutTest extends TestHelper {
     final DatabaseInternal db = (DatabaseInternal) database;
     database.getSchema().createDocumentType("Doc");
 
-    final int fileId = database.getSchema().getType("Doc").getBuckets(false).getFirst().getFileId();
+    final int fileId = database.getSchema().getType("Doc").getBuckets(false).get(0).getFileId();
 
     final CountDownLatch held = new CountDownLatch(1);
     final CountDownLatch release = new CountDownLatch(1);

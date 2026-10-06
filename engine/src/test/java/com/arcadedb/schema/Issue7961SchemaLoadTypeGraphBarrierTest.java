@@ -159,7 +159,7 @@ class Issue7961SchemaLoadTypeGraphBarrierTest extends TestHelper {
   void anIncrementalRefreshDoesNotPublishATypeMidRebuild() throws Exception {
     final LocalSchema schema = schema();
     final DocumentType typeBefore = schema.getType(TYPE_NAME);
-    final int vectorIndexFileId = bucketLevelVectorIndex(schema).getFileIds().getFirst();
+    final int vectorIndexFileId = bucketLevelVectorIndex(schema).getFileIds().get(0);
 
     // A bucket file the FileManager knows and no component is registered for: what a follower sees when an earlier
     // entry created the file, and what puts this bucket in loadIncremental's `toInstantiate` pass.
@@ -337,7 +337,7 @@ class Issue7961SchemaLoadTypeGraphBarrierTest extends TestHelper {
   }
 
   private static String firstBucketNameOf(final LocalSchema schema) {
-    return schema.getType(TYPE_NAME).getBuckets(false).getFirst().getName();
+    return schema.getType(TYPE_NAME).getBuckets(false).get(0).getName();
   }
 
   private LocalSchema schema() {

@@ -6214,7 +6214,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   private String vectorPropertyName() {
     return metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ?
-        metadata.propertyNames.getFirst() : "vector";
+        metadata.propertyNames.get(0) : "vector";
   }
 
   /**

@@ -95,7 +95,7 @@ public class FunctionAggregationContext implements AggregationContext, HeapBuffe
     aggregateFunction.execute(next, null, null, paramValues.toArray(), context);
     // a DISTINCT call is charged through the set of distinct values it remembers, which share the function's own items
     if (heapLimit != null && seen == null)
-      heapLimit.chargeElement(paramValues.size() == 1 ? paramValues.getFirst() : paramValues, 0);
+      heapLimit.chargeElement(paramValues.size() == 1 ? paramValues.get(0) : paramValues, 0);
   }
 
   /**
@@ -107,7 +107,7 @@ public class FunctionAggregationContext implements AggregationContext, HeapBuffe
     final Object element;
     if (paramValues.size() == 1) {
       // the common count(DISTINCT x): no array, no wrapping list
-      element = normalizeForKey(paramValues.getFirst());
+      element = normalizeForKey(paramValues.get(0));
     } else {
       final Object[] key = new Object[paramValues.size()];
       for (int i = 0; i < key.length; i++)

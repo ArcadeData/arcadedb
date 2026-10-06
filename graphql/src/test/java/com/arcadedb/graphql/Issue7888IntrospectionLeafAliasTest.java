@@ -88,7 +88,7 @@ class Issue7888IntrospectionLeafAliasTest extends AbstractGraphQLTest {
 
       final List<Result> fields = record.getProperty("fields");
       assertThat(fields).hasSize(1);
-      final Result field = fields.getFirst();
+      final Result field = fields.get(0);
       assertThat(field.getPropertyNames()).containsExactlyInAnyOrder("fn", "t");
       assertThat(field.<String>getProperty("fn")).isEqualTo("position");
 

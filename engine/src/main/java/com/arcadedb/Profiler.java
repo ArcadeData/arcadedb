@@ -543,7 +543,7 @@ public class Profiler {
       removeByIdentity(configuration);
       diskSpaceSettings = publishedDiskSpaceSettings.isEmpty() ?
           GLOBAL_SETTINGS :
-          publishedDiskSpaceSettings.getLast();
+          publishedDiskSpaceSettings.get(publishedDiskSpaceSettings.size() - 1);
     }
   }
 

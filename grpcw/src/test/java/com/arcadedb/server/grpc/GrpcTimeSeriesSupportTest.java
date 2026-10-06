@@ -81,9 +81,9 @@ class GrpcTimeSeriesSupportTest {
         TimeSeriesPrecision.TS_PRECISION_MILLISECONDS);
 
     assertThat(samples).hasSize(1);
-    assertThat(samples.getFirst().getTags()).containsEntry("rack", "7");
-    assertThat(samples.getFirst().getFields()).containsEntry("temperature", 22.5);
-    assertThat(samples.getFirst().getTimestampMs()).isEqualTo(1_000L);
+    assertThat(samples.get(0).getTags()).containsEntry("rack", "7");
+    assertThat(samples.get(0).getFields()).containsEntry("temperature", 22.5);
+    assertThat(samples.get(0).getTimestampMs()).isEqualTo(1_000L);
   }
 
   /**
@@ -128,11 +128,11 @@ class GrpcTimeSeriesSupportTest {
         .build();
 
     assertThat(GrpcTimeSeriesSupport.toSamples(List.of(seconds), "weather",
-        TimeSeriesPrecision.TS_PRECISION_SECONDS).getFirst().getTimestampMs()).isEqualTo(5_000L);
+        TimeSeriesPrecision.TS_PRECISION_SECONDS).get(0).getTimestampMs()).isEqualTo(5_000L);
 
     // The zero value is MILLISECONDS, so an unset precision must not be rescaled.
     assertThat(GrpcTimeSeriesSupport.toSamples(List.of(seconds), "weather",
-        TimeSeriesPrecision.TS_PRECISION_MILLISECONDS).getFirst().getTimestampMs()).isEqualTo(5L);
+        TimeSeriesPrecision.TS_PRECISION_MILLISECONDS).get(0).getTimestampMs()).isEqualTo(5L);
   }
 
   @Test

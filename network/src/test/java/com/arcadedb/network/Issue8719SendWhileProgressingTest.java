@@ -120,7 +120,8 @@ class Issue8719SendWhileProgressingTest {
   // ------------------------------------------------------------------------------------------------------------
 
   private static void assertGivesUp(final SilentPeer peer, final LongSupplier progress) {
-    try (final HttpClient client = HttpClient.newHttpClient()) {
+    { // JDK17: HttpClient is AutoCloseable only since Java 21
+      final HttpClient client = HttpClient.newHttpClient();
       final HttpRequest request = HttpRequest.newBuilder(URI.create("http://" + peer.address() + "/")).GET().build();
       assertThatThrownBy(() -> callWithin(() -> BoundedHttpExchange.sendWhileProgressing(client, request,
           HttpResponse.BodyHandlers.ofString(), BUDGET_MS, progress, null), peer))

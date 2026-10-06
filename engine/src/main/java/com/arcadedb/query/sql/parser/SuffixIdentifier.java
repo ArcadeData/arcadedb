@@ -294,17 +294,23 @@ public class SuffixIdentifier extends SimpleNode {
   }
 
   public Object execute(final Object currentValue, final CommandContext context) {
-    return switch (currentValue) {
-      case Result result -> execute(result, context);
-      case Identifiable identifiable -> execute(identifiable, context);
-      case JSONObject json -> execute(json.toMap(), context);
-      case Map map -> execute(map, context);
-      case CommandContext commandContext -> execute(commandContext);
-      case Iterable iterable -> execute(iterable, context);
-      case Iterator iterator -> execute(iterator, context);
-      case null -> execute((Result) null, context);
-      default -> null; // TODO other cases?
-    };
+    if (currentValue == null)
+      return execute((Result) null, context);
+    else if (currentValue instanceof Result result)
+      return execute(result, context);
+    else if (currentValue instanceof Identifiable identifiable)
+      return execute(identifiable, context);
+    else if (currentValue instanceof JSONObject json)
+      return execute(json.toMap(), context);
+    else if (currentValue instanceof Map map)
+      return execute(map, context);
+    else if (currentValue instanceof CommandContext commandContext)
+      return execute(commandContext);
+    else if (currentValue instanceof Iterable iterable)
+      return execute(iterable, context);
+    else if (currentValue instanceof Iterator iterator)
+      return execute(iterator, context);
+    return null; // TODO other cases?
   }
 
   /**
@@ -377,16 +383,20 @@ public class SuffixIdentifier extends SimpleNode {
   }
 
   public void setValue(final Object target, final Object value, final CommandContext context) {
-    switch (target) {
-    case Result result -> setValueAsResult(result, value, context);
-    case Identifiable identifiable -> setValueAsIdentifiable(identifiable, value, context);
+    if (target == null)
+      throw new NullPointerException();
+    else if (target instanceof Result result)
+      setValueAsResult(result, value, context);
+    else if (target instanceof Identifiable identifiable)
+      setValueAsIdentifiable(identifiable, value, context);
     // No JSONObject arm: it implements Map<String, Object>, so the Map one takes it, and takes the object ITSELF.
     // That is the fix - the arm that used to sit here passed json.toMap(), a fresh LinkedHashMap built out of the
     // element tree, so the write landed in a copy nothing ever read back: the same lost write as #8027, one level
     // down (PR #8093 review).
-    case Map map -> setValueAsMap(map, value, context);
-    default -> throw new IllegalStateException("Unexpected value: " + target);
-    }
+    else if (target instanceof Map map)
+      setValueAsMap(map, value, context);
+    else
+      throw new IllegalStateException("Unexpected value: " + target);
   }
 
   public void setValueAsIdentifiable(final Identifiable target, final Object value, final CommandContext context) {

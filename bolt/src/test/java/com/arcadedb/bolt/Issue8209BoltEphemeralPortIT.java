@@ -96,7 +96,7 @@ public class Issue8209BoltEphemeralPortIT extends BaseBoltServerTest {
         SessionConfig.forDatabase(getDatabaseName()))) {
       final List<Record> rows = session.run("RETURN 1 AS one").list();
       assertThat(rows).hasSize(1);
-      assertThat(rows.getFirst().get("one").asLong()).isEqualTo(1L);
+      assertThat(rows.get(0).get("one").asLong()).isEqualTo(1L);
     }
   }
 

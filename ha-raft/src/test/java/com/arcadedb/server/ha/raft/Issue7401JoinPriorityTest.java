@@ -94,7 +94,7 @@ class Issue7401JoinPriorityTest {
     new RaftClusterManager(server).addPeer(target.peer(), target.name());
 
     assertThat(captor.getValue().getServersInNewConf()).hasSize(1);
-    return captor.getValue().getServersInNewConf().getFirst();
+    return captor.getValue().getServersInNewConf().get(0);
   }
 
   @Test

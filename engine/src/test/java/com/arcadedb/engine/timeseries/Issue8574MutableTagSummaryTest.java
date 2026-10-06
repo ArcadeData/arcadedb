@@ -129,7 +129,7 @@ class Issue8574MutableTagSummaryTest extends TestHelper {
         metrics);
 
     assertThat(deep(newest)).isEqualTo(deep(expected(engine, "stale", true, 1)));
-    assertThat((long) newest.getFirst()[0]).isEqualTo(BASE_TS + STEP_MS);
+    assertThat((long) newest.get(0)[0]).isEqualTo(BASE_TS + STEP_MS);
     // Only the first page holds the tag: every other one is dropped on its summary.
     assertThat(metrics.getScannedPages()).isEqualTo(1);
     assertThat(metrics.getScannedPages() + metrics.getSkippedPages()).isEqualTo(pages);

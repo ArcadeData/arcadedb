@@ -974,21 +974,31 @@ public enum PostgresType {
   /** The text of one element of a text[] or json[] array: what {@link #serializeArrayToString} writes, without the literal quoting. */
   @SuppressWarnings("unchecked")
   private String arrayElementToText(final Object element) {
-    return switch (element) {
-      case String str -> str;
-      case Float f -> String.valueOf(f.floatValue());
-      case Double d -> String.valueOf(d.doubleValue());
-      case Date date -> LocalDateTime.ofInstant(date.toInstant(), ZoneOffset.UTC).format(POSTGRES_DATETIME_FORMATTER);
-      case LocalDateTime ldt -> ldt.format(POSTGRES_DATETIME_FORMATTER);
-      case Binary binary -> binary.getString();
-      case Collection<?> nested -> new JSONArray(nested).toString();
-      case Result result -> result.toJSON().toString();
-      case JSONObject json -> json.toString();
-      case Map<?, ?> map -> new JSONObject((Map<String, ?>) map).toString();
-      case EmbeddedDocument embeddedDocument -> embeddedDocument.toJSON(true).toString();
-      case Record record -> record.toJSON(true).toString();
-      default -> element.getClass().isArray() ? new JSONArray(convertPrimitiveArrayToCollection(element)).toString() : element.toString();
-    };
+    if (element instanceof String str)
+      return str;
+    else if (element instanceof Float f)
+      return String.valueOf(f.floatValue());
+    else if (element instanceof Double d)
+      return String.valueOf(d.doubleValue());
+    else if (element instanceof Date date)
+      return LocalDateTime.ofInstant(date.toInstant(), ZoneOffset.UTC).format(POSTGRES_DATETIME_FORMATTER);
+    else if (element instanceof LocalDateTime ldt)
+      return ldt.format(POSTGRES_DATETIME_FORMATTER);
+    else if (element instanceof Binary binary)
+      return binary.getString();
+    else if (element instanceof Collection<?> nested)
+      return new JSONArray(nested).toString();
+    else if (element instanceof Result result)
+      return result.toJSON().toString();
+    else if (element instanceof JSONObject json)
+      return json.toString();
+    else if (element instanceof Map<?, ?> map)
+      return new JSONObject((Map<String, ?>) map).toString();
+    else if (element instanceof EmbeddedDocument embeddedDocument)
+      return embeddedDocument.toJSON(true).toString();
+    else if (element instanceof Record record)
+      return record.toJSON(true).toString();
+    return element.getClass().isArray() ? new JSONArray(convertPrimitiveArrayToCollection(element)).toString() : element.toString();
   }
 
   private void writeString(final Binary typeBuffer, final String value) {

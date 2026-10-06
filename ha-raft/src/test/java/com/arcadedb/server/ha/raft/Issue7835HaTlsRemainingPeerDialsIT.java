@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.network.HttpClientLifecycle;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
@@ -268,11 +269,15 @@ class Issue7835HaTlsRemainingPeerDialsIT extends BaseRaftHASslTest {
   }
 
   private HttpResponse<String> send(final int fromIndex, final HttpRequest request) throws Exception {
-    try (final HttpClient client = HttpClient.newBuilder()
+    // JDK17: HttpClient is AutoCloseable only since Java 21
+    final HttpClient client = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(5))
         .sslContext(SnapshotInstaller.buildSSLContext(getServer(fromIndex)))
-        .build()) {
+        .build();
+    try {
       return client.send(request, HttpResponse.BodyHandlers.ofString());
+    } finally {
+      HttpClientLifecycle.close(client);
     }
   }
 }

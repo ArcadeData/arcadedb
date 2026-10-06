@@ -366,7 +366,7 @@ class Issue7250RevokesEstablishedTransportTest {
       };
     });
     // The handler finishes the RPC normally, exactly as a completing appendEntries would.
-    handed.getFirst().close(Status.OK, new Metadata());
+    handed.get(0).close(Status.OK, new Metadata());
     assertThat(raw.closes).isEqualTo(1);
 
     filter.setMemberHosts(List.of());

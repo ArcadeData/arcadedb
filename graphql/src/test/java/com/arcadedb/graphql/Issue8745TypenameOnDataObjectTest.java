@@ -60,9 +60,9 @@ class Issue8745TypenameOnDataObjectTest extends AbstractGraphQLTest {
           assertThat(record.<String>getProperty("__typename")).isEqualTo("Book");
           final List<Result> authors = record.getProperty("authors");
           assertThat(authors).hasSize(1);
-          assertThat(authors.getFirst().<String>getProperty("__typename")).isEqualTo("Author");
-          assertThat(authors.getFirst().<String>getProperty("firstName")).isEqualTo("Joanne");
-          final List<Result> wrote = authors.getFirst().getProperty("wrote");
+          assertThat(authors.get(0).<String>getProperty("__typename")).isEqualTo("Author");
+          assertThat(authors.get(0).<String>getProperty("firstName")).isEqualTo("Joanne");
+          final List<Result> wrote = authors.get(0).getProperty("wrote");
           assertThat(wrote).hasSize(2);
           for (final Result book : wrote)
             assertThat(book.<String>getProperty("__typename")).isEqualTo("Book");
@@ -100,7 +100,7 @@ class Issue8745TypenameOnDataObjectTest extends AbstractGraphQLTest {
       assertBook(database, "{ bookById(id: \"book-1\") { authors { wrote { id __typename } } } }", record -> {
         final List<Result> authors = record.getProperty("authors");
         final List<String> typeNames = new ArrayList<>();
-        for (final Result book : authors.getFirst().<List<Result>>getProperty("wrote"))
+        for (final Result book : authors.get(0).<List<Result>>getProperty("wrote"))
           typeNames.add(book.getProperty("id") + ":" + book.getProperty("__typename"));
         assertThat(typeNames).containsExactlyInAnyOrder("book-1:Book", "book-2:Book", "novel-1:Novel");
       });

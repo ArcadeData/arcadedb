@@ -105,7 +105,7 @@ public class TextEmbeddingsImporterLSM {
     final List<TextFloatsEmbedding> texts = loadFromFile();
 
     if (!texts.isEmpty()) {
-      final int dimensions = texts.getFirst().dimensions();
+      final int dimensions = texts.get(0).dimensions();
 
       logger.logLine(2, "- Parsed %,d embeddings with %,d dimensions in RAM", texts.size(), dimensions);
 
@@ -267,7 +267,7 @@ public class TextEmbeddingsImporterLSM {
       final List<TextFloatsEmbedding> texts = parser.map(line -> {
         final List<String> tokens = CodeUtils.split(line, ' ', -1, vectorSize.get());
 
-        String word = tokens.getFirst();
+        String word = tokens.get(0);
 
         float[] vector = new float[tokens.size() - 1];
         for (int i = 1; i < tokens.size(); i++)

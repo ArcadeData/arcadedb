@@ -155,7 +155,7 @@ public final class MultiAddressServerSocket implements AutoCloseable {
    */
   public Socket accept() throws IOException {
     if (accepted == null)
-      return sockets.getFirst().accept();
+      return sockets.get(0).accept();
     try {
       // polled, not taken: the CLOSED marker can be lost to a connection queued while close() ran, so the flag is the authority
       Object next;
@@ -225,12 +225,12 @@ public final class MultiAddressServerSocket implements AutoCloseable {
 
   /** The port bound, the same on every address; -1 when not bound or closed. */
   public int getLocalPort() {
-    final ServerSocket socket = sockets.getFirst();
+    final ServerSocket socket = sockets.get(0);
     return socket.isBound() && !socket.isClosed() ? socket.getLocalPort() : -1;
   }
 
   public boolean isClosed() {
-    return closed || sockets.getFirst().isClosed();
+    return closed || sockets.get(0).isClosed();
   }
 
   List<ServerSocket> getServerSockets() {

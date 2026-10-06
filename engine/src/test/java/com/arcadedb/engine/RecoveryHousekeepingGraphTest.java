@@ -211,7 +211,7 @@ class RecoveryHousekeepingGraphTest extends TestHelper {
     database.transaction(() -> {
       for (int i = 0; i < 8; ++i)
         vertices.add(database.newVertex("RecoveryVertex").set("id", i).save().getIdentity());
-      vertices.getFirst().asVertex().newEdge("RecoveryEdge", vertices.get(1), "id", -1, "payload", "baseline");
+      vertices.get(0).asVertex().newEdge("RecoveryEdge", vertices.get(1), "id", -1, "payload", "baseline");
     });
     // A clean baseline persists schema/dictionary and an existing edge before the crash-only changes.
     database.close();

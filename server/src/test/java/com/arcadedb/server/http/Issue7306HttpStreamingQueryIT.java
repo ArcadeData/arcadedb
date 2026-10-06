@@ -198,8 +198,8 @@ public class Issue7306HttpStreamingQueryIT extends BaseGraphServerTest {
       StreamGate.release.countDown();
       final List<JSONObject> rest = readAll(lines);
       assertThat(rest).hasSize(ROW_COUNT); // ROW_COUNT-1 remaining records plus the trailer
-      assertThat(rest.getLast().has("stats")).isTrue();
-      assertThat(rest.getLast().getJSONObject("stats").getInt("returned")).isEqualTo(ROW_COUNT);
+      assertThat(rest.get(rest.size() - 1).has("stats")).isTrue();
+      assertThat(rest.get(rest.size() - 1).getJSONObject("stats").getInt("returned")).isEqualTo(ROW_COUNT);
 
     } finally {
       StreamGate.release.countDown();
@@ -219,7 +219,7 @@ public class Issue7306HttpStreamingQueryIT extends BaseGraphServerTest {
     for (int i = 0; i < ROW_COUNT; i++)
       assertThat(events.get(i).getJSONObject("record").getInt("idx")).isEqualTo(i);
 
-    final JSONObject stats = events.getLast().getJSONObject("stats");
+    final JSONObject stats = events.get(events.size() - 1).getJSONObject("stats");
     assertThat(stats.getInt("returned")).isEqualTo(ROW_COUNT);
     assertThat(stats.getBoolean("truncated")).isFalse();
   }
@@ -230,7 +230,7 @@ public class Issue7306HttpStreamingQueryIT extends BaseGraphServerTest {
         "SELECT idx, name FROM " + TYPE_NAME + " ORDER BY idx", "command"));
 
     assertThat(events).hasSize(ROW_COUNT + 1);
-    assertThat(events.getLast().getJSONObject("stats").getInt("returned")).isEqualTo(ROW_COUNT);
+    assertThat(events.get(events.size() - 1).getJSONObject("stats").getInt("returned")).isEqualTo(ROW_COUNT);
   }
 
   @Test
@@ -239,7 +239,7 @@ public class Issue7306HttpStreamingQueryIT extends BaseGraphServerTest {
         "SELECT idx, name FROM " + TYPE_NAME + " ORDER BY idx", null));
 
     assertThat(events).hasSize(ROW_COUNT + 1);
-    assertThat(events.getLast().getJSONObject("stats").getInt("returned")).isEqualTo(ROW_COUNT);
+    assertThat(events.get(events.size() - 1).getJSONObject("stats").getInt("returned")).isEqualTo(ROW_COUNT);
   }
 
   /**
@@ -299,7 +299,7 @@ public class Issue7306HttpStreamingQueryIT extends BaseGraphServerTest {
         "SELECT idx FROM " + TYPE_NAME + " ORDER BY idx", "query", 3, null));
 
     assertThat(events).hasSize(4);
-    final JSONObject stats = events.getLast().getJSONObject("stats");
+    final JSONObject stats = events.get(events.size() - 1).getJSONObject("stats");
     assertThat(stats.getInt("limit")).isEqualTo(3);
     assertThat(stats.getInt("returned")).isEqualTo(3);
     assertThat(stats.getBoolean("truncated")).isTrue();
@@ -365,7 +365,7 @@ public class Issue7306HttpStreamingQueryIT extends BaseGraphServerTest {
           "SELECT idx FROM " + TYPE_NAME + " ORDER BY idx", "query", ceiling + 100));
 
       assertThat(events).hasSize(ROW_COUNT + 1);
-      final JSONObject stats = events.getLast().getJSONObject("stats");
+      final JSONObject stats = events.get(events.size() - 1).getJSONObject("stats");
       assertThat(stats.getInt("returned")).isEqualTo(ROW_COUNT);
       assertThat(stats.getBoolean("truncated")).isFalse();
     } finally {
@@ -390,7 +390,7 @@ public class Issue7306HttpStreamingQueryIT extends BaseGraphServerTest {
       assertThat(events).hasSize(ceiling + 1);
       assertThat(events.stream().anyMatch(e -> e.has("stats"))).isFalse();
 
-      final JSONObject error = events.getLast().getJSONObject("error");
+      final JSONObject error = events.get(events.size() - 1).getJSONObject("error");
       assertThat(error.getString("message")).contains("maximum of " + ceiling + " rows");
     } finally {
       resetCeiling();
@@ -435,7 +435,8 @@ public class Issue7306HttpStreamingQueryIT extends BaseGraphServerTest {
       final String command = "SELECT FROM " + TYPE_NAME + " LIMIT 1000000";
 
       final JSONObject buffered = postBuffered(command);
-      final JSONObject trailer = readAllEvents(postStream(command, "query")).getLast().getJSONObject("stats");
+      final List<JSONObject> events = readAllEvents(postStream(command, "query"));
+      final JSONObject trailer = events.get(events.size() - 1).getJSONObject("stats");
 
       // Neither was truncated - the type holds far fewer rows than the ceiling - so the two encodings must agree.
       assertThat(buffered.getBoolean("truncated")).isFalse();

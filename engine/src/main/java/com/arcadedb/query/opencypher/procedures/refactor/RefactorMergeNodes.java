@@ -181,7 +181,7 @@ public class RefactorMergeNodes implements CypherProcedure {
           final List<Object> combined = new ArrayList<>();
           addDistinct(combined, survivorValue);
           addDistinct(combined, absorbedValue);
-          survivor.set(propertyName, !anyContributionWasList && combined.size() == 1 ? combined.getFirst() : combined);
+          survivor.set(propertyName, !anyContributionWasList && combined.size() == 1 ? combined.get(0) : combined);
         }
         // unreachable in practice - extractPropertiesPolicy validates policy against VALID_POLICIES
         // before mergeProperties is ever called; kept as a defensive fallback against the two drifting

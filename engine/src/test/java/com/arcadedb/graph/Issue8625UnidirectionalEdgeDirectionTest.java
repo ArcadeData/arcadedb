@@ -94,7 +94,7 @@ class Issue8625UnidirectionalEdgeDirectionTest extends TestHelper {
     database.transaction(() -> question[0] = database.newVertex("Question").set("qid", 0).save().getIdentity());
 
     try (final GraphBatch batch = database.batch().withBidirectional(false).build()) {
-      assertThatThrownBy(() -> batch.newEdge(question[0], "TAGGED_WITH", tags.getFirst()))
+      assertThatThrownBy(() -> batch.newEdge(question[0], "TAGGED_WITH", tags.get(0)))
           .isInstanceOf(IllegalArgumentException.class)
           .hasMessageContaining("Edge type 'TAGGED_WITH' is bidirectional");
     }
@@ -113,7 +113,7 @@ class Issue8625UnidirectionalEdgeDirectionTest extends TestHelper {
     final List<RID> tags = createTags();
     database.transaction(() -> {
       final MutableVertex q = database.newVertex("Question").set("qid", 0).save();
-      assertThatThrownBy(() -> q.newEdge("TAGGED_WITH", tags.getFirst(), false, (Object[]) null))
+      assertThatThrownBy(() -> q.newEdge("TAGGED_WITH", tags.get(0), false, (Object[]) null))
           .isInstanceOf(IllegalArgumentException.class)
           .hasMessageContaining("Edge type 'TAGGED_WITH' is bidirectional");
     });

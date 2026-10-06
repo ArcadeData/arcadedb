@@ -113,7 +113,7 @@ class GrpcProgressStreamConcurrencyTest {
     assertThat(observer.received).hasSize(EVENTS_PER_WRITER * 2 + 1);
     assertThat(observer.completions.get()).isEqualTo(1);
     assertThat(observer.afterComplete).as("no message may follow the completion").isZero();
-    assertThat(observer.received.getLast().getCompleted()).isTrue();
+    assertThat(observer.received.get(observer.received.size() - 1).getCompleted()).isTrue();
     assertThat(observer.received.subList(0, observer.received.size() - 1)).allMatch(p -> !p.getCompleted());
   }
 
@@ -136,7 +136,7 @@ class GrpcProgressStreamConcurrencyTest {
         e -> Status.INTERNAL.withDescription(e.getMessage()).asException());
 
     assertThat(observer.received).hasSize(1);
-    assertThat(observer.received.getFirst().getCompleted()).isFalse();
+    assertThat(observer.received.get(0).getCompleted()).isFalse();
     assertThat(observer.completions.get()).isZero();
     assertThat(observer.error.get()).hasMessageContaining("restore blew up");
   }
@@ -187,6 +187,6 @@ class GrpcProgressStreamConcurrencyTest {
         e -> Status.INTERNAL.withDescription(e.getMessage()).asException());
 
     assertThat(observer.received).hasSize(2);
-    assertThat(observer.received.getFirst().getMessage()).isEqualTo("the only message");
+    assertThat(observer.received.get(0).getMessage()).isEqualTo("the only message");
   }
 }

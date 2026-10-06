@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.network.HttpClientLifecycle;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -86,15 +87,19 @@ class Issue7836HaTlsWrongCertificateNameIT extends BaseRaftHASslTest {
   void aDialToANameTheCertificateDoesNotCoverFailsAtTheHandshake() throws Exception {
     final String url = "https://localhost:" + getServer(0).getHttpServer().getHttpsPort() + "/api/v1/ready";
 
-    try (final HttpClient client = HttpClient.newBuilder()
+    // JDK17: HttpClient is AutoCloseable only since Java 21
+    final HttpClient client = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(5))
         .sslContext(SnapshotInstaller.buildSSLContext(getServer(1)))
-        .build()) {
+        .build();
+    try {
       assertThatThrownBy(() -> client.send(
           HttpRequest.newBuilder().uri(URI.create(url)).timeout(Duration.ofSeconds(10)).GET().build(),
           HttpResponse.BodyHandlers.discarding()))
           .as("a certificate issued for '%s' must not be accepted for a dial to 'localhost'", UNDIALLED_NAME)
           .isInstanceOf(IOException.class);
+    } finally {
+      HttpClientLifecycle.close(client);
     }
   }
 

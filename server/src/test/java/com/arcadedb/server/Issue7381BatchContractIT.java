@@ -281,7 +281,7 @@ class Issue7381BatchContractIT extends BaseGraphServerTest {
 
   private static JSONObject terminal(final List<JSONObject> events, final String kind) {
     assertThat(events).as("a stream that ends with no terminal line did not arrive whole").isNotEmpty();
-    final JSONObject last = events.getLast();
+    final JSONObject last = events.get(events.size() - 1);
     assertThat(last.has(kind)).as("the last line must be the '%s' terminator, was %s", kind, last).isTrue();
     return last.getJSONObject(kind);
   }

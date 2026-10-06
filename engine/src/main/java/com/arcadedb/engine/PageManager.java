@@ -1482,7 +1482,7 @@ public class PageManager extends LockContext {
   private void awaitDeferredBacklogUnderCap(final List<MutablePage> pages) throws InterruptedException {
     if (flushThread == null || pages == null || pages.isEmpty())
       return;
-    flushThread.awaitDeferredBacklogUnderCap(pages.getFirst().getPageId().getDatabase());
+    flushThread.awaitDeferredBacklogUnderCap(pages.get(0).getPageId().getDatabase());
   }
 
   /**
@@ -1623,7 +1623,7 @@ public class PageManager extends LockContext {
     if (!fileManager.existsFile(pageId.getFileId()))
       throw new ConcurrentModificationException(
           "Concurrent modification on page " + pageId + ". The file with id " + pageId.getFileId()
-              + " does not exist anymore. Please retry the operation (threadId=" + Thread.currentThread().threadId() + ")");
+              + " does not exist anymore. Please retry the operation (threadId=" + Thread.currentThread().getId() + ")");
 
     int mostRecentPageVersion = getMostRecentVersionOfPage(pageId, page.getPhysicalSize());
 
@@ -1656,7 +1656,7 @@ public class PageManager extends LockContext {
             if (realPages > b.pageCount.get()) {
               LogManager.instance().log(this, Level.SEVERE,
                   "New page %s cannot be written because already present in file '%s' with version %d. Updating page count (threadId=%d)",
-                  page, file.getFileName(), mostRecentPageVersion, Thread.currentThread().threadId());
+                  page, file.getFileName(), mostRecentPageVersion, Thread.currentThread().getId());
 
               b.updatePageCount(realPages);
             }
@@ -1669,7 +1669,7 @@ public class PageManager extends LockContext {
       throw new ConcurrentModificationException(
           "Concurrent modification on page " + pageId + " in file '" + fileManager.getFile(pageId.getFileId()).getFileName()
               + "' (current v." + page.getVersion() + " <> database v." + mostRecentPageVersion
-              + "). Please retry the operation (threadId=" + Thread.currentThread().threadId() + ")");
+              + "). Please retry the operation (threadId=" + Thread.currentThread().getId() + ")");
     }
   }
 
@@ -1795,13 +1795,13 @@ public class PageManager extends LockContext {
       if (page.getVersion() == 0 && mostRecentPageVersion > 1) {
         LogManager.instance().log(this, Level.SEVERE,
             "Page %s is new and has version 0, but the file '%s' has been modified. Please retry the operation (threadId=%d)",
-            null, page, fileManager.getFile(pageId.getFileId()).getFileName(), Thread.currentThread().threadId());
+            null, page, fileManager.getFile(pageId.getFileId()).getFileName(), Thread.currentThread().getId());
       }
 
       throw new ConcurrentModificationException(
           "Concurrent modification on page " + pageId + " in file '" + fileManager.getFile(pageId.getFileId()).getFileName()
               + "' (current v." + page.getVersion() + " <> database v." + mostRecentPageVersion
-              + "). Please retry the operation (threadId=" + Thread.currentThread().threadId() + ")");
+              + "). Please retry the operation (threadId=" + Thread.currentThread().getId() + ")");
     }
 
     page.incrementVersion();
@@ -1810,7 +1810,7 @@ public class PageManager extends LockContext {
     if (LogManager.instance().isLoggable(this, Level.FINE))
       LogManager.instance()
           .log(this, Level.FINE, "Updated page %s (size=%d records=%d threadId=%d)", null, page, page.getPhysicalSize(),
-              page.readShort(0), Thread.currentThread().threadId());
+              page.readShort(0), Thread.currentThread().getId());
 
     return page;
   }
@@ -1822,7 +1822,7 @@ public class PageManager extends LockContext {
 
     if (LogManager.instance().isLoggable(this, Level.FINE))
       LogManager.instance().log(this, Level.FINE, "Overwritten page %s (size=%d threadId=%d)", null, page, page.getPhysicalSize(),
-          Thread.currentThread().threadId());
+          Thread.currentThread().getId());
   }
 
   /**
@@ -1872,7 +1872,7 @@ public class PageManager extends LockContext {
 
     // Successive commits can leave more than one copy pending. The most recent one is a full page image covering
     // every older one, so writing it alone puts the whole pending content on disk.
-    MutablePage mostRecent = pending.getFirst();
+    MutablePage mostRecent = pending.get(0);
     for (int i = 1; i < pending.size(); i++)
       if (pending.get(i).getVersion() > mostRecent.getVersion())
         mostRecent = pending.get(i);
@@ -2082,7 +2082,7 @@ public class PageManager extends LockContext {
           putPageInReadCache(new CachedPage(page, true));
         handedOver = true;
         flushThread.scheduleFlushOfPages(updatedPages,
-            flushSlotReserved ? updatedPages.getFirst().getPageId().getDatabase() : null);
+            flushSlotReserved ? updatedPages.get(0).getPageId().getDatabase() : null);
       } else {
         // SYNCHRONOUS FLUSH
         for (final MutablePage page : updatedPages) {
@@ -2113,7 +2113,7 @@ public class PageManager extends LockContext {
     final PageManagerFlushThread thread = flushThread;
     if (thread == null || pages == null || pages.isEmpty())
       return false;
-    return thread.reserveQueueSlot(pages.getFirst().getPageId().getDatabase());
+    return thread.reserveQueueSlot(pages.get(0).getPageId().getDatabase());
   }
 
   /**
@@ -2125,7 +2125,7 @@ public class PageManager extends LockContext {
   private void releaseFlushQueueSlot(final List<MutablePage> pages) {
     final PageManagerFlushThread thread = flushThread;
     if (thread != null && pages != null && !pages.isEmpty())
-      thread.releaseQueueReservation(pages.getFirst().getPageId().getDatabase());
+      thread.releaseQueueReservation(pages.get(0).getPageId().getDatabase());
   }
 
   /**
@@ -2176,7 +2176,7 @@ public class PageManager extends LockContext {
 
       if (LogManager.instance().isLoggable(this, Level.FINE))
         LogManager.instance()
-            .log(this, Level.FINE, "Flushing page %s to disk (threadId=%d)...", null, page, Thread.currentThread().threadId());
+            .log(this, Level.FINE, "Flushing page %s to disk (threadId=%d)...", null, page, Thread.currentThread().getId());
 
       final PageWriteFaultInjector faultInjector = pageWriteFaultInjector;
       if (faultInjector != null)
@@ -2269,7 +2269,7 @@ public class PageManager extends LockContext {
     if (LogManager.instance().isLoggable(this, Level.FINE))
       LogManager.instance()
           .log(this, Level.FINE, "Cannot flush page %s because the file %shas been dropped (threadId=%d)%s", null, page,
-              file != null ? "'" + file.getFileName() + "' " : "", Thread.currentThread().threadId(),
+              file != null ? "'" + file.getFileName() + "' " : "", Thread.currentThread().getId(),
               cause != null ? ": " + cause.getClass().getSimpleName() + " - " + cause.getMessage() : "...");
 
     final WALFile walFile = page.takeWALFile();
@@ -2304,7 +2304,7 @@ public class PageManager extends LockContext {
       page.loadMetadata();
 
       if (LogManager.instance().isLoggable(this, Level.FINE))
-        LogManager.instance().log(this, Level.FINE, "Loaded page %s (threadId=%d)", null, page, Thread.currentThread().threadId());
+        LogManager.instance().log(this, Level.FINE, "Loaded page %s (threadId=%d)", null, page, Thread.currentThread().getId());
     }
 
     totalPagesRead.incrementAndGet();
@@ -2376,7 +2376,7 @@ public class PageManager extends LockContext {
     if (LogManager.instance().isLoggable(this, Level.FINE))
       LogManager.instance()
           .log(this, Level.FINE, "Reached max RAM for page cache. Freeing pages from cache (target=%d current=%d max=%d threadId=%d)",
-              null, ramToFree, totalRAM, maxRAM, Thread.currentThread().threadId());
+              null, ramToFree, totalRAM, maxRAM, Thread.currentThread().getId());
 
     // GET THE <DISPOSE_PAGES_PER_CYCLE> OLDEST PAGES
     // ORDER PAGES BY LAST ACCESS + SIZE
@@ -2416,11 +2416,11 @@ public class PageManager extends LockContext {
     if (LogManager.instance().isLoggable(this, Level.FINE))
       LogManager.instance()
           .log(this, Level.FINE, "Freed %s RAM (current=%s max=%s threadId=%d)", null, FileUtils.getSizeAsString(freedRAM),
-              FileUtils.getSizeAsString(newTotalRAM), FileUtils.getSizeAsString(maxRAM), Thread.currentThread().threadId());
+              FileUtils.getSizeAsString(newTotalRAM), FileUtils.getSizeAsString(maxRAM), Thread.currentThread().getId());
 
     if (newTotalRAM > maxRAM)
       LogManager.instance().log(this, Level.WARNING, "Cannot free pages in RAM (current=%s > max=%s threadId=%d)", null,
-          FileUtils.getSizeAsString(newTotalRAM), FileUtils.getSizeAsString(maxRAM), Thread.currentThread().threadId());
+          FileUtils.getSizeAsString(newTotalRAM), FileUtils.getSizeAsString(maxRAM), Thread.currentThread().getId());
 
     lastCheckForRAM = System.currentTimeMillis();
   }
@@ -2502,7 +2502,7 @@ public class PageManager extends LockContext {
 
     if (page == null)
       throw new IllegalArgumentException(
-          "Page id '" + pageId + "' does not exist (threadId=" + Thread.currentThread().threadId() + ")");
+          "Page id '" + pageId + "' does not exist (threadId=" + Thread.currentThread().getId() + ")");
 
     return page;
   }

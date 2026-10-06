@@ -125,17 +125,24 @@ public final class LineProtocolWriter {
    * instead would send text to a numeric column.
    */
   private static void appendFieldValue(final StringBuilder out, final Object value) {
-    switch (value) {
-    case Boolean b -> out.append(b ? "true" : "false");
-    case Byte b -> out.append(b.longValue()).append('i');
-    case Short s -> out.append(s.longValue()).append('i');
-    case Integer i -> out.append(i.longValue()).append('i');
-    case Long l -> out.append(l.longValue()).append('i');
-    case Double d -> appendDouble(out, d);
-    case Float f -> appendDouble(out, f.doubleValue());
-    case BigDecimal d -> out.append(d.toPlainString());
-    default -> appendQuotedString(out, String.valueOf(value));
-    }
+    if (value instanceof Boolean b)
+      out.append(b ? "true" : "false");
+    else if (value instanceof Byte b)
+      out.append(b.longValue()).append('i');
+    else if (value instanceof Short s)
+      out.append(s.longValue()).append('i');
+    else if (value instanceof Integer i)
+      out.append(i.longValue()).append('i');
+    else if (value instanceof Long l)
+      out.append(l.longValue()).append('i');
+    else if (value instanceof Double d)
+      appendDouble(out, d);
+    else if (value instanceof Float f)
+      appendDouble(out, f.doubleValue());
+    else if (value instanceof BigDecimal d)
+      out.append(d.toPlainString());
+    else
+      appendQuotedString(out, String.valueOf(value));
   }
 
   /**

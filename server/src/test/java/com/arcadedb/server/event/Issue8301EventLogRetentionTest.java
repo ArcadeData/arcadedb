@@ -52,8 +52,8 @@ class Issue8301EventLogRetentionTest {
     FileServerEventLog.retainNewest(dir.toFile(), files);
 
     assertThat(files).hasSize(10);
-    assertThat(FileServerEventLog.fileCounter(files.getFirst())).isEqualTo(10);
-    assertThat(FileServerEventLog.fileCounter(files.getLast())).isEqualTo(1);
+    assertThat(FileServerEventLog.fileCounter(files.get(0))).isEqualTo(10);
+    assertThat(FileServerEventLog.fileCounter(files.get(files.size() - 1))).isEqualTo(1);
     assertThat(dir.resolve("server-event-log-25690100-000000.0.jsonl")).doesNotExist();
     assertThat(dir.resolve("server-event-log-20260910-000000.10.jsonl")).exists();
   }

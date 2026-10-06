@@ -676,7 +676,7 @@ public class WALFile extends LockContext {
         if (LogManager.instance().isLoggable(WALFile.class, Level.FINE))
           LogManager.instance()
               .log(WALFile.class, Level.FINE, "Writing page %s v%d range %d-%d into buffer (txId=%d threadId=%d)", null,
-                  newPage.getPageId(), newPage.version + 1, rangeFrom, rangeTo, txId, Thread.currentThread().threadId());
+                  newPage.getPageId(), newPage.version + 1, rangeFrom, rangeTo, txId, Thread.currentThread().getId());
 
         bufferChanges.putInt(newPage.getPageId().getFileId());
         bufferChanges.putInt(newPage.getPageId().getPageNumber());
@@ -707,7 +707,7 @@ public class WALFile extends LockContext {
 
     if (LogManager.instance().isLoggable(this, Level.FINE))
       LogManager.instance()
-          .log(this, Level.FINE, "Appending WAL for txId=%d (size=%d file=%s threadId=%d)", null, txId, buffer.size(), filePath, Thread.currentThread().threadId());
+          .log(this, Level.FINE, "Appending WAL for txId=%d (size=%d file=%s threadId=%d)", null, txId, buffer.size(), filePath, Thread.currentThread().getId());
 
     file.append(buffer.getByteBuffer());
 

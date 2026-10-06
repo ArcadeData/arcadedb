@@ -203,7 +203,7 @@ public class Issue8235QueryNdJsonErrorStatusIT extends BaseGraphServerTest {
     try {
       final List<JSONObject> events = readAllEvents(send(postRequest("SELECT idx FROM " + TYPE_NAME, "query", 100)));
       assertThat(events.stream().anyMatch(e -> e.has("stats"))).isFalse();
-      final JSONObject error = events.getLast().getJSONObject("error");
+      final JSONObject error = events.get(events.size() - 1).getJSONObject("error");
       assertThat(error.getInt("status")).as("error line: %s", error).isEqualTo(413);
       assertThat(error.getString("exception")).isEqualTo(ResultSetTooLargeException.class.getName());
       assertThat(error.getString("message")).contains("maximum of 2 rows");
@@ -216,10 +216,10 @@ public class Issue8235QueryNdJsonErrorStatusIT extends BaseGraphServerTest {
   /** Requires the 200, at least one row before the failure, and the error as the terminal line with no trailer. */
   private JSONObject streamedError(final HttpResponse<InputStream> response) throws Exception {
     final List<JSONObject> events = readAllEvents(response);
-    assertThat(events.getFirst().has("record")).as("the failure must come after a row was already sent").isTrue();
+    assertThat(events.get(0).has("record")).as("the failure must come after a row was already sent").isTrue();
     assertThat(events.stream().anyMatch(e -> e.has("stats"))).isFalse();
-    assertThat(events.getLast().has("error")).as("terminal line: %s", events.getLast()).isTrue();
-    return events.getLast().getJSONObject("error");
+    assertThat(events.get(events.size() - 1).has("error")).as("terminal line: %s", events.get(events.size() - 1)).isTrue();
+    return events.get(events.size() - 1).getJSONObject("error");
   }
 
   private String failingQuery() {

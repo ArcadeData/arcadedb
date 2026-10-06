@@ -242,7 +242,7 @@ class Issue7567TimeSeriesPropertyDDLTest extends TestHelper {
     database.transaction(() -> database.command("sql", "INSERT INTO " + TYPE + " SET ts = 2000, sensor = 'b', value = 1.25"));
     final List<Result> rows = database.query("sql", "SELECT FROM " + TYPE).stream().toList();
     assertThat(rows).hasSize(1);
-    assertThat(((Number) rows.getFirst().getProperty("value")).doubleValue()).isEqualTo(1.25);
+    assertThat(((Number) rows.get(0).getProperty("value")).doubleValue()).isEqualTo(1.25);
   }
 
   /**

@@ -57,7 +57,7 @@ class Issue8157WeightCodecFp16Test {
     for (int h = 0; h <= 0xFFFF; h++) {
       final short pattern = (short) h;
       final float decoded = WeightCodec.fromFp16(pattern);
-      final float reference = Float.float16ToFloat(pattern);
+      final float reference = WeightCodec.float16ToFloat(pattern);
 
       if (Float.isNaN(reference)) {
         assertThat(Float.isNaN(decoded)).as("pattern 0x%04X must stay NaN", h).isTrue();
@@ -82,7 +82,7 @@ class Issue8157WeightCodecFp16Test {
       final float back = WeightCodec.fromFp16(WeightCodec.toFp16(w));
       assertThat(back).as("weight %s", w).isNotZero();
       // What the stored pattern denotes, exactly.
-      assertThat(back).as("weight %s", w).isEqualTo(Float.float16ToFloat(Float.floatToFloat16(w)));
+      assertThat(back).as("weight %s", w).isEqualTo(WeightCodec.float16ToFloat(WeightCodec.floatToFloat16(w)));
       // And the defect itself: a subnormal's quantization error grows towards the bottom of the range (2^-24 is the
       // step there, so 1e-7 legitimately comes back ~19% high), but it was never a FACTOR OF TWO. 1.5 separates the
       // two readings for every magnitude in the range and is not a precision claim.
@@ -102,11 +102,11 @@ class Issue8157WeightCodecFp16Test {
     final Random random = new Random(8157);
     int checked = 0;
     for (int i = 0; i < 2_000_000; i++) {
-      final float f = i < 0x10000 ? Float.float16ToFloat((short) i) : Float.intBitsToFloat(random.nextInt());
+      final float f = i < 0x10000 ? WeightCodec.float16ToFloat((short) i) : Float.intBitsToFloat(random.nextInt());
       if (Float.isNaN(f) || Math.abs(f) > 65504.0f)
         // Both are deliberate departures, asserted on their own below.
         continue;
-      assertThat(WeightCodec.toFp16(f)).as("value %s", f).isEqualTo(Float.floatToFloat16(f));
+      assertThat(WeightCodec.toFp16(f)).as("value %s", f).isEqualTo(WeightCodec.floatToFloat16(f));
       ++checked;
     }
     assertThat(checked).isGreaterThan(1_000_000);

@@ -217,9 +217,9 @@ class Issue7710TagCombinationsFromBlockMetadataTest extends TestHelper {
       });
 
       assertThat(visited).hasSize(1);
-      assertThat(visited.getFirst()).as("just the timestamp: one series, identified by its metric name alone")
+      assertThat(visited.get(0)).as("just the timestamp: one series, identified by its metric name alone")
           .hasSize(1);
-      assertThat((long) visited.getFirst()[0]).isEqualTo(1000L);
+      assertThat((long) visited.get(0)[0]).isEqualTo(1000L);
       assertThat(metrics.getMaterializedRows())
           .as("a block that cannot disagree with itself needs no read").isZero();
     } finally {

@@ -56,7 +56,7 @@ final class Targets {
 
     final int leader = role == Role.ANY ? -1 : control.findLeader();
     if (leader >= 0 && candidates.remove(Integer.valueOf(leader)) && role == Role.LEADER)
-      candidates.addFirst(leader);
+      candidates.add(0, leader);
 
     if (candidates.size() < count)
       throw new ChaosFailure(ResultKind.HARNESS, "Need " + count + " " + role + " targets, UP candidates: " + candidates);

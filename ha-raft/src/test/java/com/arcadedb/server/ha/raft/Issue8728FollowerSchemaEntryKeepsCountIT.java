@@ -197,7 +197,7 @@ class Issue8728FollowerSchemaEntryKeepsCountIT extends BaseRaftHATest {
   // getFirst() is the whole type only because createCountedType() builds it with withTotalBuckets(1).
   private LocalBucket followerBucket(final int followerIndex) {
     final LocalSchema schema = getServerDatabase(followerIndex, getDatabaseName()).getSchema().getEmbedded();
-    return (LocalBucket) schema.getFileByIdIfExists(schema.getType(TYPE).getBuckets(false).getFirst().getFileId());
+    return (LocalBucket) schema.getFileByIdIfExists(schema.getType(TYPE).getBuckets(false).get(0).getFileId());
   }
 
   /**

@@ -88,7 +88,7 @@ class ServerControlPlaneProgressAndSessionsTest {
 
       final List<OperationProgress> operations = controlPlane.getProgress("cp7310db");
       assertThat(operations).hasSize(1);
-      assertThat(operations.getFirst().getOperation()).isEqualTo("check database");
+      assertThat(operations.get(0).getOperation()).isEqualTo("check database");
 
       assertThat(controlPlane.getProgress("cp7310db-other")).isEmpty();
     } finally {

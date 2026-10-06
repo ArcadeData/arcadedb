@@ -60,7 +60,7 @@ class Issue7654SchemaTriggersCatalogTest extends TestHelper {
       assertThat(rows.stream().map(r -> r.<String>getProperty("name")).toList())
           .containsExactly("auditOnUpdate", "bumpOnCreate");
 
-      final Result audit = rows.getFirst();
+      final Result audit = rows.get(0);
       assertThat(audit.<String>getProperty("typeName")).isEqualTo(TYPE);
       assertThat(audit.<String>getProperty("timing")).isEqualTo("AFTER");
       assertThat(audit.<String>getProperty("event")).isEqualTo("UPDATE");

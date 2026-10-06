@@ -87,11 +87,11 @@ class RemoteGraphBatchProgressIT extends BaseGraphServerTest {
     assertThat(progress)
         .as("a flush of eight vertices committed two at a time must report more than once")
         .hasSizeGreaterThan(1);
-    assertThat(progress.getFirst().getString("phase")).isEqualTo("vertices");
-    assertThat(progress.getFirst().getLong("verticesCreated")).isEqualTo(2);
-    assertThat(progress.getLast().getLong("verticesCreated"))
+    assertThat(progress.get(0).getString("phase")).isEqualTo("vertices");
+    assertThat(progress.get(0).getLong("verticesCreated")).isEqualTo(2);
+    assertThat(progress.get(progress.size() - 1).getLong("verticesCreated"))
         .as("the acknowledgements are cumulative, so the last one is not smaller than the first")
-        .isGreaterThanOrEqualTo(progress.getFirst().getLong("verticesCreated"));
+        .isGreaterThanOrEqualTo(progress.get(0).getLong("verticesCreated"));
 
     try (final ResultSet rs = database.query("sql", "SELECT count(*) as cnt FROM Person")) {
       final Result r = rs.nextIfAvailable();
@@ -171,7 +171,7 @@ class RemoteGraphBatchProgressIT extends BaseGraphServerTest {
         ids.add(batch.createVertex("Person", "name", "p" + i));
       // The first of these was created in a request that has already been answered, so it can only be resolved
       // through the mapping that request returned.
-      batch.createEdge("KNOWS", ids.getFirst(), ids.getLast());
+      batch.createEdge("KNOWS", ids.get(0), ids.get(ids.size() - 1));
     }
 
     assertThat(progress).isNotEmpty();
@@ -211,7 +211,7 @@ class RemoteGraphBatchProgressIT extends BaseGraphServerTest {
         .build()) {
       for (int i = 0; i < 10; i++)
         ids.add(batch.createVertex("Person", "name", "p" + i));
-      batch.createEdge("KNOWS", ids.getFirst(), ids.getLast());
+      batch.createEdge("KNOWS", ids.get(0), ids.get(ids.size() - 1));
     }
 
     assertThat(progress.stream().filter(p -> p.has("idMapping")).count())
@@ -249,7 +249,7 @@ class RemoteGraphBatchProgressIT extends BaseGraphServerTest {
         .build()) {
       for (int i = 0; i < 10; i++)
         ids.add(batch.createVertex("Person", "name", "p" + i));
-      batch.createEdge("KNOWS", ids.getFirst(), ids.getLast());
+      batch.createEdge("KNOWS", ids.get(0), ids.get(ids.size() - 1));
     }
 
     try (final ResultSet rs = database.query("sql", "SELECT count(*) as cnt FROM KNOWS")) {
@@ -293,7 +293,7 @@ class RemoteGraphBatchProgressIT extends BaseGraphServerTest {
       assertThat(intercepted)
           .as("a flush without a progress listener must still reach the method subclasses override")
           .hasSize(1);
-      assertThat(intercepted.getFirst()).contains("Alice");
+      assertThat(intercepted.get(0)).contains("Alice");
     }
   }
 

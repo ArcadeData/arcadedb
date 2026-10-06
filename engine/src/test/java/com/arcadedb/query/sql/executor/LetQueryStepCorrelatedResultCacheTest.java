@@ -487,7 +487,7 @@ class LetQueryStepCorrelatedResultCacheTest extends TestHelper {
         labels.add(rs.next().getProperty("rootLabel"));
 
       assertThat(labels).hasSize(LEAVES_PER_OFFICE);
-      assertThat(labels.getFirst()).isNull();
+      assertThat(labels.get(0)).isNull();
       assertThat(labels.subList(1, labels.size())).containsOnly("changed");
       rs.close();
     });

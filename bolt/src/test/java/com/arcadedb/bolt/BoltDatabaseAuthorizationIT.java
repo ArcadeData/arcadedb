@@ -215,7 +215,7 @@ public class BoltDatabaseAuthorizationIT extends BaseBoltServerTest {
     try (final Driver driver = driver(LIMITED_USER, PASSWORD); final Session session = driver.session()) {
       final List<Record> current = session.run("SHOW DATABASES WHERE default = true").list();
       assertThat(current).hasSize(1);
-      assertThat(current.getFirst().get("name").asString()).isEqualTo(getDatabaseName());
+      assertThat(current.get(0).get("name").asString()).isEqualTo(getDatabaseName());
     }
   }
 

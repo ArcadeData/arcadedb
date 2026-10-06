@@ -152,7 +152,7 @@ class FaultsTest {
       final FakeNodeControl control = new FakeNodeControl();
       final ToxicFault fault = new ToxicFault(ToxicFault.Variant.LATENCY);
       fault.inject(state, control, new Random(seed));
-      final String[] call = control.calls.getFirst().split(":");
+      final String[] call = control.calls.get(0).split(":");
       assertThat(call[0]).isEqualTo("latency");
       assertThat(Integer.parseInt(call[2])).isBetween(200, 2000);
       assertThat(state.state(Integer.parseInt(call[1]))).isEqualTo(NodeState.DEGRADED);
@@ -167,7 +167,7 @@ class FaultsTest {
     for (long seed = 0; seed < 50; seed++) {
       final FakeNodeControl control = new FakeNodeControl();
       new ToxicFault(ToxicFault.Variant.LOSS).inject(new ClusterState(3), control, new Random(seed));
-      final float toxicity = Float.parseFloat(control.calls.getFirst().split(":")[2]);
+      final float toxicity = Float.parseFloat(control.calls.get(0).split(":")[2]);
       assertThat(toxicity).isBetween(0.05f, 0.20f);
     }
   }

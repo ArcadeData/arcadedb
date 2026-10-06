@@ -223,7 +223,7 @@ class Issue8292EngineCommitsReachTheWrapperTest extends TestHelper {
     });
 
     final LocalDatabase local = (LocalDatabase) database;
-    final LocalBucket bucket = (LocalBucket) local.getSchema().getType("Repaired").getBuckets(false).getFirst();
+    final LocalBucket bucket = (LocalBucket) local.getSchema().getType("Repaired").getBuckets(false).get(0);
     final DatabaseInternal previous = local.getWrappedDatabaseInstance();
     local.setWrappedDatabaseInstance(countingWrapper(local));
     try {

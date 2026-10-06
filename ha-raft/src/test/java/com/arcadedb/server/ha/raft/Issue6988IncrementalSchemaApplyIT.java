@@ -78,7 +78,7 @@ class Issue6988IncrementalSchemaApplyIT extends BaseRaftHATest {
     final Database replicaDb = getServerDatabase(replicaIndex, getDatabaseName());
     final LocalSchema replicaSchema = replicaDb.getSchema().getEmbedded();
 
-    final int anchorFileId = replicaSchema.getType("Issue6988Anchor").getBuckets(false).getFirst().getFileId();
+    final int anchorFileId = replicaSchema.getType("Issue6988Anchor").getBuckets(false).get(0).getFileId();
     final Component anchorBefore = replicaSchema.getFileByIdIfExists(anchorFileId);
     assertThat(anchorBefore).as("the follower must have registered the anchor type's bucket").isNotNull();
 

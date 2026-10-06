@@ -214,7 +214,7 @@ class Issue8029PreparedTransactionEndInAbortedBlockIT extends PostgresWireProtoc
         for (final String statement : new String[] { "bg", "sel" }) {
           final List<WireMessage> refused = bindExecuteSync(out, in, statement);
           assertThat(messageTypesOf(refused)).as(statement + " is refused").containsExactly('E', 'Z');
-          assertThat(errorFields(refused.getFirst()).get('C')).isEqualTo("25P02");
+          assertThat(errorFields(refused.get(0)).get('C')).isEqualTo("25P02");
           assertThat(readyForQueryStatusOf(refused)).as(statement + " leaves the block aborted").isEqualTo('E');
 
           sendDescribe(out, 'S', statement);

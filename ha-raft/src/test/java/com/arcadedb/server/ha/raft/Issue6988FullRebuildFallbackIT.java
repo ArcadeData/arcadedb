@@ -67,7 +67,7 @@ class Issue6988FullRebuildFallbackIT extends BaseRaftHATest {
     final Database replicaDb = getServerDatabase(replicaIndex, getDatabaseName());
     final LocalSchema replicaSchema = replicaDb.getSchema().getEmbedded();
 
-    final int anchorFileId = replicaSchema.getType("Issue6988FallbackAnchor").getBuckets(false).getFirst().getFileId();
+    final int anchorFileId = replicaSchema.getType("Issue6988FallbackAnchor").getBuckets(false).get(0).getFileId();
     final Component anchorBefore = replicaSchema.getFileByIdIfExists(anchorFileId);
     assertThat(anchorBefore).isNotNull();
 

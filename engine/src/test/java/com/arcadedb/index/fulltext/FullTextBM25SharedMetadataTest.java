@@ -86,12 +86,12 @@ class FullTextBM25SharedMetadataTest extends TestHelper {
   @Test
   void bucketIndexesShareOneMetadataAfterReopen() {
     createAndFill();
-    assertThat(bucketMetadata()).allSatisfy(m -> assertThat(m).isSameAs(bucketMetadata().getFirst()));
+    assertThat(bucketMetadata()).allSatisfy(m -> assertThat(m).isSameAs(bucketMetadata().get(0)));
 
     reopenDatabase();
 
     final List<FullTextIndexMetadata> metadata = bucketMetadata();
-    assertThat(metadata).allSatisfy(m -> assertThat(m).isSameAs(metadata.getFirst()));
+    assertThat(metadata).allSatisfy(m -> assertThat(m).isSameAs(metadata.get(0)));
   }
 
   @Test
@@ -131,7 +131,7 @@ class FullTextBM25SharedMetadataTest extends TestHelper {
     saveSchema();
     reopenDatabase();
 
-    bucketMetadata().getLast().setCounters(1L, 1L);
+    bucketMetadata().get(bucketMetadata().size() - 1).setCounters(1L, 1L);
     database.command("sql", "REBUILD INDEX `Doc[content]` WITH statsOnly = true");
 
     for (final FullTextIndexMetadata m : bucketMetadata()) {
@@ -161,13 +161,13 @@ class FullTextBM25SharedMetadataTest extends TestHelper {
     database = factory.open();
 
     final List<FullTextIndexMetadata> metadata = bucketMetadata();
-    assertThat(metadata).allSatisfy(m -> assertThat(m).isSameAs(metadata.getFirst()));
-    assertThat(metadata.getFirst().isCountersValid()).isFalse();
+    assertThat(metadata).allSatisfy(m -> assertThat(m).isSameAs(metadata.get(0)));
+    assertThat(metadata.get(0).isCountersValid()).isFalse();
 
     database.query("sql", "SELECT FROM Doc WHERE SEARCH_INDEX('Doc[content]', 'alpha') = true").close();
 
-    assertThat(metadata.getFirst().isCountersValid()).isTrue();
-    assertThat(metadata.getFirst().getTotalDocs()).isEqualTo(DOCS);
-    assertThat(metadata.getFirst().getSumDocLength()).isEqualTo(DOCS * 3L);
+    assertThat(metadata.get(0).isCountersValid()).isTrue();
+    assertThat(metadata.get(0).getTotalDocs()).isEqualTo(DOCS);
+    assertThat(metadata.get(0).getSumDocLength()).isEqualTo(DOCS * 3L);
   }
 }

@@ -186,7 +186,7 @@ public final class FakeLeader implements AutoCloseable {
     synchronized (accepted) {
       if (closing || accepted.isEmpty())
         return false;
-      socket = accepted.getFirst();
+      socket = accepted.get(0);
     }
     // setSoTimeout(0) would block forever: a bound of zero or less is the shortest wait instead
     // SO_TIMEOUT bounds each read, not the loop: a client that keeps sending would otherwise extend the wait forever

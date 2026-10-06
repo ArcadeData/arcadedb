@@ -338,14 +338,16 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
   }
 
   protected String[] stringArray(final Object fromObject) {
-    return switch (fromObject) {
-      case null -> new String[] {};
-      case String s -> toStrings(s.replace("},{", " ,").split(","));
-      case Collection<?> c -> toStrings(c.toArray());
-      case Object[] a -> toStrings(a);
-      default -> throw new CommandSQLParsingException(
-          "Expected a string or a list of strings, found " + fromObject.getClass().getSimpleName());
-    };
+    if (fromObject == null)
+      return new String[] {};
+    else if (fromObject instanceof String s)
+      return toStrings(s.replace("},{", " ,").split(","));
+    else if (fromObject instanceof Collection<?> c)
+      return toStrings(c.toArray());
+    else if (fromObject instanceof Object[] a)
+      return toStrings(a);
+    throw new CommandSQLParsingException(
+        "Expected a string or a list of strings, found " + fromObject.getClass().getSimpleName());
   }
 
   /** Trims every value and drops null and blank ones, so an empty name never reaches an edge-type or property lookup. */
@@ -363,11 +365,15 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
   }
 
   protected Boolean booleanOrDefault(final Object fromObject, final boolean defaultValue) {
-    return switch (fromObject) {
-      case Boolean boolean1 -> boolean1;
-      case String string -> Boolean.parseBoolean(string);
-      case null, default -> defaultValue;
-    };
+    Boolean res;
+    if (fromObject instanceof Boolean boolean1) {
+      res = boolean1;
+    } else if (fromObject instanceof String string) {
+      res = Boolean.parseBoolean(string);
+    } else {
+      res = defaultValue;
+    }
+    return res;
   }
 
   protected String stringOrDefault(final Object fromObject, final String defaultValue) {
@@ -377,60 +383,42 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
   }
 
   protected Integer integerOrDefault(final Object fromObject, final int defaultValue) {
-    switch (fromObject) {
-      case null -> {
-        return defaultValue;
-      }
-      case Number number -> {
-        return number.intValue();
-      }
-      case String s -> {
-        try {
-          return Integer.parseInt(fromObject.toString());
-        } catch (final NumberFormatException ignore) {
-        }
-      }
-      default -> {
+    if (fromObject == null) {
+      return defaultValue;
+    } else if (fromObject instanceof Number number) {
+      return number.intValue();
+    } else if (fromObject instanceof String) {
+      try {
+        return Integer.parseInt(fromObject.toString());
+      } catch (final NumberFormatException ignore) {
       }
     }
     return defaultValue;
   }
 
   protected Long longOrDefault(final Object fromObject, final long defaultValue) {
-    switch (fromObject) {
-      case null -> {
-        return defaultValue;
-      }
-      case Number number -> {
-        return number.longValue();
-      }
-      case String s -> {
-        try {
-          return Long.parseLong(fromObject.toString());
-        } catch (final NumberFormatException ignore) {
-        }
-      }
-      default -> {
+    if (fromObject == null) {
+      return defaultValue;
+    } else if (fromObject instanceof Number number) {
+      return number.longValue();
+    } else if (fromObject instanceof String) {
+      try {
+        return Long.parseLong(fromObject.toString());
+      } catch (final NumberFormatException ignore) {
       }
     }
     return defaultValue;
   }
 
   protected Double doubleOrDefault(final Object fromObject, final double defaultValue) {
-    switch (fromObject) {
-      case null -> {
-        return defaultValue;
-      }
-      case Number number -> {
-        return number.doubleValue();
-      }
-      case String s -> {
-        try {
-          return Double.parseDouble(fromObject.toString());
-        } catch (final NumberFormatException ignore) {
-        }
-      }
-      default -> {
+    if (fromObject == null) {
+      return defaultValue;
+    } else if (fromObject instanceof Number number) {
+      return number.doubleValue();
+    } else if (fromObject instanceof String) {
+      try {
+        return Double.parseDouble(fromObject.toString());
+      } catch (final NumberFormatException ignore) {
       }
     }
     return defaultValue;

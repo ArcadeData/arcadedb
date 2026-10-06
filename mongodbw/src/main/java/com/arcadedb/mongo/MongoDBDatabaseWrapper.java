@@ -279,7 +279,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
     final List<Document> pipeline = boundedPipeline(document.get("pipeline"));
     if (!pipeline.isEmpty()) {
-      final Document changeStream = (Document) pipeline.getFirst().get("$changeStream");
+      final Document changeStream = (Document) pipeline.get(0).get("$changeStream");
       if (changeStream != null) {
         final Aggregation aggregation = Aggregation.fromPipeline(pipeline.subList(1, pipeline.size()), plugin, this, collection,
             oplog);
@@ -302,7 +302,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   }
 
   private static boolean startsWithChangeStream(final Object pipeline) {
-    return pipeline instanceof List<?> stages && !stages.isEmpty() && stages.getFirst() instanceof Document first
+    return pipeline instanceof List<?> stages && !stages.isEmpty() && stages.get(0) instanceof Document first
         && first.containsKey("$changeStream");
   }
 
@@ -1276,7 +1276,9 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * order is preserved so a replacement document reaches the record in wire order.
    */
   private static Map<String, Object> documentToMap(final Document doc, final boolean topLevel) {
-    final Map<String, Object> map = LinkedHashMap.newLinkedHashMap(doc.size());
+    // LinkedHashMap.newLinkedHashMap(int) is JDK 19+; JDK 17 has no such factory, so size the constructor
+    // directly against the default 0.75 load factor instead.
+    final Map<String, Object> map = new LinkedHashMap<>(doc.size() * 4 / 3 + 1);
     for (final Map.Entry<String, Object> entry : doc.entrySet())
       map.put(entry.getKey(), topLevel && "_id".equals(entry.getKey()) ? MongoBsonValues.toStored("_id", entry.getValue()) : toMapValue(entry.getValue()));
     return map;
@@ -1317,7 +1319,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
   private synchronized void putLastResult(final Channel channel, final Document result) {
     final List<Document> results = this.lastResults.get(channel);
-    final Document last = results.getLast();
+    final Document last = results.get(results.size() - 1);
     if (last != null)
       throw new IllegalStateException("last result already set: " + last);
     results.set(results.size() - 1, result);

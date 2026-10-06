@@ -71,11 +71,11 @@ class WaitForReplicationIsCompletedTest {
 
     final List<String> warnings = logger.formattedAt(Level.WARNING);
     assertThat(warnings).hasSize(1);
-    assertThat(warnings.getFirst()).contains(BaseRaftHATest.SLOW_WAIT_MARKER);
-    assertThat(warnings.getFirst()).contains("GAVE UP");
-    assertThat(warnings.getFirst()).contains("replication on server 1");
-    assertThat(warnings.getFirst()).contains("no leader");
-    assertThat(warnings.getFirst()).contains(SHORT_BUDGET_MS + " ms budget");
+    assertThat(warnings.get(0)).contains(BaseRaftHATest.SLOW_WAIT_MARKER);
+    assertThat(warnings.get(0)).contains("GAVE UP");
+    assertThat(warnings.get(0)).contains("replication on server 1");
+    assertThat(warnings.get(0)).contains("no leader");
+    assertThat(warnings.get(0)).contains(SHORT_BUDGET_MS + " ms budget");
   }
 
   @Test
@@ -94,12 +94,12 @@ class WaitForReplicationIsCompletedTest {
     // rather than emitted alongside.
     final List<String> warnings = logger.formattedAt(Level.WARNING);
     assertThat(warnings).hasSize(1);
-    assertThat(warnings.getFirst()).contains(BaseRaftHATest.SLOW_WAIT_MARKER);
-    assertThat(warnings.getFirst()).contains("GAVE UP");
-    assertThat(warnings.getFirst()).contains("replication on server 2");
-    assertThat(warnings.getFirst()).contains("index 17");
-    assertThat(warnings.getFirst()).contains("at index 5");
-    assertThat(warnings.getFirst()).contains(SHORT_BUDGET_MS + " ms budget");
+    assertThat(warnings.get(0)).contains(BaseRaftHATest.SLOW_WAIT_MARKER);
+    assertThat(warnings.get(0)).contains("GAVE UP");
+    assertThat(warnings.get(0)).contains("replication on server 2");
+    assertThat(warnings.get(0)).contains("index 17");
+    assertThat(warnings.get(0)).contains("at index 5");
+    assertThat(warnings.get(0)).contains(SHORT_BUDGET_MS + " ms budget");
   }
 
   @Test
@@ -171,7 +171,7 @@ class WaitForReplicationIsCompletedTest {
     assertThat(caughtUp).isFalse();
     final List<String> warnings = logger.formattedAt(Level.WARNING);
     assertThat(warnings).hasSize(1);
-    assertThat(warnings.getFirst()).contains("GAVE UP");
+    assertThat(warnings.get(0)).contains("GAVE UP");
   }
 
   /**

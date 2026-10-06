@@ -534,7 +534,7 @@ public class RedisWTest extends BaseRedisServerTest {
    */
   @Test
   void hmgetWithBracketedCompositeIndexKey() {
-    final Jedis jedis = new Jedis("localhost", DEF_PORT);
+    final Jedis jedis = new Jedis("localhost", getServerRedisPort());
     jedis.auth("root", DEFAULT_PASSWORD_FOR_TESTS);
 
     final Database database = getServerDatabase(0, getDatabaseName());

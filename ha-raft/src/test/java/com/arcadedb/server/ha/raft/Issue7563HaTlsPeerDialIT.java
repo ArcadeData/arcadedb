@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.network.HttpClientLifecycle;
 import com.arcadedb.database.Database;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.http.handler.LeaderDial;
@@ -216,27 +217,35 @@ class Issue7563HaTlsPeerDialIT extends BaseRaftHASslTest {
         + "/api/v1/ready";
 
     final SSLContext foreignTrust = RaftTestPki.anonymousClientContext(foreignPki);
-    try (final HttpClient client = HttpClient.newBuilder()
+    // JDK17: HttpClient is AutoCloseable only since Java 21
+    final HttpClient client = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(5))
         .sslContext(foreignTrust)
-        .build()) {
+        .build();
+    try {
       assertThatThrownBy(() -> client.send(
           HttpRequest.newBuilder().uri(URI.create(leaderUrl)).timeout(Duration.ofSeconds(10)).GET().build(),
           HttpResponse.BodyHandlers.discarding()))
           .as("a client trusting a foreign CA must not be able to talk to a cluster node over TLS")
           .isInstanceOf(IOException.class);
+    } finally {
+      HttpClientLifecycle.close(client);
     }
   }
 
   /** Sends a GET over the trust context {@code server}'s own peer-to-peer dials are built from. */
   private static int readyProbeStatus(final ArcadeDBServer server, final String url) throws Exception {
-    try (final HttpClient client = HttpClient.newBuilder()
+    // JDK17: HttpClient is AutoCloseable only since Java 21
+    final HttpClient client = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(5))
         .sslContext(SnapshotInstaller.buildSSLContext(server))
-        .build()) {
+        .build();
+    try {
       return client.send(
           HttpRequest.newBuilder().uri(URI.create(url)).timeout(Duration.ofSeconds(10)).GET().build(),
           HttpResponse.BodyHandlers.discarding()).statusCode();
+    } finally {
+      HttpClientLifecycle.close(client);
     }
   }
 }

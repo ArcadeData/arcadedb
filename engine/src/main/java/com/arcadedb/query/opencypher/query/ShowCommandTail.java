@@ -155,7 +155,7 @@ public final class ShowCommandTail {
       bindings.add(rowVariable + ".`" + field + "` AS `" + field + "`");
     rewritten.append(bindings);
 
-    final Token first = tail.getFirst();
+    final Token first = tail.get(0);
     if (first.getType() == Cypher25Lexer.WHERE) {
       // WHERE alone keeps every column the command declares.
       rewritten.append(' ').append(textOf(query, tail)).append(" RETURN ").append(backticked(fields));
@@ -185,12 +185,12 @@ public final class ShowCommandTail {
   private static List<String> projectedNames(final String query, List<Token> items, final List<String> fields) {
     // DISTINCT belongs to the clause, not to the item after it: RETURN DISTINCT name projects a column called
     // name, not one called "DISTINCT name".
-    if (!items.isEmpty() && items.getFirst().getType() == Cypher25Lexer.DISTINCT)
+    if (!items.isEmpty() && items.get(0).getType() == Cypher25Lexer.DISTINCT)
       items = items.subList(1, items.size());
 
     if (items.isEmpty())
       return fields;
-    if (items.size() == 1 && items.getFirst().getType() == Cypher25Lexer.TIMES)
+    if (items.size() == 1 && items.get(0).getType() == Cypher25Lexer.TIMES)
       return null;
 
     final List<String> names = new ArrayList<>();
@@ -321,7 +321,7 @@ public final class ShowCommandTail {
   private static String textOf(final String query, final List<Token> tokens) {
     if (tokens.isEmpty())
       return "";
-    return query.substring(tokens.getFirst().getStartIndex(), tokens.getLast().getStopIndex() + 1);
+    return query.substring(tokens.get(0).getStartIndex(), tokens.get(tokens.size() - 1).getStopIndex() + 1);
   }
 
   private static List<Token> tokenize(final String query) {

@@ -86,7 +86,7 @@ class Issue7702InterleavedTagAndFieldOrderTest extends TestHelper {
 
     final List<String> sql = interleaved("InterleavedSQL").toSQL();
     assertThat(sql).hasSize(1);
-    database.command("sql", sql.getFirst());
+    database.command("sql", sql.get(0));
 
     assertThat(columnNames(typeOf("InterleavedSQL")))
         .as("the DDL the builder renders must create the type the builder creates")
@@ -96,7 +96,7 @@ class Issue7702InterleavedTagAndFieldOrderTest extends TestHelper {
   /** The rendering itself, so a regrouping regression is readable rather than inferred from a column list. */
   @Test
   void theRenderedStatementSpellsOneGroupPerRunOfConsecutiveColumns() {
-    assertThat(interleaved("Rendered").toSQL().getFirst()).isEqualTo(
+    assertThat(interleaved("Rendered").toSQL().get(0)).isEqualTo(
         "CREATE TIMESERIES TYPE `Rendered` TIMESTAMP `ts` FIELDS (`f1` DOUBLE) TAGS (`t1` STRING) "
             + "FIELDS (`f2` DOUBLE) TAGS (`t2` STRING)");
   }
@@ -111,7 +111,7 @@ class Issue7702InterleavedTagAndFieldOrderTest extends TestHelper {
         .withTimestamp("ts")
         .withTag("host", Type.STRING).withTag("zone", Type.STRING)
         .withField("v1", Type.DOUBLE).withField("v2", Type.DOUBLE)
-        .toSQL().getFirst();
+        .toSQL().get(0);
 
     assertThat(sql).isEqualTo("CREATE TIMESERIES TYPE `Canonical` TIMESTAMP `ts` "
         + "TAGS (`host` STRING, `zone` STRING) FIELDS (`v1` DOUBLE, `v2` DOUBLE)");
@@ -162,7 +162,7 @@ class Issue7702InterleavedTagAndFieldOrderTest extends TestHelper {
         .withColumn(new ColumnDefinition("f1", Type.DOUBLE, ColumnDefinition.ColumnRole.FIELD, TimeSeriesCodec.DICTIONARY))
         .withColumn(new ColumnDefinition("t1", Type.INTEGER, ColumnDefinition.ColumnRole.TAG, TimeSeriesCodec.SIMPLE8B))
         .withColumn(new ColumnDefinition("f2", Type.DOUBLE, ColumnDefinition.ColumnRole.FIELD, TimeSeriesCodec.GORILLA_XOR))
-        .toSQL().getFirst();
+        .toSQL().get(0);
 
     assertThat(sql).isEqualTo("CREATE TIMESERIES TYPE `InterleavedCodecs` TIMESTAMP `ts` "
         + "FIELDS (`f1` DOUBLE CODEC DICTIONARY) TAGS (`t1` INTEGER CODEC SIMPLE8B) "
@@ -195,7 +195,7 @@ class Issue7702InterleavedTagAndFieldOrderTest extends TestHelper {
         .withField("f1", Type.DOUBLE)
         .withTimestamp("ts")
         .withTag("t1", Type.STRING)
-        .toSQL().getFirst();
+        .toSQL().get(0);
     assertThat(sql).isEqualTo("CREATE TIMESERIES TYPE `TimestampSecondSQL` FIELDS (`f1` DOUBLE) TIMESTAMP `ts` "
         + "TAGS (`t1` STRING)");
 
@@ -213,7 +213,7 @@ class Issue7702InterleavedTagAndFieldOrderTest extends TestHelper {
         .withColumn(new ColumnDefinition("ts", Type.LONG, ColumnDefinition.ColumnRole.TIMESTAMP, TimeSeriesCodec.SIMPLE8B))
         .withPrecision("microsecond")
         .withField("f1", Type.DOUBLE)
-        .toSQL().getFirst();
+        .toSQL().get(0);
 
     assertThat(sql).isEqualTo("CREATE TIMESERIES TYPE `TimestampClauses` TAGS (`t1` STRING) "
         + "TIMESTAMP `ts` PRECISION MICROSECOND CODEC SIMPLE8B FIELDS (`f1` DOUBLE)");

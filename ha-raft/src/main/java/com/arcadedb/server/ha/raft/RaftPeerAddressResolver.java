@@ -117,7 +117,7 @@ final class RaftPeerAddressResolver {
       throw new IllegalArgumentException("Connect cluster joins one server at a time, but '" + serverAddress
           + "' names " + parsed.peers().size() + " of them");
 
-    final RaftPeer peer = parsed.peers().getFirst();
+    final RaftPeer peer = parsed.peers().get(0);
     return new JoinTarget(peer, parsed.httpAddresses().get(peer.getId()), parsed.peerNames().get(peer.getId()));
   }
 

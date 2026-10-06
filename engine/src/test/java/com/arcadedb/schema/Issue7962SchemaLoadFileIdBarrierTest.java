@@ -96,7 +96,7 @@ class Issue7962SchemaLoadFileIdBarrierTest extends TestHelper {
   void anIncrementalRefreshKeepsThePreviousComponentInTheFileIdSlot() throws Exception {
     final LocalSchema schema = schema();
     final IndexInternal vectorIndex = bucketLevelVectorIndex(schema);
-    final int vectorIndexFileId = vectorIndex.getFileIds().getFirst();
+    final int vectorIndexFileId = vectorIndex.getFileIds().get(0);
     final Component componentBefore = schema.getFileById(vectorIndexFileId);
 
     // A bucket file the FileManager knows and no component is registered for: loadIncremental's `toInstantiate`
@@ -173,7 +173,7 @@ class Issue7962SchemaLoadFileIdBarrierTest extends TestHelper {
   @Timeout(value = 2, unit = TimeUnit.MINUTES)
   void aFullLoadKeepsItsFileIdsResolvableSoThePublishedTypeGraphStaysReadable() throws Exception {
     final LocalSchema schema = schema();
-    final int vectorIndexFileId = bucketLevelVectorIndex(schema).getFileIds().getFirst();
+    final int vectorIndexFileId = bucketLevelVectorIndex(schema).getFileIds().get(0);
     final String blockingBucketName = firstBucketNameOf(schema);
     final int blockingBucketFileId = schema.getBucketByName(blockingBucketName).getFileId();
 
@@ -222,7 +222,7 @@ class Issue7962SchemaLoadFileIdBarrierTest extends TestHelper {
   @Timeout(value = 2, unit = TimeUnit.MINUTES)
   void arefreshThatThrowsInsideTheWindowLeavesEveryFileIdSlotUntouched() throws Exception {
     final LocalSchema schema = schema();
-    final int vectorIndexFileId = bucketLevelVectorIndex(schema).getFileIds().getFirst();
+    final int vectorIndexFileId = bucketLevelVectorIndex(schema).getFileIds().get(0);
     final Component componentBefore = schema.getFileById(vectorIndexFileId);
 
     final String blockingBucketName = "issue7962failingbucket";
@@ -361,7 +361,7 @@ class Issue7962SchemaLoadFileIdBarrierTest extends TestHelper {
   }
 
   private static String firstBucketNameOf(final LocalSchema schema) {
-    return schema.getType(TYPE_NAME).getBuckets(false).getFirst().getName();
+    return schema.getType(TYPE_NAME).getBuckets(false).get(0).getName();
   }
 
   private LocalSchema schema() {

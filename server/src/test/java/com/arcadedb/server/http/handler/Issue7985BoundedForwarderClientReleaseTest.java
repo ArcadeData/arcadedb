@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.network.HttpClientLifecycle;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.server.http.SilentPeer;
 import com.arcadedb.utility.StallAwareStopwatch;
@@ -85,7 +86,7 @@ class Issue7985BoundedForwarderClientReleaseTest {
 
         transport.close();
 
-        if (!transport.client().isTerminated())
+        if (!HttpClientLifecycle.isTerminated(transport.client()))
           stillRunning++;
 
         parked.forEach(f -> f.cancel(true));
@@ -132,7 +133,7 @@ class Issue7985BoundedForwarderClientReleaseTest {
     watch.assertGaveUpWithin(LeaderDial.CLIENT_RELEASE_GRACE_MS,
         "a release that returns as soon as the client is terminated from one that always waits out the grace");
 
-    assertThat(client.isTerminated()).as("released").isTrue();
+    assertThat(HttpClientLifecycle.isTerminated(client)).as("released").isTrue();
   }
 
   /** A {@code null} client is a caller whose client was never built; releasing it is a no-op, not an NPE. */

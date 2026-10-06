@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.network.HttpClientLifecycle;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
@@ -95,7 +96,7 @@ class Issue7985BoundedClientReleaseOnStopTest {
           "an HA shutdown bounded by LeaderDial.CLIENT_RELEASE_GRACE_MS from one that waits out a forward parked "
               + "on an unresponsive leader - the whole of stop() runs after this close");
 
-      assertThat(forwardClient.isTerminated())
+      assertThat(HttpClientLifecycle.isTerminated(forwardClient))
           .as("stop() must return with the shared forward client terminated, not merely told to stop")
           .isTrue();
 
@@ -129,7 +130,7 @@ class Issue7985BoundedClientReleaseOnStopTest {
           "a bounded release of the cached peer client from one that waits out an in-flight peer dial while "
               + "holding this cache's monitor");
 
-      assertThat(cached.isTerminated())
+      assertThat(HttpClientLifecycle.isTerminated(cached))
           .as("close() must return with the cached client terminated")
           .isTrue();
 

@@ -482,17 +482,25 @@ public class DocumentValidator {
   }
 
   private static void appendPrintable(final StringBuilder buffer, final Object value) {
-    switch (value) {
-    case byte[] array -> buffer.append(Arrays.toString(array));
-    case short[] array -> buffer.append(Arrays.toString(array));
-    case int[] array -> buffer.append(Arrays.toString(array));
-    case long[] array -> buffer.append(Arrays.toString(array));
-    case float[] array -> buffer.append(Arrays.toString(array));
-    case double[] array -> buffer.append(Arrays.toString(array));
-    case char[] array -> buffer.append(Arrays.toString(array));
-    case boolean[] array -> buffer.append(Arrays.toString(array));
-    case Object[] array -> appendPrintable(buffer, Arrays.asList(array));
-    case Collection<?> collection -> {
+    if (value instanceof byte[] array)
+      buffer.append(Arrays.toString(array));
+    else if (value instanceof short[] array)
+      buffer.append(Arrays.toString(array));
+    else if (value instanceof int[] array)
+      buffer.append(Arrays.toString(array));
+    else if (value instanceof long[] array)
+      buffer.append(Arrays.toString(array));
+    else if (value instanceof float[] array)
+      buffer.append(Arrays.toString(array));
+    else if (value instanceof double[] array)
+      buffer.append(Arrays.toString(array));
+    else if (value instanceof char[] array)
+      buffer.append(Arrays.toString(array));
+    else if (value instanceof boolean[] array)
+      buffer.append(Arrays.toString(array));
+    else if (value instanceof Object[] array)
+      appendPrintable(buffer, Arrays.asList(array));
+    else if (value instanceof Collection<?> collection) {
       buffer.append('[');
       int i = 0;
       for (final Object element : collection) {
@@ -501,8 +509,7 @@ public class DocumentValidator {
         appendPrintable(buffer, element);
       }
       buffer.append(']');
-    }
-    case Map<?, ?> map -> {
+    } else if (value instanceof Map<?, ?> map) {
       buffer.append('{');
       int i = 0;
       for (final Map.Entry<?, ?> entry : map.entrySet()) {
@@ -512,9 +519,8 @@ public class DocumentValidator {
         appendPrintable(buffer, entry.getValue());
       }
       buffer.append('}');
-    }
-    case null, default -> buffer.append(value);
-    }
+    } else
+      buffer.append(value);
   }
 
   private static void validateMaxValue(final Document document, final Property p, final Object fieldValue, final String max) {

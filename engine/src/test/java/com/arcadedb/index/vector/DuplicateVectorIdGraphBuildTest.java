@@ -92,7 +92,7 @@ class DuplicateVectorIdGraphBuildTest extends TestHelper {
         .as("every record holding an embedding is indexed again, the %d that lost theirs included", COLLISIONS)
         .isEqualTo((long) LIVE);
     for (int k = 0; k < COLLISIONS; k++)
-      assertThat(vectorIndex().findNeighborsFromVector(embedding(k), 1, 64).getFirst().getFirst())
+      assertThat(vectorIndex().findNeighborsFromVector(embedding(k), 1, 64).get(0).getFirst())
           .as("record %d found by its own embedding", k).isEqualTo(ridOf(k));
 
     vectorIndex().buildVectorGraphNow();

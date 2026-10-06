@@ -116,7 +116,7 @@ class Issue8265ScanRecordLookupTest extends TestHelper {
       }
     });
 
-    final LocalBucket bucket = (LocalBucket) database.getSchema().getType("Mixed8265").getBuckets(false).getFirst();
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getType("Mixed8265").getBuckets(false).get(0);
     for (final boolean forward : new boolean[] { true, false }) {
       final Set<Integer> seen = new HashSet<>();
       final Iterator<Record> it = forward ? bucket.iterator() : bucket.inverseIterator();

@@ -100,9 +100,9 @@ class Issue7770FragmentsTest extends AbstractGraphQLTest {
       assertThat(record.<String>getProperty("id")).isEqualTo("book-1");
       final List<Result> authors = record.getProperty("authors");
       assertThat(authors).hasSize(1);
-      assertThat(authors.getFirst().<String>getProperty("firstName")).isEqualTo("Joanne");
-      assertThat(authors.getFirst().<String>getProperty("lastName")).isEqualTo("Rowling");
-      assertThat(authors.getFirst().getPropertyNames()).doesNotContainNull();
+      assertThat(authors.get(0).<String>getProperty("firstName")).isEqualTo("Joanne");
+      assertThat(authors.get(0).<String>getProperty("lastName")).isEqualTo("Rowling");
+      assertThat(authors.get(0).getPropertyNames()).doesNotContainNull();
     });
   }
 
@@ -125,8 +125,8 @@ class Issue7770FragmentsTest extends AbstractGraphQLTest {
         { bookById(id: "book-1") { authors { firstName } ...F } }""", record -> {
       final List<Result> authors = record.getProperty("authors");
       assertThat(authors).hasSize(1);
-      assertThat(authors.getFirst().<String>getProperty("firstName")).isEqualTo("Joanne");
-      assertThat(authors.getFirst().<String>getProperty("lastName")).isEqualTo("Rowling");
+      assertThat(authors.get(0).<String>getProperty("firstName")).isEqualTo("Joanne");
+      assertThat(authors.get(0).<String>getProperty("lastName")).isEqualTo("Rowling");
     });
   }
 
@@ -139,7 +139,7 @@ class Issue7770FragmentsTest extends AbstractGraphQLTest {
         { bookById(id: "book-1") { authors { wrote { id } } ...F } }""", record -> {
       final List<Result> authors = record.getProperty("authors");
       assertThat(authors).hasSize(1);
-      final List<Result> wrote = authors.getFirst().getProperty("wrote");
+      final List<Result> wrote = authors.get(0).getProperty("wrote");
       assertThat(wrote).hasSize(2);
       for (final Result book : wrote) {
         assertThat(book.<String>getProperty("id")).isNotNull();
@@ -166,7 +166,7 @@ class Issue7770FragmentsTest extends AbstractGraphQLTest {
           assertThat(record.<String>getProperty("name")).isNotNull();
           final List<Result> authors = record.getProperty("authors");
           assertThat(authors).hasSize(1);
-          assertThat(authors.getFirst().<String>getProperty("firstName")).isEqualTo("Joanne");
+          assertThat(authors.get(0).<String>getProperty("firstName")).isEqualTo("Joanne");
           count++;
         }
         assertThat(count).isEqualTo(2);
@@ -305,8 +305,8 @@ class Issue7770FragmentsTest extends AbstractGraphQLTest {
     assertSingleBook("{ bookById(id: \"book-1\") { authors { firstName } authors { lastName } } }", record -> {
       final List<Result> authors = record.getProperty("authors");
       assertThat(authors).hasSize(1);
-      assertThat(authors.getFirst().<String>getProperty("firstName")).isEqualTo("Joanne");
-      assertThat(authors.getFirst().<String>getProperty("lastName")).isEqualTo("Rowling");
+      assertThat(authors.get(0).<String>getProperty("firstName")).isEqualTo("Joanne");
+      assertThat(authors.get(0).<String>getProperty("lastName")).isEqualTo("Rowling");
     });
   }
 
@@ -326,7 +326,7 @@ class Issue7770FragmentsTest extends AbstractGraphQLTest {
           assertSerializable(database, record);
           final List<Result> authors = record.getProperty("authors");
           assertThat(authors).hasSize(1);
-          final Result author = authors.getFirst();
+          final Result author = authors.get(0);
           assertThat(author.<String>getProperty("firstName")).isEqualTo("Joanne");
           assertThat(author.<String>getProperty("lastName")).isEqualTo("Rowling");
           assertThat(author.getPropertyNames()).doesNotContain("name");
@@ -397,7 +397,7 @@ class Issue7770FragmentsTest extends AbstractGraphQLTest {
         final List<Result> fields = record.getProperty("fields");
         assertThat(fields.stream().map(f -> f.<String>getProperty("name")).collect(Collectors.toSet()))
             .contains("id", "name", "pageCount", "authors");
-        assertThat(fields.getFirst().<Object>getProperty("type")).isNotNull();
+        assertThat(fields.get(0).<Object>getProperty("type")).isNotNull();
       }
       return null;
     });

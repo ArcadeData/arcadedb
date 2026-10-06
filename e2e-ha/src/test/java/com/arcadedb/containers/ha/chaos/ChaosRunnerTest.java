@@ -147,7 +147,7 @@ class ChaosRunnerTest {
     final ChaosResult result = harness.runner().run();
     assertThat(result.kind()).isEqualTo(ResultKind.SAFETY);
     assertThat(result.steps()).isEqualTo(1);
-    assertThat(result.violations().getFirst().invariant()).isEqualTo("I1");
+    assertThat(result.violations().get(0).invariant()).isEqualTo("I1");
     assertThat(Files.readString(dir.resolve("7/ledger-diff.txt"))).contains("w0-0");
   }
 

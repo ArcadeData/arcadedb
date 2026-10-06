@@ -322,7 +322,7 @@ class LineProtocolParserTest {
     final List<Sample> samples = LineProtocolParser.parse("cpu,\\=k=v value=1 1700000000000", Precision.MILLISECONDS);
 
     assertThat(samples).hasSize(1);
-    assertThat(samples.getFirst().getTags()).containsExactlyEntriesOf(Map.of("=k", "v"));
+    assertThat(samples.get(0).getTags()).containsExactlyEntriesOf(Map.of("=k", "v"));
   }
 
   @Test

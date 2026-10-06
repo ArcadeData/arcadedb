@@ -117,7 +117,7 @@ class Issue8817TxRangeOverCompactedIndexTest extends TestHelper {
     try {
       for (int i = 0; i < 10; i++)
         database.newVertex("V").set("a", 500L + i).save();
-      final TypeIndex index = database.getSchema().getType("V").getIndexesByProperties("a").getFirst();
+      final TypeIndex index = database.getSchema().getType("V").getIndexesByProperties("a").get(0);
       int n = 0;
       try (final IndexCursor c = index.range(true, new Object[] { 500L }, true, new Object[] { 1009L }, true)) {
         while (c.hasNext()) {

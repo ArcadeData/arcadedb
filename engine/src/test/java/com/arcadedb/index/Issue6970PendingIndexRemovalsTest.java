@@ -51,7 +51,7 @@ class Issue6970PendingIndexRemovalsTest extends TestHelper {
     database.begin();
     try {
       final Index index = typeIndex();
-      ((IndexInternal) index).remove(new Object[] { 5 }, rids.getFirst());
+      ((IndexInternal) index).remove(new Object[] { 5 }, rids.get(0));
       assertThat(drain(index.get(new Object[] { 5 }))).containsExactly(rids.get(1));
     } finally {
       database.rollback();
@@ -80,7 +80,7 @@ class Issue6970PendingIndexRemovalsTest extends TestHelper {
     database.begin();
     try {
       final Index index = typeIndex();
-      ((IndexInternal) index).remove(new Object[] { 5 }, rids.getFirst());
+      ((IndexInternal) index).remove(new Object[] { 5 }, rids.get(0));
       assertThat(drain(index.get(new Object[] { 5 }))).containsExactly(rids.get(1));
     } finally {
       database.rollback();

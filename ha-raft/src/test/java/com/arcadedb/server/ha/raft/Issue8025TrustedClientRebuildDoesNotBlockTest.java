@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.network.HttpClientLifecycle;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
@@ -155,15 +156,15 @@ class Issue8025TrustedClientRebuildDoesNotBlockTest {
       rotate(truststore);
       final HttpClient current = cache.clientFor(server);
       assertThat(current).isNotSameAs(previous);
-      assertThat(previous.isTerminated()).as("still draining the parked exchanges").isFalse();
+      assertThat(HttpClientLifecycle.isTerminated(previous)).as("still draining the parked exchanges").isFalse();
 
       final StallAwareStopwatch watch = StallAwareStopwatch.start();
       cache.close();
       watch.assertGaveUpWithin(REBUILD_BOUND_MS,
           "a close bounded by LeaderDial.CLIENT_RELEASE_GRACE_MS from one that waits out a retired client's straggler");
 
-      assertThat(current.isTerminated()).as("the current client is released").isTrue();
-      assertThat(previous.isTerminated())
+      assertThat(HttpClientLifecycle.isTerminated(current)).as("the current client is released").isTrue();
+      assertThat(HttpClientLifecycle.isTerminated(previous))
           .as("the client retired by the rotation is released by the same close(), not left to its straggler")
           .isTrue();
       // The JDK completes a shut-down client's pending exchanges on the common pool, after and independently of its
@@ -191,7 +192,7 @@ class Issue8025TrustedClientRebuildDoesNotBlockTest {
         rotate(truststore);
         final HttpClient current = cache.clientFor(server);
         assertThat(current).isNotSameAs(previous);
-        assertThat(previous.awaitTermination(Duration.ofSeconds(30)))
+        assertThat(HttpClientLifecycle.awaitTermination(previous, Duration.ofSeconds(30)))
             .as("an idle retired client terminates without anyone closing it")
             .isTrue();
         previous = current;
@@ -227,7 +228,7 @@ class Issue8025TrustedClientRebuildDoesNotBlockTest {
 
       // Once the stragglers finish, the retired client unwinds on its own.
       parked.forEach(f -> f.cancel(true));
-      assertThat(previous.awaitTermination(Duration.ofSeconds(30)))
+      assertThat(HttpClientLifecycle.awaitTermination(previous, Duration.ofSeconds(30)))
           .as("the retired client terminates once its last exchange completes")
           .isTrue();
     }

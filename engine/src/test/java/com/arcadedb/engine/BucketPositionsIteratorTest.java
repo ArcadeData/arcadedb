@@ -53,7 +53,7 @@ class BucketPositionsIteratorTest extends TestHelper {
       for (int i = 0; i < RECORDS; i++)
         rids.add(database.newDocument("Item").set("id", i).save().getIdentity());
     });
-    bucket = (LocalBucket) database.getSchema().getType("Item").getBuckets(false).getFirst();
+    bucket = (LocalBucket) database.getSchema().getType("Item").getBuckets(false).get(0);
   }
 
   @Test
@@ -120,8 +120,8 @@ class BucketPositionsIteratorTest extends TestHelper {
 
   @Test
   void positionsPastTheBucketOrItsPagesAreSkipped() {
-    final long last = rids.getLast().getPosition();
-    final long[] positions = { rids.getFirst().getPosition(), last + 1, last + 1_000_000_000L };
+    final long last = rids.get(rids.size() - 1).getPosition();
+    final long[] positions = { rids.get(0).getPosition(), last + 1, last + 1_000_000_000L };
     assertThat(ids(bucket.iterator(positions, 0, positions.length))).containsExactly(0);
   }
 

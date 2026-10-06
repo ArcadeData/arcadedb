@@ -152,7 +152,7 @@ final class ParallelAggregation {
         return partial;
       }, (partial, row, position, workerContext) -> partial.accept(row, position, workerContext), guard::check);
 
-      final Partial merged = partials.getFirst();
+      final Partial merged = partials.get(0);
       long partialGroups = 0;
       for (final Partial partial : partials)
         partialGroups += partial.groupCount;

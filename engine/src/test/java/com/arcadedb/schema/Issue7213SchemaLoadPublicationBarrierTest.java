@@ -175,7 +175,7 @@ class Issue7213SchemaLoadPublicationBarrierTest extends TestHelper {
   void anIncrementalRefreshKeepsTheOldIndexUntilTheNewOnesSchemaHookHasRun() throws Exception {
     final LocalSchema schema = schema();
     final Index indexBefore = schema.getIndexByName(INDEX_NAME);
-    final int vectorIndexFileId = bucketLevelVectorIndex(schema).getFileIds().getFirst();
+    final int vectorIndexFileId = bucketLevelVectorIndex(schema).getFileIds().get(0);
 
     // A bucket file the FileManager knows and no component is registered for: exactly what a follower sees when an
     // earlier entry created the file, and what puts this bucket in loadIncremental's `toInstantiate` pass, which
@@ -461,7 +461,7 @@ class Issue7213SchemaLoadPublicationBarrierTest extends TestHelper {
   }
 
   private static String firstBucketNameOf(final LocalSchema schema) {
-    return schema.getType(TYPE_NAME).getBuckets(false).getFirst().getName();
+    return schema.getType(TYPE_NAME).getBuckets(false).get(0).getName();
   }
 
   private LocalSchema schema() {

@@ -176,8 +176,8 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
           frozen.updatedEdges.putAll(delta.updatedEdges);
           frozen.forceEdgePropertyRebuild = delta.forceEdgePropertyRebuild;
           delta.clear();
-          perThreadDeltas.remove(Thread.currentThread().threadId());
-          inFlightEdgeSources.remove(Thread.currentThread().threadId());
+          perThreadDeltas.remove(Thread.currentThread().getId());
+          inFlightEdgeSources.remove(Thread.currentThread().getId());
           if (!frozen.isEmpty())
             view.onCommittedDelta(frozen);
         });
@@ -202,7 +202,7 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
   }
 
   private TxDelta getOrCreateDelta() {
-    final long tid = Thread.currentThread().threadId();
+    final long tid = Thread.currentThread().getId();
     final TxDelta existing = perThreadDeltas.get(tid);
     if (existing != null) {
       // If there's an existing delta but the commit callback is no longer registered
@@ -226,7 +226,7 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
    * opposite one by {@link #registerInFlightEdgeSources}, so a build opening its watch concurrently misses neither.
    */
   private void watchEdgeSource(final RID source) {
-    inFlightEdgeSources.computeIfAbsent(Thread.currentThread().threadId(), k -> ConcurrentHashMap.newKeySet()).add(source);
+    inFlightEdgeSources.computeIfAbsent(Thread.currentThread().getId(), k -> ConcurrentHashMap.newKeySet()).add(source);
     view.watchEdgeSource(source);
   }
 

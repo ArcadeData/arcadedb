@@ -316,7 +316,7 @@ class Issue7370GrpcTimeSeriesInTransactionIT extends BaseGrpcClientServerTest {
 
       assertThat(aggregated.isAggregated()).isTrue();
       assertThat(aggregated.buckets()).hasSize(1);
-      assertThat(((Number) aggregated.buckets().getFirst().values()[0]).doubleValue())
+      assertThat(((Number) aggregated.buckets().get(0).values()[0]).doubleValue())
           .as("10.0 + 20.0 seeded + 30.0 appended in this transaction")
           .isEqualTo(60.0);
     } finally {

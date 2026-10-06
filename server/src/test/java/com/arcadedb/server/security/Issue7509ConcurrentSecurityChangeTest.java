@@ -282,7 +282,7 @@ class Issue7509ConcurrentSecurityChangeTest {
 
     security.createUserClusterWide(userJson("alice"));
 
-    final String[] winning = ha.submitted.getLast();
+    final String[] winning = ha.submitted.get(ha.submitted.size() - 1);
     assertThat(fingerprintOfUsersWithout(winning[0], "alice"))
         .as("the precondition must be the fingerprint of the list this payload was derived from")
         .isEqualTo(winning[1]);
@@ -294,7 +294,7 @@ class Issue7509ConcurrentSecurityChangeTest {
 
     security.saveGroupClusterWide(DATABASE, "editors", group());
 
-    final String[] winning = ha.submitted.getLast();
+    final String[] winning = ha.submitted.get(ha.submitted.size() - 1);
     assertThat(fingerprintOfGroupsWithout(winning[0], "editors")).isEqualTo(winning[1]);
   }
 
@@ -304,7 +304,7 @@ class Issue7509ConcurrentSecurityChangeTest {
 
     final JSONObject minted = security.createApiTokenClusterWide("my-token", DATABASE, -1L, new JSONObject());
 
-    final String[] winning = ha.submitted.getLast();
+    final String[] winning = ha.submitted.get(ha.submitted.size() - 1);
     assertThat(fingerprintOfTokensWithout(winning[0], minted.getString("tokenHash"))).isEqualTo(winning[1]);
   }
 

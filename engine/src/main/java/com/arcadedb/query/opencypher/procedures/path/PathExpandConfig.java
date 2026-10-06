@@ -153,7 +153,7 @@ public class PathExpandConfig extends AbstractPathProcedure {
         }
 
         if (currentLevel < maxLevel) {
-          final Vertex lastNode = (Vertex) path.getLast();
+          final Vertex lastNode = (Vertex) path.get(path.size() - 1);
           expandFromNode(lastNode, relTypes, labelFilter, path, visited, ghostNodes, nextFrontier);
         }
       }
@@ -244,8 +244,8 @@ public class PathExpandConfig extends AbstractPathProcedure {
               expandDFS(neighbor, relTypes, labelFilter, currentDepth + 1, minDepth, maxDepth,
                   currentPath, visited, ghostNodes, allPaths, context, limit);
             } finally {
-              currentPath.removeLast();
-              currentPath.removeLast();
+              currentPath.remove(currentPath.size() - 1);
+              currentPath.remove(currentPath.size() - 1);
               visited.remove(neighborId);
             }
           }

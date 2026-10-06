@@ -186,7 +186,7 @@ public class Issue7699AbsentAggregatesOverGrpcIT extends BaseGrpcServerTest {
 
     assertThat(rows).hasSize(2);
     // Column 0 is the timestamp, column 1 the value.
-    assertThat(rows.getFirst().getValues(1).getKindCase()).isEqualTo(GrpcValue.KindCase.KIND_NOT_SET);
+    assertThat(rows.get(0).getValues(1).getKindCase()).isEqualTo(GrpcValue.KindCase.KIND_NOT_SET);
     assertThat(rows.get(1).getValues(1).getDoubleValue()).isEqualTo(3.5);
   }
 
@@ -206,7 +206,7 @@ public class Issue7699AbsentAggregatesOverGrpcIT extends BaseGrpcServerTest {
       buckets.addAll(stream.next().getBucketsList());
 
     assertThat(buckets).as("one bucket wide enough for every sample").hasSize(1);
-    return buckets.getFirst().getValuesList();
+    return buckets.get(0).getValuesList();
   }
 
   /**

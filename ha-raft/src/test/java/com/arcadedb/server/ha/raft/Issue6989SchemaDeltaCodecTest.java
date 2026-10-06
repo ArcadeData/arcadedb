@@ -129,10 +129,10 @@ class Issue6989SchemaDeltaCodecTest {
     final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(entry);
 
     assertThat(decoded.walEntries()).hasSize(1);
-    assertThat(decoded.walEntries().getFirst()).isEqualTo(wal);
+    assertThat(decoded.walEntries().get(0)).isEqualTo(wal);
     assertThat(decoded.bucketDeltas()).containsExactly(bucketDelta);
     assertThat(decoded.sealedFileBlobs()).hasSize(1);
-    assertThat(decoded.sealedFileBlobs().getFirst().bytes()).isEqualTo(sealed);
+    assertThat(decoded.sealedFileBlobs().get(0).bytes()).isEqualTo(sealed);
     assertThat(decoded.moreChunksFollow()).isTrue();
     assertThat(decoded.sealedFileChunks()).isEmpty();
     assertThat(decoded.schemaDelta().deltaJson()).isEqualTo(DELTA_MARKER);
@@ -151,7 +151,7 @@ class Issue6989SchemaDeltaCodecTest {
     final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(entry);
 
     assertThat(decoded.sealedFileChunks()).hasSize(1);
-    assertThat(decoded.sealedFileChunks().getFirst().bytes()).isEqualTo(slice);
+    assertThat(decoded.sealedFileChunks().get(0).bytes()).isEqualTo(slice);
     assertThat(decoded.schemaDelta().deltaJson()).isEqualTo(DELTA_MARKER);
   }
 

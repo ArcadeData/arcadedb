@@ -202,7 +202,7 @@ class Issue7689CreateTimeSeriesTypeCompleteDeclarationTest extends TestHelper {
         .toSQL();
 
     assertThat(statements).hasSize(1);
-    assertThat(statements.getFirst())
+    assertThat(statements.get(0))
         .startsWith("CREATE TIMESERIES TYPE `OneStatement`")
         .contains("`cpu` DOUBLE CODEC NONE")
         .contains("DOWNSAMPLING POLICY AFTER 7 DAYS GRANULARITY 1 HOURS AFTER 30 DAYS GRANULARITY 1 DAYS")
@@ -215,7 +215,7 @@ class Issue7689CreateTimeSeriesTypeCompleteDeclarationTest extends TestHelper {
     // the default anyway would pin today's default table into the DDL, and a type recreated from that statement
     // after the table changed would get the old codec where the same builder code gets the new one embedded.
     final String sql = builder("DefaultCodecs").withField("v", Type.DOUBLE).withTag("host", Type.STRING)
-        .toSQL().getFirst();
+        .toSQL().get(0);
 
     assertThat(sql).doesNotContain("CODEC");
   }
@@ -274,7 +274,7 @@ class Issue7689CreateTimeSeriesTypeCompleteDeclarationTest extends TestHelper {
         .withColumn(new ColumnDefinition("ts", Type.LONG, ColumnDefinition.ColumnRole.TIMESTAMP,
             TimeSeriesCodec.SIMPLE8B))
         .withField("v", Type.DOUBLE)
-        .toSQL().getFirst();
+        .toSQL().get(0);
 
     assertThat(sql).contains("TIMESTAMP `ts` CODEC SIMPLE8B");
 

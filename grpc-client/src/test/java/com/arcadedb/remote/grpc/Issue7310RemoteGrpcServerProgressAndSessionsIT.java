@@ -82,9 +82,9 @@ class Issue7310RemoteGrpcServerProgressAndSessionsIT extends BaseGrpcClientServe
       final List<OperationProgressInfo> operations = server.getProgress(getDatabaseName());
 
       assertThat(operations).hasSize(1);
-      assertThat(operations.getFirst().getOperation()).isEqualTo("check database fix");
-      assertThat(operations.getFirst().getStepName()).isEqualTo("Checking edges 'Knows'");
-      assertThat(operations.getFirst().getPercentage()).isEqualTo(50);
+      assertThat(operations.get(0).getOperation()).isEqualTo("check database fix");
+      assertThat(operations.get(0).getStepName()).isEqualTo("Checking edges 'Knows'");
+      assertThat(operations.get(0).getPercentage()).isEqualTo(50);
     } finally {
       OperationProgressRegistry.instance().unregister(operation);
     }
@@ -110,13 +110,13 @@ class Issue7310RemoteGrpcServerProgressAndSessionsIT extends BaseGrpcClientServe
       final List<JSONObject> operations = database.getProgress();
 
       assertThat(operations).hasSize(1);
-      assertThat(operations.getFirst().getString("operation", "")).isEqualTo("compact index");
-      assertThat(operations.getFirst().getString("stepName", "")).isEqualTo("Compacting page 10");
-      assertThat(operations.getFirst().getInt("stepIndex", -1)).isEqualTo(1);
-      assertThat(operations.getFirst().getInt("totalSteps", -1)).isEqualTo(1);
-      assertThat(operations.getFirst().getLong("done", -1L)).isEqualTo(10);
-      assertThat(operations.getFirst().getLong("total", -1L)).isEqualTo(40);
-      assertThat(operations.getFirst().getInt("percentage", -1)).isEqualTo(25);
+      assertThat(operations.get(0).getString("operation", "")).isEqualTo("compact index");
+      assertThat(operations.get(0).getString("stepName", "")).isEqualTo("Compacting page 10");
+      assertThat(operations.get(0).getInt("stepIndex", -1)).isEqualTo(1);
+      assertThat(operations.get(0).getInt("totalSteps", -1)).isEqualTo(1);
+      assertThat(operations.get(0).getLong("done", -1L)).isEqualTo(10);
+      assertThat(operations.get(0).getLong("total", -1L)).isEqualTo(40);
+      assertThat(operations.get(0).getInt("percentage", -1)).isEqualTo(25);
     } finally {
       OperationProgressRegistry.instance().unregister(operation);
     }

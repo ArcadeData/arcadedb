@@ -152,6 +152,6 @@ class Issue7531SelfJoinSeedsSecurityIT extends BaseMiniRaftTest {
       assertThat(reply.isSuccess()).as("the Mode.ADD must commit: %s", reply.getException()).isTrue();
     }
 
-    return added.getFirst();
+    return added.get(0);
   }
 }

@@ -163,11 +163,11 @@ class Issue7683PrometheusConcurrentBodiesIT extends BaseGraphServerTest {
             new Query(0, 200_000, List.of(new LabelMatcher(MatchType.EQ, "__name__", metric(w)))))));
 
         final List<QueryResult> results = response.getResults();
-        if (results.size() != 1 || results.getFirst().getTimeSeries().size() != 1)
+        if (results.size() != 1 || results.get(0).getTimeSeries().size() != 1)
           return metric(w) + " -> " + results.size() + " result(s), "
-              + (results.isEmpty() ? "-" : results.getFirst().getTimeSeries().size()) + " series";
+              + (results.isEmpty() ? "-" : results.get(0).getTimeSeries().size()) + " series";
 
-        final Sample sample = results.getFirst().getTimeSeries().getFirst().getSamples().getFirst();
+        final Sample sample = results.get(0).getTimeSeries().get(0).getSamples().get(0);
         return metric(w) + " -> " + sample.value() + "@" + sample.timestampMs();
       });
 

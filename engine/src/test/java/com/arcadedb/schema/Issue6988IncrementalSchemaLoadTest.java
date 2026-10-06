@@ -262,7 +262,7 @@ class Issue6988IncrementalSchemaLoadTest extends TestHelper {
   void aTouchedNonIndexComponentIsLeftAlone() throws Exception {
     final LocalSchema schema = schema();
 
-    final int bucketFileId = schema.getType("Issue6988Type_0").getBuckets(false).getFirst().getFileId();
+    final int bucketFileId = schema.getType("Issue6988Type_0").getBuckets(false).get(0).getFileId();
     final Map<Integer, Component> before = componentsByFileId(schema);
 
     assertThat(schema.loadIncremental(ComponentFile.MODE.READ_WRITE, Set.of(), Set.of(bucketFileId))).isTrue();
@@ -276,7 +276,7 @@ class Issue6988IncrementalSchemaLoadTest extends TestHelper {
   @Test
   void retiredFilesForceTheFullRebuildWithoutTouchingAnything() throws Exception {
     final LocalSchema schema = schema();
-    final int someFileId = schema.getType("Issue6988Type_0").getBuckets(false).getFirst().getFileId();
+    final int someFileId = schema.getType("Issue6988Type_0").getBuckets(false).get(0).getFileId();
     final Map<Integer, Component> before = componentsByFileId(schema);
 
     assertThat(schema.loadIncremental(ComponentFile.MODE.READ_WRITE, Set.of(someFileId), Set.of()))

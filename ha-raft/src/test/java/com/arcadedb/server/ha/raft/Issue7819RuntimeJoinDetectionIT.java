@@ -144,6 +144,6 @@ class Issue7819RuntimeJoinDetectionIT extends BaseMiniRaftTest {
       final RaftClientReply reply = client.admin().setConfiguration(args);
       assertThat(reply.isSuccess()).as("the Mode.ADD must commit: %s", reply.getException()).isTrue();
     }
-    return added.getFirst();
+    return added.get(0);
   }
 }

@@ -18,6 +18,8 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.network.HttpClientLifecycle;
+
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
@@ -152,16 +154,20 @@ public final class LeaderDatabaseQuery {
     final HttpRequest request = builder.build();
 
     if (endpoint.https()) {
-      // A dedicated client carrying the cluster trust context. HttpClient is AutoCloseable on Java 21, so the
-      // selector thread is released after the (rare, opt-in) query rather than leaked. Building one per call is
-      // fine for these infrequent paths (reconcile / opt-in presence); if this ever moves onto a hot path, cache
-      // an SSL-configured client instead.
-      try (final HttpClient client = HttpClient.newBuilder()
+      // A dedicated client carrying the cluster trust context. HttpClient is AutoCloseable on Java 21 only, so on
+      // the JDK17 build the release goes through HttpClientLifecycle: the selector thread is released after the
+      // (rare, opt-in) query on a Java 21+ runtime, and left to time out on its own on Java 17. Building one per
+      // call is fine for these infrequent paths (reconcile / opt-in presence); if this ever moves onto a hot path,
+      // cache an SSL-configured client instead.
+      final HttpClient client = HttpClient.newBuilder()
           .connectTimeout(Duration.ofSeconds(5))
           .sslContext(SnapshotInstaller.buildSSLContext(server))
-          .build()) {
+          .build();
+      try {
         return parse(LeaderDial.sendBounded(client, request, HttpResponse.BodyHandlers.ofString(), timeoutMs),
             endpoint.url(), expectedPeerId);
+      } finally {
+        HttpClientLifecycle.close(client);
       }
     }
     // Bounded over the whole exchange, body included (issue #8325): on JDK 21-25 the request timeout stops at the

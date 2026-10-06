@@ -128,7 +128,7 @@ class Issue8713ChunkChainCycleTest extends TestHelper {
   private <T> T inTx(final Supplier<T> read) {
     final List<T> result = new ArrayList<>(1);
     database.transaction(() -> result.add(read.get()));
-    return result.getFirst();
+    return result.get(0);
   }
 
   private <T> T runBounded(final Callable<T> walk) throws Exception {

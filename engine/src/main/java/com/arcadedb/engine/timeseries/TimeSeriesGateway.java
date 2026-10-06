@@ -297,7 +297,7 @@ public final class TimeSeriesGateway {
   public static Object[] latest(final TimeSeriesEngine engine, final TagFilter tagFilter,
       final AggregationMetrics metrics) throws IOException {
     final List<Object[]> newest = engine.queryDescending(Long.MIN_VALUE, Long.MAX_VALUE, null, tagFilter, 1, metrics);
-    return newest.isEmpty() ? null : newest.getFirst();
+    return newest.isEmpty() ? null : newest.get(0);
   }
 
   /**
@@ -618,7 +618,7 @@ public final class TimeSeriesGateway {
     // The common declaration - and every one written before issue #7702 - already spells the row order, so it
     // is handed back without copying it.
     if (columnIndices == null && !columns.isEmpty()
-        && columns.getFirst().getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+        && columns.get(0).getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
       return columns;
 
     final List<ColumnDefinition> selected =

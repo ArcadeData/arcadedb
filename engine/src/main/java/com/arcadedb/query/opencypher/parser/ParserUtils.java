@@ -237,7 +237,7 @@ public class ParserUtils {
       final Cypher25Parser.LabelExpressionContext root) {
     final List<Cypher25Parser.LabelExpression3Context> operands = ctx.labelExpression3();
     if (operands.size() == 1)
-      return buildLabelPredicate(operands.getFirst(), root);
+      return buildLabelPredicate(operands.get(0), root);
     final LabelPredicate[] out = new LabelPredicate[operands.size()];
     for (int i = 0; i < out.length; i++)
       out[i] = buildLabelPredicate(operands.get(i), root);
@@ -248,7 +248,7 @@ public class ParserUtils {
       final Cypher25Parser.LabelExpressionContext root) {
     final List<Cypher25Parser.LabelExpression2Context> operands = ctx.labelExpression2();
     if (operands.size() == 1)
-      return buildLabelPredicate(operands.getFirst(), root);
+      return buildLabelPredicate(operands.get(0), root);
     final LabelPredicate[] out = new LabelPredicate[operands.size()];
     for (int i = 0; i < out.length; i++)
       out[i] = buildLabelPredicate(operands.get(i), root);

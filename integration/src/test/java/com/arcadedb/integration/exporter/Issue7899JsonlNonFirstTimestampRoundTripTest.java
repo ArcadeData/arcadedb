@@ -89,7 +89,7 @@ class Issue7899JsonlNonFirstTimestampRoundTripTest {
       final LocalTimeSeriesType type = (LocalTimeSeriesType) target.getSchema().getType("M");
       final List<Object[]> rows = type.getEngine().query(Long.MIN_VALUE, Long.MAX_VALUE, null, null);
       assertThat(rows).hasSize(1);
-      assertThat(rows.getFirst()).as("the restored engine row, timestamp first by definition")
+      assertThat(rows.get(0)).as("the restored engine row, timestamp first by definition")
           .containsExactly(TS, "srv-1", 42.5);
     }
   }
@@ -106,7 +106,7 @@ class Issue7899JsonlNonFirstTimestampRoundTripTest {
       final LocalTimeSeriesType type = (LocalTimeSeriesType) target.getSchema().getType("N");
       final List<Object[]> rows = type.getEngine().query(Long.MIN_VALUE, Long.MAX_VALUE, null, null);
       assertThat(rows).hasSize(1);
-      final Object[] row = rows.getFirst();
+      final Object[] row = rows.get(0);
       assertThat((long) row[0]).as("the restored timestamp, not the value of 'seq'").isEqualTo(TS);
       assertThat(((Number) row[1]).longValue()).as("'seq', not the timestamp").isEqualTo(7L);
       assertThat(row[2]).isEqualTo(42.5);

@@ -131,10 +131,10 @@ class CheckpointTest {
     reader.rows.put(2, List.of(new long[] { a, 0 }, new long[] { b, 0 }));
     final List<Violation> violations = checkpoint(reader, Duration.ofMillis(300)).run().violations();
     assertThat(violations).extracting(Violation::invariant).containsExactly("CONVERGENCE");
-    assertThat(violations.getFirst().kind()).isEqualTo(ResultKind.SAFETY);
-    assertThat(violations.getFirst().message()).contains("[2, 0, 1, 0, 2, 0]");
-    assertThat(violations.getFirst().keys()).containsExactly(b);
-    assertThat(violations.getFirst().details()).containsExactly(
+    assertThat(violations.get(0).kind()).isEqualTo(ResultKind.SAFETY);
+    assertThat(violations.get(0).message()).contains("[2, 0, 1, 0, 2, 0]");
+    assertThat(violations.get(0).keys()).containsExactly(b);
+    assertThat(violations.get(0).details()).containsExactly(
         "node 0 counts: count(*) ops=2 edges=0, scanned 2 records, 2 index entries, 0 edges",
         "node 1 counts: count(*) ops=1 edges=0, scanned 1 records, 1 index entries, 0 edges",
         "node 2 counts: count(*) ops=2 edges=0, scanned 2 records, 2 index entries, 0 edges",
@@ -150,8 +150,8 @@ class CheckpointTest {
     reader.unreadable.add(1);
     final List<Violation> violations = checkpoint(reader, Duration.ofMillis(300)).run().violations();
     assertThat(violations).extracting(Violation::invariant).containsExactly("CONVERGENCE");
-    assertThat(violations.getFirst().message()).contains("node 1 down");
-    assertThat(violations.getFirst().details()).contains("node 1: not scanned (node 1 down)");
+    assertThat(violations.get(0).message()).contains("node 1 down");
+    assertThat(violations.get(0).details()).contains("node 1: not scanned (node 1 down)");
   }
 
   @Test
@@ -178,7 +178,7 @@ class CheckpointTest {
       reader.rows.put(node, List.of(new long[] { a, 0 }));
     final List<Violation> violations = checkpoint(reader, Duration.ofSeconds(5)).run().violations();
     assertThat(violations).extracting(Violation::invariant).containsExactly("I1");
-    assertThat(violations.getFirst().keys()).containsExactly(lost);
+    assertThat(violations.get(0).keys()).containsExactly(lost);
   }
 
   @Test
@@ -190,8 +190,8 @@ class CheckpointTest {
     reader.scanErrors.put(1, new HttpNodeReader.ServerErrorException(1, 500, "duplicate key"));
     final List<Violation> violations = checkpoint(reader, Duration.ofSeconds(5)).run().violations();
     assertThat(violations).extracting(Violation::invariant).containsExactly("SCAN_ERROR");
-    assertThat(violations.getFirst().kind()).isEqualTo(ResultKind.SAFETY);
-    assertThat(violations.getFirst().message()).contains("node 1").contains("500").contains("duplicate key");
+    assertThat(violations.get(0).kind()).isEqualTo(ResultKind.SAFETY);
+    assertThat(violations.get(0).message()).contains("node 1").contains("500").contains("duplicate key");
   }
 
   @Test
@@ -203,8 +203,8 @@ class CheckpointTest {
     reader.scanErrors.put(2, new IOException("connection reset"));
     final List<Violation> violations = checkpoint(reader, Duration.ofSeconds(5)).run().violations();
     assertThat(violations).extracting(Violation::invariant).containsExactly("SCAN");
-    assertThat(violations.getFirst().kind()).isEqualTo(ResultKind.AVAILABILITY);
-    assertThat(violations.getFirst().message()).contains("connection reset");
+    assertThat(violations.get(0).kind()).isEqualTo(ResultKind.AVAILABILITY);
+    assertThat(violations.get(0).message()).contains("connection reset");
   }
 
   @Test
@@ -235,7 +235,7 @@ class CheckpointTest {
     reader.bucketOnly.put(1, List.of(new long[] { RecordScan.rid(2, 7), b }));
     final List<Violation> violations = checkpoint(reader, Duration.ofMillis(300)).run().violations();
     assertThat(violations).extracting(Violation::invariant).containsExactly("CONVERGENCE");
-    final Violation convergence = violations.getFirst();
+    final Violation convergence = violations.get(0);
     assertThat(convergence.message()).contains("[2, 0, 3, 0, 2, 0]").contains("the record scan found records");
     assertThat(convergence.keys()).isEmpty();
     assertThat(convergence.details()).containsExactly(
@@ -258,7 +258,7 @@ class CheckpointTest {
     reader.countDrift.put(2, new long[] { 0, -1 });
     final List<Violation> violations = checkpoint(reader, Duration.ofMillis(300)).run().violations();
     assertThat(violations).extracting(Violation::invariant).containsExactly("COUNT_DRIFT");
-    final Violation drift = violations.getFirst();
+    final Violation drift = violations.get(0);
     assertThat(drift.kind()).isEqualTo(ResultKind.SAFETY);
     assertThat(drift.keys()).isEmpty();
     assertThat(drift.message()).contains("[2, 1, 3, 1, 2, 0]").contains("2 records and 1 edges on every node")

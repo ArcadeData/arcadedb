@@ -101,7 +101,7 @@ class Issue7336AscendingLimitTest extends TestHelper {
     final List<Object[]> oldest = engine.queryAscending(Long.MIN_VALUE, Long.MAX_VALUE, null, filter, 10, metrics);
 
     assertThat(oldest).hasSize(10);
-    assertThat((long) oldest.getFirst()[0]).isEqualTo(BASE_TS);
+    assertThat((long) oldest.get(0)[0]).isEqualTo(BASE_TS);
 
     // The whole point of the bound: at most the oldest block of each shard is decompressed.
     final int touched = metrics.getFastPathBlocks() + metrics.getSlowPathBlocks();
@@ -159,7 +159,7 @@ class Issue7336AscendingLimitTest extends TestHelper {
     // And a limit of exactly the range's size is not reported any differently.
     final List<Object[]> exact = engine.queryAscending(from, to, null, filter, reference.size(), null);
     assertThat(exact).hasSameSizeAs(reference);
-    assertThat((long) exact.getLast()[0]).isEqualTo(to);
+    assertThat((long) exact.get(exact.size() - 1)[0]).isEqualTo(to);
   }
 
   /**
@@ -226,8 +226,8 @@ class Issue7336AscendingLimitTest extends TestHelper {
     final List<Object[]> rows = engine.queryAscending(Long.MIN_VALUE, Long.MAX_VALUE, null, filter, 2, null);
 
     assertThat(rows).hasSize(2);
-    assertThat((long) rows.getFirst()[0]).isEqualTo(olderTs);
-    assertThat(((Number) rows.getFirst()[2]).doubleValue()).isEqualTo(-1.0);
+    assertThat((long) rows.get(0)[0]).isEqualTo(olderTs);
+    assertThat(((Number) rows.get(0)[2]).doubleValue()).isEqualTo(-1.0);
     assertThat((long) rows.get(1)[0]).isEqualTo(BASE_TS);
   }
 
@@ -247,8 +247,8 @@ class Issue7336AscendingLimitTest extends TestHelper {
       assertThat(row).hasSize(2);
       assertThat(row[1]).isEqualTo("host_7");
     }
-    assertThat((long) rows.getFirst()[0]).isEqualTo(BASE_TS);
-    assertThat((long) rows.getLast()[0]).isEqualTo(BASE_TS + 2 * STEP_MS);
+    assertThat((long) rows.get(0)[0]).isEqualTo(BASE_TS);
+    assertThat((long) rows.get(rows.size() - 1)[0]).isEqualTo(BASE_TS + 2 * STEP_MS);
   }
 
   /**

@@ -161,7 +161,7 @@ class Issue7796RemoteServerAdminCommandsTest {
           entry.getSecond().accept(client);
 
           assertThat(second.bodies()).as(entry.getFirst()).hasSize(1);
-          assertThat(new JSONObject(second.bodies().getFirst()).getString("command")).as(entry.getFirst())
+          assertThat(new JSONObject(second.bodies().get(0)).getString("command")).as(entry.getFirst())
               .startsWith(entry.getFirst());
         } finally {
           client.close();
@@ -242,7 +242,7 @@ class Issue7796RemoteServerAdminCommandsTest {
       try {
         client.createUser("u7796", PASSWORD, Map.of("accounts", "reader"));
 
-        final String command = new JSONObject(server.bodies().getFirst()).getString("command");
+        final String command = new JSONObject(server.bodies().get(0)).getString("command");
         assertThat(command).startsWith("create user ");
         final JSONObject user = new JSONObject(command.substring("create user ".length()));
         assertThat(user.getString("name")).isEqualTo("u7796");

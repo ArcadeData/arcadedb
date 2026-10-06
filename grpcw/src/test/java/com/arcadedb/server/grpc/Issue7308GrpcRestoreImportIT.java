@@ -251,7 +251,7 @@ public class Issue7308GrpcRestoreImportIT extends BaseGrpcServerTest {
     // The stream is not just its terminator: the restore reports what it is doing while it runs,
     // which is the whole reason these RPCs are server-streaming rather than unary.
     assertThat(events).hasSizeGreaterThan(1);
-    assertThat(events.getFirst().getCompleted()).isFalse();
+    assertThat(events.get(0).getCompleted()).isFalse();
     assertCompletedLast(events, target + " restored successfully");
 
     assertThat(getServer(0).getDatabase(target).countType(VERTEX1_TYPE_NAME, false)).isEqualTo(sourceCount);
@@ -302,7 +302,7 @@ public class Issue7308GrpcRestoreImportIT extends BaseGrpcServerTest {
         ImportDatabaseRequest.newBuilder().setCredentials(root()).setDatabase(target)
             .setUrl("file://" + source.getAbsolutePath()).build()));
 
-    final ImportProgress last = events.getLast();
+    final ImportProgress last = events.get(events.size() - 1);
     assertThat(last.getCompleted()).isTrue();
     assertThat(last.getMessage()).isEqualTo(target + " imported successfully");
     // The importer's report travels as JSON on the completed message and nowhere else.
@@ -353,7 +353,7 @@ public class Issue7308GrpcRestoreImportIT extends BaseGrpcServerTest {
 
   private static void assertCompletedLast(final List<RestoreProgress> events, final String message) {
     assertThat(events).isNotEmpty();
-    final RestoreProgress last = events.getLast();
+    final RestoreProgress last = events.get(events.size() - 1);
     assertThat(last.getCompleted()).isTrue();
     assertThat(last.getMessage()).isEqualTo(message);
     // completed marks the end of the stream and nothing before it.

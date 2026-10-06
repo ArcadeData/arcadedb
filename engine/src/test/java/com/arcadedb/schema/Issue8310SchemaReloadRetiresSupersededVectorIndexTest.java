@@ -101,7 +101,7 @@ class Issue8310SchemaReloadRetiresSupersededVectorIndexTest extends TestHelper {
     final IndexInternal before = bucketLevelVectorIndex(schema);
     assertThat(timerThreadsOf(before)).as("the fixture must arm the inactivity timer it then expects gone").hasSize(1);
 
-    assertThat(schema.loadIncremental(ComponentFile.MODE.READ_WRITE, Set.of(), Set.of(before.getFileIds().getFirst())))
+    assertThat(schema.loadIncremental(ComponentFile.MODE.READ_WRITE, Set.of(), Set.of(before.getFileIds().get(0))))
         .as("the refresh must have been expressible incrementally")
         .isTrue();
 

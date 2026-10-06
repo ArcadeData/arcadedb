@@ -137,11 +137,15 @@ class Issue7129PendingSnapshotStartupTest {
 
     @Override
     public void startService() {
-      try (final var executor = Executors.newSingleThreadExecutor()) {
+      // JDK17: ExecutorService is AutoCloseable only since Java 19
+      final var executor = Executors.newSingleThreadExecutor();
+      try {
         executor.submit(() -> probe.accept(server)).get(60, TimeUnit.SECONDS);
         executed = true;
       } catch (final Exception e) {
         throw new RuntimeException(e);
+      } finally {
+        executor.shutdownNow();
       }
     }
   }

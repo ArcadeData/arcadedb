@@ -126,11 +126,11 @@ class Issue8794MergeSmallSealedBlocksTest extends TestHelper {
     engine.mergeSmallBlocks();
 
     final TimeSeriesSealedStore sealed = engine.getShard(0).getSealedStore();
-    final long idBefore = sealed.snapshotBlockDirectory(Long.MIN_VALUE, Long.MAX_VALUE).blocks().getFirst().blockId;
+    final long idBefore = sealed.snapshotBlockDirectory(Long.MIN_VALUE, Long.MAX_VALUE).blocks().get(0).blockId;
     engine.mergeSmallBlocks();
 
     assertThat(sealedBlocks(engine)).isEqualTo(1);
-    assertThat(sealed.snapshotBlockDirectory(Long.MIN_VALUE, Long.MAX_VALUE).blocks().getFirst().blockId)
+    assertThat(sealed.snapshotBlockDirectory(Long.MIN_VALUE, Long.MAX_VALUE).blocks().get(0).blockId)
         .as("a merge with nothing to merge must not rewrite the store").isEqualTo(idBefore);
   }
 
@@ -269,12 +269,12 @@ class Issue8794MergeSmallSealedBlocksTest extends TestHelper {
     }
     final int blocks = sealedBlocks(engine);
     final TimeSeriesSealedStore sealed = engine.getShard(0).getSealedStore();
-    final long firstId = sealed.snapshotBlockDirectory(Long.MIN_VALUE, Long.MAX_VALUE).blocks().getFirst().blockId;
+    final long firstId = sealed.snapshotBlockDirectory(Long.MIN_VALUE, Long.MAX_VALUE).blocks().get(0).blockId;
 
     engine.mergeSmallBlocks();
 
     assertThat(sealedBlocks(engine)).isEqualTo(blocks);
-    assertThat(sealed.snapshotBlockDirectory(Long.MIN_VALUE, Long.MAX_VALUE).blocks().getFirst().blockId).isEqualTo(firstId);
+    assertThat(sealed.snapshotBlockDirectory(Long.MIN_VALUE, Long.MAX_VALUE).blocks().get(0).blockId).isEqualTo(firstId);
   }
 
   @Test

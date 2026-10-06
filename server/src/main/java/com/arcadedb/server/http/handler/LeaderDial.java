@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.network.HttpClientLifecycle;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
@@ -163,18 +164,18 @@ public record LeaderDial(String address, boolean https, HttpClient client, Strin
 
     // Cancels what is in flight instead of waiting for it. An exchange this node is shutting down on is one
     // whose answer it will never read.
-    client.shutdownNow();
+    HttpClientLifecycle.shutdownNow(client);
 
     final long grace = Math.max(graceMs, MIN_FORWARD_TIMEOUT_MS);
     try {
-      if (client.awaitTermination(Duration.ofMillis(grace)))
+      if (HttpClientLifecycle.awaitTermination(client, Duration.ofMillis(grace)))
         return true;
     } catch (final InterruptedException e) {
       // Shutdown is already interrupt-driven (RaftHAServer.stop() interrupts the auto-join thread, the
       // executors are ended with shutdownNow). Restore the flag and report what the client actually is rather
       // than waiting again on a thread that has been told to stop.
       Thread.currentThread().interrupt();
-      return client.isTerminated();
+      return HttpClientLifecycle.isTerminated(client);
     }
 
     LogManager.instance().log(LeaderDial.class, Level.WARNING,

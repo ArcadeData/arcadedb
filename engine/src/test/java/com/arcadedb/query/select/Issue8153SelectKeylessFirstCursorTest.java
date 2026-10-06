@@ -109,7 +109,7 @@ public class Issue8153SelectKeylessFirstCursorTest extends TestHelper {
 
   @Test
   void equalityLookupCarriesTheIndexKeyMetadata() {
-    final TypeIndex index = (TypeIndex) database.getSchema().getType("T").getIndexesByProperties("b").getFirst();
+    final TypeIndex index = (TypeIndex) database.getSchema().getType("T").getIndexesByProperties("b").get(0);
     final IndexCursor cursor = index.get(new Object[] { 1 });
     assertThat(cursor.getBinaryKeyTypes()).isEqualTo(index.getBinaryKeyTypes());
     assertThat(cursor.getComparator()).isNotNull();
@@ -119,7 +119,7 @@ public class Issue8153SelectKeylessFirstCursorTest extends TestHelper {
   @Test
   void sqlIndexLookupProjectsTheKeyItMatched() {
     // FetchFromIndexStep PROJECTS cursor.getKeys(): AN EQUALITY LOOKUP ON A TYPE INDEX USED TO ANSWER key = []
-    final String indexName = database.getSchema().getType("T").getIndexesByProperties("b").getFirst().getName();
+    final String indexName = database.getSchema().getType("T").getIndexesByProperties("b").get(0).getName();
     try (final ResultSet rs = database.query("sql", "SELECT FROM index:`" + indexName + "` WHERE key = 1")) {
       final Result row = rs.next();
       assertThat(row.<Object>getProperty("key")).isEqualTo(new Object[] { 1 });
@@ -135,7 +135,7 @@ public class Issue8153SelectKeylessFirstCursorTest extends TestHelper {
       for (int i = 0; i < 20; i++)
         database.newDocument("T").set("b", 7).save();
     });
-    final TypeIndex index = (TypeIndex) database.getSchema().getType("T").getIndexesByProperties("b").getFirst();
+    final TypeIndex index = (TypeIndex) database.getSchema().getType("T").getIndexesByProperties("b").get(0);
 
     assertThat(count(index.get(new Object[] { 7 }, 0))).isZero();
     assertThat(count(index.get(new Object[] { 7 }, 3))).isEqualTo(3);
@@ -153,7 +153,7 @@ public class Issue8153SelectKeylessFirstCursorTest extends TestHelper {
 
   @Test
   void mergeSamplesKeyMetadataFromTheFirstChildThatHasIt() {
-    final TypeIndex index = (TypeIndex) database.getSchema().getType("T").getIndexesByProperties("b").getFirst();
+    final TypeIndex index = (TypeIndex) database.getSchema().getType("T").getIndexesByProperties("b").get(0);
 
     final List<IndexCursor> children = new ArrayList<>();
     children.add(new EmptyIndexCursor());

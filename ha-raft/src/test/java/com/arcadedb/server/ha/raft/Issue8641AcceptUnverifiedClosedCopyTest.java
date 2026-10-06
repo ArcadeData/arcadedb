@@ -191,7 +191,7 @@ class Issue8641AcceptUnverifiedClosedCopyTest {
     }
 
     assertThat(warnings).hasSize(1);
-    assertThat(warnings.getFirst()).contains(DB_NAME).contains("user 'root' (from 10.0.0.7)").contains("23")
+    assertThat(warnings.get(0)).contains(DB_NAME).contains("user 'root' (from 10.0.0.7)").contains("23")
         .contains("dead-peer").contains("connection refused").contains("#8641");
   }
 

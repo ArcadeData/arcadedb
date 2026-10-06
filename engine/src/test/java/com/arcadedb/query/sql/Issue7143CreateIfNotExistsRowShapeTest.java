@@ -72,7 +72,7 @@ class Issue7143CreateIfNotExistsRowShapeTest extends TestHelper {
     try (final ResultSet rs = database.command("sql", statement)) {
       final List<Result> rows = rs.stream().toList();
       assertThat(rows).as("row count of: %s", statement).hasSize(1);
-      return rows.getFirst();
+      return rows.get(0);
     }
   }
 }

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.network.HttpClientLifecycle;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.http.HttpServer;
@@ -48,18 +49,18 @@ class Issue8024PostBatchHandlerClientLifecycleTest extends BaseGraphServerTest {
   void stoppingTheServerReleasesTheBatchHandlersHttpClient() throws Exception {
     final ArcadeDBServer server = getServer(0);
     final HttpClient client = batchClientOf(server.getHttpServer());
-    assertThat(client.isTerminated()).as("the batch forward client is live while the server is up").isFalse();
+    assertThat(HttpClientLifecycle.isTerminated(client)).as("the batch forward client is live while the server is up").isFalse();
 
     server.stop();
 
-    assertThat(client.isTerminated()).as("stopping the server releases the batch handler's HTTP client").isTrue();
+    assertThat(HttpClientLifecycle.isTerminated(client)).as("stopping the server releases the batch handler's HTTP client").isTrue();
 
     // A restart builds a fresh HttpServer and a fresh handler: the route must not be left dialing on the client
     // the previous stop released.
     server.start();
     final HttpClient restarted = batchClientOf(server.getHttpServer());
     assertThat(restarted).isNotSameAs(client);
-    assertThat(restarted.isTerminated()).as("the restarted server's batch forward client is live").isFalse();
+    assertThat(HttpClientLifecycle.isTerminated(restarted)).as("the restarted server's batch forward client is live").isFalse();
   }
 
   @Test
@@ -68,7 +69,7 @@ class Issue8024PostBatchHandlerClientLifecycleTest extends BaseGraphServerTest {
     final ArcadeDBServer server = getServer(0);
     final HttpServer httpServer = server.getHttpServer();
     final HttpClient client = batchClientOf(httpServer);
-    assertThat(client.isTerminated()).isFalse();
+    assertThat(HttpClientLifecycle.isTerminated(client)).isFalse();
 
     final Field bus = HttpServer.class.getDeclaredField("webSocketEventBus");
     bus.setAccessible(true);
@@ -77,7 +78,7 @@ class Issue8024PostBatchHandlerClientLifecycleTest extends BaseGraphServerTest {
     // stopInternal() swallows whatever stopService() throws, so this returns either way.
     server.stop();
 
-    assertThat(client.isTerminated())
+    assertThat(HttpClientLifecycle.isTerminated(client))
         .as("a failing step earlier in stopService() must not skip the release of the batch handler's HTTP client")
         .isTrue();
     // No restart here: BaseGraphServerTest.endTest() restarts any server that is down before its teardown checks,

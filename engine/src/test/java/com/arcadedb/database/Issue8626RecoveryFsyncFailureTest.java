@@ -82,7 +82,7 @@ class Issue8626RecoveryFsyncFailureTest {
     final AtomicBoolean broken = new AtomicBoolean();
     LocalDatabase.TEST_BEFORE_RECOVERY_REPLAY_HOOK = db -> {
       try {
-        final PaginatedComponent bucket = (PaginatedComponent) db.getSchema().getType("Other").getBuckets(false).getFirst();
+        final PaginatedComponent bucket = (PaginatedComponent) db.getSchema().getType("Other").getBuckets(false).get(0);
         final PaginatedComponentFile file = (PaginatedComponentFile) db.getFileManager().getFile(bucket.getFileId());
         final Field channelField = PaginatedComponentFile.class.getDeclaredField("channel");
         channelField.setAccessible(true);

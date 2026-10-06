@@ -84,7 +84,7 @@ class Issue8422CypherIndexOrderLimitTest extends TestHelper {
       if (page.isEmpty())
         break;
       all.addAll(page);
-      cursor = (String) page.getLast();
+      cursor = (String) page.get(page.size() - 1);
     }
     assertThat(all).containsExactlyElementsOf(ids(0, VERTICES));
     assertThat(profile(query, Map.of("cursor", ""))).doesNotContain("OrderByStep");

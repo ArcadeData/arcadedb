@@ -74,7 +74,7 @@ class TimeSeriesSingleBucketAnchorTest extends TestHelper {
             new MultiColumnAggregationRequest(1, AggregationType.COUNT, "count")), 0, null);
 
     assertThat(result.size()).isEqualTo(1);
-    assertThat(result.getBucketTimestamps().getFirst()).isEqualTo(1000L);
+    assertThat(result.getBucketTimestamps().get(0)).isEqualTo(1000L);
     assertThat(result.getValue(1000L, 0)).isEqualTo(60.0);
     assertThat(result.getValue(1000L, 1)).isEqualTo(3.0);
     database.commit();
@@ -98,7 +98,7 @@ class TimeSeriesSingleBucketAnchorTest extends TestHelper {
             new MultiColumnAggregationRequest(1, AggregationType.COUNT, "count")), 0, null);
 
     assertThat(result.size()).isEqualTo(1);
-    assertThat(result.getBucketTimestamps().getFirst()).isEqualTo(1000L);
+    assertThat(result.getBucketTimestamps().get(0)).isEqualTo(1000L);
     assertThat(result.getValue(1000L, 0)).isEqualTo(100.0);
     assertThat(result.getValue(1000L, 1)).isEqualTo(4.0);
     database.commit();

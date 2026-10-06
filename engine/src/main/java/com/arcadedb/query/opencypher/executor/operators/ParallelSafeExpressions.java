@@ -55,26 +55,41 @@ public final class ParallelSafeExpressions {
    * @param variable the only variable the predicate may read: the node the scan binds
    */
   public static boolean isParallelSafe(final Object expression, final String variable) {
-    return switch (expression) {
-      case null -> false;
-      case LiteralExpression ignored -> true;
-      case ParameterExpression ignored -> true;
-      case StarExpression ignored -> true;
-      case VariableExpression v -> variable.equals(v.getVariableName());
-      case PropertyAccessExpression p -> variable.equals(p.getVariableName());
-      case BooleanWrapperExpression w -> isParallelSafe(w.getBooleanExpression(), variable);
-      case ComparisonExpressionWrapper w -> isParallelSafe(w.getComparison(), variable);
-      case BooleanCoercionExpression c -> isParallelSafe(c.getExpression(), variable);
-      case ComparisonExpression c -> isParallelSafe(c.getLeft(), variable) && isParallelSafe(c.getRight(), variable);
-      case LogicalExpression l -> isParallelSafe(l.getLeft(), variable) && (l.getRight() == null || isParallelSafe(l.getRight(), variable));
-      case TernaryLogicalExpression t -> isParallelSafe(t.getLeft(), variable) && (t.getRight() == null || isParallelSafe(t.getRight(), variable));
-      case IsNullExpression n -> isParallelSafe(n.getExpression(), variable);
-      case ArithmeticExpression a -> isParallelSafe(a.getLeft(), variable) && isParallelSafe(a.getRight(), variable);
-      case StringMatchExpression s -> isParallelSafe(s.getExpression(), variable) && isParallelSafe(s.getPattern(), variable);
-      case InExpression in -> isParallelSafe(in.getExpression(), variable) && allSafe(in.getList(), variable);
-      case ListExpression list -> allSafe(list.getElements(), variable);
-      default -> false;
-    };
+    if (expression == null)
+      return false;
+    else if (expression instanceof LiteralExpression)
+      return true;
+    else if (expression instanceof ParameterExpression)
+      return true;
+    else if (expression instanceof StarExpression)
+      return true;
+    else if (expression instanceof VariableExpression v)
+      return variable.equals(v.getVariableName());
+    else if (expression instanceof PropertyAccessExpression p)
+      return variable.equals(p.getVariableName());
+    else if (expression instanceof BooleanWrapperExpression w)
+      return isParallelSafe(w.getBooleanExpression(), variable);
+    else if (expression instanceof ComparisonExpressionWrapper w)
+      return isParallelSafe(w.getComparison(), variable);
+    else if (expression instanceof BooleanCoercionExpression c)
+      return isParallelSafe(c.getExpression(), variable);
+    else if (expression instanceof ComparisonExpression c)
+      return isParallelSafe(c.getLeft(), variable) && isParallelSafe(c.getRight(), variable);
+    else if (expression instanceof LogicalExpression l)
+      return isParallelSafe(l.getLeft(), variable) && (l.getRight() == null || isParallelSafe(l.getRight(), variable));
+    else if (expression instanceof TernaryLogicalExpression t)
+      return isParallelSafe(t.getLeft(), variable) && (t.getRight() == null || isParallelSafe(t.getRight(), variable));
+    else if (expression instanceof IsNullExpression n)
+      return isParallelSafe(n.getExpression(), variable);
+    else if (expression instanceof ArithmeticExpression a)
+      return isParallelSafe(a.getLeft(), variable) && isParallelSafe(a.getRight(), variable);
+    else if (expression instanceof StringMatchExpression s)
+      return isParallelSafe(s.getExpression(), variable) && isParallelSafe(s.getPattern(), variable);
+    else if (expression instanceof InExpression in)
+      return isParallelSafe(in.getExpression(), variable) && allSafe(in.getList(), variable);
+    else if (expression instanceof ListExpression list)
+      return allSafe(list.getElements(), variable);
+    return false;
   }
 
   private static boolean allSafe(final Iterable<?> expressions, final String variable) {

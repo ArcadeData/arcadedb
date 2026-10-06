@@ -126,7 +126,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
     }
     if (statements == null || statements.isEmpty())
       return false;
-    final Statement last = statements.getLast();
+    final Statement last = statements.get(statements.size() - 1);
     return last instanceof SelectStatement || last instanceof MatchStatement;
   }
 

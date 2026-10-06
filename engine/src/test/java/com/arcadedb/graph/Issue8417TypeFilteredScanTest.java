@@ -117,8 +117,8 @@ class Issue8417TypeFilteredScanTest {
       new EdgeVertexIteratorFilter((DatabaseInternal) database, countingHead(ids[0], decodes), new String[] { "Parent" })
           .forEachRemaining(entries::add);
       assertThat(entries).hasSize(1);
-      assertThat(entries.getFirst().getFirst()).isEqualTo(ids[2]);
-      assertThat(entries.getFirst().getSecond()).isEqualTo(ids[1]);
+      assertThat(entries.get(0).getFirst()).isEqualTo(ids[2]);
+      assertThat(entries.get(0).getSecond()).isEqualTo(ids[1]);
       assertThat(decodes.get()).isEqualTo(2);
     });
   }
@@ -181,7 +181,7 @@ class Issue8417TypeFilteredScanTest {
       final List<Edge> edges = new ArrayList<>();
       u.getEdges(Vertex.DIRECTION.IN, "Parent").forEach(edges::add);
       assertThat(edges).hasSize(1);
-      assertThat(edges.getFirst().getOut()).isEqualTo(parent[0]);
+      assertThat(edges.get(0).getOut()).isEqualTo(parent[0]);
     });
   }
 

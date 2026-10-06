@@ -260,7 +260,7 @@ class Issue7663GrafanaPrometheusRowCeilingIT extends BaseGraphServerTest {
             List.of(new LabelMatcher(MatchType.EQ, "__name__", TYPE_NAME))))));
 
     assertThat(response.getResults()).hasSize(1);
-    final int samples = response.getResults().getFirst().getTimeSeries().stream()
+    final int samples = response.getResults().get(0).getTimeSeries().stream()
         .mapToInt(ts -> ts.getSamples().size()).sum();
     assertThat(samples).isEqualTo(CEILING);
 
@@ -296,7 +296,7 @@ class Issue7663GrafanaPrometheusRowCeilingIT extends BaseGraphServerTest {
             new LabelMatcher(MatchType.EQ, "__name__", TYPE_NAME),
             new LabelMatcher(MatchType.EQ, "host", "web1"))))));
 
-    final int samples = response.getResults().getFirst().getTimeSeries().stream()
+    final int samples = response.getResults().get(0).getTimeSeries().stream()
         .mapToInt(ts -> ts.getSamples().size()).sum();
     assertThat(samples).isEqualTo(TOTAL_ROWS / 2);
   }
@@ -311,7 +311,7 @@ class Issue7663GrafanaPrometheusRowCeilingIT extends BaseGraphServerTest {
             List.of(new LabelMatcher(MatchType.EQ, "__name__", "no_such_metric"))))));
 
     assertThat(response.getResults()).hasSize(1);
-    assertThat(response.getResults().getFirst().getTimeSeries()).isEmpty();
+    assertThat(response.getResults().get(0).getTimeSeries()).isEmpty();
   }
 
   // ---------------------------------------------------------------------------------------------------

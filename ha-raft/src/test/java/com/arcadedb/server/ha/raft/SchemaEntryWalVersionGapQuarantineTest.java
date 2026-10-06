@@ -98,7 +98,7 @@ class SchemaEntryWalVersionGapQuarantineTest {
   }
 
   private PageId firstPageOf(final String type) {
-    final LocalBucket bucket = (LocalBucket) database.getSchema().getType(type).getBuckets(false).getFirst();
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getType(type).getBuckets(false).get(0);
     return new PageId(database, bucket.getFileId(), 0);
   }
 
