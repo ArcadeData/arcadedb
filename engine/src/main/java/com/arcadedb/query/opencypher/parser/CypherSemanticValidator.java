@@ -2253,15 +2253,50 @@ public class CypherSemanticValidator {
    */
   private final class FunctionArgumentChecks implements CypherExpressionWalker.Visitor {
     private final Map<String, VarType> scope;
+    // The patterns the clause being walked declares itself: they are the source of the kinds in scope, so they are
+    // never checked against them. Everything else reached here is a pattern that only uses names (a WHERE predicate,
+    // a pattern comprehension) and must agree with the kind each name was declared as (issue #9292).
+    private final Set<PathPattern> declaringPatterns;
 
     private FunctionArgumentChecks(final Map<String, VarType> scope) {
+      this(scope, Set.of());
+    }
+
+    private FunctionArgumentChecks(final Map<String, VarType> scope, final Set<PathPattern> declaringPatterns) {
       this.scope = scope;
+      this.declaringPatterns = declaringPatterns;
     }
 
     @Override
     public void visit(final Expression expression) {
       checkFunctionArgTypes(expression, scope);
       checkPropertyAccessOnPath(expression, scope);
+    }
+
+    @Override
+    public void visitPattern(final PathPattern path) {
+      if (declaringPatterns.contains(path))
+        return;
+      for (final NodePattern node : path.getNodes())
+        checkUsedAs(node.getVariable(), VarType.NODE);
+      for (final RelationshipPattern rel : path.getRelationships())
+        if (!(rel instanceof QuantifiedPathPattern))
+          checkUsedAs(rel.getVariable(), VarType.RELATIONSHIP);
+    }
+
+    /**
+     * A name already bound as a node cannot be a relationship in a later pattern, nor the reverse. Only that pair is
+     * checked: the other kinds a {@code WITH} can leave behind are approximations, and guessing there is how a check
+     * starts rejecting valid queries.
+     */
+    private void checkUsedAs(final String name, final VarType used) {
+      if (name == null)
+        return;
+      final VarType declared = scope.get(name);
+      if ((declared == VarType.NODE || declared == VarType.RELATIONSHIP) && declared != used)
+        throw new CommandParsingException(
+            "VariableTypeConflict: Variable '" + name + "' already defined as " + declared + ", cannot redefine as "
+                + used);
     }
 
     /**
@@ -2290,8 +2325,35 @@ public class CypherSemanticValidator {
       // This walk only needs the resulting kinds, not to re-decide a question those phases already settle.
       final Map<String, VarType> advanced = new HashMap<>(scope);
       applyClauseToVarTypes(entry, advanced, new HashSet<>());
-      return new FunctionArgumentChecks(advanced);
+      return new FunctionArgumentChecks(advanced, declaredPatterns(entry));
     }
+  }
+
+  /**
+   * The patterns a clause declares variables through (the ones {@link #applyClauseToVarTypes} reads), by identity.
+   */
+  private static Set<PathPattern> declaredPatterns(final ClauseEntry entry) {
+    final Set<PathPattern> patterns = Collections.newSetFromMap(new IdentityHashMap<>());
+    switch (entry.getType()) {
+    case MATCH -> {
+      final MatchClause matchClause = entry.getTypedClause();
+      if (matchClause.hasPathPatterns())
+        patterns.addAll(matchClause.getPathPatterns());
+    }
+    case CREATE -> {
+      final CreateClause createClause = entry.getTypedClause();
+      if (createClause != null && !createClause.isEmpty())
+        patterns.addAll(createClause.getPathPatterns());
+    }
+    case MERGE -> {
+      final MergeClause mergeClause = entry.getTypedClause();
+      if (mergeClause != null)
+        patterns.add(mergeClause.getPathPattern());
+    }
+    default -> {
+    }
+    }
+    return patterns;
   }
 
   // ================================================
