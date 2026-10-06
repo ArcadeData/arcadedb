@@ -74,6 +74,7 @@ class Issue9313ProfileClassificationTest extends TestHelper {
   void explainStaysIdempotentButReportsTheWrappedOperation() {
     final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine("sql").analyze("EXPLAIN INSERT INTO Person SET name = 'a'");
     assertThat(analyzed.isIdempotent()).isTrue();
+    assertThat(analyzed.getOperationTypes()).contains(OperationType.CREATE);
   }
 
   @Test
