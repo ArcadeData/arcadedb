@@ -436,9 +436,14 @@ public class RedisQueryEngine implements QueryEngine {
   private static RamSlot slotFor(final RetryScope scope, final int index, final String command) {
     if (scope == null)
       return null;
-    final String trimmed = command.stripLeading();
-    final int end = trimmed.indexOf(' ') < 0 ? trimmed.length() : trimmed.indexOf(' ');
-    final String name = trimmed.substring(0, end);
+    // The command name is taken with the same tokenization parseCommand uses (any whitespace separates, a name may be
+    // quoted), or a command the parser accepts would be run without a slot and applied again by a retry
+    final Matcher matcher = COMMAND_PATTERN.matcher(command.trim());
+    if (!matcher.find())
+      return null;
+    final String name = matcher.group(2) != null ? matcher.group(2) : matcher.group(3) != null ? matcher.group(3) : matcher.group(4);
+    if (name == null)
+      return null;
     final String upper = name.toUpperCase(Locale.ENGLISH);
     if (RAM_SLOT_COMMANDS.contains(upper))
       // keyed by the position in the block as well as the text: a command without a slot (a SET) that turns up before this

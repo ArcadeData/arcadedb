@@ -146,6 +146,24 @@ public class Issue9322RedisRetriedByWrapperTest extends BaseRedisServerTest {
   }
 
   @Test
+  void aCommandSeparatedByATabOrWithAQuotedNameStillKeepsItsSlot() {
+    final Database database = getServerDatabase(0, getDatabaseName());
+    database.command("sql", "CREATE DOCUMENT TYPE Tab9322");
+    final AtomicInteger creates = new AtomicInteger();
+    final BeforeRecordCreateListener listener = conflictOnce(creates);
+    database.getSchema().getType("Tab9322").getEvents().registerListener(listener);
+    try {
+      final List<?> reply = runUnderRetryingOwner(database, "MULTI\nINCR\tseq\n\"INCR\" seq\nHSET Tab9322 {\"id\":1}\nEXEC");
+      assertThat(creates.get()).isGreaterThan(1);
+      assertThat(((Number) reply.get(0)).longValue()).isEqualTo(1L);
+      assertThat(((Number) reply.get(1)).longValue()).isEqualTo(2L);
+      assertThat(((Number) get(database, "seq")).longValue()).isEqualTo(2L);
+    } finally {
+      database.getSchema().getType("Tab9322").getEvents().unregisterListener(listener);
+    }
+  }
+
+  @Test
   void scopeEndsWithTheOwnerSoTheNextRequestIncrementsAgain() {
     final Database database = getServerDatabase(0, getDatabaseName());
     for (int i = 1; i <= 3; i++)
