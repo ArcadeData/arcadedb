@@ -220,7 +220,22 @@ public final class GAVVertex implements Vertex {
 
   @Override
   public long countEdges(final DIRECTION direction, final String... edgeTypes) {
+    if (!providerCovers(edgeTypes))
+      return resolve().countEdges(direction, edgeTypes);
     return provider.countEdges(nodeId, direction, edgeTypes);
+  }
+
+  /**
+   * Whether the view holds every edge type asked for: a view answers only for the edge types it lists, and an unlisted
+   * one has no edges in it, so the record is the one to ask (issue #9377). An empty list means every type.
+   */
+  private boolean providerCovers(final String[] edgeTypes) {
+    if (edgeTypes == null || edgeTypes.length == 0)
+      return false;
+    for (final String edgeType : edgeTypes)
+      if (!provider.coversEdgeType(edgeType))
+        return false;
+    return true;
   }
 
   @Override
@@ -235,6 +250,8 @@ public final class GAVVertex implements Vertex {
 
   @Override
   public Iterable<RID> getConnectedVertexRIDs(final DIRECTION direction, final String... edgeTypes) {
+    if (!providerCovers(edgeTypes))
+      return resolve().getConnectedVertexRIDs(direction, edgeTypes);
     // Use CSR for RID-only traversal — no OLTP
     final int[] neighborIds = provider.getNeighborIds(nodeId, direction, edgeTypes);
     return () -> new Iterator<>() {
@@ -265,7 +282,7 @@ public final class GAVVertex implements Vertex {
   @Override
   public boolean isConnectedTo(final Identifiable toVertex, final DIRECTION direction, final String edgeType) {
     final int targetNodeId = provider.getNodeId(toVertex.getIdentity());
-    if (targetNodeId >= 0)
+    if (targetNodeId >= 0 && providerCovers(new String[] { edgeType }))
       return provider.isConnectedTo(nodeId, targetNodeId, direction, edgeType);
     return resolve().isConnectedTo(toVertex, direction, edgeType);
   }

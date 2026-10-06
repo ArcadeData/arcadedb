@@ -222,7 +222,7 @@ public class ExpandInto extends AbstractPhysicalOperator {
       connecting = ((DatabaseInternal) source.getDatabase()).getGraphEngine()
           .getEdgesConnectedTo(internalSource, arcadeDirection, target.getIdentity(), edgeTypes);
     else
-      connecting = reachingTarget(source.getEdges(arcadeDirection, edgeTypes).iterator(),
+      connecting = reachingTarget(source.getEdges(arcadeDirection, edgeTypes).iterator(), source.getIdentity(),
           target.getIdentity(), arcadeDirection);
 
     return arcadeDirection == Vertex.DIRECTION.BOTH ? SelfLoops.deduplicatingEdges(connecting) : connecting;
@@ -252,14 +252,15 @@ public class ExpandInto extends AbstractPhysicalOperator {
     if (from instanceof VertexInternal internal)
       return ((DatabaseInternal) from.getDatabase()).getGraphEngine()
           .getEdgesConnectedTo(internal, Vertex.DIRECTION.OUT, to.getIdentity(), edgeTypes);
-    return reachingTarget(from.getEdges(Vertex.DIRECTION.OUT, edgeTypes).iterator(), to.getIdentity(),
+    return reachingTarget(from.getEdges(Vertex.DIRECTION.OUT, edgeTypes).iterator(), from.getIdentity(), to.getIdentity(),
         Vertex.DIRECTION.OUT);
   }
 
   /**
-   * Lazily keeps the edges whose far endpoint is {@code target}, one at a time.
+   * Lazily keeps the edges whose far endpoint is {@code target}, one at a time. For an undirected hop the far end is
+   * the one that is not {@code source}, so a source that is also the target matches only its self-loops (issue #9349).
    */
-  private static Iterator<Edge> reachingTarget(final Iterator<Edge> edges, final RID target,
+  private static Iterator<Edge> reachingTarget(final Iterator<Edge> edges, final RID source, final RID target,
       final Vertex.DIRECTION direction) {
     return new Iterator<>() {
       private Edge nextEdge = null;
@@ -271,7 +272,8 @@ public class ExpandInto extends AbstractPhysicalOperator {
         while (edges.hasNext()) {
           final Edge candidate = edges.next();
           final boolean reaches = direction == Vertex.DIRECTION.BOTH ?
-              candidate.getOut().equals(target) || candidate.getIn().equals(target) :
+              (candidate.getOut().equals(source) && candidate.getIn().equals(target)) ||
+                  (candidate.getIn().equals(source) && candidate.getOut().equals(target)) :
               (direction == Vertex.DIRECTION.OUT ? candidate.getIn() : candidate.getOut()).equals(target);
           if (reaches) {
             nextEdge = candidate;
