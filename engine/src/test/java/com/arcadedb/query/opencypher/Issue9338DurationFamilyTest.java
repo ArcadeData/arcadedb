@@ -263,4 +263,18 @@ class Issue9338DurationFamilyTest {
     expectError("RETURN duration({days: 1, nanoseconds: 1e30})", ArithmeticErrorException.class);
     assertThat(scalar("RETURN toString(duration({days: 1e3, hours: 1})) AS r")).isEqualTo("P1000DT1H");
   }
+
+  @Test
+  void hugeComponentsAndFactorsRaiseTheArithmeticError() {
+    expectError("RETURN duration('P99999999999999999999D')", ArithmeticErrorException.class);
+    expectError("RETURN duration('PT99999999999999999999S')", ArithmeticErrorException.class);
+    expectError("RETURN duration({days: 1}) * 1e300", ArithmeticErrorException.class);
+    expectError("RETURN duration({days: 1}) * (0.0 / 0.0)", ArithmeticErrorException.class);
+  }
+
+  @Test
+  void negativeSubSecondFieldsNormalise() {
+    assertThat(scalar("RETURN toString(duration({milliseconds: -1500})) AS r")).isEqualTo("PT-1.5S");
+    assertThat(scalar("RETURN toString(duration({microseconds: -1})) AS r")).isEqualTo("PT-0.000001S");
+  }
 }

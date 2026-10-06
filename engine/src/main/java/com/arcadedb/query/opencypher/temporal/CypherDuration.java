@@ -131,7 +131,8 @@ public class CypherDuration implements CypherTemporalValue {
         }
       }
       return new CypherDuration(months, days, seconds, nanos);
-    } catch (final ArithmeticException e) {
+    } catch (final ArithmeticException | NumberFormatException e) {
+      // a component with more digits than a long holds is an overflow like any other, not a malformed text
       throw new ArithmeticErrorException("Duration overflow: " + m.group());
     }
   }
