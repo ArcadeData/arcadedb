@@ -173,4 +173,21 @@ public class Issue9339UpsertIndexTest extends TestHelper {
       assertThat(rs.hasNext()).isFalse();
     }
   }
+
+  @Test
+  void upsertWithReversedEqualityNeverCreatesDuplicates() {
+    database.command("sql", "CREATE DOCUMENT TYPE Rev");
+    database.command("sql", "CREATE PROPERTY Rev.code STRING");
+    database.command("sql", "CREATE INDEX ON Rev (code) UNIQUE");
+
+    // whether the planner accepts the reversed form or rejects it, two runs must leave at most one record
+    for (int i = 0; i < 2; i++) {
+      try {
+        database.transaction(() -> database.command("sql", "UPDATE Rev SET name = ? UPSERT WHERE ? = code", "x", "c1"));
+      } catch (final CommandSQLParsingException e) {
+        assertThat(e.getMessage()).contains("UNIQUE index");
+      }
+    }
+    assertThat(database.countType("Rev", false)).isLessThanOrEqualTo(1);
+  }
 }
