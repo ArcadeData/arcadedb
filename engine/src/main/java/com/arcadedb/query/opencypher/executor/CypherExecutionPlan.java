@@ -7720,10 +7720,48 @@ public class CypherExecutionPlan {
         return null;
     }
 
+    if (!isAntiJoinShapeCountedExactly(nodeLabels, edgeTypes, antiJoin, antiJoinSourceIdx, antiJoinTargetIdx, inequalityIdxA,
+        inequalityIdxB))
+      return null;
+
     return new AntiJoinChainOp(nodeLabels, edgeTypes, directions,
         antiJoinSourceIdx, antiJoinTargetIdx,
         antiJoin.antiJoinEdgeType, antiJoin.antiJoinDirection,
         inequalityIdxA, inequalityIdxB);
+  }
+
+  /**
+   * Whether {@link AntiJoinChainOp} counts this chain exactly as the row pipeline would (issue #9290). The operator counts walks by
+   * degree products, so it only applies Cypher's relationship uniqueness through the inequality between the two ends of the negated
+   * pattern, and only for the one shape verified against the row pipeline:
+   * <ul>
+   *   <li>the check position is 2 and both hops before it are of the anti-join's type, one end of the negated pattern being the
+   *   first node, and the inequality is between the negated pattern's two nodes (a walk back over the same relationship is then
+   *   excluded);</li>
+   *   <li>no hop after the check position is of a type used before it (it could reuse a relationship the operator does not track);</li>
+   *   <li>every node of the chain is labelled unless the negated pattern starts at the first node (an unlabelled node takes the
+   *   recursive path, which never applies the anti-join set when the negated pattern ends at the first node).</li>
+   * </ul>
+   * Any other shape is declined and takes the row pipeline.
+   */
+  private static boolean isAntiJoinShapeCountedExactly(final String[] nodeLabels, final String[] edgeTypes, final AntiJoinInfo antiJoin,
+      final int sourceIdx, final int targetIdx, final int inequalityIdxA, final int inequalityIdxB) {
+    // an unlabelled node makes the operator walk the chain recursively, which never applies the anti-join set when the negated
+    // pattern starts at a later node and ends at the first one
+    if (sourceIdx != 0)
+      for (final String label : nodeLabels)
+        if (label == null)
+          return false;
+    if (Math.min(sourceIdx, targetIdx) != 0 || Math.max(sourceIdx, targetIdx) != 2)
+      return false;
+    if (inequalityIdxA < 0 || Math.min(inequalityIdxA, inequalityIdxB) != 0 || Math.max(inequalityIdxA, inequalityIdxB) != 2)
+      return false;
+    if (!antiJoin.antiJoinEdgeType.equals(edgeTypes[0]) || !antiJoin.antiJoinEdgeType.equals(edgeTypes[1]))
+      return false;
+    for (int i = 2; i < edgeTypes.length; i++)
+      if (edgeTypes[i].equals(edgeTypes[0]) || edgeTypes[i].equals(edgeTypes[1]))
+        return false;
+    return true;
   }
 
   /**

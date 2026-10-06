@@ -31,6 +31,7 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -49,6 +50,10 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
   private static final ThreadLocal<BuildTestHook> BUILD_TEST_HOOK = new ThreadLocal<>();
 
   private static final long ESTIMATED_BYTES_PER_ENTRY    = 3_072L;
+  /** Distinct keys of the current run that are shared between entries, so a repeated key is one object and compares by identity (#9291). */
+  private static final int  MAX_SHARED_KEYS_PER_RUN      = 65_536;
+  private static final int  SHARING_PROBE_ENTRIES        = 32_768;
+  private static final int  SHARED_KEY_RUN_GROWTH        = 8;
   private static final long MIN_MEMORY_BUDGET_BYTES      = 1L << 20;
   private static final long WRITER_WORKER_OVERHEAD_BYTES = 8L << 20;
   private static final int  MAX_BUFFERED_RIDS_PER_GROUP  = 256;
@@ -64,6 +69,12 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
   private final int                        requestedBuildParallelism;
   private final int                        maxEntriesPerRun;
   private final List<Entry>                entries;
+  private final Map<TransactionIndexContext.ComparableKey, SharedKey> sharedKeys    = new HashMap<>();
+  private final List<TransactionIndexContext.ComparableKey>            sharedKeyList = new ArrayList<>();
+  /** Whether every entry of the current run carries a shared key, so the run can be ordered by the rank of its distinct keys. */
+  private       boolean                                                allKeysShared = true;
+  /** Cleared for the rest of a run once its first entries show that keys hardly repeat. */
+  private       boolean                                                sharingKeys   = true;
   private final BuildTestHook               buildTestHook;
   private final Map<Integer, LSMTreeIndex> indexesByBucket = new LinkedHashMap<>();
   private       LSMTreeIndexExternalSorter externalSorter;
@@ -128,9 +139,10 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
         return;
 
       registerIndex(index);
-      entries.add(new Entry(index, new TransactionIndexContext.ComparableKey(normalizedKeys), rid));
+      final SharedKey shared = shareKey(new TransactionIndexContext.ComparableKey(normalizedKeys));
+      entries.add(new Entry(index, shared.key, rid, shared.id));
       totalEntries++;
-      if (entries.size() >= maxEntriesPerRun)
+      if (entries.size() >= currentRunLimit())
         spillCurrentRun();
     });
   }
@@ -278,7 +290,7 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
       spillCurrentRun();
     else {
       final long started = System.nanoTime();
-      entries.sort(LSMTreeIndexBulkLoader::compareEntries);
+      sortRun(entries);
       inMemorySortNanos += System.nanoTime() - started;
     }
   }
@@ -363,6 +375,82 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
       throw new IndexException("Multiple indexes are associated with bucket " + index.getAssociatedBucketId());
   }
 
+  /**
+   * Returns the shared holder of the key of the current run that equals this one, so entries with a repeated key (a low-cardinality
+   * column) share one object: it saves the memory of the copies, and the run is later ordered by comparing its few distinct keys
+   * once instead of every pair of entries (#9291). Once the table is full new keys are no longer retained (their entries carry
+   * {@link Entry#NO_GROUP} and the run falls back to comparing keys), which bounds the table for high-cardinality columns where
+   * sharing would find nothing.
+   */
+  /**
+   * How many entries the current run may hold. {@code maxEntriesPerRun} budgets {@link #ESTIMATED_BYTES_PER_ENTRY} for an entry that
+   * carries its own key; while the keys of the run repeat heavily (every key is shared and there are at most one distinct key per 16
+   * entries) an entry is only the record and its rid, so the run is allowed {@link #SHARED_KEY_RUN_GROWTH} times as many and a
+   * low-cardinality build spills, and merges, far less (#9291).
+   */
+  private int currentRunLimit() {
+    final int size = entries.size();
+    if (size >= SHARING_PROBE_ENTRIES && sharingKeys && allKeysShared && (long) sharedKeyList.size() * 16L <= size)
+      return (int) Math.min(Integer.MAX_VALUE, (long) maxEntriesPerRun * SHARED_KEY_RUN_GROWTH);
+    return maxEntriesPerRun;
+  }
+
+  private SharedKey shareKey(final TransactionIndexContext.ComparableKey key) {
+    if (!sharingKeys)
+      return new SharedKey(key, Entry.NO_GROUP);
+    if (entries.size() == SHARING_PROBE_ENTRIES && sharedKeyList.size() > SHARING_PROBE_ENTRIES / 2) {
+      // keys hardly repeat: stop paying a hash lookup per entry for the rest of the run
+      sharingKeys = false;
+      allKeysShared = false;
+      sharedKeys.clear();
+      sharedKeyList.clear();
+      return new SharedKey(key, Entry.NO_GROUP);
+    }
+    final SharedKey shared = sharedKeys.get(key);
+    if (shared != null)
+      return shared;
+    if (sharedKeys.size() < MAX_SHARED_KEYS_PER_RUN) {
+      final SharedKey created = new SharedKey(key, sharedKeyList.size());
+      sharedKeys.put(key, created);
+      sharedKeyList.add(key);
+      return created;
+    }
+    allKeysShared = false;
+    return new SharedKey(key, Entry.NO_GROUP);
+  }
+
+  /**
+   * Orders a run by (key, rid). When every key is shared the distinct keys are sorted once and the entries are ordered by the int
+   * rank of their key, which is what makes a low-cardinality build cheap; otherwise it is the plain key comparison.
+   *
+   */
+  private void sortRun(final List<Entry> run) {
+    if (!allKeysShared || sharedKeyList.size() == run.size() && run.size() > 1) {
+      // either some key escaped the table or nothing repeats: ranking buys nothing over comparing the keys
+      run.sort(LSMTreeIndexBulkLoader::compareEntries);
+      return;
+    }
+    final int distinct = sharedKeyList.size();
+    final Integer[] order = new Integer[distinct];
+    for (int i = 0; i < distinct; i++)
+      order[i] = i;
+    Arrays.sort(order, (x, y) -> sharedKeyList.get(x).compareTo(sharedKeyList.get(y)));
+    final int[] rank = new int[distinct];
+    for (int i = 0; i < distinct; i++)
+      rank[order[i]] = i;
+    run.sort((left, right) -> {
+      final int byKey = Integer.compare(rank[left.group()], rank[right.group()]);
+      return byKey != 0 ? byKey : left.rid().compareTo(right.rid());
+    });
+  }
+
+  private void resetSharedKeys() {
+    sharedKeys.clear();
+    sharedKeyList.clear();
+    allKeysShared = true;
+    sharingKeys = true;
+  }
+
   private void spillCurrentRun() {
     if (entries.isEmpty())
       return;
@@ -371,8 +459,10 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
       if (externalSorter == null)
         externalSorter = new LSMTreeIndexExternalSorter(database, binaryKeyTypes, indexesByBucket, spillDirectory,
             mergeFanIn, memoryBudgetBytes, spillWorkspace, requestedBuildParallelism);
-      externalSorter.addRun(entries);
+      sortRun(entries);
+      externalSorter.addRun(entries, true);
       entries.clear();
+      resetSharedKeys();
     } catch (final IOException error) {
       throw new IndexException("Cannot spill external sort run for index '" + indexName + "'", error);
     }
@@ -414,11 +504,20 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
   }
 
   static int compareEntries(final Entry left, final Entry right) {
-    final int keyComparison = left.key().compareTo(right.key());
+    final int keyComparison = left.key() == right.key() ? 0 : left.key().compareTo(right.key());
     return keyComparison != 0 ? keyComparison : left.rid().compareTo(right.rid());
   }
 
-  static record Entry(LSMTreeIndex index, TransactionIndexContext.ComparableKey key, RID rid) {
+  /** @param group the id of the shared key within the run being collected, {@link #NO_GROUP} when the key is not shared */
+  static record Entry(LSMTreeIndex index, TransactionIndexContext.ComparableKey key, RID rid, int group) {
+    static final int NO_GROUP = -1;
+
+    Entry(final LSMTreeIndex index, final TransactionIndexContext.ComparableKey key, final RID rid) {
+      this(index, key, rid, NO_GROUP);
+    }
+  }
+
+  private record SharedKey(TransactionIndexContext.ComparableKey key, int id) {
   }
 
   static void setBuildTestHook(final BuildTestHook hook) {
