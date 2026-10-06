@@ -18,6 +18,7 @@
  */
 package com.arcadedb.bolt;
 
+import java.io.BufferedOutputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
@@ -28,17 +29,28 @@ import java.io.OutputStream;
  */
 public class BoltChunkedOutput {
   private static final int MAX_CHUNK_SIZE = 65535;
+  private static final int BUFFER_SIZE    = 16384;
 
   private final DataOutputStream out;
 
   public BoltChunkedOutput(final OutputStream out) {
-    this.out = new DataOutputStream(out);
+    this.out = new DataOutputStream(new BufferedOutputStream(out, BUFFER_SIZE));
   }
 
   /**
    * Write a complete message with chunked framing.
    */
   public void writeMessage(final byte[] messageData) throws IOException {
+    writeMessage(messageData, true);
+  }
+
+  /**
+   * Write a complete message with chunked framing. With {@code flush} false the bytes stay in the buffer until a later
+   * flush, so a stream of RECORD messages is coalesced into a few large socket writes instead of three per record.
+   * The caller must end the batch with a flushing message (SUCCESS/FAILURE) or {@link #flush()}; a slow producer
+   * therefore shows its rows to the client only when the buffer fills or the PULL ends.
+   */
+  public void writeMessage(final byte[] messageData, final boolean flush) throws IOException {
     int offset = 0;
     final int length = messageData.length;
 
@@ -56,7 +68,8 @@ public class BoltChunkedOutput {
 
     // Write end marker (two zero bytes)
     out.writeShort(0);
-    out.flush();
+    if (flush)
+      out.flush();
   }
 
   /**

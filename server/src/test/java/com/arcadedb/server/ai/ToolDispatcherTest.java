@@ -25,6 +25,7 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Verifies that {@link ToolDispatcher} executes the gateway's tool requests
@@ -167,5 +168,92 @@ class ToolDispatcherTest extends BaseGraphServerTest {
     assertThat(result.has("error")).isFalse();
     assertThat(result.getString("version", null)).isNotBlank();
     assertThat(result.getJSONArray("databases").length()).isGreaterThan(0);
+  }
+
+  /**
+   * Issue #8721: a tool that throws instead of returning {@code {"error":...}} must still give the relay a result to hand back
+   * to the model, or the gateway's model loop waits on that tool call until its own timeout.
+   */
+  @Test
+  void executeSafelyTurnsAThrownExceptionIntoAnErrorResult() {
+    final JSONObject result = new JSONObject(throwing(new IllegalStateException("tool exploded"))
+        .executeSafely("get_schema", new JSONObject()));
+
+    assertThat(result.getString("error", "")).contains("get_schema").contains("tool exploded");
+  }
+
+  /** {@link ToolDispatcher#execute} catches every Exception already: an Error is what reaches the relay. */
+  @Test
+  void executeSafelyTurnsAThrownErrorIntoAnErrorResult() {
+    final JSONObject result = new JSONObject(throwing(new StackOverflowError()).executeSafely("query_database", new JSONObject()));
+
+    assertThat(result.getString("error", "")).contains("query_database").contains("StackOverflowError");
+  }
+
+  @Test
+  void executeSafelyDoesNotSwallowOutOfMemory() {
+    final ToolDispatcher dispatcher = throwing(new OutOfMemoryError("test"));
+
+    assertThatThrownBy(() -> dispatcher.executeSafely("get_schema", new JSONObject())).isInstanceOf(OutOfMemoryError.class);
+    assertThatThrownBy(() -> throwing(new InternalError("test")).executeSafely("get_schema", new JSONObject()))
+        .isInstanceOf(InternalError.class);
+  }
+
+  @Test
+  void executeSafelyAnswersANullResultWithAnErrorResult() {
+    final ToolDispatcher dispatcher = new ToolDispatcher(null, null, "db") {
+      @Override
+      public String execute(final String toolName, final JSONObject args) {
+        return null;
+      }
+    };
+
+    assertThat(new JSONObject(dispatcher.executeSafely("get_schema", new JSONObject())).getString("error", "")).contains("no result");
+  }
+
+  @Test
+  void executeSafelyAnswersUnusableArgumentsWithAnErrorResultWithoutRunningTheTool() {
+    final ToolDispatcher dispatcher = throwing(new AssertionError("must not run"));
+
+    assertThat(new JSONObject(dispatcher.executeSafely("get_schema", null)).getString("error", "")).contains("not a JSON object");
+  }
+
+  @Test
+  void executeSafelyReturnsTheResultOfATool() {
+    final ToolDispatcher dispatcher = new ToolDispatcher(getServer(0), rootUser(), getDatabaseName());
+
+    final JSONObject result = new JSONObject(dispatcher.executeSafely("get_server_info", new JSONObject()));
+
+    assertThat(result.has("error")).isFalse();
+    assertThat(result.getString("version", null)).isNotBlank();
+  }
+
+  @Test
+  void argumentsAcceptAnObjectOrAStringHoldingOne() {
+    final JSONObject args = new JSONObject().put("database", "db");
+
+    assertThat(ToolDispatcher.arguments(new JSONObject().put("arguments", args)).getString("database")).isEqualTo("db");
+    assertThat(ToolDispatcher.arguments(new JSONObject().put("arguments", args.toString())).getString("database")).isEqualTo("db");
+    assertThat(ToolDispatcher.arguments(new JSONObject()).isEmpty()).isTrue();
+    assertThat(ToolDispatcher.arguments(new JSONObject().put("arguments", "  ")).isEmpty()).isTrue();
+  }
+
+  @Test
+  void argumentsThatAreNotAJsonObjectAreNull() {
+    assertThat(ToolDispatcher.arguments(new JSONObject().put("arguments", new JSONArray().put(1)))).isNull();
+    assertThat(ToolDispatcher.arguments(new JSONObject().put("arguments", "not json at all"))).isNull();
+    assertThat(ToolDispatcher.arguments(new JSONObject().put("arguments", "[1,2]"))).isNull();
+    assertThat(ToolDispatcher.arguments(new JSONObject().put("arguments", 42))).isNull();
+  }
+
+  private static ToolDispatcher throwing(final Throwable failure) {
+    return new ToolDispatcher(null, null, "db") {
+      @Override
+      public String execute(final String toolName, final JSONObject args) {
+        if (failure instanceof RuntimeException e)
+          throw e;
+        throw (Error) failure;
+      }
+    };
   }
 }

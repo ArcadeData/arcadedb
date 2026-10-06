@@ -98,13 +98,21 @@ final class GrpcTimeSeriesSupport {
               .withDescription("Missing tag key on a TimeSeriesPoint of type '" + measurement + "'")
               .asRuntimeException();
         final Object value = GrpcTypeConverter.fromGrpcValue(tag.getValue());
-        if (value != null)
+        if (value != null) {
           // The proto types tags as map<string, GrpcValue>, so nothing at the wire boundary stops a bytes,
           // list or map value arriving here. Refuse it - String.valueOf(byte[]) is an object identity, stored
           // as a different meaningless tag on every run. IllegalArgumentException, which GrpcErrorMapper turns
           // into INVALID_ARGUMENT, matching how this class refuses an unrecognized precision or aggregation.
-          tags.put(tag.getKey(),
-              String.valueOf(TimeSeriesGateway.requireStorableTagValue(tag.getKey(), value)));
+          final String text = String.valueOf(TimeSeriesGateway.requireStorableTagValue(tag.getKey(), value));
+          // An empty value is refused as the line protocol refuses "host=" (issue #8647), in the Status form so the
+          // description survives the error mapper. An unset GrpcValue is an absent tag and never gets here.
+          if (text.isEmpty())
+            throw Status.INVALID_ARGUMENT
+                .withDescription("Tag '" + tag.getKey() + "' has an empty value on a TimeSeriesPoint of type '" + measurement
+                    + "'; leave the tag unset to write a sample without it")
+                .asRuntimeException();
+          tags.put(tag.getKey(), text);
+        }
       }
 
       final Map<String, Object> fields = new LinkedHashMap<>();

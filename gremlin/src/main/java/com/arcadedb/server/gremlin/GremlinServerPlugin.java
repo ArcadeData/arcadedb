@@ -30,7 +30,10 @@ import org.apache.tinkerpop.gremlin.server.Settings;
 
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.IOException;
 import java.lang.reflect.Field;
+import java.net.InetAddress;
+import java.net.ServerSocket;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -39,13 +42,20 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
 public class GremlinServerPlugin implements ServerPlugin {
+  private static final long                 START_TIMEOUT_SECONDS      = 60;
   private static final String               CONFIG_GREMLIN_SERVER_YAML = "gremlin-server.yaml";
   private static final String               IO_REGISTRIES_KEY          = "ioRegistries";
   private static final String               ARCADE_IO_REGISTRY         = ArcadeIoRegistry.class.getName();
@@ -118,6 +128,10 @@ public class GremlinServerPlugin implements ServerPlugin {
       if (key.startsWith("gremlin."))
         applyServerSetting(settings, key.substring("gremlin.".length()), configuration.getValue(key, null));
 
+    // GremlinServer cannot report an OS-chosen port, so a configured 0 becomes a concrete free port here
+    if (settings.port == 0)
+      settings.port = findFreePort(settings.host);
+
     // Ensure databases referenced in the graphs section of gremlin-server.yaml are created/opened.
     // This restores the pre-2026.2.1 behaviour where a static `graphs:` entry in gremlin-server.yaml
     // would cause ArcadeGraph to create the database on first access (issue #3661).
@@ -136,8 +150,26 @@ public class GremlinServerPlugin implements ServerPlugin {
 
     gremlinServer = new GremlinServer(settings, gremlinExecutorService);
     try {
-      gremlinServer.start();
+      // start() only reports a failure of the bootstrap itself: the bind is asynchronous, and an address already in use
+      // arrives as an exceptional completion of the returned future. Waiting on it makes a failed bind fail the start
+      // like the Bolt, Postgres, Redis, MongoDB and HTTP listeners do, instead of leaving the plugin "started" and its
+      // port advertised with nothing listening on it (issue #9319).
+      within(gremlinServer::start);
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      releaseAfterFailedStart();
+      throw new ServerException("Interrupted while starting the GremlinServer plugin", e);
+    } catch (final ExecutionException e) {
+      releaseAfterFailedStart();
+      final Throwable cause = e.getCause() != null ? e.getCause() : e;
+      throw new ServerException("Error on starting GremlinServer plugin on " + settings.host + ":" + settings.port + ": "
+          + cause.getMessage(), cause);
+    } catch (final TimeoutException e) {
+      releaseAfterFailedStart();
+      throw new ServerException("The GremlinServer plugin did not finish starting on " + settings.host + ":" + settings.port
+          + " within " + START_TIMEOUT_SECONDS + " seconds", e);
     } catch (final Exception e) {
+      releaseAfterFailedStart();
       throw new ServerException("Error on starting GremlinServer plugin", e);
     }
     boundPort = settings.port;
@@ -149,6 +181,68 @@ public class GremlinServerPlugin implements ServerPlugin {
         engineNames.addAll(settings.scriptEngines.keySet());
       arcadeGraphManager.bindScriptEnginesLive(gremlinServer.getServerGremlinExecutor().getGremlinExecutor(), engineNames);
     }
+  }
+
+  /**
+   * A free port for a configured port of {@code 0}. GremlinServer never reports the port it bound when it was asked for
+   * an OS-chosen one (and offers no public way to read it), so the port is chosen here, before the server is built, and
+   * configured like any other: the advertised port is then the one the server listens on, and a port taken in the
+   * meantime fails the start loudly like any other bind failure.
+   */
+  private static int findFreePort(final String host) {
+    try (final ServerSocket probe = new ServerSocket(0, 1, host != null && !host.isBlank() ? InetAddress.getByName(host) : null)) {
+      return probe.getLocalPort();
+    } catch (final IOException e) {
+      throw new ServerException("Cannot find a free port for the Gremlin Server on '" + host + "': " + e.getMessage(), e);
+    }
+  }
+
+  /**
+   * Runs a lifecycle operation of the Gremlin Server and waits for its future, the whole of it under one deadline: in
+   * TinkerPop 3.8.2 {@code start()} and {@code stop()} run hooks and close processors before they return the future, so a
+   * deadline applied only to the future never starts counting if the call itself blocks.
+   */
+  private static <T> T within(final Callable<CompletableFuture<T>> operation)
+      throws InterruptedException, ExecutionException, TimeoutException {
+    final ExecutorService executor = Executors.newSingleThreadExecutor(runnable -> {
+      final Thread thread = new Thread(runnable, "arcadedb-gremlin-lifecycle");
+      thread.setDaemon(true);
+      return thread;
+    });
+    try {
+      final Future<T> future = executor.submit(() -> operation.call().get());
+      try {
+        return future.get(START_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+      } catch (final TimeoutException e) {
+        future.cancel(true);
+        throw e;
+      } catch (final ExecutionException e) {
+        // the operation's own failure arrives wrapped once by each future
+        Throwable cause = e;
+        while (cause instanceof ExecutionException && cause.getCause() != null)
+          cause = cause.getCause();
+        throw new ExecutionException(cause);
+      }
+    } finally {
+      executor.shutdownNow();
+    }
+  }
+
+  /** The failed start leaves nothing running: the half-started server and its executor are stopped here, not left to the caller. */
+  private void releaseAfterFailedStart() {
+    try {
+      stopService();
+    } catch (final Exception e) {
+      // BEST EFFORT: THE START FAILURE IS WHAT THE CALLER MUST SEE
+      LogManager.instance().log(this, Level.WARNING, "Error releasing the Gremlin Server after a failed start: %s", null,
+          e.toString());
+    }
+  }
+
+  /** Active only while the Gremlin Server is listening, so a plugin whose bind failed is not reported as started. */
+  @Override
+  public boolean isActive() {
+    return boundPort > 0;
   }
 
   /**
@@ -342,7 +436,21 @@ public class GremlinServerPlugin implements ServerPlugin {
       if (graphManager instanceof ArcadeGraphManager) {
         ((ArcadeGraphManager) graphManager).closeAll();
       }
-      gremlinServer.stop().join();
+      boolean stopped = false;
+      try {
+        // Bounded like the start: a server whose bind failed must not be able to hang the shutdown
+        within(gremlinServer::stop);
+        stopped = true;
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      } catch (final ExecutionException | TimeoutException e) {
+        LogManager.instance().log(this, Level.SEVERE,
+            "Error or timeout stopping the Gremlin Server, which may still be running and holding its port: %s", null,
+            e.toString());
+      }
+      // A server that did not confirm its stop keeps its handle, so a later stopService() can try again
+      if (stopped)
+        gremlinServer = null;
     }
     if (gremlinExecutorService != null) {
       gremlinExecutorService.shutdownNow();

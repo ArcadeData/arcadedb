@@ -2059,13 +2059,32 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   @Override
-  public boolean transaction(final TransactionScope txBlock, final boolean joinCurrentTx, int attempts,
+  public boolean transaction(final TransactionScope txBlock, final boolean joinCurrentTx, final int attempts,
       final OkCallback ok,
       final ErrorCallback error) {
     if (txBlock == null)
       throw new IllegalArgumentException("Transaction block is null");
 
+    // The outermost call owns the RetryScope, which outlives the rollbacks between its attempts (issue #9322)
+    // A thread that never touched this database has no context yet: begin() creates it on first use, so it is created here
+    // instead, or the first retried call of the thread would run without a scope
+    final DatabaseContext.DatabaseContextTL existing = DatabaseContext.INSTANCE.getContextIfExists(databasePath);
+    final DatabaseContext.DatabaseContextTL context = existing != null ? existing : DatabaseContext.INSTANCE.init(this);
+    context.enterRetryScope();
+    try {
+      return transactionWithRetries(txBlock, joinCurrentTx, attempts, ok, error, context);
+    } finally {
+      context.exitRetryScope();
+    }
+  }
+
+  private boolean transactionWithRetries(final TransactionScope txBlock, final boolean joinCurrentTx, int attempts,
+      final OkCallback ok, final ErrorCallback error, final DatabaseContext.DatabaseContextTL context) {
+
     ArcadeDBException lastException = null;
+
+    // Where this call's slots begin, so each of its own retries meets the slots its first attempt filled
+    final int retryScopeBase = context != null ? context.retryScopeCursor() : 0;
 
     if (attempts < 1)
       attempts = 1;
@@ -2077,6 +2096,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
     for (int retry = 0; retry < attempts; ++retry) {
       boolean createdNewTx = true;
+
+      if (retry > 0 && context != null)
+        context.restoreRetryScopeCursor(retryScopeBase);
 
       // Declared OUTSIDE the try so the catch can read them; sampled just after begin(), so they refer to the
       // transaction this attempt's block actually runs in. See the guard in the catch below (#7916).

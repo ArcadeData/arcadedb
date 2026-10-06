@@ -37,6 +37,74 @@ class BoltChunkedIOTest {
 
   // ============ BoltChunkedOutput tests ============
 
+  /** Counts the write calls that reach the "socket", each one being a syscall and a TCP segment on a real connection. */
+  private static final class CountingStream extends ByteArrayOutputStream {
+    int writes;
+
+    @Override
+    public synchronized void write(final int b) {
+      writes++;
+      super.write(b);
+    }
+
+    @Override
+    public synchronized void write(final byte[] b, final int off, final int len) {
+      writes++;
+      super.write(b, off, len);
+    }
+  }
+
+  @Test
+  void messageReachesTheSocketInOneWrite() throws Exception {
+    final CountingStream socket = new CountingStream();
+    final BoltChunkedOutput output = new BoltChunkedOutput(socket);
+
+    output.writeMessage(new byte[] { 1, 2, 3, 4, 5 });
+
+    assertThat(socket.writes).isEqualTo(1);
+    assertThat(socket.size()).isEqualTo(9);
+  }
+
+  @Test
+  void unflushedMessagesAreBatchedUntilFlush() throws Exception {
+    final CountingStream socket = new CountingStream();
+    final BoltChunkedOutput output = new BoltChunkedOutput(socket);
+
+    for (int i = 0; i < 100; i++)
+      output.writeMessage(new byte[] { 1, 2, 3, 4, 5 }, false);
+    assertThat(socket.writes).isEqualTo(0);
+
+    output.flush();
+    assertThat(socket.writes).isEqualTo(1);
+    assertThat(socket.size()).isEqualTo(900);
+  }
+
+  @Test
+  void flushingMessageEmitsPriorUnflushedMessagesInOrder() throws Exception {
+    final CountingStream socket = new CountingStream();
+    final BoltChunkedOutput output = new BoltChunkedOutput(socket);
+
+    output.writeMessage(new byte[] { 1 }, false);
+    output.writeMessage(new byte[] { 2 }, false);
+    output.writeMessage(new byte[] { 3 });
+
+    assertThat(socket.toByteArray()).containsExactly(0, 1, 1, 0, 0, 0, 1, 2, 0, 0, 0, 1, 3, 0, 0);
+  }
+
+  @Test
+  void unflushedMessagesLargerThanTheBufferSpillWithoutFlush() throws Exception {
+    final CountingStream socket = new CountingStream();
+    final BoltChunkedOutput output = new BoltChunkedOutput(socket);
+
+    for (int i = 0; i < 10; i++)
+      output.writeMessage(new byte[10_000], false);
+
+    assertThat(socket.size()).isGreaterThan(0).isLessThan(10 * 10_004);
+
+    output.flush();
+    assertThat(socket.size()).isEqualTo(10 * 10_004);
+  }
+
   @Test
   void writeEmptyMessage() throws Exception {
     final ByteArrayOutputStream baos = new ByteArrayOutputStream();

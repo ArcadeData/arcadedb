@@ -317,6 +317,46 @@ class LineProtocolParserTest {
     assertThat(malformedLines).containsExactly(2);
   }
 
+  /**
+   * Issue #8647, the value-side sibling of #8563: {@code cpu,host= value=1} used to be stored with {@code host=""}. The
+   * InfluxDB line protocol rejects a tag with no value ("missing tag value"), so the line is now malformed, in every
+   * position of the tag set, while the other lines of the batch still parse.
+   */
+  @Test
+  void emptyTagValueIsRejected() {
+    for (final String line : new String[] { //
+        "cpu,host= value=1 1700000000000", //
+        "cpu,host=,region=east value=1 1700000000000", //
+        "cpu,region=east,host= value=1 1700000000000", //
+        "cpu,region=east,host=,zone=a value=1", //
+        "cpu,host=", //
+        "cpu,host= value=1" })
+      assertThat(LineProtocolParser.parse(line, Precision.MILLISECONDS)).as(line).isEmpty();
+  }
+
+  @Test
+  void emptyTagValueLineIsReportedAsMalformedAndTheOthersStillParse() {
+    final List<Integer> malformedLines = new ArrayList<>();
+    final List<Sample> samples = LineProtocolParser.parse("""
+        cpu,host=a value=1 1700000000000
+        cpu,host=,region=east value=2 1700000000001
+        cpu,host=b value=3 1700000000002
+        """, Precision.MILLISECONDS, malformedLines);
+
+    assertThat(samples).hasSize(2);
+    assertThat(samples.get(0).getTags()).containsExactlyEntriesOf(Map.of("host", "a"));
+    assertThat(samples.get(1).getTags()).containsExactlyEntriesOf(Map.of("host", "b"));
+    assertThat(malformedLines).containsExactly(2);
+  }
+
+  @Test
+  void escapedSpaceTagValueIsNotAnEmptyValue() {
+    final List<Sample> samples = LineProtocolParser.parse("cpu,host=\\  value=1 1700000000000", Precision.MILLISECONDS);
+
+    assertThat(samples).hasSize(1);
+    assertThat(samples.getFirst().getTags()).containsExactlyEntriesOf(Map.of("host", " "));
+  }
+
   @Test
   void escapedEqualsInTagKeyIsNotAnEmptyKey() {
     final List<Sample> samples = LineProtocolParser.parse("cpu,\\=k=v value=1 1700000000000", Precision.MILLISECONDS);

@@ -46,8 +46,9 @@ public final class LineProtocolWriter {
    * @param fields      field columns; at least one is required, a line with none is rejected by the parser
    * @param timestampMs the sample timestamp, epoch milliseconds
    *
-   * @throws IllegalArgumentException if the measurement is blank, no field is present, or any element carries a
-   *                                  line terminator (which would split one sample across two lines)
+   * @throws IllegalArgumentException if the measurement is blank, no field is present, a tag value is empty, or any
+   *                                  element carries a line terminator (which would split one sample across two
+   *                                  lines)
    */
   public static void appendLine(final StringBuilder out, final String measurement, final Map<String, ?> tags,
       final Map<String, ?> fields, final long timestampMs) {
@@ -67,10 +68,10 @@ public final class LineProtocolWriter {
         escapeKey(out, tag.getKey());
         out.append('=');
         // Refused rather than stringified: a byte[] has no toString() of its own, so it would be written as
-        // [B@6bc7c054 - a different meaningless tag on every run. Same rule the gRPC ingest path applies, so
-        // the two protocols reject the same value instead of both mis-encoding it.
-        escapeKey(out, String.valueOf(
-            TimeSeriesGateway.requireStorableTagValue(tag.getKey(), tag.getValue())));
+        // [B@6bc7c054 - a different meaningless tag on every run. An empty value is refused too: "host=" is a
+        // malformed line the server would drop (issue #8647). Same rule the gRPC ingest path applies, so the
+        // two protocols reject the same value instead of both mis-encoding it.
+        escapeKey(out, TimeSeriesGateway.requireWritableTagText(tag.getKey(), tag.getValue()));
       }
     }
 

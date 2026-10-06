@@ -25,12 +25,16 @@ import java.io.OutputStream;
 
 /**
  * OutputStream that wraps data in WebSocket binary frames.
- * Buffers writes and sends as a single frame on flush().
+ * Buffers writes and sends them as a frame on flush(), or as soon as {@link #MAX_BUFFERED_BYTES} are pending, so a long
+ * unflushed run of messages (a PULL streaming a large result) never accumulates on the heap. A WebSocket message may
+ * be split across frames of a byte stream, and the Bolt chunking inside is untouched.
  * Used to transport Bolt protocol over WebSocket connections (e.g. Neo4j Desktop).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class BoltWebSocketOutputStream extends OutputStream {
+  static final int MAX_BUFFERED_BYTES = 64 * 1024;
+
   private final DataOutputStream      out;
   private final ByteArrayOutputStream buffer = new ByteArrayOutputStream();
 
@@ -41,38 +45,46 @@ class BoltWebSocketOutputStream extends OutputStream {
   @Override
   public void write(final int b) throws IOException {
     buffer.write(b);
+    if (buffer.size() >= MAX_BUFFERED_BYTES)
+      emitFrame();
   }
 
   @Override
   public void write(final byte[] b, final int off, final int len) throws IOException {
     buffer.write(b, off, len);
+    if (buffer.size() >= MAX_BUFFERED_BYTES)
+      emitFrame();
   }
 
   @Override
   public void flush() throws IOException {
-    if (buffer.size() > 0) {
-      final byte[] data = buffer.toByteArray();
-      buffer.reset();
-      writeFrame(data);
-    }
+    emitFrame();
     out.flush();
   }
 
-  private void writeFrame(final byte[] payload) throws IOException {
+  private void emitFrame() throws IOException {
+    if (buffer.size() == 0)
+      return;
+    writeFrame(buffer);
+    buffer.reset();
+  }
+
+  private void writeFrame(final ByteArrayOutputStream payload) throws IOException {
+    final int length = payload.size();
     // FIN bit + binary opcode (0x82)
     out.writeByte(0x82);
 
     // Server-to-client frames are NOT masked
-    if (payload.length < 126) {
-      out.writeByte(payload.length);
-    } else if (payload.length < 65536) {
+    if (length < 126) {
+      out.writeByte(length);
+    } else if (length < 65536) {
       out.writeByte(126);
-      out.writeShort(payload.length);
+      out.writeShort(length);
     } else {
       out.writeByte(127);
-      out.writeLong(payload.length);
+      out.writeLong(length);
     }
 
-    out.write(payload);
+    payload.writeTo(out);
   }
 }

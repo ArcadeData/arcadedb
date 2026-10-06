@@ -33,6 +33,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #8646: {@link TimeSeriesGateway#write} built each row by looking up the type's DECLARED columns in the
@@ -148,5 +149,17 @@ class Issue8646TimeSeriesUndeclaredKeysTest extends TestHelper {
       assertThat(row.<Double>getProperty("temp")).isEqualTo(21.5);
       assertThat(rs.hasNext()).isFalse();
     }
+  }
+
+  /**
+   * A mistyped policy must be refused, not read as some other value: the gateway treats anything but {@code ignore}
+   * as {@code reject}, so an operator who wrote {@code 'ignroe'} would otherwise keep rejecting without being told.
+   */
+  @Test
+  void aMistypedPolicyIsRefused() {
+    assertThatThrownBy(() -> database.command("sql", "ALTER DATABASE `arcadedb.timeSeriesUndeclaredKeys` 'ignroe'"))
+        .hasStackTraceContaining("Allowed values are");
+    assertThat(database.getConfiguration().getValueAsString(GlobalConfiguration.TIMESERIES_UNDECLARED_KEYS))
+        .isEqualTo("reject");
   }
 }

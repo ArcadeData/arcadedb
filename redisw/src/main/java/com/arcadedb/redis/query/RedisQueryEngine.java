@@ -19,10 +19,12 @@
 package com.arcadedb.redis.query;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.RetryScope;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandParsingException;
@@ -82,6 +84,9 @@ public class RedisQueryEngine implements QueryEngine {
   // Batch separator: any line break, as the executor has always split on (String.split("\\R")).
   private static final Pattern LINE_SEPARATOR = Pattern.compile("\\R");
   private static final Pattern COMMAND_PATTERN = Pattern.compile("(\\{[^{}]*(?:\\{[^{}]*\\}[^{}]*)*\\})|\"([^\"]*)\"|'([^']*)'|(\\S+)");
+  private static final String RAM_OVERLAY_ATTACHMENT = "redis.ramOverlay";
+  /** The commands that take a value from the shared RAM map and so keep a {@link RamSlot} across retries. */
+  private static final Set<String> RAM_SLOT_COMMANDS = Set.of("INCR", "INCRBY", "INCRBYFLOAT", "DECR", "DECRBY", "GETDEL");
 
   protected RedisQueryEngine(final DatabaseInternal database) {
     this.database = database;
@@ -303,14 +308,16 @@ public class RedisQueryEngine implements QueryEngine {
       return createResultSet("OK");
 
     final List<Object> results = new ArrayList<>();
+    int position = 0;
     for (final Object step : plan) {
       if (step instanceof String command)
-        results.add(executeSingleCommandInternal(command));
+        results.add(executeSingleCommandInternal(command, looseSlot(position, command)));
       else {
         @SuppressWarnings("unchecked")
         final List<String> commands = (List<String>) step;
         results.addAll(executeTransaction(commands));
       }
+      position++;
     }
     return createResultSet(results);
   }
@@ -334,16 +341,17 @@ public class RedisQueryEngine implements QueryEngine {
     @SuppressWarnings("unchecked")
     final List<Object>[] committed = new List[1];
 
-    // Deliberately OUTSIDE the retried block, unlike `committed`: one slot per command, surviving the attempts, so a
-    // retry answers with the value the first attempt already took from the shared map instead of taking another.
-    final RamSlot[] slots = new RamSlot[commands.size()];
-    for (int i = 0; i < slots.length; i++)
-      slots[i] = new RamSlot();
-
+    // One slot per command, taken from the RetryScope of the transaction() call below or, when this block joined an outer
+    // transaction, of the call that owns it (the HTTP command endpoint, which re-parses the batch and calls in again on a
+    // retry): the slots outlive the attempts, so a retry answers with the value the first attempt already took from the
+    // shared map instead of taking another (issue #9322).
     database.transaction(() -> {
+      final RetryScope scope = retryScope();
       final List<Object> attemptResults = new ArrayList<>(commands.size());
-      for (int i = 0; i < commands.size(); i++)
-        attemptResults.add(executeSingleCommandInternal(commands.get(i), slots[i]));
+      for (int i = 0; i < commands.size(); i++) {
+        final String command = commands.get(i);
+        attemptResults.add(executeSingleCommandInternal(command, slotFor(scope, i, command)));
+      }
       committed[0] = attemptResults;
     });
 
@@ -400,7 +408,49 @@ public class RedisQueryEngine implements QueryEngine {
     }
   }
 
-  private static final String RAM_OVERLAY_ATTACHMENT = "redis.ramOverlay";
+
+  /**
+   * @return the state that survives the attempts of the retried transaction call this request runs under, or null when
+   * none is running. A rollback drops a transaction's attachments, so what an INCR/GETDEL took from the shared map
+   * cannot live there (issue #9322).
+   */
+  private RetryScope retryScope() {
+    final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
+    return context != null ? context.getRetryScope() : null;
+  }
+
+  /**
+   * The slot of a command run outside a MULTI/EXEC block: kept across the retries of the request, null when none. It is
+   * keyed by the command text, so a retry that reaches this position with a different command gets a fresh slot and the
+   * effect of that command is applied again instead of answering with another command's value.
+   */
+  private RamSlot looseSlot(final int index, final String command) {
+    return slotFor(retryScope(), index, command);
+  }
+
+  /**
+   * The slot of a command, or null for one that never applies a non-rollbackable effect (GET, SET, HSET, ...): only
+   * INCR/DECR/GETDEL take values from the shared map, so only they need to remember them across a retry. Which commands
+   * need one depends on the command text alone, so every attempt of a retry allocates the same positions.
+   */
+  private static RamSlot slotFor(final RetryScope scope, final int index, final String command) {
+    if (scope == null)
+      return null;
+    // The command name is taken with the same tokenization parseCommand uses (any whitespace separates, a name may be
+    // quoted), or a command the parser accepts would be run without a slot and applied again by a retry
+    final Matcher matcher = COMMAND_PATTERN.matcher(command.trim());
+    if (!matcher.find())
+      return null;
+    final String name = matcher.group(2) != null ? matcher.group(2) : matcher.group(3) != null ? matcher.group(3) : matcher.group(4);
+    if (name == null)
+      return null;
+    final String upper = name.toUpperCase(Locale.ENGLISH);
+    if (RAM_SLOT_COMMANDS.contains(upper))
+      // keyed by the position in the block as well as the text: a command without a slot (a SET) that turns up before this
+      // one on a retry shifts it, and the reserved reply of the earlier attempt is then not reused for another input
+      return scope.nextSlot(index + "#" + command, RamSlot::new);
+    return null;
+  }
 
   /**
    * @return the RAM overlay of the active transaction, created and bound to its commit on first use, or null when no
@@ -424,15 +474,8 @@ public class RedisQueryEngine implements QueryEngine {
    * Executes a single command and returns a ResultSet.
    */
   private ResultSet executeSingleCommand(final String query) {
-    final Object result = executeSingleCommandInternal(query);
+    final Object result = executeSingleCommandInternal(query, looseSlot(0, query));
     return createResultSet(result);
-  }
-
-  /**
-   * Executes a single command and returns the raw result.
-   */
-  private Object executeSingleCommandInternal(final String query) {
-    return executeSingleCommandInternal(query, null);
   }
 
   /**

@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.procedures.algo;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.StallAwareStopwatch;
@@ -37,6 +38,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Regression tests for issue #6302 - the {@code algo.*} procedures whose work is multiplied by the <em>graph</em>
@@ -229,36 +231,63 @@ class Issue6302AlgoGraphDrivenWorkGuardTest {
   /**
    * {@code algo.apsp} is the sharp case, and the one worth pinning against the clock rather than the interrupt
    * flag: Floyd-Warshall's triple loop is O(V³) on an input the memory budget explicitly admits, and the
-   * deadline has to be observed <em>inside</em> it. 1500 nodes is 3.4e9 relaxations, several seconds of CPU, so
-   * a 1 s deadline lands well inside the {@code k} loop - and the whole graph is only an 18 MB matrix, which the
-   * 64 MB budget floor accepts without complaint. That is the issue's point in one fixture: the budget says yes,
-   * and before this change nothing could then say stop.
+   * deadline has to be observed <em>inside</em> it. There is no checkpoint after the loop, so a guard missing from
+   * it lets the call complete normally and {@code assertThatThrownBy} fails - provided the loop is guaranteed to
+   * outlast the deadline. That proviso is what the fixture is for.
+   * <p>
+   * It used to be a 1500-node ring, which looked like 3.4e9 relaxations but was not: the {@code dist[i][k] >= INF}
+   * skip drops every row that cannot reach {@code k} through the nodes already processed, and on a ring that is
+   * about half of them, so the real work was ~1.7e9 relaxations. A fast runner finished that inside the 1 s
+   * deadline and the test failed with "Expecting code to raise a throwable" (issue #8653).
+   * <p>
+   * The hub topology removes the skip: node 0 is the first node loaded (one bucket, so scan order is insertion
+   * order) and is linked both ways to every other node, so after {@code k = 0} every pair is reachable and every
+   * later {@code k} relaxes all V² cells. With V = 4000 that is 6.4e10 relaxations - about 30 s of CPU on a
+   * current workstation, thirty times the deadline - for a 128 MB matrix, which the budget is raised explicitly
+   * to admit rather than left to the heap-scaled default.
    * <p>
    * The elapsed bound is measured with {@link StallAwareStopwatch} so a JVM-wide pause inside the window is
    * discounted rather than charged to the procedure. It is a tripwire between "aborted from inside the loop"
-   * and "ran the loop to the end", not a latency budget: widen it rather than delete it if it ever flakes.
+   * (about 1 s: the deadline plus one {@code i} row) and "ran the loop to the end" (tens of seconds), not a
+   * latency budget: widen it rather than delete it if it ever flakes, but keep it under the full run.
    */
   @Test
   @Tag("slow")
   @Timeout(300)
   void apspObservesTheDeadlineInsideTheTripleLoop() {
+    // The 128 MB matrix below needs real headroom: on a heap this small the call would die of an OutOfMemoryError
+    // that says nothing about the deadline under test. The JVM default heap (a quarter of physical memory) clears
+    // this on GitHub-hosted runners (7 GB and up) and the build sets no -Xmx, so only a starved run skips.
+    assumeTrue(Runtime.getRuntime().maxMemory() >= 1024L * 1024 * 1024,
+        "needs a heap of at least 1 GB for the 4000 x 4000 distance matrix");
+
     final DatabaseFactory factory = new DatabaseFactory("./target/databases/test-issue-6302-apsp-deadline");
     if (factory.exists())
       factory.open().drop();
     final Database dense = factory.create();
     try {
-      dense.getSchema().createVertexType("Node");
+      dense.getSchema().createVertexType("Node", 1);
       dense.getSchema().createEdgeType("LINK");
 
-      final int nodeCount = 1500;
+      final int nodeCount = 4000;
       dense.transaction(() -> {
-        final List<MutableVertex> nodes = new ArrayList<>(nodeCount);
-        for (int i = 0; i < nodeCount; i++)
-          nodes.add(dense.newVertex("Node").set("idx", i).save());
-        for (int i = 0; i < nodeCount; i++)
-          nodes.get(i).newEdge("LINK", nodes.get((i + 1) % nodeCount), true, (Object[]) null).save();
+        final MutableVertex hub = dense.newVertex("Node").set("idx", 0).save();
+        for (int i = 1; i < nodeCount; i++) {
+          final MutableVertex spoke = dense.newVertex("Node").set("idx", i).save();
+          hub.newEdge("LINK", spoke, true, (Object[]) null).save();
+          spoke.newEdge("LINK", hub, true, (Object[]) null).save();
+        }
       });
 
+      // The whole margin rests on the hub being node index 0: anywhere else, every k before it skips all rows but
+      // one and the loop shrinks back to a size a fast runner can finish. algo.apsp numbers nodes in the order this
+      // iterator returns them, so check it here rather than trust the bucket layout.
+      assertThat(GraphEngine.getAllVertices(dense, null).next().getInteger("idx"))
+          .as("the hub must be the first node algo.apsp loads, or the triple loop skips most of its work")
+          .isEqualTo(0);
+
+      // 4000 x 4000 doubles is 128 MB, over the 64 MB floor the default budget falls back to on a small heap.
+      dense.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 256L * 1024 * 1024);
       dense.getConfiguration().setValue(GlobalConfiguration.COMMAND_TIMEOUT, 1_000L);
 
       final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
@@ -269,10 +298,15 @@ class Issue6302AlgoGraphDrivenWorkGuardTest {
       }).as("O(V³) with no knob is exactly the shape that has to be abortable")
           .hasStackTraceContaining(GlobalConfiguration.COMMAND_TIMEOUT.getKey());
 
-      stopwatch.assertGaveUpWithin(60_000L, "a Floyd-Warshall pass aborted from inside, not run to the end");
+      // Secondary to the assertion above, which already fails an unguarded loop outright (it returns, it does not
+      // throw). This one catches a check that only fires after the loop: on a runner fast enough to bring the full
+      // run under 15 s it can no longer tell the two apart, and only then does it stop adding anything.
+      stopwatch.assertGaveUpWithin(15_000L, "a Floyd-Warshall pass aborted from inside, not run to the end");
     } finally {
       dense.getConfiguration().setValue(GlobalConfiguration.COMMAND_TIMEOUT,
           GlobalConfiguration.COMMAND_TIMEOUT.getDefValue());
+      dense.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY,
+          GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY.getDefValue());
       dense.drop();
     }
   }
