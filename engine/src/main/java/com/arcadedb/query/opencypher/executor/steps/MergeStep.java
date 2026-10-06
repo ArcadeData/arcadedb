@@ -34,6 +34,7 @@ import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
+import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.MergeClause;
@@ -48,6 +49,7 @@ import com.arcadedb.query.opencypher.executor.CypherVertexReload;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.executor.LabelReplacements;
 import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
+import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
@@ -58,8 +60,12 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Property;
+import com.arcadedb.schema.Type;
 
+import java.time.temporal.Temporal;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -94,6 +100,10 @@ public class MergeStep extends AbstractExecutionStep {
   // The ON CREATE SET (and absorbed SET) items written with a created node, resolved once, on the first creation
   private       boolean             createItemsResolved;
   private       List<SetClause.SetItem> createItems;
+
+  // The storage text of the last temporal operand matchesTemporal compared against (see there); one immutable pair, so the
+  // operand and its text can never be read out of step
+  private WantedText wantedText;
 
   public MergeStep(final MergeClause mergeClause, final CommandContext context,
                    final CypherFunctionFactory functionFactory) {
@@ -483,7 +493,7 @@ public class MergeStep extends AbstractExecutionStep {
     if (type == null)
       return false;
 
-    final Map<String, Object> unboundProps = evaluateProperties(unboundPattern.getProperties(), baseResult);
+    final Map<String, Object> unboundProps = evaluateMatchProperties(unboundPattern.getProperties(), baseResult);
     final Iterator<Identifiable> indexIter = tryFindByIndex(type, label, unboundProps);
     if (indexIter == null)
       return false; // no usable index, fall back to anchor walk
@@ -495,7 +505,7 @@ public class MergeStep extends AbstractExecutionStep {
 
     final String relType = relPattern.getFirstType();
     final Map<String, Object> relProps = relPattern.hasProperties()
-        ? evaluateProperties(relPattern.getProperties(), baseResult) : null;
+        ? evaluateMatchProperties(relPattern.getProperties(), baseResult) : null;
     final Direction dir = relPattern.getDirection();
 
     while (indexIter.hasNext()) {
@@ -698,7 +708,7 @@ public class MergeStep extends AbstractExecutionStep {
 
     final String relType = relPattern.getFirstType();
     final Map<String, Object> relProps = relPattern.hasProperties()
-        ? evaluateProperties(relPattern.getProperties(), current) : null;
+        ? evaluateMatchProperties(relPattern.getProperties(), current) : null;
     final NodePattern nextPattern = pathPattern.getNode(nodeIdx + 1);
     final Direction dir = relPattern.getDirection();
 
@@ -758,7 +768,7 @@ public class MergeStep extends AbstractExecutionStep {
 
     final String relType = relPattern.getFirstType();
     final Map<String, Object> relProps = relPattern.hasProperties()
-        ? evaluateProperties(relPattern.getProperties(), current) : null;
+        ? evaluateMatchProperties(relPattern.getProperties(), current) : null;
     final NodePattern prevPattern = pathPattern.getNode(nodeIdx - 1);
     final Direction dir = relPattern.getDirection();
 
@@ -883,7 +893,7 @@ public class MergeStep extends AbstractExecutionStep {
         return;
 
       final Map<String, Object> relProps = relPattern.hasProperties()
-          ? evaluateProperties(relPattern.getProperties(), currentResult) : null;
+          ? evaluateMatchProperties(relPattern.getProperties(), currentResult) : null;
 
       @SuppressWarnings("unchecked")
       final Iterator<Identifiable> it = (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(relType, true);
@@ -949,7 +959,7 @@ public class MergeStep extends AbstractExecutionStep {
 
     final String relType = relPattern.getFirstType();
     final Map<String, Object> relProps = relPattern.hasProperties()
-        ? evaluateProperties(relPattern.getProperties(), currentResult) : null;
+        ? evaluateMatchProperties(relPattern.getProperties(), currentResult) : null;
 
     final boolean inbound = relPattern.getDirection() == Direction.IN;
     final Vertex.DIRECTION edgeDir = inbound ? Vertex.DIRECTION.IN : Vertex.DIRECTION.OUT;
@@ -1060,7 +1070,7 @@ public class MergeStep extends AbstractExecutionStep {
     if (!Labels.matches(vertex, nodePattern.getLabels(), nodePattern.isLabelDisjunction()))
       return false;
     if (nodePattern.hasProperties()) {
-      final Map<String, Object> props = evaluateProperties(nodePattern.getProperties(), result);
+      final Map<String, Object> props = evaluateMatchProperties(nodePattern.getProperties(), result);
       if (!matchesProperties(vertex, props))
         return false;
     }
@@ -1184,8 +1194,15 @@ public class MergeStep extends AbstractExecutionStep {
 
     final String[] propertyNames = bestMatchedProperties.toArray(new String[0]);
     final Object[] propertyValues = new Object[propertyNames.length];
-    for (int i = 0; i < propertyNames.length; i++)
-      propertyValues[i] = evaluatedProperties.get(propertyNames[i]);
+    for (int i = 0; i < propertyNames.length; i++) {
+      final Object value = evaluatedProperties.get(propertyNames[i]);
+      // A temporal wrapper is looked up as the java.time value the index key conversion understands; an indexed STRING
+      // property holds the storage text instead (issue #9334)
+      final Property property = type.getPolymorphicPropertyIfExists(propertyNames[i]);
+      propertyValues[i] = value instanceof CypherTemporalValue && property != null && property.getType() == Type.STRING ?
+          TemporalUtil.toCoreJavaType(value) :
+          TemporalUtil.toIndexKey(value);
+    }
 
     final Iterator<Identifiable> cursor = context.getDatabase().lookupByKey(label, propertyNames, propertyValues);
     return Labels.isInheritedIndex(bestIndex, label) ?
@@ -1199,7 +1216,7 @@ public class MergeStep extends AbstractExecutionStep {
   private List<Vertex> findAllNodes(final NodePattern nodePattern, final Result result) {
     final List<Vertex> matches = new ArrayList<>();
     final Map<String, Object> evaluatedProperties = nodePattern.hasProperties()
-        ? evaluateProperties(nodePattern.getProperties(), result)
+        ? evaluateMatchProperties(nodePattern.getProperties(), result)
         : null;
 
     final List<String> labels = nodePattern.hasLabels() ? nodePattern.getLabels() : null;
@@ -1292,6 +1309,31 @@ public class MergeStep extends AbstractExecutionStep {
     return CypherVertexReload.latest(context.getDatabase(), anchor);
   }
 
+
+  /**
+   * A temporal operand against a stored value: text is compared with the operand's storage form, then restored to its
+   * temporal type and compared by value; any other stored value is compared the way a MATCH compares it (a naive stored
+   * datetime against a zoned operand by instant, issue #9334).
+   */
+  private boolean matchesTemporal(final Document doc, final String propertyName, final Object actual,
+      final CypherTemporalValue wanted) {
+    if (actual instanceof String text) {
+      // The storage text of the operand is the same for every candidate of one MERGE: computed once, not once per row
+      WantedText cached = wantedText;
+      if (cached == null || cached.wanted != wanted) {
+        cached = new WantedText(wanted, String.valueOf(TemporalUtil.toCoreJavaType(wanted)));
+        wantedText = cached;
+      }
+      final String wantedStorageText = cached.text;
+      // The parse only runs for a text with the shape of a temporal: a scan over plain strings pays a character test
+      // A declared STRING property holds text by contract (issue #8384): it only matches the operand's own text, never a
+      // differently formatted rendering of the same instant, exactly like MATCH
+      return text.equals(wantedStorageText) || (TemporalUtil.mayBeTemporalString(text) && !TemporalUtil.isDeclaredString(doc, propertyName)
+          && InlineProperties.matchesResolvedValue(TemporalUtil.convertFromStorage(text), wanted));
+    }
+    return InlineProperties.matchesResolvedValue(actual, wanted);
+  }
+
   /**
    * Checks if a vertex/edge matches all property filters.
    *
@@ -1307,6 +1349,11 @@ public class MergeStep extends AbstractExecutionStep {
       final Object actualValue = doc.get(key);
       if (actualValue == null)
         return false;
+      if (expectedValue instanceof CypherTemporalValue wanted) {
+        if (!matchesTemporal(doc, key, actualValue, wanted))
+          return false;
+        continue;
+      }
       // Use numeric-safe comparison (Integer vs Long, etc.)
       if (!CypherValues.equalValues(actualValue, expectedValue))
         return false;
@@ -1540,6 +1587,36 @@ public class MergeStep extends AbstractExecutionStep {
    * @return evaluated property map with actual values
    */
   private Map<String, Object> evaluateProperties(final Map<String, Object> properties, final Result result) {
+    return evaluateProperties(properties, result, false);
+  }
+
+  /**
+   * Evaluates the inline properties of a pattern the MERGE is MATCHING with. A Cypher temporal wrapper is kept as it
+   * is instead of being turned into its storage form, so a zoned {@code datetime()} is compared by instant like the
+   * identical {@code MATCH} does ({@link InlineProperties#matchesResolvedValue}) rather than as text, which no stored
+   * DATETIME ever equals (issue #9334). The creation path keeps {@link #evaluateProperties(Map, Result)}: what is
+   * written is the storage form.
+   */
+  private Map<String, Object> evaluateMatchProperties(final Map<String, Object> properties, final Result result) {
+    return evaluateProperties(properties, result, true);
+  }
+
+  private static Object storageOrWrapper(final Object value, final boolean keepWrapper) {
+    if (!keepWrapper)
+      return TemporalUtil.toCoreJavaType(value);
+    if (value instanceof CypherTemporalValue)
+      return value;
+    // A native java.time parameter (a datetime sent over Bolt or HTTP) is wrapped like datetime() so both compare alike
+    if (value instanceof Temporal || value instanceof Date) {
+      final Object wrapped = TemporalUtil.fromCoreJavaType(value);
+      if (wrapped instanceof CypherTemporalValue)
+        return wrapped;
+    }
+    return TemporalUtil.toCoreJavaType(value);
+  }
+
+  private Map<String, Object> evaluateProperties(final Map<String, Object> properties, final Result result,
+      final boolean keepTemporalWrapper) {
     final Map<String, Object> evaluated = new HashMap<>();
 
     for (final Map.Entry<String, Object> entry : properties.entrySet()) {
@@ -1548,13 +1625,13 @@ public class MergeStep extends AbstractExecutionStep {
 
       // If the value is an Expression object, evaluate it in the current result context
       if (value instanceof Expression) {
-        value = TemporalUtil.toCoreJavaType(evaluator.evaluate((Expression) value, result, context));
+        value = storageOrWrapper(evaluator.evaluate((Expression) value, result, context), keepTemporalWrapper);
       }
       // Resolve parameter references (e.g., $username -> actual value from context)
       else if (value instanceof CypherASTBuilder.ParameterReference) {
         final String paramName = ((CypherASTBuilder.ParameterReference) value).getName();
         if (context.getInputParameters() != null)
-          value = TemporalUtil.toCoreJavaType(context.getInputParameters().get(paramName));
+          value = storageOrWrapper(context.getInputParameters().get(paramName), keepTemporalWrapper);
       }
       // Legacy support: If the value looks like a property access (e.g., "BatchEntry.subtype"),
       // try to evaluate it against the current result context
@@ -1646,5 +1723,8 @@ public class MergeStep extends AbstractExecutionStep {
 
   private static String getIndent(final int depth, final int indent) {
     return "  ".repeat(Math.max(0, depth * indent));
+  }
+
+  private record WantedText(CypherTemporalValue wanted, String text) {
   }
 }

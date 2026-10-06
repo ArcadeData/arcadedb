@@ -393,6 +393,9 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
      * nothing else should be asked of this flag.
      */
     public       boolean                  perThreadBucketSelection = false;
+    // Depth of the transaction() calls open on this thread, and the scope the outermost one owns (issue #9322)
+    private      int                      retryScopeDepth          = 0;
+    private      RetryScope               retryScope;
     private      Binary                   temporaryBuffer1;
     private      Binary                   temporaryBuffer2;
     private      int                      maxNested                = 3;
@@ -426,6 +429,40 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
      * database B that happened to run on the same thread.
      */
     private      DeferredExistenceChecks  deferredExistenceChecks = null;
+
+    /**
+     * The state that survives the attempts of the outermost retried {@code transaction()} call on this thread, or null
+     * when none is running (see {@link RetryScope}).
+     */
+    public RetryScope getRetryScope() {
+      if (retryScopeDepth == 0)
+        return null;
+      if (retryScope == null)
+        retryScope = new RetryScope();
+      return retryScope;
+    }
+
+    void enterRetryScope() {
+      ++retryScopeDepth;
+    }
+
+    void exitRetryScope() {
+      if (--retryScopeDepth <= 0) {
+        retryScopeDepth = 0;
+        retryScope = null;
+      }
+    }
+
+    /** Where the next slot of the scope will be taken from: a transaction() call records it on entry (issue #9322). */
+    int retryScopeCursor() {
+      return retryScope != null ? retryScope.cursor() : 0;
+    }
+
+    /** An attempt of a transaction() call starts over: its requests meet the slots the previous attempt filled. */
+    void restoreRetryScopeCursor(final int cursor) {
+      if (retryScope != null)
+        retryScope.restoreCursor(cursor);
+    }
 
     /** See {@link #firingReadEvents}. */
     public boolean isFiringReadEvents() {
