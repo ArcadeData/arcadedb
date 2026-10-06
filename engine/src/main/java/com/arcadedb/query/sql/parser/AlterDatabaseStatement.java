@@ -74,6 +74,13 @@ public class AlterDatabaseStatement extends DDLStatement {
           "Setting '" + settingNameAsString + "' has " + cfg.getScope() + " scope and cannot be set per database"
               + (cfg.getScope() == GlobalConfiguration.SCOPE.SERVER ? ": use SET SERVER SETTING instead" : ""));
 
+    // A database administrator holds updateDatabaseSettings for tuning. The settings that guard what a query may
+    // reach (LOAD CSV remote/file access and the SSRF block list) are security controls: clearing the block list
+    // turns the server into a proxy to its internal network, so they need the same privilege as the statements that
+    // fetch caller-supplied URLs or read local files (IMPORT DATABASE).
+    if (cfg.isSecuritySensitive())
+      db.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SECURITY);
+
     // Externalized on the way into the result row for the same reason the new value is: for a Class-typed
     // setting the stored value may be the Class itself, and reporting it as "class java.time.LocalDate" would
     // make oldValue and newValue two different spellings of the same thing (issue #7163).
