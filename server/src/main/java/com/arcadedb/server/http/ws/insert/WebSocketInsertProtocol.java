@@ -320,7 +320,7 @@ public class WebSocketInsertProtocol {
     try {
       sessionManager.finish(session, false);
     } catch (final RuntimeException e) {
-      LogManager.instance().log(this, Level.FINE, "Cannot roll back /ws insert session %s after its grant was revoked", e,
+      LogManager.instance().log(this, Level.WARNING, "Cannot roll back /ws insert session %s after its grant was revoked", e,
           session.id);
     }
     throw new SecurityException("User does not have access to database '" + session.databaseName + "'.");

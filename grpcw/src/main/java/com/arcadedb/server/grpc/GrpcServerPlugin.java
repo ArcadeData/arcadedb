@@ -362,8 +362,10 @@ public class GrpcServerPlugin implements ServerPlugin {
     final String keyPath = getConfigString(config, GlobalConfiguration.GRPC_TLS_KEY);
 
     if (certPath == null || keyPath == null)
-      throw new SecurityException("gRPC TLS is enabled (" + GlobalConfiguration.GRPC_TLS_ENABLED.getKey() + "=true) but the certificate ("
-          + GlobalConfiguration.GRPC_TLS_CERT.getKey() + ") or key (" + GlobalConfiguration.GRPC_TLS_KEY.getKey() + ") path is not configured. Refusing to start with cleartext.");
+      throw new SecurityException(
+          "gRPC TLS is enabled (" + GlobalConfiguration.GRPC_TLS_ENABLED.getKey() + "=true) but the certificate ("
+              + GlobalConfiguration.GRPC_TLS_CERT.getKey() + ") or key (" + GlobalConfiguration.GRPC_TLS_KEY.getKey()
+              + ") path is not configured. Refusing to start with cleartext.");
 
     final File certFile = new File(certPath);
     final File keyFile = new File(keyPath);
