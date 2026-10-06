@@ -19,8 +19,8 @@
 package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.database.RID;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.query.sql.executor.Result;
@@ -37,6 +37,7 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests for the algo.labelpropagation Cypher procedure.
@@ -234,14 +235,53 @@ class AlgoLabelPropagationTest {
   }
 
   private static String labelOwnerOfX(final Database db, final String config) {
-    final ResultSet rs = db.query("opencypher",
-        "CALL algo.labelpropagation(" + config + ") YIELD node, communityId RETURN node.name AS name, communityId");
-    final Map<String, Integer> byName = new HashMap<>();
-    while (rs.hasNext()) {
-      final Result r = rs.next();
-      byName.put(r.getProperty("name"), ((Number) r.getProperty("communityId")).intValue());
-    }
+    final Map<String, Integer> byName = labels(db, config);
     // With direction IN only X has neighbours, so P and Q keep their own labels and X's label names the winner
     return byName.get("X").equals(byName.get("P")) ? "P" : "Q";
+  }
+
+  @Test
+  void tieBreakPropertyRejectsMixedAndNonComparableValues() {
+    final DatabaseFactory factory = new DatabaseFactory("./target/databases/test-algo-lpa-tiebreak-bad");
+    if (factory.exists())
+      factory.open().drop();
+    final Database db = factory.create();
+    try {
+      db.getSchema().createVertexType("T");
+      db.getSchema().createEdgeType("TE");
+      db.transaction(() -> {
+        final MutableVertex a = db.newVertex("T").set("vid", 1).save();
+        final MutableVertex b = db.newVertex("T").set("vid", "two").save();
+        a.newEdge("TE", b, true, (Object[]) null).save();
+      });
+      assertThatThrownBy(() -> labels(db, "{tieBreakProperty: 'vid'}")).hasStackTraceContaining("cannot be used as tieBreakProperty");
+    } finally {
+      db.drop();
+    }
+  }
+
+  @Test
+  void tieBreakPropertyMissingValuesSortLastAndIterationsConverge() {
+    final DatabaseFactory factory = new DatabaseFactory("./target/databases/test-algo-lpa-tiebreak-null");
+    if (factory.exists())
+      factory.open().drop();
+    final Database db = factory.create();
+    try {
+      db.getSchema().createVertexType("T");
+      db.getSchema().createEdgeType("TE");
+      db.transaction(() -> {
+        final MutableVertex a = db.newVertex("T").set("name", "A").save();
+        final MutableVertex b = db.newVertex("T").set("name", "B").set("vid", 5).save();
+        final MutableVertex c = db.newVertex("T").set("name", "C").set("vid", 5).save();
+        a.newEdge("TE", b, true, (Object[]) null).save();
+        b.newEdge("TE", c, true, (Object[]) null).save();
+        c.newEdge("TE", a, true, (Object[]) null).save();
+      });
+      // a null and two equal values must still produce a total order, and the triangle ends up in one community
+      final Map<String, Integer> byName = labels(db, "{maxIterations: 20, tieBreakProperty: 'vid'}");
+      assertThat(byName).hasSize(3);
+    } finally {
+      db.drop();
+    }
   }
 }
