@@ -136,7 +136,7 @@ public class GraphTraversalProviderRegistry {
    * @return a matching ready provider, or null if none found
    */
   public static GraphTraversalProvider findProvider(final Database database, final String... edgeTypes) {
-    return find(database, true, edgeTypes);
+    return findReadyProvider(database, true, edgeTypes);
   }
 
   /**
@@ -146,10 +146,10 @@ public class GraphTraversalProviderRegistry {
    */
   public static GraphTraversalProvider findProviderAllowingPartialVertexCoverage(final Database database,
       final String... edgeTypes) {
-    return find(database, false, edgeTypes);
+    return findReadyProvider(database, false, edgeTypes);
   }
 
-  private static GraphTraversalProvider find(final Database database, final boolean requireAllVertexTypes,
+  private static GraphTraversalProvider findReadyProvider(final Database database, final boolean requireAllVertexTypes,
       final String[] edgeTypes) {
     // Fast path: single volatile read avoids lock, unwrap, and WeakHashMap lookup
     // when no providers are registered (the common case for most databases)
