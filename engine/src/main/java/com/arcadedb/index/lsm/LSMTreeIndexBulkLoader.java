@@ -381,7 +381,8 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
    * carries its own key; while the keys of the run repeat heavily (every key is shared and there is at most one distinct key per
    * {@link #MIN_ENTRIES_PER_SHARED_KEY} entries) an entry is only the record and its rid, so the run is allowed {@link #SHARED_KEY_RUN_GROWTH} times as many and a
    * low-cardinality build spills, and merges, far less (#9291). The shared-key table (at most {@link #MAX_SHARED_KEYS_PER_RUN} keys) is
-   * small next to the entries it replaces, so it is not part of the per-entry estimate. The limit is re-read on every add: if the
+   * small next to the entries it replaces, so it is not part of the per-entry estimate. An entry of a shared run holds the entry
+   * record, the rid and a reference to the shared key (about 100 bytes), a third of what the 8x growth budgets for it. The limit is re-read on every add: if the
    * keys stop repeating after the run has grown, the run is spilled at once, which is correct but depends on the data order.
    */
   private int currentRunLimit() {
