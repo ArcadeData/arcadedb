@@ -33,6 +33,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.lang.reflect.Method;
 import java.util.List;
 import java.util.Random;
 import java.util.function.Consumer;
@@ -96,6 +97,36 @@ class Issue7260ResidentGraphDemotionTest {
       assertThat(searchIds(index))
           .as("searches keep answering from the demoted graph with the same ordinals")
           .isEqualTo(before);
+    });
+  }
+
+  @Test
+  void theRebuildAfterADemotionCompletesAndReplacesTheOnDiskGraph() {
+    withIndex(index -> {
+      final Sizes sizes = sizesOf(index);
+      assertThat(index.admitOnlineRebuild(sizes.availableHeapJustBelow(sizes.estimateKeepingOnHeap()), 0L)).isTrue();
+      final ImmutableGraphIndex demoted = index.getGraphIndex();
+      assertThat(demoted).isInstanceOf(OnDiskGraphIndex.class);
+
+      // A real trigger, against the real heap: the demoted graph is cheap to keep, so it is admitted and runs.
+      try {
+        final Method start = LSMVectorIndex.class.getDeclaredMethod("startAsyncGraphRebuild");
+        start.setAccessible(true);
+        start.invoke(index);
+      } catch (final ReflectiveOperationException e) {
+        throw new RuntimeException(e);
+      }
+      final long deadline = System.currentTimeMillis() + 30_000;
+      while (index.getStats().get("asyncRebuildInProgress") != 0 && System.currentTimeMillis() < deadline)
+        Thread.onSpinWait();
+
+      assertThat(index.getStats().get("asyncRebuildInProgress")).isZero();
+      assertThat(index.getStats().get("rebuildsDeferredForMemory")).isZero();
+      assertThat(index.getGraphIndex())
+          .as("the rebuild published its replacement, so the demotion is not sticky")
+          .isNotSameAs(demoted)
+          .isInstanceOf(OnHeapGraphIndex.class);
+      assertThat(searchIds(index)).hasSize(5);
     });
   }
 
