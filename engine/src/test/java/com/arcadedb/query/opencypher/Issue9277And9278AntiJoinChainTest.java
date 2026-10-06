@@ -70,12 +70,12 @@ class Issue9277And9278AntiJoinChainTest {
     database.commit();
 
     final String chain = "MATCH (p1:Person)-[:KNOWS]-(p2:Person)-[:KNOWS]-(p3:Employee)-[:HAS_INTEREST]->(t:Tag) ";
-    assertSame(chain, "p1, p2, p3, t", "NOT (p1)-[:KNOWS]-(p3)", 1);
-    assertSame(chain, "p1, p2, p3, t", "NOT (p1)-[:KNOWS]-(p3) AND p1 <> p3", 1);
-    assertSame(chain, "p1, p2, p3, t", "NOT (p1)-[:KNOWS]-(p3) AND id(p1) <> id(p3)", 1);
-    assertSame(chain, "p1, p2, p3, t", "NOT (p1)-[:KNOWS]-(p3) AND p1.id <> p3.id", 0);
+    assertSameCount(chain, "p1, p2, p3, t", "NOT (p1)-[:KNOWS]-(p3)", 1);
+    assertSameCount(chain, "p1, p2, p3, t", "NOT (p1)-[:KNOWS]-(p3) AND p1 <> p3", 1);
+    assertSameCount(chain, "p1, p2, p3, t", "NOT (p1)-[:KNOWS]-(p3) AND id(p1) <> id(p3)", 1);
+    assertSameCount(chain, "p1, p2, p3, t", "NOT (p1)-[:KNOWS]-(p3) AND p1.id <> p3.id", 0);
     // no HAS_INTEREST hop
-    assertSame("MATCH (p1:Person)-[:KNOWS]-(p2:Person)-[:KNOWS]-(p3:Employee) ", "p1, p2, p3", "NOT (p1)-[:KNOWS]-(p3) AND p1 <> p3", 1);
+    assertSameCount("MATCH (p1:Person)-[:KNOWS]-(p2:Person)-[:KNOWS]-(p3:Employee) ", "p1, p2, p3", "NOT (p1)-[:KNOWS]-(p3) AND p1 <> p3", 1);
   }
 
   @Test
@@ -93,17 +93,18 @@ class Issue9277And9278AntiJoinChainTest {
 
     final String chain = "MATCH (x:P)-[:K]->(y:P)-[:K]->(z:P)-[:L]->(t:Q) ";
     final String vars = "x, y, z, t";
-    assertSame(chain, vars, "NOT (x)-[:K {w: 1}]->(z)", 1);
-    assertSame(chain, vars, "NOT (x)-[:K {w: 0}]->(z)", 0);
-    assertSame(chain, vars, "NOT (x)-[:K]->(z)", 0);
-    assertSame(chain, vars, "NOT (x)-[:K {w: 1}]->(z) AND x <> z", 1);
-    assertSame(chain, vars, "NOT (x)-[:K]->(z:Foo)", 1);
-    assertSame(chain, vars, "NOT (x)-[:K]->(z:P)", 0);
-    assertSame(chain, vars, "NOT (x)-[:K]->(z {id: 99})", 1);
-    assertSame(chain, vars, "NOT (x)-[:K]->(z {id: 2})", 0);
+    assertSameCount(chain, vars, "NOT (x)-[:K {w: 1}]->(z)", 1);
+    assertSameCount(chain, vars, "NOT (x)-[:K {w: 0}]->(z)", 0);
+    assertSameCount(chain, vars, "NOT (x)-[:K]->(z)", 0);
+    assertSameCount(chain, vars, "NOT (x)-[:K {w: 1}]->(z) AND x <> z", 1);
+    assertSameCount(chain, vars, "NOT (x)-[:K]->(z:Foo)", 1);
+    assertSameCount(chain, vars, "NOT (x:P)-[:K]->(z:P)", 0);
+    assertSameCount(chain, vars, "NOT (x:P)-[:K]->(z:Q)", 1);
+    assertSameCount(chain, vars, "NOT (x)-[:K]->(z {id: 99})", 1);
+    assertSameCount(chain, vars, "NOT (x)-[:K]->(z {id: 2})", 0);
   }
 
-  private void assertSame(final String chain, final String vars, final String where, final long expected) {
+  private void assertSameCount(final String chain, final String vars, final String where, final long expected) {
     final long asWritten = count(chain + "WHERE " + where + " RETURN count(*) AS n");
     final long afterWith = count(chain + "WITH " + vars + " WHERE " + where + " RETURN count(*) AS n");
     assertThat(afterWith).as("row pipeline: " + where).isEqualTo(expected);

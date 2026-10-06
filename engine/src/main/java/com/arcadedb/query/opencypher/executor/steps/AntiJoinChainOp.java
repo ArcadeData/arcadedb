@@ -722,7 +722,7 @@ public final class AntiJoinChainOp implements CountOp {
         hopMaps[h] = buildNeighborRIDMap(db, nodeLabels[h], edgeTypes[h], directions[h], validBuckets[h + 1], guard);
     }
 
-    // Build anti-join neighbor map (reuse hop map if parameters match)
+    // Build anti-join neighbor map (reuse hop map if parameters match; hopMaps[0] keeps only targets of nodeLabels[1], hence the label test)
     final Map<RID, RID[]> antiJoinMap;
     if (anchorIsSource && checkPos > 0 && antiJoinEdgeType.equals(edgeTypes[0]) && antiJoinDirection == directions[0]
         && Objects.equals(nodeLabels[antiJoinTargetIdx], nodeLabels[1]))
