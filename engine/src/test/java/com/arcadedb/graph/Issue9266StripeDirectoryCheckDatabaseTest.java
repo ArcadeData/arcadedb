@@ -34,6 +34,7 @@ import java.util.Collection;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Consumer;
+import java.util.function.UnaryOperator;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -135,6 +136,25 @@ class Issue9266StripeDirectoryCheckDatabaseTest extends TestHelper {
 
     assertThat(unreadable(result)).containsExactly(dirRID);
     assertThat(warnings(result)).anyMatch(w -> w.contains(dirRID.toString()) && w.contains("is truncated"));
+  }
+
+  /**
+   * The silent case the layout validation closes: a directory cut down to a bare header is zero-padded by the bucket
+   * to {@code MINIMUM_RECORD_SIZE} and used to read as ZERO generations, i.e. an empty edge list - CHECK then blamed
+   * every edge ("missing from that vertex's IN list") and never the directory. It must be reported as the directory.
+   */
+  @Test
+  void checkReportsAZeroGenerationDirectoryAsTheDirectoryNotAsAnEmptyList() {
+    final RID created = createPromotedHub();
+    final RID written = rewriteDirectory(created, full -> new byte[] { StripeDirectory.RECORD_TYPE, StripeDirectory.HASH_VERSION, 0, 0, 0 });
+    reopenDatabase();
+    final RID dirRID = rebind(written);
+
+    final Map<String, Object> result = new DatabaseChecker(database).setVerboseLevel(0).check();
+
+    assertThat(unreadable(result)).containsExactly(dirRID);
+    assertThat(warnings(result)).anyMatch(w -> w.contains(dirRID.toString()) && w.contains("0 generations"));
+    assertThat(warnings(result)).noneMatch(w -> w.contains("missing from that vertex's"));
   }
 
   @Test
@@ -300,17 +320,20 @@ class Issue9266StripeDirectoryCheckDatabaseTest extends TestHelper {
    * fixed-size: a truncated body cannot be produced through its API.
    */
   private RID rewriteDirectory(final RID hub, final boolean truncate) {
+    return rewriteDirectory(hub, full -> {
+      if (truncate)
+        return Arrays.copyOf(full, TRUNCATED);
+      full[1] = FUTURE_HASH;
+      return full;
+    });
+  }
+
+  private RID rewriteDirectory(final RID hub, final UnaryOperator<byte[]> transform) {
     final RID[] holder = new RID[1];
     database.transaction(() -> {
       final RID dirRID = head(hub);
-      final byte[] full = bucketOf(dirRID).getRecord(dirRID).copyOfContent().toByteArray();
-      final Binary rewritten;
-      if (truncate)
-        rewritten = new Binary(Arrays.copyOf(full, TRUNCATED), TRUNCATED);
-      else {
-        full[1] = FUTURE_HASH;
-        rewritten = new Binary(full, full.length);
-      }
+      final byte[] bytes = transform.apply(bucketOf(dirRID).getRecord(dirRID).copyOfContent().toByteArray());
+      final Binary rewritten = new Binary(bytes, bytes.length);
       final StripeDirectory copy = new StripeDirectory(database, dirRID, bucketOf(dirRID).getRecord(dirRID).copyOfContent()) {
         @Override
         public Binary getContent() {

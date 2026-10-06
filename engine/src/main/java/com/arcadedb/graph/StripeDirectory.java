@@ -236,7 +236,7 @@ public class StripeDirectory extends BaseRecord implements RecordInternal {
       offset += Binary.INT_SERIALIZED_SIZE;
       if ((long) offset + (long) stripes * SLOT_SIZE > size)
         return "is truncated: " + size + " bytes, generation " + g + " declares " + stripes + " stripes that do not fit";
-      offset += stripes * SLOT_SIZE;
+      offset += stripes * SLOT_SIZE; // cannot overflow: the long bound above just proved it fits in size
     }
     return null;
   }
