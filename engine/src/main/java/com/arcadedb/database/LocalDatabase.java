@@ -2036,11 +2036,26 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   @Override
-  public boolean transaction(final TransactionScope txBlock, final boolean joinCurrentTx, int attempts,
+  public boolean transaction(final TransactionScope txBlock, final boolean joinCurrentTx, final int attempts,
       final OkCallback ok,
       final ErrorCallback error) {
     if (txBlock == null)
       throw new IllegalArgumentException("Transaction block is null");
+
+    // The outermost call owns the RetryScope, which outlives the rollbacks between its attempts (issue #9322)
+    final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(databasePath);
+    if (context == null)
+      return transactionWithRetries(txBlock, joinCurrentTx, attempts, ok, error, null);
+    context.enterRetryScope();
+    try {
+      return transactionWithRetries(txBlock, joinCurrentTx, attempts, ok, error, context);
+    } finally {
+      context.exitRetryScope();
+    }
+  }
+
+  private boolean transactionWithRetries(final TransactionScope txBlock, final boolean joinCurrentTx, int attempts,
+      final OkCallback ok, final ErrorCallback error, final DatabaseContext.DatabaseContextTL context) {
 
     ArcadeDBException lastException = null;
 
@@ -2054,6 +2069,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
     for (int retry = 0; retry < attempts; ++retry) {
       boolean createdNewTx = true;
+
+      if (retry > 0 && context != null)
+        context.restartRetryScopeAttempt();
 
       // Declared OUTSIDE the try so the catch can read them; sampled just after begin(), so they refer to the
       // transaction this attempt's block actually runs in. See the guard in the catch below (#7916).

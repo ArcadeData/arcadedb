@@ -280,6 +280,13 @@ public class ArithmeticExpression implements Expression {
     if (op == Operator.DIVIDE && leftValue instanceof CypherDuration ld && rightValue instanceof Number)
       return ld.divide(((Number) rightValue).doubleValue());
 
+    // Instant ± duration is only defined for + and -; * / % are a type error and must fall through (issue #9338).
+    // + is also defined with the duration on the left, since duration + instant is the same operation.
+    if (op == Operator.ADD && leftValue instanceof CypherDuration && isInstant(rightValue))
+      return evaluateTemporalArithmetic(rightValue, leftValue, op);
+    if (op != Operator.ADD && op != Operator.SUBTRACT)
+      return null;
+
     // java.time.LocalDate (from ArcadeDB storage) ± Duration
     if (leftValue instanceof LocalDate ld && rightValue instanceof CypherDuration dur) {
       // For dates, full days from the seconds component must be carried over
@@ -312,15 +319,15 @@ public class ArithmeticExpression implements Expression {
 
     // LocalTime ± Duration
     if (leftValue instanceof CypherLocalTime clt && rightValue instanceof CypherDuration dur) {
-      final long totalNanos = dur.getSeconds() * 1_000_000_000L + dur.getNanosAdjustment();
-      final LocalTime t = op == Operator.ADD ? clt.getValue().plusNanos(totalNanos) : clt.getValue().minusNanos(totalNanos);
+      final long clockNanos = clockNanosOfDay(dur);
+      final LocalTime t = op == Operator.ADD ? clt.getValue().plusNanos(clockNanos) : clt.getValue().minusNanos(clockNanos);
       return new CypherLocalTime(t);
     }
 
     // Time ± Duration
     if (leftValue instanceof CypherTime ct && rightValue instanceof CypherDuration dur) {
-      final long totalNanos = dur.getSeconds() * 1_000_000_000L + dur.getNanosAdjustment();
-      final OffsetTime t = op == Operator.ADD ? ct.getValue().plusNanos(totalNanos) : ct.getValue().minusNanos(totalNanos);
+      final long clockNanos = clockNanosOfDay(dur);
+      final OffsetTime t = op == Operator.ADD ? ct.getValue().plusNanos(clockNanos) : ct.getValue().minusNanos(clockNanos);
       return new CypherTime(t);
     }
 
@@ -345,6 +352,21 @@ public class ArithmeticExpression implements Expression {
     }
 
     return null; // Not a temporal arithmetic operation
+  }
+
+  private static boolean isInstant(final Object value) {
+    return value instanceof CypherDate || value instanceof CypherDateTime || value instanceof CypherLocalDateTime
+        || value instanceof CypherLocalTime || value instanceof CypherTime || value instanceof LocalDate
+        || value instanceof LocalDateTime;
+  }
+
+  /**
+   * The clock part of a duration reduced to a nanosecond of the day. {@code seconds * 1e9} overflowed a long at
+   * 9223372037 seconds and moved the clock backwards by minutes (issue #9338); a time of day only depends on the
+   * remainder of the duration modulo 24 hours, which is computed first.
+   */
+  private static long clockNanosOfDay(final CypherDuration dur) {
+    return (dur.getSeconds() % 86400L) * 1_000_000_000L + dur.getNanosAdjustment();
   }
 
   private static boolean isInteger(final Number num) {
