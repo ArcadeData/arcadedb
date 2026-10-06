@@ -18,6 +18,16 @@ on:
 permissions:
   contents: read
 
+# A push to a PR cancels that PR's run still building the previous commit: only the newest
+# commit's result can gate the merge, and the superseded run otherwise keeps a full set of runners
+# busy for nothing. Every other event is keyed by its commit SHA, so no two pushes to main ever
+# share a group - each merge keeps its own complete run, and a red main still points at one commit.
+# (A shared main group would not do: GitHub keeps one pending run per group and silently cancels
+# the one it replaces, so merges landing close together would skip their middle commits.)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   # Repo/workflow hygiene only: formatting, the meta-checks below, and the CI scripts' own self-test.
   # None of it needs the code to build or the tests to run, and until #6569 it gated both anyway
