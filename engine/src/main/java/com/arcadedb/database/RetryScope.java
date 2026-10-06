@@ -20,6 +20,7 @@ package com.arcadedb.database;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.function.Supplier;
 
 /**
@@ -68,7 +69,7 @@ public final class RetryScope {
       return (T) slot.value;
     }
     final Slot slot = slots.get(index);
-    if (!slot.key.equals(key)) {
+    if (!Objects.equals(slot.key, key)) {
       slot.value = factory.get();
       return (T) slot.value;
     }

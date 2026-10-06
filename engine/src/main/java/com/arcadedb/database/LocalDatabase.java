@@ -2045,9 +2045,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     // The outermost call owns the RetryScope, which outlives the rollbacks between its attempts (issue #9322)
     // A thread that never touched this database has no context yet: begin() creates it on first use, so it is created here
     // instead, or the first retried call of the thread would run without a scope
-    DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(databasePath);
-    if (context == null)
-      context = DatabaseContext.INSTANCE.init(this);
+    final DatabaseContext.DatabaseContextTL existing = DatabaseContext.INSTANCE.getContextIfExists(databasePath);
+    final DatabaseContext.DatabaseContextTL context = existing != null ? existing : DatabaseContext.INSTANCE.init(this);
     context.enterRetryScope();
     try {
       return transactionWithRetries(txBlock, joinCurrentTx, attempts, ok, error, context);

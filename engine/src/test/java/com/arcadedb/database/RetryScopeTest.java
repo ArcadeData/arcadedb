@@ -152,4 +152,24 @@ class RetryScopeTest extends TestHelper {
     assertThat(failure[0]).isNull();
     assertThat(seen).as("the retry on a fresh thread meets the slot of its first attempt").containsExactly(1, 1);
   }
+
+  @Test
+  void aDivergedRetryThatReconvergesGetsFreshSlotsAndANullKeyIsAccepted() {
+    final AtomicInteger attempts = new AtomicInteger();
+    final AtomicInteger created = new AtomicInteger();
+    final List<Integer> seen = new ArrayList<>();
+
+    database.transaction(() -> {
+      final int attempt = attempts.incrementAndGet();
+      seen.add(scope().nextSlot("a", created::incrementAndGet));
+      // the retry takes another statement at position 1, then comes back to "c" at position 2
+      seen.add(scope().nextSlot(attempt == 1 ? "b" : "x", created::incrementAndGet));
+      seen.add(scope().nextSlot(null, created::incrementAndGet));
+      if (attempt < 2)
+        throw new ConcurrentModificationException("retry");
+    }, false, 2);
+
+    // a: reused (1). position 1: key changed, so a fresh slot (4), never the slot of "b" (2). null key: reused (3)
+    assertThat(seen).containsExactly(1, 2, 3, 1, 4, 3);
+  }
 }

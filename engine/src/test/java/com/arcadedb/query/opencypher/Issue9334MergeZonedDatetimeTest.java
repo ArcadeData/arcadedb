@@ -117,6 +117,14 @@ class Issue9334MergeZonedDatetimeTest {
   }
 
   @Test
+  void aStoredNonTemporalTextNeverMakesMergeFailOrMatch() {
+    database.transaction(() -> database.command("cypher", "CREATE (:U {d: 'not a date'})"));
+    database.transaction(() -> database.command("cypher", "MERGE (p:U {d: datetime('2021-06-15T12:30:00Z')})"));
+    // the existing datetime node plus the text one plus nothing new: the text node is skipped, no error
+    assertThat(count("U")).isEqualTo(2L);
+  }
+
+  @Test
   void naiveOperandControlStillMerges() {
     database.transaction(() -> database.command("cypher", "MERGE (p:Z {d: localdatetime('2021-06-15T12:30:00')})"));
     assertThat(count("Z")).isEqualTo(1L);
