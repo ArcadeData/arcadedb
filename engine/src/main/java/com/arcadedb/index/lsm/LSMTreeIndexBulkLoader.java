@@ -443,9 +443,15 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
     for (int i = 0; i < distinct; i++)
       order[i] = i;
     Arrays.sort(order, (x, y) -> sharedKeyList.get(x).compareTo(sharedKeyList.get(y)));
+    // keys that compare equal without being equal (a DECIMAL of another scale) are one key to the index: they share a rank, so the
+    // entries between them are ordered by rid exactly as compareEntries would
     final int[] rank = new int[distinct];
-    for (int i = 0; i < distinct; i++)
-      rank[order[i]] = i;
+    int currentRank = 0;
+    for (int i = 0; i < distinct; i++) {
+      if (i > 0 && sharedKeyList.get(order[i]).compareTo(sharedKeyList.get(order[i - 1])) != 0)
+        currentRank++;
+      rank[order[i]] = currentRank;
+    }
     run.sort((left, right) -> {
       final int byKey = Integer.compare(rank[left.group()], rank[right.group()]);
       return byKey != 0 ? byKey : left.rid().compareTo(right.rid());
