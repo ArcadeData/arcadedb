@@ -1644,4 +1644,17 @@ class TypeTest extends TestHelper {
     assertThat(result).isInstanceOf(LocalDate.class);
     assertThat((LocalDate) result).isEqualTo(expected);
   }
+
+  // ───── Byte arithmetic (issue #9281) ─────
+
+  @Test
+  void incrementDecrementByte() {
+    assertThat(Type.increment((byte) 100, (byte) 50)).isEqualTo(150);
+    assertThat(Type.increment((byte) 100, 1L)).isEqualTo(101L);
+    assertThat(Type.increment(5, (byte) 3)).isEqualTo(8);
+    assertThat(Type.increment(5.5d, (byte) 3)).isEqualTo(8.5d);
+    assertThat(Type.decrement((byte) 100, (byte) 50)).isEqualTo(50);
+    assertThat(Type.decrement((byte) -100, (byte) 100)).isEqualTo(-200);
+    assertThat(Type.decrement(10L, (byte) 3)).isEqualTo(7L);
+  }
 }
