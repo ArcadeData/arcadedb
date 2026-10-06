@@ -78,6 +78,28 @@ class PairHashJoinOpSparseNodeIdsTest {
     assertThat(count).isEqualTo(2L);
   }
 
+  /** Issue #9298: a probe neighbour listed twice (parallel edge) is two matches, for the inline walk and the HashMap fallback. */
+  @Test
+  void parallelProbeEdgeCountsPerRelationship() {
+    for (final boolean views : new boolean[] { true, false }) {
+      SparseNodeIdProvider provider = new SparseNodeIdProvider();
+      if (!views)
+        provider = provider.withoutViews();
+      provider.withEdges("ARM_1", Vertex.DIRECTION.OUT, 0, 2)
+          .withEdges("ARM_2", Vertex.DIRECTION.OUT, 0, 3)
+          .withEdges("ARM_1", Vertex.DIRECTION.OUT, HIGH_ID, 2)
+          .withEdges("ARM_2", Vertex.DIRECTION.OUT, HIGH_ID, 3)
+          .withEdges("PROBE", Vertex.DIRECTION.OUT, 2, 3, 3);
+      final PairHashJoinOp op = new PairHashJoinOp("Build",
+          new String[] { "ARM_1" }, new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT }, null,
+          new String[] { "ARM_2" }, new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT }, null,
+          "PROBE", Vertex.DIRECTION.OUT);
+
+      // two build nodes, each pairing (2, 3), and the probe edge 2 -> 3 exists twice
+      assertThat(op.execute(provider, databaseWithBuildBucket(), WorkGuard.forCommandDeadline(null))).as("views=" + views).isEqualTo(4L);
+    }
+  }
+
   private static Database databaseWithBuildBucket() {
     final Database db = Mockito.mock(Database.class);
     final Schema schema = Mockito.mock(Schema.class);
