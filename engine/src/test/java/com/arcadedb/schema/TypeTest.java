@@ -1656,5 +1656,7 @@ class TypeTest extends TestHelper {
     assertThat(Type.decrement((byte) 100, (byte) 50)).isEqualTo(50);
     assertThat(Type.decrement((byte) -100, (byte) 100)).isEqualTo(-200);
     assertThat(Type.decrement(10L, (byte) 3)).isEqualTo(7L);
+    assertThat(Type.increment((byte) 3, 1.5f)).isEqualTo(4.5f);
+    assertThat(Type.increment((byte) 3, new BigDecimal("1.5"))).isEqualTo(new BigDecimal("4.5"));
   }
 }

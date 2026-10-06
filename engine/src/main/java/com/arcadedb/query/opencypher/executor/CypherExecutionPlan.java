@@ -7691,6 +7691,11 @@ public class CypherExecutionPlan {
     }
     if (antiJoinSourceIdx < 0 || antiJoinTargetIdx < 0)
       return null;
+    // A label on an end node of the negated pattern is implied by the MATCH only when it is the label the chain binds that variable to
+    if (antiJoin.sourceLabel != null && !antiJoin.sourceLabel.equals(nodeLabels[antiJoinSourceIdx]))
+      return null;
+    if (antiJoin.targetLabel != null && !antiJoin.targetLabel.equals(nodeLabels[antiJoinTargetIdx]))
+      return null;
 
     // Do NOT swap source/target — the direction depends on the original order.
     // AntiJoinChainOp handles both cases:
@@ -7732,6 +7737,8 @@ public class CypherExecutionPlan {
     final String inequalityVar1; // null if no inequality
     final String inequalityVar2;
     final String inequalityProperty; // null when the inequality compares the nodes themselves
+    String sourceLabel; // label written on the negated pattern's end nodes, null when none
+    String targetLabel;
 
     AntiJoinInfo(final String sourceVar, final String targetVar,
         final String antiJoinEdgeType, final Vertex.DIRECTION antiJoinDirection,
@@ -7849,12 +7856,13 @@ public class CypherExecutionPlan {
     // THE ROW PIPELINE (issue #9278)
     if (rel.hasProperties() || rel.hasWhereExpression() || rel.getVariable() != null)
       return null;
-    final NodePattern first = pp.getFirstNode(), last = pp.getLastNode();
-    if (first.hasLabels() || first.hasProperties() || last.hasLabels() || last.hasProperties())
+    final NodePattern first = pp.getFirstNode();
+    final NodePattern last = pp.getLastNode();
+    if (first.hasProperties() || last.hasProperties() || !hasPushDownRepresentableLabel(first) || !hasPushDownRepresentableLabel(last))
       return null;
 
-    final String sourceVar = pp.getFirstNode().getVariable();
-    final String targetVar = pp.getLastNode().getVariable();
+    final String sourceVar = first.getVariable();
+    final String targetVar = last.getVariable();
     if (sourceVar == null || targetVar == null)
       return null;
 
@@ -7863,8 +7871,11 @@ public class CypherExecutionPlan {
     final Vertex.DIRECTION direction = dir == Direction.OUT ? Vertex.DIRECTION.OUT
         : dir == Direction.IN ? Vertex.DIRECTION.IN : Vertex.DIRECTION.BOTH;
 
-    return new AntiJoinInfo(sourceVar, targetVar, edgeType, direction,
+    final AntiJoinInfo info = new AntiJoinInfo(sourceVar, targetVar, edgeType, direction,
         inequalityVar1, inequalityVar2, inequalityProperty);
+    info.sourceLabel = first.hasLabels() ? first.getLabels().get(0) : null;
+    info.targetLabel = last.hasLabels() ? last.getLabels().get(0) : null;
+    return info;
   }
 
   /**
