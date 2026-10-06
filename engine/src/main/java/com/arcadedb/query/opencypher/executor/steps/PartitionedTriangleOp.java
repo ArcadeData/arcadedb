@@ -29,7 +29,6 @@ import com.arcadedb.graph.olap.GraphAlgorithms;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.VertexType;
-import com.arcadedb.utility.RidHashSet;
 
 import com.arcadedb.query.QueryEngineManager;
 
@@ -166,10 +165,16 @@ public final class PartitionedTriangleOp implements CountOp {
           else if (nu > nv)
             iv++;
           else {
+            // a value occurring m times in one range and n times in the other is m * n matches (issue #9298)
+            int ue = iu + 1, ve = iv + 1;
+            while (ue < uEnd && nbrs[ue] == nu)
+              ue++;
+            while (ve < vEnd && nbrs[ve] == nv)
+              ve++;
             if (personPartition[nu] == country)
-              count++;
-            iu++;
-            iv++;
+              count += (long) (ue - iu) * (ve - iv);
+            iu = ue;
+            iv = ve;
           }
         }
       }
@@ -273,10 +278,16 @@ public final class PartitionedTriangleOp implements CountOp {
           else if (uNeighbors[iu] > vNeighbors[iv])
             iv++;
           else {
-            if (personPartition[uNeighbors[iu]] == country)
-              total++;
-            iu++;
-            iv++;
+            final int value = uNeighbors[iu];
+            int ue = iu + 1, ve = iv + 1;
+            while (ue < uNeighbors.length && uNeighbors[ue] == value)
+              ue++;
+            while (ve < vNeighbors.length && vNeighbors[ve] == value)
+              ve++;
+            if (personPartition[value] == country)
+              total += (long) (ue - iu) * (ve - iv);
+            iu = ue;
+            iv = ve;
           }
         }
       }
@@ -324,16 +335,18 @@ public final class PartitionedTriangleOp implements CountOp {
         if (vCountry == null || !vCountry.equals(uCountry))
           continue;
 
-        final RidHashSet uNeighborSet = new RidHashSet();
+        // multiplicity of each in-country neighbour of u: a parallel edge is a match of its own (issue #9298)
+        final HashMap<RID, Integer> uNeighborCounts = new HashMap<>();
         for (final RID nRid : uNeighbors) {
           final RID nCountry = personToPartition.get(nRid);
           if (nCountry != null && nCountry.equals(uCountry))
-            uNeighborSet.add(nRid);
+            uNeighborCounts.merge(nRid, 1, Integer::sum);
         }
         final RID[] vNeighbors = getNeighborRIDs(db, gavProvider, vRid, Vertex.DIRECTION.BOTH, triangleEdgeType);
         for (final RID wRid : vNeighbors) {
-          if (uNeighborSet.contains(wRid))
-            total++;
+          final Integer multiplicity = uNeighborCounts.get(wRid);
+          if (multiplicity != null)
+            total += multiplicity;
         }
       }
     }

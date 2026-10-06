@@ -251,6 +251,22 @@ public final class PairHashJoinOp implements CountOp {
   }
 
   /**
+   * Number of times {@code key} occurs in the sorted range {@code [from, to)}. A parallel edge, or the two directions of a
+   * reciprocal pair in a BOTH view, lists the same neighbour more than once, and each is a match of its own (issue #9298).
+   */
+  private static int countOccurrences(final int[] sorted, final int from, final int to, final int key) {
+    final int idx = Arrays.binarySearch(sorted, from, to, key);
+    if (idx < 0)
+      return 0;
+    int lo = idx, hi = idx + 1;
+    while (lo > from && sorted[lo - 1] == key)
+      lo--;
+    while (hi < to && sorted[hi] == key)
+      hi++;
+    return hi - lo;
+  }
+
+  /**
    * Inline build+probe: for each build node, compute (ep1, ep2) pair and immediately
    * check if the probe edge exists via binary search. No HashMap at all.
    * <p>
@@ -309,8 +325,7 @@ public final class PairHashJoinOp implements CountOp {
             for (int k = a2h1Start; k < a2h1End; k++) {
               final int ep2 = arm2Nbrs1[k];
               if (arm2Filter1 != null && !arm2Filter1.contains(bucketIds[ep2])) continue;
-              if (Arrays.binarySearch(probeNbrs, pStart, pEnd, ep2) >= 0)
-                total++;
+              total += countOccurrences(probeNbrs, pStart, pEnd, ep2);
             }
           }
         }
@@ -338,8 +353,7 @@ public final class PairHashJoinOp implements CountOp {
         if (pStart == pEnd) continue;
 
         for (final int ep2 : ep2Ids) {
-          if (Arrays.binarySearch(probeNbrs, pStart, pEnd, ep2) >= 0)
-            total++;
+          total += countOccurrences(probeNbrs, pStart, pEnd, ep2);
         }
       }
     }
