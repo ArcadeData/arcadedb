@@ -2184,12 +2184,14 @@ function populateSavedQueriesPanel() {
     let name = escapeHtml(q.name);
     let cmd = escapeHtml(q.c || "");
     let lang = escapeHtml(q.l || "sql");
-    // A CLICK ONLY LOADS THE QUERY, SO IT CAN BE EDITED BEFORE RUNNING IT; RUNNING IS THE EXPLICIT PLAY BUTTON (ISSUE #7049)
+    // A CLICK ONLY LOADS THE QUERY, SO IT CAN BE EDITED BEFORE RUNNING IT; RUNNING IS THE EXPLICIT PLAY BUTTON (ISSUE #7049).
+    // THE NAME, RUN AND DELETE CONTROLS ARE REAL BUTTONS SO THEY ARE REACHABLE WITH TAB AND TRIGGERED WITH ENTER/SPACE (ISSUE #8740).
+    // THE NAME BUTTON HAS NO HANDLER OF ITS OWN: THE CLICK A KEYBOARD ACTIVATION DISPATCHES BUBBLES INTO THE ENTRY'S LOAD
     html += "<div class='saved-query-entry' title='Click to load into the editor' onclick='loadSavedQuery(" + i + ")'>";
-    html += "<div class='saved-query-name'><span>" + name + "<span class='saved-query-lang'>" + lang + "</span></span>";
+    html += "<div class='saved-query-name'><button type='button' class='saved-query-load' aria-label='Load saved query " + name + " into the editor'>" + name + "<span class='saved-query-lang'>" + lang + "</span></button>";
     html += "<span class='saved-query-actions'>";
-    html += "<span class='saved-query-run' onclick='event.stopPropagation(); executeSavedQuery(" + i + ")' title='Run'><i class='fa fa-play'></i></span>";
-    html += "<span class='saved-query-delete' onclick='event.stopPropagation(); deleteSavedQuery(" + i + ")' title='Delete'><i class='fa fa-times'></i></span>";
+    html += "<button type='button' class='saved-query-run' onclick='event.stopPropagation(); executeSavedQuery(" + i + ")' title='Run' aria-label='Run saved query " + name + "'><i class='fa fa-play' aria-hidden='true'></i></button>";
+    html += "<button type='button' class='saved-query-delete' onclick='event.stopPropagation(); deleteSavedQuery(" + i + ")' title='Delete' aria-label='Delete saved query " + name + "'><i class='fa fa-times' aria-hidden='true'></i></button>";
     html += "</span></div>";
     html += "<div class='saved-query-preview'>" + cmd + "</div>";
     html += "</div>";
@@ -2248,6 +2250,10 @@ function deleteSavedQuery(index) {
   queries.splice(index, 1);
   storeSavedQueries(queries);
   populateSavedQueriesPanel();
+  // RE-RENDERING DROPS THE FOCUSED DELETE BUTTON: HAND THE FOCUS TO THE ENTRY THAT TOOK ITS PLACE, OR THE ONE BEFORE IT,
+  // SO A KEYBOARD USER IS NOT THROWN BACK TO THE TOP OF THE PAGE (ISSUE #8740)
+  if (queries.length > 0)
+    $("#sidebarPanelSaved .saved-query-load").eq(Math.min(index, queries.length - 1)).trigger("focus");
 }
 
 // --- History Panel ---
@@ -2345,14 +2351,16 @@ function renderHistoryEntries(entries) {
     }
 
     html += "<div class='history-entry' data-index='" + idx + "' data-cmd='" + cmd.toLowerCase() + "'>";
-    html += "<input type='checkbox' class='history-checkbox history-item-check' data-index='" + idx + "' onclick='event.stopPropagation()'>";
-    html += "<div class='history-entry-content' title='Click to load into the editor' onclick='loadHistoryEntry(" + idx + ")'>";
-    html += "<div class='history-meta'>";
+    html += "<input type='checkbox' class='history-checkbox history-item-check' data-index='" + idx + "' onclick='event.stopPropagation()' aria-label='Select history entry'>";
+    // A REAL BUTTON, SO THE ENTRY IS REACHABLE WITH TAB AND LOADED WITH ENTER/SPACE (ISSUE #8740). A BUTTON ONLY ADMITS
+    // PHRASING CONTENT, HENCE THE SPANS: THEIR LAYOUT COMES FROM THE CSS CLASSES, NOT FROM THE ELEMENT
+    html += "<button type='button' class='history-entry-content' title='Click to load into the editor' onclick='loadHistoryEntry(" + idx + ")'>";
+    html += "<span class='history-meta'>";
     if (time) html += "<span class='history-time'>" + time + "</span>";
     html += "<span class='history-lang'>" + lang + "</span>";
-    html += "</div>";
-    html += "<div class='history-cmd'>" + cmd + "</div>";
-    html += "</div></div>";
+    html += "</span>";
+    html += "<span class='history-cmd'>" + cmd + "</span>";
+    html += "</button></div>";
   }
   return html;
 }
