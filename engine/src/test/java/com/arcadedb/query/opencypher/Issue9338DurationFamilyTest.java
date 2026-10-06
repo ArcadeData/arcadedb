@@ -226,4 +226,14 @@ class Issue9338DurationFamilyTest {
     assertThat(scalar("MATCH (n:W) WHERE n.w = duration('P1D') RETURN count(n) AS r")).as("a valid short duration is restored")
         .isEqualTo(1L);
   }
+
+  @Test
+  void parsingNegativeFractionsAndMoreThanNineDigits() {
+    assertThat(scalar("RETURN toString(duration('PT-0.5S')) AS r")).isEqualTo("PT-0.5S");
+    assertThat(scalar("RETURN toString(duration('PT-1.5S')) AS r")).isEqualTo("PT-1.5S");
+    // digits past the nanosecond round half away from zero, in both directions
+    assertThat(scalar("RETURN toString(duration('PT0.0000000015S')) AS r")).isEqualTo("PT0.000000002S");
+    assertThat(scalar("RETURN toString(duration('PT-0.0000000015S')) AS r")).isEqualTo("PT-0.000000002S");
+    assertThat(scalar("RETURN toString(duration('PT0.1234567891234S')) AS r")).isEqualTo("PT0.123456789S");
+  }
 }

@@ -345,7 +345,7 @@ public class RedisQueryEngine implements QueryEngine {
       final List<Object> attemptResults = new ArrayList<>(commands.size());
       for (int i = 0; i < commands.size(); i++) {
         final String command = commands.get(i);
-        attemptResults.add(executeSingleCommandInternal(command, scope != null ? scope.nextSlot(command, RamSlot::new) : null));
+        attemptResults.add(executeSingleCommandInternal(command, slotFor(scope, command)));
       }
       committed[0] = attemptResults;
     });
@@ -421,8 +421,23 @@ public class RedisQueryEngine implements QueryEngine {
    * effect of that command is applied again instead of answering with another command's value.
    */
   private RamSlot looseSlot(final String command) {
-    final RetryScope scope = retryScope();
-    return scope != null ? scope.nextSlot(command, RamSlot::new) : null;
+    return slotFor(retryScope(), command);
+  }
+
+  /**
+   * The slot of a command, or null for one that never applies a non-rollbackable effect (GET, SET, HSET, ...): only
+   * INCR/DECR/GETDEL take values from the shared map, so only they need to remember them across a retry. Which commands
+   * need one depends on the command text alone, so every attempt of a retry allocates the same positions.
+   */
+  private static RamSlot slotFor(final RetryScope scope, final String command) {
+    if (scope == null)
+      return null;
+    final String trimmed = command.stripLeading();
+    final int end = trimmed.indexOf(' ') < 0 ? trimmed.length() : trimmed.indexOf(' ');
+    final String name = trimmed.substring(0, end);
+    if (name.regionMatches(true, 0, "INCR", 0, 4) || name.regionMatches(true, 0, "DECR", 0, 4) || name.equalsIgnoreCase("GETDEL"))
+      return scope.nextSlot(command, RamSlot::new);
+    return null;
   }
 
   /**
