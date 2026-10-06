@@ -64,7 +64,7 @@ public class UpsertStep extends AbstractExecutionStep {
       }
     } else {
       for (ExecutionStep step : p.getSubSteps()) {
-        if (step instanceof FetchFromIndexStep) {
+        if (step instanceof FetchFromIndexStep indexStep && indexStep.index.isUnique()) {
           fetchFromIndexFound = true;
           break;
         }
@@ -73,7 +73,8 @@ public class UpsertStep extends AbstractExecutionStep {
 
     if (!fetchFromIndexFound)
       throw new CommandSQLParsingException(
-          "Upsert must involve a UNIQUE index on a single property to retrieve the records. Check that the where condition is an equality on a property covered by a UNIQUE index (non-unique, full-text and composite indexes are not usable for the upsert)");
+          "Upsert must involve a UNIQUE index to retrieve the records. Check that the where condition is an equality on all"
+              + " the properties of a UNIQUE index (non-unique, full-text and partially matched composite indexes cannot be used)");
 
     applied = true;
     final ResultSet upstream = getPrev().syncPull(context, nRecords);
