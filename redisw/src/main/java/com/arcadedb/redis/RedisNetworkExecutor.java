@@ -329,6 +329,16 @@ public class RedisNetworkExecutor extends Thread {
           return;
         }
 
+        if (authenticatedUser != null) {
+          try {
+            // The live principal: a user deleted, re-passworded or stripped of a grant since AUTH must not keep the
+            // access it had when it authenticated.
+            authenticatedUser = server.getSecurity().revalidate(authenticatedUser);
+          } catch (final ServerSecurityException e) {
+            markUnauthenticated();
+          }
+        }
+
         if (authenticatedUser == null) {
           value.append("-NOAUTH Authentication required.");
           appendCrLf();

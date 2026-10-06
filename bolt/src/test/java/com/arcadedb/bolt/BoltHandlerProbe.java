@@ -25,6 +25,7 @@ import com.arcadedb.bolt.packstream.PackStreamReader;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityUser;
 
 import java.io.ByteArrayInputStream;
@@ -35,6 +36,7 @@ import java.lang.reflect.Proxy;
 import java.net.Socket;
 import java.util.Map;
 
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -61,6 +63,16 @@ final class BoltHandlerProbe {
   static final String READY    = "READY";
   static final String TX_READY = "TX_READY";
 
+  /**
+   * Gives a server double the security service the executor now consults to re-resolve its user on every request,
+   * answering the user it is handed: these tests drive handlers with a user already bound and are not about it.
+   */
+  static void withPassThroughSecurity(final ArcadeDBServer server) {
+    final ServerSecurity security = mock(ServerSecurity.class);
+    when(security.revalidate(any(ServerSecurityUser.class))).thenAnswer(invocation -> invocation.getArgument(0));
+    when(server.getSecurity()).thenReturn(security);
+  }
+
   private BoltHandlerProbe() {
     // utility class
   }
@@ -82,6 +94,7 @@ final class BoltHandlerProbe {
   static Map<String, Object> failureMetadataOf(final String handlerName, final String state,
       final RuntimeException failure) throws Exception {
     final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    withPassThroughSecurity(server);
     when(server.getConfiguration()).thenReturn(new ContextConfiguration());
 
     try (final Socket socket = new Socket()) {

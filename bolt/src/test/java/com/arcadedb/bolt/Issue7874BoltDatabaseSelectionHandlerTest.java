@@ -55,6 +55,7 @@ class Issue7874BoltDatabaseSelectionHandlerTest {
   @Test
   void aServerWithNoDatabaseAtAllAnswersTransientlyUnavailable() throws Exception {
     final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    BoltHandlerProbe.withPassThroughSecurity(server);
     when(server.getConfiguration()).thenReturn(new ContextConfiguration());
     when(server.getDatabaseNames()).thenReturn(Set.of());
 
@@ -76,6 +77,7 @@ class Issue7874BoltDatabaseSelectionHandlerTest {
     when(closed.isOpen()).thenReturn(false);
 
     final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    BoltHandlerProbe.withPassThroughSecurity(server);
     when(server.getConfiguration()).thenReturn(new ContextConfiguration());
     when(server.getDatabase(anyString())).thenReturn(closed);
 
@@ -96,6 +98,7 @@ class Issue7874BoltDatabaseSelectionHandlerTest {
   @Test
   void aNameTheServerThrowsForIsThePermanentClientError() throws Exception {
     final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    BoltHandlerProbe.withPassThroughSecurity(server);
     when(server.getConfiguration()).thenReturn(new ContextConfiguration());
     when(server.getDatabase(anyString()))
         .thenThrow(new DatabaseNotFoundException("Database '/data/nosuchdb' does not exist"));
@@ -117,6 +120,7 @@ class Issue7874BoltDatabaseSelectionHandlerTest {
     configuration.setValue(GlobalConfiguration.BOLT_DEFAULT_DATABASE, "configured");
 
     final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    BoltHandlerProbe.withPassThroughSecurity(server);
     when(server.getConfiguration()).thenReturn(configuration);
     when(server.getDatabase(anyString()))
         .thenThrow(new DatabaseNotFoundException("Database '/data/configured' does not exist"));
