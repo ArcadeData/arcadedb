@@ -258,12 +258,24 @@ public final class PairHashJoinOp implements CountOp {
     final int idx = Arrays.binarySearch(sorted, from, to, key);
     if (idx < 0)
       return 0;
-    int lo = idx, hi = idx + 1;
-    while (lo > from && sorted[lo - 1] == key)
-      lo--;
-    while (hi < to && sorted[hi] == key)
-      hi++;
-    return hi - lo;
+    // the run is bounded by a binary search on each side, so a hub with thousands of parallel edges stays O(log n)
+    int lo = from, hi = idx;
+    while (lo < hi) {
+      final int mid = (lo + hi) >>> 1;
+      if (sorted[mid] < key)
+        lo = mid + 1;
+      else
+        hi = mid;
+    }
+    int up = idx + 1, end = to;
+    while (up < end) {
+      final int mid = (up + end) >>> 1;
+      if (sorted[mid] <= key)
+        up = mid + 1;
+      else
+        end = mid;
+    }
+    return up - lo;
   }
 
   /**
