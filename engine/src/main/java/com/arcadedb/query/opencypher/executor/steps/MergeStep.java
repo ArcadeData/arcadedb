@@ -101,6 +101,10 @@ public class MergeStep extends AbstractExecutionStep {
   private       boolean             createItemsResolved;
   private       List<SetClause.SetItem> createItems;
 
+  // The storage text of the last temporal operand matchesTemporal compared against (see there); one immutable pair, so the
+  // operand and its text can never be read out of step
+  private WantedText wantedText;
+
   public MergeStep(final MergeClause mergeClause, final CommandContext context,
                    final CypherFunctionFactory functionFactory) {
     super(context);
@@ -1305,12 +1309,6 @@ public class MergeStep extends AbstractExecutionStep {
     return CypherVertexReload.latest(context.getDatabase(), anchor);
   }
 
-  // The storage text of the last temporal operand matchesTemporal compared against (see there)
-  private WantedText wantedText;
-
-  /** One immutable pair, so the operand and its text can never be read out of step. */
-  private record WantedText(CypherTemporalValue wanted, String text) {
-  }
 
   /**
    * A temporal operand against a stored value: text is compared with the operand's storage form, then restored to its
@@ -1725,5 +1723,8 @@ public class MergeStep extends AbstractExecutionStep {
 
   private static String getIndent(final int depth, final int indent) {
     return "  ".repeat(Math.max(0, depth * indent));
+  }
+
+  private record WantedText(CypherTemporalValue wanted, String text) {
   }
 }

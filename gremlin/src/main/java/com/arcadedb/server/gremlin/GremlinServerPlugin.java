@@ -25,14 +25,15 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ServerPlugin;
-import io.netty.channel.Channel;
 import org.apache.tinkerpop.gremlin.server.GremlinServer;
 import org.apache.tinkerpop.gremlin.server.Settings;
 
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.IOException;
 import java.lang.reflect.Field;
-import java.net.InetSocketAddress;
+import java.net.InetAddress;
+import java.net.ServerSocket;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -127,6 +128,10 @@ public class GremlinServerPlugin implements ServerPlugin {
       if (key.startsWith("gremlin."))
         applyServerSetting(settings, key.substring("gremlin.".length()), configuration.getValue(key, null));
 
+    // GremlinServer cannot report an OS-chosen port, so a configured 0 becomes a concrete free port here
+    if (settings.port == 0)
+      settings.port = findFreePort(settings.host);
+
     // Ensure databases referenced in the graphs section of gremlin-server.yaml are created/opened.
     // This restores the pre-2026.2.1 behaviour where a static `graphs:` entry in gremlin-server.yaml
     // would cause ArcadeGraph to create the database on first access (issue #3661).
@@ -167,12 +172,7 @@ public class GremlinServerPlugin implements ServerPlugin {
       releaseAfterFailedStart();
       throw new ServerException("Error on starting GremlinServer plugin", e);
     }
-    try {
-      boundPort = resolveBoundPort(gremlinServer, settings.port);
-    } catch (final ServerException e) {
-      releaseAfterFailedStart();
-      throw e;
-    }
+    boundPort = settings.port;
 
     // SCRIPTS MUST SEE THE DATABASES CREATED AFTER THE START, NOT ONLY THE ONES THERE WHEN THE EXECUTOR WAS BUILT (#9147)
     if (gremlinServer.getServerGremlinExecutor().getGraphManager() instanceof ArcadeGraphManager arcadeGraphManager) {
@@ -184,28 +184,17 @@ public class GremlinServerPlugin implements ServerPlugin {
   }
 
   /**
-   * The port the channel is really bound to, which is the only answer when the setting is {@code 0} (the OS picks one).
-   * GremlinServer keeps the channel in a private field and never writes the port back to its settings, so it is read from
-   * there (verified against gremlin-server 3.8.2, field {@code serverSocketChannel}; {@code Issue9319GremlinBindFailureTest}
-   * fails if an upgrade renames it), falling back to the configured port if that cannot be done.
+   * A free port for a configured port of {@code 0}. GremlinServer never reports the port it bound when it was asked for
+   * an OS-chosen one (and offers no public way to read it), so the port is chosen here, before the server is built, and
+   * configured like any other: the advertised port is then the one the server listens on, and a port taken in the
+   * meantime fails the start loudly like any other bind failure.
    */
-  private static int resolveBoundPort(final GremlinServer gremlinServer, final int configuredPort) {
-    try {
-      final Field field = GremlinServer.class.getDeclaredField("serverSocketChannel");
-      field.setAccessible(true);
-      final Channel channel = (Channel) field.get(gremlinServer);
-      if (channel != null && channel.localAddress() instanceof InetSocketAddress address && address.getPort() > 0)
-        return address.getPort();
-    } catch (final ReflectiveOperationException | RuntimeException e) {
-      if (configuredPort <= 0)
-        // A listener nobody can find is worse than no listener: the OS-chosen port is the only way to reach it
-        throw new ServerException("The Gremlin Server is listening on an OS-chosen port that cannot be determined (a "
-            + "TinkerPop upgrade may have changed GremlinServer internals): " + e, e);
-      LogManager.instance().log(GremlinServerPlugin.class, Level.WARNING,
-          "Cannot read the port the Gremlin Server is bound to, advertising the configured port %d (%s)", null, configuredPort,
-          e.toString());
+  private static int findFreePort(final String host) {
+    try (final ServerSocket probe = new ServerSocket(0, 1, host != null && !host.isBlank() ? InetAddress.getByName(host) : null)) {
+      return probe.getLocalPort();
+    } catch (final IOException e) {
+      throw new ServerException("Cannot find a free port for the Gremlin Server on '" + host + "': " + e.getMessage(), e);
     }
-    return configuredPort;
   }
 
   /**
