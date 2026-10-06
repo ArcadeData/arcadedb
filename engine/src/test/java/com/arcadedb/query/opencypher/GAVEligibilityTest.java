@@ -630,11 +630,13 @@ class GAVEligibilityTest {
 
   @Test
   void antiJoinWithoutInequalityCorrectCount() {
-    // Without the inequality p1 could equal p3, but only by walking the same KNOWS relationship back, and Cypher binds
-    // a relationship at most once per MATCH: Alice-Bob-Alice and Charlie-Bob-Charlie are not paths.
-    // Alice-Bob-Charlie: NOT Alice-KNOWS-Charlie? Charlie not in {Bob} -> passes, Charlie has HAS_INTEREST Java: 1
-    // Charlie-Bob-Alice: Alice has no HAS_INTEREST: 0
-    // Total: 1
+    // Without an inequality p1 may equal p3 only when the two hops use DIFFERENT relationships. KNOWS has two edges here
+    // (Alice-Bob, Bob-Charlie), so Alice-Bob-Alice and Charlie-Bob-Charlie would each walk ONE edge twice, which Cypher's
+    // relationship uniqueness rule forbids inside a single MATCH (Neo4j drops them). What is left:
+    // Alice-Bob-Charlie: NOT Alice-KNOWS-Charlie? Charlie is not a neighbour of Alice, so it passes.
+    //   Charlie has HAS_INTEREST Java -> contributes 1
+    // Charlie-Bob-Alice: Alice has no HAS_INTEREST -> contributes 0
+    // Total: 1 (the old expectation of 2 counted Charlie-Bob-Charlie, which reuses the Bob-Charlie edge)
     final ResultSet result = database.query("opencypher",
         "MATCH (p1:Person)-[:KNOWS]-(p2:Person)-[:KNOWS]-(p3:Person)-[:HAS_INTEREST]->(t:Tag) WHERE NOT (p1)-[:KNOWS]-(p3) RETURN count(*) AS count");
 
