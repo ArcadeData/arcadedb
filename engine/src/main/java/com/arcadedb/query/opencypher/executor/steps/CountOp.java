@@ -70,9 +70,9 @@ public interface CountOp {
    * Whether this operator's anchors are <b>every vertex</b> rather than one label's, which makes it answerable off a
    * {@link GraphTraversalProvider} only when that provider's node domain is every vertex too.
    * <p>
-   * A view built over a subset of the vertex types is a perfectly good accelerator for a walk anchored on a label it
-   * holds, but "every vertex" is a claim about the graph rather than about the view, and a view holding some of them
-   * cannot make it. Such an operator runs against the OLTP path instead, which reads the schema (issue #5757).
+   * A provider built over a subset of the vertex types is never handed to a count push-down at all, because a walk
+   * that leaves the covered types would miss the edges that leave it (issue #9301), so this is a second guard for the
+   * unlabelled anchor of issue #5757 should a partially covering provider ever be offered here.
    */
   default boolean requiresFullVertexCoverage() {
     return false;

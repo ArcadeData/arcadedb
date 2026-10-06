@@ -1002,8 +1002,9 @@ class GraphAnalyticalViewTest extends TestHelper {
     // findProvider with null should NOT find this GAV
     assertThat(GraphTraversalProviderRegistry.findProvider(database)).isNull();
 
-    // But findProvider with specific types should still work
-    assertThat(GraphTraversalProviderRegistry.findProvider(database, "FOLLOWS")).isSameAs(gav);
+    // Company is not covered, so a walk over FOLLOWS could leave the view: only a caller that handles it may have it (#9301)
+    assertThat(GraphTraversalProviderRegistry.findProvider(database, "FOLLOWS")).isNull();
+    assertThat(GraphTraversalProviderRegistry.findProviderAllowingPartialVertexCoverage(database, "FOLLOWS")).isSameAs(gav);
 
     gav.drop();
   }
