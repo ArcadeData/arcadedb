@@ -2209,20 +2209,27 @@ public class BoltNetworkExecutor extends Thread {
    */
   private void sendRecord(final List<Object> data) throws IOException {
     final RecordMessage record = new RecordMessage(data);
-    sendMessage(record);
+    sendMessage(record, false);
   }
 
   /**
    * Send a message to the client.
    */
   private void sendMessage(final BoltMessage message) throws IOException {
+    sendMessage(message, true);
+  }
+
+  /**
+   * Send a message to the client. RECORDs are sent unflushed: the SUCCESS/FAILURE that ends the PULL flushes them all.
+   */
+  private void sendMessage(final BoltMessage message, final boolean flush) throws IOException {
     if (debug) {
       LogManager.instance().log(this, Level.FINE, "BOLT >> %s", message);
     }
 
     final PackStreamWriter writer = new PackStreamWriter().boltMajorVersion(getMajorVersion(protocolVersion));
     message.writeTo(writer);
-    output.writeMessage(writer.toByteArray());
+    output.writeMessage(writer.toByteArray(), flush);
   }
 
   /**
