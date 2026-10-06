@@ -104,13 +104,20 @@ public class OpenCypherQueryEngine implements QueryEngine {
   @Override
   public AnalyzedQuery analyze(final String query) {
     try {
+      // EXPLAIN/PROFILE are prefixes the query()/command() paths strip before parsing, so the grammar never sees them.
+      // PROFILE executes what it wraps, so it is classified exactly as the wrapped statement; EXPLAIN only plans, so
+      // it stays idempotent while still reporting the wrapped statement's operation types (issue #9313).
+      final String stripped = stripLeadingComments(query);
+      final boolean explain = stripped.regionMatches(true, 0, "EXPLAIN ", 0, 8);
+      final String actual = explain || stripped.regionMatches(true, 0, "PROFILE ", 0, 8) ? stripped.substring(8).trim() : query;
+
       // Use statement cache to avoid re-parsing
-      final CypherStatement statement = database.getCypherStatementCache().get(query);
+      final CypherStatement statement = database.getCypherStatementCache().get(actual);
 
       return new AnalyzedQuery() {
         @Override
         public boolean isIdempotent() {
-          return statement.isReadOnly();
+          return explain || statement.isReadOnly();
         }
 
         @Override
@@ -207,13 +214,10 @@ public class OpenCypherQueryEngine implements QueryEngine {
       if (!explain)
         checkParametersAreBound(parsed.parameters(), effectiveParameters);
 
-      // EXPLAIN never executes the underlying query, so the idempotency rule does not apply.
-      // PROFILE is treated as idempotent at the wrapper level to match SQL parity
-      // (see ProfileStatement/ExplainStatement in the SQL parser, both return isIdempotent()==true).
-      // Without this bypass, EXPLAIN/PROFILE of a CREATE/MERGE/DELETE/SET fails the read-only
-      // gate even though the user explicitly asked for plan inspection rather than execution
-      // (issue #4366).
-      if (!explain && !profile && !statement.isReadOnly())
+      // EXPLAIN never executes the underlying query, so the idempotency rule does not apply. PROFILE does execute it,
+      // so a write under PROFILE is refused here exactly like the bare write (issue #9313); Studio and the command
+      // path (database.command) are where a profiled write is legitimate (issue #4366).
+      if (!explain && !statement.isReadOnly())
         throw new QueryNotIdempotentException("Query '" + query + "' is not idempotent");
 
       return execute(actualQuery, statement, configuration, effectiveParameters, explain, profile, timeExecution);

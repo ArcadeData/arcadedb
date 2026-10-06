@@ -386,7 +386,8 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   }
 
   /**
-   * Resolves the live principal behind a user a long-lived connection (Postgres, Bolt, MongoDB, Redis wire protocols)
+   * Resolves the live principal behind a user a long-lived connection (Postgres, Bolt, MongoDB, Redis wire protocols and the {@code /ws} WebSocket, through
+   * {@code WebSocketEventBus.revalidatedUser})
    * authenticated as, so a change an administrator made after the login reaches the connection on its next request
    * the way it reaches an HTTP call. The connection keeps the {@link ServerSecurityUser} it got from
    * {@link #authenticate}, but {@link #updateUser} replaces the map entry with a new object, so a group refresh no
