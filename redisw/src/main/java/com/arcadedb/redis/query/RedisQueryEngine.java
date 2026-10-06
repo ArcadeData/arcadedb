@@ -342,14 +342,15 @@ public class RedisQueryEngine implements QueryEngine {
     // retried by its owner (the HTTP command endpoint), which re-parses the batch and calls in again, so there the
     // slots come from the owner's RetryScope instead (issue #9322).
     final RamSlot[] ownSlots = new RamSlot[commands.size()];
-    for (int i = 0; i < ownSlots.length; i++)
-      ownSlots[i] = new RamSlot();
+    Arrays.setAll(ownSlots, i -> new RamSlot());
 
     database.transaction(() -> {
       final RetryScope scope = retryScope();
       final List<Object> attemptResults = new ArrayList<>(commands.size());
-      for (int i = 0; i < commands.size(); i++)
-        attemptResults.add(executeSingleCommandInternal(commands.get(i), scope != null ? scope.nextSlot(commands.get(i), RamSlot::new) : ownSlots[i]));
+      for (int i = 0; i < commands.size(); i++) {
+        final String command = commands.get(i);
+        attemptResults.add(executeSingleCommandInternal(command, scope != null ? scope.nextSlot(command, RamSlot::new) : ownSlots[i]));
+      }
       committed[0] = attemptResults;
     });
 
