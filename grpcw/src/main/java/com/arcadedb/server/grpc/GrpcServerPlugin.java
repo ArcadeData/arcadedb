@@ -487,13 +487,24 @@ public class GrpcServerPlugin implements ServerPlugin {
 
   // Configuration helper methods. Every key is a declared GlobalConfiguration setting (issue #9316), so the server
   // configuration file, the environment and -D all reach it; the plugin never reads a bare key.
+  /**
+   * The value of a declared setting: the overlay first (server configuration file, SET SERVER SETTING), then a system
+   * property read NOW, then what the enum holds (a -D at JVM start, an environment variable, the default). The live
+   * system property is what the plugin always honoured while the keys were bare strings: the enum alone reads -D once, at
+   * class load, so a property set afterwards (the transaction-reaper integration tests do) would be silently ignored.
+   */
+  private Object resolve(final ContextConfiguration config, final GlobalConfiguration setting) {
+    final Object overlayOrProperty = config.getValue(setting.getKey(), (Object) null);
+    return overlayOrProperty != null ? overlayOrProperty : config.getValue(setting);
+  }
+
   private String getConfigString(final ContextConfiguration config, final GlobalConfiguration setting) {
-    final Object value = config.getValue(setting);
+    final Object value = resolve(config, setting);
     return value == null ? null : value.toString();
   }
 
   private int getConfigInt(final ContextConfiguration config, final GlobalConfiguration setting) {
-    final Object value = config.getValue(setting);
+    final Object value = resolve(config, setting);
     if (value instanceof Number number)
       return number.intValue();
     if (value != null) {
@@ -507,7 +518,7 @@ public class GrpcServerPlugin implements ServerPlugin {
   }
 
   private long getConfigLong(final ContextConfiguration config, final GlobalConfiguration setting) {
-    final Object value = config.getValue(setting);
+    final Object value = resolve(config, setting);
     if (value instanceof Number number)
       return number.longValue();
     if (value != null) {
@@ -541,7 +552,7 @@ public class GrpcServerPlugin implements ServerPlugin {
     rejectNonBooleanText(setting, System.getProperty(setting.getKey()));
     rejectNonBooleanText(setting, System.getenv(setting.getKey()));
 
-    final Object value = config.getValue(setting);
+    final Object value = resolve(config, setting);
     if (value instanceof Boolean bool)
       return bool;
     if (value == null)
