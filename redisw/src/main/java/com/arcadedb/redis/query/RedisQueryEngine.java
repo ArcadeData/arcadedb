@@ -84,6 +84,9 @@ public class RedisQueryEngine implements QueryEngine {
   // Batch separator: any line break, as the executor has always split on (String.split("\\R")).
   private static final Pattern LINE_SEPARATOR = Pattern.compile("\\R");
   private static final Pattern COMMAND_PATTERN = Pattern.compile("(\\{[^{}]*(?:\\{[^{}]*\\}[^{}]*)*\\})|\"([^\"]*)\"|'([^']*)'|(\\S+)");
+  private static final String RAM_OVERLAY_ATTACHMENT = "redis.ramOverlay";
+  /** The commands that take a value from the shared RAM map and so keep a {@link RamSlot} across retries. */
+  private static final Set<String> RAM_SLOT_COMMANDS = Set.of("INCR", "INCRBY", "INCRBYFLOAT", "DECR", "DECRBY", "GETDEL");
 
   protected RedisQueryEngine(final DatabaseInternal database) {
     this.database = database;
@@ -305,14 +308,16 @@ public class RedisQueryEngine implements QueryEngine {
       return createResultSet("OK");
 
     final List<Object> results = new ArrayList<>();
+    int position = 0;
     for (final Object step : plan) {
       if (step instanceof String command)
-        results.add(executeSingleCommandInternal(command, looseSlot(command)));
+        results.add(executeSingleCommandInternal(command, looseSlot(position, command)));
       else {
         @SuppressWarnings("unchecked")
         final List<String> commands = (List<String>) step;
         results.addAll(executeTransaction(commands));
       }
+      position++;
     }
     return createResultSet(results);
   }
@@ -345,7 +350,7 @@ public class RedisQueryEngine implements QueryEngine {
       final List<Object> attemptResults = new ArrayList<>(commands.size());
       for (int i = 0; i < commands.size(); i++) {
         final String command = commands.get(i);
-        attemptResults.add(executeSingleCommandInternal(command, slotFor(scope, command)));
+        attemptResults.add(executeSingleCommandInternal(command, slotFor(scope, i, command)));
       }
       committed[0] = attemptResults;
     });
@@ -403,10 +408,6 @@ public class RedisQueryEngine implements QueryEngine {
     }
   }
 
-  private static final String RAM_OVERLAY_ATTACHMENT = "redis.ramOverlay";
-
-  /** The commands that take a value from the shared RAM map and so keep a {@link RamSlot} across retries. */
-  private static final Set<String> RAM_SLOT_COMMANDS = Set.of("INCR", "INCRBY", "INCRBYFLOAT", "DECR", "DECRBY", "GETDEL");
 
   /**
    * @return the state that survives the attempts of the retried transaction call this request runs under, or null when
@@ -423,8 +424,8 @@ public class RedisQueryEngine implements QueryEngine {
    * keyed by the command text, so a retry that reaches this position with a different command gets a fresh slot and the
    * effect of that command is applied again instead of answering with another command's value.
    */
-  private RamSlot looseSlot(final String command) {
-    return slotFor(retryScope(), command);
+  private RamSlot looseSlot(final int index, final String command) {
+    return slotFor(retryScope(), index, command);
   }
 
   /**
@@ -432,7 +433,7 @@ public class RedisQueryEngine implements QueryEngine {
    * INCR/DECR/GETDEL take values from the shared map, so only they need to remember them across a retry. Which commands
    * need one depends on the command text alone, so every attempt of a retry allocates the same positions.
    */
-  private static RamSlot slotFor(final RetryScope scope, final String command) {
+  private static RamSlot slotFor(final RetryScope scope, final int index, final String command) {
     if (scope == null)
       return null;
     final String trimmed = command.stripLeading();
@@ -440,7 +441,9 @@ public class RedisQueryEngine implements QueryEngine {
     final String name = trimmed.substring(0, end);
     final String upper = name.toUpperCase(Locale.ENGLISH);
     if (RAM_SLOT_COMMANDS.contains(upper))
-      return scope.nextSlot(command, RamSlot::new);
+      // keyed by the position in the block as well as the text: a command without a slot (a SET) that turns up before this
+      // one on a retry shifts it, and the reserved reply of the earlier attempt is then not reused for another input
+      return scope.nextSlot(index + "#" + command, RamSlot::new);
     return null;
   }
 
@@ -466,7 +469,7 @@ public class RedisQueryEngine implements QueryEngine {
    * Executes a single command and returns a ResultSet.
    */
   private ResultSet executeSingleCommand(final String query) {
-    final Object result = executeSingleCommandInternal(query, looseSlot(query));
+    final Object result = executeSingleCommandInternal(query, looseSlot(0, query));
     return createResultSet(result);
   }
 
