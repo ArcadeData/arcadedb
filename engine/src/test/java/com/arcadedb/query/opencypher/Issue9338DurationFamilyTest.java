@@ -277,4 +277,12 @@ class Issue9338DurationFamilyTest {
     assertThat(scalar("RETURN toString(duration({milliseconds: -1500})) AS r")).isEqualTo("PT-1.5S");
     assertThat(scalar("RETURN toString(duration({microseconds: -1})) AS r")).isEqualTo("PT-0.000001S");
   }
+
+  @Test
+  void fractionalComponentsBeyondTheLongRangeOverflowToo() {
+    expectError("RETURN duration('P99999999999999999999.5D')", ArithmeticErrorException.class);
+    expectError("RETURN duration({days: 1e20, hours: 1.5})", ArithmeticErrorException.class);
+    expectError("RETURN duration({months: 1e19, days: 0.5})", ArithmeticErrorException.class);
+    assertThat(scalar("RETURN toString(duration('PT1.5H')) AS r")).isEqualTo("PT1H30M");
+  }
 }

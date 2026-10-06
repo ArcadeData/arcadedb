@@ -1328,8 +1328,8 @@ public class MergeStep extends AbstractExecutionStep {
       // The parse only runs for a text with the shape of a temporal: a scan over plain strings pays a character test
       // A declared STRING property holds text by contract (issue #8384): it only matches the operand's own text, never a
       // differently formatted rendering of the same instant, exactly like MATCH
-      return text.equals(wantedStorageText) || TemporalUtil.mayBeTemporalString(text) && !TemporalUtil.isDeclaredString(doc, propertyName)
-          && InlineProperties.matchesResolvedValue(TemporalUtil.convertFromStorage(text), wanted);
+      return text.equals(wantedStorageText) || (TemporalUtil.mayBeTemporalString(text) && !TemporalUtil.isDeclaredString(doc, propertyName)
+          && InlineProperties.matchesResolvedValue(TemporalUtil.convertFromStorage(text), wanted));
     }
     return InlineProperties.matchesResolvedValue(actual, wanted);
   }

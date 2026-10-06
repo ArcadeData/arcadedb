@@ -250,19 +250,26 @@ public class CypherDuration implements CypherTemporalValue {
     return value == null ? 0L : longOf((Number) value);
   }
 
+  /** The whole part of a floating point total: past the long range the cast would saturate without a word. */
+  private static long wholeOrOverflow(final double total) {
+    if (!(total > -0x1p63 && total < 0x1p63))
+      throw new ArithmeticErrorException("Duration component overflow: " + total);
+    return (long) total;
+  }
+
   private static CypherDuration fromComponents(final double years, final double months, final double weeks,
       final double days, final double hours, final double minutes, final double secs, final long extraNanos) {
     // Fractional cascading: fractional years → months, fractional months → days, etc.
     double totalMonths = years * 12 + months;
-    final long wholeMonths = (long) totalMonths;
+    final long wholeMonths = wholeOrOverflow(totalMonths);
     final double fracMonths = totalMonths - wholeMonths;
 
     double totalDays = weeks * 7 + days + fracMonths * (365.2425 / 12); // fractional months → average days per month
-    final long wholeDays = (long) totalDays;
+    final long wholeDays = wholeOrOverflow(totalDays);
     final double fracDays = totalDays - wholeDays;
 
     double totalSeconds = hours * 3600 + minutes * 60 + secs + fracDays * 86400;
-    final long wholeSeconds = (long) totalSeconds;
+    final long wholeSeconds = wholeOrOverflow(totalSeconds);
     final double fracSeconds = totalSeconds - wholeSeconds;
 
     final long nanos = Math.round(fracSeconds * 1_000_000_000) + extraNanos;
