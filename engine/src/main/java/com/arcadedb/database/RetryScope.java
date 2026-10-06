@@ -24,14 +24,15 @@ import java.util.Objects;
 import java.util.function.Supplier;
 
 /**
- * State that survives the attempts of one retried {@link Database#transaction} call, unlike a
- * {@link TransactionContext#setAttachment transaction attachment}, which a rollback drops together with the attempt.
+ * State that survives the attempts of one retried {@link Database#transaction} call, unlike a {@link
+ * TransactionContext#setAttachment transaction attachment}, which a rollback drops together with the attempt.
  * <p>
- * It exists for a side effect that cannot be rolled back (the Redis INCR/GETDEL on the shared RAM map, issue #9322): the
- * first attempt performs it and parks what it took in a slot, a retry that re-runs the same statements finds the slot
- * and answers from it instead of performing the effect again. Slots are handed out in call order and the order restarts
- * with every attempt, so the n-th request of a retry meets the slot the n-th request of the first attempt filled, provided it carries the same
- * key. A retry that diverges (a data-dependent branch) therefore gets fresh slots instead of the wrong ones.
+ * It exists for a side effect that cannot be rolled back (the Redis INCR/GETDEL on the shared RAM map, issue #9322):
+ * the first attempt performs it and parks what it took in a slot, a retry that re-runs the same statements finds the
+ * slot and answers from it instead of performing the effect again. Slots are handed out in call order and the order
+ * restarts with every attempt, so the n-th request of a retry meets the slot the n-th request of the first attempt
+ * filled, provided it carries the same key. A retry that diverges (a data-dependent branch) gets a fresh slot at each
+ * position whose key changed, instead of the wrong one; the positions whose key is unchanged keep theirs.
  * <p>
  * The scope belongs to the outermost {@code transaction()} call of the thread and ends with it, whether it commits or
  * gives up. It is reachable through {@link DatabaseContext.DatabaseContextTL#getRetryScope()}.
