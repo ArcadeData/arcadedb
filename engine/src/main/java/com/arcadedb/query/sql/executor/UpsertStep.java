@@ -56,7 +56,7 @@ public class UpsertStep extends AbstractExecutionStep {
     if (p instanceof SubQueryStep) {
       for (ExecutionPlan ep : p.getSubExecutionPlans()) {
         for (ExecutionStep s : ep.getSteps()) {
-          if (s instanceof FetchFromIndexStep step && step.index.isUnique()) {
+          if (s instanceof FetchFromIndexStep step && isUniqueFullKeyLookup(step)) {
             fetchFromIndexFound = true;
             break;
           }
@@ -64,7 +64,7 @@ public class UpsertStep extends AbstractExecutionStep {
       }
     } else {
       for (ExecutionStep step : p.getSubSteps()) {
-        if (step instanceof FetchFromIndexStep indexStep && indexStep.index.isUnique()) {
+        if (step instanceof FetchFromIndexStep indexStep && isUniqueFullKeyLookup(indexStep)) {
           fetchFromIndexFound = true;
           break;
         }
@@ -84,6 +84,10 @@ public class UpsertStep extends AbstractExecutionStep {
     final InternalResultSet result = new InternalResultSet();
     result.add(createNewRecord(commandTarget, initialFilter));
     return result;
+  }
+
+  private static boolean isUniqueFullKeyLookup(final FetchFromIndexStep step) {
+    return step.index.isUnique() && step.isFullKeyEquality();
   }
 
   private Result createNewRecord(final FromClause commandTarget, final WhereClause initialFilter) {
