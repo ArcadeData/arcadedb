@@ -201,20 +201,23 @@ class AlgoLabelPropagationTest {
     try {
       db.getSchema().createVertexType("T");
       db.getSchema().createEdgeType("TE");
+      final RID[] pRid = new RID[1];
       final RID[] qRid = new RID[1];
       db.transaction(() -> {
-        final MutableVertex p = db.newVertex("T").set("name", "P").set("vid", 200).save();
-        final MutableVertex q = db.newVertex("T").set("name", "Q").set("vid", 100).save();
-        final MutableVertex x = db.newVertex("T").set("name", "X").set("vid", 300).save();
+        final MutableVertex p = db.newVertex("T").set("name", "P").set("vidA", 1).set("vidB", 2).save();
+        final MutableVertex q = db.newVertex("T").set("name", "Q").set("vidA", 2).set("vidB", 1).save();
+        final MutableVertex x = db.newVertex("T").set("name", "X").set("vidA", 3).set("vidB", 3).save();
         p.newEdge("TE", x, true, (Object[]) null).save();
         q.newEdge("TE", x, true, (Object[]) null).save();
+        pRid[0] = p.getIdentity();
         qRid[0] = q.getIdentity();
       });
       final GraphAnalyticalView gav = GraphAnalyticalView.builder(db).withVertexTypes("T").withEdgeTypes("TE").build();
       try {
-        // X sees a 1-1 tie between P and Q: the smaller vid (Q) must win whatever the dense order is
-        final Map<String, Integer> byVid = labels(db, "{maxIterations: 1, tieBreakProperty: 'vid'}");
-        assertThat(byVid.get("X")).isEqualTo(gav.getNodeId(qRid[0]));
+        // X sees a 1-1 tie between P and Q. The two properties order them oppositely, so the winner flips with the
+        // property whatever the dense order is, which a tie-break that merely follows the dense order cannot do.
+        assertThat(labels(db, "{maxIterations: 1, tieBreakProperty: 'vidA'}").get("X")).isEqualTo(gav.getNodeId(pRid[0]));
+        assertThat(labels(db, "{maxIterations: 1, tieBreakProperty: 'vidB'}").get("X")).isEqualTo(gav.getNodeId(qRid[0]));
       } finally {
         gav.drop();
       }

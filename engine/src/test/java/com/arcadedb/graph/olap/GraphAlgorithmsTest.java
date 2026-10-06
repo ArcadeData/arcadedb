@@ -887,6 +887,8 @@ class GraphAlgorithmsTest extends TestHelper {
         .isInstanceOf(IllegalArgumentException.class);
     assertThatThrownBy(() -> GraphAlgorithms.labelPropagation(gav, 1, new int[] { 0 }, WorkCheckpoint.NONE, "LINK"))
         .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> GraphAlgorithms.labelPropagation(gav, 1, new int[] { 0, 5 }, WorkCheckpoint.NONE, "LINK"))
+        .isInstanceOf(IllegalArgumentException.class);
   }
 
   // --- Compaction Threshold (builder) ---
