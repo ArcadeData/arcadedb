@@ -833,6 +833,42 @@ class GraphAlgorithmsTest extends TestHelper {
   }
 
   @Test
+  void labelPropagationTieBreakRankOnHighDegreeHub() {
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    final int leafCount = 40;
+    database.begin();
+    final MutableVertex hub = database.newVertex("Node").save();
+    for (int i = 0; i < leafCount; i++)
+      hub.newEdge("LINK", database.newVertex("Node").save());
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node")
+        .withEdgeTypes("LINK")
+        .build();
+
+    final int n = leafCount + 1;
+    final int hubId = gav.getNodeId(hub.getIdentity());
+    final int[] reversed = new int[n];
+    int expectedLowest = -1;
+    int expectedHighest = -1;
+    for (int i = 0; i < n; i++) {
+      reversed[i] = n - 1 - i;
+      if (i != hubId) {
+        if (expectedLowest == -1)
+          expectedLowest = i;
+        expectedHighest = i;
+      }
+    }
+
+    // every leaf holds a different label, so the hub sees a leafCount-way tie
+    assertThat(GraphAlgorithms.labelPropagation(gav, 1, WorkCheckpoint.NONE, "LINK")[hubId]).isEqualTo(expectedLowest);
+    assertThat(GraphAlgorithms.labelPropagation(gav, 1, reversed, WorkCheckpoint.NONE, "LINK")[hubId]).isEqualTo(expectedHighest);
+  }
+
+  @Test
   void labelPropagationRejectsInvalidRank() {
     database.getSchema().createVertexType("Node");
     database.getSchema().createEdgeType("LINK");
