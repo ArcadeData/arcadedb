@@ -209,8 +209,10 @@ public class GremlinServerPlugin implements ServerPlugin {
   private void releaseAfterFailedStart() {
     try {
       stopService();
-    } catch (final Throwable ignored) {
+    } catch (final Exception e) {
       // BEST EFFORT: THE START FAILURE IS WHAT THE CALLER MUST SEE
+      LogManager.instance().log(this, Level.WARNING, "Error releasing the Gremlin Server after a failed start: %s", null,
+          e.toString());
     }
   }
 
@@ -411,16 +413,21 @@ public class GremlinServerPlugin implements ServerPlugin {
       if (graphManager instanceof ArcadeGraphManager) {
         ((ArcadeGraphManager) graphManager).closeAll();
       }
+      boolean stopped = false;
       try {
         // Bounded like the start: a server whose bind failed must not be able to hang the shutdown
         gremlinServer.stop().get(START_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        stopped = true;
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
       } catch (final ExecutionException | TimeoutException e) {
-        LogManager.instance().log(this, Level.WARNING,
-            "Error or timeout stopping the Gremlin Server, which may still be running: %s", null, e.toString());
+        LogManager.instance().log(this, Level.SEVERE,
+            "Error or timeout stopping the Gremlin Server, which may still be running and holding its port: %s", null,
+            e.toString());
       }
-      gremlinServer = null;
+      // A server that did not confirm its stop keeps its handle, so a later stopService() can try again
+      if (stopped)
+        gremlinServer = null;
     }
     if (gremlinExecutorService != null) {
       gremlinExecutorService.shutdownNow();
