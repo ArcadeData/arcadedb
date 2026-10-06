@@ -29,7 +29,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * Regression test for issue #9339: an UPSERT whose WHERE condition cannot use a unique single-property index (non-unique,
  * composite or missing index) must say so in the error, instead of the generic "must involve an index" wording that misled
- * users who did have an index on the property.
+ * users who did have an index on the property. A composite UNIQUE index is usable only when the WHERE matches all its properties.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -57,7 +57,36 @@ public class Issue9339UpsertIndexTest extends TestHelper {
     assertThatThrownBy(() -> database.transaction(
         () -> database.command("sql", "UPDATE Plain SET code = ? UPSERT WHERE code = ?", "c1", "c1")))
         .isInstanceOf(CommandSQLParsingException.class)
-        .hasMessageContaining("UNIQUE index")
-        .hasMessageContaining("single property");
+        .hasMessageContaining("UNIQUE index");
+  }
+
+  @Test
+  void upsertWithoutAnyIndexExplainsTheRequirement() {
+    database.command("sql", "CREATE DOCUMENT TYPE NoIdx");
+    database.command("sql", "CREATE PROPERTY NoIdx.code STRING");
+
+    assertThatThrownBy(() -> database.transaction(
+        () -> database.command("sql", "UPDATE NoIdx SET code = ? UPSERT WHERE code = ?", "c1", "c1")))
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("UNIQUE index");
+  }
+
+  @Test
+  void upsertOnCompositeUniqueIndexNeedsAllItsProperties() {
+    database.command("sql", "CREATE DOCUMENT TYPE Comp");
+    database.command("sql", "CREATE PROPERTY Comp.tenant STRING");
+    database.command("sql", "CREATE PROPERTY Comp.code STRING");
+    database.command("sql", "CREATE INDEX ON Comp (tenant, code) UNIQUE");
+
+    assertThatThrownBy(() -> database.transaction(
+        () -> database.command("sql", "UPDATE Comp SET name = ? UPSERT WHERE code = ?", "x", "c1")))
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("UNIQUE index");
+
+    database.transaction(() -> {
+      database.command("sql", "UPDATE Comp SET name = ? UPSERT WHERE tenant = ? AND code = ?", "x", "t", "c1");
+      database.command("sql", "UPDATE Comp SET name = ? UPSERT WHERE tenant = ? AND code = ?", "y", "t", "c1");
+    });
+    assertThat(database.countType("Comp", false)).isEqualTo(1);
   }
 }
