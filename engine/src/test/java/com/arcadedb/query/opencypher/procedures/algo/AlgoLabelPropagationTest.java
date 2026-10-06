@@ -28,8 +28,10 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -154,5 +156,48 @@ class AlgoLabelPropagationTest {
     } finally {
       db.drop();
     }
+  }
+
+  @Test
+  void tieBreakPropertyDecidesEqualFrequencyLabels() {
+    final DatabaseFactory factory = new DatabaseFactory("./target/databases/test-algo-lpa-tiebreak");
+    if (factory.exists())
+      factory.open().drop();
+    final Database db = factory.create();
+    try {
+      db.getSchema().createVertexType("T");
+      db.getSchema().createEdgeType("TE");
+      db.transaction(() -> {
+        final MutableVertex p = db.newVertex("T").set("name", "P").set("vid", 200).save();
+        final MutableVertex q = db.newVertex("T").set("name", "Q").set("vid", 100).save();
+        final MutableVertex x = db.newVertex("T").set("name", "X").set("vid", 300).save();
+        p.newEdge("TE", x, true, (Object[]) null).save();
+        q.newEdge("TE", x, true, (Object[]) null).save();
+      });
+
+      // X sees a 1-1 tie between P's and Q's labels. Whichever one the internal order picks, give the other the smaller vid.
+      final String plain = labelOwnerOfX(db, "{maxIterations: 1, direction: 'IN'}");
+      final String other = plain.equals("P") ? "Q" : "P";
+      db.transaction(() -> {
+        db.command("sql", "UPDATE T SET vid = 900 WHERE name = ?", plain);
+        db.command("sql", "UPDATE T SET vid = 100 WHERE name = ?", other);
+      });
+
+      assertThat(labelOwnerOfX(db, "{maxIterations: 1, direction: 'IN', tieBreakProperty: 'vid'}")).isEqualTo(other);
+    } finally {
+      db.drop();
+    }
+  }
+
+  private static String labelOwnerOfX(final Database db, final String config) {
+    final ResultSet rs = db.query("opencypher",
+        "CALL algo.labelpropagation(" + config + ") YIELD node, communityId RETURN node.name AS name, communityId");
+    final Map<String, Integer> byName = new HashMap<>();
+    while (rs.hasNext()) {
+      final Result r = rs.next();
+      byName.put(r.getProperty("name"), ((Number) r.getProperty("communityId")).intValue());
+    }
+    // With direction IN only X has neighbours, so P and Q keep their own labels and X's label names the winner
+    return byName.get("X").equals(byName.get("P")) ? "P" : "Q";
   }
 }
