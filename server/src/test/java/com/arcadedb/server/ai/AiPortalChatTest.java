@@ -80,6 +80,8 @@ class AiPortalChatTest {
     @Override
     public String execute(final String toolName, final JSONObject args) {
       calls.add(toolName + args);
+      if (toolName.equals("boom"))
+        throw new IllegalStateException("tool exploded");
       return toolName.equals("bad") ? "{\"error\":\"nope\"}" : "{\"result\":[{\"n\":1}]}";
     }
   }
@@ -171,6 +173,36 @@ class AiPortalChatTest {
     assertThat(results.getJSONObject(0).getString("result")).contains("\"n\":1");
     assertThat(results.getJSONObject(1).getString("result")).contains("nope");
     assertThat(opened).isEqualTo(1);
+  }
+
+  /**
+   * Issue #8721, the portal's side of it: a tool that throws, or a call whose arguments are not a JSON object, is an error
+   * result the model sees on the next round, not the end of the whole answer.
+   */
+  @Test
+  void aToolThatThrowsOrUnusableArgumentsBecomeAnErrorResultForTheNextRound() throws IOException {
+    portal.script = body -> body.getInt("round") == 0
+        ? FakeAiPortal.answer("", List.of(FakeAiPortal.toolCall("t1", "boom", new JSONObject()),
+        new JSONObject().put("id", "t2").put("name", "get_schema").put("arguments", "not json"),
+        new JSONObject().put("id", "t3").put("name", "get_type").put("arguments", new JSONObject().put("name", "User").toString())))
+        : FakeAiPortal.answer("Recovered", List.of());
+    final RecordingTools tools = new RecordingTools();
+
+    final AiPortalChat.Answer answer = new AiPortalChat(client, 5_000).run(request(), tools, sink);
+
+    assertThat(answer.response()).isEqualTo("Recovered");
+    assertThat(tools.calls).as("the call with unusable arguments is not run; string-encoded arguments are")
+        .containsExactly("boom{}", "get_type{\"name\":\"User\"}");
+    final List<JSONObject> ends = events.stream().filter(e -> e.getString("type").equals("tool_end")).toList();
+    assertThat(ends).hasSize(3);
+    assertThat(ends.get(0).getString("error")).contains("tool exploded");
+    assertThat(ends.get(1).getString("error")).contains("not a JSON object");
+    assertThat(ends.get(2).getString("error", null)).isNull();
+
+    final JSONArray results = portal.sends.get(1).getJSONArray("toolResults");
+    assertThat(results.length()).isEqualTo(3);
+    assertThat(new JSONObject(results.getJSONObject(0).getString("result")).getString("error")).contains("tool exploded");
+    assertThat(new JSONObject(results.getJSONObject(1).getString("result")).getString("error")).contains("not a JSON object");
   }
 
   @Test

@@ -121,10 +121,12 @@ public class AiPortalChat {
       for (int i = 0; i < toolCalls.length(); i++) {
         final JSONObject call = toolCalls.getJSONObject(i);
         final String name = call.getString("name", "");
-        final JSONObject args = call.getJSONObject("arguments", new JSONObject());
+        // Arguments that are not a JSON object, and a tool that throws, are error results the model sees next round (#8721)
+        final JSONObject callArgs = ToolDispatcher.arguments(call);
+        final JSONObject args = callArgs != null ? callArgs : new JSONObject();
         sink.event(new JSONObject().put("type", "tool_start").put("tool", name).put("args", args));
 
-        String output = dispatcher.execute(name, args);
+        String output = dispatcher.executeSafely(name, callArgs);
         final JSONObject end = new JSONObject().put("type", "tool_end").put("tool", name).put("args", args);
         try {
           final String error = new JSONObject(output).getString("error", null);
