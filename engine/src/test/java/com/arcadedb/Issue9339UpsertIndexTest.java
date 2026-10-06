@@ -165,7 +165,7 @@ public class Issue9339UpsertIndexTest extends TestHelper {
   }
 
   @Test
-  void upsertOnSubqueryTargetWithUniqueFullKeyLookup() {
+  void upsertOnUniqueFullKeyLookupUpdatesTheExistingRecord() {
     database.command("sql", "CREATE DOCUMENT TYPE Sub");
     database.command("sql", "CREATE PROPERTY Sub.code STRING");
     database.command("sql", "CREATE INDEX ON Sub (code) UNIQUE");
@@ -197,5 +197,19 @@ public class Issue9339UpsertIndexTest extends TestHelper {
           .hasMessageContaining("UNIQUE index");
     }
     assertThat(database.countType("Shapes", false)).isZero();
+  }
+
+  @Test
+  void upsertOnCompositeIndexWithResidualPredicate() {
+    database.command("sql", "CREATE DOCUMENT TYPE CompResid");
+    database.command("sql", "CREATE PROPERTY CompResid.tenant STRING");
+    database.command("sql", "CREATE PROPERTY CompResid.code STRING");
+    database.command("sql", "CREATE INDEX ON CompResid (tenant, code) UNIQUE");
+
+    database.transaction(() -> {
+      database.command("sql", "UPDATE CompResid SET name = ? UPSERT WHERE tenant = ? AND code = ? AND name = ?", "n", "t", "c1", "n");
+      database.command("sql", "UPDATE CompResid SET name = ? UPSERT WHERE tenant = ? AND code = ? AND name = ?", "n", "t", "c1", "n");
+    });
+    assertThat(database.countType("CompResid", false)).isEqualTo(1);
   }
 }
