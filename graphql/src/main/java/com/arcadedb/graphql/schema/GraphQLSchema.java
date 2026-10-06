@@ -102,12 +102,16 @@ public class GraphQLSchema {
       // IT SPREADS MAY BE DECLARED AFTER IT. SEE ISSUE #7770
       final GraphQLFragments fragments = GraphQLFragments.of(definitions);
 
+      // The GraphQL schema is shared by every user of the database: replacing a type is a schema change. Checked once,
+      // before anything in the document is executed or applied, so a denied document does nothing at all.
+      for (final Definition definition : definitions)
+        if (definition instanceof TypeSystemDefinition) {
+          ((DatabaseInternal) database).checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+          break;
+        }
+
       for (final Definition definition : definitions) {
         if (definition instanceof TypeSystemDefinition typeSystemDefinition) {
-          // The GraphQL schema is shared by every user of the database: replacing a type is a schema change. Checked before
-          // the first type is applied, so a denied document leaves the schema untouched.
-          ((DatabaseInternal) database).checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
-
           final TypeDefinition type = typeSystemDefinition.getTypeDefinition();
           if (type instanceof ObjectTypeDefinition obj) {
             objectTypeDefinitionMap.put(obj.getName(), obj);
