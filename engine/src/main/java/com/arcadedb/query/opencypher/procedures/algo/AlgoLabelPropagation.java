@@ -135,7 +135,7 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
     if (n == 0)
       return Stream.empty();
 
-    final int[] rank = tieBreakProperty != null ? computeTieBreakRank(context.getDatabase(), n, gav::getRID, tieBreakProperty) : null;
+    final int[] rank = tieBreakProperty != null ? computeTieBreakRank(n, i -> context.getDatabase().lookupByRID(gav.getRID(i), true).asVertex().get(tieBreakProperty), tieBreakProperty) : null;
 
     // The kernel's "nothing moved" break only fires if the labelling settles - a graph that oscillates between two
     // labellings never converges - so maxIterations is what ends the run, and the guard is what can abort it.
@@ -157,7 +157,7 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
       return Stream.empty();
 
     final int n = vertices.size();
-    final int[] rank = tieBreakProperty != null ? computeTieBreakRank(db, n, i -> vertices.get(i).getIdentity(), tieBreakProperty) : null;
+    final int[] rank = tieBreakProperty != null ? computeTieBreakRank(n, i -> vertices.get(i).get(tieBreakProperty), tieBreakProperty) : null;
     final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
 
     // Build adjacency once to avoid repeated OLTP traversal
@@ -226,6 +226,10 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
     });
   }
 
+  private static boolean isFinite(final Number n) {
+    return !(n instanceof Double d && !Double.isFinite(d)) && !(n instanceof Float f && !Float.isFinite(f));
+  }
+
   /**
    * Ranks the {@code n} dense nodes by the value of {@code property}: {@code rank[i]} is the position of node {@code i}
    * in ascending property order. Nodes with a missing value sort last, and equal values fall back to the dense index so
@@ -233,12 +237,20 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
    * the algorithm itself.
    */
   @SuppressWarnings("unchecked")
-  private static int[] computeTieBreakRank(final Database db, final int n, final IntFunction<RID> ridOf, final String property) {
+  private static int[] computeTieBreakRank(final int n, final IntFunction<Object> valueOf, final String property) {
     final Object[] values = new Object[n];
+    Object first = null;
     for (int i = 0; i < n; i++) {
-      final Object value = db.lookupByRID(ridOf.apply(i), true).asVertex().get(property);
-      if (value != null && !(value instanceof Comparable))
-        throw new IllegalArgumentException("Property '" + property + "' is not comparable, cannot be used as tieBreakProperty");
+      final Object value = valueOf.apply(i);
+      if (value != null) {
+        if (!(value instanceof Comparable))
+          throw new IllegalArgumentException("Property '" + property + "' of node " + i + " is not comparable, cannot be used as tieBreakProperty");
+        if (first == null)
+          first = value;
+        else if (!(first instanceof Number && value instanceof Number) && first.getClass() != value.getClass())
+          throw new IllegalArgumentException("Property '" + property + "' of node " + i + " is a " + value.getClass().getSimpleName()
+              + " but others are " + first.getClass().getSimpleName() + ", cannot be used as tieBreakProperty");
+      }
       values[i] = value;
     }
 
@@ -254,7 +266,7 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
       } else {
         final int cmp;
         if (va instanceof Number na && vb instanceof Number nb) {
-          if (na instanceof BigDecimal || nb instanceof BigDecimal)
+          if ((na instanceof BigDecimal || nb instanceof BigDecimal) && isFinite(na) && isFinite(nb))
             cmp = new BigDecimal(na.toString()).compareTo(new BigDecimal(nb.toString()));
           else if (na instanceof Double || na instanceof Float || nb instanceof Double || nb instanceof Float)
             cmp = Double.compare(na.doubleValue(), nb.doubleValue());
