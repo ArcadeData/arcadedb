@@ -273,8 +273,8 @@ public final class AntiJoinChainOp implements CountOp {
       if (!provider.isNodeLive(x) || checkBuckets != null && !checkBuckets.contains(bucketIds[x]))
         continue;
       long paths = 1;
-      for (final NeighborView view : tailViews) {
-        paths *= view.degree(x);
+      for (int h = 2; h < edgeTypes.length; h++) {
+        paths *= targetDegree(tailViews[h - 2], x, validBuckets[h + 1], bucketIds);
         if (paths == 0)
           break;
       }
@@ -506,6 +506,30 @@ public final class AntiJoinChainOp implements CountOp {
   }
 
   /** Pre-computes bucket IDs for all live CSR nodes. One-time O(node ID space) cost. */
+  /** The edges of {@code view} out of {@code node} that reach a vertex of the labelled bucket set (null: any vertex, the plain degree). */
+  private static long targetDegree(final NeighborView view, final int node, final IntHashSet targetBuckets, final int[] bucketIds) {
+    if (targetBuckets == null)
+      return view.degree(node);
+    final int[] neighbors = view.neighbors();
+    long degree = 0;
+    for (int j = view.offset(node), end = view.offsetEnd(node); j < end; j++)
+      if (targetBuckets.contains(bucketIds[neighbors[j]]))
+        degree++;
+    return degree;
+  }
+
+  /** The edges of {@code vertex} that reach a vertex of the labelled bucket set (null: any vertex, the plain degree). */
+  private static long targetDegree(final Vertex vertex, final Vertex.DIRECTION direction, final String edgeType,
+      final IntHashSet targetBuckets) {
+    if (targetBuckets == null)
+      return vertex.countEdges(direction, edgeType);
+    long degree = 0;
+    for (final RID target : vertex.getConnectedVertexRIDs(direction, edgeType))
+      if (targetBuckets.contains(target.getBucketId()))
+        degree++;
+    return degree;
+  }
+
   private static int[] precomputeBucketIds(final GraphTraversalProvider provider, final int nodeIdUpperBound,
       final WorkGuard guard) {
     final int[] bucketIds = new int[nodeIdUpperBound];
@@ -618,7 +642,7 @@ public final class AntiJoinChainOp implements CountOp {
         if (Arrays.binarySearch(anchorAntiNbrs, target) >= 0)
           continue;
 
-        count += computeTailCount(provider, target, validBuckets);
+        count += computeTailCount(provider, target, validBuckets, bucketIds);
       }
     } else {
       // Case B (Q8): anchor is anti-join target. For each frontier node, check
@@ -636,7 +660,7 @@ public final class AntiJoinChainOp implements CountOp {
           final int aEnd = antiView.offsetEnd(frontierNode);
           if (Arrays.binarySearch(antiNbrs, aStart, aEnd, anchorId) >= 0)
             continue; // anti-join hit — exclude
-          count += computeTailCount(provider, frontierNode, validBuckets);
+          count += computeTailCount(provider, frontierNode, validBuckets, bucketIds);
         }
       } else {
         for (final int frontierNode : frontier) {
@@ -647,7 +671,7 @@ public final class AntiJoinChainOp implements CountOp {
               antiJoinDirection, antiJoinEdgeType);
           if (Arrays.binarySearch(frontierAntiNbrs, anchorId) >= 0)
             continue;
-          count += computeTailCount(provider, frontierNode, validBuckets);
+          count += computeTailCount(provider, frontierNode, validBuckets, bucketIds);
         }
       }
     }
@@ -670,11 +694,19 @@ public final class AntiJoinChainOp implements CountOp {
    * For single remaining hops, uses O(1) degree lookup.
    */
   private long computeTailCount(final GraphTraversalProvider provider, final int nodeId,
-      final IntHashSet[] validBuckets) {
+      final IntHashSet[] validBuckets, final int[] bucketIds) {
     final int checkPos = Math.max(antiJoinSourceIdx, antiJoinTargetIdx);
     long tailCount = 1;
     for (int h = checkPos; h < edgeTypes.length; h++) {
-      final long degree = provider.countEdges(nodeId, directions[h], edgeTypes[h]);
+      final IntHashSet targetBuckets = validBuckets[h + 1];
+      long degree = 0;
+      if (targetBuckets == null)
+        degree = provider.countEdges(nodeId, directions[h], edgeTypes[h]);
+      else
+        // the label of the hop's target node filters the edges it counts
+        for (final int target : provider.getNeighborIds(nodeId, directions[h], edgeTypes[h]))
+          if (targetBuckets.contains(bucketIds[target]))
+            degree++;
       if (degree == 0)
         return 0;
       tailCount *= degree;
@@ -863,6 +895,10 @@ public final class AntiJoinChainOp implements CountOp {
     // Try GAV provider for accelerated degree counting. See findAcceleratingProvider: a partial view undercounts
     // the degree of every vertex it does map (issue #5757).
     final GraphTraversalProvider gavProvider = CSRCountUtils.findAcceleratingProvider(db, edgeTypes);
+    // the label of a hop's target node filters the edges that hop counts
+    final IntHashSet[] targetBuckets = new IntHashSet[edgeTypes.length];
+    for (int h = fromHop; h < edgeTypes.length; h++)
+      targetBuckets[h] = CSRCountUtils.buildValidBuckets(db, nodeLabels[h + 1]);
 
     for (final Iterator<? extends Identifiable> it = db.iterateType(sourceLabel, true); it.hasNext(); ) {
       guard.check();
@@ -870,12 +906,11 @@ public final class AntiJoinChainOp implements CountOp {
       long tailCount = 1;
       for (int h = fromHop; h < edgeTypes.length; h++) {
         final long degree;
-        if (gavProvider != null) {
-          final int nodeId = gavProvider.getNodeId(vertexRid);
-          degree = nodeId >= 0 ? gavProvider.countEdges(nodeId, directions[h], edgeTypes[h])
-              : ((Vertex) db.lookupByRID(vertexRid, true)).countEdges(directions[h], edgeTypes[h]);
-        } else
-          degree = ((Vertex) db.lookupByRID(vertexRid, true)).countEdges(directions[h], edgeTypes[h]);
+        final int nodeId = gavProvider != null && targetBuckets[h] == null ? gavProvider.getNodeId(vertexRid) : -1;
+        if (nodeId >= 0)
+          degree = gavProvider.countEdges(nodeId, directions[h], edgeTypes[h]);
+        else
+          degree = targetDegree((Vertex) db.lookupByRID(vertexRid, true), directions[h], edgeTypes[h], targetBuckets[h]);
         if (degree == 0) {
           tailCount = 0;
           break;
@@ -918,7 +953,7 @@ public final class AntiJoinChainOp implements CountOp {
     if (hopIndex >= checkPos) {
       long tailCount = 1;
       for (int h = hopIndex; h < edgeTypes.length; h++) {
-        final long degree = vertex.countEdges(directions[h], edgeTypes[h]);
+        final long degree = targetDegree(vertex, directions[h], edgeTypes[h], CSRCountUtils.buildValidBuckets(db, nodeLabels[h + 1]));
         if (degree == 0)
           return 0;
         tailCount *= degree;
