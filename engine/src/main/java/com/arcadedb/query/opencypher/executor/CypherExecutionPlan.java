@@ -4921,7 +4921,7 @@ public class CypherExecutionPlan {
 
     final List<String> types = relationship.getTypes();
     final String[] edgeTypes = types != null && !types.isEmpty() ? types.toArray(new String[0]) : null;
-    final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(database, edgeTypes);
+    final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProviderAllowingPartialVertexCoverage(database, edgeTypes);
     if (provider == null || provider.isStale())
       return null;
 
