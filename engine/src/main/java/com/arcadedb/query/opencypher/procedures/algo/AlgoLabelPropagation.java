@@ -107,8 +107,8 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
     final int maxIterations = config != null && config.get("maxIterations") instanceof Number n ?
         extractInt(n, "maxIterations", 1) : 10;
 
-    final String tieBreakProperty = config != null && config.get("tieBreakProperty") != null ?
-        extractString(config.get("tieBreakProperty"), "tieBreakProperty") : null;
+    final Object tieBreakConfig = config != null ? config.get("tieBreakProperty") : null;
+    final String tieBreakProperty = tieBreakConfig != null ? extractString(tieBreakConfig, "tieBreakProperty") : null;
 
     final Database db = context.getDatabase();
     final WorkGuard guard = newWorkGuard(context);
@@ -213,9 +213,7 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
 
     // Return raw label values (no sequential remapping)
     if (rank != null) {
-      final int[] nodeOfRank = new int[n];
-      for (int i = 0; i < n; i++)
-        nodeOfRank[rank[i]] = i;
+      final int[] nodeOfRank = GraphAlgorithms.invertRank(rank);
       for (int i = 0; i < n; i++)
         label[i] = nodeOfRank[label[i]];
     }
@@ -231,8 +229,10 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
   /**
    * Ranks the {@code n} dense nodes by the value of {@code property}: {@code rank[i]} is the position of node {@code i}
    * in ascending property order. Nodes with a missing value sort last, and equal values fall back to the dense index so
-   * the result is always a permutation.
+   * the result is always a permutation. Reads one vertex record per node, so the cost is O(n) record loads on top of
+   * the algorithm itself.
    */
+  @SuppressWarnings("unchecked")
   private static int[] computeTieBreakRank(final Database db, final int n, final IntFunction<RID> ridOf, final String property) {
     final Object[] values = new Object[n];
     for (int i = 0; i < n; i++) {
@@ -253,10 +253,14 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
           return va == null ? 1 : -1;
       } else {
         final int cmp;
-        if (va instanceof Number na && vb instanceof Number nb && !(na instanceof BigDecimal) && !(nb instanceof BigDecimal))
-          cmp = na instanceof Double || na instanceof Float || nb instanceof Double || nb instanceof Float ?
-              Double.compare(na.doubleValue(), nb.doubleValue()) :
-              Long.compare(na.longValue(), nb.longValue());
+        if (va instanceof Number na && vb instanceof Number nb) {
+          if (na instanceof BigDecimal || nb instanceof BigDecimal)
+            cmp = new BigDecimal(na.toString()).compareTo(new BigDecimal(nb.toString()));
+          else if (na instanceof Double || na instanceof Float || nb instanceof Double || nb instanceof Float)
+            cmp = Double.compare(na.doubleValue(), nb.doubleValue());
+          else
+            cmp = Long.compare(na.longValue(), nb.longValue());
+        }
         else if (va.getClass() == vb.getClass())
           cmp = ((Comparable<Object>) va).compareTo(vb);
         else

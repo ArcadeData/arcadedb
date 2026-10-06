@@ -19,8 +19,10 @@
 package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.RID;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -187,6 +189,48 @@ class AlgoLabelPropagationTest {
     } finally {
       db.drop();
     }
+  }
+
+  @Test
+  void tieBreakPropertyOnGraphAnalyticalView() {
+    final DatabaseFactory factory = new DatabaseFactory("./target/databases/test-algo-lpa-tiebreak-gav");
+    if (factory.exists())
+      factory.open().drop();
+    final Database db = factory.create();
+    try {
+      db.getSchema().createVertexType("T");
+      db.getSchema().createEdgeType("TE");
+      final RID[] qRid = new RID[1];
+      db.transaction(() -> {
+        final MutableVertex p = db.newVertex("T").set("name", "P").set("vid", 200).save();
+        final MutableVertex q = db.newVertex("T").set("name", "Q").set("vid", 100).save();
+        final MutableVertex x = db.newVertex("T").set("name", "X").set("vid", 300).save();
+        p.newEdge("TE", x, true, (Object[]) null).save();
+        q.newEdge("TE", x, true, (Object[]) null).save();
+        qRid[0] = q.getIdentity();
+      });
+      final GraphAnalyticalView gav = GraphAnalyticalView.builder(db).withVertexTypes("T").withEdgeTypes("TE").build();
+      try {
+        // X sees a 1-1 tie between P and Q: the smaller vid (Q) must win whatever the dense order is
+        final Map<String, Integer> byVid = labels(db, "{maxIterations: 1, tieBreakProperty: 'vid'}");
+        assertThat(byVid.get("X")).isEqualTo(gav.getNodeId(qRid[0]));
+      } finally {
+        gav.drop();
+      }
+    } finally {
+      db.drop();
+    }
+  }
+
+  private static Map<String, Integer> labels(final Database db, final String config) {
+    final ResultSet rs = db.query("opencypher",
+        "CALL algo.labelpropagation(" + config + ") YIELD node, communityId RETURN node.name AS name, communityId");
+    final Map<String, Integer> byName = new HashMap<>();
+    while (rs.hasNext()) {
+      final Result r = rs.next();
+      byName.put(r.getProperty("name"), ((Number) r.getProperty("communityId")).intValue());
+    }
+    return byName;
   }
 
   private static String labelOwnerOfX(final Database db, final String config) {
