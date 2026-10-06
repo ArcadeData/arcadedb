@@ -2274,6 +2274,15 @@ public class CypherSemanticValidator {
     }
 
     @Override
+    public CypherExpressionWalker.Visitor forLocalBindings(final String... variables) {
+      final Map<String, VarType> shadowed = new HashMap<>(scope);
+      for (final String variable : variables)
+        if (variable != null)
+          shadowed.remove(variable);
+      return new FunctionArgumentChecks(shadowed, declaringPatterns);
+    }
+
+    @Override
     public void visitPattern(final PathPattern path) {
       if (declaringPatterns.contains(path))
         return;

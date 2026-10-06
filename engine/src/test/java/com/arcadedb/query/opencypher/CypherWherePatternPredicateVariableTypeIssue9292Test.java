@@ -23,6 +23,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
@@ -101,6 +102,12 @@ class CypherWherePatternPredicateVariableTypeIssue9292Test extends TestHelper {
   @Test
   void variableLengthRelationshipVariableReusedAsNodeIsRejected() {
     assertRejected("MATCH ()-[r*1..2]-() WHERE (r)-[]-() RETURN r");
+  }
+
+  @Test
+  void iteratorVariableShadowingOuterRelationshipIsNotRejected() {
+    assertThatCode(() -> count("MATCH (p)-[r]->() WHERE size([r IN [p] WHERE (r)--()]) = 1 RETURN p")).doesNotThrowAnyException();
+    assertThatCode(() -> count("MATCH (p)-[r]->() WHERE size([r IN [p] | size([(r)--() | 1])]) = 1 RETURN p")).doesNotThrowAnyException();
   }
 
   private int count(final String query) {
