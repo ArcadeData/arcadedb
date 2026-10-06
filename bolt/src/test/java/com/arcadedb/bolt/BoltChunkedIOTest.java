@@ -72,13 +72,38 @@ class BoltChunkedIOTest {
 
     for (int i = 0; i < 100; i++)
       output.writeMessage(new byte[] { 1, 2, 3, 4, 5 }, false);
-    assertThat(socket.writes).isLessThanOrEqualTo(1);
+    assertThat(socket.writes).isEqualTo(0);
 
     output.flush();
-    assertThat(socket.writes).isLessThanOrEqualTo(2);
+    assertThat(socket.writes).isEqualTo(1);
     assertThat(socket.size()).isEqualTo(900);
   }
 
+  @Test
+  void flushingMessageEmitsPriorUnflushedMessagesInOrder() throws Exception {
+    final CountingStream socket = new CountingStream();
+    final BoltChunkedOutput output = new BoltChunkedOutput(socket);
+
+    output.writeMessage(new byte[] { 1 }, false);
+    output.writeMessage(new byte[] { 2 }, false);
+    output.writeMessage(new byte[] { 3 });
+
+    assertThat(socket.toByteArray()).containsExactly(0, 1, 1, 0, 0, 0, 1, 2, 0, 0, 0, 1, 3, 0, 0);
+  }
+
+  @Test
+  void unflushedMessagesLargerThanTheBufferSpillWithoutFlush() throws Exception {
+    final CountingStream socket = new CountingStream();
+    final BoltChunkedOutput output = new BoltChunkedOutput(socket);
+
+    for (int i = 0; i < 10; i++)
+      output.writeMessage(new byte[10_000], false);
+
+    assertThat(socket.size()).isGreaterThan(0).isLessThan(10 * 10_004);
+
+    output.flush();
+    assertThat(socket.size()).isEqualTo(10 * 10_004);
+  }
 
   @Test
   void writeEmptyMessage() throws Exception {
