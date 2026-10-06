@@ -5527,7 +5527,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
               + "it) the build fits next to the persisted copy (%d MB on the heap), with about %d MB for the build. Searches read the topology from pages until a "
               + "rebuild publishes its replacement; if this one fails the next trigger retries it against the "
               + "much smaller on-disk graph (issue #7260)",
-          indexName, nodes, onHeapBytes / (1024 * 1024), creditedHeap * Math.min(percent, 90) / 100 / (1024 * 1024),
+          indexName, nodes, onHeapBytes / (1024 * 1024), VectorHeapBudget.budgetBytes(percent, creditedHeap) / (1024 * 1024),
           GlobalConfiguration.VECTOR_INDEX_REBUILD_MAX_HEAP_PERCENT.getKey(), twinBytes / (1024 * 1024),
           estimate / (1024 * 1024));
       return true;

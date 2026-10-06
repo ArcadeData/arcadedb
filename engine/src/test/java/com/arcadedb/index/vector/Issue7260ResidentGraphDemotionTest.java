@@ -118,7 +118,7 @@ class Issue7260ResidentGraphDemotionTest {
       }
       final long deadline = System.currentTimeMillis() + 30_000;
       while (index.getStats().get("asyncRebuildInProgress") != 0 && System.currentTimeMillis() < deadline)
-        Thread.onSpinWait();
+        sleepQuietly();
 
       assertThat(index.getStats().get("asyncRebuildInProgress")).isZero();
       assertThat(index.getStats().get("rebuildsDeferredForMemory")).isZero();
@@ -190,6 +190,16 @@ class Issue7260ResidentGraphDemotionTest {
           .isFalse();
       assertThat(index.getGraphIndex()).isInstanceOf(OnHeapGraphIndex.class);
     });
+  }
+
+  /** The deadline above is a hang detector, not a latency bound: the poll itself must not burn a core. */
+  private static void sleepQuietly() {
+    try {
+      Thread.sleep(10);
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new RuntimeException(e);
+    }
   }
 
   /** The numbers the gate compares, derived with the same pieces it uses so the test pins no magic constants. */
