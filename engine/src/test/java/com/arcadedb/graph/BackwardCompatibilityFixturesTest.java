@@ -169,6 +169,7 @@ class BackwardCompatibilityFixturesTest {
       int total = 0;
       for (final Edge e : hubIn.getEdges(Vertex.DIRECTION.IN)) {
         ++total;
+        // A light edge has no record of its own, so there is no identity to check for uniqueness; the total covers it.
         if (!(e instanceof ImmutableLightEdge))
           assertThat(unfiltered.add(e.getIdentity())).isTrue();
       }
