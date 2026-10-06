@@ -56,7 +56,7 @@ public class UpsertStep extends AbstractExecutionStep {
     if (p instanceof SubQueryStep) {
       for (ExecutionPlan ep : p.getSubExecutionPlans()) {
         for (ExecutionStep s : ep.getSteps()) {
-          if (s instanceof FetchFromIndexStep step && step.index.isUnique()) {
+          if (s instanceof FetchFromIndexStep step && isUniqueFullKeyLookup(step)) {
             fetchFromIndexFound = true;
             break;
           }
@@ -64,7 +64,7 @@ public class UpsertStep extends AbstractExecutionStep {
       }
     } else {
       for (ExecutionStep step : p.getSubSteps()) {
-        if (step instanceof FetchFromIndexStep) {
+        if (step instanceof FetchFromIndexStep indexStep && isUniqueFullKeyLookup(indexStep)) {
           fetchFromIndexFound = true;
           break;
         }
@@ -73,7 +73,8 @@ public class UpsertStep extends AbstractExecutionStep {
 
     if (!fetchFromIndexFound)
       throw new CommandSQLParsingException(
-          "Upsert must involve an index to retrieve the records. Check the where condition is using the index for the upsert");
+          "Upsert must involve a UNIQUE index to retrieve the records. Check that the where condition is a non-null equality on all"
+              + " the properties of a UNIQUE index (non-unique, full-text and partially matched composite indexes cannot be used)");
 
     applied = true;
     final ResultSet upstream = getPrev().syncPull(context, nRecords);
@@ -83,6 +84,10 @@ public class UpsertStep extends AbstractExecutionStep {
     final InternalResultSet result = new InternalResultSet();
     result.add(createNewRecord(commandTarget, initialFilter));
     return result;
+  }
+
+  private static boolean isUniqueFullKeyLookup(final FetchFromIndexStep step) {
+    return step.index.isUnique() && step.isFullKeyEquality();
   }
 
   private Result createNewRecord(final FromClause commandTarget, final WhereClause initialFilter) {
