@@ -551,7 +551,15 @@ public final class TemporalUtil {
   }
 
   public static boolean mayBeTemporalString(final String str) {
-    return str.length() >= 5 && (Character.isDigit(str.charAt(0)) || str.charAt(0) == 'P');
+    final int length = str.length();
+    if (length == 0)
+      return false;
+    final char first = str.charAt(0);
+    // An ISO duration is recognised by its leading 'P' and is as short as "P1D": the length floor must not apply to it
+    // (issue #9338). Every other temporal text is at least 5 characters long.
+    if (first == 'P')
+      return length >= 3;
+    return length >= 5 && Character.isDigit(first);
   }
 
   public static Object convertFromStorage(final Object value) {

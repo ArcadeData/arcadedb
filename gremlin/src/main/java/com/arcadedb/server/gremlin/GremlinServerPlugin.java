@@ -25,6 +25,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ServerPlugin;
+import io.netty.channel.Channel;
 import org.apache.tinkerpop.gremlin.server.GremlinServer;
 import org.apache.tinkerpop.gremlin.server.Settings;
 
@@ -39,9 +40,12 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
+import java.net.InetSocketAddress;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
@@ -60,6 +64,7 @@ public class GremlinServerPlugin implements ServerPlugin {
   private              ContextConfiguration configuration;
   private              GremlinServer        gremlinServer;
   private              ExecutorService      gremlinExecutorService;
+  private static final long             START_TIMEOUT_SECONDS      = 60;
   private volatile     int                  boundPort;
 
   @Override
@@ -136,11 +141,22 @@ public class GremlinServerPlugin implements ServerPlugin {
 
     gremlinServer = new GremlinServer(settings, gremlinExecutorService);
     try {
-      gremlinServer.start();
+      // start() only reports a failure of the bootstrap itself: the bind is asynchronous, and an address already in use
+      // arrives as an exceptional completion of the returned future. Waiting on it makes a failed bind fail the start
+      // like the Bolt, Postgres, Redis, MongoDB and HTTP listeners do, instead of leaving the plugin "started" and its
+      // port advertised with nothing listening on it (issue #9319).
+      gremlinServer.start().get(START_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new ServerException("Interrupted while starting the GremlinServer plugin", e);
+    } catch (final ExecutionException e) {
+      final Throwable cause = e.getCause() != null ? e.getCause() : e;
+      throw new ServerException("Error on starting GremlinServer plugin on " + settings.host + ":" + settings.port + ": "
+          + cause.getMessage(), cause);
     } catch (final Exception e) {
       throw new ServerException("Error on starting GremlinServer plugin", e);
     }
-    boundPort = settings.port;
+    boundPort = resolveBoundPort(gremlinServer, settings.port);
 
     // SCRIPTS MUST SEE THE DATABASES CREATED AFTER THE START, NOT ONLY THE ONES THERE WHEN THE EXECUTOR WAS BUILT (#9147)
     if (gremlinServer.getServerGremlinExecutor().getGraphManager() instanceof ArcadeGraphManager arcadeGraphManager) {
@@ -149,6 +165,31 @@ public class GremlinServerPlugin implements ServerPlugin {
         engineNames.addAll(settings.scriptEngines.keySet());
       arcadeGraphManager.bindScriptEnginesLive(gremlinServer.getServerGremlinExecutor().getGremlinExecutor(), engineNames);
     }
+  }
+
+  /**
+   * The port the channel is really bound to, which is the only answer when the setting is {@code 0} (the OS picks one).
+   * GremlinServer keeps the channel in a private field and never writes the port back to its settings, so it is read from
+   * there, falling back to the configured port if that cannot be done.
+   */
+  private static int resolveBoundPort(final GremlinServer gremlinServer, final int configuredPort) {
+    try {
+      final Field field = GremlinServer.class.getDeclaredField("serverSocketChannel");
+      field.setAccessible(true);
+      final Channel channel = (Channel) field.get(gremlinServer);
+      if (channel != null && channel.localAddress() instanceof InetSocketAddress address && address.getPort() > 0)
+        return address.getPort();
+    } catch (final ReflectiveOperationException | RuntimeException e) {
+      LogManager.instance().log(GremlinServerPlugin.class, Level.FINE,
+          "Cannot read the port the Gremlin Server is bound to, using the configured one (%s)", null, e.getMessage());
+    }
+    return configuredPort;
+  }
+
+  /** Active only while the Gremlin Server is listening, so a plugin whose bind failed is not reported as started. */
+  @Override
+  public boolean isActive() {
+    return boundPort > 0;
   }
 
   /**
@@ -343,6 +384,7 @@ public class GremlinServerPlugin implements ServerPlugin {
         ((ArcadeGraphManager) graphManager).closeAll();
       }
       gremlinServer.stop().join();
+      gremlinServer = null;
     }
     if (gremlinExecutorService != null) {
       gremlinExecutorService.shutdownNow();

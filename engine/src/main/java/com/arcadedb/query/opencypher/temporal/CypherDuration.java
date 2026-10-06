@@ -20,6 +20,9 @@ package com.arcadedb.query.opencypher.temporal;
 
 import com.arcadedb.exception.ArithmeticErrorException;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.math.RoundingMode;
 import java.util.Map;
 import java.util.Objects;
 import java.util.regex.Matcher;
@@ -82,18 +85,62 @@ public class CypherDuration implements CypherTemporalValue {
     if (!m.matches())
       throw new IllegalArgumentException("Invalid duration string: " + str);
 
-    double years = m.group(1) != null ? Double.parseDouble(m.group(1)) : 0;
-    double months = m.group(2) != null ? Double.parseDouble(m.group(2)) : 0;
-    double weeks = m.group(3) != null ? Double.parseDouble(m.group(3)) : 0;
-    double daysVal = m.group(4) != null ? Double.parseDouble(m.group(4)) : 0;
-    double hours = m.group(5) != null ? Double.parseDouble(m.group(5)) : 0;
-    double minutes = m.group(6) != null ? Double.parseDouble(m.group(6)) : 0;
-    double secs = m.group(7) != null ? Double.parseDouble(m.group(7)) : 0;
+    if (isIntegral(m.group(1)) && isIntegral(m.group(2)) && isIntegral(m.group(3)) && isIntegral(m.group(4))
+        && isIntegral(m.group(5)) && isIntegral(m.group(6)))
+      return parseExact(m);
+
+    final double years = m.group(1) != null ? Double.parseDouble(m.group(1)) : 0;
+    final double months = m.group(2) != null ? Double.parseDouble(m.group(2)) : 0;
+    final double weeks = m.group(3) != null ? Double.parseDouble(m.group(3)) : 0;
+    final double daysVal = m.group(4) != null ? Double.parseDouble(m.group(4)) : 0;
+    final double hours = m.group(5) != null ? Double.parseDouble(m.group(5)) : 0;
+    final double minutes = m.group(6) != null ? Double.parseDouble(m.group(6)) : 0;
+    final double secs = m.group(7) != null ? Double.parseDouble(m.group(7)) : 0;
 
     return fromComponents(years, months, weeks, daysVal, hours, minutes, secs, 0);
   }
 
+  private static boolean isIntegral(final String component) {
+    return component == null || component.indexOf('.') < 0;
+  }
+
+  /**
+   * Parses an ISO text whose whole-unit components carry no fraction (the shape {@link #toString()} always writes) in
+   * exact {@code long} arithmetic, reading the seconds fraction as a decimal rather than through a {@code double}, which
+   * cannot hold a nanosecond past about 97 days (issue #9338).
+   */
+  private static CypherDuration parseExact(final Matcher m) {
+    try {
+      final long months = Math.addExact(Math.multiplyExact(longOf(m.group(1)), 12L), longOf(m.group(2)));
+      final long days = Math.addExact(Math.multiplyExact(longOf(m.group(3)), 7L), longOf(m.group(4)));
+      long seconds = Math.addExact(Math.multiplyExact(longOf(m.group(5)), 3600L), Math.multiplyExact(longOf(m.group(6)), 60L));
+      long nanos = 0;
+      if (m.group(7) != null) {
+        final BigDecimal secs = new BigDecimal(m.group(7));
+        final BigInteger whole = secs.toBigInteger();
+        seconds = Math.addExact(seconds, whole.longValueExact());
+        // Digits beyond the nanosecond round half away from zero
+        nanos = secs.subtract(new BigDecimal(whole)).movePointRight(9).setScale(0, RoundingMode.HALF_UP).longValueExact();
+      }
+      return new CypherDuration(months, days, seconds, nanos);
+    } catch (final ArithmeticException e) {
+      throw new ArithmeticErrorException("Duration overflow: " + m.group());
+    }
+  }
+
+  private static long longOf(final String component) {
+    return component == null ? 0L : Long.parseLong(component);
+  }
+
   public static CypherDuration fromMap(final Map<String, Object> map) {
+    try {
+      return fromMapInternal(map);
+    } catch (final ArithmeticException e) {
+      throw new ArithmeticErrorException("Duration fields overflow: " + map);
+    }
+  }
+
+  private static CypherDuration fromMapInternal(final Map<String, Object> map) {
     // Fast path for single-field durations with integral values (common in bulk operations)
     if (map.size() == 1) {
       final Map.Entry<String, Object> entry = map.entrySet().iterator().next();
@@ -107,17 +154,17 @@ public class CypherDuration implements CypherTemporalValue {
           case "seconds":
             return new CypherDuration(0, 0, ((Number) value).longValue(), 0);
           case "minutes":
-            return new CypherDuration(0, 0, ((Number) value).longValue() * 60, 0);
+            return new CypherDuration(0, 0, Math.multiplyExact(((Number) value).longValue(), 60L), 0);
           case "hours":
-            return new CypherDuration(0, 0, ((Number) value).longValue() * 3600, 0);
+            return new CypherDuration(0, 0, Math.multiplyExact(((Number) value).longValue(), 3600L), 0);
           case "days":
             return new CypherDuration(0, ((Number) value).longValue(), 0, 0);
           case "weeks":
-            return new CypherDuration(0, ((Number) value).longValue() * 7, 0, 0);
+            return new CypherDuration(0, Math.multiplyExact(((Number) value).longValue(), 7L), 0, 0);
           case "months":
             return new CypherDuration(((Number) value).longValue(), 0, 0, 0);
           case "years":
-            return new CypherDuration(((Number) value).longValue() * 12, 0, 0, 0);
+            return new CypherDuration(Math.multiplyExact(((Number) value).longValue(), 12L), 0, 0, 0);
           case "milliseconds":
             return new CypherDuration(0, 0, ((Number) value).longValue() / 1000, ((Number) value).longValue() % 1000 * 1_000_000);
           case "microseconds":
@@ -128,7 +175,12 @@ public class CypherDuration implements CypherTemporalValue {
       }
     }
 
-    // General case: multiple fields or unrecognized field
+    // General case: multiple fields or unrecognized field. Integral fields stay exact in long arithmetic (a double holds
+    // whole numbers exactly only to 2^53, so the same value was exact or not depending on how many other keys the map had)
+    if (allIntegral(map))
+      return fromIntegralMap(map);
+
+    // Fractional fields cascade into the smaller units through floating point
     final double years = map.containsKey("years") ? toDouble(map.get("years")) : 0;
     final double quarters = map.containsKey("quarters") ? toDouble(map.get("quarters")) : 0;
     final double months = map.containsKey("months") ? toDouble(map.get("months")) : 0;
@@ -149,6 +201,37 @@ public class CypherDuration implements CypherTemporalValue {
     final double totalMonths = years * 12 + quarters * 3 + months;
 
     return fromComponents(0, totalMonths, weeks, days, hours, minutes, seconds, totalNanos);
+  }
+
+  private static boolean allIntegral(final Map<String, Object> map) {
+    for (final String key : WHOLE_UNIT_KEYS) {
+      final Object value = map.get(key);
+      if (value != null && !(value instanceof Number number && !hasFraction(number)))
+        return false;
+    }
+    return true;
+  }
+
+  private static final String[] WHOLE_UNIT_KEYS = { "years", "quarters", "months", "weeks", "days", "hours", "minutes", "seconds" };
+
+  private static CypherDuration fromIntegralMap(final Map<String, Object> map) {
+    try {
+      final long totalMonths = Math.addExact(Math.addExact(Math.multiplyExact(wholeOf(map, "years"), 12L),
+          Math.multiplyExact(wholeOf(map, "quarters"), 3L)), wholeOf(map, "months"));
+      final long totalDays = Math.addExact(Math.multiplyExact(wholeOf(map, "weeks"), 7L), wholeOf(map, "days"));
+      final long totalSeconds = Math.addExact(Math.addExact(Math.multiplyExact(wholeOf(map, "hours"), 3600L),
+          Math.multiplyExact(wholeOf(map, "minutes"), 60L)), wholeOf(map, "seconds"));
+      final long totalNanos = Math.addExact(Math.addExact(toNanos(map.get("milliseconds"), 1_000_000L),
+          toNanos(map.get("microseconds"), 1_000L)), toNanos(map.get("nanoseconds"), 1L));
+      return new CypherDuration(totalMonths, totalDays, totalSeconds, totalNanos);
+    } catch (final ArithmeticException e) {
+      throw new ArithmeticErrorException("Duration fields overflow: " + map);
+    }
+  }
+
+  private static long wholeOf(final Map<String, Object> map, final String key) {
+    final Object value = map.get(key);
+    return value == null ? 0L : ((Number) value).longValue();
   }
 
   private static CypherDuration fromComponents(final double years, final double months, final double weeks,
@@ -205,32 +288,39 @@ public class CypherDuration implements CypherTemporalValue {
   }
 
   public CypherDuration add(final CypherDuration other) {
-    return new CypherDuration(months + other.months, days + other.days, seconds + other.seconds,
-        nanosAdjustment + other.nanosAdjustment);
+    try {
+      return new CypherDuration(Math.addExact(months, other.months), Math.addExact(days, other.days),
+          Math.addExact(seconds, other.seconds), (long) nanosAdjustment + other.nanosAdjustment);
+    } catch (final ArithmeticException e) {
+      throw overflow("add", other);
+    }
   }
 
   public CypherDuration subtract(final CypherDuration other) {
-    return new CypherDuration(months - other.months, days - other.days, seconds - other.seconds,
-        nanosAdjustment - other.nanosAdjustment);
+    try {
+      return new CypherDuration(Math.subtractExact(months, other.months), Math.subtractExact(days, other.days),
+          Math.subtractExact(seconds, other.seconds), (long) nanosAdjustment - other.nanosAdjustment);
+    } catch (final ArithmeticException e) {
+      throw overflow("subtract", other);
+    }
+  }
+
+  private ArithmeticErrorException overflow(final String operation, final Object operand) {
+    return new ArithmeticErrorException("Duration overflow: cannot " + operation + " " + operand + " and " + this);
   }
 
   public CypherDuration multiply(final double factor) {
-    // Cascading remainder approach: fractional months carry to days, fractional days carry to seconds.
-    // This matches Neo4j behavior where 1 month = 365.2425/12 days and 1 day = 86400 seconds.
-    final double newMonths = months * factor;
-    final long wholeMonths = (long) newMonths;
-    final double monthRemainder = newMonths - wholeMonths;
-
-    final double newDays = days * factor + monthRemainder * (365.2425 / 12);
-    final long wholeDays = (long) newDays;
-    final double dayRemainder = newDays - wholeDays;
-
-    final double totalNanos = (seconds * 1_000_000_000.0 + nanosAdjustment) * factor + dayRemainder * 86400_000_000_000.0;
-    final long wholeNanos = (long) totalNanos; // Truncate sub-nanosecond remainder
-    final long newSeconds = wholeNanos / 1_000_000_000L;
-    final int newNanosAdj = (int) (wholeNanos % 1_000_000_000L);
-
-    return new CypherDuration(wholeMonths, wholeDays, newSeconds, newNanosAdj);
+    if (factor == Math.rint(factor) && Math.abs(factor) < 0x1p62) {
+      // Integral factor: exact in long arithmetic, so "* 1" is the identity whatever the magnitude
+      final long f = (long) factor;
+      try {
+        return new CypherDuration(Math.multiplyExact(months, f), Math.multiplyExact(days, f), Math.multiplyExact(seconds, f),
+            Math.multiplyExact((long) nanosAdjustment, f));
+      } catch (final ArithmeticException e) {
+        throw overflow("multiply by " + factor, this);
+      }
+    }
+    return scale(decimalOf(factor), BigDecimal.ONE);
   }
 
   public CypherDuration divide(final double divisor) {
@@ -238,7 +328,52 @@ public class CypherDuration implements CypherTemporalValue {
       // A raw java.lang.ArithmeticException reached the wire layers as an unrecognised throwable and became a 500;
       // dividing a duration by zero is the caller's mistake, same as 1/0 (issue #5602).
       throw new ArithmeticErrorException("Cannot divide duration by zero");
-    return multiply(1.0 / divisor);
+    if (divisor == 1)
+      return this;
+    return scale(BigDecimal.ONE, decimalOf(divisor));
+  }
+
+  private static BigDecimal decimalOf(final double value) {
+    if (Double.isNaN(value) || Double.isInfinite(value))
+      throw new ArithmeticErrorException("Cannot scale a duration by " + value);
+    return BigDecimal.valueOf(value);
+  }
+
+  /**
+   * Scales every component by {@code numerator / denominator} in exact decimal arithmetic. Fractional months carry to
+   * days (1 month = 365.2425/12 days) and fractional days carry to seconds, as Neo4j does. The previous implementation
+   * did it all in {@code double}, which saturated at {@code Long.MAX_VALUE} past the long range and lost nanoseconds
+   * past 2^53 (issue #9338); an unrepresentable result now raises an arithmetic error.
+   */
+  private CypherDuration scale(final BigDecimal numerator, final BigDecimal denominator) {
+    try {
+      final BigDecimal newMonths = scaled(months, numerator, denominator);
+      final BigInteger wholeMonths = newMonths.toBigInteger();
+      final double monthRemainder = newMonths.subtract(new BigDecimal(wholeMonths)).doubleValue();
+
+      final BigDecimal newDays = scaled(days, numerator, denominator).add(BigDecimal.valueOf(monthRemainder * (365.2425 / 12)));
+      final BigInteger wholeDays = newDays.toBigInteger();
+      final BigDecimal dayRemainder = newDays.subtract(new BigDecimal(wholeDays));
+
+      final BigDecimal clockNanos = scaled(BigInteger.valueOf(seconds).multiply(BigInteger.valueOf(1_000_000_000L))
+          .add(BigInteger.valueOf(nanosAdjustment)), numerator, denominator)
+          .add(dayRemainder.multiply(BigDecimal.valueOf(86400_000_000_000L)));
+      final BigInteger[] secondsAndNanos = clockNanos.toBigInteger().divideAndRemainder(BigInteger.valueOf(1_000_000_000L));
+
+      return new CypherDuration(wholeMonths.longValueExact(), wholeDays.longValueExact(), secondsAndNanos[0].longValueExact(),
+          secondsAndNanos[1].longValueExact());
+    } catch (final ArithmeticException e) {
+      throw overflow("scale by " + numerator + "/" + denominator, this);
+    }
+  }
+
+  private static BigDecimal scaled(final long value, final BigDecimal numerator, final BigDecimal denominator) {
+    return scaled(BigInteger.valueOf(value), numerator, denominator);
+  }
+
+  private static BigDecimal scaled(final BigInteger value, final BigDecimal numerator, final BigDecimal denominator) {
+    final BigDecimal product = new BigDecimal(value).multiply(numerator);
+    return BigDecimal.ONE.equals(denominator) ? product : product.divide(denominator, 40, RoundingMode.DOWN);
   }
 
   @Override
@@ -252,9 +387,9 @@ public class CypherDuration implements CypherTemporalValue {
       case "hours" -> seconds / 3600;
       case "minutes" -> seconds / 60;
       case "seconds" -> seconds;
-      case "milliseconds" -> seconds * 1000 + nanosAdjustment / 1_000_000;
-      case "microseconds" -> seconds * 1_000_000 + nanosAdjustment / 1_000;
-      case "nanoseconds" -> seconds * 1_000_000_000L + nanosAdjustment;
+      case "milliseconds" -> subSecondTotal(1_000L, nanosAdjustment / 1_000_000, name);
+      case "microseconds" -> subSecondTotal(1_000_000L, nanosAdjustment / 1_000, name);
+      case "nanoseconds" -> subSecondTotal(1_000_000_000L, nanosAdjustment, name);
       // "of" variants — remainder after extracting larger units
       case "monthsOfYear" -> months % 12;
       case "monthsOfQuarter" -> months % 3;
@@ -267,6 +402,14 @@ public class CypherDuration implements CypherTemporalValue {
       case "nanosecondsOfSecond" -> (long) nanosAdjustment;
       default -> null;
     };
+  }
+
+  private long subSecondTotal(final long unitsPerSecond, final long fraction, final String name) {
+    try {
+      return Math.addExact(Math.multiplyExact(seconds, unitsPerSecond), fraction);
+    } catch (final ArithmeticException e) {
+      throw new ArithmeticErrorException("Duration " + this + " does not fit the '" + name + "' accessor");
+    }
   }
 
   @Override

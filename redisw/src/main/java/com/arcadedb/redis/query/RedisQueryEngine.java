@@ -19,10 +19,12 @@
 package com.arcadedb.redis.query;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.RetryScope;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandParsingException;
@@ -305,7 +307,7 @@ public class RedisQueryEngine implements QueryEngine {
     final List<Object> results = new ArrayList<>();
     for (final Object step : plan) {
       if (step instanceof String command)
-        results.add(executeSingleCommandInternal(command));
+        results.add(executeSingleCommandInternal(command, looseSlot()));
       else {
         @SuppressWarnings("unchecked")
         final List<String> commands = (List<String>) step;
@@ -336,14 +338,18 @@ public class RedisQueryEngine implements QueryEngine {
 
     // Deliberately OUTSIDE the retried block, unlike `committed`: one slot per command, surviving the attempts, so a
     // retry answers with the value the first attempt already took from the shared map instead of taking another.
-    final RamSlot[] slots = new RamSlot[commands.size()];
-    for (int i = 0; i < slots.length; i++)
-      slots[i] = new RamSlot();
+    // This array covers the retries executeTransaction performs itself; a block that joined an outer transaction is
+    // retried by its owner (the HTTP command endpoint), which re-parses the batch and calls in again, so there the
+    // slots come from the owner's RetryScope instead (issue #9322).
+    final RamSlot[] ownSlots = new RamSlot[commands.size()];
+    for (int i = 0; i < ownSlots.length; i++)
+      ownSlots[i] = new RamSlot();
 
     database.transaction(() -> {
+      final RetryScope scope = retryScope();
       final List<Object> attemptResults = new ArrayList<>(commands.size());
       for (int i = 0; i < commands.size(); i++)
-        attemptResults.add(executeSingleCommandInternal(commands.get(i), slots[i]));
+        attemptResults.add(executeSingleCommandInternal(commands.get(i), scope != null ? scope.nextSlot(RamSlot::new) : ownSlots[i]));
       committed[0] = attemptResults;
     });
 
@@ -403,6 +409,22 @@ public class RedisQueryEngine implements QueryEngine {
   private static final String RAM_OVERLAY_ATTACHMENT = "redis.ramOverlay";
 
   /**
+   * @return the state that survives the attempts of the retried transaction call this request runs under, or null when
+   * none is running. A rollback drops a transaction's attachments, so what an INCR/GETDEL took from the shared map
+   * cannot live there (issue #9322).
+   */
+  private RetryScope retryScope() {
+    final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
+    return context != null ? context.getRetryScope() : null;
+  }
+
+  /** The slot of a command run outside a MULTI/EXEC block: kept across the retries of the request, null when none. */
+  private RamSlot looseSlot() {
+    final RetryScope scope = retryScope();
+    return scope != null ? scope.nextSlot(RamSlot::new) : null;
+  }
+
+  /**
    * @return the RAM overlay of the active transaction, created and bound to its commit on first use, or null when no
    * transaction is active and a RAM command applies to the global-variables map directly
    */
@@ -424,15 +446,8 @@ public class RedisQueryEngine implements QueryEngine {
    * Executes a single command and returns a ResultSet.
    */
   private ResultSet executeSingleCommand(final String query) {
-    final Object result = executeSingleCommandInternal(query);
+    final Object result = executeSingleCommandInternal(query, looseSlot());
     return createResultSet(result);
-  }
-
-  /**
-   * Executes a single command and returns the raw result.
-   */
-  private Object executeSingleCommandInternal(final String query) {
-    return executeSingleCommandInternal(query, null);
   }
 
   /**
