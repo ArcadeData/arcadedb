@@ -206,6 +206,7 @@ import com.arcadedb.query.sql.parser.WhileBlock;
 import com.arcadedb.query.sql.parser.WithinOperator;
 import com.arcadedb.schema.Property;
 import com.arcadedb.utility.CollectionUtils;
+import com.arcadedb.utility.ShortestDecimal;
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.tree.ParseTree;
@@ -3440,7 +3441,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         // up to 17 significant digits is what a double carries (the `printf("%.17g")` round-trip form): such a literal IS
         // the double, and turning it into a BigDecimal would stop it matching the stored double in an unindexed scan
         if (precision > MAX_DOUBLE_DIGITS && Math.abs(exact.scale()) <= MAX_EXACT_DECIMAL_SCALE
-            && exact.compareTo(new BigDecimal(Double.toString(d))) != 0)
+            && exact.compareTo(new BigDecimal(ShortestDecimal.toString(d))) != 0)
           return exact;
       } catch (final NumberFormatException ignore) {
         // a hex float (BigDecimal rejects it) or an exponent that does not fit an int (underflow to 0.0): the double is

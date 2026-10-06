@@ -36,6 +36,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.MultiIterator;
+import com.arcadedb.utility.ShortestDecimal;
 
 import java.lang.reflect.Array;
 import java.math.BigDecimal;
@@ -454,7 +455,7 @@ public enum Type {
         throw new IllegalArgumentException("Not a floating point or decimal number: " + number);
       if (Double.isNaN(d) || Double.isInfinite(d))
         return Double.toString(d);
-      decimal = BigDecimal.valueOf(d);
+      decimal = new BigDecimal(ShortestDecimal.toString(d));
     }
     if (decimal.signum() == 0)
       return "0";
@@ -1654,7 +1655,7 @@ public enum Type {
     // so the two diverge - 33554448f widens to 33554448 but reads as 3.355445E7, which is 33554450.
     if (f == (long) f && Math.abs(f) <= EXACT_INTEGRAL_FLOAT)
       return f;
-    return Double.parseDouble(Float.toString(f));
+    return Double.parseDouble(ShortestDecimal.toString(f));
   }
 
   /**
@@ -1672,7 +1673,7 @@ public enum Type {
    *                               {@link #widenFloat} this one has no non-finite path to fall back on
    */
   public static BigDecimal floatToBigDecimal(final float value) {
-    return new BigDecimal(Float.toString(value));
+    return new BigDecimal(ShortestDecimal.toString(value));
   }
 
   /**
