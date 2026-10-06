@@ -61,16 +61,25 @@ public class StripeDirectory extends BaseRecord implements RecordInternal {
    * on-disk contract (entries are found by re-hashing), so it can never change silently: a new algorithm must
    * use a new version number and keep the old one readable.
    * <p>
-   * Every directory built from stored bytes is checked against this value ({@link #checkHashVersion()}): a version
-   * this release does not know FAILS CLOSED with a {@link DatabaseMetadataException}, the same way an unknown record
-   * type does in the {@code RecordFactory}. Reading it with the version-0 hash would look in the wrong stripe and
-   * silently answer "not connected" or miss a removal (#8868).
+   * Every directory built from stored bytes is checked against {@link #isSupportedHashVersion(byte)}
+   * ({@link #checkHashVersion()}): a version this release does not know FAILS CLOSED with a
+   * {@link DatabaseMetadataException}, the same way an unknown record type does in the {@code RecordFactory}. Reading
+   * it with the version-0 hash would look in the wrong stripe and silently answer "not connected" or miss a removal
+   * (#8868).
    * <p>
    * Releases older than the one that added this check do NOT validate the byte, and read any version with the
    * version-0 hash. A new placement version is therefore only safe once those releases are out of support; until
    * then a layout that changes placement needs a new record type, which they reject in the {@code RecordFactory}.
    */
   public static final byte HASH_VERSION = 0;
+
+  /**
+   * Every placement hash version this release can read (#9266). {@link #HASH_VERSION} is the one it WRITES; a
+   * release that introduces a second placement function adds it here and keeps the old one, so directories written
+   * before the switch stay readable. Checked by {@link #isSupportedHashVersion(byte)}, never by an equality on
+   * {@link #HASH_VERSION}.
+   */
+  private static final byte[] SUPPORTED_HASH_VERSIONS = { HASH_VERSION };
 
   private static final int  HEADER_SIZE = 3;                                 // type + hashVersion + generations
   private static final int  SLOT_SIZE   = Binary.INT_SERIALIZED_SIZE + Binary.LONG_SERIALIZED_SIZE;
@@ -171,19 +180,74 @@ public class StripeDirectory extends BaseRecord implements RecordInternal {
   }
 
   /**
-   * Rejects a directory whose placement hash version is not the one this release implements, or whose header is
-   * truncated. Absolute read of header byte 1: does not move the buffer position the record factory left behind.
+   * Rejects a directory this release cannot read: a placement hash version it does not support, a header shorter
+   * than {@link #HEADER_SIZE}, or a body too short for the generations and stripes its header declares. Absolute
+   * reads only: does not move the buffer position the record factory left behind.
    */
   private void checkHashVersion() {
-    if (buffer.size() < HEADER_SIZE)
-      throw new DatabaseMetadataException(
-          "Stripe directory " + rid + " is corrupt: " + buffer.size() + " bytes, shorter than its " + HEADER_SIZE + "-byte header");
-    final byte version = buffer.getByte(1);
-    if (version != HASH_VERSION)
-      throw new DatabaseMetadataException(
-          "Stripe directory " + rid + " uses placement hash version " + version + ", but this release only supports version "
-              + HASH_VERSION + ". Either the database was written by a newer ArcadeDB release (open it with that release or a "
-              + "later one) or the record is corrupt");
+    final String problem = describeUnreadableContent(buffer);
+    if (problem != null)
+      throw new DatabaseMetadataException("Stripe directory " + rid + " " + problem);
+  }
+
+  /** True when this release implements the placement function of {@code version} (#9266). */
+  public static boolean isSupportedHashVersion(final byte version) {
+    for (final byte supported : SUPPORTED_HASH_VERSIONS)
+      if (supported == version)
+        return true;
+    return false;
+  }
+
+  /**
+   * Explains why the stored content of a stripe directory cannot be read by this release, or returns {@code null}
+   * when it can. Shared by the loading paths, which turn the answer into a {@link DatabaseMetadataException}, and by
+   * {@code CHECK DATABASE}, which reports it as a per-record finding instead of failing (#9266).
+   * <p>
+   * The layout is only verified for a supported version: an unknown version may lay its body out differently, so
+   * its slots are never decoded.
+   *
+   * @param content the record content, starting with the record type byte, sized to the record
+   */
+  public static String describeUnreadableContent(final Binary content) {
+    final int size = content.size();
+    if (size < HEADER_SIZE)
+      return "is corrupt: " + size + " bytes, shorter than its " + HEADER_SIZE + "-byte header";
+
+    final byte version = content.getByte(1);
+    if (!isSupportedHashVersion(version))
+      return "uses placement hash version " + version + ", but this release only supports " + supportedHashVersionsAsString()
+          + ". Either the database was written by a newer ArcadeDB release (open it with that release or a later one) or the "
+          + "record is corrupt";
+
+    final int generations = content.getByte(2);
+    if (generations < 1)
+      return "is corrupt: its header declares " + generations + " generations";
+
+    int offset = HEADER_SIZE;
+    for (int g = 0; g < generations; g++) {
+      if (offset + Binary.INT_SERIALIZED_SIZE > size)
+        return "is truncated: " + size + " bytes, generation " + g + " of " + generations + " starts past the end";
+      final int stripes = content.getInt(offset);
+      if (stripes < 1)
+        return "is corrupt: generation " + g + " declares " + stripes + " stripes";
+      offset += Binary.INT_SERIALIZED_SIZE;
+      if ((long) offset + (long) stripes * SLOT_SIZE > size)
+        return "is truncated: " + size + " bytes, generation " + g + " declares " + stripes + " stripes that do not fit";
+      offset += stripes * SLOT_SIZE;
+    }
+    return null;
+  }
+
+  private static String supportedHashVersionsAsString() {
+    if (SUPPORTED_HASH_VERSIONS.length == 1)
+      return "version " + SUPPORTED_HASH_VERSIONS[0];
+    final StringBuilder versions = new StringBuilder("versions ");
+    for (int i = 0; i < SUPPORTED_HASH_VERSIONS.length; i++) {
+      if (i > 0)
+        versions.append(", ");
+      versions.append(SUPPORTED_HASH_VERSIONS[i]);
+    }
+    return versions.toString();
   }
 
   /** Bounded by the single-byte header field: at most 127 generations (a growth event is rare - promotion adds
