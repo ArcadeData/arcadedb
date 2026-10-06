@@ -100,6 +100,7 @@ class Issue9277And9278AntiJoinChainTest {
     assertSameCount(chain, vars, "NOT (x)-[:K]->(z:Foo)", 1);
     assertSameCount(chain, vars, "NOT (x:P)-[:K]->(z:P)", 0);
     assertSameCount(chain, vars, "NOT (x:P)-[:K]->(z:Q)", 1);
+    assertSameCount(chain, vars, "NOT (x:P:Foo)-[:K]->(z)", 1);
     assertSameCount(chain, vars, "NOT (x)-[:K]->(z {id: 99})", 1);
     assertSameCount(chain, vars, "NOT (x)-[:K]->(z {id: 2})", 0);
   }
