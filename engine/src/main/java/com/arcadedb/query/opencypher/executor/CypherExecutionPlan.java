@@ -188,6 +188,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
@@ -7754,12 +7755,12 @@ public class CypherExecutionPlan {
           return false;
     if (Math.min(sourceIdx, targetIdx) != 0 || Math.max(sourceIdx, targetIdx) != 2)
       return false;
-    if (inequalityIdxA < 0 || Math.min(inequalityIdxA, inequalityIdxB) != 0 || Math.max(inequalityIdxA, inequalityIdxB) != 2)
+    if (inequalityIdxA < 0 || inequalityIdxB < 0 || Math.min(inequalityIdxA, inequalityIdxB) != 0 || Math.max(inequalityIdxA, inequalityIdxB) != 2)
       return false;
-    if (!antiJoin.antiJoinEdgeType.equals(edgeTypes[0]) || !antiJoin.antiJoinEdgeType.equals(edgeTypes[1]))
+    if (!Objects.equals(antiJoin.antiJoinEdgeType, edgeTypes[0]) || !Objects.equals(antiJoin.antiJoinEdgeType, edgeTypes[1]))
       return false;
     for (int i = 2; i < edgeTypes.length; i++)
-      if (edgeTypes[i].equals(edgeTypes[0]) || edgeTypes[i].equals(edgeTypes[1]))
+      if (Objects.equals(edgeTypes[i], edgeTypes[0]) || Objects.equals(edgeTypes[i], edgeTypes[1]))
         return false;
     return true;
   }
