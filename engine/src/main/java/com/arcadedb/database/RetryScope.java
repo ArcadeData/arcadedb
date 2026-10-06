@@ -31,8 +31,8 @@ import java.util.function.Supplier;
  * the first attempt performs it and parks what it took in a slot, a retry that re-runs the same statements finds the
  * slot and answers from it instead of performing the effect again. Slots are handed out in call order and the order
  * restarts with every attempt, so the n-th request of a retry meets the slot the n-th request of the first attempt
- * filled, provided it carries the same key. A retry that diverges (a data-dependent branch) gets a fresh slot at each
- * position whose key changed, instead of the wrong one; the positions whose key is unchanged keep theirs. Caveat: the effect
+ * filled, provided it carries the same key. A retry that diverges (a data-dependent branch) gets fresh slots from the
+ * first position whose key changed on, instead of the wrong ones; the positions before it keep theirs. Caveat: the effect
  * of the replaced position is applied a second time (an INCR that ran in the lost attempt stays applied), so the guarantee
  * of exactly-once is only as good as the determinism of the retried block.
  * <p>
@@ -74,8 +74,11 @@ public final class RetryScope {
     }
     final Slot slot = slots.get(index);
     if (!Objects.equals(slot.key, key)) {
-      slot.value = factory.get();
-      return (T) slot.value;
+      // The retry diverged here: nothing after this position is trusted either, even where a later key happens to match
+      slots.subList(index, slots.size()).clear();
+      final Slot fresh = new Slot(key, factory.get());
+      slots.add(fresh);
+      return (T) fresh.value;
     }
     return (T) slot.value;
   }
