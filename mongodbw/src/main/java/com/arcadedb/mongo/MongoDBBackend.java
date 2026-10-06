@@ -89,8 +89,11 @@ public class MongoDBBackend extends AbstractMongoBackend {
       try {
         // The live principal: a user deleted, re-passworded or stripped of a grant since the SASL login must not keep
         // the access it had when it authenticated.
-        user = server.getSecurity().revalidate(user);
-        authenticatedUsers.put(channel, user);
+        final ServerSecurityUser current = server.getSecurity().revalidate(user);
+        if (current != user) {
+          user = current;
+          authenticatedUsers.put(channel, current);
+        }
       } catch (final ServerSecurityException e) {
         authenticatedUsers.remove(channel);
         throw new MongoServerError(UNAUTHORIZED, "Unauthorized", "Command '" + command + "' requires authentication");
