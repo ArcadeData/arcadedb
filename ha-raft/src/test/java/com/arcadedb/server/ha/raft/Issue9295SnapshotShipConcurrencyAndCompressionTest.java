@@ -35,6 +35,7 @@ import java.io.File;
 import java.util.Random;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.zip.ZipEntry;
@@ -68,7 +69,7 @@ class Issue9295SnapshotShipConcurrencyAndCompressionTest {
   void twoShipsOfTheSameDatabaseOverlapOnTheWindowPath() throws Exception {
     GlobalConfiguration.PAGE_SNAPSHOT_ENABLED.setValue(true);
     try (final Database database = createDatabase()) {
-      assertThat(runTwoShips((DatabaseInternal) database)).as("both ships inside the streamer at the same time").isTrue();
+      assertThat(runTwoShips((DatabaseInternal) database)).as("both ships inside the streamer at the same time").isEqualTo(2);
     }
   }
 
@@ -76,7 +77,8 @@ class Issue9295SnapshotShipConcurrencyAndCompressionTest {
   void twoShipsOfTheSameDatabaseAreSerializedOnTheFallbackPath() throws Exception {
     GlobalConfiguration.PAGE_SNAPSHOT_ENABLED.setValue(false);
     try (final Database database = createDatabase()) {
-      assertThat(runTwoShips((DatabaseInternal) database)).as("the flush-suspension fallback must stay serialized").isFalse();
+      assertThat(runTwoShips((DatabaseInternal) database)).as("the flush-suspension fallback must stay serialized")
+          .isEqualTo(-1);
     }
   }
 
@@ -108,10 +110,14 @@ class Issue9295SnapshotShipConcurrencyAndCompressionTest {
     assertThat(unzip(zip(payload, 10))).isEqualTo(payload);
   }
 
-  /** @return true when both streamers were inside the callback at the same moment. */
-  private boolean runTwoShips(final DatabaseInternal db) throws Exception {
+  /**
+   * @return 2 when both streamers were inside the callback at the same moment, 1 when never overlapped, or -1 when
+   * they never overlapped AND the second ship was seen queued on the lock (positive proof of serialization).
+   */
+  private int runTwoShips(final DatabaseInternal db) throws Exception {
     final ReentrantLock lock = new ReentrantLock();
-    final CountDownLatch bothInside = new CountDownLatch(2);
+    final AtomicBoolean sawQueued = new AtomicBoolean();
+    final AtomicBoolean overlapped = new AtomicBoolean();
     final AtomicInteger inside = new AtomicInteger();
     final AtomicInteger maxInside = new AtomicInteger();
     final CountDownLatch done = new CountDownLatch(2);
@@ -121,9 +127,17 @@ class Issue9295SnapshotShipConcurrencyAndCompressionTest {
         try {
           SnapshotHttpHandler.streamThroughPointInTimeImage(db, db.getName(), null, lock, (image, pause) -> {
             maxInside.accumulateAndGet(inside.incrementAndGet(), Math::max);
-            bothInside.countDown();
             try {
-              bothInside.await(2, TimeUnit.SECONDS);
+              final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+              // `overlapped` is sticky: the first thread to see both inside leaves, and the other must not then wait
+              // for a second one that will never come
+              while (!overlapped.get() && !sawQueued.get() && System.nanoTime() < deadline) {
+                if (inside.get() == 2)
+                  overlapped.set(true);
+                if (lock.hasQueuedThreads())
+                  sawQueued.set(true);
+                Thread.sleep(5);
+              }
             } catch (final InterruptedException e) {
               Thread.currentThread().interrupt();
             } finally {
@@ -138,7 +152,7 @@ class Issue9295SnapshotShipConcurrencyAndCompressionTest {
       t.start();
     }
     assertThat(done.await(30, TimeUnit.SECONDS)).isTrue();
-    return maxInside.get() == 2;
+    return maxInside.get() == 2 ? 2 : sawQueued.get() ? -1 : 1;
   }
 
   private static byte[] zip(final byte[] payload, final int level) throws Exception {
