@@ -125,10 +125,26 @@ public class Issue9339UpsertIndexTest extends TestHelper {
 
     assertThatThrownBy(() -> database.transaction(
         () -> database.command("sql", "UPDATE Rng SET name = ? UPSERT WHERE code > ?", "x", "a")))
-        .isInstanceOf(CommandSQLParsingException.class);
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("UNIQUE index");
     assertThatThrownBy(() -> database.transaction(
         () -> database.command("sql", "UPDATE Rng SET name = ? UPSERT WHERE code IN ['a','b']", "x")))
-        .isInstanceOf(CommandSQLParsingException.class);
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("UNIQUE index");
     assertThat(database.countType("Rng", false)).isZero();
+  }
+
+  @Test
+  void upsertWithDuplicatedPredicateOnCompositeIndexIsRejected() {
+    database.command("sql", "CREATE DOCUMENT TYPE Dup");
+    database.command("sql", "CREATE PROPERTY Dup.tenant STRING");
+    database.command("sql", "CREATE PROPERTY Dup.code STRING");
+    database.command("sql", "CREATE INDEX ON Dup (tenant, code) UNIQUE");
+
+    assertThatThrownBy(() -> database.transaction(
+        () -> database.command("sql", "UPDATE Dup SET name = ? UPSERT WHERE tenant = ? AND tenant = ?", "x", "t", "t")))
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("UNIQUE index");
+    assertThat(database.countType("Dup", false)).isZero();
   }
 }
