@@ -57,7 +57,8 @@ import java.util.stream.Stream;
  *   <li>direction (string, default "BOTH"): edge direction to follow (IN, OUT, BOTH)</li>
  *   <li>tieBreakProperty (string, optional): vertex property used to break ties between equally frequent labels, the
  *   smallest value wins (LDBC Graphalytics CDLP breaks ties by the smallest vertex id). Without it the smallest
- *   internal node index wins, which follows load order</li>
+ *   internal node index wins, which follows load order. Values must be mutually comparable (numbers with numbers, or
+ *   the same class); a vertex without the property loses every tie</li>
  * </ul>
  * </p>
  * <p>
