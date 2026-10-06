@@ -148,15 +148,23 @@ public class GremlinServerPlugin implements ServerPlugin {
       gremlinServer.start().get(START_TIMEOUT_SECONDS, TimeUnit.SECONDS);
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
+      releaseAfterFailedStart();
       throw new ServerException("Interrupted while starting the GremlinServer plugin", e);
     } catch (final ExecutionException e) {
+      releaseAfterFailedStart();
       final Throwable cause = e.getCause() != null ? e.getCause() : e;
       throw new ServerException("Error on starting GremlinServer plugin on " + settings.host + ":" + settings.port + ": "
           + cause.getMessage(), cause);
     } catch (final Exception e) {
+      releaseAfterFailedStart();
       throw new ServerException("Error on starting GremlinServer plugin", e);
     }
-    boundPort = resolveBoundPort(gremlinServer, settings.port);
+    try {
+      boundPort = resolveBoundPort(gremlinServer, settings.port);
+    } catch (final ServerException e) {
+      releaseAfterFailedStart();
+      throw e;
+    }
 
     // SCRIPTS MUST SEE THE DATABASES CREATED AFTER THE START, NOT ONLY THE ONES THERE WHEN THE EXECUTOR WAS BUILT (#9147)
     if (gremlinServer.getServerGremlinExecutor().getGraphManager() instanceof ArcadeGraphManager arcadeGraphManager) {
@@ -180,10 +188,24 @@ public class GremlinServerPlugin implements ServerPlugin {
       if (channel != null && channel.localAddress() instanceof InetSocketAddress address && address.getPort() > 0)
         return address.getPort();
     } catch (final ReflectiveOperationException | RuntimeException e) {
-      LogManager.instance().log(GremlinServerPlugin.class, Level.FINE,
-          "Cannot read the port the Gremlin Server is bound to, using the configured one (%s)", null, e.getMessage());
+      if (configuredPort <= 0)
+        // A listener nobody can find is worse than no listener: the OS-chosen port is the only way to reach it
+        throw new ServerException("The Gremlin Server is listening on an OS-chosen port that cannot be determined (a "
+            + "TinkerPop upgrade may have changed GremlinServer internals): " + e, e);
+      LogManager.instance().log(GremlinServerPlugin.class, Level.WARNING,
+          "Cannot read the port the Gremlin Server is bound to, advertising the configured port %d (%s)", null, configuredPort,
+          e.toString());
     }
     return configuredPort;
+  }
+
+  /** The failed start leaves nothing running: the half-started server and its executor are stopped here, not left to the caller. */
+  private void releaseAfterFailedStart() {
+    try {
+      stopService();
+    } catch (final Throwable ignored) {
+      // BEST EFFORT: THE START FAILURE IS WHAT THE CALLER MUST SEE
+    }
   }
 
   /** Active only while the Gremlin Server is listening, so a plugin whose bind failed is not reported as started. */

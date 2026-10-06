@@ -48,8 +48,8 @@ class RetryScopeTest extends TestHelper {
 
     database.transaction(() -> {
       final RetryScope scope = scope();
-      final int first = scope.nextSlot(created::incrementAndGet);
-      final int second = scope.nextSlot(created::incrementAndGet);
+      final int first = scope.nextSlot("k", created::incrementAndGet);
+      final int second = scope.nextSlot("k", created::incrementAndGet);
       seen.add(first);
       seen.add(second);
       if (attempts.incrementAndGet() < 3)
@@ -71,8 +71,8 @@ class RetryScopeTest extends TestHelper {
     assertThat(scope()).as("no transaction call is running").isNull();
 
     final AtomicInteger created = new AtomicInteger();
-    database.transaction(() -> scope().nextSlot(created::incrementAndGet));
-    database.transaction(() -> scope().nextSlot(created::incrementAndGet));
+    database.transaction(() -> scope().nextSlot("k", created::incrementAndGet));
+    database.transaction(() -> scope().nextSlot("k", created::incrementAndGet));
     assertThat(created.get()).as("a later call starts with a fresh scope").isEqualTo(2);
   }
 
@@ -80,12 +80,51 @@ class RetryScopeTest extends TestHelper {
   void theScopeEndsWhenTheOwnerGivesUp() {
     try {
       database.transaction(() -> {
-        scope().nextSlot(Object::new);
+        scope().nextSlot("k", Object::new);
         throw new ConcurrentModificationException("always");
       }, false, 2);
     } catch (final ConcurrentModificationException expected) {
       // GIVES UP AFTER THE LAST ATTEMPT
     }
     assertThat(scope()).isNull();
+  }
+
+  @Test
+  void aSlotIsNotInheritedByADifferentKey() {
+    final AtomicInteger attempts = new AtomicInteger();
+    final List<Integer> seen = new ArrayList<>();
+    final AtomicInteger created = new AtomicInteger();
+
+    database.transaction(() -> {
+      // The second attempt reaches position 0 with another statement: it must not receive the first one's slot
+      final String key = attempts.incrementAndGet() == 1 ? "INCR a" : "GETDEL a";
+      seen.add(scope().nextSlot(key, created::incrementAndGet));
+      if (attempts.get() < 2)
+        throw new ConcurrentModificationException("retry");
+    }, false, 2);
+
+    assertThat(seen).containsExactly(1, 2);
+  }
+
+  @Test
+  void anInnerRetryDoesNotRealignTheOwnersPositionAndTheOwnerKeepsItsSlots() {
+    final AtomicInteger innerAttempts = new AtomicInteger();
+    final AtomicInteger created = new AtomicInteger();
+    final List<Integer> seen = new ArrayList<>();
+
+    database.transaction(() -> {
+      seen.add(scope().nextSlot("outer", created::incrementAndGet));
+      // A nested, non-joining call that retries on its own
+      database.transaction(() -> {
+        seen.add(scope().nextSlot("inner" + innerAttempts.get(), created::incrementAndGet));
+        if (innerAttempts.incrementAndGet() < 2)
+          throw new ConcurrentModificationException("inner retry");
+      }, false, 2);
+    }, false, 1);
+
+    assertThat(seen.getFirst()).isEqualTo(1);
+    assertThat(seen).as("the outer slot is untouched and the inner retry only ever gets fresh slots").hasSize(3);
+    assertThat(seen.get(1)).isNotEqualTo(seen.get(0));
+    assertThat(seen.get(2)).isNotEqualTo(seen.get(1));
   }
 }

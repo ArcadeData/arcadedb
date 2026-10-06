@@ -29,8 +29,8 @@ import java.util.function.Supplier;
  * It exists for a side effect that cannot be rolled back (the Redis INCR/GETDEL on the shared RAM map, issue #9322): the
  * first attempt performs it and parks what it took in a slot, a retry that re-runs the same statements finds the slot
  * and answers from it instead of performing the effect again. Slots are handed out in call order and the order restarts
- * with every attempt, so the n-th request of a retry meets the slot the n-th request of the first attempt filled. That
- * holds for a block that re-runs deterministically, which is what a retry is.
+ * with every attempt, so the n-th request of a retry meets the slot the n-th request of the first attempt filled, provided it carries the same
+ * key. A retry that diverges (a data-dependent branch) therefore gets fresh slots instead of the wrong ones.
  * <p>
  * The scope belongs to the outermost {@code transaction()} call of the thread and ends with it, whether it commits or
  * gives up. It is reachable through {@link DatabaseContext.DatabaseContextTL#getRetryScope()}.
@@ -38,19 +38,41 @@ import java.util.function.Supplier;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public final class RetryScope {
-  private final List<Object> slots = new ArrayList<>(2);
-  private       int          next;
+  private final List<Slot> slots = new ArrayList<>(2);
+  private       int        next;
+
+  private static final class Slot {
+    private final Object key;
+    private       Object value;
+
+    private Slot(final Object key, final Object value) {
+      this.key = key;
+      this.value = value;
+    }
+  }
 
   /**
-   * @return the slot at the current position, created by {@code factory} the first time the position is reached, then
-   * advances the position
+   * @param key     what the slot was made for (the statement text): a retry that takes a different path and reaches this
+   *                position with another key does not inherit the slot of the statement that was there before, it gets a
+   *                fresh one, so a mismatch costs a re-applied effect at worst and never a wrong answer
+   * @param factory creates the slot value
+   * @return the slot at the current position, created by {@code factory} the first time the position is reached with this
+   * key, then advances the position
    */
   @SuppressWarnings("unchecked")
-  public <T> T nextSlot(final Supplier<T> factory) {
+  public <T> T nextSlot(final Object key, final Supplier<T> factory) {
     final int index = next++;
-    if (index == slots.size())
-      slots.add(factory.get());
-    return (T) slots.get(index);
+    if (index == slots.size()) {
+      final Slot slot = new Slot(key, factory.get());
+      slots.add(slot);
+      return (T) slot.value;
+    }
+    final Slot slot = slots.get(index);
+    if (!slot.key.equals(key)) {
+      slot.value = factory.get();
+      return (T) slot.value;
+    }
+    return (T) slot.value;
   }
 
   /** Called when an attempt starts over: its requests meet the slots the previous attempt filled, from the first. */

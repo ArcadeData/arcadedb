@@ -67,10 +67,24 @@ class Issue9319GremlinBindFailureTest {
 
       assertThat(plugin.isActive()).as("a plugin whose bind failed is not active").isFalse();
       assertThat(plugin.getAdvertisedPorts()).as("nothing listens, so nothing is advertised").isEmpty();
-      plugin.stopService(); // the PluginManager stops a plugin whose start failed: it must cope with the half-built state
+      assertThat(gremlinExecutorThreads()).as("a failed start leaves no Gremlin executor thread running").isZero();
+      plugin.stopService(); // the PluginManager stops a plugin whose start failed too: it must cope with the released state
     } finally {
       Files.deleteIfExists(configDirectory);
     }
+  }
+
+  private static long gremlinExecutorThreads() throws InterruptedException {
+    long count = 0;
+    // shutdownNow() interrupts the workers, which exit asynchronously
+    for (int i = 0; i < 50; i++) {
+      count = Thread.getAllStackTraces().keySet().stream()
+          .filter(t -> t.isAlive() && t.getName().startsWith("arcadedb-gremlin-exec-")).count();
+      if (count == 0)
+        break;
+      Thread.sleep(100);
+    }
+    return count;
   }
 
   @Test

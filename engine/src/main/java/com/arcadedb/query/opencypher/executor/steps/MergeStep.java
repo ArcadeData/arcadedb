@@ -34,6 +34,7 @@ import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
+import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.MergeClause;
@@ -48,7 +49,6 @@ import com.arcadedb.query.opencypher.executor.CypherVertexReload;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.executor.LabelReplacements;
 import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
-import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
@@ -1304,13 +1304,6 @@ public class MergeStep extends AbstractExecutionStep {
   }
 
   /**
-   * Checks if a vertex/edge matches all property filters.
-   *
-   * @param doc        document to check
-   * @param properties expected properties
-   * @return true if all properties match
-   */
-  /**
    * A temporal operand against a stored value: text is compared with the operand's storage form, then restored to its
    * temporal type and compared by value; any other stored value is compared the way a MATCH compares it (a naive stored
    * datetime against a zoned operand by instant, issue #9334).
@@ -1322,6 +1315,13 @@ public class MergeStep extends AbstractExecutionStep {
     return InlineProperties.matchesResolvedValue(actual, wanted);
   }
 
+  /**
+   * Checks if a vertex/edge matches all property filters.
+   *
+   * @param doc        document to check
+   * @param properties expected properties
+   * @return true if all properties match
+   */
   private boolean matchesProperties(final Document doc, final Map<String, Object> properties) {
     for (final Map.Entry<String, Object> entry : properties.entrySet()) {
       final String key = entry.getKey();

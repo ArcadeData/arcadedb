@@ -307,7 +307,7 @@ public class RedisQueryEngine implements QueryEngine {
     final List<Object> results = new ArrayList<>();
     for (final Object step : plan) {
       if (step instanceof String command)
-        results.add(executeSingleCommandInternal(command, looseSlot()));
+        results.add(executeSingleCommandInternal(command, looseSlot(command)));
       else {
         @SuppressWarnings("unchecked")
         final List<String> commands = (List<String>) step;
@@ -349,7 +349,7 @@ public class RedisQueryEngine implements QueryEngine {
       final RetryScope scope = retryScope();
       final List<Object> attemptResults = new ArrayList<>(commands.size());
       for (int i = 0; i < commands.size(); i++)
-        attemptResults.add(executeSingleCommandInternal(commands.get(i), scope != null ? scope.nextSlot(RamSlot::new) : ownSlots[i]));
+        attemptResults.add(executeSingleCommandInternal(commands.get(i), scope != null ? scope.nextSlot(commands.get(i), RamSlot::new) : ownSlots[i]));
       committed[0] = attemptResults;
     });
 
@@ -419,9 +419,9 @@ public class RedisQueryEngine implements QueryEngine {
   }
 
   /** The slot of a command run outside a MULTI/EXEC block: kept across the retries of the request, null when none. */
-  private RamSlot looseSlot() {
+  private RamSlot looseSlot(final String command) {
     final RetryScope scope = retryScope();
-    return scope != null ? scope.nextSlot(RamSlot::new) : null;
+    return scope != null ? scope.nextSlot(command, RamSlot::new) : null;
   }
 
   /**
@@ -446,7 +446,7 @@ public class RedisQueryEngine implements QueryEngine {
    * Executes a single command and returns a ResultSet.
    */
   private ResultSet executeSingleCommand(final String query) {
-    final Object result = executeSingleCommandInternal(query, looseSlot());
+    final Object result = executeSingleCommandInternal(query, looseSlot(query));
     return createResultSet(result);
   }
 
