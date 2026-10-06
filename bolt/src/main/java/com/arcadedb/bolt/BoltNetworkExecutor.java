@@ -1411,6 +1411,8 @@ public class BoltNetworkExecutor extends Thread {
         // grant since then must not keep the access it had when it authenticated.
         user = server.getSecurity().revalidate(user);
       } catch (final ServerSecurityException e) {
+        // Released before the handle is dropped: an explicit transaction of the revoked user must not outlive it.
+        rollbackExplicitTransaction();
         user = null;
         database = null;
         sendFailure(BoltErrorCodes.AUTHENTICATION_ERROR, "The credentials of this connection are no longer valid");
