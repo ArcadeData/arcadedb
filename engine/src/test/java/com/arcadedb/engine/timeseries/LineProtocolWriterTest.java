@@ -110,6 +110,24 @@ class LineProtocolWriterTest {
     assertThat(sample.getFields()).containsOnlyKeys("value");
   }
 
+  /**
+   * Issue #8647: the server rejects a tag with an empty value as a malformed line, so the writer refuses it where the
+   * caller can still see which tag it was, instead of emitting {@code host=} for the server to drop.
+   */
+  @Test
+  void anEmptyTagValueIsRefusedRatherThanSentForTheServerToDrop() {
+    assertThatThrownBy(() -> LineProtocolWriter.appendLine(new StringBuilder(), "m", Map.of("host", ""),
+        Map.of("v", 1.0), 1L))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("host")
+        .hasMessageContaining("empty value");
+
+    assertThatThrownBy(() -> LineProtocolWriter.appendLine(new StringBuilder(), "m", Map.of("host", new StringBuilder()),
+        Map.of("v", 1.0), 1L))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("empty value");
+  }
+
   @Test
   void aLineTerminatorInAValueIsRefusedRatherThanSplittingTheSample() {
     // Line protocol is line-delimited: a newline inside a value would make the server read two malformed lines
