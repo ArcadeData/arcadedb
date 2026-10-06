@@ -54,6 +54,7 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
   private static final int  MAX_SHARED_KEYS_PER_RUN      = 65_536;
   private static final int  SHARING_PROBE_ENTRIES        = 32_768;
   private static final int  SHARED_KEY_RUN_GROWTH        = 8;
+  private static final int  MIN_ENTRIES_PER_SHARED_KEY   = 16;
   private static final long MIN_MEMORY_BUDGET_BYTES      = 1L << 20;
   private static final long WRITER_WORKER_OVERHEAD_BYTES = 8L << 20;
   private static final int  MAX_BUFFERED_RIDS_PER_GROUP  = 256;
@@ -376,25 +377,27 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
   }
 
   /**
+   * How many entries the current run may hold. {@code maxEntriesPerRun} budgets {@link #ESTIMATED_BYTES_PER_ENTRY} for an entry that
+   * carries its own key; while the keys of the run repeat heavily (every key is shared and there is at most one distinct key per
+   * {@link #MIN_ENTRIES_PER_SHARED_KEY} entries) an entry is only the record and its rid, so the run is allowed {@link #SHARED_KEY_RUN_GROWTH} times as many and a
+   * low-cardinality build spills, and merges, far less (#9291). The shared-key table (at most {@link #MAX_SHARED_KEYS_PER_RUN} keys) is
+   * small next to the entries it replaces, so it is not part of the per-entry estimate. The limit is re-read on every add: if the
+   * keys stop repeating after the run has grown, the run is spilled at once, which is correct but depends on the data order.
+   */
+  private int currentRunLimit() {
+    final int size = entries.size();
+    if (size >= SHARING_PROBE_ENTRIES && sharingKeys && allKeysShared && (long) sharedKeyList.size() * MIN_ENTRIES_PER_SHARED_KEY <= size)
+      return (int) Math.min(Integer.MAX_VALUE, (long) maxEntriesPerRun * SHARED_KEY_RUN_GROWTH);
+    return maxEntriesPerRun;
+  }
+
+  /**
    * Returns the shared holder of the key of the current run that equals this one, so entries with a repeated key (a low-cardinality
    * column) share one object: it saves the memory of the copies, and the run is later ordered by comparing its few distinct keys
    * once instead of every pair of entries (#9291). Once the table is full new keys are no longer retained (their entries carry
    * {@link Entry#NO_GROUP} and the run falls back to comparing keys), which bounds the table for high-cardinality columns where
    * sharing would find nothing.
    */
-  /**
-   * How many entries the current run may hold. {@code maxEntriesPerRun} budgets {@link #ESTIMATED_BYTES_PER_ENTRY} for an entry that
-   * carries its own key; while the keys of the run repeat heavily (every key is shared and there are at most one distinct key per 16
-   * entries) an entry is only the record and its rid, so the run is allowed {@link #SHARED_KEY_RUN_GROWTH} times as many and a
-   * low-cardinality build spills, and merges, far less (#9291).
-   */
-  private int currentRunLimit() {
-    final int size = entries.size();
-    if (size >= SHARING_PROBE_ENTRIES && sharingKeys && allKeysShared && (long) sharedKeyList.size() * 16L <= size)
-      return (int) Math.min(Integer.MAX_VALUE, (long) maxEntriesPerRun * SHARED_KEY_RUN_GROWTH);
-    return maxEntriesPerRun;
-  }
-
   private SharedKey shareKey(final TransactionIndexContext.ComparableKey key) {
     if (!sharingKeys)
       return new SharedKey(key, Entry.NO_GROUP);
@@ -422,10 +425,9 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
   /**
    * Orders a run by (key, rid). When every key is shared the distinct keys are sorted once and the entries are ordered by the int
    * rank of their key, which is what makes a low-cardinality build cheap; otherwise it is the plain key comparison.
-   *
    */
   private void sortRun(final List<Entry> run) {
-    if (!allKeysShared || sharedKeyList.size() == run.size() && run.size() > 1) {
+    if (!allKeysShared || (sharedKeyList.size() == run.size() && run.size() > 1)) {
       // either some key escaped the table or nothing repeats: ranking buys nothing over comparing the keys
       run.sort(LSMTreeIndexBulkLoader::compareEntries);
       return;

@@ -25,6 +25,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -119,7 +120,7 @@ class Issue9291SortedBuildTest extends TestHelper {
     final IndexCursor cursor = index.iterator(true);
     while (cursor.hasNext()) {
       final RID rid = cursor.next().getIdentity();
-      out.add(java.util.Arrays.toString(cursor.getKeys()) + "@" + rid.getPosition());
+      out.add(Arrays.toString(cursor.getKeys()) + "@" + rid.getPosition());
     }
     return out;
   }
