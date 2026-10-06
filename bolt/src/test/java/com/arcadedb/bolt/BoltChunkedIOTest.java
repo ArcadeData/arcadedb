@@ -37,6 +37,49 @@ class BoltChunkedIOTest {
 
   // ============ BoltChunkedOutput tests ============
 
+  /** Counts the write calls that reach the "socket", each one being a syscall and a TCP segment on a real connection. */
+  private static final class CountingStream extends ByteArrayOutputStream {
+    int writes;
+
+    @Override
+    public synchronized void write(final int b) {
+      writes++;
+      super.write(b);
+    }
+
+    @Override
+    public synchronized void write(final byte[] b, final int off, final int len) {
+      writes++;
+      super.write(b, off, len);
+    }
+  }
+
+  @Test
+  void messageReachesTheSocketInOneWrite() throws Exception {
+    final CountingStream socket = new CountingStream();
+    final BoltChunkedOutput output = new BoltChunkedOutput(socket);
+
+    output.writeMessage(new byte[] { 1, 2, 3, 4, 5 });
+
+    assertThat(socket.writes).isEqualTo(1);
+    assertThat(socket.size()).isEqualTo(9);
+  }
+
+  @Test
+  void unflushedMessagesAreBatchedUntilFlush() throws Exception {
+    final CountingStream socket = new CountingStream();
+    final BoltChunkedOutput output = new BoltChunkedOutput(socket);
+
+    for (int i = 0; i < 100; i++)
+      output.writeMessage(new byte[] { 1, 2, 3, 4, 5 }, false);
+    assertThat(socket.writes).isLessThanOrEqualTo(1);
+
+    output.flush();
+    assertThat(socket.writes).isLessThanOrEqualTo(2);
+    assertThat(socket.size()).isEqualTo(900);
+  }
+
+
   @Test
   void writeEmptyMessage() throws Exception {
     final ByteArrayOutputStream baos = new ByteArrayOutputStream();
