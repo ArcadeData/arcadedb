@@ -423,7 +423,7 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   public void createRecordNoLock(final Record record, final String bucketName, final boolean discardRecordAfter) {
-    current().createRecordNoLock(record, bucketName, false);
+    current().createRecordNoLock(record, bucketName, discardRecordAfter);
   }
 
   @Override
