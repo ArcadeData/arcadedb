@@ -222,6 +222,8 @@ public class StripeDirectory extends BaseRecord implements RecordInternal {
           + ". Either the database was written by a newer ArcadeDB release (open it with that release or a later one) or the "
           + "record is corrupt";
 
+    // Safe to require: the only writer, the promotion constructor, persists 2 generations at once (1 stripe, then
+    // GRAPH_SUPERNODE_STRIPES >= 2 - promotion is skipped below 2) and later writes only rewrite slots in place.
     final int generations = content.getByte(2);
     if (generations < 1)
       return "is corrupt: its header declares " + generations + " generations, outside the valid range 1..127";

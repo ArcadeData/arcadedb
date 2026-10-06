@@ -503,6 +503,8 @@ public class GraphDatabaseChecker {
     if (head == null)
       return;
     final String problem = describeUnreadableStripeDirectory(head);
+    // The warning follows the set: once the corrupted cap is reached a new directory is neither retained nor warned
+    // about, the same cap every other per-record finding of this class honours.
     if (problem != null && CollectionUtils.addBounded(report.unreadableStripeDirectories, report.maxCorrupted, head)
         .isFirstSighting())
       report.warn("vertex " + vertex + " edge list head " + head + " is a stripe directory this release cannot read: it " + problem);
