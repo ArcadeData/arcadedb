@@ -31,6 +31,7 @@ import org.apache.tinkerpop.gremlin.server.Settings;
 
 import java.io.File;
 import java.io.FileInputStream;
+import java.net.InetSocketAddress;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -40,16 +41,17 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
-import java.net.InetSocketAddress;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
 public class GremlinServerPlugin implements ServerPlugin {
+  private static final long                 START_TIMEOUT_SECONDS      = 60;
   private static final String               CONFIG_GREMLIN_SERVER_YAML = "gremlin-server.yaml";
   private static final String               IO_REGISTRIES_KEY          = "ioRegistries";
   private static final String               ARCADE_IO_REGISTRY         = ArcadeIoRegistry.class.getName();
@@ -64,7 +66,6 @@ public class GremlinServerPlugin implements ServerPlugin {
   private              ContextConfiguration configuration;
   private              GremlinServer        gremlinServer;
   private              ExecutorService      gremlinExecutorService;
-  private static final long             START_TIMEOUT_SECONDS      = 60;
   private volatile     int                  boundPort;
 
   @Override
@@ -405,7 +406,14 @@ public class GremlinServerPlugin implements ServerPlugin {
       if (graphManager instanceof ArcadeGraphManager) {
         ((ArcadeGraphManager) graphManager).closeAll();
       }
-      gremlinServer.stop().join();
+      try {
+        // Bounded like the start: a server whose bind failed must not be able to hang the shutdown
+        gremlinServer.stop().get(START_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      } catch (final ExecutionException | TimeoutException e) {
+        LogManager.instance().log(this, Level.WARNING, "Error stopping the Gremlin Server: %s", null, e.toString());
+      }
       gremlinServer = null;
     }
     if (gremlinExecutorService != null) {

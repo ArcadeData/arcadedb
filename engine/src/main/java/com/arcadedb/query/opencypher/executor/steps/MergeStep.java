@@ -63,7 +63,9 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 
+import java.time.temporal.Temporal;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -1585,9 +1587,15 @@ public class MergeStep extends AbstractExecutionStep {
   private static Object storageOrWrapper(final Object value, final boolean keepWrapper) {
     if (!keepWrapper)
       return TemporalUtil.toCoreJavaType(value);
+    if (value instanceof CypherTemporalValue)
+      return value;
     // A native java.time parameter (a datetime sent over Bolt or HTTP) is wrapped like datetime() so both compare alike
-    final Object wrapped = TemporalUtil.fromCoreJavaType(value);
-    return wrapped instanceof CypherTemporalValue ? wrapped : TemporalUtil.toCoreJavaType(value);
+    if (value instanceof Temporal || value instanceof Date) {
+      final Object wrapped = TemporalUtil.fromCoreJavaType(value);
+      if (wrapped instanceof CypherTemporalValue)
+        return wrapped;
+    }
+    return TemporalUtil.toCoreJavaType(value);
   }
 
   private Map<String, Object> evaluateProperties(final Map<String, Object> properties, final Result result,
