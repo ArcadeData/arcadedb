@@ -91,6 +91,12 @@ public class Issue9339UpsertIndexTest extends TestHelper {
         .isInstanceOf(CommandSQLParsingException.class)
         .hasMessageContaining("UNIQUE index");
 
+    assertThatThrownBy(() -> database.transaction(
+        () -> database.command("sql", "UPDATE Comp SET name = ? UPSERT WHERE tenant = ?", "x", "t")))
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("UNIQUE index");
+    assertThat(database.countType("Comp", false)).isZero();
+
     database.transaction(() -> {
       database.command("sql", "UPDATE Comp SET name = ? UPSERT WHERE tenant = ? AND code = ?", "x", "t", "c1");
       database.command("sql", "UPDATE Comp SET name = ? UPSERT WHERE tenant = ? AND code = ?", "y", "t", "c1");

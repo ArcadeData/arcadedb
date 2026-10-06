@@ -951,6 +951,27 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 //    return OType.convert(val, types[0].getDefaultJavaType());
   }
 
+  /**
+   * True when the index lookup is an equality on EVERY property of the index, so a unique index returns at most one
+   * record (an UPSERT must not run on a key prefix, a range or an IN list).
+   */
+  boolean isFullKeyEquality() {
+    final int keyCount = index.getPropertyNames().size();
+    if (condition instanceof BinaryCondition binaryCondition)
+      return keyCount == 1 && binaryCondition.getOperator() instanceof EqualsCompareOperator;
+
+    if (condition instanceof AndBlock andBlock) {
+      final List<BooleanExpression> subBlocks = andBlock.getSubBlocks();
+      if (subBlocks.size() != keyCount)
+        return false;
+      for (final BooleanExpression exp : subBlocks)
+        if (!(exp instanceof BinaryCondition binaryCondition) || !(binaryCondition.getOperator() instanceof EqualsCompareOperator))
+          return false;
+      return true;
+    }
+    return false;
+  }
+
   private boolean allEqualities(final AndBlock condition) {
     if (condition == null) {
       return false;
