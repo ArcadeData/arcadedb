@@ -32,6 +32,7 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.utility.IntIntHashMap;
 
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -229,6 +230,10 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
     });
   }
 
+  private static boolean isFixedIntegral(final Number n) {
+    return n instanceof Long || n instanceof Integer || n instanceof Short || n instanceof Byte;
+  }
+
   private static boolean isFinite(final Number n) {
     return !(n instanceof Double d && !Double.isFinite(d)) && !(n instanceof Float f && !Float.isFinite(f));
   }
@@ -269,15 +274,15 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
       } else {
         final int cmp;
         if (va instanceof Number na && vb instanceof Number nb) {
-          // exact when the kinds are mixed (a double cannot hold every long), unless NaN/Infinity make that impossible
-          if (isFinite(na) && isFinite(nb) && (na.getClass() != nb.getClass()))
-            cmp = new BigDecimal(na.toString()).compareTo(new BigDecimal(nb.toString()));
-          else if (na instanceof Double || na instanceof Float || nb instanceof Double || nb instanceof Float)
-            cmp = Double.compare(na.doubleValue(), nb.doubleValue());
-          else
+          // Long.compare only for fixed-width integrals; anything else finite is compared exactly (a double cannot hold
+          // every long, longValue() drops fractions and overflows BigInteger). NaN/Infinity fall back to Double.compare.
+          if (isFixedIntegral(na) && isFixedIntegral(nb))
             cmp = Long.compare(na.longValue(), nb.longValue());
-        }
-        else if (va.getClass() == vb.getClass())
+          else if (isFinite(na) && isFinite(nb) && (na.getClass() != nb.getClass() || na instanceof BigDecimal || na instanceof BigInteger))
+            cmp = new BigDecimal(na.toString()).compareTo(new BigDecimal(nb.toString()));
+          else
+            cmp = Double.compare(na.doubleValue(), nb.doubleValue());
+        } else if (va.getClass() == vb.getClass())
           cmp = ((Comparable<Object>) va).compareTo(vb);
         else
           throw new IllegalArgumentException("Property '" + property + "' has values of different types, cannot be used as tieBreakProperty");

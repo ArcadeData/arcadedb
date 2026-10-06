@@ -30,6 +30,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.math.BigDecimal;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -280,6 +281,29 @@ class AlgoLabelPropagationTest {
         q.newEdge("TE", x, true, (Object[]) null).save();
       });
       // P has no vid and sorts last, so Q wins the tie even though 900 is a larger value than anything else
+      assertThat(labelOwnerOfX(db, "{maxIterations: 1, direction: 'IN', tieBreakProperty: 'vid'}")).isEqualTo("Q");
+    } finally {
+      db.drop();
+    }
+  }
+
+  @Test
+  void tieBreakPropertyComparesDecimalsExactly() {
+    final DatabaseFactory factory = new DatabaseFactory("./target/databases/test-algo-lpa-tiebreak-decimal");
+    if (factory.exists())
+      factory.open().drop();
+    final Database db = factory.create();
+    try {
+      db.getSchema().createVertexType("T");
+      db.getSchema().createEdgeType("TE");
+      db.transaction(() -> {
+        // 1.2 and 1.5 have the same longValue(): only an exact comparison tells them apart
+        final MutableVertex p = db.newVertex("T").set("name", "P").set("vid", new BigDecimal("1.5")).save();
+        final MutableVertex q = db.newVertex("T").set("name", "Q").set("vid", new BigDecimal("1.2")).save();
+        final MutableVertex x = db.newVertex("T").set("name", "X").set("vid", new BigDecimal("9")).save();
+        p.newEdge("TE", x, true, (Object[]) null).save();
+        q.newEdge("TE", x, true, (Object[]) null).save();
+      });
       assertThat(labelOwnerOfX(db, "{maxIterations: 1, direction: 'IN', tieBreakProperty: 'vid'}")).isEqualTo("Q");
     } finally {
       db.drop();
