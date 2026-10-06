@@ -271,6 +271,54 @@ class Issue7305TimeSeriesGrpcIT extends BaseGrpcClientServerTest {
     assertThat(summary.unknownTypes()).containsExactly("nosuchtype");
   }
 
+  /**
+   * Issue #8646: a misspelled tag key used to be ignored, storing the point with {@code location = null} and
+   * answering OK. Both gRPC write RPCs and the HTTP client must report the key and not store the sample.
+   */
+  private static List<TimeSeriesPoint> oneGoodOneMisspelled(final long base) {
+    return List.of(
+        new TimeSeriesPoint(TYPE, base, Map.of("location", "us-east"), Map.of("temperature", 22.5)),
+        new TimeSeriesPoint(TYPE, base + 1, Map.of("locaton", "us-west"), Map.of("temperature", 18.3)));
+  }
+
+  @Test
+  void anUndeclaredKeyIsReportedByTheUnaryWrite() {
+    createType();
+
+    final TimeSeriesWriteSummary summary = grpcClient().timeSeriesWrite(oneGoodOneMisspelled(1_000L));
+
+    assertThat(summary.written()).isEqualTo(1);
+    assertThat(summary.dropped()).isEqualTo(1);
+    assertThat(summary.undeclaredKeys()).containsExactly(TYPE + ".locaton (tag)");
+    assertThat(grpcClient().timeSeriesQuery(new TimeSeriesQuery(TYPE)).count()).isEqualTo(1);
+  }
+
+  @Test
+  void anUndeclaredKeyIsReportedByTheStreamingWrite() {
+    createType();
+
+    final List<TimeSeriesPoint> points = new ArrayList<>(oneGoodOneMisspelled(1_000L));
+    points.addAll(oneGoodOneMisspelled(2_000L));
+    // One point per chunk, so the key is reported once across chunks rather than once per chunk
+    final TimeSeriesWriteSummary summary = grpcClient().timeSeriesWriteStream(points, 1);
+
+    assertThat(summary.received()).isEqualTo(4);
+    assertThat(summary.written()).isEqualTo(2);
+    assertThat(summary.dropped()).isEqualTo(2);
+    assertThat(summary.undeclaredKeys()).containsExactly(TYPE + ".locaton (tag)");
+  }
+
+  @Test
+  void anUndeclaredKeyIsReportedByTheHttpClient() {
+    createType();
+
+    final TimeSeriesWriteSummary summary = httpClient().timeSeriesWrite(oneGoodOneMisspelled(1_000L));
+
+    assertThat(summary.written()).isEqualTo(1);
+    assertThat(summary.dropped()).isEqualTo(1);
+    assertThat(summary.undeclaredKeys()).containsExactly(TYPE + ".locaton (tag)");
+  }
+
   @Test
   void queryingATypeThatDoesNotExistFailsRatherThanReturningNothing() {
     // An empty answer and "there is no such type" are different facts, and a client that cannot tell them

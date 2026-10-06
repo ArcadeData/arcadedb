@@ -2749,7 +2749,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
   private static TimeSeriesWriteSummary toWriteSummary(
       final com.arcadedb.server.grpc.TimeSeriesWriteSummary response) {
     return new TimeSeriesWriteSummary(response.getReceived(), response.getWritten(), response.getDropped(),
-        response.getUnknownTypesList(), response.getNonTimeSeriesTypesList(), response.getUnavailableTypesList());
+        response.getUnknownTypesList(), response.getNonTimeSeriesTypesList(), response.getUnavailableTypesList(),
+        response.getUndeclaredKeysList());
   }
 
   private <Resp> Resp callUnary(String opName, Rpc<Resp> rpc) throws StatusException {

@@ -315,7 +315,12 @@ public class TimeSeriesApiSpec implements OpenApiContributor {
     schema.addProperty("unavailableTypes", SpecBuilders.arrayOf(
         SpecBuilders.string("Type name"),
         "Measurements naming a time-series type whose storage engine failed to load; see the server log for why"));
-    // 'error' plus the two counters are on every rejection; the three name lists are written only when they
+    schema.addProperty("undeclaredKeys", SpecBuilders.arrayOf(
+        SpecBuilders.string("'<measurement>.<key> (tag|field)'"),
+        "Tag or field keys the measurement's time-series type does not declare in that role; the samples carrying them "
+            + "were dropped. Capped at 100 entries. Set arcadedb.timeSeriesUndeclaredKeys=ignore to store such samples "
+            + "with the undeclared keys discarded instead"));
+    // 'error' plus the two counters are on every rejection; the name lists are written only when they
     // hold something, and 'requestId' only when the request carried a correlation id (issue #7578).
     schema.setRequired(List.of("error", "written", "dropped"));
     return schema;
