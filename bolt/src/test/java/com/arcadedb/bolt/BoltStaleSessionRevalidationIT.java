@@ -30,6 +30,7 @@ import org.neo4j.driver.Driver;
 import org.neo4j.driver.GraphDatabase;
 import org.neo4j.driver.Session;
 import org.neo4j.driver.SessionConfig;
+import org.neo4j.driver.Transaction;
 
 import java.util.function.Consumer;
 
@@ -79,6 +80,26 @@ public class BoltStaleSessionRevalidationIT extends BaseBoltServerTest {
     run(security -> security.updateUser(
         new JSONObject().put("name", USER).put("password", security.encodePassword("another-Password-2"))
             .put("databases", new JSONObject().put(getDatabaseName(), new JSONArray().put("admin")))));
+  }
+
+  @Test
+  void revokedUserIsCutOffInsideAnExplicitTransaction() {
+    final ServerSecurity security = getServer(0).getSecurity();
+    security.createUser(new JSONObject().put("name", USER).put("password", security.encodePassword(PASSWORD))
+        .put("databases", new JSONObject().put(getDatabaseName(), new JSONArray().put("admin"))));
+
+    try (final Driver driver = GraphDatabase.driver(getServerBoltUrl(), AuthTokens.basic(USER, PASSWORD),
+        Config.builder().withoutEncryption().build());
+        final Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()));
+        final Transaction transaction = session.beginTransaction()) {
+      transaction.run("CREATE (:StaleDoc {name:'before'})").consume();
+
+      security.dropUser(USER);
+
+      final Throwable thrown = catchThrowable(() -> transaction.run("CREATE (:StaleDoc {name:'after'})").consume());
+      assertThat(thrown).as("a transaction of a revoked user must be refused").isNotNull();
+      assertThat(getServerDatabase(0, getDatabaseName()).countType("StaleDoc", false)).isEqualTo(0L);
+    }
   }
 
   private void run(final Consumer<ServerSecurity> change) {
