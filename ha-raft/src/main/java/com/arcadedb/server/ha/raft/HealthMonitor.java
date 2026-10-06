@@ -84,6 +84,15 @@ public final class HealthMonitor {
     }
 
     /**
+     * Whether this division was restarted in place and the leader's appends have not been seen reaching it since (no new
+     * entry, no newer term with a known leader). The stale-term signature then proves no divergence (issue #8901). The
+     * divergence reformat is itself an in-place restart, so a reformat that did not help is held the same way.
+     */
+    default boolean isReplicationPathUnprovenSinceRestart() {
+      return false;
+    }
+
+    /**
      * This node's last-applied Raft log index, or {@code -1} when it cannot be read. The stuck-at-stale-term streak
      * restarts whenever it advances (issue #8375): a follower that is still applying entries is making progress, not
      * stuck, even if it matches {@link #isFollowerStuckDiverged()} at every tick.
@@ -292,6 +301,9 @@ public final class HealthMonitor {
    */
   static final long CRASH_LOOP_RECORD_RESET_MS = 10L * 60_000L;
 
+  /** How often a held stale-term reformat repeats its dead-path WARNING while the hold lasts (issue #8901). */
+  static final long DEAD_PATH_REPORT_INTERVAL_MS = 5L * 60_000L;
+
   /** Consecutive ticks a division must stay CLOSING before it is recovered like a CLOSED one (issue #8651). */
   static final int CLOSING_TICKS_BEFORE_RECOVERY = 2;
 
@@ -339,6 +351,10 @@ public final class HealthMonitor {
   // volatile - see crashLoopEscalated above. A flag rather than "the streak is older than intervalMs": that would
   // answer true for a streak whose condition cleared after its first tick, until the next tick got round to it.
   private volatile boolean                  stuckConfirmed              = false;
+  // When the suspected dead replication path was last logged in the current streak (-1 = not yet), and how many times
+  // it was (issue #8901). Written on the tick executor only; the count is volatile because tests read it.
+  private          long                     deadPathReportedAtMs        = -1;
+  private volatile int                      deadPathReports             = 0;
   // Bounded reformat budget (#4741 review): reformats fired in the current divergence episode, the
   // time the follower started looking healthy again, and whether the budget is exhausted (logged once).
   private          int                      divergenceReformatCount     = 0;
@@ -807,6 +823,7 @@ public final class HealthMonitor {
     lagObservedSinceMs = -1;
     stuckObservedSinceMs = -1;
     stuckConfirmed = false;
+    deadPathReportedAtMs = -1;
   }
 
   /**
@@ -875,6 +892,7 @@ public final class HealthMonitor {
       stuckObservedSinceMs = -1;
       stuckLastAppliedIndex = -1;
       stuckConfirmed = false;
+      deadPathReportedAtMs = -1;
       // Forget a prior reformat episode once the follower has looked healthy long enough that the
       // divergence is considered resolved, re-arming the bounded reformat budget for any genuinely
       // new divergence later.
@@ -910,6 +928,22 @@ public final class HealthMonitor {
 
     stuckConfirmed = true; // seen again on a later tick with no progress: no longer a single-tick blip
 
+    // Issue #8901: a dead replication path after an in-place restart, not a divergence. The window restarts on every
+    // such tick, so it only counts time spent stuck once the leader's appends are seen reaching this node.
+    if (target.isReplicationPathUnprovenSinceRestart()) {
+      stuckObservedSinceMs = now;
+      if (deadPathReportedAtMs < 0 || now - deadPathReportedAtMs >= DEAD_PATH_REPORT_INTERVAL_MS) {
+        deadPathReportedAtMs = now;
+        deadPathReports++;
+        LogManager.instance().log(this, Level.WARNING,
+            "Follower is stuck at a stale term but has taken no replicated entry since its in-place Ratis restart, "
+                + "under the same term: the leader's appends are not reaching this node. Not reformatting the Raft "
+                + "storage for a suspected dead replication path (issue #8901)");
+      }
+      return;
+    }
+    deadPathReportedAtMs = -1;
+
     if (!divergedFollowerRecoveryEnabled)
       return; // observed and reported (see isFollowerStuckDivergedConfirmed), but auto-recovery is off
 
@@ -941,6 +975,11 @@ public final class HealthMonitor {
     stuckObservedSinceMs = -1; // reset; the next streak re-arms only if the divergence persists again
     stuckLastAppliedIndex = -1;
     stuckConfirmed = false;
+  }
+
+  /** Package-private for tests: how many dead-path WARNINGs were logged (issue #8901). */
+  int getDeadPathReports() {
+    return deadPathReports;
   }
 
   /**

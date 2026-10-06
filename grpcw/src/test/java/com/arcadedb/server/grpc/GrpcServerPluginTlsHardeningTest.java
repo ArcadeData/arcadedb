@@ -19,6 +19,8 @@
 package com.arcadedb.server.grpc;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.server.ArcadeDBServer;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -135,5 +137,53 @@ class GrpcServerPluginTlsHardeningTest {
     config.setValue("arcadedb.grpc.maxMetadataSize", String.valueOf(Integer.MAX_VALUE));
     final GrpcServerPlugin plugin = new GrpcServerPlugin();
     assertThat(plugin.getMaxMetadataSizeBytes(config)).isEqualTo(Integer.MAX_VALUE);
+  }
+
+  /**
+   * Issue #9316: {@code tls.enabled} written in the server configuration FILE used to be dropped as an unknown setting, so
+   * the plugin saw its default (false) and served cleartext while the operator had TLS written down. Loaded the way the
+   * server loads the file, it must now reach the plugin and fail closed on the missing certificate.
+   */
+  @Test
+  void tlsEnabledInTheServerConfigurationFileIsHonoured() {
+    final ContextConfiguration config = new ContextConfiguration();
+    config.fromJSON("{\"configuration\":{\"grpc.port\":0,\"grpc.tls.enabled\":true,\"grpc.reflection.enabled\":false}}");
+    final GrpcServerPlugin plugin = pluginWithConfig(config);
+
+    assertThatThrownBy(plugin::startService)
+        .isInstanceOf(SecurityException.class)
+        .hasMessageContaining("Refusing to start with cleartext");
+
+    assertThat(plugin.getStatus().standardServerRunning).isFalse();
+  }
+
+  /** The raw text of a -D that is not boolean refuses to start, as it did when the key was a bare string (issue #8935). */
+  @Test
+  void nonBooleanSystemPropertyRefusesToStart() {
+    final String key = GlobalConfiguration.GRPC_TLS_ENABLED.getKey();
+    System.setProperty(key, "yes");
+    try {
+      final GrpcServerPlugin plugin = pluginWithConfig(new ContextConfiguration());
+
+      assertThatThrownBy(plugin::startService)
+          .isInstanceOf(ConfigurationException.class)
+          .hasMessageContaining("yes");
+      assertThat(plugin.getStatus().standardServerRunning).isFalse();
+    } finally {
+      System.clearProperty(key);
+    }
+  }
+
+  /** An unknown mode is refused instead of starting no listener and reporting success. */
+  @Test
+  void invalidModeRefusesToStart() {
+    final ContextConfiguration config = new ContextConfiguration();
+    config.setValue("arcadedb.grpc.mode", "stadnard");
+    final GrpcServerPlugin plugin = pluginWithConfig(config);
+
+    assertThatThrownBy(plugin::startService)
+        .isInstanceOf(ConfigurationException.class)
+        .hasMessageContaining("stadnard");
+    assertThat(plugin.getStatus().standardServerRunning).isFalse();
   }
 }

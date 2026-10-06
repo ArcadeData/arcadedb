@@ -630,24 +630,19 @@ class GAVEligibilityTest {
 
   @Test
   void antiJoinWithoutInequalityCorrectCount() {
-    // Without inequality, p1 can equal p3 (self-loops through 2-hop KNOWS)
-    // Alice-Bob-Alice: NOT Alice-KNOWS-Alice? Alice's KNOWS = {Bob}. Alice not in {Bob} → passes.
-    //   But Alice has no HAS_INTEREST → contributes 0
-    // Alice-Bob-Charlie: NOT Alice-KNOWS-Charlie? Charlie not in {Bob} → passes.
-    //   Charlie has HAS_INTEREST Java → contributes 1
-    // Bob-Alice-Bob: NOT Bob-KNOWS-Bob? Bob's KNOWS = {Alice, Charlie}. Bob not in set → passes.
-    //   But Bob has no HAS_INTEREST → contributes 0
-    // Charlie-Bob-Alice: NOT Charlie-KNOWS-Alice? Alice not in {Bob} → passes.
-    //   Alice has no HAS_INTEREST → contributes 0
-    // Charlie-Bob-Charlie: NOT Charlie-KNOWS-Charlie? Charlie's KNOWS = {Bob}. Charlie not in {Bob} → passes.
-    //   Charlie has HAS_INTEREST → contributes 1
-    // Total: 2 (Alice-Bob-Charlie + Charlie-Bob-Charlie)
+    // Without an inequality p1 may equal p3 only when the two hops use DIFFERENT relationships. KNOWS has two edges here
+    // (Alice-Bob, Bob-Charlie), so Alice-Bob-Alice and Charlie-Bob-Charlie would each walk ONE edge twice, which Cypher's
+    // relationship uniqueness rule forbids inside a single MATCH (Neo4j drops them). What is left:
+    // Alice-Bob-Charlie: NOT Alice-KNOWS-Charlie? Charlie is not a neighbour of Alice, so it passes.
+    //   Charlie has HAS_INTEREST Java -> contributes 1
+    // Charlie-Bob-Alice: Alice has no HAS_INTEREST -> contributes 0
+    // Total: 1 (the old expectation of 2 counted Charlie-Bob-Charlie, which reuses the Bob-Charlie edge)
     final ResultSet result = database.query("opencypher",
         "MATCH (p1:Person)-[:KNOWS]-(p2:Person)-[:KNOWS]-(p3:Person)-[:HAS_INTEREST]->(t:Tag) WHERE NOT (p1)-[:KNOWS]-(p3) RETURN count(*) AS count");
 
     assertThat(result.hasNext()).isTrue();
     final long count = result.next().getProperty("count");
-    assertThat(count).isEqualTo(2L);
+    assertThat(count).isEqualTo(1L);
     result.close();
   }
 

@@ -94,6 +94,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.SortedMap;
 import java.util.TreeMap;
@@ -113,6 +114,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.BiConsumer;
 import java.util.function.LongSupplier;
+import java.util.function.Supplier;
 import java.util.function.ToLongFunction;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -268,6 +270,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // threads - the health monitor and, since #5345, the log compaction scheduler - read it. Every reader
   // still copies it to a local before use so a concurrent reassignment cannot null it mid-method.
   private volatile RaftServer                raftServer;
+  // Issue #8901: the division's position right after the latest in-place restartRatis() (the reformat included),
+  // PENDING_BASELINE from before the new server starts until it can be read, null when never restarted in place or once
+  // the path was proven. Evaluations only ever compare-and-set.
+  private final    AtomicReference<InPlaceRestartBaseline> inPlaceRestartBaseline = new AtomicReference<>();
   private          RaftClient                raftClient;
   private volatile RaftProperties            raftProperties;
   private volatile RaftTransactionBroker     transactionBroker;
@@ -2029,6 +2035,94 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     return floorMs;
   }
 
+  /**
+   * Where the division stood right after an in-place restart (issue #8901): last log entry ({@code null} for an empty
+   * log), current term, and whether a leader was known.
+   */
+  record InPlaceRestartBaseline(TermIndex lastEntry, long term, boolean leaderKnown) {
+  }
+
+  /** Baseline whose values could not be read right after the restart; resolved by the next health tick. */
+  static final InPlaceRestartBaseline PENDING_BASELINE = new InPlaceRestartBaseline(null, Long.MIN_VALUE, false);
+
+  /**
+   * Records the baseline right after {@link #restartRatis(boolean)} started the new server, or leaves it pending when
+   * the division cannot be read yet. A late read errs on the safe side: an entry that landed before it does not count
+   * as proof, so the hold lasts until the next entry or leader change.
+   */
+  private void captureInPlaceRestartBaseline() {
+    final InPlaceRestartBaseline baseline = readReplicationPosition();
+    inPlaceRestartBaseline.set(baseline != null ? baseline : PENDING_BASELINE);
+  }
+
+  /** The division's last log entry, current term and leader presence, or {@code null} when they cannot be read. */
+  private InPlaceRestartBaseline readReplicationPosition() {
+    final RaftServer server = raftServer;
+    if (server == null)
+      return null;
+    try {
+      final RaftServer.Division division = server.getDivision(raftGroup.getGroupId());
+      final DivisionInfo info = division.getInfo();
+      return new InPlaceRestartBaseline(division.getRaftLog().getLastEntryTermIndex(), info.getCurrentTerm(),
+          info.getLeaderId() != null);
+    } catch (final Exception e) {
+      // Same Ratis IllegalStateException window as isReadyForTraffic() (issue #5271).
+      LogManager.instance().log(this, Level.FINE, "Cannot read the Raft log position of the restarted division", e);
+      return null;
+    }
+  }
+
+  /**
+   * {@inheritDoc}
+   * <p>
+   * Proof is a new last log entry (an append reached the running server and was accepted) or a newer term with a known
+   * leader (that leader's appenders dialled the running server). An unreadable division holds. Once proven the baseline
+   * is dropped until the next in-place restart.
+   */
+  @Override
+  public boolean isReplicationPathUnprovenSinceRestart() {
+    return replicationPathUnproven(inPlaceRestartBaseline, this::readReplicationPosition);
+  }
+
+  /**
+   * One evaluation over the baseline reference, package-private for testing: resolves {@link #PENDING_BASELINE}
+   * (holding, nothing to compare yet) and drops the baseline once proven, both by compare-and-set.
+   */
+  static boolean replicationPathUnproven(final AtomicReference<InPlaceRestartBaseline> baselineRef,
+      final Supplier<InPlaceRestartBaseline> positionReader) {
+    final InPlaceRestartBaseline baseline = baselineRef.get();
+    if (baseline == null)
+      return false;
+    final InPlaceRestartBaseline current = positionReader.get();
+    if (baseline == PENDING_BASELINE) {
+      if (current != null)
+        baselineRef.compareAndSet(PENDING_BASELINE, current);
+      return true;
+    }
+    if (current == null)
+      return true;
+    if (replicationPathUnproven(baseline, current.lastEntry(), current.term(), current.leaderKnown()))
+      return true;
+    baselineRef.compareAndSet(baseline, null);
+    return false;
+  }
+
+  /**
+   * Pure comparison, package-private for testing: {@code true} while a baseline exists and neither a new last entry
+   * nor a newer term with a known leader has been seen, or the current term cannot be read.
+   */
+  static boolean replicationPathUnproven(final InPlaceRestartBaseline baseline, final TermIndex currentLastEntry,
+      final long currentTerm, final boolean leaderKnown) {
+    if (baseline == null)
+      return false;
+    if (currentTerm < 0)
+      return true;
+    if (!Objects.equals(currentLastEntry, baseline.lastEntry()))
+      return false;
+    // A term bumped by a candidate's vote request alone proves nothing: only a leader at the new term has dialled us.
+    return currentTerm == baseline.term() || !leaderKnown;
+  }
+
   @Override
   public void recoverFromDivergence() {
     if (shutdownRequested || isLeader())
@@ -2438,6 +2532,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
         final Parameters recoveryParameters = buildParameters(configuration);
 
+        // Before the new server can take anything: a tick in between holds, and so does a start() that throws.
+        inPlaceRestartBaseline.set(PENDING_BASELINE);
         this.raftServer = RaftServer.newBuilder()
             .setServerId(localPeerId)
             .setGroup(raftGroup)
@@ -2454,6 +2550,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
           HALog.log(this, HALog.BASIC, "Recovery abandoned: shutdown requested while the new Ratis server was starting");
           return;
         }
+        captureInPlaceRestartBaseline();
         this.raftProperties = properties;
         this.raftClient = buildRaftClient(raftGroup, properties, recoveryParameters);
 

@@ -275,6 +275,10 @@ public class WebSocketInsertSessionManager {
 
     if (user == null || !user.equals(session.user))
       throw new SecurityException("Insert session '" + sessionId + "' belongs to another user");
+    // (ServerSecurityUser.equals compares by name, so the check above is ownership, not authorization.)
+    // Same name, possibly a NEW object: the principal is replaced when the user is updated (issue #9311). The session
+    // writes with the grants of the live one from now on, not those it started with.
+    session.user = user;
 
     return session;
   }
