@@ -7726,7 +7726,9 @@ public class CypherExecutionPlan {
     if (repeatsNodeVariable(pathPattern))
       return null;
     if (!isAntiJoinShapeCountedExactly(database, nodeLabels, edgeTypes, antiJoin, antiJoinSourceIdx, antiJoinTargetIdx, inequalityIdxA,
-        inequalityIdxB))
+        inequalityIdxB)
+        && !isOverlapShapeCountedExactly(database, nodeLabels, edgeTypes, directions, antiJoin, antiJoinSourceIdx, antiJoinTargetIdx,
+        inequalityIdxA, inequalityIdxB))
       return null;
 
     return new AntiJoinChainOp(nodeLabels, edgeTypes, directions,
@@ -7772,6 +7774,46 @@ public class CypherExecutionPlan {
       if (edgeTypesOverlap(database, edgeTypes[i], edgeTypes[0]) || edgeTypesOverlap(database, edgeTypes[i], edgeTypes[1]))
         return false;
     return true;
+  }
+
+  /**
+   * Whether the chain is LSQB Q8, the one other shape {@link AntiJoinChainOp} counts exactly (the operator's own isOverlapShape and
+   * its javadoc give the formula):
+   * <pre>
+   *   (t1:T)&lt;-[:E]-(m:M)&lt;-[:R]-(c:C)-[:E]-&gt;(t2:T) WHERE NOT (c)-[:E]-&gt;(t1) AND t1 &lt;&gt; t2
+   * </pre>
+   * Three hops, every node labelled, no undirected hop, hops 0 and 2 of the negated pattern's type {@code E} and running the same way
+   * from {@code m} and from {@code c}, the negated pattern from {@code c} to {@code t1} in that way, the inequality between the ends,
+   * and a middle type {@code R} that is not {@code E} nor related to it by inheritance (a relationship it could share with a
+   * {@code E} hop would break the relationship uniqueness the formula assumes). The shape was counted without these checks before
+   * issue #9290 and answered wrong for labels at the ends and for parallel edges, which the operator now handles.
+   */
+  private static boolean isOverlapShapeCountedExactly(final Database database, final String[] nodeLabels, final String[] edgeTypes,
+      final Vertex.DIRECTION[] directions, final AntiJoinInfo antiJoin, final int sourceIdx, final int targetIdx, final int inequalityIdxA,
+      final int inequalityIdxB) {
+    if (edgeTypes.length != 3)
+      return false;
+    for (final String label : nodeLabels)
+      if (label == null)
+        return false;
+    for (final Vertex.DIRECTION direction : directions)
+      if (direction == Vertex.DIRECTION.BOTH)
+        return false;
+    if (Math.min(sourceIdx, targetIdx) != 0 || Math.max(sourceIdx, targetIdx) != 2)
+      return false;
+    if (inequalityIdxA < 0 || inequalityIdxB < 0 || Math.min(inequalityIdxA, inequalityIdxB) != 0
+        || Math.max(inequalityIdxA, inequalityIdxB) != 3)
+      return false;
+    if (!Objects.equals(antiJoin.antiJoinEdgeType, edgeTypes[0]) || !Objects.equals(antiJoin.antiJoinEdgeType, edgeTypes[2])
+        || edgeTypesOverlap(database, edgeTypes[1], edgeTypes[0]))
+      return false;
+    final Vertex.DIRECTION antiFromC = sourceIdx == 2 ? antiJoin.antiJoinDirection : reverseDirection(antiJoin.antiJoinDirection);
+    return antiFromC == directions[2] && reverseDirection(directions[0]) == directions[2];
+  }
+
+  private static Vertex.DIRECTION reverseDirection(final Vertex.DIRECTION direction) {
+    return direction == Vertex.DIRECTION.OUT ? Vertex.DIRECTION.IN
+        : direction == Vertex.DIRECTION.IN ? Vertex.DIRECTION.OUT : Vertex.DIRECTION.BOTH;
   }
 
   /** Whether one relationship can belong to both types: they are the same type or one inherits from the other. */
