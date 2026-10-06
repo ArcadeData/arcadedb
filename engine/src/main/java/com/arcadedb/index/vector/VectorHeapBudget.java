@@ -149,18 +149,20 @@ final class VectorHeapBudget {
   }
 
   /**
-   * Whether a collector's cycles refresh the old-generation reading. Keyed on the collector's NAME, not on the pools
-   * it lists: G1's young collector lists the old pool among its own (it manages every region), yet a young
-   * collection never refreshes that pool's post-collection usage. What is left after dropping the young
-   * collectors is the ones that do: G1 Old Generation and G1 Concurrent GC, the Parallel and Serial mark-sweep
-   * collectors, ZGC and Shenandoah cycles.
+   * Whether a collector's cycles refresh the old-generation reading. A WHITELIST on the collector's name, so a
+   * collector this has never heard of withholds the credit rather than granting it: G1 Old Generation and G1
+   * Concurrent GC, the mark-sweep collectors of Parallel and Serial, and the full cycles of ZGC and Shenandoah.
+   * G1's young collector is deliberately absent although it lists the old pool among its own (it manages every
+   * region): a young collection never refreshes that pool's post-collection usage.
    */
   static boolean isTenuredCollector(final String collectorName) {
     if (collectorName == null)
       return false;
     final String name = collectorName.toLowerCase(Locale.ROOT);
-    return !(name.contains("young") || name.contains("scavenge") || name.contains("copy") || name.contains("parnew")
-        || name.contains("minor"));
+    if (name.contains("young") || name.contains("minor"))
+      return false;
+    return name.contains("old") || name.contains("marksweep") || name.contains("concurrent")
+        || name.contains("major") || name.contains("cycles");
   }
 
   /**
