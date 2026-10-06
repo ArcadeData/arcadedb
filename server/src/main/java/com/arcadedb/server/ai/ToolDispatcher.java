@@ -19,6 +19,7 @@
 package com.arcadedb.server.ai;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONArray;
@@ -28,6 +29,8 @@ import com.arcadedb.server.info.SchemaInfo;
 import com.arcadedb.server.info.ServerInfo;
 import com.arcadedb.server.security.DatabaseUserContext;
 import com.arcadedb.server.security.ServerSecurityUser;
+
+import java.util.logging.Level;
 
 /**
  * Executes the gateway's tool_call requests locally inside the ArcadeDB server,
@@ -76,6 +79,52 @@ public class ToolDispatcher {
     } catch (final Exception e) {
       return errorJson(e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
     }
+  }
+
+  /**
+   * {@link #execute} as the chat relays call it: whatever the tool does, the caller gets a result to hand back to the model.
+   * The relay to the AI gateway answers every {@code tool_call} with this result on {@code /api/chat/tool_result}, and the
+   * gateway's model loop stays paused on the call until it arrives: a tool that threw instead of returning left that loop
+   * waiting for its own timeout (issue #8721). {@link #execute} already turns an {@link Exception} into an error result, but
+   * not an {@link Error} (a {@link StackOverflowError} on a deeply nested query, an {@link AssertionError}), nor what an
+   * override of it throws or returns. Only an {@link OutOfMemoryError} still escapes.
+   *
+   * @param args the tool's arguments, or {@code null} when the call carried arguments that are not a JSON object (see
+   *             {@link #arguments}): answered with an error result, without running the tool
+   */
+  public final String executeSafely(final String toolName, final JSONObject args) {
+    if (args == null)
+      return errorJson("The arguments of tool '" + toolName + "' are not a JSON object");
+    try {
+      final String result = execute(toolName, args);
+      return result != null ? result : errorJson("Tool '" + toolName + "' returned no result");
+    } catch (final OutOfMemoryError e) {
+      throw e;
+    } catch (final Throwable e) {
+      LogManager.instance().log(this, Level.WARNING, "AI tool '%s' threw instead of returning an error result", e, toolName);
+      return errorJson("Tool '" + toolName + "' failed: " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()));
+    }
+  }
+
+  /**
+   * The arguments of a tool call as the model sent them: a JSON object, or a string holding one (some models send the
+   * arguments encoded). Missing, null or blank arguments are no arguments.
+   *
+   * @return {@code null} when the arguments are anything else, which {@link #executeSafely} answers with an error result
+   */
+  static JSONObject arguments(final JSONObject call) {
+    if (call.isNull("arguments"))
+      return new JSONObject();
+    try {
+      final Object raw = call.opt("arguments");
+      if (raw instanceof JSONObject object)
+        return object;
+      if (raw instanceof String text)
+        return text.isBlank() ? new JSONObject() : new JSONObject(text);
+    } catch (final RuntimeException e) {
+      // neither a JSON object nor a string holding one
+    }
+    return null;
   }
 
   private String executeQuery(final JSONObject args) {

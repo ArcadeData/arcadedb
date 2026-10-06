@@ -356,45 +356,7 @@ public class AiChatHandler extends AbstractServerHttpHandler {
             gatewaySessionId = event.getString("sessionId", null);
             // Internal control event - do not forward to Studio.
           }
-          case "tool_call" -> {
-            final String toolId = event.getString("id", null);
-            final String toolName = event.getString("name", "");
-            final JSONObject toolArgs = event.getJSONObject("arguments", new JSONObject());
-
-            // Synthesize tool_start for Studio's live UI (keeps Studio's existing renderer happy).
-            forwardEvent(output, new JSONObject()
-                .put("type", "tool_start")
-                .put("tool", toolName)
-                .put("args", toolArgs));
-
-            // Execute locally. Returns JSON string (success or {"error":"..."}).
-            final String toolResult = dispatcher.execute(toolName, toolArgs);
-
-            // Synthesize tool_end. If the result encodes an error, propagate it.
-            final JSONObject toolEnd = new JSONObject()
-                .put("type", "tool_end")
-                .put("tool", toolName)
-                .put("args", toolArgs);
-            String toolError = null;
-            try {
-              final JSONObject parsed = new JSONObject(toolResult);
-              toolError = parsed.getString("error", null);
-            } catch (final Exception ignored) { /* result is not a JSON object */ }
-            if (toolError != null && !toolError.isEmpty()) {
-              toolEnd.put("error", toolError);
-              LogManager.instance().log(this, Level.WARNING,
-                  "AI tool '%s' failed locally: %s", toolName, toolError);
-            }
-            forwardEvent(output, toolEnd);
-
-            // POST the result back to the gateway so the paused LLM loop resumes.
-            if (gatewaySessionId == null) {
-              LogManager.instance().log(this, Level.WARNING,
-                  "AI gateway sent tool_call before session event; cannot deliver result");
-              break;
-            }
-            postToolResult(gatewaySessionId, toolId, toolResult);
-          }
+          case "tool_call" -> relayToolCall(output, event, gatewaySessionId, dispatcher);
           case "done" -> {
             // Inject chatId before forwarding the done event
             event.put("chatId", chat.getString("id"));
@@ -656,6 +618,58 @@ public class AiChatHandler extends AbstractServerHttpHandler {
       forwardEvent(output, new JSONObject().put("type", "error").put("code", code).put("error", message));
     } catch (final Exception ignored) {
       // The client is gone as well
+    }
+  }
+
+  /**
+   * Runs one {@code tool_call} of the gateway here and answers it. The gateway's model loop is paused on the call until a
+   * result arrives on {@code /api/chat/tool_result/:sessionId}, so every call read is answered with one (issue #8721): a call
+   * that cannot be run - arguments that are not a JSON object, a tool that threw - is answered with an {@code {"error":...}}
+   * result the model can recover from, and a result is POSTed even when relaying {@code tool_start}/{@code tool_end} to Studio
+   * fails, before that failure ends the stream.
+   */
+  private void relayToolCall(final OutputStream output, final JSONObject event, final String gatewaySessionId,
+      final ToolDispatcher dispatcher) throws IOException {
+    final String toolId = textOf(event, "id", null);
+    final String toolName = textOf(event, "name", "");
+    final JSONObject toolArgs = ToolDispatcher.arguments(event);
+    final JSONObject shownArgs = toolArgs != null ? toolArgs : new JSONObject();
+
+    String toolResult = null;
+    try {
+      // Synthesize tool_start for Studio's live UI (keeps Studio's existing renderer happy).
+      forwardEvent(output, new JSONObject().put("type", "tool_start").put("tool", toolName).put("args", shownArgs));
+
+      // Execute locally. Always a JSON string: the tool's result, or {"error":"..."}.
+      toolResult = dispatcher.executeSafely(toolName, toolArgs);
+
+      // Synthesize tool_end. If the result encodes an error, propagate it.
+      final JSONObject toolEnd = new JSONObject().put("type", "tool_end").put("tool", toolName).put("args", shownArgs);
+      String toolError = null;
+      try {
+        toolError = new JSONObject(toolResult).getString("error", null);
+      } catch (final Exception ignored) { /* result is not a JSON object */ }
+      if (toolError != null && !toolError.isEmpty()) {
+        toolEnd.put("error", toolError);
+        LogManager.instance().log(this, Level.WARNING, "AI tool '%s' failed locally: %s", toolName, toolError);
+      }
+      forwardEvent(output, toolEnd);
+    } finally {
+      // POST the result back to the gateway so the paused LLM loop resumes - also when Studio could not be written to
+      if (gatewaySessionId == null)
+        LogManager.instance().log(this, Level.WARNING, "AI gateway sent tool_call before session event; cannot deliver result");
+      else
+        postToolResult(gatewaySessionId, toolId,
+            toolResult != null ? toolResult : new JSONObject().put("error", "The tool was not run: the chat stream ended").toString());
+    }
+  }
+
+  /** A text member of a gateway event, or the default when it is missing or not text (a malformed event must not throw). */
+  private static String textOf(final JSONObject event, final String name, final String defaultValue) {
+    try {
+      return event.getString(name, defaultValue);
+    } catch (final RuntimeException e) {
+      return defaultValue;
     }
   }
 
