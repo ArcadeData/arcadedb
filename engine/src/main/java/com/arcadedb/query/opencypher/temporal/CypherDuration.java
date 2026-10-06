@@ -160,25 +160,25 @@ public class CypherDuration implements CypherTemporalValue {
         // Common single-field cases
         switch (key) {
           case "seconds":
-            return new CypherDuration(0, 0, ((Number) value).longValue(), 0);
+            return new CypherDuration(0, 0, longOf((Number) value), 0);
           case "minutes":
-            return new CypherDuration(0, 0, Math.multiplyExact(((Number) value).longValue(), 60L), 0);
+            return new CypherDuration(0, 0, Math.multiplyExact(longOf((Number) value), 60L), 0);
           case "hours":
-            return new CypherDuration(0, 0, Math.multiplyExact(((Number) value).longValue(), 3600L), 0);
+            return new CypherDuration(0, 0, Math.multiplyExact(longOf((Number) value), 3600L), 0);
           case "days":
-            return new CypherDuration(0, ((Number) value).longValue(), 0, 0);
+            return new CypherDuration(0, longOf((Number) value), 0, 0);
           case "weeks":
-            return new CypherDuration(0, Math.multiplyExact(((Number) value).longValue(), 7L), 0, 0);
+            return new CypherDuration(0, Math.multiplyExact(longOf((Number) value), 7L), 0, 0);
           case "months":
-            return new CypherDuration(((Number) value).longValue(), 0, 0, 0);
+            return new CypherDuration(longOf((Number) value), 0, 0, 0);
           case "years":
-            return new CypherDuration(Math.multiplyExact(((Number) value).longValue(), 12L), 0, 0, 0);
+            return new CypherDuration(Math.multiplyExact(longOf((Number) value), 12L), 0, 0, 0);
           case "milliseconds":
-            return new CypherDuration(0, 0, ((Number) value).longValue() / 1000, ((Number) value).longValue() % 1000 * 1_000_000);
+            return new CypherDuration(0, 0, longOf((Number) value) / 1000, longOf((Number) value) % 1000 * 1_000_000);
           case "microseconds":
-            return new CypherDuration(0, 0, ((Number) value).longValue() / 1_000_000, ((Number) value).longValue() % 1_000_000 * 1_000);
+            return new CypherDuration(0, 0, longOf((Number) value) / 1_000_000, longOf((Number) value) % 1_000_000 * 1_000);
           case "nanoseconds":
-            return new CypherDuration(0, 0, 0, ((Number) value).longValue());
+            return new CypherDuration(0, 0, 0, longOf((Number) value));
         }
       }
     }
@@ -231,9 +231,22 @@ public class CypherDuration implements CypherTemporalValue {
     return new CypherDuration(totalMonths, totalDays, totalSeconds, totalNanos);
   }
 
+  /**
+   * The whole value of a map field. A floating point number outside the long range has no fraction and so reaches the
+   * integral paths, where {@code longValue()} would saturate at {@code Long.MAX_VALUE} without a word: it overflows instead.
+   */
+  private static long longOf(final Number number) {
+    if (number instanceof Double || number instanceof Float) {
+      final double d = number.doubleValue();
+      if (d < -0x1p63 || d >= 0x1p63)
+        throw new ArithmeticException("long overflow: " + number);
+    }
+    return number.longValue();
+  }
+
   private static long wholeOf(final Map<String, Object> map, final String key) {
     final Object value = map.get(key);
-    return value == null ? 0L : ((Number) value).longValue();
+    return value == null ? 0L : longOf((Number) value);
   }
 
   private static CypherDuration fromComponents(final double years, final double months, final double weeks,
@@ -264,7 +277,7 @@ public class CypherDuration implements CypherTemporalValue {
     if (value == null)
       return 0L;
     if (value instanceof Number number && !hasFraction(number))
-      return Math.multiplyExact(number.longValue(), nanosPerUnit);
+      return Math.multiplyExact(longOf(number), nanosPerUnit);
     return Math.round(toDouble(value) * nanosPerUnit);
   }
 

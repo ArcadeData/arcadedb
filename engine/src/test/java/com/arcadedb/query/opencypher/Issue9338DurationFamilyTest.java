@@ -254,4 +254,13 @@ class Issue9338DurationFamilyTest {
     assertThat(scalar("RETURN toString(duration('PT0.9999999999S')) AS r")).isEqualTo("PT1S");
     assertThat(scalar("RETURN toString(duration('PT1.9999999999S')) AS r")).isEqualTo("PT2S");
   }
+
+  @Test
+  void aFloatingPointFieldBeyondTheLongRangeOverflowsInsteadOfSaturating() {
+    expectError("RETURN duration({days: 1e20, hours: 1})", ArithmeticErrorException.class);
+    expectError("RETURN duration({days: 1e20})", ArithmeticErrorException.class);
+    expectError("RETURN duration({seconds: -1e30})", ArithmeticErrorException.class);
+    expectError("RETURN duration({days: 1, nanoseconds: 1e30})", ArithmeticErrorException.class);
+    assertThat(scalar("RETURN toString(duration({days: 1e3, hours: 1})) AS r")).isEqualTo("P1000DT1H");
+  }
 }
