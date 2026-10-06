@@ -19,6 +19,7 @@
 package com.arcadedb.graph.olap;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.MutableVertex;
 import org.junit.jupiter.api.Test;
 
@@ -70,11 +71,19 @@ class Issue9301PartialVertexCoverageViewTest extends TestHelper {
         .map(r -> r.<Number>getProperty("id").intValue()).toList()).as(state + " Cypher ids").containsExactly(21, 22);
   }
 
-  private void withView(final String vertexTypes, final String state) throws Exception {
+  private void withView(final String vertexTypes, final boolean coversAll, final String state) throws Exception {
     database.command("sql", "CREATE GRAPH ANALYTICAL VIEW g9301 VERTEX TYPES (" + vertexTypes + ") EDGE TYPES (E) UPDATE MODE OFF");
     try {
-      GraphAnalyticalViewRegistry.get(database, "g9301").awaitReady(60, TimeUnit.SECONDS);
+      final GraphAnalyticalView view = GraphAnalyticalViewRegistry.get(database, "g9301");
+      assertThat(view.awaitReady(60, TimeUnit.SECONDS)).as(state + " ready").isTrue();
+      // the registry hands a view to a walk only when it can answer for every vertex the walk reaches
+      assertThat(GraphTraversalProviderRegistry.findProvider(database, "E")).as(state + " findProvider")
+          .isEqualTo(coversAll ? view : null);
+      assertThat(GraphTraversalProviderRegistry.findProviderAllowingPartialVertexCoverage(database, "E")).as(state + " partial")
+          .isSameAs(view);
       assertSameAnswers(state);
+      // the one-hop scan, the one path that accepts a partial view, answers the same
+      assertThat(count("opencypher", "MATCH (a:A)-[:E]->(b:B) RETURN count(*) AS n")).as(state + " Cypher one hop").isEqualTo(2);
     } finally {
       database.command("sql", "DROP GRAPH ANALYTICAL VIEW g9301");
     }
@@ -83,9 +92,24 @@ class Issue9301PartialVertexCoverageViewTest extends TestHelper {
   @Test
   void viewOverSomeVertexTypesAnswersLikeNoView() throws Exception {
     assertSameAnswers("no view");
-    withView("A, B", "view (A, B)");
-    withView("A, C", "view (A, C)");
-    withView("A, B, C", "view (A, B, C)");
+    withView("A, B", false, "view (A, B)");
+    withView("A, C", false, "view (A, C)");
+    withView("A, B, C", true, "view (A, B, C)");
     assertSameAnswers("view dropped");
+  }
+
+  @Test
+  void newVertexTypeMakesTheViewPartial() throws Exception {
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW g9301 VERTEX TYPES (A, B, C) EDGE TYPES (E) UPDATE MODE OFF");
+    try {
+      final GraphAnalyticalView view = GraphAnalyticalViewRegistry.get(database, "g9301");
+      assertThat(view.awaitReady(60, TimeUnit.SECONDS)).isTrue();
+      assertThat(view.coversVertexType(null)).isTrue();
+      database.getSchema().createVertexType("D");
+      assertThat(view.coversVertexType(null)).as("a vertex type the view does not hold appeared").isFalse();
+      assertThat(GraphTraversalProviderRegistry.findProvider(database, "E")).isNull();
+    } finally {
+      database.command("sql", "DROP GRAPH ANALYTICAL VIEW g9301");
+    }
   }
 }

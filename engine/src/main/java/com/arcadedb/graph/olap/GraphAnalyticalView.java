@@ -255,6 +255,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   // Per-view override of GlobalConfiguration.GAV_USE_WHEN_STALE; null follows the database's configuration, read
   // live on every isReady() so an ALTER DATABASE reaches views already built (and restored ones) - see #7875.
   private volatile Boolean useWhenStale;
+  // coversVertexType(null) answer with the schema version it was computed at: asked once per vertex by the SQL traversal
+  // functions, and the answer only changes with the schema, so the type list is not copied on every call
+  private volatile long      allVertexTypesCoveredVersion = -1L;
+  private volatile boolean   allVertexTypesCovered;
   private volatile UpdateMode updateMode;
 
   /** Single volatile reference for all mutable CSR state — ensures atomic visibility to readers. */
@@ -953,10 +957,18 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       if (vertexTypes == null)
         return true; // built without filter = all types
       // Check if explicit types cover all vertex types in the schema
+      final long version = database.getSchema().getEmbedded().getVersion();
+      if (version == allVertexTypesCoveredVersion)
+        return allVertexTypesCovered;
+      boolean covered = true;
       for (final DocumentType dt : database.getSchema().getTypes())
-        if (dt instanceof VertexType && !containsType(vertexTypes, dt.getName()))
-          return false;
-      return true;
+        if (dt instanceof VertexType && !containsType(vertexTypes, dt.getName())) {
+          covered = false;
+          break;
+        }
+      allVertexTypesCovered = covered;
+      allVertexTypesCoveredVersion = version;
+      return covered;
     }
     if (vertexTypes == null)
       return true; // we include all vertex types
