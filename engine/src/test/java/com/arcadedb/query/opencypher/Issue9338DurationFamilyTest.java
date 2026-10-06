@@ -198,4 +198,18 @@ class Issue9338DurationFamilyTest {
       for (final String op : new String[] { "*", "/", "%", "-" })
         expectError("RETURN duration({days: 1}) " + op + " " + t);
   }
+
+  @Test
+  void clockArithmeticWithAHugeDurationWrapsBackwardsCorrectly() {
+    // 9223372037 s mod 86400 = 85637 s = 23:47:17 ; 00:00:01 - 23:47:17 = 00:12:44 (the day before)
+    assertThat(scalar("RETURN toString(localtime('00:00:01') - duration({seconds: 9223372037})) AS r")).isEqualTo("00:12:44");
+  }
+
+  @Test
+  void fractionalFactorsUseTheDecimalPathAndNonFiniteFactorsAreRefused() {
+    assertThat(scalar("RETURN toString(duration({days: 3}) * 0.5) AS r")).isEqualTo("P1DT12H");
+    expectError("RETURN duration({days: 1}) * (0.0 / 0.0)");
+    expectError("RETURN duration({days: 1}) * (1 / 0.0)");
+    expectError("RETURN duration({days: 1}) / (1 / 0.0)");
+  }
 }

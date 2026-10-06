@@ -1312,8 +1312,10 @@ public class MergeStep extends AbstractExecutionStep {
    */
   private static boolean matchesTemporal(final Object actual, final CypherTemporalValue wanted) {
     if (actual instanceof String text)
+      // The parse only runs for a text with the shape of a temporal: a scan over plain strings pays a character test
       return text.equals(TemporalUtil.toCoreJavaType(wanted))
-          || InlineProperties.matchesResolvedValue(TemporalUtil.convertFromStorage(text), wanted);
+          || TemporalUtil.mayBeTemporalString(text)
+          && InlineProperties.matchesResolvedValue(TemporalUtil.convertFromStorage(text), wanted);
     return InlineProperties.matchesResolvedValue(actual, wanted);
   }
 
