@@ -137,4 +137,22 @@ class Issue6503VectorHeapBudgetTest {
     assertThat(VectorHeapBudget.bytesPerCachedVector(256) - VectorHeapBudget.bytesPerCachedVector(128))
         .isEqualTo(128L * Float.BYTES);
   }
+
+  @Test
+  void onlyCollectorsThatRefreshTheOldGenerationReadingCountAsTenured() {
+    // G1's young collector lists the old pool among its own, yet never refreshes its post-collection usage (#7260).
+    assertThat(VectorHeapBudget.isTenuredCollector("G1 Young Generation")).isFalse();
+    assertThat(VectorHeapBudget.isTenuredCollector("PS Scavenge")).isFalse();
+    assertThat(VectorHeapBudget.isTenuredCollector("Copy")).isFalse();
+    assertThat(VectorHeapBudget.isTenuredCollector("ParNew")).isFalse();
+    assertThat(VectorHeapBudget.isTenuredCollector("ZGC Minor Cycles")).isFalse();
+    assertThat(VectorHeapBudget.isTenuredCollector(null)).isFalse();
+    assertThat(VectorHeapBudget.isTenuredCollector("SomeFutureCollector")).as("unknown withholds the credit").isFalse();
+    assertThat(VectorHeapBudget.isTenuredCollector("G1 Old Generation")).isTrue();
+    assertThat(VectorHeapBudget.isTenuredCollector("G1 Concurrent GC")).isTrue();
+    assertThat(VectorHeapBudget.isTenuredCollector("PS MarkSweep")).isTrue();
+    assertThat(VectorHeapBudget.isTenuredCollector("MarkSweepCompact")).isTrue();
+    assertThat(VectorHeapBudget.isTenuredCollector("ZGC Major Cycles")).isTrue();
+    assertThat(VectorHeapBudget.isTenuredCollector("Shenandoah Cycles")).isTrue();
+  }
 }
