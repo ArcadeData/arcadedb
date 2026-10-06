@@ -38,6 +38,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Regression tests for issue #6302 - the {@code algo.*} procedures whose work is multiplied by the <em>graph</em>
@@ -254,6 +255,12 @@ class Issue6302AlgoGraphDrivenWorkGuardTest {
   @Tag("slow")
   @Timeout(300)
   void apspObservesTheDeadlineInsideTheTripleLoop() {
+    // The 128 MB matrix below needs real headroom: on a heap this small the call would die of an OutOfMemoryError
+    // that says nothing about the deadline under test. The JVM default heap (a quarter of physical memory) clears
+    // this on GitHub-hosted runners (7 GB and up) and the build sets no -Xmx, so only a starved run skips.
+    assumeTrue(Runtime.getRuntime().maxMemory() >= 1024L * 1024 * 1024,
+        "needs a heap of at least 1 GB for the 4000 x 4000 distance matrix");
+
     final DatabaseFactory factory = new DatabaseFactory("./target/databases/test-issue-6302-apsp-deadline");
     if (factory.exists())
       factory.open().drop();
@@ -291,6 +298,9 @@ class Issue6302AlgoGraphDrivenWorkGuardTest {
       }).as("O(V³) with no knob is exactly the shape that has to be abortable")
           .hasStackTraceContaining(GlobalConfiguration.COMMAND_TIMEOUT.getKey());
 
+      // Secondary to the assertion above, which already fails an unguarded loop outright (it returns, it does not
+      // throw). This one catches a check that only fires after the loop: on a runner fast enough to bring the full
+      // run under 15 s it can no longer tell the two apart, and only then does it stop adding anything.
       stopwatch.assertGaveUpWithin(15_000L, "a Floyd-Warshall pass aborted from inside, not run to the end");
     } finally {
       dense.getConfiguration().setValue(GlobalConfiguration.COMMAND_TIMEOUT,
