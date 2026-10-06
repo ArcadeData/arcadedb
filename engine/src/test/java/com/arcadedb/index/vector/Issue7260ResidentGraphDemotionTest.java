@@ -165,7 +165,11 @@ class Issue7260ResidentGraphDemotionTest {
   @Test
   void aRebuildThatDoesNotFitEvenDemotedIsDeferredAndTheGraphStaysOnHeap() {
     withIndex(index -> {
+      final List<RID> before = searchIds(index);
       assertThat(index.admitOnlineRebuild(0L, 0L, true)).isFalse();
+      assertThat(searchIds(index))
+          .as("declining closes the twin it loaded on the side, which must not disturb the live graph")
+          .isEqualTo(before);
 
       assertThat(index.getGraphIndex())
           .as("a deferral must not have degraded the searches it was meant to protect")

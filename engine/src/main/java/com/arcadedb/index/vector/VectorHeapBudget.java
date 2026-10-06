@@ -121,25 +121,40 @@ final class VectorHeapBudget {
   }
 
   /**
-   * Wall-clock time the most recent collection of any collector finished, or {@code -1} when the JVM does not
-   * publish it (issue #7260). Compared with the moment a graph was published, it says whether the post-collection
-   * reading of {@link #liveHeapBytes()} can have counted that graph: only a collection that ended after the
-   * publish saw it live.
+   * Wall-clock time the most recent collection of the TENURED pools finished, or {@code -1} when one has not run or
+   * the JVM does not publish it (issue #7260). Compared with the moment a graph was published, it says whether the
+   * post-collection reading of {@link #liveHeapBytes()} can have counted that graph: a large graph lives in the old
+   * generation, whose reading a young collection does not refresh (with G1 only a concurrent, mixed or full cycle
+   * does), so only a collector that manages such a pool counts. Conservative by construction: an unknown answers
+   * {@code -1}, which withholds the credit, and the cost of that is one more deferral rather than an OOM.
    */
   static long lastCollectionEndMillis() {
     long last = -1L;
     try {
       final long jvmStart = ManagementFactory.getRuntimeMXBean().getStartTime();
-      for (final GarbageCollectorMXBean gc : ManagementFactory.getGarbageCollectorMXBeans())
-        if (gc instanceof final com.sun.management.GarbageCollectorMXBean sunGc) {
-          final com.sun.management.GcInfo info = sunGc.getLastGcInfo();
-          if (info != null)
-            last = Math.max(last, jvmStart + info.getEndTime());
-        }
+      for (final GarbageCollectorMXBean gc : ManagementFactory.getGarbageCollectorMXBeans()) {
+        // Fully qualified because the com.sun.management variant shares its simple name with the standard
+        // java.lang.management interface imported above.
+        if (!managesTenuredPool(gc) || !(gc instanceof final com.sun.management.GarbageCollectorMXBean sunGc))
+          continue;
+        final com.sun.management.GcInfo info = sunGc.getLastGcInfo();
+        if (info != null)
+          last = Math.max(last, jvmStart + info.getEndTime());
+      }
     } catch (final RuntimeException | LinkageError e) {
       return -1L; // indistinguishable from a JVM that does not publish it
     }
     return last;
+  }
+
+  private static boolean managesTenuredPool(final GarbageCollectorMXBean gc) {
+    for (final String pool : gc.getMemoryPoolNames()) {
+      final String name = pool.toLowerCase();
+      if (!name.contains("eden") && !name.contains("survivor") && !name.contains("young") && !name.contains("nursery")
+          && !name.contains("metaspace") && !name.contains("code") && !name.contains("class"))
+        return true;
+    }
+    return false;
   }
 
   /**
