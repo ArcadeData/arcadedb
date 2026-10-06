@@ -18,6 +18,8 @@
  */
 package com.arcadedb.remote;
 
+import com.arcadedb.network.HttpClientLifecycle;
+
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.BasicDatabase;
@@ -191,8 +193,12 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
   @Override
   public void close() {
+    super.close();
     setSessionId(null);
     open = false;
+
+    if (HttpClientLifecycle.isSupported())
+      return;
 
     // HttpClient.close() is not available in Java 17. Use reflection to shutdown SelectorManager if possible.
     try {
