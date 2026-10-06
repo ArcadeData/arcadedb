@@ -19,6 +19,7 @@
 package com.arcadedb.graphql.schema;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.graphql.parser.AbstractValue;
@@ -50,6 +51,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
+import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.math.BigInteger;
 import java.util.*;
@@ -100,9 +102,16 @@ public class GraphQLSchema {
       // IT SPREADS MAY BE DECLARED AFTER IT. SEE ISSUE #7770
       final GraphQLFragments fragments = GraphQLFragments.of(definitions);
 
+      // The GraphQL schema is shared by every user of the database: replacing a type is a schema change. Checked once,
+      // before anything in the document is executed or applied, so a denied document does nothing at all.
+      for (final Definition definition : definitions)
+        if (definition instanceof TypeSystemDefinition) {
+          ((DatabaseInternal) database).checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+          break;
+        }
+
       for (final Definition definition : definitions) {
         if (definition instanceof TypeSystemDefinition typeSystemDefinition) {
-
           final TypeDefinition type = typeSystemDefinition.getTypeDefinition();
           if (type instanceof ObjectTypeDefinition obj) {
             objectTypeDefinitionMap.put(obj.getName(), obj);
