@@ -405,6 +405,9 @@ public class RedisQueryEngine implements QueryEngine {
 
   private static final String RAM_OVERLAY_ATTACHMENT = "redis.ramOverlay";
 
+  /** The commands that take a value from the shared RAM map and so keep a {@link RamSlot} across retries. */
+  private static final Set<String> RAM_SLOT_COMMANDS = Set.of("INCR", "INCRBY", "INCRBYFLOAT", "DECR", "DECRBY", "GETDEL");
+
   /**
    * @return the state that survives the attempts of the retried transaction call this request runs under, or null when
    * none is running. A rollback drops a transaction's attachments, so what an INCR/GETDEL took from the shared map
@@ -435,7 +438,8 @@ public class RedisQueryEngine implements QueryEngine {
     final String trimmed = command.stripLeading();
     final int end = trimmed.indexOf(' ') < 0 ? trimmed.length() : trimmed.indexOf(' ');
     final String name = trimmed.substring(0, end);
-    if (name.regionMatches(true, 0, "INCR", 0, 4) || name.regionMatches(true, 0, "DECR", 0, 4) || name.equalsIgnoreCase("GETDEL"))
+    final String upper = name.toUpperCase(Locale.ENGLISH);
+    if (RAM_SLOT_COMMANDS.contains(upper))
       return scope.nextSlot(command, RamSlot::new);
     return null;
   }
