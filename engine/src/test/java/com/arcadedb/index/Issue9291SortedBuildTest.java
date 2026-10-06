@@ -107,6 +107,39 @@ class Issue9291SortedBuildTest extends TestHelper {
     assertThat(database.getSchema().getType("T").getPolymorphicIndexByProperties("q").countEntries()).isEqualTo(1);
   }
 
+  @Test
+  void caseInsensitiveCollationKeysShareAGroupAndStayOrdered() {
+    for (final String type : new String[] { "CiSorted", "CiPlain" }) {
+      database.command("sql", "CREATE DOCUMENT TYPE " + type);
+      database.command("sql", "CREATE PROPERTY " + type + ".p STRING");
+      database.transaction(() -> {
+        for (int i = 0; i < 5_000; i++)
+          database.newDocument(type).set("p", (i % 2 == 0 ? "Key" : "kEY") + (i % 13)).save();
+      });
+    }
+    database.command("sql", "CREATE INDEX ON CiSorted (p COLLATE ci) NOTUNIQUE METADATA {\"buildMode\": \"SORTED\"}");
+    database.command("sql", "CREATE INDEX ON CiPlain (p COLLATE ci) NOTUNIQUE");
+
+    final List<String> sorted = entries(database.getSchema().getType("CiSorted").getPolymorphicIndexByProperties("p"));
+    final List<String> plain = entries(database.getSchema().getType("CiPlain").getPolymorphicIndexByProperties("p"));
+    assertThat(sorted).hasSize(5_000);
+    assertThat(keysOnly(sorted)).isEqualTo(keysOnly(plain));
+    assertThat(sorted.stream().sorted().toList()).isEqualTo(plain.stream().sorted().toList());
+  }
+
+  @Test
+  void uniqueSortedBuildStillDetectsDuplicatesOfRepeatedKeys() {
+    database.command("sql", "CREATE DOCUMENT TYPE U");
+    database.command("sql", "CREATE PROPERTY U.p STRING");
+    database.transaction(() -> {
+      for (int i = 0; i < 1_000; i++)
+        database.newDocument("U").set("p", "dup" + (i % 10)).save();
+    });
+    assertThatThrownBy(() -> database.command("sql", "CREATE INDEX ON U (p) UNIQUE METADATA {\"buildMode\": \"SORTED\"}"))
+        .isInstanceOf(RuntimeException.class);
+    assertThat(database.getSchema().getType("U").getPolymorphicIndexByProperties("p")).isNull();
+  }
+
   private long countRows(final String type, final String where) {
     try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM " + type + " WHERE " + where)) {
       return ((Number) rs.next().getProperty("c")).longValue();

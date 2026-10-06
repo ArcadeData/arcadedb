@@ -7748,7 +7748,8 @@ public class CypherExecutionPlan {
    *   <li>every node of the chain is labelled unless the negated pattern starts at the first node (an unlabelled node takes the
    *   recursive path, which never applies the anti-join set when the negated pattern ends at the first node).</li>
    * </ul>
-   * Any other shape is declined and takes the row pipeline.
+   * Any other shape is declined and takes the row pipeline: over random graphs the operator answered wrong for most of the shapes
+   * outside this one, and this one answered right in every query checked (issue #9290).
    */
   private static boolean isAntiJoinShapeCountedExactly(final Database database, final String[] nodeLabels, final String[] edgeTypes, final AntiJoinInfo antiJoin,
       final int sourceIdx, final int targetIdx, final int inequalityIdxA, final int inequalityIdxB) {
