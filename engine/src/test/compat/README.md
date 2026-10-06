@@ -37,6 +37,7 @@ To add a release:
 The generator only uses API that exists in every release it is run against. If the graph shape changes, change the
 constants in `BackwardCompatFixtureGenerator.java` and `BackwardCompatibilityFixturesTest` together, then
 regenerate every fixture. A fixture that was already published should normally stay as it is, because it records
-what that release actually wrote.
+what that release actually wrote. A regenerated fixture is not byte-identical to the committed one (the database
+files carry timestamps and generated file names), even though the zip entry times are zeroed.
 
 `.gitignore` ignores `*.zip` everywhere except in `engine/src/test/resources/compat/`.

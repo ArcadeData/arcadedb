@@ -289,6 +289,48 @@ class BackwardCompatibilityFixturesTest {
     assertCheckDatabaseClean();
   }
 
+  @ParameterizedTest
+  @MethodSource("versions")
+  void deletesOnAnOldDatabaseSurviveReopen(final String version) throws IOException {
+    final Path dbDir = open(version);
+    final int deletedPerson = HUB_IN_PARENT_FROM + 1; // Knows + Likes + Tags into hubIn, Knows from hubOut, chain both ways
+
+    database.transaction(() -> {
+      // An edge removed from a promoted list directly...
+      for (final Edge e : hubIn().getEdges(Vertex.DIRECTION.IN, "Parent"))
+        e.delete();
+      for (final Edge e : hubOut().getEdges(Vertex.DIRECTION.OUT, "Parent"))
+        if (e.getInVertex().getInteger("id") == HUB_OUT_PARENT_TO[0])
+          e.delete();
+      // ...and a vertex whose edges sit in both promoted lists and in low-degree lists.
+      person(deletedPerson).delete();
+    });
+    database.close();
+
+    database = new DatabaseFactory(dbDir.toString()).open();
+    database.transaction(() -> {
+      final Vertex hubIn = hubIn();
+      assertThat(hubIn.countEdges(Vertex.DIRECTION.IN, "Parent")).isZero();
+      assertThat(hubIn.isConnectedTo(person(HUB_IN_PARENT_FROM), Vertex.DIRECTION.IN, "Parent")).isFalse();
+      assertThat(hubIn.countEdges(Vertex.DIRECTION.IN, "Knows")).isEqualTo(HUB_IN_KNOWS - 1);
+      assertThat(hubIn.countEdges(Vertex.DIRECTION.IN, "Likes")).isEqualTo(HUB_IN_LIKES - 1);
+      assertThat(hubIn.countEdges(Vertex.DIRECTION.IN, "Tags")).isEqualTo(HUB_IN_TAGS - 1);
+      assertThat(ids(hubIn.getVertices(Vertex.DIRECTION.IN))).doesNotContain(deletedPerson)
+          .hasSize(HUB_IN_KNOWS + HUB_IN_LIKES + HUB_IN_TAGS - 3);
+
+      final Vertex hubOut = hubOut();
+      assertThat(ids(hubOut.getVertices(Vertex.DIRECTION.OUT, "Parent"))).containsExactly(HUB_OUT_PARENT_TO[1]);
+      assertThat(ids(hubOut.getVertices(Vertex.DIRECTION.OUT, "Knows"))).doesNotContain(deletedPerson).hasSize(HUB_OUT_KNOWS - 1);
+
+      assertThat(database.countType("Person", false)).isEqualTo(PERSONS - 1);
+      assertThat(database.countType("Parent", false)).isEqualTo(HUB_OUT_PARENT_TO.length - 1);
+      // Knows: into hubIn, from hubOut, and the two chain edges around the deleted person.
+      assertThat(database.countType("Knows", false)).isEqualTo(HUB_IN_KNOWS + HUB_OUT_KNOWS + CHAIN - 4);
+      assertThat(person(deletedPerson - 1).countEdges(Vertex.DIRECTION.OUT, "Knows")).isEqualTo(1); // only to hubIn
+    });
+    assertCheckDatabaseClean();
+  }
+
   private Path open(final String version) throws IOException {
     final Path dbDir = tempDir.resolve("compat-" + version);
     unzip("/compat/db-" + version + ".zip", dbDir);
