@@ -125,6 +125,8 @@ public final class ShortestPathFinder {
     final Search search = new Search(graph, searchGuard);
     final int s = graph.intern(source);
     final int t = graph.intern(target);
+    // the records answer for every vertex (a deleted one has no arcs), so this search never refuses a node and its
+    // answer needs no fallback
     search.run(s, t);
     if (search.meet < 0)
       return null;
