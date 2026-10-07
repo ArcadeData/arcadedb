@@ -609,6 +609,47 @@ public class PromQLEvaluator {
     }
   }
 
+  /**
+   * Whether the label matchers of a selector rule out every series of a type before any row is read, because a
+   * matcher names a label the type does not declare (issue #6938). Public for the series endpoint, which has to
+   * agree with {@code /query} about what a selector selects (issue #9386).
+   */
+  public boolean selectsNoSeries(final List<LabelMatcher> matchers, final List<ColumnDefinition> columns) {
+    return excludesEverySeries(matchers, columns, regexDeadline());
+  }
+
+  /**
+   * Applies the label matchers of a selector to one row that carries only TAG columns: {@code row[0]} is the
+   * timestamp and {@code row[i + 1]} the value of the tag {@code tagNames[i]}, the layout a tag projection scan
+   * produces. A null or empty value is an absent label. A matcher naming a label that is not in {@code tagNames}
+   * is not decided here: {@link #selectsNoSeries} settles it for the whole type (issue #9386).
+   */
+  public boolean matchesTagRow(final List<LabelMatcher> matchers, final String[] tagNames, final Object[] row) {
+    for (final LabelMatcher m : matchers) {
+      if (METRIC_NAME_LABEL.equals(m.name()))
+        continue;
+      int tagIdx = -1;
+      for (int i = 0; i < tagNames.length; i++)
+        if (tagNames[i].equals(m.name())) {
+          tagIdx = i;
+          break;
+        }
+      if (tagIdx < 0)
+        continue;
+      final Object val = tagIdx + 1 < row.length ? row[tagIdx + 1] : null;
+      final String strVal = val != null ? val.toString() : "";
+      final boolean matches = switch (m.op()) {
+        case EQ -> strVal.equals(m.value());
+        case NEQ -> !strVal.equals(m.value());
+        case RE -> TimeBoundRegex.matchesUntil(compilePattern(m.value()), strVal, regexDeadline());
+        case NRE -> !TimeBoundRegex.matchesUntil(compilePattern(m.value()), strVal, regexDeadline());
+      };
+      if (!matches)
+        return false;
+    }
+    return true;
+  }
+
   private TagFilter buildTagFilter(final List<LabelMatcher> matchers, final List<ColumnDefinition> columns) {
     TagFilter filter = null;
     for (final LabelMatcher m : matchers) {

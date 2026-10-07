@@ -6619,6 +6619,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
   /** How many candidates a BINARY search fetches per requested neighbour before reranking them on the stored vectors. */
   private static final int   BINARY_RERANK_OVERSAMPLE = 4;
 
+  /** How many times a BINARY search whose rerank came up short of k widens its candidate budget and asks again. */
+  private static final int   BINARY_RERANK_MAX_ATTEMPTS = 6;
+
   /**
    * The scoring function used to walk the graph: the configured similarity for a vector that can be read, and
    * {@link #UNREADABLE_NODE_SCORE} for one that cannot.
@@ -7573,9 +7576,28 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // by its own vector ties with every other record of the same signs). The graph answers with the oversampled
     // candidates and the stored float vectors put them in order, which is the "approximate search with reranking"
     // the quantization promises (issue #8960).
-    final int candidatesToFetch = k > Integer.MAX_VALUE / BINARY_RERANK_OVERSAMPLE ? Integer.MAX_VALUE : k * BINARY_RERANK_OVERSAMPLE;
-    final List<Pair<RID, Float>> candidates = searchNeighbors(queryVector, candidatesToFetch, efSearch, allowedRIDs);
-    return rerankOnStoredVectors(queryVector, candidates, k);
+    //
+    // A candidate whose record is gone by the time it is reranked is dropped, and a commit landing between the search
+    // and the rerank deletes exactly the nearest records, which are the ones the candidate list is made of. So a
+    // rerank that comes up short of k while candidates were dropped asks again with a larger budget, against the
+    // state committed by then, instead of answering with fewer than k although the index holds them (issue #9396).
+    int candidatesToFetch = k > Integer.MAX_VALUE / BINARY_RERANK_OVERSAMPLE ? Integer.MAX_VALUE : k * BINARY_RERANK_OVERSAMPLE;
+    List<Pair<RID, Float>> reranked = List.of();
+    for (int attempt = 0; attempt < BINARY_RERANK_MAX_ATTEMPTS; attempt++) {
+      final List<Pair<RID, Float>> candidates = searchNeighbors(queryVector, candidatesToFetch, efSearch, allowedRIDs);
+      reranked = rerankOnStoredVectors(queryVector, candidates, k);
+      // Done when k came back, or when the graph had fewer than the budget and none of them was dropped: the index
+      // simply holds fewer than k.
+      if (reranked.size() >= k || candidates.size() < candidatesToFetch && reranked.size() == candidates.size())
+        break;
+      // Short of k because candidates were dropped (record gone): widen the budget and ask again. A commit removes the
+      // records before it removes their index entries, so the stale stretch is as wide as the commit's deletes: the
+      // budget grows geometrically to step over it in a few rounds.
+      if (candidatesToFetch > Integer.MAX_VALUE / BINARY_RERANK_OVERSAMPLE)
+        break;
+      candidatesToFetch *= BINARY_RERANK_OVERSAMPLE;
+    }
+    return reranked;
   }
 
   /**
