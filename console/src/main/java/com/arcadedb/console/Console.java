@@ -1030,6 +1030,11 @@ public class Console {
         outputLine(3, "Command executed in %dms", elapsed);
     }
 
+    private void outputFileProcessed(final long elapsedMs) {
+        output(2, "\nFile processed in " + (elapsedMs / 1000) + " seconds");
+        flushOutput();
+    }
+
     private void executeLoad(final String fileName) throws IOException {
         checkIsEmpty("File name", fileName);
 
@@ -1044,8 +1049,7 @@ public class Console {
             // LOSES THE VARIABLES AND BREAKS THE BLOCKS (ISSUE #9454). HAND THE WHOLE FILE TO THE SCRIPT ENGINE, AS STUDIO DOES
             final long scriptStartedOn = System.currentTimeMillis();
             executeSQL(Files.readString(file.toPath(), DatabaseFactory.getDefaultCharset()));
-            output(2, "\nFile processed in " + ((System.currentTimeMillis() - scriptStartedOn) / 1000) + " seconds");
-            flushOutput();
+            outputFileProcessed(System.currentTimeMillis() - scriptStartedOn);
             return;
         }
 
@@ -1143,8 +1147,7 @@ public class Console {
 
         elapsed = System.currentTimeMillis() - startedOn;
 
-        output(2, "\nFile processed in " + (elapsed / 1000) + " seconds");
-        flushOutput();
+        outputFileProcessed(elapsed);
     }
 
     public boolean parse(final String line) throws IOException {
