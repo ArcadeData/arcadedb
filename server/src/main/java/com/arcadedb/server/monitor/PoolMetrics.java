@@ -189,8 +189,12 @@ public final class PoolMetrics implements MeterBinder {
   /** An instance-pool gauge: work an abort-policy pool refused while running, which nothing then ran (issue #8856). */
   public static final String REJECTED_GAUGE = "arcadedb.executor.tasks.rejected";
 
+  /** Serialises every instance-pool row's publish-if-absent and its removal across all servers in the JVM. */
+  private static final Object INSTANCE_POOL_LOCK = new Object();
+
   /** What {@link #bindInstancePool} hands back when another binding already publishes the row: owns nothing. */
-  private static final Closeable NOTHING_OWNED = () -> {
+  // Package-private for the test that checks concurrent bindings of one tag leave exactly one owner.
+  static final Closeable NOTHING_OWNED = () -> {
   };
 
   /**
@@ -243,35 +247,44 @@ public final class PoolMetrics implements MeterBinder {
   public static Closeable bindInstancePool(final MeterRegistry registry, final String poolTag, final String description,
       final Supplier<PoolStats> stats, final LongSupplier coalesced, final LongSupplier rejected) {
     final Tags tags = Tags.of(Tag.of("pool", poolTag));
-    // Keyed on a gauge every row has, not on an optional one: a pool publishing neither extra would otherwise always
-    // look unpublished, and a second binding would take the first one's meters as its own.
-    if (registry.find("arcadedb.executor.pool.size").tags(tags).gauge() != null) {
-      LogManager.instance().log(PoolMetrics.class, Level.FINE,
-          "Executor pool row '%s' is already published by another binding in this JVM; not registering it twice",
-          poolTag);
-      return NOTHING_OWNED;
-    }
+    final List<Meter> meters;
+    // The check and the registration are one step under a JVM-wide lock (review of PR #9417): two servers starting
+    // at once could otherwise both find the row unpublished, Micrometer would hand the second one the first one's
+    // meters, and either server stopping would remove the row the other one still publishes. Closing takes the same
+    // lock, so a binding never sees a row half removed. Registration and removal are rare (start and stop only).
+    synchronized (INSTANCE_POOL_LOCK) {
+      // Keyed on a gauge every row has, not on an optional one: a pool publishing neither extra would otherwise
+      // always look unpublished, and a second binding would take the first one's meters as its own.
+      if (registry.find("arcadedb.executor.pool.size").tags(tags).gauge() != null) {
+        LogManager.instance().log(PoolMetrics.class, Level.FINE,
+            "Executor pool row '%s' is already published by another binding in this JVM; not registering it twice",
+            poolTag);
+        return NOTHING_OWNED;
+      }
 
-    final List<Meter> meters = bindPool(registry, poolTag, description, stats);
-    if (coalesced != null)
-      meters.add(Gauge.builder(COALESCED_GAUGE, coalesced::getAsLong)
-          .description(description + ": cumulative tasks the pool did not run because one already queued or running "
-              + "covers them, plus any refused while the owner was stopping. Harmless by itself - the covering task "
-              + "reads its inputs when it runs - but a count climbing while tasks.completed does not is a worker that "
-              + "is not draining.")
-          .tags(tags).register(registry));
-    if (rejected != null)
-      meters.add(Gauge.builder(REJECTED_GAUGE, rejected::getAsLong)
-          .description(description + ": cumulative tasks the pool refused because its queue was full, which nothing ran "
-              + "in their place. Rejections while the owner was stopping are not counted. Any growth means work was "
-              + "dropped; what that costs depends on the submitter, which logs each one.")
-          .tags(tags).register(registry));
+      meters = bindPool(registry, poolTag, description, stats);
+      if (coalesced != null)
+        meters.add(Gauge.builder(COALESCED_GAUGE, coalesced::getAsLong)
+            .description(description + ": cumulative tasks the pool did not run because one already queued or running "
+                + "covers them, plus any refused while the owner was stopping. Harmless by itself - the covering task "
+                + "reads its inputs when it runs - but a count climbing while tasks.completed does not is a worker "
+                + "that is not draining.")
+            .tags(tags).register(registry));
+      if (rejected != null)
+        meters.add(Gauge.builder(REJECTED_GAUGE, rejected::getAsLong)
+            .description(description + ": cumulative tasks the pool refused because its queue was full, which nothing "
+                + "ran in their place. Rejections while the owner was stopping are not counted. Any growth means work "
+                + "was dropped; what that costs depends on the submitter, which logs each one.")
+            .tags(tags).register(registry));
+    }
 
     final AtomicBoolean closed = new AtomicBoolean();
     return () -> {
       if (closed.compareAndSet(false, true))
-        for (final Meter meter : meters)
-          registry.remove(meter);
+        synchronized (INSTANCE_POOL_LOCK) {
+          for (final Meter meter : meters)
+            registry.remove(meter);
+        }
     };
   }
 

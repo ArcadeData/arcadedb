@@ -26,6 +26,9 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 
 import java.io.Closeable;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CountDownLatch;
@@ -438,6 +441,41 @@ class PoolMetricsTest {
       release.countDown();
       executor.shutdown();
       executor.awaitTermination(10, TimeUnit.SECONDS);
+    }
+  }
+
+  /**
+   * Servers starting at once bind the same tag concurrently: exactly one binding must own the row, or either server
+   * stopping would remove the row the other still publishes (review of PR #9417).
+   */
+  @Test
+  void concurrentBindingsOfOneTagLeaveExactlyOneOwner() throws Exception {
+    final int binders = 8;
+    for (int round = 0; round < 50; round++) {
+      final SimpleMeterRegistry registry = new SimpleMeterRegistry();
+      final CountDownLatch go = new CountDownLatch(1);
+      final List<Closeable> handles = Collections.synchronizedList(new ArrayList<>());
+      final List<Thread> threads = new ArrayList<>();
+      for (int i = 0; i < binders; i++) {
+        final Thread t = new Thread(() -> {
+          try {
+            go.await();
+            handles.add(PoolMetrics.bindInstancePool(registry, "racing_pool", "Racing pool",
+                () -> new PoolStats(0, 0, 0, 1, 0, 0, 0), null, () -> 0L));
+          } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+          }
+        });
+        threads.add(t);
+        t.start();
+      }
+      go.countDown();
+      for (final Thread t : threads)
+        t.join(10_000);
+
+      assertThat(handles).hasSize(binders);
+      assertThat(handles.stream().filter(h -> h != PoolMetrics.NOTHING_OWNED).count()).as("owners in round %d", round)
+          .isEqualTo(1);
     }
   }
 }
