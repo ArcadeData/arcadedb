@@ -20,6 +20,7 @@ package com.arcadedb.graph.olap;
 
 import com.arcadedb.database.RID;
 import com.arcadedb.utility.IntIntHashMap;
+import com.arcadedb.utility.LongObjectHashMap;
 
 import java.util.*;
 import java.util.function.LongConsumer;
@@ -132,10 +133,11 @@ class DeltaOverlay {
   // value can be served from here instead of forcing a rebuild of the columns. A weight update on a road network, where
   // parallel roads of one type between two junctions are rare, then costs nothing but this entry. A pair with parallel
   // edges is still ambiguous and still marks the type dirty, as before.
-  private final Map<String, Map<Long, Object[]>> updatedBaseEdgeValues;
+  private final Map<String, LongObjectHashMap<Object[]>> updatedBaseEdgeValues;
   // How many pairs updatedBaseEdgeValues holds, counted once: the view asks on every commit, for the compaction threshold
   private final int                              updatedBaseEdgeCount;
   private static final Object[]                  NO_VALUES = new Object[0];
+  private static final LongObjectHashMap<Object[]> NO_BASE_EDGE_VALUES = new LongObjectHashMap<>(1);
 
   @SuppressWarnings("unchecked")
   DeltaOverlay(final int baseNodeCount) {
@@ -182,7 +184,7 @@ class DeltaOverlay {
       final Map<String, Map<Integer, AddedNeighbors>> outNeighborIndex,
       final Map<String, Map<Integer, AddedNeighbors>> inNeighborIndex,
       final int overflowCount, final int deltaEdgeCount, final Set<String> dirtyEdgeTypes,
-      final boolean allEdgeTypesDirty, final Map<String, Map<Long, Object[]>> updatedBaseEdgeValues) {
+      final boolean allEdgeTypesDirty, final Map<String, LongObjectHashMap<Object[]>> updatedBaseEdgeValues) {
     this.baseNodeCount = baseNodeCount;
     this.overflowNodeIds = overflowNodeIds;
     this.overflowIdToRID = overflowIdToRID;
@@ -205,7 +207,7 @@ class DeltaOverlay {
     this.allEdgeTypesDirty = allEdgeTypesDirty;
     this.updatedBaseEdgeValues = updatedBaseEdgeValues;
     int baseEdgeCount = 0;
-    for (final Map<Long, Object[]> values : updatedBaseEdgeValues.values())
+    for (final LongObjectHashMap<Object[]> values : updatedBaseEdgeValues.values())
       baseEdgeCount += values.size();
     this.updatedBaseEdgeCount = baseEdgeCount;
   }
@@ -327,7 +329,7 @@ class DeltaOverlay {
     for (final var entry : absorbedAddedEdgesPerType.entrySet())
       newAbsorbedAdditions.put(entry.getKey(), new HashMap<>(entry.getValue()));
     // Copied on the first base-edge value this delta records, so a delta with none keeps sharing the previous maps
-    Map<String, Map<Long, Object[]>> newBaseEdgeValues = updatedBaseEdgeValues;
+    Map<String, LongObjectHashMap<Object[]>> newBaseEdgeValues = updatedBaseEdgeValues;
     boolean baseEdgeValuesCopied = false;
     final Map<Integer, Map<String, Object>> newPropOverrides = new HashMap<>(propertyOverrides.size());
     for (final var propEntry : propertyOverrides.entrySet())
@@ -463,10 +465,10 @@ class DeltaOverlay {
           baseEdgeValuesCopied = true;
           newBaseEdgeValues = new HashMap<>();
           for (final var entry : updatedBaseEdgeValues.entrySet())
-            newBaseEdgeValues.put(entry.getKey(), new HashMap<>(entry.getValue()));
+            newBaseEdgeValues.put(entry.getKey(), copy(entry.getValue()));
         }
         // no values at all: every materialised property was removed, so each reads as missing, as a rebuilt column would
-        newBaseEdgeValues.computeIfAbsent(ed.edgeType, k -> new HashMap<>())
+        newBaseEdgeValues.computeIfAbsent(ed.edgeType, k -> new LongObjectHashMap<>())
             .put(packEdge(srcId, tgtId), ed.properties != null ? ed.properties : NO_VALUES);
       } else if (!newDirtyTypes.contains(ed.edgeType)) {
         if (!dirtyTypesCopied) {
@@ -613,18 +615,24 @@ class DeltaOverlay {
     return csr.forwardEdgeCount(srcId, tgtId) == 1;
   }
 
+  private static LongObjectHashMap<Object[]> copy(final LongObjectHashMap<Object[]> source) {
+    final LongObjectHashMap<Object[]> copy = new LongObjectHashMap<>(source.size() * 2 + 8);
+    source.forEach(copy::put);
+    return copy;
+  }
+
   /**
    * The new property values of the base edge of {@code edgeType} from {@code srcId} to {@code tgtId}, one per name of the
    * view's edge property filter, or null when that edge's column slot still holds its current values.
    */
   Object[] getUpdatedBaseEdgeValues(final String edgeType, final int srcId, final int tgtId) {
-    final Map<Long, Object[]> values = updatedBaseEdgeValues.get(edgeType);
+    final LongObjectHashMap<Object[]> values = updatedBaseEdgeValues.get(edgeType);
     return values == null ? null : values.get(packEdge(srcId, tgtId));
   }
 
   /** Whether any base edge of {@code edgeType} has new property values here. */
   boolean hasUpdatedBaseEdgeValues(final String edgeType) {
-    final Map<Long, Object[]> values = updatedBaseEdgeValues.get(edgeType);
+    final LongObjectHashMap<Object[]> values = updatedBaseEdgeValues.get(edgeType);
     return values != null && !values.isEmpty();
   }
 
@@ -675,14 +683,16 @@ class DeltaOverlay {
     final Set<String> valueTypes = new HashSet<>(before.updatedBaseEdgeValues.keySet());
     valueTypes.addAll(after.updatedBaseEdgeValues.keySet());
     for (final String type : valueTypes) {
-      final Map<Long, Object[]> was = before.updatedBaseEdgeValues.getOrDefault(type, Collections.emptyMap());
-      final Map<Long, Object[]> is = after.updatedBaseEdgeValues.getOrDefault(type, Collections.emptyMap());
-      for (final var entry : is.entrySet())
-        if (!Arrays.equals(was.get(entry.getKey()), entry.getValue()))
-          pairs.accept(entry.getKey());
-      for (final Long pair : was.keySet())
+      final LongObjectHashMap<Object[]> was = before.updatedBaseEdgeValues.getOrDefault(type, NO_BASE_EDGE_VALUES);
+      final LongObjectHashMap<Object[]> is = after.updatedBaseEdgeValues.getOrDefault(type, NO_BASE_EDGE_VALUES);
+      is.forEach((pair, values) -> {
+        if (!Arrays.equals(was.get(pair), values))
+          pairs.accept(pair);
+      });
+      was.forEach((pair, values) -> {
         if (!is.containsKey(pair))
           pairs.accept(pair);
+      });
     }
     return true;
   }
