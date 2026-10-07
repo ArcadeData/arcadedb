@@ -93,6 +93,8 @@ public final class ConsistentKeyLookup {
 
       final long before = pageManager.getPublicationSequence();
       if ((before & 1) != 0)
+        // another commit started publishing right after the wait: this attempt did no work, and a sequence odd on every
+        // attempt ends in the lock below
         continue;
 
       final Read read = readAndLoad(database, index, keys);

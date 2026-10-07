@@ -123,6 +123,21 @@ class Issue9397TornCommitIndexLookupTest extends TestHelper {
   }
 
   @Test
+  void keyDeletedInTheSameTransactionIsNotFound() {
+    database.command("sql", "CREATE INDEX ON Product (pid) UNIQUE_HASH");
+    fill(10);
+    database.begin();
+    try {
+      database.command("sql", "DELETE FROM Product WHERE pid = 3").close();
+      assertThat(database.lookupByKey("Product", "pid", 3L).hasNext()).isFalse();
+      assertThat(database.lookupByKey("Product", "pid", 4L).hasNext()).isTrue();
+    } finally {
+      database.rollback();
+    }
+    assertThat(database.lookupByKey("Product", "pid", 3L).hasNext()).isTrue();
+  }
+
+  @Test
   void repeatableReadTransactionStillLooksKeysUp() {
     database.command("sql", "CREATE INDEX ON Product (pid) UNIQUE_HASH");
     fill(100);
