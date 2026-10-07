@@ -197,8 +197,10 @@ public class LineProtocolParser {
             throw new IllegalArgumentException("Missing value for tag '" + keyResult.value() + "' at position " + pos);
           pos += valResult.length();
           tags.put(keyResult.value(), valResult.value());
-          if (pos < len && line.charAt(pos) == ',')
+          if (pos < len && line.charAt(pos) == ',') {
             pos++; // skip comma separator
+            rejectDanglingSeparator(line, pos, "tag");
+          }
         }
       }
 
@@ -216,8 +218,10 @@ public class LineProtocolParser {
         final ParsedValue valueAndLen = readFieldValue(line, pos);
         fields.put(keyResult.value(), valueAndLen.value());
         pos += valueAndLen.length();
-        if (pos < len && line.charAt(pos) == ',')
+        if (pos < len && line.charAt(pos) == ',') {
           pos++; // skip comma separator
+          rejectDanglingSeparator(line, pos, "field");
+        }
       }
 
       if (fields.isEmpty())
@@ -245,6 +249,15 @@ public class LineProtocolParser {
       // batch parse
       return null;
     }
+  }
+
+  /**
+   * A ',' separator must be followed by another key: a line cut right after it (or a separator followed by the space
+   * that ends the set) would otherwise be stored as a complete write missing the entries after the comma (issue #9323).
+   */
+  private static void rejectDanglingSeparator(final String line, final int pos, final String kind) {
+    if (pos >= line.length() || line.charAt(pos) == ' ')
+      throw new IllegalArgumentException("Trailing " + kind + " separator at position " + (pos - 1));
   }
 
   /**
