@@ -1052,6 +1052,9 @@
       "type": "io.grpc.netty.shaded.io.netty.util.ReferenceCountUtil"
     },
     {
+      "type": "io.grpc.netty.shaded.io.netty.util.ResourceLeakDetector$DefaultResourceLeak"
+    },
+    {
       "type": "io.grpc.netty.shaded.io.netty.util.concurrent.ConcurrentSkipListIntObjMultimap"
     },
     {

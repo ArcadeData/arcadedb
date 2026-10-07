@@ -152,7 +152,8 @@ fi
 # because the free ~7 GB one OOM-thrashed for 40+ minutes.
 #
 # 16 GiB is the floor enforced here (it is what CI's Linux runners have). With Raft HA, metrics and
-# tracing in the image (#9407) a 9 GB builder heap (80% of 12 GiB) ran out of memory, 12 GB did not, and 8 GiB failed before. Raise it in Docker Desktop under Settings -> Resources -> Memory.
+# tracing in the image (#9407) a 9 GB builder heap (80% of 12 GiB) ran out of memory, 12 GB did not,
+# and 8 GiB failed before. Raise it in Docker Desktop under Settings -> Resources -> Memory.
 # ---------------------------------------------------------------------------
 DOCKER_MEM_BYTES="$(docker info --format '{{.MemTotal}}' 2>/dev/null || echo 0)"
 case "$DOCKER_MEM_BYTES" in

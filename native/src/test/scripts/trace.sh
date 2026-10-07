@@ -167,5 +167,14 @@ CONFIGURE_BIN="$(dirname "$JAVA_BIN")/native-image-configure"
 "$CONFIGURE_BIN" generate "${MERGE_ARGS[@]}" --output-dir="$WORK/agent-merged"
 cp "$WORK/agent-merged/reachability-metadata.json" "$OUT/reachability-metadata.json"
 
+# The hand-curated Unsafe entries (see docs/native-image.md) cannot be recorded by the agent, so a
+# merge that silently dropped them would only show up later as a Raft server that fails to start.
+for needle in '"UNALIGNED"' '"theUnsafe"'; do
+  grep -q "$needle" "$OUT/reachability-metadata.json" || {
+    echo "[trace] FAIL: $needle is missing from the regenerated metadata (hand-curated Netty entries lost)"
+    exit 1
+  }
+done
+
 echo "[trace] metadata written to $OUT"
 ls -la "$OUT"

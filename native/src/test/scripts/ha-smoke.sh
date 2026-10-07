@@ -87,6 +87,18 @@ for i in $(seq 0 $((NODES - 1))); do
   SERVER_LIST="${SERVER_LIST:+$SERVER_LIST,}n$i@$HOST:$((RAFT_BASE + i)):$((HTTP_BASE + i))"
 done
 
+# Fail fast and by name if something already listens on one of our ports: a stranger on an HTTP port
+# answers this script's requests in place of the node it was meant for, which reads as an
+# authentication or leader-election failure rather than as a port conflict.
+for i in $(seq 0 $((NODES - 1))); do
+  for port in $((HTTP_BASE + i)) $((RAFT_BASE + i)); do
+    if (exec 3<>"/dev/tcp/$HOST/$port") 2>/dev/null; then
+      echo "[ha-smoke] FAIL: port $port is already in use; set HTTP_BASE/RAFT_BASE to free ports"
+      exit 1
+    fi
+  done
+done
+
 for i in $(seq 0 $((NODES - 1))); do
   mkdir -p "$WORK/node$i"
   echo "[ha-smoke] starting node $i (http $((HTTP_BASE + i)), raft $((RAFT_BASE + i)))"
