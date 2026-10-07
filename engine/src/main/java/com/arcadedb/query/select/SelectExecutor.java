@@ -86,6 +86,10 @@ public class SelectExecutor {
   private static final Set<SelectOperator> CURSOR_BUILDABLE_OPERATORS = EnumSet.of(SelectOperator.eq, SelectOperator.in_op,
       SelectOperator.between, SelectOperator.gt, SelectOperator.ge, SelectOperator.lt, SelectOperator.le);
 
+  /** The operators answered by a key range, which a folded (COLLATE ci) index cannot serve. */
+  private static final Set<SelectOperator> RANGE_OPERATORS = EnumSet.of(SelectOperator.between, SelectOperator.gt,
+      SelectOperator.ge, SelectOperator.lt, SelectOperator.le);
+
   /** What {@link #integralLowerBound} and {@link #integralUpperBound} answer when no key of the index can satisfy the bound. */
   private static final Object NO_KEY = new Object();
 
@@ -854,7 +858,11 @@ public class SelectExecutor {
         final TypeIndex found = select.fromType.getPolymorphicIndexByProperties(
             ((SelectPropertyValue) node.left).propertyName);
         // A FULL_TEXT index answers by token and misses a value with none: the cursor must hold every match (#8439)
-        final TypeIndex propertyIndex = found != null && found.getType().isExactKeyLookup() ? found : null;
+        TypeIndex propertyIndex = found != null && found.getType().isExactKeyLookup() ? found : null;
+        // A COLLATE ci index holds lower-cased keys: a range over it is not the case sensitive range the leaf asks for and
+        // loses rows no residual filter can bring back, so the scan answers it (#9302)
+        if (propertyIndex != null && RANGE_OPERATORS.contains(node.operator) && SelectExecutionPlanner.holdsFoldedKeys(propertyIndex))
+          propertyIndex = null;
 
         if (propertyIndex != null)
           node.index = propertyIndex;

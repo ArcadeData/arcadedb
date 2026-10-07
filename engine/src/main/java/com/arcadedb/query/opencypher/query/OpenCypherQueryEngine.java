@@ -57,6 +57,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.schema.TypeIndexBuilder;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityManager;
@@ -595,6 +596,31 @@ public class OpenCypherQueryEngine implements QueryEngine {
       schema.getOrCreateVertexType(Labels.requireUsableLabelName(typeName, "a label in this statement"));
   }
 
+  /**
+   * Changes the declared type of a property, keeping every other attribute of its declaration (MANDATORY, NOTNULL, READONLY,
+   * REGEXP, MIN, MAX, DEFAULT, HIDDEN, custom values) and refusing the change when a stored record violates the new
+   * declaration (#9304). The schema has no in-place type change, so the property is recreated from its own JSON; a refusal
+   * puts the previous declaration back before rethrowing.
+   */
+  private void retypeProperty(final Schema schema, final String typeName, final Property existing, final Type newType) {
+    final DocumentType type = schema.getType(typeName);
+    final String propName = existing.getName();
+    final JSONObject previous = existing.toJSON();
+    final JSONObject retyped = new JSONObject(previous.toMap());
+    retyped.put("type", newType.name());
+
+    type.dropProperty(propName);
+    try {
+      final Property created = type.createProperty(propName, retyped);
+      ExistingRecordsCheck.requireDeclaration(schema.getEmbedded().getDatabase(), type, created);
+    } catch (final RuntimeException e) {
+      if (type.existsProperty(propName))
+        type.dropProperty(propName);
+      type.createProperty(propName, previous);
+      throw e;
+    }
+  }
+
   private void executeCreateConstraint(final CypherDDLStatement ddl, final Schema schema, final QueryStatistics stats) {
     final String typeName = ddl.getLabelName();
     final String[] propertyNames = ddl.getPropertyNames().toArray(new String[0]);
@@ -635,8 +661,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
           schema.getType(typeName).createProperty(propName, explicitPropertyType);
           typedChanged = true;
         } else if (existing.getType() != explicitPropertyType) {
-          schema.getType(typeName).dropProperty(propName);
-          schema.getType(typeName).createProperty(propName, explicitPropertyType);
+          retypeProperty(schema, typeName, existing, explicitPropertyType);
           typedChanged = true;
         }
       } else if (existing == null) {

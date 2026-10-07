@@ -31,6 +31,7 @@ import com.arcadedb.graphql.parser.Directives;
 import com.arcadedb.graphql.parser.Document;
 import com.arcadedb.graphql.parser.FieldDefinition;
 import com.arcadedb.graphql.parser.GraphQLParser;
+import com.arcadedb.graphql.parser.GraphQLParserTreeConstants;
 import com.arcadedb.graphql.parser.InputValueDefinition;
 import com.arcadedb.graphql.parser.ListType;
 import com.arcadedb.graphql.parser.ObjectTypeDefinition;
@@ -134,6 +135,37 @@ public class GraphQLSchema {
     return new InternalResultSet();
   }
 
+  /**
+   * Collapses the top-level selections of an operation into the one field they select and returns the merged selection set
+   * (the first selection's own when there is just one). Selections sharing a response key are one field per the GraphQL
+   * specification (CollectFields / MergeSelectionSets), so their sub-selections are concatenated and merged level by level
+   * by the code that consumes them (#7770, #8744). Different response keys are several queries, and the same key over a
+   * different field or different arguments cannot be merged (FieldsInSetCanMerge): both stay rejected. The first selection of the list
+   * stands for the merged field.
+   */
+  private static SelectionSet mergeTopLevelSelections(final List<Selection> selections, final Map<String, Object> variables) {
+    if (selections.size() < 2)
+      return selections.isEmpty() ? null : selections.getFirst().getSelectionSet();
+
+    final Selection first = selections.getFirst();
+    final Map<String, Object> firstArguments = getArguments(first.getArguments(), variables);
+    SelectionSet merged = null;
+    for (final Selection selection : selections) {
+      if (!Objects.equals(first.getName(), selection.getName()) || !Objects.equals(first.getFieldName(), selection.getFieldName())
+          || !Objects.equals(firstArguments, getArguments(selection.getArguments(), variables)))
+        throw new CommandParsingException("Error on executing multiple queries");
+
+      final SelectionSet set = selection.getSelectionSet();
+      if (set == null)
+        continue;
+      if (merged == null)
+        merged = new SelectionSet(GraphQLParserTreeConstants.JJTSELECTIONSET);
+      merged.getSelections().addAll(set.getSelections());
+    }
+
+    return merged;
+  }
+
   private ResultSet executeQuery(final OperationDefinition op, final Map<String, Object> parameters,
       final GraphQLFragments documentFragments) {
     String from = null;
@@ -153,8 +185,8 @@ public class GraphQLSchema {
 
     // THE OPERATION'S OWN SELECTIONS ARE FIELDS OF THE Query TYPE, WHICH A TOP-LEVEL FRAGMENT CAN BE WRITTEN ON
     final List<Selection> operationSelections = fragments.expand(op.getSelectionSet().getSelections(), "Query"::equals);
-    if (operationSelections.size() > 1)
-      throw new CommandParsingException("Error on executing multiple queries");
+    // SELECTIONS SHARING A RESPONSE KEY ARE ONE FIELD WHOSE SUB-SELECTIONS ARE MERGED, NOT SEVERAL QUERIES (#9356)
+    final SelectionSet operationSelectionSet = mergeTopLevelSelections(operationSelections, variables);
     if (operationSelections.isEmpty()) {
       // EXCLUDED BY @skip OR @include, THE ONLY FIELD IS WHAT A VALID DOCUMENT ASKED FOR: A RESPONSE WITH NO FIELD. WITHOUT
       // THEM THERE IS STILL NO FIELD WHEN THE FRAGMENTS CANNOT APPLY TO Query, WHICH THE SPECIFICATION REJECTS
@@ -171,9 +203,9 @@ public class GraphQLSchema {
 
       // HANDLE INTROSPECTION QUERIES
       if ("__schema".equals(queryName))
-        return executeIntrospectionSchema(selection, fragments);
+        return executeIntrospectionSchema(operationSelectionSet, fragments);
       else if ("__type".equals(queryName))
-        return executeIntrospectionType(selection, variables, fragments);
+        return executeIntrospectionType(selection, operationSelectionSet, variables, fragments);
       else if ("__typename".equals(queryName))
         return executeIntrospectionTypename(selection);
       if (queryDefinition != null) {
@@ -205,13 +237,13 @@ public class GraphQLSchema {
             if ("sql".equals(directiveName) ||
                 "gremlin".equals(directiveName) ||
                 "cypher".equals(directiveName))
-              return parseNativeQueryDirective(directiveName, directive, selection, returnType, variables, fragments);
+              return parseNativeQueryDirective(directiveName, directive, selection, operationSelectionSet, returnType, variables, fragments);
           }
         }
       }
 
       final Arguments queryArguments = selection.getArguments();
-      projection = selection.getSelectionSet();
+      projection = operationSelectionSet;
 
       final Map<String, Object> boundParameters = new HashMap<>();
       final String where = buildWhereClause(queryArguments, typeArgumentNames, variables, boundParameters);
@@ -435,7 +467,7 @@ public class GraphQLSchema {
   }
 
   private GraphQLResultSet parseNativeQueryDirective(final String language, final Directive directive, final Selection selection,
-      final ObjectTypeDefinition returnType, final Map<String, Object> variables, final GraphQLFragments fragments) {
+      final SelectionSet selectionSet, final ObjectTypeDefinition returnType, final Map<String, Object> variables, final GraphQLFragments fragments) {
     if (directive.getArguments() == null)
       throw new CommandParsingException(language.toUpperCase(Locale.ENGLISH) + " directive has no `statement` argument");
 
@@ -450,7 +482,7 @@ public class GraphQLSchema {
         statement = statementValue != null ? statementValue.toString() : null;
 
         arguments = getArguments(selection.getArguments(), variables);
-        projection = selection.getSelectionSet();
+        projection = selectionSet;
       }
     }
 
@@ -481,14 +513,13 @@ public class GraphQLSchema {
     return arguments;
   }
 
-  private ResultSet executeIntrospectionSchema(final Selection selection, final GraphQLFragments fragments) {
+  private ResultSet executeIntrospectionSchema(final SelectionSet selectionSet, final GraphQLFragments fragments) {
     final InternalResultSet resultSet = new InternalResultSet();
     final ResultInternal schemaResult = new ResultInternal();
 
-    // Resolved through Selection.getSelectionSet()/getFieldName() so an aliased selection (`s: __schema { ... }`,
+    // The selection set comes through Selection.getSelectionSet() so an aliased selection (`s: __schema { ... }`,
     // `t: types { ... }`) is served exactly as the plain one, and the result is keyed by the alias the client wrote,
     // as the GraphQL spec requires for response keys (issue #7036)
-    final SelectionSet selectionSet = selection.getSelectionSet();
 
     if (selectionSet != null) {
       for (final Selection sub : fragments.expand(selectionSet.getSelections(), "__Schema"::equals)) {
@@ -513,7 +544,8 @@ public class GraphQLSchema {
     return resultSet;
   }
 
-  private ResultSet executeIntrospectionType(final Selection selection, final Map<String, Object> variables,
+  private ResultSet executeIntrospectionType(final Selection selection, final SelectionSet selectionSet,
+      final Map<String, Object> variables,
       final GraphQLFragments fragments) {
     final Arguments arguments = selection.getArguments();
     String typeName = null;
@@ -528,7 +560,7 @@ public class GraphQLSchema {
     if (typeName == null)
       throw new CommandParsingException("__type query requires a 'name' argument");
 
-    final ResultInternal typeResult = buildTypeResult(typeName, selection.getSelectionSet(), fragments, 0);
+    final ResultInternal typeResult = buildTypeResult(typeName, selectionSet, fragments, 0);
 
     if (typeResult == null)
       throw new CommandParsingException("Type '" + typeName + "' not found");

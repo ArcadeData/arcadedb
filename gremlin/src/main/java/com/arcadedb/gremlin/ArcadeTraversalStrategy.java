@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.query.sql.executor.SelectExecutionPlanner;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.VertexType;
@@ -159,6 +160,8 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
                   continue; // A FULL_TEXT INDEX ANSWERS BY TOKEN AND MISSES A VALUE WITH NONE (#8439)
                 if (c.getBiPredicate() != Compare.eq && !index.supportsOrderedIterations())
                   continue; // A HASH INDEX ANSWERS EQUALITY ONLY: A RANGE FALLS BACK TO THE TYPE SCAN (#9144)
+                if (c.getBiPredicate() != Compare.eq && SelectExecutionPlanner.holdsFoldedKeys(index))
+                  continue; // A COLLATE ci INDEX HOLDS LOWER-CASED KEYS: ITS RANGE LOSES ROWS THE HasStep CANNOT RESTORE (#9302)
                 final int rank = c.getBiPredicate() == Compare.eq ? (index.isUnique() ? 0 : 1) : 2;
                 if (rank < chosenRank) {
                   chosenRank = rank;
