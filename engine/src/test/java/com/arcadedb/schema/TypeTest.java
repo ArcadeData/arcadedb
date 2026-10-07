@@ -47,12 +47,14 @@ class TypeTest extends TestHelper {
     assertThat(Type.getById((byte) 0)).isEqualTo(Type.BOOLEAN);
     assertThat(Type.getById((byte) 7)).isEqualTo(Type.STRING);
     assertThat(Type.getById((byte) 23)).isEqualTo(Type.ARRAY_OF_DOUBLES);
+    assertThat(Type.getById((byte) 24)).isEqualTo(Type.OFFSET_TIME);
+    assertThat(Type.getById((byte) 27)).isEqualTo(Type.DURATION);
   }
 
   @Test
   void getByIdOutOfRange() {
     assertThat(Type.getById((byte) -1)).isNull();
-    assertThat(Type.getById((byte) 24)).isNull();
+    assertThat(Type.getById((byte) 28)).isNull();
     assertThat(Type.getById((byte) 100)).isNull();
   }
 

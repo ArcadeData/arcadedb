@@ -50,6 +50,7 @@ import com.arcadedb.graph.StripeDirectory;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.function.sql.geo.GeoUtils;
 import com.arcadedb.database.BaseDocument;
@@ -57,6 +58,7 @@ import com.arcadedb.database.DocumentInternal;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.Property;
+import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.DateUtils;
 
@@ -72,7 +74,14 @@ import java.lang.reflect.Array;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.time.LocalDate;
+import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.OffsetDateTime;
+import java.time.OffsetTime;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicLong;
@@ -376,7 +385,8 @@ public class BinarySerializer {
             propertyValue = readExternalValue((DatabaseInternal) database, extBucketId, extPosition, propertyModifier,
                 isExternalCompressedType(type));
           } else {
-            propertyValue = deserializeValue(database, buffer, type, propertyModifier);
+            propertyValue = convertStoredString(database, propertyModifier, propertyName,
+                deserializeValue(database, buffer, type, propertyModifier));
           }
 
           values.put(propertyName, propertyValue);
@@ -489,7 +499,8 @@ public class BinarySerializer {
               isExternalCompressedType(type));
         }
 
-        return deserializeValue(database, buffer, type, propertyModifier);
+        return convertStoredString(database, propertyModifier, fieldName,
+            deserializeValue(database, buffer, type, propertyModifier));
       }
     } catch (final DatabaseIsClosedException e) {
       throw e;
@@ -498,6 +509,33 @@ public class BinarySerializer {
       return found ? null : absentValue;
     }
     return absentValue;
+  }
+
+  /**
+   * A String stored under a property the schema now declares as a native temporal type (OFFSET_TIME, LOCAL_TIME,
+   * ZONED_DATETIME, DURATION) is the value as it was written before the property was declared, or before those types
+   * existed: it is converted when read, and saved in the declared type the next time the record is written (issue
+   * #8572). A String that cannot be converted is returned as it is, so a read never fails on it.
+   */
+  private static Object convertStoredString(final Database database, final EmbeddedModifier modifier, final String propertyName,
+      final Object value) {
+    if (!(value instanceof String) || modifier == null)
+      return value;
+    final Document owner = modifier.getOwner();
+    final DocumentType documentType = owner != null ? owner.getType() : null;
+    if (documentType == null)
+      return value;
+    final Property property = documentType.getPolymorphicPropertyIfExists(propertyName);
+    if (property == null)
+      return value;
+    final Type declared = property.getType();
+    if (declared != Type.OFFSET_TIME && declared != Type.LOCAL_TIME && declared != Type.ZONED_DATETIME && declared != Type.DURATION)
+      return value;
+    try {
+      return Type.convert(database, value, declared.getDefaultJavaType(), property);
+    } catch (final RuntimeException e) {
+      return value;
+    }
   }
 
   public void serializeValue(final Database database, final Binary serialized, final byte type, Object value) {
@@ -583,6 +621,39 @@ public class BinarySerializer {
     case BinaryTypes.TYPE_DATETIME_NANOS:
       serializeDateTime(database, content, value, type);
       break;
+    case BinaryTypes.TYPE_OFFSET_TIME: {
+      final OffsetTime time = (OffsetTime) value;
+      content.putUnsignedNumber(time.toLocalTime().toNanoOfDay());
+      content.putNumber(time.getOffset().getTotalSeconds());
+      break;
+    }
+    case BinaryTypes.TYPE_LOCAL_TIME:
+      content.putUnsignedNumber(((LocalTime) value).toNanoOfDay());
+      break;
+    case BinaryTypes.TYPE_ZONED_DATETIME: {
+      final ZonedDateTime zoned = value instanceof OffsetDateTime offsetDateTime ?
+          offsetDateTime.toZonedDateTime() :
+          (ZonedDateTime) value;
+      content.putNumber(zoned.toEpochSecond());
+      content.putUnsignedNumber(zoned.getNano());
+      // A FIXED OFFSET IS STORED AS ITS SECONDS, A REGION AS ITS ID
+      if (zoned.getZone() instanceof ZoneOffset offset) {
+        content.putByte((byte) 0);
+        content.putNumber(offset.getTotalSeconds());
+      } else {
+        content.putByte((byte) 1);
+        content.putString(zoned.getZone().getId());
+      }
+      break;
+    }
+    case BinaryTypes.TYPE_DURATION: {
+      final CypherDuration duration = (CypherDuration) value;
+      content.putNumber(duration.getMonths());
+      content.putNumber(duration.getDays());
+      content.putNumber(duration.getSeconds());
+      content.putUnsignedNumber(duration.getNanosAdjustment());
+      break;
+    }
     case BinaryTypes.TYPE_DECIMAL: {
       final BigDecimal decimal = value instanceof BigInteger bigInteger ? new BigDecimal(bigInteger) : (BigDecimal) value;
       content.putNumber(decimal.scale());
@@ -923,6 +994,30 @@ public class BinarySerializer {
       value = DateUtils.dateTime(database, content.getUnsignedNumber(), ChronoUnit.NANOS, subMillisDateTimeImplementation,
           ChronoUnit.NANOS);
       break;
+    case BinaryTypes.TYPE_OFFSET_TIME: {
+      final long nanoOfDay = content.getUnsignedNumber();
+      value = OffsetTime.of(LocalTime.ofNanoOfDay(nanoOfDay), ZoneOffset.ofTotalSeconds((int) content.getNumber()));
+      break;
+    }
+    case BinaryTypes.TYPE_LOCAL_TIME:
+      value = LocalTime.ofNanoOfDay(content.getUnsignedNumber());
+      break;
+    case BinaryTypes.TYPE_ZONED_DATETIME: {
+      final long epochSecond = content.getNumber();
+      final int nano = (int) content.getUnsignedNumber();
+      final ZoneId zone = content.getByte() == 0 ?
+          ZoneOffset.ofTotalSeconds((int) content.getNumber()) :
+          ZoneId.of(content.getString());
+      value = ZonedDateTime.ofInstant(Instant.ofEpochSecond(epochSecond, nano), zone);
+      break;
+    }
+    case BinaryTypes.TYPE_DURATION: {
+      final long months = content.getNumber();
+      final long days = content.getNumber();
+      final long seconds = content.getNumber();
+      value = new CypherDuration(months, days, seconds, content.getUnsignedNumber());
+      break;
+    }
     case BinaryTypes.TYPE_DECIMAL:
       final int scale = (int) content.getNumber();
       final byte[] unscaledValue = content.getBytes();
