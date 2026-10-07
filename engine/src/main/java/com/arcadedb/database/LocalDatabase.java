@@ -33,9 +33,9 @@ import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.PageManager;
-import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.PageVersionReservations;
 import com.arcadedb.engine.PageSnapshot;
+import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.engine.WALFileFactory;
@@ -3464,7 +3464,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         LogManager.instance().log(this, Level.INFO, "Deleted orphan index-compaction temporary file '%s' (%d bytes) from database '%s'",
             null, orphan.getName(), size, name);
       else
-        LogManager.instance().log(this, Level.WARNING, "Cannot delete the orphan index-compaction temporary file '%s'", null, orphan);
+        LogManager.instance().log(this, Level.WARNING, "Cannot delete orphan index-compaction temporary file '%s' (%d bytes) from database '%s'",
+            null, orphan.getName(), size, name);
     }
   }
 
