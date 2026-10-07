@@ -29,6 +29,7 @@ import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -97,9 +98,9 @@ class OpenCypherTimestampTest extends TestHelper {
   void createWithDatetimePersists() {
     final Database db = newDatetimeDatabase("create-datetime", "t");
     try {
-      final LocalDateTime before = LocalDateTime.now().minusMinutes(1);
+      final LocalDateTime before = LocalDateTime.now(ZoneOffset.UTC).minusMinutes(1);
       db.command("opencypher", "CREATE (n:Foo {id: 'a', t: datetime()})");
-      final LocalDateTime after = LocalDateTime.now().plusMinutes(1);
+      final LocalDateTime after = LocalDateTime.now(ZoneOffset.UTC).plusMinutes(1);
 
       try (final ResultSet rs = db.query("opencypher", "MATCH (n:Foo {id: 'a'}) RETURN n.t AS t")) {
         final Object t = rs.next().getProperty("t");
@@ -118,9 +119,9 @@ class OpenCypherTimestampTest extends TestHelper {
     final Database db = newDatetimeDatabase("set-datetime", "t");
     try {
       db.command("opencypher", "CREATE (n:Foo {id: 'b'})");
-      final LocalDateTime before = LocalDateTime.now().minusMinutes(1);
+      final LocalDateTime before = LocalDateTime.now(ZoneOffset.UTC).minusMinutes(1);
       db.command("opencypher", "MATCH (n:Foo {id: 'b'}) SET n.t = datetime()");
-      final LocalDateTime after = LocalDateTime.now().plusMinutes(1);
+      final LocalDateTime after = LocalDateTime.now(ZoneOffset.UTC).plusMinutes(1);
 
       try (final ResultSet rs = db.query("opencypher", "MATCH (n:Foo {id: 'b'}) RETURN n.t AS t")) {
         final Object t = rs.next().getProperty("t");
@@ -157,9 +158,9 @@ class OpenCypherTimestampTest extends TestHelper {
   void mergeOnCreateSetDatetimePersists() {
     final Database db = newDatetimeDatabase("merge-create-datetime", "t");
     try {
-      final LocalDateTime before = LocalDateTime.now().minusMinutes(1);
+      final LocalDateTime before = LocalDateTime.now(ZoneOffset.UTC).minusMinutes(1);
       db.command("opencypher", "MERGE (n:Foo {id: 'merge-a'}) ON CREATE SET n.t = datetime()");
-      final LocalDateTime after = LocalDateTime.now().plusMinutes(1);
+      final LocalDateTime after = LocalDateTime.now(ZoneOffset.UTC).plusMinutes(1);
 
       try (final ResultSet rs = db.query("opencypher", "MATCH (n:Foo {id: 'merge-a'}) RETURN n.t AS t")) {
         final Object t = rs.next().getProperty("t");
@@ -178,9 +179,9 @@ class OpenCypherTimestampTest extends TestHelper {
     final Database db = newDatetimeDatabase("merge-match-datetime", "t");
     try {
       db.command("opencypher", "CREATE (n:Foo {id: 'merge-b'})");
-      final LocalDateTime before = LocalDateTime.now().minusMinutes(1);
+      final LocalDateTime before = LocalDateTime.now(ZoneOffset.UTC).minusMinutes(1);
       db.command("opencypher", "MERGE (n:Foo {id: 'merge-b'}) ON MATCH SET n.t = datetime()");
-      final LocalDateTime after = LocalDateTime.now().plusMinutes(1);
+      final LocalDateTime after = LocalDateTime.now(ZoneOffset.UTC).plusMinutes(1);
 
       try (final ResultSet rs = db.query("opencypher", "MATCH (n:Foo {id: 'merge-b'}) RETURN n.t AS t")) {
         final Object t = rs.next().getProperty("t");

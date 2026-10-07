@@ -28,6 +28,10 @@ import com.arcadedb.database.ImmutableEmbeddedDocument;
 import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.opencypher.temporal.CypherDateTime;
+import com.arcadedb.query.opencypher.temporal.CypherDuration;
+import com.arcadedb.query.opencypher.temporal.CypherLocalTime;
+import com.arcadedb.query.opencypher.temporal.CypherTime;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.serializer.BinaryComparator;
@@ -110,6 +114,15 @@ public enum Type {
 
   ARRAY_OF_DOUBLES("Double[]", 23, BinaryTypes.TYPE_ARRAY_OF_DOUBLES, double[].class,
       new Class<?>[] { double[].class, Double[].class }),
+
+  OFFSET_TIME("Offset_time", 24, BinaryTypes.TYPE_OFFSET_TIME, OffsetTime.class, new Class<?>[] { OffsetTime.class }),
+
+  LOCAL_TIME("Local_time", 25, BinaryTypes.TYPE_LOCAL_TIME, LocalTime.class, new Class<?>[] { LocalTime.class }),
+
+  ZONED_DATETIME("Zoned_datetime", 26, BinaryTypes.TYPE_ZONED_DATETIME, ZonedDateTime.class,
+      new Class<?>[] { ZonedDateTime.class, OffsetDateTime.class }),
+
+  DURATION("Duration", 27, BinaryTypes.TYPE_DURATION, CypherDuration.class, new Class<?>[] { CypherDuration.class }),
   ;
 
   /**
@@ -131,7 +144,7 @@ public enum Type {
   private static final BigInteger LONG_MIN_INTEGER = BigInteger.valueOf(Long.MIN_VALUE);
   // Don't change the order, the type discover get broken if you change the order.
   private static final Type[]              TYPES               = new Type[] { LIST, MAP, LINK, STRING, DATETIME };
-  private static final Type[]              TYPES_BY_ID         = new Type[24];
+  private static final Type[]              TYPES_BY_ID         = new Type[28];
   // Values previously stored in javaTypes
   private static final Map<Class<?>, Type> TYPES_BY_USERTYPE   = new HashMap<Class<?>, Type>();
   private static final Map<String, Type>   TYPES_BY_NAME       = new HashMap<String, Type>();
@@ -176,7 +189,7 @@ public enum Type {
     TYPES_BY_USERTYPE.put(Date.class, DATETIME);
     TYPES_BY_USERTYPE.put(Calendar.class, DATETIME);
     TYPES_BY_USERTYPE.put(LocalDateTime.class, DATETIME);
-    TYPES_BY_USERTYPE.put(ZonedDateTime.class, DATETIME);
+    TYPES_BY_USERTYPE.put(ZonedDateTime.class, ZONED_DATETIME);
     TYPES_BY_USERTYPE.put(OffsetDateTime.class, DATETIME);
     TYPES_BY_USERTYPE.put(Instant.class, DATETIME);
     TYPES_BY_USERTYPE.put(String.class, STRING);
@@ -197,6 +210,9 @@ public enum Type {
     TYPES_BY_USERTYPE.put(long[].class, ARRAY_OF_LONGS);
     TYPES_BY_USERTYPE.put(float[].class, ARRAY_OF_FLOATS);
     TYPES_BY_USERTYPE.put(double[].class, ARRAY_OF_DOUBLES);
+    TYPES_BY_USERTYPE.put(OffsetTime.class, OFFSET_TIME);
+    TYPES_BY_USERTYPE.put(LocalTime.class, LOCAL_TIME);
+    TYPES_BY_USERTYPE.put(CypherDuration.class, DURATION);
 
     BYTE.castable.add(BOOLEAN);
     SHORT.castable.addAll(Arrays.asList(BOOLEAN, BYTE));
@@ -610,7 +626,7 @@ public enum Type {
 
     final Class<?> valueClass = value.getClass();
 
-    if (property == null ||
+    if (property == null || property.getType() == ZONED_DATETIME ||
         !(value instanceof LocalDateTime) &&
             !(value instanceof ZonedDateTime) &&
             !(value instanceof Instant)) {
@@ -629,6 +645,9 @@ public enum Type {
         // not reversible. Refuse it rather than store that (issue #9041).
         if (property != null && valueClass.isArray())
           throw inconvertible(value, "STRING", property);
+        // A zoned datetime keeps the text form Cypher gave it before it had a native type (issue #8572)
+        if (value instanceof ZonedDateTime zoned)
+          return new CypherDateTime(zoned).toString();
         return value.toString();
       }
       else if (value instanceof Binary binary && targetClass.isAssignableFrom(byte[].class))
@@ -889,6 +908,15 @@ public enum Type {
           throw new IllegalArgumentException(
               "Cannot convert object of type '" + value.getClass().getName() + "' into an EmbeddedDocument");
 
+      } else if (targetClass.equals(OffsetTime.class)) {
+        if (value instanceof String text)
+          return CypherTime.parse(text).getValue();
+      } else if (targetClass.equals(LocalTime.class)) {
+        if (value instanceof String text)
+          return CypherLocalTime.parse(text).getValue();
+      } else if (targetClass.equals(CypherDuration.class)) {
+        if (value instanceof String text)
+          return CypherDuration.parse(text);
       } else if (targetClass.equals(Date.class)) {
         return convertToDate(database, value);
       } else if (targetClass.equals(Calendar.class)) {
@@ -1000,6 +1028,14 @@ public enum Type {
             // denotes the same instant whether it arrives ISO- or space-separated, and anchors an offset-free input
             // to the database's zone. Before issue #8090 this branch answered NULL for every string: the schema
             // patterns it tried carry no zone, so a ZonedDateTime could never be resolved from one.
+            if (property != null && property.getType() == ZONED_DATETIME) {
+              // The declared type keeps the zone the text names, a region included (issue #8572)
+              try {
+                return CypherDateTime.parse(valueAsString).getValue();
+              } catch (final RuntimeException e) {
+                // not Cypher datetime text: the general parse below decides
+              }
+            }
             return truncateToPropertyPrecision(DateUtils.parseZonedDateTime(database, valueAsString), property);
         }
       } else if (targetClass.equals(Instant.class)) {
@@ -2570,6 +2606,8 @@ public enum Type {
 
   /** A DATE property holds whole days, which a datetime-valued implementation of it must be truncated to (issue #9324). */
   private static ChronoUnit precisionOf(final Property property) {
+    if (property.getType() == ZONED_DATETIME)
+      return ChronoUnit.NANOS;
     return property.getType() == DATE ? ChronoUnit.DAYS : DateUtils.getPrecisionFromType(property.getType());
   }
 
