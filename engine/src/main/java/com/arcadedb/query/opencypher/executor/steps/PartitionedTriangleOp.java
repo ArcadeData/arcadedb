@@ -415,7 +415,7 @@ public final class PartitionedTriangleOp implements CountOp {
         for (int h = 0; h < partitionEdgeTypes.length && !current.isEmpty(); h++) {
           final HashMap<RID, Long> next = new HashMap<>();
           for (final Map.Entry<RID, Long> e : current.entrySet())
-            for (final RID n : ((Vertex) db.lookupByRID(e.getKey(), true)).getConnectedVertexRIDs(partitionDirections[h],
+            for (final RID n : db.lookupByRID(e.getKey(), true).asVertex().getConnectedVertexRIDs(partitionDirections[h],
                 partitionEdgeTypes[h]))
               next.merge(n, e.getValue(), Long::sum);
           current = next;
@@ -435,17 +435,17 @@ public final class PartitionedTriangleOp implements CountOp {
       final HashMap<RID, Long> uCountries = entry.getValue();
 
       final RID[] uNeighbors = getNeighborRIDs(db, gavProvider, uRid, Vertex.DIRECTION.BOTH, triangleEdgeType);
+      // multiplicity of each in-partition neighbour of u: a parallel edge is a match of its own (issue #9298). The boxing is
+      // deliberate: this is the no-view fallback, which already materializes RIDs and a RID-keyed partition map per call
+      final HashMap<RID, Integer> uNeighborCounts = new HashMap<>();
+      for (final RID nRid : uNeighbors)
+        if (personToPartitions.containsKey(nRid))
+          uNeighborCounts.merge(nRid, 1, Integer::sum);
       for (final RID vRid : uNeighbors) {
         final HashMap<RID, Long> vCountries = personToPartitions.get(vRid);
         if (vCountries == null)
           continue;
 
-        // multiplicity of each in-partition neighbour of u: a parallel edge is a match of its own (issue #9298). The boxing is
-        // deliberate: this is the no-view fallback, which already materializes RIDs and a RID-keyed partition map per call
-        final HashMap<RID, Integer> uNeighborCounts = new HashMap<>();
-        for (final RID nRid : uNeighbors)
-          if (personToPartitions.containsKey(nRid))
-            uNeighborCounts.merge(nRid, 1, Integer::sum);
         final RID[] vNeighbors = getNeighborRIDs(db, gavProvider, vRid, Vertex.DIRECTION.BOTH, triangleEdgeType);
         for (final RID wRid : vNeighbors) {
           final Integer multiplicity = uNeighborCounts.get(wRid);
