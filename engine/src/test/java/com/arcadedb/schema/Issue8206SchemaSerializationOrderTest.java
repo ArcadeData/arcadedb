@@ -103,8 +103,6 @@ class Issue8206SchemaSerializationOrderTest extends TestHelper {
       database.command("sql", "CREATE TRIGGER trigger" + i + " BEFORE CREATE ON TYPE Triggered EXECUTE SQL 'SELECT 1'");
       database.command("sql", "DEFINE FUNCTION lib" + i + ".f 'SELECT 1 AS result' LANGUAGE sql");
     }
-    // Libraries first: unregisterFunctionLibrary() does not save the schema by itself (#8879), so the trigger drops
-    // that follow are what write their removal to the file.
     for (int i = KEPT; i < CREATED; i++)
       database.getSchema().unregisterFunctionLibrary("lib" + i);
     for (int i = KEPT; i < CREATED; i++)
