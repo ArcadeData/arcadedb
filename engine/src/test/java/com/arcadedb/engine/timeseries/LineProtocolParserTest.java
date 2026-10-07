@@ -286,6 +286,17 @@ class LineProtocolParserTest {
       assertThat(LineProtocolParser.parse(line, Precision.MILLISECONDS)).as(line).isEmpty();
   }
 
+  /** Issue #9323: a line cut right after a field or tag separator was stored as a complete write. */
+  @Test
+  void trailingSeparatorIsRejected() {
+    for (final String line : new String[] { //
+        "weather,city=rome temp=21.5,", //
+        "weather,city=rome temp=21.5, 1700000000000", //
+        "weather,city=rome, temp=1", //
+        "weather,city=rome, temp=1 1700000000000" })
+      assertThat(LineProtocolParser.parse(line, Precision.MILLISECONDS)).as(line).isEmpty();
+  }
+
   /**
    * Issue #8563: an empty TAG key used to be skipped silently while the rest of the line was stored, so the sample
    * landed under a different series identity than the one the client sent and the write was answered 204. It is now

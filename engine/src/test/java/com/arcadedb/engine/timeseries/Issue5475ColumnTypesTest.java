@@ -68,7 +68,7 @@ class Issue5475ColumnTypesTest extends TestHelper {
       { "DATE", 1_700_000_123_456L, Long.class },
       { "DATETIME_SECOND", 1_700_000_123L, Long.class },
       { "DATETIME_MICROS", 1_700_000_123_456_789L, Long.class },
-      { "DATETIME_NANOS", 1_700_000_123_456_789L, Long.class },
+      { "DATETIME_NANOS", 1_700_000_123_456_789_000L, Long.class },
       { "STRING", "hello", String.class },
   };
 

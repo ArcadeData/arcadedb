@@ -2140,6 +2140,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           // outer catch mask it as a generic INTERNAL error with the interrupt flag swallowed.
           Thread.currentThread().interrupt();
           terminated = true;
+          // The executor is still iterating the result set: stop it at its next batch boundary instead of letting it
+          // write into the call this CANCELLED terminal closes (issue #8752). Not future.cancel(true): an interrupt
+          // aimed at the transaction's thread would hit its file I/O
+          stopInTransactionStream(future, cancelled);
           responseObserver.onError(
               Status.CANCELLED.withDescription("Stream query execution was interrupted").asRuntimeException());
           return;
@@ -3531,6 +3535,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // Set before every terminal in the try; `cancelled` is set asynchronously and cannot guard a throwing terminal.
     boolean terminated = false;
 
+    Future<?> streamFuture = null;
+
     ProtocolContext.set("grpc");
     try {
       final String incomingTxId = req.hasTransaction() ? req.getTransaction().getTransactionId() : null;
@@ -3543,10 +3549,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             (DatabaseInternal) getDatabase(req.getDatabase(), req.getCredentials()));
       else
         try {
-          submitToActiveTransaction(txCtx, () -> {
+          streamFuture = submitToActiveTransaction(txCtx, () -> {
             streamTimeSeries(call, cancelled, serverTimedOut, req, (DatabaseInternal) txCtx.db);
             return null;
-          }).get();
+          });
+          streamFuture.get();
         } catch (final ExecutionException e) {
           // Surface the real failure - the resolution status, the RESOURCE_EXHAUSTED ceiling,
           // requireTransactionStillActive's FAILED_PRECONDITION - instead of letting the catch below map every
@@ -3555,7 +3562,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         } catch (final InterruptedException e) {
           Thread.currentThread().interrupt();
           terminated = true;
-          if (!cancelled.get())
+          // A client cancel already closed the call, so it needs no terminal; either way the executor must stop
+          // streaming into it (issue #8752)
+          final boolean clientCancelled = cancelled.get();
+          stopInTransactionStream(streamFuture, cancelled);
+          if (!clientCancelled)
             resp.onError(Status.CANCELLED
                 .withDescription("TimeSeriesQuery was interrupted while streaming inside the transaction")
                 .asRuntimeException());
@@ -3582,6 +3593,19 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     } finally {
       ProtocolContext.clear();
     }
+  }
+
+  /**
+   * Stops a stream running on a transaction's executor after the handler waiting for it was interrupted (issue #8752):
+   * the producer checks {@code cancelled} before every row and every batch, so it quits at its next boundary instead of
+   * iterating the rest of the result set into a call the handler is about to close. {@code cancel(false)} only keeps a
+   * not-yet-started task from running; the thread is never interrupted, because that would reach the transaction's
+   * file I/O and close its channels.
+   */
+  private static void stopInTransactionStream(final Future<?> future, final AtomicBoolean cancelled) {
+    cancelled.set(true);
+    if (future != null)
+      future.cancel(false);
   }
 
   /**

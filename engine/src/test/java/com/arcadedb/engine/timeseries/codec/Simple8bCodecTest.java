@@ -137,13 +137,29 @@ class Simple8bCodecTest {
    * Regression test: values with |v| >= 2^59 must throw IllegalArgumentException rather than
    * silently truncating via 60-bit ZigZag overflow. Previously encode() had no bounds check.
    */
+  /** Issue #9309: values outside the packable range round-trip through the raw escape layout. */
   @Test
-  void outOfRangeValueThrows() {
-    // ZigZag(-(2^59) - 1) exceeds 60 bits and must be rejected
-    final long outOfRange = -(1L << 59) - 1;
-    assertThatThrownBy(() -> Simple8bCodec.encode(new long[] { outOfRange }))
-        .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("Simple-8b supported range");
+  void outOfRangeValueRoundTrips() throws Exception {
+    final long[] input = { -(1L << 59) - 1, 1L << 59, 1_700_000_123_456_789_000L, 1_500_000_000_000_000_000L, Long.MAX_VALUE,
+        Long.MIN_VALUE, Long.MAX_VALUE - 1, 0L, -1L, 42L };
+    assertThat(Simple8bCodec.decode(Simple8bCodec.encode(input))).containsExactly(input);
+  }
+
+  /** Issue #9309: one wide value among small ones must not lose the others. */
+  @Test
+  void singleOutOfRangeValueAmongSmallOnes() throws Exception {
+    final long[] input = new long[1000];
+    for (int i = 0; i < input.length; i++)
+      input[i] = i;
+    input[500] = 1L << 60;
+    assertThat(Simple8bCodec.decode(Simple8bCodec.encode(input))).containsExactly(input);
+  }
+
+  @Test
+  void truncatedRawBlockIsRejected() {
+    final byte[] encoded = Simple8bCodec.encode(new long[] { Long.MAX_VALUE, 1L });
+    final byte[] truncated = Arrays.copyOf(encoded, encoded.length - 4);
+    assertThatThrownBy(() -> Simple8bCodec.decode(truncated)).isInstanceOf(IOException.class);
   }
 
   @Test
@@ -159,40 +175,5 @@ class Simple8bCodecTest {
     // (2^59)-1 is the largest positive value: ZigZag((2^59)-1) = (1L<<60)-2 < MAX_ZIGZAG_VALUE
     final long[] input = { (1L << 59) - 1 };
     assertThat(Simple8bCodec.decode(Simple8bCodec.encode(input))).containsExactly(input);
-  }
-
-  /**
-   * Regression: zigzagEncode(Long.MAX_VALUE) = -2 (0xFFFFFFFFFFFFFFFE) — negative in signed
-   * arithmetic so the old {@code encoded > MAX_ZIGZAG_VALUE} check was always false, bypassing
-   * validation and silently corrupting the stored value.
-   */
-  @Test
-  void longMaxValueThrows() {
-    assertThatThrownBy(() -> Simple8bCodec.encode(new long[] { Long.MAX_VALUE }))
-        .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("Simple-8b supported range");
-  }
-
-  /**
-   * Regression: zigzagEncode(Long.MIN_VALUE) = -1 (0xFFFFFFFFFFFFFFFF) — negative in signed
-   * arithmetic so the old {@code encoded > MAX_ZIGZAG_VALUE} check was always false, bypassing
-   * validation and silently corrupting the stored value.
-   */
-  @Test
-  void longMinValueThrows() {
-    assertThatThrownBy(() -> Simple8bCodec.encode(new long[] { Long.MIN_VALUE }))
-        .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("Simple-8b supported range");
-  }
-
-  /**
-   * Regression: values just inside the extreme — Long.MAX_VALUE - 1 zigzag-encodes to
-   * 0xFFFFFFFFFFFFFFFC, still unsigned-larger than MAX_ZIGZAG_VALUE, so must also be rejected.
-   */
-  @Test
-  void nearLongMaxValueThrows() {
-    assertThatThrownBy(() -> Simple8bCodec.encode(new long[] { Long.MAX_VALUE - 1 }))
-        .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("Simple-8b supported range");
   }
 }
