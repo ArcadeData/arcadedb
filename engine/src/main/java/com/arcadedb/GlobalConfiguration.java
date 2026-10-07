@@ -995,6 +995,18 @@ public enum GlobalConfiguration {
       each bucket is then scanned by one worker""",
       Integer.class, 32),
 
+  QUERY_BATCH_MAX_BYTES("arcadedb.queryBatchMaxBytes", SCOPE.DATABASE,
+      """
+      Maximum bytes a scan of a bucket reads ahead of the query in one batch (issue #9404). A scan prefetches up to 1,024 \
+      records per bucket, which is cheap for small records but holds 1,024 whole records when they span several pages (a \
+      vertex with a big nested document): that memory is no query's buffer, so no budget accounts for it, and a few dozen \
+      concurrent queries exhaust the heap. The batch ends as soon as the bytes it copied out of the pages reach this size, \
+      whatever the record count; records that fit their own page are views of the cached page and are not counted. The \
+      limit also shrinks as the queries running take the heap budget (see arcadedb.queryMaxHeapRAM): a scan reads ahead at \
+      most a sixty-fourth of what is left of it, down to one record at a time. A batch always holds at least one record. 0 or \
+      a negative value disables the byte bound, and the shrinking with it (record count only)""",
+      Long.class, 1024L * 1024),
+
   QUERY_PARALLEL_SCAN_MAX_BATCH_BYTES("arcadedb.queryParallelScanMaxBatchBytes", SCOPE.DATABASE,
       """
       Memory backpressure bound that complements the parallel scan's row-count batch size (256): a producer \

@@ -59,6 +59,15 @@ public final class QueryHeapBudget {
     return GlobalConfiguration.QUERY_MAX_HEAP_RAM.getValueAsLong() > 0;
   }
 
+  /**
+   * The bytes the running queries may still reserve: what is left of the budget, {@link Long#MAX_VALUE} when it is disabled.
+   * What a scan reads ahead of the query uses it to shrink its batches as the budget fills (issue #9404).
+   */
+  public static long getAvailableBytes() {
+    final long limit = getLimitBytes();
+    return limit <= 0 ? Long.MAX_VALUE : Math.max(0L, limit - RESERVED.get());
+  }
+
   /** The bytes the running queries hold reserved right now. */
   public static long getReservedBytes() {
     return RESERVED.get();
