@@ -626,6 +626,9 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
     final long begin = context.isProfiling() ? System.nanoTime() : 0;
     try {
       for (int attempt = 0; attempt < MAX_RECONCILE_ATTEMPTS; attempt++) {
+        if ((pageManager.getPublicationSequence() & 1) != 0)
+          // a commit is publishing: wait for it to let go of the lock instead of spending an attempt inside its window
+          pageManager.executeInLock(() -> null);
         final ArrayDeque<Result> rows = readAndLoad(context, indexStep, nRecords);
         if (rows == null)
           return null;
