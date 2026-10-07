@@ -183,8 +183,10 @@ public class ComparisonExpression implements BooleanExpression {
     // zoned datetime it takes that operand's zone, so it equals every datetime at its instant rather than only the
     // UTC ones: datetimes at one instant in different zones are distinct values (issue #8300).
     // Only against a genuinely zoned operand: two zone-less ones are both UTC already.
-    final boolean leftZoneless = left instanceof Date || left instanceof Instant;
-    final boolean rightZoneless = right instanceof Date || right instanceof Instant;
+    // A datetime read from a stored property is the same: it carries a zone the engine materialized, not one chosen
+    // (issue #9325), and the property read has already wrapped it, so it is flagged zone-less on the wrapper.
+    final boolean leftZoneless = left instanceof Date || left instanceof Instant || isStoredZoneless(left);
+    final boolean rightZoneless = right instanceof Date || right instanceof Instant || isStoredZoneless(right);
     if (leftZoneless && !rightZoneless && rightTemporal instanceof CypherDateTime zoned)
       leftTemporal = adoptZone(left, (CypherDateTime) leftTemporal, zoned.getValue().getZone());
     else if (rightZoneless && !leftZoneless && leftTemporal instanceof CypherDateTime zoned)
@@ -430,9 +432,16 @@ public class ComparisonExpression implements BooleanExpression {
     return coerced;
   }
 
+  private static boolean isStoredZoneless(final Object value) {
+    return value instanceof CypherDateTime dateTime && dateTime.isZoneless();
+  }
+
   private CypherDateTime adoptZone(final Object raw, final CypherDateTime coerced, final ZoneId zone) {
     final Object[] memo = zoneAdoptionMemo;
-    if (memo != null && memo[0] == raw && (long) memo[3] == dateMillis(raw) && memo[1].equals(zone))
+    // A stored datetime is wrapped afresh per row: equal immutable wrappers share one adoption. equals() ignores the
+    // zone-less flag, which is fine because an adoption only runs for the zone-less side of a comparison
+    if (memo != null && (memo[0] == raw || (raw instanceof CypherDateTime && isStoredZoneless(raw) && isStoredZoneless(memo[0]) && raw.equals(memo[0]))) && (long) memo[3] == dateMillis(raw)
+        && memo[1].equals(zone))
       return (CypherDateTime) memo[2];
     final CypherDateTime adjusted = new CypherDateTime(coerced.getValue().withZoneSameInstant(zone));
     zoneAdoptionMemo = new Object[] { raw, zone, adjusted, dateMillis(raw) };

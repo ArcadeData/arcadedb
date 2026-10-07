@@ -1,4 +1,4 @@
-name: HA Resilence Tests
+name: HA Resilience Tests
 
 on:
   workflow_dispatch:

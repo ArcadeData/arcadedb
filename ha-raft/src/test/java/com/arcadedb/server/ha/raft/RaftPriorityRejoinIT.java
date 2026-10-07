@@ -151,7 +151,7 @@ class RaftPriorityRejoinIT extends BaseRaftHATest {
 
     // Step 4: restart server 0. Its Raft storage was wiped (persistStorage=false) so it joins fresh.
     LogManager.instance().log(this, Level.INFO, "TEST: restarting server 0");
-    getServer(0).start();
+    startServer(0);
 
     // Step 5: with priority 10, server 0 should become the leader again. Wait for that.
     final int reLeader = waitForLeader(0, 60_000);
@@ -193,7 +193,7 @@ class RaftPriorityRejoinIT extends BaseRaftHATest {
 
     // Step 7: restart the replica. Storage is wiped so it joins as a fresh peer.
     LogManager.instance().log(this, Level.INFO, "TEST: restarting replica (server 3)");
-    getServer(3).start();
+    startServer(3);
 
     // Step 8: the replica must catch up. The leader must NOT get stuck in an INCONSISTENCY loop.
     waitForReplicationIsCompleted(3);
@@ -227,8 +227,7 @@ class RaftPriorityRejoinIT extends BaseRaftHATest {
       for (int i = 0; i < getServerCount(); i++) {
         if (i == excludeIndex)
           continue;
-        final RaftHAPlugin plugin = getRaftPlugin(i);
-        if (plugin != null && plugin.isLeader())
+        if (isReadyLeader(i))
           return i;
       }
       CodeUtils.sleep(250);
@@ -239,11 +238,23 @@ class RaftPriorityRejoinIT extends BaseRaftHATest {
   private int waitForLeader(final int expectedIndex, final long timeoutMs) {
     final long deadline = System.currentTimeMillis() + timeoutMs;
     while (System.currentTimeMillis() < deadline) {
-      final RaftHAPlugin plugin = getRaftPlugin(expectedIndex);
-      if (plugin != null && plugin.isLeader())
+      if (isReadyLeader(expectedIndex))
         return expectedIndex;
       CodeUtils.sleep(500);
     }
     return -1;
+  }
+
+  /**
+   * Leader AND ready: Ratis flips {@code isLeader()} the moment the election is won, but refuses client requests
+   * with {@code LeaderNotReadyException} until the new term's first entry commits. With a 1 s quorum timeout a write
+   * issued in that window times out instead of being retried (the nightly HA run 37629976606 failed this way).
+   */
+  private boolean isReadyLeader(final int serverIndex) {
+    final RaftHAPlugin plugin = getRaftPlugin(serverIndex);
+    if (plugin == null || !plugin.isLeader())
+      return false;
+    final RaftHAServer raftHAServer = plugin.getRaftHAServer();
+    return raftHAServer != null && raftHAServer.isLeaderReady();
   }
 }

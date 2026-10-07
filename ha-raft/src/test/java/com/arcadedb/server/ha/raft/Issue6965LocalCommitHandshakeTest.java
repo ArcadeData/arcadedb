@@ -258,7 +258,7 @@ class Issue6965LocalCommitHandshakeTest {
     verify(tx, never()).commit2ndPhase(any());
     verify(tx, never()).publishCommittedPages(any());
     verify(tx, never()).completeCommit();
-    verify(tx).reset();
+    verify(tx).concludeCommitWithoutPublishing();
     verify(proxied, never()).rollback();
     assertThat(stateMachine.pendingLocalCommits()).as("the withdrawal removed the registration").isZero();
   }
@@ -280,7 +280,7 @@ class Issue6965LocalCommitHandshakeTest {
     verify(raftServer).waitForAppliedIndex(DB_NAME, 7L);
     verify(tx, never()).commit2ndPhase(any());
     verify(tx, never()).publishCommittedPages(any());
-    verify(tx).reset();
+    verify(tx).concludeCommitWithoutPublishing();
     verify(proxied, never()).rollback();
     assertThat(stateMachine.pendingLocalCommits()).isZero();
   }
@@ -297,7 +297,7 @@ class Issue6965LocalCommitHandshakeTest {
     verify(raftServer).waitForAppliedIndex(DB_NAME, 7L);
     verify(tx, never()).commit2ndPhase(any());
     verify(tx, never()).publishCommittedPages(any());
-    verify(tx).reset();
+    verify(tx).concludeCommitWithoutPublishing();
     verify(proxied, never()).rollback();
   }
 
@@ -316,7 +316,7 @@ class Issue6965LocalCommitHandshakeTest {
 
     verify(raftServer).waitForAppliedIndex(DB_NAME, 11L);
     verify(tx, never()).commit2ndPhase(any());
-    verify(tx).reset();
+    verify(tx).concludeCommitWithoutPublishing();
   }
 
   /** Issue #8781: with neither the entry's index nor a commit index, a replica still never publishes. */
@@ -331,7 +331,7 @@ class Issue6965LocalCommitHandshakeTest {
 
     verify(raftServer, never()).waitForAppliedIndex(anyString(), anyLong());
     verify(tx, never()).commit2ndPhase(any());
-    verify(tx).reset();
+    verify(tx).concludeCommitWithoutPublishing();
   }
 
   /**
@@ -349,7 +349,7 @@ class Issue6965LocalCommitHandshakeTest {
 
     verify(raftServer).waitForAppliedIndex(DB_NAME, 9L);
     verify(tx, never()).commit2ndPhase(any());
-    verify(tx).reset();
+    verify(tx).concludeCommitWithoutPublishing();
   }
 
   /** The index survives the hop to a follower: the message every leader-side constructor call writes carries it. */
@@ -385,7 +385,7 @@ class Issue6965LocalCommitHandshakeTest {
 
     verify(raftServer).waitForAppliedIndex(DB_NAME, 7L);
     verify(tx, never()).commit2ndPhase(any());
-    verify(tx).reset();
+    verify(tx).concludeCommitWithoutPublishing();
   }
 
   /** Issue #8781: a shutdown in progress stops the state machine applying, so the committing thread publishes. */
@@ -397,7 +397,7 @@ class Issue6965LocalCommitHandshakeTest {
     database.replicateAndCommitLocally(payload, true, stateMachine);
 
     verify(tx).commit2ndPhase(any());
-    verify(tx, never()).reset();
+    verify(tx, never()).concludeCommitWithoutPublishing();
   }
 
   /** Issue #8785, MAJORITY-committed variant: the replacement state machine applies the entry, this thread only releases. */
@@ -413,7 +413,7 @@ class Issue6965LocalCommitHandshakeTest {
     verify(raftServer).waitForAppliedIndex(DB_NAME, 7L);
     verify(tx, never()).commit2ndPhase(any());
     verify(tx, never()).completeCommit();
-    verify(tx).reset();
+    verify(tx).concludeCommitWithoutPublishing();
     verify(proxied, never()).rollback();
     assertThat(stateMachine.pendingLocalCommits()).isZero();
   }
@@ -479,7 +479,7 @@ class Issue6965LocalCommitHandshakeTest {
     assertThat(stateMachine.pendingLocalCommits()).isZero();
     verify(tx, never()).completeCommit();
     verify(tx, never()).commit2ndPhase(any());
-    verify(tx).reset();
+    verify(tx).concludeCommitWithoutPublishing();
   }
 
   /** A Ratis restart builds a new state machine, which recovers the log the one the commit registered with stopped applying. */

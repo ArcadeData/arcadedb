@@ -18,6 +18,7 @@
  */
 package com.arcadedb.engine;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.ImmutableDocument;
@@ -28,17 +29,25 @@ import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SerializationException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.QueryHeapBudget;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.utility.ScanPressureReporter;
 
 import java.io.IOException;
+import java.util.Arrays;
 import java.util.Iterator;
 import java.util.logging.Level;
 
 import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
 
-public class BucketIterator implements Iterator<Record> {
+public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
   private final static int              PREFETCH_SIZE = 1_024;
+  // #9404: AN ITERATOR MAY READ AHEAD AT MOST THIS FRACTION OF WHAT IS LEFT OF THE QUERY HEAP BUDGET, SO A BUDGET CLOSE TO FULL
+  // SHRINKS THE BATCH DOWN TO ONE RECORD INSTEAD OF HOLDING MEMORY NO QUERY ACCOUNTS FOR
+  private final static int              BUDGET_SHARE  = 64;
+  // #9404: THE SAME FOR THE JVM-WIDE POOL OF READ-AHEAD BYTES (ScanReadAheadBudget): THE BATCHES SHRINK AS THE POOL FILLS
+  private final static int              POOL_SHARE    = 32;
   private final        DatabaseInternal database;
   // THE INSTANCE A RECORD LOOKED UP BY RID BELONGS TO (e.g. THE SERVER/HA WRAPPER), SO A SCANNED RECORD MODIFIES AND
   // SAVES THROUGH THE SAME ONE
@@ -46,6 +55,8 @@ public class BucketIterator implements Iterator<Record> {
   // RESOLVED ONCE PER ITERATOR, NOT PER RECORD: A BUCKET MOVED TO ANOTHER TYPE (OR ITS TYPE DROPPED) WHILE A SCAN IS OPEN
   // IS SEEN BY THE NEXT ITERATOR ONLY. THIS ONE KEEPS THE TYPE IT STARTED WITH FOR EVERY BATCH, HOWEVER LONG IT STAYS OPEN
   private final        DocumentType     type;
+  // #9404: THE BYTES A BATCH MAY COPY OUT OF THE PAGES, FROM arcadedb.queryBatchMaxBytes, READ ONCE PER ITERATOR
+  private final        long             maxBatchBytes;
   private final        LocalBucket      bucket;
   final                Record[]         nextBatch     = new Record[PREFETCH_SIZE];
   private              int              prefetchIndex = 0;
@@ -60,6 +71,20 @@ public class BucketIterator implements Iterator<Record> {
   private int  writeIndex     = 0;
   // RECORDS RESOLVED BY THE CURRENT fetchNext(), REPORTED TO THE readRecord STATISTIC ONCE PER BATCH
   private long recordsRead    = 0;
+  // #9404: THE BYTES THE CURRENT BATCH COPIED OUT OF THE PAGES (A MULTI-PAGE OR PLACEHOLDER RECORD IS ASSEMBLED INTO A BUFFER OF
+  // ITS OWN; A RECORD ON ITS OWN PAGE IS A VIEW OF THE CACHED PAGE AND COSTS NOTHING MORE), AND WHAT A BATCH MAY HOLD
+  private long batchBytes     = 0;
+  // #9404: THE FIRST BATCH IS READ ON THE FIRST READ, NOT AT CREATION: A TYPE SCAN CREATES ONE ITERATOR PER BUCKET UP FRONT BUT READS THEM
+  // ONE AFTER THE OTHER. THE PAGES THE ITERATOR COVERS ARE STILL FIXED AT CREATION
+  private boolean started = false;
+  // #9404: WHAT THE BATCH READ AHEAD HOLDS OF THE JVM-WIDE POOL, CREATED WHEN IT FIRST HOLDS ANYTHING; GIVEN BACK WHEN THE BATCH HAS
+  // BEEN HANDED OVER, AND BY THE GARBAGE COLLECTOR IF THE ITERATOR IS ABANDONED
+  private ScanReadAheadBudget.Reservation readAhead;
+  // WHETHER THE LIMIT OF THE CURRENT BATCH IS A SHARE OF THE BUDGET OR THE POOL AND NOT THE SETTING
+  private boolean limitedByBudget = false;
+  // THE BATCHES READ WITH THE READ-AHEAD REDUCED BY MEMORY PRESSURE, WHICH A PROFILE REPORTS; WRITTEN BY THE SCANNING THREAD, READ ONCE
+  // THE SCAN IS OVER
+  private long shrunkBatches  = 0;
   private long skippedRecords = 0;
   // POSITIONS MODE (#8333): THE SORTED POSITIONS [positionIndex, positionsEnd) TO READ, INSTEAD OF EVERY SLOT OF THE PAGES
   private final long[] positions;
@@ -118,6 +143,7 @@ public class BucketIterator implements Iterator<Record> {
     }
 
     limit = database.getResultSetLimit();
+    maxBatchBytes = database.getConfiguration().getValueAsLong(GlobalConfiguration.QUERY_BATCH_MAX_BYTES);
 
     if (forwardDirection) {
       currentRecordInPage = 0;
@@ -126,13 +152,17 @@ public class BucketIterator implements Iterator<Record> {
       nextPageNumber = this.totalPages - 1;
       currentRecordInPage = Integer.MAX_VALUE;
     }
-
-    fetchNext();
   }
 
   public void setPosition(final RID position) throws IOException {
+    started = true;
+    releaseReadAhead();
+    // WHATEVER BATCH WAS READ BEFORE IS DROPPED: THE POSITIONED RECORD IS A BATCH OF ONE, AND THE SCAN GOES ON FROM THE SLOT AFTER IT
+    // WHEN IT IS CONSUMED
+    Arrays.fill(nextBatch, 0, Math.max(writeIndex, 1), null);
     prefetchIndex = 0;
     nextBatch[prefetchIndex] = position.getRecord();
+    writeIndex = 1;
     nextPageNumber = (int) (position.getPosition() / bucket.getMaxRecordsInPage());
     currentRecordInPage = (int) (position.getPosition() % bucket.getMaxRecordsInPage()) + 1;
     currentPage = database.getTransaction().getPage(new PageId(database, position.getBucketId(), nextPageNumber),
@@ -194,11 +224,20 @@ public class BucketIterator implements Iterator<Record> {
   public boolean hasNext() {
     if (limit > -1 && browsed >= limit)
       return false;
+    start();
     return prefetchIndex < writeIndex && nextBatch[prefetchIndex] != null;
+  }
+
+  private void start() {
+    if (!started) {
+      started = true;
+      fetchNext();
+    }
   }
 
   @Override
   public Record next() {
+    start();
     if (prefetchIndex >= writeIndex || nextBatch[prefetchIndex] == null)
       throw new IllegalStateException();
 
@@ -317,8 +356,13 @@ public class BucketIterator implements Iterator<Record> {
       }
 
       final Record record = newRecord(rid, content, pageVersion);
-      if (record != null)
+      if (record != null) {
         nextBatch[writeIndex++] = record;
+        // ONLY A RECORD ASSEMBLED INTO A BUFFER OF ITS OWN (A MULTI-PAGE CHAIN OR A PLACEHOLDER'S CONTENT) ADDS HEAP: A RECORD ON ITS
+        // OWN PAGE IS A VIEW OF THE CACHED PAGE, AND ONE THE TRANSACTION ALREADY HOLDS IS ANSWERED FROM IT ABOVE, BOTH ALREADY IN MEMORY
+        if (!inPage)
+          batchBytes += content.size();
+      }
     } catch (final RecordNotFoundException e) {
       // BENIGN RACE: the record existed a moment ago when its slot was read from currentPage above, but
       // was concurrently deleted before getRecordInternal() executed. Skip it silently, the
@@ -362,20 +406,64 @@ public class BucketIterator implements Iterator<Record> {
     return true;
   }
 
+  /**
+   * The bytes copied out of the pages a batch may reach before it ends: {@link GlobalConfiguration#QUERY_BATCH_MAX_BYTES}, or less
+   * when the queries running have taken most of the query heap budget. A batch always holds at least one record, and keeps taking
+   * records that copy nothing (a record on its own page) until one is copied, so the floor is a scan that copies one record at a
+   * time. The budget share is sampled once per batch and is a heuristic, not a reservation: every scan running takes its share of
+   * what is left, so the read-ahead of many scans together is bounded by the budget only roughly.
+   */
+  private long batchByteLimit() {
+    if (maxBatchBytes <= 0)
+      return Long.MAX_VALUE;
+    final long budgetShare = Math.min(QueryHeapBudget.getAvailableBytes() / BUDGET_SHARE,
+        ScanReadAheadBudget.getAvailableBytes() / POOL_SHARE);
+    if (budgetShare >= maxBatchBytes)
+      return maxBatchBytes;
+    limitedByBudget = true;
+    return budgetShare;
+  }
+
+  @Override
+  public long getBudgetShrunkBatches() {
+    return shrunkBatches;
+  }
+
+  @Override
+  public void releaseReadAhead() {
+    if (readAhead != null)
+      readAhead.release();
+  }
+
+  private void holdReadAhead(final long bytes) {
+    if (readAhead == null)
+      readAhead = ScanReadAheadBudget.newReservation(this);
+    readAhead.reserve(bytes);
+  }
+
   private void fetchNext() {
     if (prefetchIndex < writeIndex)
       return;
+
+    // THE BATCH BEFORE IS HANDED OVER: ITS BYTES GO BACK TO THE POOL, SO THAT THIS BATCH SEES WHAT IS REALLY LEFT
+    releaseReadAhead();
 
     // One lookup per batch: every record of the batch is read now, in this transaction
     readInTransaction = database.getTransaction().getBeginSequence();
 
     recordsRead = 0;
+    batchBytes = 0L;
+    limitedByBudget = false;
+    // READ ONCE FOR THE WHOLE BATCH, BEFORE ANY RECORD IS: THE METHOD OF THE SAME NAME ONLY COMPUTES IT
+    final long batchLimit = batchByteLimit();
     try {
       database.executeInReadLock(() -> {
         prefetchIndex = 0;
         nextBatch[prefetchIndex] = null;
 
-        for (writeIndex = 0; writeIndex < nextBatch.length; ) {
+        // A BATCH OF LARGE RECORDS ENDS BY BYTES, NOT BY COUNT: 1,024 RECORDS OF 100KB WOULD BE 100MB PER BUCKET, PER SCAN (#9404)
+        // batchBytes == 0 KEEPS A BATCH OF RECORDS THAT COPY NOTHING (ON THEIR OWN PAGE) GOING UNTIL ONE IS COPIED, EVEN WHEN THE LIMIT IS 0
+        for (writeIndex = 0; writeIndex < nextBatch.length && (batchBytes == 0 || batchBytes < batchLimit); ) {
           if (positions != null) {
             if (!readNextPosition())
               return null;
@@ -434,6 +522,15 @@ public class BucketIterator implements Iterator<Record> {
     } finally {
       if (recordsRead > 0)
         database.countRecordsRead(recordsRead);
+      // A BATCH IS REDUCED WHEN THE BUDGET, NOT THE SETTING, ENDED IT: IT COPIED BYTES AND THEY REACHED THE SHARE (AN EMPTY BUCKET, OR
+      // RECORDS ON THEIR OWN PAGE, COPY NOTHING AND ARE NOT SLOWED BY IT)
+      // WHAT THE BATCH COPIED IS HELD IN THE POOL UNTIL THE BATCH IS HANDED OVER
+      if (batchBytes > 0 && ScanReadAheadBudget.isEnabled())
+        holdReadAhead(batchBytes);
+      if (limitedByBudget && batchBytes > 0 && batchBytes >= batchLimit) {
+        ++shrunkBatches;
+        QueryHeapBudget.scanBatchShrunk();
+      }
     }
   }
 }

@@ -28,7 +28,7 @@ import java.util.*;
 /**
  * Iterator that allow to iterate against multiple collection of elements.
  */
-public class MultiIterator<T> implements ResettableIterator<T>, IterableGraph<T> {
+public class MultiIterator<T> implements ResettableIterator<T>, IterableGraph<T>, ScanPressureReporter {
   private List<Object> sources;
   private Iterator<?>  sourcesIterator;
   private Iterator<T>  partialIterator;
@@ -141,6 +141,24 @@ public class MultiIterator<T> implements ResettableIterator<T>, IterableGraph<T>
     browsed = 0;
     skipped = 0;
     promised = false;
+  }
+
+  @Override
+  public void releaseReadAhead() {
+    if (sources != null)
+      for (final Object source : sources)
+        if (source instanceof ScanPressureReporter reporter)
+          reporter.releaseReadAhead();
+  }
+
+  @Override
+  public long getBudgetShrunkBatches() {
+    long total = 0L;
+    if (sources != null)
+      for (final Object source : sources)
+        if (source instanceof ScanPressureReporter reporter)
+          total += reporter.getBudgetShrunkBatches();
+    return total;
   }
 
   public MultiIterator<T> addIterator(final Object iValue) {

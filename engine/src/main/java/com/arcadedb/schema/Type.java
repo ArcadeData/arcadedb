@@ -936,7 +936,8 @@ public enum Type {
           if (property != null)
             return truncateToPropertyPrecision(time, property);
         } else if (value instanceof Number number) {
-          return DateUtils.date(database, DateUtils.numberToEpochUnits(number), LocalDateTime.class);
+          // epoch MILLIS of a DATETIME, not the day count DateUtils.date() reads (issue #9324)
+          return DateUtils.localDateTimeFromEpochMillis(DateUtils.numberToEpochUnits(number));
         } else if (value instanceof LocalDate date) {
           return truncateToPropertyPrecision(date.atStartOfDay(), property);
         } else if (value instanceof Instant instant) {
@@ -2567,6 +2568,11 @@ public enum Type {
     return Date.from(DateUtils.parseZonedDateTime(database, valueAsString, false).toInstant());
   }
 
+  /** A DATE property holds whole days, which a datetime-valued implementation of it must be truncated to (issue #9324). */
+  private static ChronoUnit precisionOf(final Property property) {
+    return property.getType() == DATE ? ChronoUnit.DAYS : DateUtils.getPrecisionFromType(property.getType());
+  }
+
   /**
    * Truncates a parsed datetime to the precision the target property declares, so a literal carrying more digits
    * than the column can hold reads back identically before and after a reload instead of briefly keeping digits the
@@ -2574,15 +2580,15 @@ public enum Type {
    * already do; only the string branches were missing it. A no-op when the value is not bound to a property.
    */
   private static LocalDateTime truncateToPropertyPrecision(final LocalDateTime value, final Property property) {
-    return property == null ? value : value.truncatedTo(DateUtils.getPrecisionFromType(property.getType()));
+    return property == null ? value : value.truncatedTo(precisionOf(property));
   }
 
   private static ZonedDateTime truncateToPropertyPrecision(final ZonedDateTime value, final Property property) {
-    return property == null ? value : value.truncatedTo(DateUtils.getPrecisionFromType(property.getType()));
+    return property == null ? value : value.truncatedTo(precisionOf(property));
   }
 
   private static Instant truncateToPropertyPrecision(final Instant value, final Property property) {
-    return property == null ? value : value.truncatedTo(DateUtils.getPrecisionFromType(property.getType()));
+    return property == null ? value : value.truncatedTo(precisionOf(property));
   }
 
   /** A primitive array of numbers (not {@code byte[]}, which is binary content, nor {@code boolean[]}/{@code char[]}). */

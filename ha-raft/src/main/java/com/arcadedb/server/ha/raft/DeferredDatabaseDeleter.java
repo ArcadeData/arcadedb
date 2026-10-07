@@ -20,6 +20,8 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.monitor.PoolMetrics;
+import com.arcadedb.utility.DedicatedThreadPool.PoolStats;
 import com.arcadedb.utility.FileUtils;
 
 import java.io.IOException;
@@ -66,6 +68,12 @@ class DeferredDatabaseDeleter implements AutoCloseable {
    */
   private static final int MAX_PENDING_DELETIONS = 1024;
 
+  // What getPoolStats() reports of an executor supplied by a test, whose threads and queue are not ours to read.
+  private static final int  NO_THREADS        = 0;
+  private static final int  NOTHING_QUEUED    = 0;
+  private static final long NOTHING_COMPLETED = 0L;
+  private static final long NOTHING_RECLAIMED = 0L;
+
   /** Candidate staging names tried before giving up and deleting inline. */
   private static final int STAGING_NAME_ATTEMPTS = 16;
 
@@ -79,6 +87,8 @@ class DeferredDatabaseDeleter implements AutoCloseable {
 
   private final ExecutorService executor;
   private final AtomicLong     lastSaturationWarningOn = new AtomicLong(Long.MIN_VALUE);
+  /** Deletions the saturated queue made the submitter run itself, for the executor row (issue #8856). */
+  private final AtomicLong     callerRunFallbacks      = new AtomicLong();
   /**
    * The executor's current worker, recorded by its thread factory, so {@link #awaitTermination(long)} can tell by
    * identity that it is running on it (issue #8364). Null for an executor supplied by a test, whose threads are not
@@ -166,6 +176,18 @@ class DeferredDatabaseDeleter implements AutoCloseable {
         "delete entries of a dropped database directory");
   }
 
+  /**
+   * The {@code pool=database_deleter} executor row (issue #8856). A saturated queue makes the submitter delete the
+   * directory itself, so its count is the row's {@code caller_run_fallbacks}: the Raft apply thread doing the
+   * unbounded work this class exists to keep off it. An executor supplied by a test reads as an idle pool.
+   */
+  PoolStats getPoolStats() {
+    return executor instanceof ThreadPoolExecutor pool ?
+        PoolMetrics.statsOf(pool, callerRunFallbacks.get()) :
+        new PoolStats(NO_THREADS, NO_THREADS, NOTHING_QUEUED, MAX_PENDING_DELETIONS, NOTHING_COMPLETED,
+            callerRunFallbacks.get(), NOTHING_RECLAIMED);
+  }
+
   private static List<Path> listStagingDirectories(final Path databasesDirectory) {
     if (databasesDirectory == null || !Files.isDirectory(databasesDirectory))
       return List.of();
@@ -234,6 +256,7 @@ class DeferredDatabaseDeleter implements AutoCloseable {
             "Deferred deletion of '%s' rejected during shutdown: it will be retried on the next restart", staged);
         return;
       }
+      callerRunFallbacks.incrementAndGet();
       warnSaturated(staged);
     }
     // Caller-runs, outside the catch so a failure in delete() is not mistaken for a rejection.

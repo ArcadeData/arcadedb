@@ -4485,6 +4485,51 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * Whether this index's database replicates its commits: asked of the current wrapper, which is the Raft-replicated
+   * database on an HA node, and never of the inner instance, which is not replicated by itself.
+   */
+  private boolean isReplicated() {
+    return getDatabase().getWrappedDatabaseInstance().isReplicated();
+  }
+
+  /** Fraction of the replicated entry cap one replicated bulk-load chunk may take: one half (see {@link #getBulkLoadChunkSizeBytes}). */
+  private static final long REPLICATED_CHUNK_SHARE_OF_ENTRY_CAP = 2;
+
+  /**
+   * How many estimated bytes of vectors one transaction of {@link #bulkLoadVectorData} may accumulate before it is
+   * committed: {@link GlobalConfiguration#INDEX_BUILD_CHUNK_SIZE_MB}, and on a replicated database no more than
+   * {@link #REPLICATED_CHUNK_SHARE_OF_ENTRY_CAP} of what one replicated entry may carry (issue #8905).
+   * <p>
+   * The bulk load commits through the wrapper, and on the ordinary arm of a replicated commit one chunk IS one
+   * replicated entry. The stock 50MB chunk sat above the stock 32MB entry cap
+   * ({@link GlobalConfiguration#maxReplicatedRaftEntrySize}), so a large enough build failed with
+   * {@code ReplicatedEntryTooLargeException}.
+   * <p>
+   * The load counts ESTIMATED bytes ({@code dimensions * 4 + 32} per vector), and that estimate is an upper bound of
+   * what it writes per vector: an index page entry is three varints, two flag bytes and, under INT8 or BINARY
+   * quantization, the quantized vector with 8 to 12 bytes of metadata (see {@code persistVectorWithLocation}); the
+   * float vector itself stays in the document. Measured, 60,000 vectors of 2 dimensions - 2.3MB estimated - made a
+   * 538KB entry. The other half of the cap is headroom for what the estimate does not see: the per-page WAL framing,
+   * and a chunk boundary checked only after each record.
+   * <p>
+   * The graph persists are not bounded here: they commit on the inner instance and never replicate (see the PHASE 3
+   * guard in {@link #build(BuildIndexCallback, GraphBuildCallback, boolean)}).
+   * <p>
+   * The cap is the one {@code ha-raft} enforces at submit, further bounded by the 64MB of uncompressed payload its
+   * codec accepts per entry for a cluster that raised the cap past that. It is read from this database's
+   * configuration, as {@code TimeSeriesShard} reads its own replicated ceiling.
+   */
+  private long getBulkLoadChunkSizeBytes() {
+    final long chunkSizeBytes = getTxChunkSize() * 1024 * 1024;
+    if (!isReplicated())
+      return chunkSizeBytes;
+
+    final long entryCap = Math.min(GlobalConfiguration.maxReplicatedRaftEntrySize(getDatabase().getConfiguration()),
+        GlobalConfiguration.MAX_REPLICATED_UNCOMPRESSED_ENTRY_BYTES);
+    return Math.min(chunkSizeBytes, entryCap / REPLICATED_CHUNK_SHARE_OF_ENTRY_CAP);
+  }
+
+  /**
    * Product Quantization can only be trained when the training set holds at least as many vectors as clusters per subspace:
    * JVector's k-means++ rejects a cluster count larger than the number of points. A freshly created index, a test fixture or
    * the first seconds of an ingest therefore cannot train a codebook at all (issue #5417).
@@ -6619,6 +6664,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
   /** How many candidates a BINARY search fetches per requested neighbour before reranking them on the stored vectors. */
   private static final int   BINARY_RERANK_OVERSAMPLE = 4;
 
+  /** How many times a BINARY search whose rerank came up short of k widens its candidate budget and asks again. */
+  private static final int   BINARY_RERANK_MAX_ATTEMPTS = 6;
+
   /**
    * The scoring function used to walk the graph: the configured similarity for a vector that can be read, and
    * {@link #UNREADABLE_NODE_SCORE} for one that cannot.
@@ -7573,9 +7621,32 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // by its own vector ties with every other record of the same signs). The graph answers with the oversampled
     // candidates and the stored float vectors put them in order, which is the "approximate search with reranking"
     // the quantization promises (issue #8960).
-    final int candidatesToFetch = k > Integer.MAX_VALUE / BINARY_RERANK_OVERSAMPLE ? Integer.MAX_VALUE : k * BINARY_RERANK_OVERSAMPLE;
-    final List<Pair<RID, Float>> candidates = searchNeighbors(queryVector, candidatesToFetch, efSearch, allowedRIDs);
-    return rerankOnStoredVectors(queryVector, candidates, k);
+    //
+    // A candidate whose record is gone by the time it is reranked is dropped, and a commit landing between the search
+    // and the rerank deletes exactly the nearest records, which are the ones the candidate list is made of. So a
+    // rerank that comes up short of k while candidates were dropped asks again with a larger budget, against the
+    // state committed by then, instead of answering with fewer than k although the index holds them (issue #9396).
+    int candidatesToFetch = k > Integer.MAX_VALUE / BINARY_RERANK_OVERSAMPLE ? Integer.MAX_VALUE : k * BINARY_RERANK_OVERSAMPLE;
+    List<Pair<RID, Float>> reranked = List.of();
+    for (int attempt = 0; attempt < BINARY_RERANK_MAX_ATTEMPTS; attempt++) {
+      final List<Pair<RID, Float>> candidates = searchNeighbors(queryVector, candidatesToFetch, efSearch, allowedRIDs);
+      reranked = rerankOnStoredVectors(queryVector, candidates, k);
+
+      final boolean answeredK = reranked.size() >= k;
+      // The graph had fewer than the budget and none of them was dropped: the index simply holds fewer than k.
+      final boolean indexExhausted = candidates.size() < candidatesToFetch && reranked.size() == candidates.size();
+      if (answeredK || indexExhausted || candidatesToFetch > Integer.MAX_VALUE / BINARY_RERANK_OVERSAMPLE)
+        break;
+      // A budget that already covers every vector of the index cannot be widened into more candidates. Evaluated only
+      // once the answer is known to be short. searchNeighbors sizes its beam to max(k, efSearch), so a wider budget
+      // is always searched with at least that beam.
+      if (candidatesToFetch >= vectorIndex().size() + deltaVectors.size())
+        break;
+      // Short of k because candidates were dropped (record gone). A commit removes the records before their index
+      // entries, so the stale stretch is as wide as the commit's deletes: the budget grows geometrically to step over it.
+      candidatesToFetch *= BINARY_RERANK_OVERSAMPLE;
+    }
+    return reranked;
   }
 
   /**
@@ -10810,8 +10881,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
             // PHASE 2: Bulk load vector data with chunking
             totalRecords = bulkLoadVectorData(callback, chunkedCommitAllowed);
 
-            // PHASE 3: Build and persist graph with chunking
-            if (vectorIndex().size() > 0 && graphState == GraphState.LOADING) {
+            // PHASE 3: Build and persist graph with chunking. Not on a replicated database (issue #8905): the graph file
+            // is node-local - every node builds and persists its own graph, on the inner instance and without the WAL
+            // (buildGraphFromScratchExclusively, #8292) - so its pages have different versions on every node and cannot
+            // travel in a replicated entry. And the persist commits on the inner instance, which commits THIS build's
+            // transaction too, so the bulk-loaded vector pages it still held landed on this node only. Skipped, the
+            // graph is built the way every other node of the cluster builds it for this same build: node-locally, on
+            // first use. It is also exactly what this build does whenever the graph is already loaded.
+            if (vectorIndex().size() > 0 && graphState == GraphState.LOADING && !isReplicated()) {
               buildGraphWithChunking(graphCallback, chunkedCommitAllowed);
             }
 
@@ -10894,11 +10971,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     // Get chunk size from configuration (default 50MB). Guard against accidental 0/negative values to avoid huge
     // single commits.
-    final long chunkSizeMB = getTxChunkSize();
-    final long chunkSizeBytes = chunkSizeMB * 1024 * 1024;
+    // Bounded by the replicated entry cap when the build replicates (issue #8905)
+    final long chunkSizeBytes = getBulkLoadChunkSizeBytes();
 
     LogManager.instance().log(this, Level.INFO,
-        "Building vector index '%s' with %dMB chunk size (WAL disabled)...", indexName, chunkSizeMB);
+        "Building vector index '%s' with %.1fMB chunk size (WAL disabled)...", indexName,
+        chunkSizeBytes / (1024.0 * 1024.0));
 
     // Track bytes written for chunking
     final AtomicLong bytesInCurrentChunk = new AtomicLong(0);

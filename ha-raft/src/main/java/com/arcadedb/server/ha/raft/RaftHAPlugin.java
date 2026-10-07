@@ -31,6 +31,7 @@ import com.arcadedb.server.monitor.HAReplicationStatsProvider;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.LeaderDial;
 import com.arcadedb.utility.CodeUtils;
+import com.arcadedb.utility.DedicatedThreadPool.PoolStats;
 
 import io.undertow.server.handlers.PathHandler;
 import org.apache.ratis.protocol.RaftPeer;
@@ -82,6 +83,10 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   /** How often a cluster that cannot use the #7509 compare-and-set may say so. */
   private static final long SECURITY_PRECONDITION_WITHHELD_LOG_THROTTLE_MS = 5 * 60_000L;
 
+  // Not MembershipSecuritySeeder.EMPTY_POOL_STATS: that one reports a one-slot queue, which these pools do not have.
+  /** What an HA executor row reads while its owner is not running: no worker, nothing queued, no capacity reported. */
+  private static final PoolStats IDLE_POOL_STATS = new PoolStats(0, 0, 0, 0, 0L, 0L, 0L);
+
   // When the "security changes are replicating without the concurrency check" line was last logged.
   private volatile long lastSecurityPreconditionWithheldLog;
 
@@ -97,10 +102,10 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   private SnapshotHttpHandler       snapshotHttpHandler;
   private PostVerifyDatabaseHandler postVerifyDatabaseHandler;
 
-  // The executor-pool rows of the two security workers the state machine owns (issue #7856). Same lifecycle as the
-  // handlers above: set by startService(), closed and cleared by the first of stopService()'s two calls.
-  private Closeable securitySeedPoolMetrics;
-  private Closeable securityCatchUpPoolMetrics;
+  // The executor-pool rows of the executors the HA layer owns: the two security workers (issue #7856) and the
+  // state machine's and RaftHAServer's other per-instance pools (issue #8856). Same lifecycle as the handlers above:
+  // filled by startService(), closed and emptied by the first of stopService()'s two calls.
+  private final List<Closeable> haPoolMetrics = new ArrayList<>(8);
 
   /**
    * Test-only: runs at the start of {@link #startService()} on the server being started, before this plugin has
@@ -201,7 +206,7 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
       // Register this plugin as the HA implementation on the server
       server.setHA(this);
 
-      registerSecurityPoolMetrics();
+      registerPoolMetrics();
 
       LogManager.instance().log(this, Level.INFO, "Raft HA plugin started successfully");
     } catch (final IOException e) {
@@ -231,16 +236,9 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     // (RaftHAPlugin is itself a discovered ServerPlugin) and once via ArcadeDBServer.stopInternal()'s
     // direct haServer.stopService() call, since startService() above did server.setHA(this), making
     // ArcadeDBServer.haServer the very same instance. The second call must be a no-op (issue #5890).
-    if (securitySeedPoolMetrics != null) {
-      CodeUtils.executeIgnoringExceptions(securitySeedPoolMetrics::close, "Error on removing the security seed pool metrics",
-          false);
-      securitySeedPoolMetrics = null;
-    }
-    if (securityCatchUpPoolMetrics != null) {
-      CodeUtils.executeIgnoringExceptions(securityCatchUpPoolMetrics::close,
-          "Error on removing the security catch-up pool metrics", false);
-      securityCatchUpPoolMetrics = null;
-    }
+    for (final Closeable poolMetrics : haPoolMetrics)
+      CodeUtils.executeIgnoringExceptions(poolMetrics::close, "Error on removing an HA executor pool's metrics", false);
+    haPoolMetrics.clear();
     if (snapshotHttpHandler != null) {
       snapshotHttpHandler.close();
       snapshotHttpHandler = null;
@@ -598,30 +596,82 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   }
 
   /**
-   * Publishes the state machine's two one-slot security workers as executor rows (issue #7856): the leader-side
-   * membership seed ({@code pool=security_seed}) and the rejoining node's catch-up ({@code pool=security_catch_up}).
-   * <p>
-   * Both suppliers resolve the worker through {@link #raftHAServer} on every scrape rather than capturing it: an
-   * in-place Ratis restart builds a new state machine, and with it a new seeder and catch-up. Between a stop and the
-   * next start, or before Ratis is up, the row reads as an idle pool rather than throwing.
+   * Publishes the executors the HA layer owns as executor rows, so they reach {@code /api/v1/metrics} and Studio's
+   * "Executor Pools" card. Each pool publishes the extra gauges that match how it handles saturation:
+   * <ul>
+   * <li>{@code security_seed}, {@code security_catch_up} (state machine, issue #7856): one slot, a refusal is covered
+   * by the queued task - {@code tasks.coalesced};</li>
+   * <li>{@code snapshot_install} (state machine): abort, the refusal becomes a failed future Ratis retries -
+   * {@code tasks.rejected};</li>
+   * <li>{@code sm_lifecycle} (state machine): unbounded queue, never refuses running work - queue depth is the
+   * signal;</li>
+   * <li>{@code database_deleter} (state machine): the submitter, the Raft apply thread, deletes the directory itself
+   * when the queue is full - {@code tasks.caller_run_fallbacks};</li>
+   * <li>{@code channel_recovery} (RaftHAServer): abort, each submitter logs what its drop means -
+   * {@code tasks.rejected}, plus {@code tasks.coalesced} for the #8491 hand-offs a health tick did not queue because
+   * one was already queued or running;</li>
+   * <li>{@code stalled_resync} (RaftHAServer): caller-runs on the lag-monitor thread -
+   * {@code tasks.caller_run_fallbacks}.</li>
+   * </ul>
+   * Every supplier resolves the pool through {@link #raftHAServer} on every scrape rather than capturing it (issue
+   * #8856): an in-place Ratis restart builds a new state machine, and with it new executors and new counters, so a
+   * state machine pool's cumulative counts restart from zero then, which a Prometheus {@code rate()} reads as a
+   * counter reset. Between a stop and the next start, or before Ratis is up, a row reads as an idle pool rather than
+   * throwing.
    */
-  private void registerSecurityPoolMetrics() {
-    securitySeedPoolMetrics = server.registerExecutorPoolMetrics("security_seed",
+  private void registerPoolMetrics() {
+    haPoolMetrics.add(server.registerExecutorPoolMetrics("security_seed",
         "MembershipSecuritySeeder leader-side cluster security seed worker", () -> {
           final ArcadeStateMachine sm = liveStateMachine();
           return sm != null ? sm.getMembershipSecuritySeeder().getPoolStats() : MembershipSecuritySeeder.EMPTY_POOL_STATS;
         }, () -> {
           final ArcadeStateMachine sm = liveStateMachine();
           return sm != null ? sm.getMembershipSecuritySeeder().getCoalescedSeeds() : 0L;
-        });
-    securityCatchUpPoolMetrics = server.registerExecutorPoolMetrics("security_catch_up",
+        }));
+    haPoolMetrics.add(server.registerExecutorPoolMetrics("security_catch_up",
         "SecurityCatchUp rejoining-node security catch-up worker", () -> {
           final ArcadeStateMachine sm = liveStateMachine();
           return sm != null ? sm.getSecurityCatchUp().getPoolStats() : MembershipSecuritySeeder.EMPTY_POOL_STATS;
         }, () -> {
           final ArcadeStateMachine sm = liveStateMachine();
           return sm != null ? sm.getSecurityCatchUp().getCoalescedRequests() : 0L;
-        });
+        }));
+
+    haPoolMetrics.add(server.registerExecutorPoolMetrics("snapshot_install",
+        "ArcadeStateMachine leader-initiated snapshot install worker", () -> {
+          final ArcadeStateMachine sm = liveStateMachine();
+          return sm != null ? sm.getSnapshotInstallPoolStats() : IDLE_POOL_STATS;
+        }, null, () -> {
+          final ArcadeStateMachine sm = liveStateMachine();
+          return sm != null ? sm.getSnapshotInstallRejections() : 0L;
+        }));
+    haPoolMetrics.add(server.registerExecutorPoolMetrics("sm_lifecycle",
+        "ArcadeStateMachine lifecycle worker (leader-facing downloads, bootstrap retries, re-verifications)", () -> {
+          final ArcadeStateMachine sm = liveStateMachine();
+          return sm != null ? sm.getLifecyclePoolStats() : IDLE_POOL_STATS;
+        }, null, null));
+    haPoolMetrics.add(server.registerExecutorPoolMetrics("database_deleter",
+        "DeferredDatabaseDeleter dropped-database directory deletion worker", () -> {
+          final ArcadeStateMachine sm = liveStateMachine();
+          return sm != null ? sm.getDatabaseDeleterPoolStats() : IDLE_POOL_STATS;
+        }, null, null));
+
+    haPoolMetrics.add(server.registerExecutorPoolMetrics("channel_recovery",
+        "RaftHAServer replication-channel recovery and leadership hand-off worker", () -> {
+          final RaftHAServer s = raftHAServer;
+          return s != null ? s.getChannelRecoveryPoolStats() : IDLE_POOL_STATS;
+        }, () -> {
+          final RaftHAServer s = raftHAServer;
+          return s != null ? s.getReplacingHandOffsCoalesced() : 0L;
+        }, () -> {
+          final RaftHAServer s = raftHAServer;
+          return s != null ? s.getChannelRecoveryRejections() : 0L;
+        }));
+    haPoolMetrics.add(server.registerExecutorPoolMetrics("stalled_resync",
+        "RaftHAServer leader-driven stalled-replica resync worker", () -> {
+          final RaftHAServer s = raftHAServer;
+          return s != null ? s.getStalledResyncPoolStats() : IDLE_POOL_STATS;
+        }, null, null));
   }
 
   private ArcadeStateMachine liveStateMachine() {

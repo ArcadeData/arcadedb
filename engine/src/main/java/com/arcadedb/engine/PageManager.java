@@ -550,6 +550,26 @@ public class PageManager extends LockContext {
     return true;
   }
 
+  /**
+   * Bounded variant of {@link #waitAllPagesOfDatabaseAreFlushed} for readers that want the files to reflect the commits
+   * made so far but must not be held hostage by a database under sustained writes (issue #8843): waits at most
+   * {@code maxWaitMillis} for the pages pending at the call to reach the disk, and is not extended by later commits.
+   *
+   * @return {@code true} when that backlog reached the disk, {@code false} when the bound expired first or the
+   *     calling thread was interrupted (its interrupt flag is restored).
+   */
+  public boolean waitPagesPendingNowOfDatabaseAreFlushed(final Database database, final long maxWaitMillis) {
+    final PageManagerFlushThread thread = flushThread;
+    if (thread == null)
+      return true;
+    try {
+      return thread.waitPagesPendingNowOfDatabaseAreFlushedUntil(database, System.currentTimeMillis() + maxWaitMillis);
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return false;
+    }
+  }
+
   public void removeModifiedPagesOfDatabase(final Database database) {
     if (flushThread != null)
       flushThread.removeAllPagesOfDatabase(database);

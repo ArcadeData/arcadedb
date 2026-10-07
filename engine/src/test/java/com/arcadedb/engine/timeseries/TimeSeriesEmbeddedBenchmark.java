@@ -253,15 +253,15 @@ public class TimeSeriesEmbeddedBenchmark {
         queryTime = (System.nanoTime() - queryStart) / 1_000_000;
         System.out.printf("Direct API 1h scan:    %,d ms (rows: %,d)%n", queryTime, directCount);
 
-        // Full scan — measure how long it takes to iterate ALL 50M points from disk
+        // Full scan - measure how long it takes to iterate ALL 50M points from disk. Streams through forEachRow, which
+        // holds one block at a time: iterateQuery materializes the whole range and exhausted a ~4 GB heap (#9416)
         queryStart = System.nanoTime();
-        long fullScanCount = 0;
-        final Iterator<Object[]> fullIter = coldEngine.iterateQuery(Long.MIN_VALUE, Long.MAX_VALUE, null,
-            null);
-        while (fullIter.hasNext()) {
-          fullIter.next();
-          fullScanCount++;
-        }
+        final long[] fullScanCounter = new long[1];
+        coldEngine.forEachRow(Long.MIN_VALUE, Long.MAX_VALUE, null, null, null, row -> {
+          fullScanCounter[0]++;
+          return true;
+        });
+        final long fullScanCount = fullScanCounter[0];
         queryTime = (System.nanoTime() - queryStart) / 1_000_000;
         final double scanRate = fullScanCount / (queryTime / 1000.0);
         System.out.printf("Full scan (all data):  %,d ms (rows: %,d, rate: %,.0f rows/s)%n",

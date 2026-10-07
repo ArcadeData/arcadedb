@@ -22,10 +22,16 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.serializer.json.JSONObject;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+import java.net.HttpURLConnection;
+import java.net.URI;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -57,7 +63,7 @@ class Issue8901ReplicationPathAfterInPlaceRestartIT extends BaseRaftHATest {
   }
 
   @Test
-  void anInPlaceRestartHoldsTheReformatUntilAnEntryArrives() {
+  void anInPlaceRestartHoldsTheReformatUntilAnEntryArrives() throws Exception {
     final int leaderIndex = findLeaderIndex();
     assertThat(leaderIndex).as("a Raft leader must be elected").isGreaterThanOrEqualTo(0);
     final int replicaIndex = leaderIndex == 0 ? 1 : 0;
@@ -73,6 +79,25 @@ class Issue8901ReplicationPathAfterInPlaceRestartIT extends BaseRaftHATest {
     assertThat(follower.isReplicationPathUnprovenSinceRestart())
         .as("right after the in-place restart no entry has reached the new division yet")
         .isTrue();
+    // Issue #9013: the same state, machine-readable in the follower's own status document.
+    assertThat(queryClusterEndpoint(replicaIndex).getBoolean("localReplicationPathUnproven")).isTrue();
+
+    // Issue #8953: an idle cluster sends the restarted follower no entry either, so "unproven" alone must not read as an
+    // unreachable leader. The health monitor is off in this fixture, so its two hooks are driven here, for longer than
+    // the grace, on the real division: the leader's heartbeat makes it known and its commit index is what we hold.
+    final ContextConfiguration config = getServer(replicaIndex).getConfiguration();
+    final long grace = 2L * RaftPropertiesBuilder.electionTimeoutMaxFor(
+        config.getValueAsInteger(GlobalConfiguration.HA_ELECTION_TIMEOUT_MIN),
+        config.getValueAsInteger(GlobalConfiguration.HA_ELECTION_TIMEOUT_MAX));
+    Awaitility.await().during(grace + 2_000L, TimeUnit.MILLISECONDS).atMost(grace + 30_000L, TimeUnit.MILLISECONDS)
+        .pollInterval(500, TimeUnit.MILLISECONDS).until(() -> {
+          follower.trackLeaderReachSinceRestart();
+          follower.refreshLeaderCommitIndex();
+          return follower.getLeaderUnreachableSinceRestart() == null;
+        });
+    final JSONObject idle = queryClusterEndpoint(replicaIndex);
+    assertThat(idle.getBoolean("localLeaderUnreachableSinceRestart")).isFalse();
+    assertThat(idle.getJSONArray("alerts").toString()).doesNotContain("follower-leader-unreachable-since-restart");
 
     final Database leaderDb = getServerDatabase(leaderIndex, getDatabaseName());
     leaderDb.transaction(() -> {
@@ -90,5 +115,20 @@ class Issue8901ReplicationPathAfterInPlaceRestartIT extends BaseRaftHATest {
 
     waitForReplicationIsCompleted(replicaIndex);
     assertThat(getServerDatabase(replicaIndex, getDatabaseName()).countType("Issue8901", true)).isEqualTo(1L);
+    assertThat(queryClusterEndpoint(replicaIndex).getBoolean("localReplicationPathUnproven")).isFalse();
+  }
+
+  private JSONObject queryClusterEndpoint(final int serverIndex) throws Exception {
+    final URL url = URI.create("http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/cluster").toURL();
+    final HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+    conn.setRequestMethod("GET");
+    conn.setRequestProperty("Authorization",
+        "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes(StandardCharsets.UTF_8)));
+    try {
+      assertThat(conn.getResponseCode()).isEqualTo(200);
+      return new JSONObject(new String(conn.getInputStream().readAllBytes(), StandardCharsets.UTF_8));
+    } finally {
+      conn.disconnect();
+    }
   }
 }

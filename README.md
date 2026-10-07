@@ -25,16 +25,6 @@
     <img src="https://github.com/ArcadeData/arcadedb/actions/workflows/mvn-deploy.yml/badge.svg">
   </a>
 
- <a href="https://github.com/ArcadeData/arcadedb/actions/workflows/ha-resilience-tests.yml">
-      <img src="https://github.com/ArcadeData/arcadedb/actions/workflows/ha-resilience-tests.yml/badge.svg">
-    </a>
- <a href="https://github.com/ArcadeData/arcadedb/actions/workflows/load-tests.yml">
-      <img src="https://github.com/ArcadeData/arcadedb/actions/workflows/load-tests.yml/badge.svg">
-    </a>
- <a href="https://github.com/ArcadeData/arcadedb/actions/workflows/native-image.yml">
-      <img src="https://github.com/ArcadeData/arcadedb/actions/workflows/native-image.yml/badge.svg">
-    </a>
-
   <a href="https://codecov.io/github/ArcadeData/arcadedb">
    <img src="https://codecov.io/github/ArcadeData/arcadedb/graph/badge.svg?token=0690JAJHIO"/>
   </a>
@@ -55,6 +45,19 @@
     <img src="https://www.meterian.io/badge/gh/ArcadeData/arcadedb/stability?branch=main">
   </a>
 </p>
+
+<div align="center">
+<table>
+  <tr><th>Scheduled suite</th><th>Runs</th><th>Status</th></tr>
+  <tr><td>HA integration (Raft, embedded)</td><td>daily</td><td><a href="https://github.com/ArcadeData/arcadedb/actions/workflows/ha-integration-tests.yml"><img src="https://github.com/ArcadeData/arcadedb/actions/workflows/ha-integration-tests.yml/badge.svg?branch=main" alt="HA integration (Raft, embedded)"></a></td></tr>
+  <tr><td>HA resilience (Docker, fault injection)</td><td>daily</td><td><a href="https://github.com/ArcadeData/arcadedb/actions/workflows/ha-resilience-tests.yml"><img src="https://github.com/ArcadeData/arcadedb/actions/workflows/ha-resilience-tests.yml/badge.svg?branch=main" alt="HA resilience (Docker, fault injection)"></a></td></tr>
+  <tr><td>HA chaos (randomized faults, 60 min)</td><td>weekly</td><td><a href="https://github.com/ArcadeData/arcadedb/actions/workflows/ha-chaos-tests.yml"><img src="https://github.com/ArcadeData/arcadedb/actions/workflows/ha-chaos-tests.yml/badge.svg?branch=main" alt="HA chaos (randomized faults, 60 min)"></a></td></tr>
+  <tr><td>Load tests</td><td>daily</td><td><a href="https://github.com/ArcadeData/arcadedb/actions/workflows/load-tests.yml"><img src="https://github.com/ArcadeData/arcadedb/actions/workflows/load-tests.yml/badge.svg?branch=main" alt="Load tests"></a></td></tr>
+  <tr><td>Bolt driver-version matrix</td><td>daily</td><td><a href="https://github.com/ArcadeData/arcadedb/actions/workflows/bolt-nightly.yml"><img src="https://github.com/ArcadeData/arcadedb/actions/workflows/bolt-nightly.yml/badge.svg?branch=main" alt="Bolt driver-version matrix"></a></td></tr>
+  <tr><td>Native image build</td><td>daily</td><td><a href="https://github.com/ArcadeData/arcadedb/actions/workflows/native-image.yml"><img src="https://github.com/ArcadeData/arcadedb/actions/workflows/native-image.yml/badge.svg?branch=main" alt="Native image build"></a></td></tr>
+  <tr><td>Benchmarks</td><td>weekly</td><td><a href="https://github.com/ArcadeData/arcadedb/actions/workflows/benchmark-tests.yml"><img src="https://github.com/ArcadeData/arcadedb/actions/workflows/benchmark-tests.yml/badge.svg?branch=main" alt="Benchmarks"></a></td></tr>
+</table>
+</div>
 
 <p align="center">
   <a href="https://discord.gg/w2Npx2B7hZ"><img width="208" height="97" src="https://arcadedb.com/assets/images/discord_button.png" alt="Join Discord"></a>
@@ -334,18 +337,25 @@ mvn verify -Pintegration -pl e2e,load-tests,e2e-ha
 
 #### Test Suites at a Glance
 
-The codebase is covered by several complementary test suites, each with a distinct scope:
+The codebase is covered by several complementary test suites, each with a distinct scope. The "CI" column says when each one
+runs; the scheduled ones have a status badge at the top of this page.
 
-| Suite | How it runs | Scope |
-|-------|-------------|-------|
-| **Unit tests** | `mvn test` (`*Test`) | Fast, in-process tests of a single component in isolation: engine internals (storage, pages, WAL, indexes, serialization), query parsing and execution (SQL, Cypher, Gremlin, GraphQL), schema, graph traversals, and security. The bulk of coverage; no external services required. Tagged `slow`/`benchmark` tests can be excluded. |
-| **Integration tests** | `mvn verify -Pintegration` (`*IT`) | Tests spanning multiple components or a running server within the same JVM/module: HTTP/REST API, wire protocols (Postgres, MongoDB, Redis, Bolt, gRPC), cross-module behavior, and embedded multi-server clustering. Some require Docker. |
-| **End-to-end (`e2e`)** | `mvn verify -Pintegration -pl e2e` | Black-box tests against a real ArcadeDB server in a Docker container (Testcontainers), exercising it the way external clients do: JDBC/Postgres queries, the remote Java API, server-side JavaScript functions, and the Bolt and gRPC drivers. |
-| **Load tests (`load-tests`)** | `mvn verify -Pintegration -pl load-tests` | Throughput and stability under sustained concurrent workloads against single-server and three-node clusters in containers, including high-volume document and time-series ingestion. Verifies no data loss or corruption under contention. |
-| **HA end-to-end (`e2e-ha`)** | `mvn verify -Pintegration -pl e2e-ha` | Resilience and correctness of the high-availability (Raft) cluster under failure: leader failover, rolling restarts, split-brain, network partitions/delay/packet loss, replication convergence, and cluster-wide operations (backup/restore, import, drop database, user management). Uses Testcontainers and fault injection (Toxiproxy). |
-| **Python client (`e2e-python`)** | `cd e2e-python && pytest tests/` | Verifies the Postgres wire protocol against real Python clients (`psycopg2`, `asyncpg`) and the SQLAlchemy ORM, running against a server in a Docker container (Testcontainers). |
-| **JavaScript client (`e2e-js`)** | `cd e2e-js && npm install && npm test` | Verifies Node.js client compatibility over the Bolt (`neo4j-driver`) and Postgres (`pg`) protocols, running against a server in a Docker container (Jest + Testcontainers). |
-| **C# client (`e2e-csharp`)** | `cd e2e-csharp/ArcadeDB.E2ETests && dotnet test` | Verifies the Postgres wire protocol against a .NET client (`Npgsql`), running against a server in a Docker container (xUnit + Testcontainers). |
+| Suite | How it runs | CI | Scope |
+|-------|-------------|----|-------|
+| **Unit tests** | `mvn test` (`*Test`) | every PR | Fast, in-process tests of a single component in isolation: engine internals (storage, pages, WAL, indexes, serialization), query parsing and execution (SQL, Cypher, Gremlin, GraphQL), schema, graph traversals, and security. The bulk of coverage; no external services required. CI splits them into lanes by JUnit tag: `slow` (long functional tests) and `vector` (LSM vector-index rebuilds) run in their own lanes, `benchmark` is excluded by default. |
+| **Integration tests** | `mvn verify -Pintegration` (`*IT`) | every PR | Tests spanning multiple components or a running server within the same JVM/module: HTTP/REST API, wire protocols (Postgres, MongoDB, Redis, Bolt, gRPC), and cross-module behavior. Some require Docker. |
+| **HA integration (`ha-raft`)** | `mvn verify -Pintegration -pl ha-raft` | daily | Raft high-availability clusters of several servers started inside one JVM: replication, leader election, schema and security propagation, snapshot install, and catch-up of lagging followers. Moved out of the PR pipeline because of its length. |
+| **End-to-end (`e2e`)** | `mvn verify -Pintegration -pl e2e` | every PR | Black-box tests against a real ArcadeDB server in a Docker container (Testcontainers), exercising it the way external clients do: JDBC/Postgres queries, the remote Java API, server-side JavaScript functions, and the Bolt and gRPC drivers. |
+| **Load tests (`load-tests`)** | `mvn verify -Pintegration -pl load-tests` | daily | Throughput and stability under sustained concurrent workloads against single-server and three-node clusters in containers, including high-volume document and time-series ingestion. Verifies no data loss or corruption under contention. |
+| **HA end-to-end (`e2e-ha`)** | `mvn verify -Pintegration -pl e2e-ha` | daily | Resilience and correctness of the Raft cluster under scripted failures: leader failover, rolling restarts, split-brain, network partitions/delay/packet loss, replication convergence, and cluster-wide operations (backup/restore, import, drop database, user management). Uses Testcontainers and fault injection (Toxiproxy). |
+| **HA chaos (`HaChaosIT`)** | `mvn verify -Pintegration -pl e2e-ha -Dit.test=HaChaosIT -Dfailsafe.excludedGroups=` | weekly | Long randomized run (60 minutes by default) against a containerized cluster: concurrent writers while a seeded scheduler injects faults (kill, stop, rolling restart, pause, isolate, split, latency, packet loss, and a follower frozen for more than 60 s that must recover without reformatting its Raft storage), and every acknowledged write is checked against all replicas after each step. Each run prints its seed so a failure can be replayed with `-Dchaos.seed=...`; tune with `-Dchaos.nodes`, `-Dchaos.duration`, `-Dchaos.faults`, `-Dchaos.writers`. Tagged `chaos`, so the plain `e2e-ha` run skips it. |
+| **Benchmarks** | `mvn verify -Dgroups=benchmark -DexcludedGroups=` | weekly | Microbenchmarks and comparison runs (`@Tag("benchmark")`). They measure rather than assert, and are excluded from every other run. |
+| **Python client (`e2e-python`)** | `cd e2e-python && pytest tests/` | every PR | Verifies the Postgres wire protocol against real Python clients (`psycopg2`, `asyncpg`) and the SQLAlchemy ORM, and the Bolt protocol against the official `neo4j` driver, running against a server in a Docker container (Testcontainers). |
+| **JavaScript client (`e2e-js`)** | `cd e2e-js && npm install && npm test` | every PR | Verifies Node.js client compatibility over the Bolt (`neo4j-driver`) and Postgres (`pg`) protocols, running against a server in a Docker container (Jest + Testcontainers). |
+| **C# client (`e2e-csharp`)** | `cd e2e-csharp/ArcadeDB.E2ETests && dotnet test` | every PR | Verifies the Postgres wire protocol (`Npgsql`) and the Bolt protocol (`Neo4j.Driver`, plain and TLS) from .NET, running against a server in a Docker container (xUnit + Testcontainers). |
+| **Go client (`e2e-go`)** | `cd e2e-go && go test ./...` | every PR | Bolt conformance with the official `neo4j-go-driver`, plain and TLS, against a server in a Docker container. Implements the shared scenario spec in [`bolt/conformance/spec.yaml`](bolt/conformance/spec.yaml), like the other client suites. |
+| **Bolt driver matrix** | `bolt-nightly.yml` workflow | daily | Reruns the Bolt tests of the JavaScript, Python, C# and Go suites against several released versions of each official driver, and publishes the result in [COMPATIBILITY.md](bolt/conformance/COMPATIBILITY.md). |
+| **Studio (`e2e-studio`)** | `cd e2e-studio && npm install && npm test` | every PR | Browser tests of the Studio web UI with Playwright: database creation, queries and charts, graph view (styling, context menu, export), table views, and vector search. |
 
 
 ### Community

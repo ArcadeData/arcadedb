@@ -388,7 +388,7 @@ public class WebSocketInsertSession {
       externalSession.execute(user, () -> {
         work.run();
         return null;
-      }, false);
+      }, /* rollbackOnFailure */ false, /* endsSession */ false, /* joinsTransaction */ true);
     } catch (final LockTimeoutException e) {
       // An HTTP command is running on the caller's own transaction right now. Translated rather than allowed to
       // propagate: LockTimeoutException is a NeedRetryException, which WebSocketInsertProtocol does not name, so

@@ -25,6 +25,7 @@ import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.utility.ScanPressureReporter;
 
 import java.util.Iterator;
 import java.util.NoSuchElementException;
@@ -242,8 +243,16 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
             .getSchema().getBucketById(bucketId)
             .getName() + ") " + (ORDER_DESC.equals(order) ? "DESC" : "ASC" + " = " + totalFetched + " RECORDS");
     if (context.isProfiling())
-      result += " (" + getCostFormatted() + ")";
+      result += " (" + getCostFormatted() + ")" + ScanPressureReporter.describe(iterator);
     return result;
+  }
+
+  @Override
+  public void close() {
+    // A SCAN STOPPED BEFORE ITS END (A LIMIT, A FAILURE) GIVES ITS READ-AHEAD BACK TO THE POOL NOW, NOT WHEN IT IS COLLECTED
+    if (iterator instanceof ScanPressureReporter reporter)
+      reporter.releaseReadAhead();
+    super.close();
   }
 
   public void setOrder(final Object order) {

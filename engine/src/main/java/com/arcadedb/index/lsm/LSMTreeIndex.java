@@ -76,7 +76,10 @@ import java.util.logging.Level;
  */
 public class LSMTreeIndex implements RangeIndex, IndexInternal {
   private static final IndexCursor                   EMPTY_CURSOR = new EmptyIndexCursor();
-  private final        String                        name;
+  // Not final for ONE writer only, restoreLogicalName(), which runs while a schema load builds this instance and before
+  // the load publishes it. The name is otherwise fixed for life: a compaction swaps the mutable FILE (and its name) in
+  // and out underneath it, which is why getMostRecentFileName() and getName() can differ (issue #9213).
+  private              String                        name;
   private final        RWLockContext                 lock         = new RWLockContext();
   protected final      AtomicReference<INDEX_STATUS> status       = new AtomicReference<>(INDEX_STATUS.AVAILABLE);
   /**
@@ -157,6 +160,26 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     this.name = name;
     this.metadata = new IndexMetadata(null, null, -1);
     this.mutable = new LSMTreeIndexMutable(this, database, name, unique, filePath, id, mode, pageSize, version);
+  }
+
+  /**
+   * Gives an instance a schema load has just built from its file back the logical name the index answered to when the
+   * schema was saved (issue #9213). The load path names an LSM index after the file it reads, and a compaction swaps a
+   * file named {@code <prefix>_<nanoTime>} in while the live index keeps its name, so after a restart - or on an HA
+   * follower, which re-reads the schema for a compaction entry - the same index used to come back under the new file
+   * name. {@code TypeIndex.equals} compares bucket indexes by name, so the leader's and a follower's copy of one type
+   * never matched again, and every lookup by the old name stopped resolving after a restart.
+   * <p>
+   * Only {@code LocalSchema} calls this, for an instance it has not published yet: no transaction can have queued
+   * entries under the old name, and nothing has hashed it, so the change of {@link #hashCode()} is unobservable.
+   */
+  public void restoreLogicalName(final String logicalName) {
+    // Only an instance still named after its file, i.e. one a load has just built: renaming a live index would hide the
+    // entries transactions queued under its current name (see LSMTreeIndexCursor, #8817).
+    if (!name.equals(mutable.getName()))
+      throw new IllegalStateException(
+          "Cannot restore the name '" + logicalName + "' on index '" + name + "': it no longer answers to its file name");
+    this.name = logicalName;
   }
 
   /**

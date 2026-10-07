@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
+import com.arcadedb.graph.EdgeWeight;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -134,7 +135,8 @@ public class AlgoKShortestPaths extends AbstractAlgoProcedure {
       for (int e = 0; e < row.length; e++) {
         final int j = row[e];
         final double w = rowWeights[e];
-        if (w < weightMatrix[i][j])
+        // Yen runs Dijkstra on this matrix: an edge whose weight is negative, NaN or infinite is not walked (issue #9443)
+        if (EdgeWeight.isWalkable(w) && w < weightMatrix[i][j])
           weightMatrix[i][j] = w;
       }
     }

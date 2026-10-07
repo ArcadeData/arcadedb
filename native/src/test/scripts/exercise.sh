@@ -27,7 +27,8 @@ set -euo pipefail
 # the agent only records what the instrumented JVM actually does, so smoke.sh and trace.sh must
 # drive identical HTTP/SQL/Cypher/wire-protocol traffic against the process they each start.
 #
-# Every wire-protocol check below (Postgres/Redis/Bolt/Mongo/gRPC) is best-effort BY DEFAULT: if
+# Every wire-protocol check below (Postgres/Redis/Bolt/Mongo/gRPC), and the observability-plugin
+# checks at the end (Prometheus, OTLP metrics, tracing), is best-effort BY DEFAULT: if
 # the corresponding plugin was not enabled on this server run (the port never opens) or the local
 # machine lacks the client tool, the check prints a WARN and is skipped rather than failing the
 # script. This keeps local/macOS/Windows runs, where client tools are not guaranteed to be
@@ -246,5 +247,51 @@ if command -v grpcurl >/dev/null 2>&1; then
 else
   wire_fail "grpcurl not installed, skipping gRPC reflection check"
 fi
+
+# Observability plugins (arcadedb-metrics, arcadedb-tracing). Same best-effort/strict split as the
+# wire protocols above: each is opt-in, so on a run that did not enable it the check WARN-skips, and
+# under WIRE_STRICT=1 (native-image.yml's Linux legs, which enable all three) it is a hard failure.
+# A plugin that is missing from the image is never discovered, so enabling it changes nothing and
+# the assertion below is what turns that into a red build rather than a silent no-op.
+echo "[exercise] Prometheus scrape (/prometheus)"
+# Not `req`: its -f would turn a 500 into an empty body and hide the one thing worth reading, the error
+# the server returned. Micrometer binds JVM/process meters reflectively, so a missing reflection
+# registration in the image shows up here as an HTTP 500 naming the method, not as a 404.
+PROM_CODE="$(curl -sS -o "$EX_WORK/prometheus.out" -w '%{http_code}' -u "$DB_USER:$PASS" \
+  "http://$HOST:$HTTP/prometheus" 2>/dev/null)" || PROM_CODE="000"
+case "$PROM_CODE" in
+  200)
+    # The SQL/Cypher round-trips above guarantee the engine query counter and the HTTP request timer exist.
+    if grep -q '# TYPE arcadedb_engine_queries_total counter' "$EX_WORK/prometheus.out" \
+      && grep -q 'arcadedb_http_requests' "$EX_WORK/prometheus.out"; then
+      echo "[exercise] Prometheus scrape -> ArcadeDB metrics present"
+    else
+      wire_fail "Prometheus scrape answered 200 but carries no ArcadeDB engine/HTTP metrics"
+    fi
+    ;;
+  404 | 000)
+    wire_fail "Prometheus endpoint /prometheus not answering, HTTP $PROM_CODE (PrometheusMetricsPlugin not enabled or missing from the image?)"
+    ;;
+  *)
+    wire_fail "Prometheus scrape answered HTTP $PROM_CODE: $(head -c 600 "$EX_WORK/prometheus.out" 2>/dev/null)"
+    ;;
+esac
+
+# The OTLP metrics registry and the tracing plugin expose no endpoint to probe: their only
+# observable is the line they log once their SDK has been built, which is exactly the step that
+# fails inside a native image when reflection or resource metadata is missing.
+plugin_log_check() {
+  local label="$1" needle="$2"
+  echo "[exercise] $label"
+  if [ -z "${SERVER_LOG:-}" ] || [ ! -r "$SERVER_LOG" ]; then
+    wire_fail "$label: SERVER_LOG not available, cannot assert"
+  elif grep -q "$needle" "$SERVER_LOG"; then
+    echo "[exercise] $label -> '$needle'"
+  else
+    wire_fail "$label: '$needle' not found in the server log (plugin not enabled or missing from the image?)"
+  fi
+}
+plugin_log_check "OTLP metrics export" "OTLP metrics export enabled"
+plugin_log_check "OpenTelemetry tracing" "OpenTelemetry tracing enabled"
 
 echo "[exercise] PASS"

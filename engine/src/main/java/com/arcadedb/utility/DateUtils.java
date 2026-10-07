@@ -66,7 +66,7 @@ public class DateUtils {
    * {@link #FILE_NAME_TIMESTAMP} at second precision, for log and profiler files rotated by name order.
    */
   public static final  DateTimeFormatter                            FILE_NAME_TIMESTAMP_SECONDS = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss", Locale.ROOT);
-  private static final ZoneId                                       UTC_ZONE_ID               = ZoneId.of("UTC");
+  private static final ZoneId                                       UTC_ZONE_ID               = ZoneOffset.UTC;
   private static final ConcurrentHashMap<String, DateTimeFormatter> CACHED_FORMATTERS         = new ConcurrentHashMap<>();
   /**
    * Ceiling on {@link #CACHED_FORMATTERS}. The cache exists for the handful of patterns a schema and the built-in
@@ -190,14 +190,8 @@ public class DateUtils {
     } else if (dateImplementation.equals(LocalDate.class)) {
       value = LocalDate.ofEpochDay(timestamp);
     } else if (dateImplementation.equals(LocalDateTime.class)) {
-      // floorDiv/floorMod for the same reason as getDate() below: '%' keeps the dividend's sign, so a pre-epoch
-      // value yields a NEGATIVE nanoOfSecond and LocalDateTime.ofEpochSecond rejects it outright (found in
-      // review). NOTE, separately and deliberately left alone: every other arm here reads `timestamp` as a count
-      // of DAYS, which is what a DATE stores, while this one divides it as if it were millis. That is a
-      // pre-existing unit mismatch in this branch, not arithmetic, and changing it would change what a DATE
-      // column configured with LocalDateTime answers - a decision, not a fix.
-      value = LocalDateTime.ofEpochSecond(Math.floorDiv(timestamp, 1_000L),
-          (int) (Math.floorMod(timestamp, 1_000L) * 1_000_000L), ZoneOffset.UTC);
+      // A DATE stores a count of DAYS, as every other arm reads it (issue #9324): midnight UTC on that day
+      value = LocalDate.ofEpochDay(timestamp).atStartOfDay();
     } else
       throw new SerializationException("Error on deserialize date. Configured class '" + dateImplementation + "' is not supported");
     return value;
@@ -980,6 +974,14 @@ public class DateUtils {
     return CACHED_FORMATTERS.size();
   }
 
+  /**
+   * The UTC wall clock of an epoch-millis timestamp. floorDiv/floorMod keep the nanosecond part non-negative for a
+   * pre-epoch value, which {@link LocalDateTime#ofEpochSecond} would otherwise reject.
+   */
+  public static LocalDateTime localDateTimeFromEpochMillis(final long millis) {
+    return LocalDateTime.ofEpochSecond(Math.floorDiv(millis, 1_000L), (int) (Math.floorMod(millis, 1_000L) * 1_000_000L), ZoneOffset.UTC);
+  }
+
   public static Object getDate(final Object date, final Class dateImplementation) {
     if (date == null)
       return null;
@@ -1006,8 +1008,7 @@ public class DateUtils {
       // LocalDateTime.ofEpochSecond validates and rejects - asDateTime() did not merely misreport such an
       // instant, it threw DateTimeException. floorMod pairs with floorDiv so second and nanosecond stay
       // consistent: the seconds floor down and the remainder is the non-negative distance above that second.
-      return LocalDateTime.ofEpochSecond(Math.floorDiv(timestamp, 1_000L),
-          (int) (Math.floorMod(timestamp, 1_000L) * 1_000_000L), ZoneOffset.UTC);
+      return localDateTimeFromEpochMillis(timestamp);
     else
       return date;
   }

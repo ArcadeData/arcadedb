@@ -205,10 +205,6 @@ public interface CommandContext {
   /** Context variable name set to {@code true} when CSR (Graph Analytical View) acceleration was used during execution. */
   String CSR_ACCELERATED_VAR = "_csrAccelerated";
 
-  /** Context variable set by algorithm procedures to the total number of results they will yield.
-   *  Used by CallStep to optimize count-only queries by skipping per-row Result object creation. */
-  String RESULT_COUNT_HINT_VAR = "_resultCountHint";
-
   /** Partition-pruned bucket file ids ({@link com.arcadedb.utility.IntHashSet}) for the FROM type named in {@link #PARTITION_PRUNED_TYPE_NAME_VAR}. Single-valued: only one partitioned FROM type per query (issue #4087). */
   String PARTITION_PRUNED_BUCKET_FILE_IDS_VAR = "_partitionPrunedBucketFileIds";
 

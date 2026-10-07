@@ -65,6 +65,7 @@ import com.arcadedb.query.opencypher.procedures.algo.AlgoSameCommunity;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoSteinerTree;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoTotalNeighbors;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoDegreeCentrality;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoCCHShortestPath;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoDijkstra;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoEigenvectorCentrality;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoGraphSummary;
@@ -315,6 +316,7 @@ public final class CypherProcedureRegistry {
 
   private static void registerAlgorithmProcedures() {
     register(new AlgoDijkstra());
+    register(new AlgoCCHShortestPath());
     register(new AlgoAStar());
     register(new AlgoAllSimplePaths());
     register(new AlgoBellmanFord());

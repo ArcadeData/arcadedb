@@ -48,11 +48,14 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.backup.BackupCoordinator;
 import com.arcadedb.server.ha.raft.ratis.RatisSnapshotDigestWarningFilter;
+import com.arcadedb.server.monitor.CountingRejectionPolicy;
+import com.arcadedb.server.monitor.PoolMetrics;
 import com.arcadedb.server.security.ApiTokenConfiguration;
 import com.arcadedb.server.security.ReplicatedSecurityConfigPersistenceException;
 import com.arcadedb.server.security.ReplicatedUsersPersistenceException;
 import com.arcadedb.server.security.SecurityGroupFileRepository;
 import com.arcadedb.server.security.SecurityUserFileRepository;
+import com.arcadedb.utility.DedicatedThreadPool.PoolStats;
 import com.arcadedb.utility.FileUtils;
 import org.apache.ratis.proto.RaftProtos;
 import org.apache.ratis.proto.RaftProtos.LogEntryProto;
@@ -103,7 +106,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -310,7 +313,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
   private volatile Thread lifecycleWorker;
   private volatile Thread snapshotInstallWorker;
 
-  private final ExecutorService lifecycleExecutor = Executors.newSingleThreadExecutor(r -> {
+  // What Executors.newSingleThreadExecutor builds, spelled out so the pool's row can read it (issue #8856).
+  private final ThreadPoolExecutor lifecycleExecutor = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
+      new LinkedBlockingQueue<>(), r -> {
     final Thread t = new Thread(r, LIFECYCLE_THREAD_NAME);
     lifecycleWorker = t;
     t.setDaemon(true);
@@ -340,7 +345,37 @@ public class ArcadeStateMachine extends BaseStateMachine {
       snapshotInstallWorker = t;
       t.setDaemon(true);
       return t;
-    }, new ThreadPoolExecutor.AbortPolicy());
+    }, CountingRejectionPolicy.abort());
+  }
+
+  /**
+   * The {@code pool=sm_lifecycle} executor row (issue #8856): the single worker the leader-facing downloads, the
+   * bootstrap retries and the re-verifications queue on. Unbounded, so it never rejects running work: queue depth is
+   * the signal, a download queued behind another.
+   */
+  PoolStats getLifecyclePoolStats() {
+    return PoolMetrics.statsOf(lifecycleExecutor);
+  }
+
+  /** The {@code pool=snapshot_install} executor row (issue #8856); see {@link #getSnapshotInstallRejections}. */
+  PoolStats getSnapshotInstallPoolStats() {
+    return PoolMetrics.statsOf(snapshotInstallExecutor);
+  }
+
+  /**
+   * Leader-initiated snapshot installs the install executor refused while running (issue #8856). Each one became a
+   * failed future Ratis retries, so a rejection is not lost for good, but the node stays behind until the retry.
+   */
+  long getSnapshotInstallRejections() {
+    // A metrics scrape must never throw: read the count only from the policy this class installs.
+    return snapshotInstallExecutor.getRejectedExecutionHandler() instanceof CountingRejectionPolicy policy ?
+        policy.getSaturations() :
+        0L;
+  }
+
+  /** The {@code pool=database_deleter} executor row (issue #8856), read through whichever deleter is installed. */
+  PoolStats getDatabaseDeleterPoolStats() {
+    return deferredDatabaseDeleter.getPoolStats();
   }
 
   /**
@@ -900,7 +935,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // loudly" backstop, so a shared budget across all diverged databases is the intended behaviour -
   // one very noisy diverged database crossing the threshold should still halt the node.
   private final        AtomicInteger divergedSwallowedErrors      = new AtomicInteger(0);
-  private static final int           MAX_DIVERGED_SWALLOWED_ERRORS = 100;
+  static final         int           MAX_DIVERGED_SWALLOWED_ERRORS = 100; // package-private for tests
 
   // Log-flood throttle for a diverged database's "snapshot resync in progress" notice. Once a WAL
   // version gap has quarantined a database, EVERY subsequent committed entry for it hits the same gap
@@ -1977,12 +2012,47 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * error on an already-diverged database is a resync condition): the only change is that the FIRST
    * unexpected error on a healthy database now quarantines it rather than halting the node.
    * <p>
+   * A sole voter does not quarantine (issue #9308): nothing could ever lift the quarantine there, so the error is
+   * raised as a {@link ReplicationException} with a SEVERE alert and the node keeps serving. The failed entry stays in
+   * the Raft log, so a restart that replays the log from the last snapshot marker applies it again, after the entries
+   * that succeeded in between were already applied before it: a deterministic failure fails the same way again, while
+   * a transient one (an I/O error, a lock timeout) now succeeds out of its original order. Either way the database may
+   * no longer match the log, which is what the alert tells the operator to check.
+   * <p>
    * Entries with no single target database ({@code databaseName} null or empty, e.g. a
    * {@code SECURITY_USERS_ENTRY}) are NOT isolable to one database's state, so their failure still
    * propagates to the node-wide fatal halt.
    */
   private void handleUnexpectedApplyError(final long index, final String databaseName, final RuntimeException t) {
     if (databaseName != null && !databaseName.isEmpty()) {
+      // A quarantine is lifted by the leadership hand-off and the targeted resync from the next leader. A sole voter
+      // has neither, and with one voter there is no other copy for this one to be diverged FROM, so the quarantine
+      // would protect nothing and never lift: it would keep the whole node out of the ready set and stop the Raft log
+      // from being checkpointed until the volume fills (issue #9308, the same reasoning #8940 applied to the
+      // forceSnapshot replay guard). Alert instead and keep serving. The entry still FAILS, so its submitter learns the
+      // apply did not happen; only the quarantine, the hand-off and the swallow budget (which exists for a node waiting
+      // on a resync, and there is none here) are skipped. A database that is ALREADY quarantined - restored from disk,
+      // or raised while the node still had peers - keeps its quarantine and the routing below.
+      // isSoleVoter() cannot throw here and mask t: the membership read it relies on (getCommittedPeersOrNull) degrades
+      // to the declared server list on any exception, and a declared multi-node list answers false, the old routing.
+      // It is also true while a cluster that will grow is still one committed voter (a single-seed bootstrap, or a
+      // membership change down to one voter): a peer that joins later installs its copy FROM this node, so it inherits
+      // the same state rather than diverging from it. The diverged check and the voter check are two reads, not one
+      // atomic decision; a quarantine raised in between only sends this error down the old routing below.
+      final RaftHAServer raftHA = this.raftHAServer;
+      if (raftHA != null && !isDatabaseDiverged(databaseName) && raftHA.isSoleVoter()) {
+        LogManager.instance().log(this, Level.SEVERE,
+            "Unexpected error applying Raft entry for database '%s' at index %d, and this node is the only voter, so "
+                + "there is no peer to resync it from. It is NOT quarantined (that could never be lifted here and would "
+                + "keep the node out of service); the entry is reported as failed and later entries keep applying on top "
+                + "of a state that is MISSING it, so from here on the database may be inconsistent with the Raft log and "
+                + "a later entry that depends on this one can fail or produce a different state. Check the database "
+                + "(CHECK DATABASE) and restore it from a backup if it is damaged: %s",
+            databaseName, index, t.getMessage());
+        throw new ReplicationException("Apply error on database '" + databaseName + "' at index " + index
+            + "; this node is the only voter, so the database is not quarantined", t);
+      }
+
       // Mark the database diverged on the first error so subsequent errors for it route here too.
       // quarantineDatabase() returns true only the first time, which is when we kick off the targeted resync. The cause
       // recorded with it is what the operator-facing alert says (issue #7741): an entry this node cannot decode
@@ -6178,13 +6248,52 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * @throws Exception when the database cannot be opened or its directory cannot be read; callers
    *                   decide what an unreadable local copy means for them.
    */
-  private BootstrapBaseline readLocalBootstrapState(final String dbName) throws Exception {
-    final ServerDatabase serverDb = server.getDatabase(dbName);
+  // @VisibleForTesting (package-private, issue #8843)
+  BootstrapBaseline readLocalBootstrapState(final String dbName) throws Exception {
+    return readLocalBootstrapState(dbName, BootstrapFingerprint.SETTLE_MAX_WAIT_MILLIS);
+  }
+
+  /** {@link #readLocalBootstrapState(String)} with an explicit flush-settle bound - see {@link #settleBudget}. */
+  BootstrapBaseline readLocalBootstrapState(final String dbName, final long maxSettleMillis) throws Exception {
+    return localBootstrapState(server.getDatabase(dbName), maxSettleMillis);
+  }
+
+  /**
+   * The {@code (fingerprint, lastTxId)} pair of one open database, or {@code null} when it is not backed by a
+   * {@link LocalDatabase}. The ONE place every bootstrap participant reads its own state from - the state machine's
+   * verification and re-verification, the election's local sample, and the {@code bootstrap-state} answer to a peer -
+   * so the pair means the same thing wherever two of them are compared.
+   * <p>
+   * The fingerprint is taken with {@link BootstrapFingerprint#computeSettled}, never over the raw files (issue #8843):
+   * the database is open, its last commits may still be queued in the asynchronous page flush, and two samples of one
+   * unchanged copy either side of that flush would otherwise read a matching peer as a mismatched one. The wait is
+   * bounded by the backlog found at the call and by {@link BootstrapFingerprint#SETTLE_MAX_WAIT_MILLIS}, so the Raft
+   * apply thread and a leader under sustained writes are never held for the duration of the writes. A caller that
+   * reads several databases in one sweep passes {@link #settleBudget} of ONE deadline shared by the sweep instead, so a
+   * wedged disk or a suspended flush costs the sweep that bound once, not once per database.
+   * <p>
+   * {@code lastTxId} is read after the fingerprint, not atomically with it: a commit landing in between is counted by
+   * the id and missing from the digest. Only a database under concurrent writes can see that, and its fingerprint
+   * drifts with every commit anyway - the pair is meaningful at the cold-start boundary, where nothing is writing.
+   */
+  static BootstrapBaseline localBootstrapState(final ServerDatabase serverDb) {
+    return localBootstrapState(serverDb, BootstrapFingerprint.SETTLE_MAX_WAIT_MILLIS);
+  }
+
+  static BootstrapBaseline localBootstrapState(final ServerDatabase serverDb, final long maxSettleMillis) {
     final DatabaseInternal embedded = serverDb.getWrappedDatabaseInstance().getEmbedded();
     if (!(embedded instanceof LocalDatabase localDb))
       return null;
-    return new BootstrapBaseline(BootstrapFingerprint.compute(new File(localDb.getDatabasePath())),
+    return new BootstrapBaseline(BootstrapFingerprint.computeSettled(localDb, maxSettleMillis),
         localDb.getLastTransactionId());
+  }
+
+  /**
+   * What is left of a flush-settle deadline shared by a sweep over several databases (issue #8843), never negative:
+   * once it is spent, the remaining databases are hashed without waiting.
+   */
+  static long settleBudget(final long sweepDeadlineMillis) {
+    return Math.max(0L, sweepDeadlineMillis - System.currentTimeMillis());
   }
 
   /**
@@ -6392,6 +6501,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   // @VisibleForTesting
   void reconcileBootstrapDivergence(final Map<String, BootstrapBaseline> leaderStates) {
+    final long settleDeadline = System.currentTimeMillis() + BootstrapFingerprint.SETTLE_MAX_WAIT_MILLIS;
     for (final String dbName : getBootstrapUnreconciledDatabases()) {
       final BootstrapBaseline leaderState = leaderStates.get(dbName);
       if (leaderState == null) {
@@ -6422,7 +6532,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       }
       final BootstrapBaseline local;
       try {
-        local = readLocalBootstrapState(dbName);
+        local = readLocalBootstrapState(dbName, settleBudget(settleDeadline));
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.WARNING,
             "Could not read local state of '%s' to verify bootstrap divergence: %s", dbName, e.getMessage());
