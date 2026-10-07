@@ -44,6 +44,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
+import java.util.Spliterator;
+import java.util.Spliterators;
 import java.util.stream.Stream;
 
 /**
@@ -64,16 +66,14 @@ import java.util.stream.Stream;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class CallStep extends AbstractExecutionStep {
-  private boolean countOnlyOptimization = false;
-
   /**
-   * Enables count-only optimization: when the downstream only needs count(*),
-   * the procedure's result stream can be replaced with a fast-counting ResultSet
-   * that skips per-row Result object creation.
+   * What a procedure call answers in count-only mode when its stream knows its exact size: the number of rows, with
+   * no row materialized.
    */
-  public void setCountOnlyOptimization(final boolean enabled) {
-    this.countOnlyOptimization = enabled;
+  private record KnownRowCount(long rows) {
   }
+
+  private boolean countOnlyOptimization = false;
   private final CallClause callClause;
   /**
    * Computed on first use and reused: one CALL names one procedure and one YIELD (issue #7976). Volatile, and always
@@ -91,6 +91,25 @@ public class CallStep extends AbstractExecutionStep {
     this.callClause = callClause;
     this.functionFactory = functionFactory;
     this.evaluator = new ExpressionEvaluator(functionFactory);
+  }
+
+  /**
+   * Enables count-only optimization: when the downstream only needs count(*),
+   * the procedure's result stream can be replaced with a fast-counting ResultSet
+   * that skips per-row Result object creation.
+   * <p>
+   * The count is the exact size the procedure's own {@link Stream} reports ({@link Spliterator#SIZED}), taken per
+   * invocation. It used to be a hint the procedure left in a query-wide context variable, which a chained CALL
+   * overwrote on every input row, so only the rows of the LAST invocation were counted, and which outlived its CALL,
+   * so a later CALL could count the rows of an earlier procedure (issue #9453).
+   * <p>
+   * Contract: enable it only when nothing downstream reads a row's content, its input-row variables or the row
+   * order - only how many rows there are, as {@code CypherExecutionPlan#isFollowedByCountOnlyReturn} establishes (a
+   * RETURN made of plain {@code count(*)} items and no other clause after the CALL). The counted rows are empty
+   * shared placeholders, emitted ahead of the materialized ones.
+   */
+  public void setCountOnlyOptimization(final boolean enabled) {
+    this.countOnlyOptimization = enabled;
   }
 
   @Override
@@ -121,7 +140,6 @@ public class CallStep extends AbstractExecutionStep {
     // Pull rows from previous step
     final ResultSet prevResults = prev.syncPull(context, nRecords);
     final boolean hasYield = callClause.hasYield() && !callClause.isYieldAll();
-    final boolean yieldHasWhere = hasYield && callClause.getYieldWhere() != null;
 
     // Each entry pairs the originating inputRow with the procedure's result iterator.
     // Pairing is required so variables carried in from preceding WITH/MATCH clauses
@@ -129,6 +147,8 @@ public class CallStep extends AbstractExecutionStep {
     // Capacity is bounded by nRecords (the upstream batch limit); capped at 1M to guard
     // against Integer.MAX_VALUE being passed as a "fetch all" sentinel.
     final List<Map.Entry<Result, Iterator<?>>> allPairs = new ArrayList<>(nRecords > 0 && nRecords < 1000000 ? nRecords : 10);
+    // Rows of the invocations answered by a count alone (count-only mode), emitted ahead of the materialized ones
+    long countedRows = 0;
     while (prevResults.hasNext()) {
       final Result inputRow = prevResults.next();
       final long begin = context.isProfiling() ? System.nanoTime() : 0;
@@ -138,14 +158,16 @@ public class CallStep extends AbstractExecutionStep {
 
         final Object callResult = executeCall(context, inputRow);
 
+        if (callResult instanceof KnownRowCount known) {
+          // Summed per invocation: every input row runs the procedure once and contributes its own rows
+          countedRows += known.rows();
+          continue;
+        }
+
         if (callResult == null) {
           if (callClause.isOptional())
-            // Use an empty result so YIELD only sees the procedure's outputs (null for every
-            // field). Pre-merging inputRow here would let YIELD incorrectly read outer-scope
-            // variables if they share a name with a YIELD field. The lazy iterator merges
-            // inputRow later, after YIELD filtering.
-            allPairs.add(Map.entry(inputRow,
-                Collections.singletonList((Object) new ResultInternal()).iterator()));
+            // No rows: the lazy iterator below answers the input row's null row
+            allPairs.add(Map.entry(inputRow, Collections.emptyIterator()));
           continue;
         }
 
@@ -164,41 +186,15 @@ public class CallStep extends AbstractExecutionStep {
       }
     }
 
-    // Check for result count hint (set by CSR-accelerated algorithm procedures)
-    // Only activate when countOnlyOptimization is enabled (detected during plan compilation)
-    final Object countHint = countOnlyOptimization ? context.getVariable(CommandContext.RESULT_COUNT_HINT_VAR) : null;
-    if (countHint instanceof Long resultCount && resultCount > 0 && !yieldHasWhere) {
-      // Fast path: return a ResultSet that yields `resultCount` shared empty results.
-      // The procedure already computed the algorithm; downstream only needs the row count.
-      final ResultInternal sharedResult = new ResultInternal();
-      return new ResultSet() {
-        private long remaining = resultCount;
-
-        @Override
-        public boolean hasNext() {
-          return remaining > 0;
-        }
-
-        @Override
-        public Result next() {
-          if (remaining-- <= 0)
-            throw new NoSuchElementException();
-          return sharedResult;
-        }
-
-        @Override
-        public void close() {
-        }
-      };
-    }
-
     // Standard path: lazily iterate through all (inputRow, resultIterator) pairs.
     // Each yielded result is merged with its originating inputRow so that variables
     // from a preceding WITH/MATCH clause remain visible after CALL ... YIELD.
     final Iterator<Map.Entry<Result, Iterator<?>>> pairIter = allPairs.iterator();
+    final boolean optional = callClause.isOptional();
     final Iterator<Result> lazyIter = new Iterator<>() {
       private Result currentInputRow = null;
       private Iterator<?> currentIter = null;
+      private boolean currentYielded = false;
       private Result next = null;
 
       @Override
@@ -209,17 +205,24 @@ public class CallStep extends AbstractExecutionStep {
             if (hasYield) {
               final ResultInternal filtered = applyYieldToSingleResult(converted);
               if (filtered != null) {
+                currentYielded = true;
                 next = mergeWithInputRow(currentInputRow, filtered);
                 return true;
               }
             } else {
+              currentYielded = true;
               next = mergeWithInputRow(currentInputRow, converted);
               return true;
             }
+          } else if (optional && currentIter != null && !currentYielded) {
+            currentYielded = true;
+            next = mergeWithInputRow(currentInputRow, nullYieldRow());
+            return true;
           } else if (pairIter.hasNext()) {
             final Map.Entry<Result, Iterator<?>> pair = pairIter.next();
             currentInputRow = pair.getKey();
             currentIter = pair.getValue();
+            currentYielded = false;
           } else {
             return false;
           }
@@ -237,7 +240,37 @@ public class CallStep extends AbstractExecutionStep {
       }
     };
 
-    return new IteratorResultSet(lazyIter);
+    return countedRows > 0 ? countedRowsThen(countedRows, lazyIter) : new IteratorResultSet(lazyIter);
+  }
+
+  /**
+   * Count-only fast path: {@code rows} shared empty results, then whatever {@code rest} yields. Downstream only counts
+   * the rows (see {@code CypherExecutionPlan#isFollowedByCountOnlyReturn}), so one shared result stands for all of
+   * them instead of one Result object per row.
+   */
+  private static ResultSet countedRowsThen(final long rows, final Iterator<Result> rest) {
+    final ResultInternal sharedResult = new ResultInternal();
+    return new ResultSet() {
+      private long remaining = rows;
+
+      @Override
+      public boolean hasNext() {
+        return remaining > 0 || rest.hasNext();
+      }
+
+      @Override
+      public Result next() {
+        if (remaining > 0) {
+          --remaining;
+          return sharedResult;
+        }
+        return rest.next();
+      }
+
+      @Override
+      public void close() {
+      }
+    };
   }
 
   /**
@@ -367,6 +400,15 @@ public class CallStep extends AbstractExecutionStep {
 
       final Stream<ResultInternal> resultStream = procedure.execute(args, inputRow, context, requestedYieldFields(procedure))
           .map(this::convertProcedureResultToInternal);
+
+      // Count-only mode: a stream that knows its exact size answers the count without producing a single row. Only
+      // for a read procedure, whose rows carry no side effect, and only without YIELD WHERE, which drops rows the
+      // size still counts. An empty stream takes the ordinary path, where OPTIONAL CALL turns it into its null row.
+      if (countOnlyOptimization && !procedure.isWriteProcedure() && callClause.getYieldWhere() == null) {
+        final Spliterator<ResultInternal> rows = resultStream.spliterator();
+        final long size = rows.getExactSizeIfKnown();
+        return size > 0 ? new KnownRowCount(size) : Spliterators.iterator(rows);
+      }
 
       // .map()/.iterator() are lazy, so without forcing it here commit() would run before the stream is ever
       // drained. Every current write procedure happens to mutate and materialize its Stream eagerly inside
@@ -501,19 +543,24 @@ public class CallStep extends AbstractExecutionStep {
    * Converts the call result to a ResultSet.
    */
   private ResultSet convertToResultSet(final Object result, final CommandContext context) {
-    if (result == null) {
-      // OPTIONAL CALL returned null - return empty result
+    final boolean optional = callClause.isOptional();
+    if (result == null && !optional)
       return createEmptyResultSet();
-    }
 
     if (result instanceof ResultSet) {
       // Already a ResultSet
       return (ResultSet) result;
     }
 
+    if (result instanceof KnownRowCount known)
+      return countedRowsThen(known.rows(), Collections.emptyIterator());
+
     // Build a lazy iterator that converts items on demand without pre-materializing
     final Iterator<?> sourceIter;
-    if (result instanceof Iterator) {
+    if (result == null) {
+      // OPTIONAL CALL with no rows: the lazy iterator below answers the null row
+      sourceIter = Collections.emptyIterator();
+    } else if (result instanceof Iterator) {
       sourceIter = (Iterator<?>) result;
     } else if (result instanceof Collection) {
       sourceIter = ((Collection<?>) result).iterator();
@@ -522,40 +569,11 @@ public class CallStep extends AbstractExecutionStep {
       sourceIter = Collections.singletonList(result).iterator();
     }
 
-    // Optimization: when the procedure has set a result count hint and YIELD has no WHERE filter,
-    // return a fast-counting ResultSet that reuses a single shared Result object instead of
-    // creating one per row. This makes count(*) queries O(1) in memory instead of O(n).
     final boolean hasYield = callClause.hasYield() && !callClause.isYieldAll();
-    final boolean yieldHasWhere = hasYield && callClause.getYieldWhere() != null;
-    final Object countHint = countOnlyOptimization ? context.getVariable(CommandContext.RESULT_COUNT_HINT_VAR) : null;
-
-    if (countHint instanceof Long resultCount && resultCount > 0 && !yieldHasWhere) {
-      // Fast path: return a ResultSet that yields `resultCount` shared empty results.
-      // The procedure already computed the algorithm; downstream only needs the count.
-      final ResultInternal sharedResult = new ResultInternal();
-      return new ResultSet() {
-        private long remaining = resultCount;
-
-        @Override
-        public boolean hasNext() {
-          return remaining > 0;
-        }
-
-        @Override
-        public Result next() {
-          if (remaining-- <= 0)
-            throw new NoSuchElementException();
-          return sharedResult;
-        }
-
-        @Override
-        public void close() {
-        }
-      };
-    }
 
     // Standard path: apply YIELD filtering lazily
     final Iterator<Result> lazyIter = new Iterator<>() {
+      private boolean yielded = false;
       private Result next = null;
 
       @Override
@@ -565,13 +583,19 @@ public class CallStep extends AbstractExecutionStep {
           if (hasYield) {
             final ResultInternal filtered = applyYieldToSingleResult(converted);
             if (filtered != null) {
+              yielded = true;
               next = filtered;
               return true;
             }
           } else {
+            yielded = true;
             next = converted;
             return true;
           }
+        }
+        if (next == null && optional && !yielded) {
+          yielded = true;
+          next = nullYieldRow();
         }
         return next != null;
       }
@@ -587,6 +611,26 @@ public class CallStep extends AbstractExecutionStep {
     };
 
     return new IteratorResultSet(lazyIter);
+  }
+
+  /**
+   * The row an OPTIONAL CALL answers for an input row the procedure yielded no row for - none at all, or none that
+   * passed YIELD WHERE - the way OPTIONAL MATCH answers a pattern with no match: every yielded name bound to null.
+   * It deliberately skips YIELD WHERE, which a row of nulls can never pass; the caller merges it with the input row.
+   * {@code YIELD *} (and no YIELD) names no field, so the null row binds every field the procedure declares.
+   */
+  private ResultInternal nullYieldRow() {
+    final ResultInternal row = new ResultInternal();
+    if (callClause.hasYield() && !callClause.isYieldAll()) {
+      for (final CallClause.YieldItem yieldItem : callClause.getYieldItems())
+        row.setProperty(yieldItem.getOutputName(), null);
+    } else {
+      final CypherProcedure procedure = CypherProcedureRegistry.get(callClause.getProcedureName());
+      if (procedure != null && procedure.getYieldFields() != null)
+        for (final String field : procedure.getYieldFields())
+          row.setProperty(field, null);
+    }
+    return row;
   }
 
   /**
