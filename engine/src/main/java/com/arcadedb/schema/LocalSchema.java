@@ -371,6 +371,7 @@ public class LocalSchema implements Schema {
    * The TimeSeries types whose engine waits for the WAL replay of the open in progress, {@code null} when engines are
    * built as their types are read. See {@link #openDeferredTimeSeriesEngines()}.
    */
+  // Written by load() and openDeferredTimeSeriesEngines(), both on the single thread that opens the database
   private             List<LocalTimeSeriesType>             timeSeriesEnginesAwaitingReplay;
   /**
    * The schema members that live beside {@code "types"} (triggers, materialized views, continuous aggregates,

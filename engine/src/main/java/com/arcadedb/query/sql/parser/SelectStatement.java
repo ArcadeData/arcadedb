@@ -220,7 +220,9 @@ public class SelectStatement extends Statement {
    * rebuilt meanwhile (issue #9331) it plans the statement again. The planner validates an index, picks it, and reads it again
    * a few calls later; the steps read it once more when they start. A concurrent {@code DROP INDEX} in any of those gaps left
    * a plan that no longer matches the schema, and the {@link IndexException} reached the caller of a read-only query.
-   * Nothing has been returned yet at that point and a SELECT writes nothing, so running it again is safe. Every attempt after
+   * Nothing has been returned yet at that point and a SELECT writes nothing (a function with side effects, such as
+   * {@code sequence.next()}, would run twice, but the exception comes from the index, before the first row), so running it again
+   * is safe. Every attempt after
    * the first plans without the cache, which may still hold the stale plan.
    */
   private ResultSet openResultSet(final CommandContext context, final Function<CommandContext, InternalExecutionPlan> firstPlanner) {

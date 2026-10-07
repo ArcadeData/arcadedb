@@ -31,6 +31,7 @@ import com.arcadedb.index.MultiIndexCursor;
 import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.vector.LSMVectorIndex;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.SelectExecutionPlanner;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.MultiIterator;
@@ -39,6 +40,7 @@ import com.arcadedb.utility.Pair;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.LongSupplier;
+import java.util.logging.Level;
 
 /**
  * Native Query engine is a simple query engine that covers most of the classic use cases, such as the retrieval of records
@@ -55,6 +57,8 @@ public class SelectExecutor {
   // FOR THE NESTED PER-VALUE CURSOR IT BUILDS FOR AN in_op LEAF, SO NEITHER PLACE HANDS A RAW select.limit (MISSING
   // skip) TO A MultiIndexCursor
   int             indexCandidateLimit = -1;
+  // THE INDEX lookForIndexes() IS BUILDING A CURSOR ON, TO TELL A DROPPED ONE FROM AN ARGUMENT THE CALLER GOT WRONG (#9331)
+  private TypeIndex indexBeingRead;
 
   // #6815: THE ABSOLUTE DEADLINE FOR THIS EXECUTION, OWNED BY THE CONSUMER INSTEAD OF BY THE SOURCE ITERATOR.
   // buildIterator() CAN RETURN FOUR DIFFERENT SOURCES AND ONLY ONE OF THEM (MultiIterator) CARRIES A TIMEOUT OF ITS
@@ -367,6 +371,7 @@ public class SelectExecutor {
   MultiIndexCursor lookForIndexes() {
     if (select.fromType != null && select.rootTreeElement != null) {
       final List<IndexCursor> cursors = new ArrayList<>();
+      indexBeingRead = null;
       try {
         // #6592: A COMPOSITE (MULTI-PROPERTY) INDEX IS REGISTERED UNDER ITS FULL PROPERTY LIST (SEE
         // LocalDocumentType.indexesByProperties), NOT UNDER ANY SUBSET OF IT - SO A PLAIN AND-CONJUNCTION OF EQUALITY
@@ -405,6 +410,12 @@ public class SelectExecutor {
         // MISLEADING FINITE VALUE
         indexCandidateLimit = -1;
       } catch (final IndexException | IllegalArgumentException e) {
+        // An IllegalArgumentException is the index's only when the index it was reading is gone: any other one (a key that does
+        // not convert, a bad parameter) is the caller's and must not turn into a silent scan
+        if (e instanceof IllegalArgumentException && (indexBeingRead == null || indexBeingRead.isValid()))
+          throw e;
+        LogManager.instance().log(this, Level.FINE, "Index dropped or rebuilt while the query was starting, scanning instead: %s",
+            null, e.getMessage());
         // #9331: AN INDEX DROPPED OR REBUILT BY A CONCURRENT DDL WHILE THE CURSORS WERE BEING BUILT: EITHER ITS OWN
         // IndexException OR, ONCE ITS FILE IS DELETED UNDER THE LOOKUP, THE FileManager'S "FILE WITH ID n WAS NOT FOUND".
         // THE SCAN ANSWERS THE SAME ROWS WITHOUT IT, SINCE evaluateWhere() RUNS THE WHOLE WHERE-TREE ON EVERY RECORD EITHER WAY
@@ -541,6 +552,7 @@ public class SelectExecutor {
     // THROUGH range() WITH EQUAL (INCLUSIVE) BEGIN/END BOUNDS INSTEAD - SEE LSMTreeIndexCompacted's "PARTIAL KEY
     // COMPARISON...MATCHES BY PREFIX" (PURPOSE=2).
     final boolean ascendingOrder = orderByElided ? select.orderBy.getFirst().getSecond() : true;
+    indexBeingRead = bestIndex;
     final IndexCursor cursor = fullKeyMatch ? bestIndex.get(keys) : bestIndex.range(ascendingOrder, keys, true, keys, true);
 
     if (cursor == null)
@@ -740,6 +752,7 @@ public class SelectExecutor {
     // DESCENDING INDEX SCAN WITH AN OPEN (null) BOUND IS NOT A SUPPORTED CURSOR SHAPE HERE AND USED TO RETURN AN EMPTY RESULT.
     final boolean ascendingOrder = true;
 
+    indexBeingRead = node.index;
     final IndexCursor cursor;
     if (node.operator == SelectOperator.eq)
       cursor = node.index.get(new Object[] { rightValue });
