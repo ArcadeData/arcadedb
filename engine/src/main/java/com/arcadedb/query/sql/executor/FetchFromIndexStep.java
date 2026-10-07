@@ -76,6 +76,8 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
    */
   final           List<IndexCursor>                              customCursors = new ArrayList<>();
   private         long                                           entriesSequence;
+  // Answered once per run of the step: asked for every row the step loads
+  private         Boolean                                        pointLookup;
   protected       RangeIndex                                     index;
   protected       BooleanExpression                              condition;
   private       BinaryCondition additionalRangeCondition;
@@ -215,6 +217,12 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
    * from a scan that reads the index as it goes.
    */
   boolean isPointLookup() {
+    if (pointLookup == null)
+      pointLookup = computeIsPointLookup();
+    return pointLookup;
+  }
+
+  private boolean computeIsPointLookup() {
     if (condition instanceof InCondition)
       return true;
     if (!(condition instanceof AndBlock and) || and.getSubBlocks().isEmpty())
@@ -1314,6 +1322,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     count = 0;
 
     inited = false;
+    pointLookup = null;
     customIterator = null;
     nextEntry = null;
     nextEntryScore = 0f;
