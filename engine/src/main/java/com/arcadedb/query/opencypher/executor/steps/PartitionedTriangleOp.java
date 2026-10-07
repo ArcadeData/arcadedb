@@ -332,18 +332,22 @@ public final class PartitionedTriangleOp implements CountOp {
       final RID uCountry = entry.getValue();
 
       final RID[] uNeighbors = getNeighborRIDs(db, gavProvider, uRid, Vertex.DIRECTION.BOTH, triangleEdgeType);
+      // multiplicity of each in-country neighbour of u: a parallel edge is a match of its own (issue #9298). Primitive counts,
+      // no Integer or map node per neighbour. It depends on u alone and is only read below, so it is built once per u, on the
+      // first in-country v, not once per (u, v) pair
+      RidIntHashMap uNeighborCounts = null;
       for (final RID vRid : uNeighbors) {
         final RID vCountry = personToPartition.get(vRid);
         if (vCountry == null || !vCountry.equals(uCountry))
           continue;
 
-        // multiplicity of each in-country neighbour of u: a parallel edge is a match of its own (issue #9298). Primitive counts,
-        // no Integer or map node per neighbour: this map is rebuilt for every (u, v) pair
-        final RidIntHashMap uNeighborCounts = new RidIntHashMap();
-        for (final RID nRid : uNeighbors) {
-          final RID nCountry = personToPartition.get(nRid);
-          if (nCountry != null && nCountry.equals(uCountry))
-            uNeighborCounts.add(nRid, 1);
+        if (uNeighborCounts == null) {
+          uNeighborCounts = new RidIntHashMap();
+          for (final RID nRid : uNeighbors) {
+            final RID nCountry = personToPartition.get(nRid);
+            if (nCountry != null && nCountry.equals(uCountry))
+              uNeighborCounts.add(nRid, 1);
+          }
         }
         final RID[] vNeighbors = getNeighborRIDs(db, gavProvider, vRid, Vertex.DIRECTION.BOTH, triangleEdgeType);
         for (final RID wRid : vNeighbors)
