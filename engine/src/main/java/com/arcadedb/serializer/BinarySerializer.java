@@ -569,9 +569,13 @@ public class BinarySerializer {
         // arcadedb.dateImplementation=java.util.Calendar is a supported setting, so a DATE column configured with
         // it reaches here holding a Calendar for the same reason (#7638)
         content.putUnsignedNumber(Math.floorDiv(calendar.getTimeInMillis(), DateUtils.MS_IN_A_DAY));
+      else if (value instanceof LocalDateTime dateTime)
+        // arcadedb.dateImplementation=java.time.LocalDateTime reads a DATE as midnight of its day (#9324), so the value
+        // read must be writable back
+        content.putUnsignedNumber(dateTime.toLocalDate().toEpochDay());
       else
         throw new IllegalArgumentException("Cannot serialize " + value.getClass()
-            + " as DATE; expected java.util.Date, java.util.Calendar or java.time.LocalDate");
+            + " as DATE; expected java.util.Date, java.util.Calendar, java.time.LocalDate or java.time.LocalDateTime");
       break;
     case BinaryTypes.TYPE_DATETIME_SECOND:
     case BinaryTypes.TYPE_DATETIME:
