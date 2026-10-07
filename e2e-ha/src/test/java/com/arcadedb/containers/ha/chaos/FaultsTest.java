@@ -108,6 +108,40 @@ class FaultsTest {
   }
 
   @Test
+  void longPauseFreezesExactlyOneFollowerAndNeverTheLeader() throws Exception {
+    for (final int nodes : new int[] { 3, 5 })
+      for (long seed = 0; seed < 100; seed++) {
+        final ClusterState state = new ClusterState(nodes);
+        final FakeNodeControl control = new FakeNodeControl();
+        control.leader = 2;
+        final LongPauseFault fault = new LongPauseFault();
+        final String description = fault.inject(state, control, new Random(seed * 0x9E3779B97F4A7C15L));
+        assertThat(description).startsWith("FOLLOWER");
+        assertThat(state.impairedCount()).isEqualTo(1);
+        assertThat(state.state(2)).isEqualTo(NodeState.UP);
+        final int paused = firstIn(state, NodeState.PAUSED);
+        assertThat(control.calls).containsExactly("pause:" + paused);
+        fault.heal(state, control);
+        assertThat(control.calls).containsExactly("pause:" + paused, "unpause:" + paused);
+        assertThat(state.impairedCount()).isZero();
+      }
+  }
+
+  @Test
+  void longPauseOutlastsTheRatisCloseThresholdAndForbidsAReformat() {
+    final Fault fault = FaultPicker.create("longpause", Duration.ofSeconds(1));
+    assertThat(fault).isInstanceOf(LongPauseFault.class);
+    assertThat(fault.minHold()).isGreaterThan(Duration.ofSeconds(60));
+    assertThat(fault.forbidsReformat()).isTrue();
+    assertThat(fault.expectsWritesAvailable()).isTrue();
+    for (final String other : ChaosConfig.ALL_FAULTS)
+      if (!other.equals("longpause")) {
+        assertThat(FaultPicker.create(other, Duration.ofSeconds(1)).minHold()).as(other).isEqualTo(Duration.ZERO);
+        assertThat(FaultPicker.create(other, Duration.ofSeconds(1)).forbidsReformat()).as(other).isFalse();
+      }
+  }
+
+  @Test
   void splitIsolatesTheLeaderSideMinority() throws Exception {
     final ClusterState five = new ClusterState(5);
     final FakeNodeControl control = new FakeNodeControl();

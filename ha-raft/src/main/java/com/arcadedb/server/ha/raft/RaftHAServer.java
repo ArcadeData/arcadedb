@@ -2608,6 +2608,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
         restartFailureCount = 0;
         (formatStorage ? formatRestartCount : recoverRestartCount).incrementAndGet();
+        // The HA chaos harness counts this exact line ("Ratis restarted in place (recovered|reformatted storage)") to fail a
+        // long-pause step that reformatted (HaChaosIT, issue #8954): rewording it makes that check silently count zero
         LogManager.instance().log(this, Level.INFO, "Ratis restarted in place (%s storage)", formatStorage ? "reformatted" : "recovered");
       } catch (final Throwable t) {
         if (abandoned.getAsBoolean()) {

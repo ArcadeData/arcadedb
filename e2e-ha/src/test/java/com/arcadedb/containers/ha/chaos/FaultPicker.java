@@ -46,6 +46,7 @@ public final class FaultPicker {
       case "kill" -> new NodeFault(NodeFault.Kind.KILL);
       case "stop" -> new NodeFault(NodeFault.Kind.STOP);
       case "pause" -> new NodeFault(NodeFault.Kind.PAUSE);
+      case "longpause" -> new LongPauseFault();
       case "isolate" -> new NodeFault(NodeFault.Kind.ISOLATE);
       case "split" -> new SplitFault();
       case "rolling" -> new RollingRestartFault(electionTimeout);
