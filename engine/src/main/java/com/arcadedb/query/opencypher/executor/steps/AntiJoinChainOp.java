@@ -1001,7 +1001,8 @@ public final class AntiJoinChainOp implements CountOp {
       if (hopIndex + 1 == antiJoinTargetIdx && antiJoinSet.contains(neighborRid))
         continue;
       if (inequalityIdxA >= 0 && inequalityIdxB >= 0
-          && inequalityIdxA == antiJoinSourceIdx && (hopIndex + 1) == inequalityIdxB
+          && ((inequalityIdxA == antiJoinSourceIdx && (hopIndex + 1) == inequalityIdxB)
+              || (inequalityIdxB == antiJoinSourceIdx && (hopIndex + 1) == inequalityIdxA))
           && neighborRid.equals(sourceRid))
         continue;
       count += countPathsRec(neighborRid.asVertex(), hopIndex + 1, db, sourceRid, antiJoinSet, hopBuckets);
