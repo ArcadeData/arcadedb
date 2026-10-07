@@ -26,6 +26,7 @@ import io.micrometer.registry.otlp.OtlpConfig;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -93,6 +94,22 @@ class OtlpMetricsPluginTest {
 
     assertThat(config.resourceAttributes().get("service.name")).isEqualTo("arcadedb");
     assertThat(config.url()).isEqualTo("http://collector:4318/v1/metrics");
+  }
+
+  /**
+   * Issue #9425: the push interval is configurable, so a smoke test (or a collector that wants finer resolution) does not
+   * wait a minute for the first export. Not positive keeps Micrometer's one-minute default, which is also the default.
+   */
+  @Test
+  void stepComesFromTheArcadedbSetting() {
+    assertThat(OtlpMetricsPlugin.otlpConfig(new ContextConfiguration(), Map.of()).step()).isEqualTo(Duration.ofMinutes(1));
+
+    final ContextConfiguration cfg = new ContextConfiguration();
+    cfg.setValue(GlobalConfiguration.SERVER_METRICS_OTLP_STEP, 2_000L);
+    assertThat(OtlpMetricsPlugin.otlpConfig(cfg, Map.of()).step()).isEqualTo(Duration.ofSeconds(2));
+
+    cfg.setValue(GlobalConfiguration.SERVER_METRICS_OTLP_STEP, 0L);
+    assertThat(OtlpMetricsPlugin.otlpConfig(cfg, Map.of()).step()).isEqualTo(Duration.ofMinutes(1));
   }
 
   /**

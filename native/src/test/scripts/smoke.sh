@@ -48,15 +48,24 @@ PASS="${ARCADEDB_ROOT_PASSWORD:-PlayWithData123!}"
 
 WORK="$(mktemp -d)"
 SRV_PID=""
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=otlp-sink.sh
+. "$SCRIPT_DIR/otlp-sink.sh"
 
 cleanup() {
   if [ -n "$SRV_PID" ] && kill -0 "$SRV_PID" 2>/dev/null; then
     kill "$SRV_PID" 2>/dev/null || true
     wait "$SRV_PID" 2>/dev/null || true
   fi
+  stop_otlp_sink
   rm -rf "$WORK"
 }
 trap cleanup EXIT
+
+# A stand-in OTLP collector, started first because the exporter endpoints are read when the plugins start (#9425). Its
+# arguments go BEFORE "$@", so an endpoint the caller passes explicitly still wins. Pointing the endpoints at it is
+# harmless on a run that does not enable the OTLP metrics or tracing plugin: nothing reads them.
+start_otlp_sink "$WORK"
 
 echo "[smoke] launching: $EXE $*"
 # Root every server-generated path (security config, groups, logs, databases) under the
@@ -67,16 +76,15 @@ ARCADEDB_ROOT_PASSWORD="$PASS" \
   "$EXE" -Darcadedb.server.rootPassword="$PASS" \
   -Darcadedb.server.rootPath="$WORK" \
   -Darcadedb.server.logsDirectory="$WORK/log" \
-  -Darcadedb.server.databaseDirectory="$WORK/databases" "$@" \
+  -Darcadedb.server.databaseDirectory="$WORK/databases" ${OTLP_ARGS[@]+"${OTLP_ARGS[@]}"} "$@" \
   >"$WORK/server.log" 2>&1 &
 SRV_PID=$!
 
 # The actual HTTP-readiness wait plus Studio/SQL/Cypher/Postgres-wire (and, opportunistically,
 # Redis/Bolt/Mongo/gRPC) assertions live in exercise.sh so trace.sh can replay the identical
 # checks against a server it starts itself under the GraalVM native-image tracing agent.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOST="$HOST" HTTP="$HTTP" PG="$PG" DB_USER="$DB_USER" PASS="$PASS" \
-  SRV_PID="$SRV_PID" SERVER_LOG="$WORK/server.log" \
+  SRV_PID="$SRV_PID" SERVER_LOG="$WORK/server.log" OTLP_SINK_DIR="$OTLP_SINK_DIR" \
   "$SCRIPT_DIR/exercise.sh"
 
 echo "[smoke] PASS"

@@ -1629,6 +1629,11 @@ public enum GlobalConfiguration {
       HTTP receiver (port 4318, path /v1/metrics), not the gRPC port 4317. A URL without a path gets /v1/metrics \
       appended""", String.class, "http://localhost:4318/v1/metrics"),
 
+  SERVER_METRICS_OTLP_STEP("arcadedb.serverMetrics.otlp.step", SCOPE.SERVER, """
+      How often the server metrics are pushed to the OTLP endpoint, in milliseconds. Also the window a step-based \
+      meter (a rate, a max) is measured over. Not positive keeps Micrometer's default of one minute. Read when the \
+      metrics plugin starts""", Long.class, 60_000L),
+
   SERVER_METRICS_TRACING_ENABLED("arcadedb.serverMetrics.tracing.enabled", SCOPE.SERVER,
       "Enable OpenTelemetry distributed tracing (requires the optional tracing plugin on the classpath). Note: query/command spans include the statement text as the db.statement span attribute, which may contain sensitive data, so secure the OTLP collector endpoint",
       Boolean.class, false),
