@@ -2570,17 +2570,17 @@ public enum Type {
     return Date.from(DateUtils.parseZonedDateTime(database, valueAsString, false).toInstant());
   }
 
+  /** A DATE property holds whole days, which a datetime-valued implementation of it must be truncated to (issue #9324). */
+  private static ChronoUnit precisionOf(final Property property) {
+    return property.getType() == DATE ? ChronoUnit.DAYS : DateUtils.getPrecisionFromType(property.getType());
+  }
+
   /**
    * Truncates a parsed datetime to the precision the target property declares, so a literal carrying more digits
    * than the column can hold reads back identically before and after a reload instead of briefly keeping digits the
    * serializer is about to drop. This mirrors what the {@link LocalDateTime}/{@link ZonedDateTime} value branches
    * already do; only the string branches were missing it. A no-op when the value is not bound to a property.
    */
-  /** A DATE property holds whole days, which a datetime-valued implementation of it must be truncated to (issue #9324). */
-  private static ChronoUnit precisionOf(final Property property) {
-    return property.getType() == DATE ? ChronoUnit.DAYS : DateUtils.getPrecisionFromType(property.getType());
-  }
-
   private static LocalDateTime truncateToPropertyPrecision(final LocalDateTime value, final Property property) {
     return property == null ? value : value.truncatedTo(precisionOf(property));
   }
