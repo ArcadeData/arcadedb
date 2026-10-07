@@ -21,6 +21,7 @@ package com.arcadedb.engine.timeseries.codec;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.Random;
 
@@ -133,10 +134,6 @@ class Simple8bCodecTest {
         .hasMessageContaining("malformed");
   }
 
-  /**
-   * Regression test: values with |v| >= 2^59 must throw IllegalArgumentException rather than
-   * silently truncating via 60-bit ZigZag overflow. Previously encode() had no bounds check.
-   */
   /** Issue #9309: values outside the packable range round-trip through the raw escape layout. */
   @Test
   void outOfRangeValueRoundTrips() throws Exception {
@@ -153,6 +150,21 @@ class Simple8bCodecTest {
       input[i] = i;
     input[500] = 1L << 60;
     assertThat(Simple8bCodec.decode(Simple8bCodec.encode(input))).containsExactly(input);
+  }
+
+  /** A corrupt raw header must fail with IOException, not try to allocate the array it declares. */
+  @Test
+  void oversizedRawCountIsRejectedBeforeAllocating() {
+    final byte[] corrupt = ByteBuffer.allocate(12).putInt(-Integer.MAX_VALUE).putLong(1L).array();
+    assertThatThrownBy(() -> Simple8bCodec.decode(corrupt)).isInstanceOf(IOException.class).hasMessageContaining("malformed");
+  }
+
+  /** Issue #9309: a block written by the packed-only codec (selector 14 = 2 x 30 bits) still decodes. */
+  @Test
+  void blockWrittenBeforeTheRawEscapeStillDecodes() throws Exception {
+    final long word = (14L << 60) | 10L | (5L << 30); // zigzag(5) = 10, zigzag(-3) = 5
+    final byte[] legacy = ByteBuffer.allocate(12).putInt(2).putLong(word).array();
+    assertThat(Simple8bCodec.decode(legacy)).containsExactly(5L, -3L);
   }
 
   @Test
