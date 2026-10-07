@@ -732,7 +732,9 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
    * publication sequence tells without a lock, and as a last resort run under the publication lock itself, which keeps any
    * commit out. Costs nothing unless an entry is dropped or a commit overlapped the lookup.
    *
-   * @param served the RIDs already served for this key, so a non-unique index does not serve one twice; null for a unique
+   * @param served the RIDs already served for this key, so a non-unique index does not serve one twice (at most
+   *               {@link #MAX_TRACKED_RIDS_PER_KEY} are remembered: past that the key is {@link #NOT_TRACKED} and a record
+   *               can be served twice after a reconciliation); null for a unique
    *               index, where a key has one entry, and {@link #NOT_TRACKED} when a key held too many to remember, which
    *               leaves the entry itself to retry
    *
