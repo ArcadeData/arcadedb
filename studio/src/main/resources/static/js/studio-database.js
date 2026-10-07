@@ -4704,6 +4704,21 @@ function showGavDetail(gavName) {
   if (gav.buildDurationMs !== undefined && gav.buildDurationMs > 0)
     html += "<div class='mv-info-row'><span class='mv-info-label'>Last Build Time:</span> " + formatDuration(gav.buildDurationMs) + "</div>";
 
+  if (gav.contractionHierarchies && gav.contractionHierarchies.length > 0) {
+    for (let h = 0; h < gav.contractionHierarchies.length; h++) {
+      let cch = gav.contractionHierarchies[h];
+      html += "<div class='mv-info-row'><span class='mv-info-label'>CCH (" + escapeHtml(cch.weightProperty) + "):</span> ";
+      html += escapeHtml(cch.status || "");
+      if (cch.arcs !== undefined)
+        html += ", " + (cch.arcs || 0).toLocaleString() + " arcs";
+      if (cch.memoryUsageBytes !== undefined)
+        html += ", " + formatBytes(cch.memoryUsageBytes);
+      if (cch.statusReason)
+        html += "<br><small class='text-muted'>" + escapeHtml(cch.statusReason) + "</small>";
+      html += "</div>";
+    }
+  }
+
   // Actions
   html += "<div class='mt-3 d-flex gap-2'>";
   html += "<button class='btn btn-sm btn-outline-primary'" + schemaActionAttrs("rebuild-gav", gav.name) + "><i class='fa fa-sync'></i> Rebuild</button>";
@@ -4799,6 +4814,11 @@ function createGraphAnalyticalView() {
   html += "<b>Recommendation:</b> Only include properties you actually need for graph algorithms. Leave empty if using only unweighted algorithms (BFS, PageRank, WCC, LCC, Label Propagation).";
   html += "</div>";
 
+  // -- Contraction hierarchies --
+  html += "<label for='inputGavCch' class='mt-2'>Shortest-Path Hierarchy (CCH) <small class='text-muted'>(optional, comma-separated weights)</small></label>";
+  html += "<input class='form-control mt-1 mb-1' id='inputGavCch' placeholder='e.g. distance, travelTime'>";
+  html += "<small class='text-muted' style='display:block;margin-bottom:10px;'>Keeps a Customizable Contraction Hierarchy per weight for fast point-to-point shortest paths (<code>algo.cch.shortestPath</code>, <code>cchShortestPath()</code>). Best on road, logistics and utility networks; refused on graphs without small separators. Weights are added to the edge properties.</small>";
+
   // -- Update mode --
   html += "<label for='inputGavUpdateMode' class='mt-2'>Update Mode</label>";
   html += "<select class='form-select mt-1 mb-1' id='inputGavUpdateMode'>";
@@ -4871,6 +4891,8 @@ function createGraphAnalyticalView() {
     let compThreshold = $("#inputGavCompactionThreshold").val();
     if (compThreshold && parseInt(compThreshold) > 0)
       command += " COMPACTION THRESHOLD " + parseInt(compThreshold);
+
+    command += buildGavCchClause($("#inputGavCch").val());
 
     let database = getCurrentDatabase();
     if (database === "") {
@@ -5160,6 +5182,19 @@ function rebuildGav(gavName) {
   .fail(function (jqXHR) {
     globalNotifyError(jqXHR.responseText);
   });
+}
+
+/**
+ * The CCH clause of a CREATE GRAPH ANALYTICAL VIEW command for a comma-separated list of weight properties, or an empty
+ * string when the list is empty. Each name is quoted like every other name the dialog writes.
+ */
+function buildGavCchClause(weights) {
+  if (!weights)
+    return "";
+  let names = String(weights).split(",").map(function (w) { return w.trim(); }).filter(function (w) { return w !== ""; });
+  if (names.length === 0)
+    return "";
+  return " CCH (" + names.map(function (w) { return quoteSqlName(w); }).join(", ") + ")";
 }
 
 function formatBytes(bytes) {

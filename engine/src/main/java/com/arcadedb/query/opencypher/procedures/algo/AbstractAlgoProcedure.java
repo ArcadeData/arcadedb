@@ -1193,9 +1193,19 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
    */
   protected WeightedPath attachEdges(final List<RID> pathRids, final String relType, final Vertex.DIRECTION dir,
       final String weightProperty, final double missingWeight) {
+    return attachEdges(pathRids, relType != null && !relType.isEmpty() ? new String[] { relType } : null, dir,
+        weightProperty, missingWeight, false);
+  }
+
+  /**
+   * Same as {@link #attachEdges(List, String, Vertex.DIRECTION, String, double)} over several edge types. With
+   * {@code skipUnusable}, an edge whose weight is negative or NaN is never picked: for a path finder that does not walk
+   * such edges, picking one would report a weight its path never had.
+   */
+  protected WeightedPath attachEdges(final List<RID> pathRids, final String[] edgeTypeFilter, final Vertex.DIRECTION dir,
+      final String weightProperty, final double missingWeight, final boolean skipUnusable) {
     // callers hand a LinkedList: index it once as an array-backed list
     final List<RID> vertexRids = new ArrayList<>(pathRids);
-    final String[] edgeTypeFilter = relType != null && !relType.isEmpty() ? new String[] { relType } : null;
 
     final List<RID> pathWithEdges = new ArrayList<>(vertexRids.size() * 2 - 1);
     pathWithEdges.add(vertexRids.get(0));
@@ -1214,6 +1224,8 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
             continue;
           final Object w = weightProperty != null ? edge.get(weightProperty) : null;
           final double edgeWeight = w instanceof Number num ? num.doubleValue() : missingWeight;
+          if (skipUnusable && !(edgeWeight >= 0))
+            continue;
           if (bestEdge == null || edgeWeight < bestWeight) {
             bestWeight = edgeWeight;
             bestEdge = edge;
