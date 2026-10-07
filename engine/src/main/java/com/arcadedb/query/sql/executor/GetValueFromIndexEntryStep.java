@@ -404,7 +404,8 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
               nextItem = toResult(finalVal, context);
               if (nextItem == null || overlappedACommit(context, indexStep)) {
                 // The entry names a record that is gone, or the lookup that produced it overlapped a commit (#9369)
-                recovered.addAll(reconcile(indexStep, key, rid, unique ? null : !track || trackingOverflow ? NOT_TRACKED : servedForKey, context));
+                final Set<RID> served = unique ? null : !track || trackingOverflow ? NOT_TRACKED : servedForKey;
+                recovered.addAll(reconcile(indexStep, key, rid, served, context));
                 nextItem = recovered.pollFirst();
                 if (track && !trackingOverflow) {
                   for (final Result row : recovered)
