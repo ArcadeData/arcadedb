@@ -26,7 +26,11 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.time.DayOfWeek;
+import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
 import java.time.temporal.ChronoUnit;
 import java.time.temporal.TemporalAdjusters;
 import java.util.*;
@@ -183,6 +187,7 @@ public class BackupRetentionManager {
    * Limited to MAX_BACKUP_FILES_TO_PROCESS to prevent unbounded memory usage.
    */
   private List<BackupFileInfo> getBackupFiles(final File dbBackupDir) {
+    final ZoneId zone = ZoneId.systemDefault();
     final File[] files = dbBackupDir.listFiles(BACKUP_FILE_FILTER);
     if (files == null || files.length == 0)
       return Collections.emptyList();
@@ -197,11 +202,11 @@ public class BackupRetentionManager {
     for (final File file : files) {
       final LocalDateTime timestamp = parseBackupTimestamp(file.getName());
       if (timestamp != null)
-        backupFiles.add(new BackupFileInfo(file, timestamp));
+        backupFiles.add(new BackupFileInfo(file, timestamp, resolveInstant(timestamp, file.lastModified(), zone)));
     }
 
-    // Sort by timestamp (oldest first)
-    backupFiles.sort(Comparator.comparing(info -> info.timestamp));
+    // Sort by the real instant (oldest first), NOT by the local name: the name repeats an hour when DST falls back
+    backupFiles.sort(Comparator.comparing(info -> info.instant));
 
     // Limit to most recent files if too many
     if (backupFiles.size() > MAX_BACKUP_FILES_TO_PROCESS) {
@@ -270,12 +275,13 @@ public class BackupRetentionManager {
 
     // Group backups by the start of their bucket. backupFiles is sorted oldest first, so each bucket's first entry is
     // its oldest backup.
-    final Map<LocalDateTime, List<BackupFileInfo>> buckets = new HashMap<>();
+    final ZoneId zone = ZoneId.systemDefault();
+    final Map<Instant, List<BackupFileInfo>> buckets = new HashMap<>();
     for (final BackupFileInfo info : backupFiles)
-      buckets.computeIfAbsent(bucketStart(info.timestamp, unit), k -> new ArrayList<>()).add(info);
+      buckets.computeIfAbsent(bucketInstant(info, unit, zone), k -> new ArrayList<>()).add(info);
 
     // Keep the oldest backup from the most recent N buckets
-    final List<LocalDateTime> sortedBuckets = new ArrayList<>(buckets.keySet());
+    final List<Instant> sortedBuckets = new ArrayList<>(buckets.keySet());
     sortedBuckets.sort(Comparator.reverseOrder());
 
     for (int i = 0; i < Math.min(count, sortedBuckets.size()); i++) {
@@ -285,6 +291,28 @@ public class BackupRetentionManager {
     }
 
     return selected;
+  }
+
+  /**
+   * The real instant a local archive timestamp stands for. The name carries no offset, so during the hour a DST fall-back
+   * repeats, two archives one real hour apart carry the same local time: the file's modification time (set when the
+   * archive was written) picks the offset that was in force then. Outside that overlap the local time is unambiguous and
+   * the preference is ignored.
+   */
+  static Instant resolveInstant(final LocalDateTime timestamp, final long lastModifiedMillis, final ZoneId zone) {
+    final ZoneOffset preferred = zone.getRules().getOffset(Instant.ofEpochMilli(lastModifiedMillis));
+    return ZonedDateTime.ofLocal(timestamp, zone, preferred).toInstant();
+  }
+
+  /**
+   * The key of the bucket of {@code unit} an archive falls in. The hourly tier keys by the real hour (the instant the
+   * local hour starts at), so the repeated hour of a DST fall-back is two buckets, not one. The coarser tiers are at date
+   * granularity, where the local calendar is unambiguous, and use {@link #bucketStart}.
+   */
+  private static Instant bucketInstant(final BackupFileInfo info, final ChronoUnit unit, final ZoneId zone) {
+    if (unit == ChronoUnit.HOURS)
+      return info.instant.atZone(zone).truncatedTo(ChronoUnit.HOURS).toInstant();
+    return bucketStart(info.timestamp, unit).atZone(zone).toInstant();
   }
 
   /**
@@ -341,10 +369,12 @@ public class BackupRetentionManager {
   private static class BackupFileInfo {
     final File          file;
     final LocalDateTime timestamp;
+    final Instant       instant;
 
-    BackupFileInfo(final File file, final LocalDateTime timestamp) {
+    BackupFileInfo(final File file, final LocalDateTime timestamp, final Instant instant) {
       this.file = file;
       this.timestamp = timestamp;
+      this.instant = instant;
     }
   }
 }

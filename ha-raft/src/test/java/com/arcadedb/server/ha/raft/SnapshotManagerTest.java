@@ -19,6 +19,7 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.engine.PaginatedComponent;
+import com.arcadedb.schema.SortedIndexBuildRecoveryMarker;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -85,6 +86,18 @@ class SnapshotManagerTest {
     Files.writeString(tempDir.resolve("database.lock"), "");
     Files.writeString(tempDir.resolve("txlog_1.corrupt"), "corrupt");
     Files.writeString(tempDir.resolve("snapshot-1.pshadow"), "shadow");
+
+    final Map<String, Long> checksums = SnapshotManager.computeFileChecksums(tempDir.toFile());
+
+    assertThat(checksums).containsOnlyKeys("database.json");
+  }
+
+  /** #9333: a sorted index build drops a marker named with a random UUID, so it differs on every node by construction. */
+  @Test
+  void sortedIndexBuildMarkerIsNotChecksummed(@TempDir final Path tempDir) throws Exception {
+    Files.writeString(tempDir.resolve("database.json"), "{}");
+    Files.writeString(tempDir.resolve(SortedIndexBuildRecoveryMarker.FILE_PREFIX + "7a1f0c3e-0000-4000-8000-000000000001.json"),
+        "{\"startedUtc\":\"2026-10-07T10:00:00Z\"}");
 
     final Map<String, Long> checksums = SnapshotManager.computeFileChecksums(tempDir.toFile());
 

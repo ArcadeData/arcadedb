@@ -41,8 +41,8 @@ import java.util.logging.Level;
 import java.util.stream.Stream;
 
 /** Durable cleanup manifest for sorted builds whose component pages are written outside the WAL. */
-final class SortedIndexBuildRecoveryMarker {
-  static final String FILE_PREFIX = ".arcadedb-sorted-index-build-";
+public final class SortedIndexBuildRecoveryMarker {
+  public static final String FILE_PREFIX = ".arcadedb-sorted-index-build-";
   static final String FILE_SUFFIX = ".json";
   private static final String SORT_DIRECTORY_PREFIX = ".arcadedb-index-sort-";
 

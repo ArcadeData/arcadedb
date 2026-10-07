@@ -28,11 +28,14 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.TimeZone;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -360,6 +363,47 @@ class BackupRetentionManagerTest {
     assertThat(BackupRetentionManager.bucketStart(t, ChronoUnit.YEARS)).isEqualTo(LocalDateTime.of(2024, 1, 1, 0, 0));
     assertThat(BackupRetentionManager.bucketStart(t, ChronoUnit.DAYS)).isEqualTo(LocalDateTime.of(2024, 12, 30, 0, 0));
     assertThat(BackupRetentionManager.bucketStart(t, ChronoUnit.HOURS)).isEqualTo(LocalDateTime.of(2024, 12, 30, 14, 0));
+  }
+
+  /**
+   * Issue #9336: an archive is named from the local wall clock, so the hour a DST fall-back repeats gives two archives one
+   * real hour apart the same local hour. They must stay two hourly buckets, not collapse into one that keeps only the older.
+   */
+  @Test
+  void hourlyTierKeepsBothArchivesOfTheHourDstFallBackRepeats() throws Exception {
+    final TimeZone previous = TimeZone.getDefault();
+    TimeZone.setDefault(TimeZone.getTimeZone("Europe/Lisbon"));
+    try {
+      final ZoneId lisbon = ZoneId.of("Europe/Lisbon");
+      final Instant first = Instant.parse("2026-10-24T21:00:00Z");
+      final List<File> files = new ArrayList<>();
+      for (int i = 0; i < 8; i++) {
+        final Instant real = first.plus(i, ChronoUnit.HOURS);
+        final File file = writeBackupFile(
+            DATABASE_NAME + "-backup-" + LocalDateTime.ofInstant(real, lisbon).plusNanos(i * 1_000_000L).format(BACKUP_FORMAT_MILLIS) + ".zip");
+        assertThat(file.setLastModified(real.toEpochMilli())).isTrue();
+        files.add(file);
+      }
+
+      registerTiered(24, 0, 0, 0, 0);
+      assertThat(retentionManager.applyRetention(DATABASE_NAME)).isZero();
+
+      for (final File file : files)
+        assertThat(file).exists();
+    } finally {
+      TimeZone.setDefault(previous);
+    }
+  }
+
+  @Test
+  void resolveInstantUsesTheModificationTimeInTheRepeatedHour() {
+    final ZoneId lisbon = ZoneId.of("Europe/Lisbon");
+    final LocalDateTime repeated = LocalDateTime.of(2026, 10, 25, 1, 0);
+
+    assertThat(BackupRetentionManager.resolveInstant(repeated, Instant.parse("2026-10-25T00:00:05Z").toEpochMilli(), lisbon))
+        .isEqualTo(Instant.parse("2026-10-25T00:00:00Z"));
+    assertThat(BackupRetentionManager.resolveInstant(repeated, Instant.parse("2026-10-25T01:00:05Z").toEpochMilli(), lisbon))
+        .isEqualTo(Instant.parse("2026-10-25T01:00:00Z"));
   }
 
   private void registerTiered(final int hourly, final int daily, final int weekly, final int monthly, final int yearly) {
