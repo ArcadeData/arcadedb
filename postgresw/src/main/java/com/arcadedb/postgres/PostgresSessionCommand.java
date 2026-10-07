@@ -19,11 +19,13 @@
 package com.arcadedb.postgres;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 /**
  * A session-reset statement the protocol layer answers itself (issue #9328): {@code DISCARD ALL | PLANS | SEQUENCES |
@@ -58,8 +60,7 @@ record PostgresSessionCommand(Kind kind, String name) {
 
   // A double-quoted identifier may hold spaces and doubled quotes; anything else ends at whitespace
   private static final Pattern TOKEN = Pattern.compile("\"(?:[^\"]|\"\")*\"|`[^`]*`|\\S+");
-  private static final Set<String> TAGS = Set.of("DISCARD ALL", "DISCARD PLANS", "DISCARD SEQUENCES", "DISCARD TEMP", "DEALLOCATE",
-      "DEALLOCATE ALL", "CLOSE CURSOR", "CLOSE CURSOR ALL");
+  private static final Set<String> TAGS = Arrays.stream(Kind.values()).map(kind -> kind.tag).collect(Collectors.toUnmodifiableSet());
 
   /**
    * True when {@code upperCaseText} starts a statement {@link #parse} answers.
@@ -89,45 +90,41 @@ record PostgresSessionCommand(Kind kind, String name) {
     while (matcher.find())
       found.add(matcher.group());
     final String[] tokens = found.toArray(new String[0]);
-    final String keyword = tokens.length > 0 ? tokens[0].toUpperCase(Locale.ENGLISH) : "";
-    switch (keyword) {
-    case "DISCARD" -> {
-      if (tokens.length == 2)
-        switch (tokens[1].toUpperCase(Locale.ENGLISH)) {
-        case "ALL" -> {
-          return new PostgresSessionCommand(Kind.DISCARD_ALL, null);
-        }
-        case "PLANS" -> {
-          return new PostgresSessionCommand(Kind.DISCARD_PLANS, null);
-        }
-        case "SEQUENCES" -> {
-          return new PostgresSessionCommand(Kind.DISCARD_SEQUENCES, null);
-        }
-        case "TEMP", "TEMPORARY" -> {
-          return new PostgresSessionCommand(Kind.DISCARD_TEMP, null);
-        }
-        default -> {
-        }
-        }
+    final PostgresSessionCommand command = tokens.length == 0 ? null : fromTokens(tokens);
+    if (command == null) {
+      final String shown = query.length() > 80 ? query.substring(0, 80) + "..." : query;
+      throw new PostgresSessionSettings.SettingException("syntax error in \"" + shown + "\"",
+          PostgresCopyStatement.SQLSTATE_SYNTAX_ERROR);
     }
-    case "DEALLOCATE" -> {
-      // DEALLOCATE [ PREPARE ] { name | ALL }
-      final int first = tokens.length > 2 && "PREPARE".equalsIgnoreCase(tokens[1]) ? 2 : 1;
-      if (tokens.length == first + 1)
-        return "ALL".equalsIgnoreCase(tokens[first]) ?
+    return command;
+  }
+
+  /**
+   * The command the tokens spell, or null when they are not one of the supported forms.
+   */
+  private static PostgresSessionCommand fromTokens(final String[] tokens) {
+    return switch (tokens[0].toUpperCase(Locale.ENGLISH)) {
+      case "DISCARD" -> tokens.length != 2 ? null : switch (tokens[1].toUpperCase(Locale.ENGLISH)) {
+        case "ALL" -> new PostgresSessionCommand(Kind.DISCARD_ALL, null);
+        case "PLANS" -> new PostgresSessionCommand(Kind.DISCARD_PLANS, null);
+        case "SEQUENCES" -> new PostgresSessionCommand(Kind.DISCARD_SEQUENCES, null);
+        case "TEMP", "TEMPORARY" -> new PostgresSessionCommand(Kind.DISCARD_TEMP, null);
+        default -> null;
+      };
+      case "DEALLOCATE" -> {
+        // DEALLOCATE [ PREPARE ] { name | ALL }
+        final int first = tokens.length > 2 && "PREPARE".equalsIgnoreCase(tokens[1]) ? 2 : 1;
+        if (tokens.length != first + 1)
+          yield null;
+        yield "ALL".equalsIgnoreCase(tokens[first]) ?
             new PostgresSessionCommand(Kind.DEALLOCATE_ALL, null) :
             new PostgresSessionCommand(Kind.DEALLOCATE, identifier(tokens[first]));
-    }
-    case "CLOSE" -> {
-      if (tokens.length == 2)
-        return "ALL".equalsIgnoreCase(tokens[1]) ?
-            new PostgresSessionCommand(Kind.CLOSE_ALL, null) :
-            new PostgresSessionCommand(Kind.CLOSE, identifier(tokens[1]));
-    }
-    default -> {
-    }
-    }
-    throw new PostgresSessionSettings.SettingException("syntax error in \"" + (query.length() > 80 ? query.substring(0, 80) + "..." : query) + "\"", PostgresCopyStatement.SQLSTATE_SYNTAX_ERROR);
+      }
+      case "CLOSE" -> tokens.length != 2 ? null : "ALL".equalsIgnoreCase(tokens[1]) ?
+          new PostgresSessionCommand(Kind.CLOSE_ALL, null) :
+          new PostgresSessionCommand(Kind.CLOSE, identifier(tokens[1]));
+      default -> null;
+    };
   }
 
   /**

@@ -155,7 +155,7 @@ final class PostgresSessionSettings {
   private       String              sessionUser    = "";
   // The one namespace this server resolves names in, which search_path answers (issue #9329)
   private       String              currentSchema  = "";
-  // The last statement_timeout text parsed and its value in milliseconds, compared by identity
+  // The last statement_timeout text parsed and its value in milliseconds, compared by value
   private       String              timeoutText    = null;
   private       long                timeoutMillis  = 0L;
   // The isolation level the open transaction runs at (the default one when none is open), and the default level of
