@@ -59,9 +59,9 @@ class Issue7689RemoteTimeSeriesCompleteCreateIT extends BaseGraphServerTest {
     return schema.buildTimeSeriesType()
         .withName(typeName)
         .withColumn(new ColumnDefinition("ts", Type.LONG, ColumnDefinition.ColumnRole.TIMESTAMP,
-            TimeSeriesCodec.SIMPLE8B))
+            TimeSeriesCodec.DELTA_OF_DELTA))
         .withPrecision("MICROSECOND")
-        .withColumn(new ColumnDefinition("host", Type.STRING, ColumnDefinition.ColumnRole.TAG, TimeSeriesCodec.NONE))
+        .withColumn(new ColumnDefinition("host", Type.STRING, ColumnDefinition.ColumnRole.TAG, TimeSeriesCodec.DICTIONARY))
         .withColumn(new ColumnDefinition("zone", Type.INTEGER, ColumnDefinition.ColumnRole.TAG,
             TimeSeriesCodec.SIMPLE8B))
         .withColumn(new ColumnDefinition("cpu", Type.DOUBLE, ColumnDefinition.ColumnRole.FIELD,
@@ -144,8 +144,8 @@ class Issue7689RemoteTimeSeriesCompleteCreateIT extends BaseGraphServerTest {
     try (final RemoteDatabase database = remote()) {
       final TimeSeriesType readBack = (TimeSeriesType) database.getSchema().getType("ServerStored");
 
-      assertThat(readBack.getTsColumn("ts").getCompressionHint()).isEqualTo(TimeSeriesCodec.SIMPLE8B);
-      assertThat(readBack.getTsColumn("host").getCompressionHint()).isEqualTo(TimeSeriesCodec.NONE);
+      assertThat(readBack.getTsColumn("ts").getCompressionHint()).isEqualTo(TimeSeriesCodec.DELTA_OF_DELTA);
+      assertThat(readBack.getTsColumn("host").getCompressionHint()).isEqualTo(TimeSeriesCodec.DICTIONARY);
       assertThat(readBack.getTsColumn("zone").getCompressionHint()).isEqualTo(TimeSeriesCodec.SIMPLE8B);
       assertThat(readBack.getTsColumn("cpu").getCompressionHint()).isEqualTo(TimeSeriesCodec.DICTIONARY);
       assertThat(readBack.getTsColumn("mem").getCompressionHint())

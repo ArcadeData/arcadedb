@@ -604,9 +604,12 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
         // rather than failing a restore of data that reads back correctly.
         final boolean inertTimestampCodec = role == ColumnDefinition.ColumnRole.TIMESTAMP
             && codec != TimeSeriesCodec.DELTA_OF_DELTA;
-        builder.withColumn(codec != null && !inertTimestampCodec ?
-            new ColumnDefinition(columnName, dataType, role, codec) :
-            new ColumnDefinition(columnName, dataType, role));
+        final ColumnDefinition definition;
+        if (codec != null && !inertTimestampCodec)
+          definition = new ColumnDefinition(columnName, dataType, role, codec);
+        else
+          definition = new ColumnDefinition(columnName, dataType, role);
+        builder.withColumn(definition);
       } catch (final IllegalArgumentException | NullPointerException e) {
         throw new ImportException(
             "Column '" + columnName + "' of TIMESERIES type '" + typeName + "' declares a data type, role or "
