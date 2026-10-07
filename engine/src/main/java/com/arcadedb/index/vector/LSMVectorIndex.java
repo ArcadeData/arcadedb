@@ -7590,9 +7590,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final boolean answeredK = reranked.size() >= k;
       // The graph had fewer than the budget and none of them was dropped: the index simply holds fewer than k.
       final boolean indexExhausted = candidates.size() < candidatesToFetch && reranked.size() == candidates.size();
-      // A budget that already covers every vector of the index cannot be widened into more candidates.
-      final boolean budgetCoversIndex = candidatesToFetch >= vectorIndex().size() + deltaVectors.size();
-      if (answeredK || indexExhausted || budgetCoversIndex || candidatesToFetch > Integer.MAX_VALUE / BINARY_RERANK_OVERSAMPLE)
+      if (answeredK || indexExhausted || candidatesToFetch > Integer.MAX_VALUE / BINARY_RERANK_OVERSAMPLE)
+        break;
+      // A budget that already covers every vector of the index cannot be widened into more candidates. Evaluated only
+      // once the answer is known to be short. searchNeighbors sizes its beam to max(k, efSearch), so a wider budget
+      // is always searched with at least that beam.
+      if (candidatesToFetch >= vectorIndex().size() + deltaVectors.size())
         break;
       // Short of k because candidates were dropped (record gone). A commit removes the records before their index
       // entries, so the stale stretch is as wide as the commit's deletes: the budget grows geometrically to step over it.
