@@ -226,7 +226,7 @@ class RaftGraphIngestionStabilityIT extends BaseRaftHATest {
       return;
     }
 
-    getServer(replicaIndex).start();
+    startServer(replicaIndex);
     waitForReplicationIsCompleted(replicaIndex);
 
     // Phase 4: Verify the recovered replica has all data

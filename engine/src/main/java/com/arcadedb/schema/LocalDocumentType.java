@@ -2466,6 +2466,7 @@ public class LocalDocumentType implements DocumentType {
         final JSONObject indexJSON = entry.toJSON();
         if (custom != null)
           indexJSON.put("typeIndexName", custom);
+        LocalSchema.putLogicalIndexName(entry, indexJSON);
         indexesByFileName.put(entry.getMostRecentFileName(), indexJSON);
       }
     }

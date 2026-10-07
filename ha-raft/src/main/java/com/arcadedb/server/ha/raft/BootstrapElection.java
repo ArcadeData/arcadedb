@@ -20,18 +20,14 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.BootstrapFingerprint;
-import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
-import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.http.handler.LeaderDial;
 import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
 
-import java.io.File;
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -984,18 +980,19 @@ class BootstrapElection {
   /** Prefix of the {@link ProbeOutcome#detail()} {@link #probeOutcomeOf} gives an answer it cannot parse. */
   static final String MALFORMED_ANSWER = "malformed JSON: ";
 
-  private Map<String, PeerState> computeLocalStates(final RaftPeerId localId, final Set<String> dbFilter) {
+  // @VisibleForTesting
+  Map<String, PeerState> computeLocalStates(final RaftPeerId localId, final Set<String> dbFilter) {
     final Map<String, PeerState> result = new HashMap<>();
+    final long settleDeadline = System.currentTimeMillis() + BootstrapFingerprint.SETTLE_MAX_WAIT_MILLIS;
     for (final String dbName : server.getDatabaseNames()) {
       if (!dbFilter.contains(dbName))
         continue;
       try {
-        final ServerDatabase serverDb = server.getDatabase(dbName);
-        final DatabaseInternal embedded = serverDb.getWrappedDatabaseInstance().getEmbedded();
-        if (!(embedded instanceof LocalDatabase localDb))
+        final ArcadeStateMachine.BootstrapBaseline local = ArcadeStateMachine.localBootstrapState(server.getDatabase(dbName),
+            ArcadeStateMachine.settleBudget(settleDeadline));
+        if (local == null)
           continue;
-        final String fp = BootstrapFingerprint.compute(new File(localDb.getDatabasePath()));
-        result.put(dbName, new PeerState(localId, dbName, fp, localDb.getLastTransactionId()));
+        result.put(dbName, new PeerState(localId, dbName, local.fingerprint(), local.lastTxId()));
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.WARNING,
             "Bootstrap: cannot compute local state for '%s': %s", dbName, e.getMessage());

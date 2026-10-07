@@ -190,6 +190,15 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
     root = v1.getIdentity();
   }
 
+  /**
+   * Starts server {@code serverIndex} again, on the instance and configuration it already has, after a test or
+   * {@link #endTest()} stopped it. A fixture that patches a running server once the cluster is up overrides this so a
+   * restart re-applies the patch: the restarted server rebuilds its state from the configuration alone (issue #9243).
+   */
+  protected void startServer(final int serverIndex) {
+    servers[serverIndex].start();
+  }
+
   protected void waitForReplicationIsCompleted(final int serverNumber) {
     // No-op with Raft: replication completion is managed by Raft consensus
   }
@@ -206,7 +215,7 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
             if (servers[i].getHttpServer() != null) {
               final int oldPort = servers[i].getHttpServer().getPort();
               servers[i].getConfiguration().setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT, oldPort);
-              servers[i].start();
+              startServer(i);
               anyServerRestarted = true;
             }
           }

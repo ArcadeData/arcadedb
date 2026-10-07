@@ -72,9 +72,8 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
    */
   protected SQLFunction         customHeuristicFunction;
 
-  protected              CommandContext context;
-  protected final        List<Vertex>   route = new LinkedList<>();
-  protected static final float          MIN   = 0f;
+  protected       CommandContext context;
+  protected final List<Vertex>   route = new LinkedList<>();
 
   public SQLFunctionHeuristicPathFinderAbstract(final String iName) {
     super(iName);

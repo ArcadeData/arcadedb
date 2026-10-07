@@ -19,6 +19,7 @@
 
 package com.arcadedb.containers.ha.chaos;
 
+import java.time.Duration;
 import java.util.Random;
 
 /**
@@ -37,4 +38,17 @@ public interface Fault {
 
   /** True when a majority stays connected, so acknowledged writes must keep flowing once a leader is elected. */
   boolean expectsWritesAvailable();
+
+  /** The shortest hold this fault needs to mean anything; a shorter configured hold is raised to it. */
+  default Duration minHold() {
+    return Duration.ZERO;
+  }
+
+  /**
+   * True when no node may reformat its Raft storage while this fault's step runs (inject, hold, heal and checkpoint):
+   * the fault alone gives no node a reason to discard its log, so a reformat means recovery took the destructive path.
+   */
+  default boolean forbidsReformat() {
+    return false;
+  }
 }

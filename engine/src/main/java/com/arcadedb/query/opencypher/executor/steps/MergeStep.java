@@ -1200,7 +1200,7 @@ public class MergeStep extends AbstractExecutionStep {
       // property holds the storage text instead (issue #9334)
       final Property property = type.getPolymorphicPropertyIfExists(propertyNames[i]);
       propertyValues[i] = value instanceof CypherTemporalValue && property != null && property.getType() == Type.STRING ?
-          TemporalUtil.toCoreJavaType(value) :
+          TemporalUtil.toStorageText(value) :
           TemporalUtil.toIndexKey(value);
     }
 
@@ -1321,15 +1321,14 @@ public class MergeStep extends AbstractExecutionStep {
       // The storage text of the operand is the same for every candidate of one MERGE: computed once, not once per row
       WantedText cached = wantedText;
       if (cached == null || cached.wanted != wanted) {
-        cached = new WantedText(wanted, String.valueOf(TemporalUtil.toCoreJavaType(wanted)));
+        cached = new WantedText(wanted, TemporalUtil.toStorageText(wanted));
         wantedText = cached;
       }
       final String wantedStorageText = cached.text;
       // The parse only runs for a text with the shape of a temporal: a scan over plain strings pays a character test
       // A declared STRING property holds text by contract (issue #8384): it only matches the operand's own text, never a
       // differently formatted rendering of the same instant, exactly like MATCH
-      return text.equals(wantedStorageText) || (TemporalUtil.mayBeTemporalString(text) && !TemporalUtil.isDeclaredString(doc, propertyName)
-          && InlineProperties.matchesResolvedValue(TemporalUtil.convertFromStorage(text), wanted));
+      return text.equals(wantedStorageText);
     }
     return InlineProperties.matchesResolvedValue(actual, wanted);
   }

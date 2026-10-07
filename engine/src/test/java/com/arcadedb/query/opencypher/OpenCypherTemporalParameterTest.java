@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.schema.Type;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -67,8 +68,9 @@ class OpenCypherTemporalParameterTest {
   @Test
   void nativeDatetimeParameterMatchesStoredIsoString() {
     withDatabase(database -> {
-      // Store valid_at as ISO-8601 strings (pre-wire-fix data / string writes). convertFromStorage
-      // parses them back into temporals on read, and the native parameter is coerced to match.
+      // Store valid_at as ISO-8601 strings (pre-wire-fix data / string writes) under a property declared ZONED_DATETIME:
+      // the declaration converts them to the native type, and the native parameter compares against it.
+      database.getSchema().getType("Episodic").createProperty("valid_at", Type.ZONED_DATETIME);
       createEpisode(database, "before", BEFORE.toString());
       createEpisode(database, "reference", REFERENCE.toString());
       createEpisode(database, "after", AFTER.toString());

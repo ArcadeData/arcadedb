@@ -30,6 +30,7 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Map;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -169,6 +170,35 @@ class Issue8942UnwrittenValidationVerdictTest {
     assertDatabaseValue(live, "old");
     assertThat(marker).doesNotExist();
     assertThat(live.resolve(SnapshotInstaller.SNAPSHOT_VALIDATION_FAILED_FILE)).doesNotExist();
+  }
+
+  /**
+   * Issue #9307: a swap that fails reopens the previous copy with the prepared record still beside it, so a SERVING
+   * database carries it until the next install. The cross-node checksum answer of that database must not list it, or
+   * an operator diffing two nodes reads this node's install bookkeeping as a difference in the data.
+   */
+  @Test
+  void preparedVerdictLeftBesideAServingDatabaseIsNotChecksummed() throws Exception {
+    final Path live = root.resolve("databases").resolve(DB_NAME);
+    final Path backup = live.resolve(SnapshotInstaller.SNAPSHOT_BACKUP_DIR);
+    final Path marker = live.resolve(SnapshotInstaller.SNAPSHOT_PENDING_FILE);
+    createDatabase(live, "old");
+
+    server = newServer();
+    server.start();
+
+    // A missing staging directory makes atomicSwap fail and restore the originals; swapAndReopen then reopens them.
+    assertThatThrownBy(() -> SnapshotInstaller.swapAndReopen(DB_NAME, live, live.resolve(SnapshotInstaller.SNAPSHOT_NEW_DIR),
+        backup, marker, server)).isInstanceOf(IOException.class);
+
+    assertValue(server, "old");
+    assertThat(live.resolve(SnapshotInstaller.SNAPSHOT_VALIDATION_FAILED_FILE)).isRegularFile();
+
+    final Map<String, Long> checksums = SnapshotManager.computeFileChecksums(live.toFile());
+
+    assertThat(checksums).isNotEmpty();
+    assertThat(checksums).doesNotContainKey(SnapshotInstaller.SNAPSHOT_VALIDATION_FAILED_FILE);
+    assertThat(checksums.keySet()).noneMatch(SnapshotInstaller::isSnapshotMachineryFileName);
   }
 
   /** On a full volume the record may be created and its write fail: the refused install leaves no partial record. */
