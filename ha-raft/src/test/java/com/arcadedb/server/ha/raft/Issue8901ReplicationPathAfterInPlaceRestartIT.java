@@ -92,7 +92,7 @@ class Issue8901ReplicationPathAfterInPlaceRestartIT extends BaseRaftHATest {
         .pollInterval(500, TimeUnit.MILLISECONDS).until(() -> {
           follower.trackLeaderReachSinceRestart();
           follower.refreshLeaderCommitIndex();
-          return follower.getLeaderUnreachableSinceRestartMs() < 0;
+          return follower.getLeaderUnreachableSinceRestart() == null;
         });
     final JSONObject idle = queryClusterEndpoint(replicaIndex);
     assertThat(idle.getBoolean("localLeaderUnreachableSinceRestart")).isFalse();

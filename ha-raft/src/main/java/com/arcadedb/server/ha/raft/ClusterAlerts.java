@@ -226,22 +226,22 @@ public class ClusterAlerts {
       final LocalResyncState localResyncState, final NodeStatus nodeStatus, final boolean stuckAtStaleTerm,
       final FollowerStallTracker.Stall stalledBehindLeader) {
     return scan(server, stateMachine, followerSamples, visibleDatabases, membership, localPeerId, localResyncState,
-        nodeStatus, stuckAtStaleTerm, stalledBehindLeader, false, -1L);
+        nodeStatus, stuckAtStaleTerm, stalledBehindLeader, false, null);
   }
 
   /**
    * Scan overload that also takes this node's replication-path state since an in-place Ratis restart: whether the
-   * path is still unproven ({@link RaftHAServer#isReplicationPathUnprovenSinceRestart()}, issue #9013), and how long a
-   * leader has been failing to reach it, {@code -1} when it is not ({@link RaftHAServer#trackLeaderReachSinceRestart()},
-   * issue #8953). This is the production entry point; {@link GetClusterHandler} calls it directly, with the same
-   * samples it renders into the status document.
+   * path is still unproven ({@link RaftHAServer#isReplicationPathUnprovenSinceRestart()}, issue #9013), and a leader
+   * failing to reach it, {@code null} when none is ({@link RaftHAServer#trackLeaderReachSinceRestart()}, issue #8953).
+   * This is the production entry point; {@link GetClusterHandler} calls it directly, with the same samples it renders
+   * into the status document.
    */
   public static JSONArray scan(final ArcadeDBServer server, final ArcadeStateMachine stateMachine,
       final List<FollowerSample> followerSamples, final Set<String> visibleDatabases,
       final ClusterMembership membership, final String localPeerId,
       final LocalResyncState localResyncState, final NodeStatus nodeStatus, final boolean stuckAtStaleTerm,
       final FollowerStallTracker.Stall stalledBehindLeader, final boolean replicationPathUnproven,
-      final long leaderUnreachableForMs) {
+      final LeaderReachSinceRestartTracker.Unreachable leaderUnreachable) {
     final JSONArray alerts = new JSONArray();
     checkSingleBucketTypes(server, alerts, visibleDatabases);
     if (stateMachine != null) {
@@ -284,8 +284,8 @@ public class ClusterAlerts {
     // Most specific cause first, one alert per condition: a node stuck at a stale term is not reached by its leader's
     // current-term entries and is stalled too, and a node its leader does not reach since an in-place restart is
     // stalled too. Each of the later two stands down for the ones before it.
-    addLeaderUnreachableSinceRestartAlert(leaderUnreachableForMs, stuckAtStaleTerm, alerts);
-    addStalledBehindLeaderAlert(stalledBehindLeader, stuckAtStaleTerm || leaderUnreachableForMs >= 0, alerts);
+    addLeaderUnreachableSinceRestartAlert(leaderUnreachable, stuckAtStaleTerm, alerts);
+    addStalledBehindLeaderAlert(stalledBehindLeader, stuckAtStaleTerm || leaderUnreachable != null, alerts);
     addCrashLoopEscalatedAlert(nodeStatus.crashLoopEscalated(), alerts);
     addLaggingFollowerAlert(followerSamples, alerts);
     if (membership != null) {
@@ -348,35 +348,45 @@ public class ClusterAlerts {
   /**
    * Pure alert builder (package-private for unit testing): appends the leader-unreachable-since-restart alert iff a
    * leader has been failing to reach this follower since its Raft layer was restarted in place, for longer than a
-   * healthy path takes to reach it (issue #8953). {@code unreachableForMs} is {@code -1} when it is not.
+   * healthy path takes to reach it (issue #8953), or nothing when {@code unreachable} is {@code null}.
    * <p>
-   * {@code critical}, like the stall it is a cause of: the leader's appends do not reach this node, so it does not
-   * count toward the Raft quorum, while {@code raftState} reads RUNNING because the new division is running.
+   * {@code critical} when a leader is known and reports entries this node does not hold: that is direct evidence its
+   * appends are not arriving, so this node does not count toward the Raft quorum while {@code raftState} reads RUNNING.
+   * Only {@code warning} when no leader has made itself known, because that is also what every node of a cluster
+   * without a quorum sees: there the alert may be a symptom of the cluster rather than of this node's path, and a
+   * critical alert raised on every node of every quorum loss would be noise (review on PR #9451).
+   * {@code details.leaderKnown} carries the distinction for a consumer that branches on fields.
+   * <p>
    * Suppressed while {@code stuckAtStaleTerm} holds, whose alert already names the in-place restart and the remedy
    * through its own {@code details.replicationPathUnproven}.
    */
-  static void addLeaderUnreachableSinceRestartAlert(final long unreachableForMs, final boolean stuckAtStaleTerm,
-      final JSONArray alerts) {
-    if (unreachableForMs < 0 || stuckAtStaleTerm)
+  static void addLeaderUnreachableSinceRestartAlert(final LeaderReachSinceRestartTracker.Unreachable unreachable,
+      final boolean stuckAtStaleTerm, final JSONArray alerts) {
+    if (unreachable == null || stuckAtStaleTerm)
       return;
 
+    final boolean leaderKnown = unreachable.leaderKnown();
     alerts.put(new JSONObject()
         .put("id", "follower-leader-unreachable-since-restart")
-        .put("severity", SEVERITY_CRITICAL)
+        .put("severity", leaderKnown ? SEVERITY_CRITICAL : SEVERITY_WARNING)
         .put("title", "No leader is reaching this node since its Raft layer was restarted in place")
-        .put("message", "This node's Raft layer was restarted in place " + unreachableForMs / 1000 + "s or more ago "
-            + "and has taken no replicated entry since, while either no leader has made itself known to it or the "
-            + "leader reports entries it does not hold. raftState reads RUNNING, because the new instance is running, "
-            + "but the leader's appends are not reaching it - typically they are still bound to the instance the "
-            + "restart replaced. While this lasts the node does not count toward the Raft quorum, and if the cluster "
-            + "loses one more node, writes stop.")
-        .put("recommendation", "The leader resets its replication channel to a follower it cannot reach once that "
-            + "follower has stayed unreachable for arcadedb.ha.peerChannelResetDuration (default 60s), retries a few "
-            + "times, and with arcadedb.ha.peerChannelResetEscalation (the default) then hands leadership to a healthy "
-            + "peer so a fresh appender is built. If this alert outlasts that, restart this node by hand. If no node of the cluster has a leader, "
-            + "this alert is a symptom of that and the cluster's quorum is the thing to restore.")
+        .put("message", "This node's Raft layer was restarted in place " + unreachable.unreachableForMs() / 1000
+            + "s or more ago and has taken no replicated entry since, while "
+            + (leaderKnown ? "the leader reports entries this node does not hold" :
+            "no leader has made itself known to it")
+            + ". raftState reads RUNNING, because the new instance is running, but the leader's appends are not "
+            + "reaching it - typically they are still bound to the instance the restart replaced. While this lasts the "
+            + "node does not count toward the Raft quorum, and if the cluster loses one more node, writes stop.")
+        .put("recommendation", (leaderKnown ? "" :
+            "First check whether any node of the cluster has a leader: if none has, this alert is a symptom of the "
+                + "lost quorum, which is the thing to restore. ")
+            + "The leader resets its replication channel to a follower it cannot reach once that follower has stayed "
+            + "unreachable for arcadedb.ha.peerChannelResetDuration, retries a few times, and with "
+            + "arcadedb.ha.peerChannelResetEscalation enabled then hands leadership to a healthy peer so a fresh "
+            + "appender is built. If this alert outlasts that, restart this node by hand.")
         .put("details", new JSONObject().put("leaderUnreachableSinceRestart", true)
-            .put("unreachableForMs", unreachableForMs)));
+            .put("leaderKnown", leaderKnown)
+            .put("unreachableForMs", unreachable.unreachableForMs())));
   }
 
   /**

@@ -62,6 +62,8 @@ class Issue9399ReplicationPathStateTest {
 
   private static final String SERVER_LIST = "localhost:2434:2480,localhost:2435:2481,localhost:2436:2482";
   private static final long   TERM        = 3L;
+  private static final LeaderReachSinceRestartTracker.Unreachable KNOWN =
+      new LeaderReachSinceRestartTracker.Unreachable(25_000L, true);
 
   // ---- #8953: the rule, on the predicate and the tracker alone ----------------------------------------------------
 
@@ -86,17 +88,17 @@ class Issue9399ReplicationPathStateTest {
   @Test
   void theTrackerReportsOnlyOnceTheConditionOutlastsTheGrace() {
     final LeaderReachSinceRestartTracker tracker = new LeaderReachSinceRestartTracker();
-    tracker.observe(1_000L, true, 10_000L);
-    assertThat(tracker.unreachableForMs()).isEqualTo(-1L);
-    tracker.observe(10_999L, true, 10_000L);
-    assertThat(tracker.unreachableForMs()).as("not before the grace").isEqualTo(-1L);
-    tracker.observe(11_000L, true, 10_000L);
-    assertThat(tracker.unreachableForMs()).isEqualTo(10_000L);
+    tracker.observe(1_000L, true, true, 10_000L);
+    assertThat(ms(tracker)).isEqualTo(-1L);
+    tracker.observe(10_999L, true, true, 10_000L);
+    assertThat(ms(tracker)).as("not before the grace").isEqualTo(-1L);
+    tracker.observe(11_000L, true, true, 10_000L);
+    assertThat(ms(tracker)).isEqualTo(10_000L);
 
-    tracker.observe(12_000L, false, 10_000L);
-    assertThat(tracker.unreachableForMs()).as("one tick without the condition clears it").isEqualTo(-1L);
-    tracker.observe(13_000L, true, 10_000L);
-    assertThat(tracker.unreachableForMs()).as("and the next spell gets its own grace").isEqualTo(-1L);
+    tracker.observe(12_000L, false, true, 10_000L);
+    assertThat(ms(tracker)).as("one tick without the condition clears it").isEqualTo(-1L);
+    tracker.observe(13_000L, true, true, 10_000L);
+    assertThat(ms(tracker)).as("and the next spell gets its own grace").isEqualTo(-1L);
   }
 
   // ---- #8953: end to end through RaftHAServer's health hook --------------------------------------------------------
@@ -109,10 +111,10 @@ class Issue9399ReplicationPathStateTest {
     f.tick(0L); // the first probe runs after the hook: no leader commit index known yet
     f.tick(3_000L); // the leader reports 5000, past the 100 this node holds: the spell starts
     f.tick(3_000L + f.grace - 1);
-    assertThat(f.raft.getLeaderUnreachableSinceRestartMs()).as("not before the grace").isEqualTo(-1L);
+    assertThat(unreachableMs(f.raft)).as("not before the grace").isEqualTo(-1L);
 
     f.tick(3_000L + f.grace);
-    assertThat(f.raft.getLeaderUnreachableSinceRestartMs()).isEqualTo(f.grace);
+    assertThat(unreachableMs(f.raft)).isEqualTo(f.grace);
   }
 
   @Test
@@ -123,7 +125,9 @@ class Issue9399ReplicationPathStateTest {
 
     f.tick(0L);
     f.tick(f.grace);
-    assertThat(f.raft.getLeaderUnreachableSinceRestartMs()).isEqualTo(f.grace);
+    assertThat(unreachableMs(f.raft)).isEqualTo(f.grace);
+    assertThat(f.raft.getLeaderUnreachableSinceRestart().leaderKnown())
+        .as("reported as the weaker arm, which a cluster without a quorum shows too").isFalse();
   }
 
   @Test
@@ -137,7 +141,7 @@ class Issue9399ReplicationPathStateTest {
       f.tick(now);
 
     assertThat(f.raft.isReplicationPathUnprovenSinceRestart()).as("the path is still unproven").isTrue();
-    assertThat(f.raft.getLeaderUnreachableSinceRestartMs()).as("but nothing says the leader is not reaching it")
+    assertThat(unreachableMs(f.raft)).as("but nothing says the leader is not reaching it")
         .isEqualTo(-1L);
   }
 
@@ -147,7 +151,7 @@ class Issue9399ReplicationPathStateTest {
     when(f.log.getLastEntryTermIndex()).thenReturn(TermIndex.valueOf(TERM, 101L));
     f.tick(2 * f.grace);
     assertThat(f.raft.isReplicationPathUnprovenSinceRestart()).isFalse();
-    assertThat(f.raft.getLeaderUnreachableSinceRestartMs()).isEqualTo(-1L);
+    assertThat(unreachableMs(f.raft)).isEqualTo(-1L);
   }
 
   @Test
@@ -155,7 +159,7 @@ class Issue9399ReplicationPathStateTest {
     final Fixture f = new Fixture();
     for (long now = 0L; now <= 3 * f.grace; now += 3_000L)
       f.tick(now);
-    assertThat(f.raft.getLeaderUnreachableSinceRestartMs()).isEqualTo(-1L);
+    assertThat(unreachableMs(f.raft)).isEqualTo(-1L);
   }
 
   @Test
@@ -163,7 +167,7 @@ class Issue9399ReplicationPathStateTest {
     final Fixture f = reported();
     when(f.stateMachine.isResyncInProgress()).thenReturn(true);
     f.tick(2 * f.grace);
-    assertThat(f.raft.getLeaderUnreachableSinceRestartMs()).isEqualTo(-1L);
+    assertThat(unreachableMs(f.raft)).isEqualTo(-1L);
   }
 
   @Test
@@ -171,7 +175,7 @@ class Issue9399ReplicationPathStateTest {
     final Fixture f = reported();
     when(f.info.getLifeCycleState()).thenReturn(LifeCycle.State.CLOSED);
     f.tick(2 * f.grace);
-    assertThat(f.raft.getLeaderUnreachableSinceRestartMs()).isEqualTo(-1L);
+    assertThat(unreachableMs(f.raft)).isEqualTo(-1L);
   }
 
   @Test
@@ -209,13 +213,13 @@ class Issue9399ReplicationPathStateTest {
 
   @Test
   void theStaleTermAlertSaysWhetherTheReformatIsHeld() {
-    final JSONObject held = alertById(scan(true, null, true, -1L), "follower-stuck-at-stale-term");
+    final JSONObject held = alertById(scan(true, null, true, null), "follower-stuck-at-stale-term");
     assertThat(held).isNotNull();
     assertThat(held.getJSONObject("details").getBoolean("stuckAtStaleTerm")).isTrue();
     assertThat(held.getJSONObject("details").getBoolean("replicationPathUnproven")).isTrue();
     assertThat(held.getString("recommendation")).startsWith("Restart this node by hand");
 
-    final JSONObject selfHealing = alertById(scan(true, null, false, -1L), "follower-stuck-at-stale-term");
+    final JSONObject selfHealing = alertById(scan(true, null, false, null), "follower-stuck-at-stale-term");
     assertThat(selfHealing).isNotNull();
     assertThat(selfHealing.getJSONObject("details").getBoolean("replicationPathUnproven")).isFalse();
     assertThat(selfHealing.getString("recommendation")).contains("this self-heals");
@@ -223,46 +227,72 @@ class Issue9399ReplicationPathStateTest {
 
   @Test
   void anUnreachableLeaderRaisesACriticalAlertWithItsDuration() {
-    final JSONArray alerts = scan(false, null, true, 25_000L);
+    final JSONArray alerts = scan(false, null, true, KNOWN);
     final JSONObject alert = alertById(alerts, "follower-leader-unreachable-since-restart");
     assertThat(alert).isNotNull();
     assertThat(alert.getString("severity")).isEqualTo(ClusterAlerts.SEVERITY_CRITICAL);
     assertThat(alert.getString("message")).contains("25s");
     assertThat(alert.getJSONObject("details").getBoolean("leaderUnreachableSinceRestart")).isTrue();
     assertThat(alert.getJSONObject("details").getLong("unreachableForMs")).isEqualTo(25_000L);
+    assertThat(alert.getJSONObject("details").getBoolean("leaderKnown")).isTrue();
+  }
+
+  /**
+   * No leader known is also what every node of a cluster without a quorum sees, so that arm is a warning that says so,
+   * not a critical alert on every node of every quorum loss (review on PR #9451).
+   */
+  @Test
+  void noLeaderKnownIsOnlyAWarningThatPointsAtTheQuorumFirst() {
+    final JSONObject alert = alertById(scan(false, null, true, new LeaderReachSinceRestartTracker.Unreachable(25_000L, false)),
+        "follower-leader-unreachable-since-restart");
+    assertThat(alert).isNotNull();
+    assertThat(alert.getString("severity")).isEqualTo(ClusterAlerts.SEVERITY_WARNING);
+    assertThat(alert.getString("message")).contains("no leader has made itself known");
+    assertThat(alert.getString("recommendation")).startsWith("First check whether any node of the cluster has a leader");
+    assertThat(alert.getJSONObject("details").getBoolean("leaderKnown")).isFalse();
   }
 
   @Test
   void oneAlertPerConditionMostSpecificCauseFirst() {
     final FollowerStallTracker.Stall stall = new FollowerStallTracker.Stall(5_000L, 100L, 4_900L, 12_000L);
 
-    final JSONArray unreachable = scan(false, stall, true, 25_000L);
+    final JSONArray unreachable = scan(false, stall, true, KNOWN);
     assertThat(alertById(unreachable, "follower-leader-unreachable-since-restart")).isNotNull();
     assertThat(alertById(unreachable, "follower-stalled-behind-leader"))
         .as("the stall is the unreachable leader's symptom").isNull();
 
-    final JSONArray stuck = scan(true, stall, true, 25_000L);
+    final JSONArray stuck = scan(true, stall, true, KNOWN);
     assertThat(alertById(stuck, "follower-stuck-at-stale-term")).isNotNull();
     assertThat(alertById(stuck, "follower-leader-unreachable-since-restart")).isNull();
     assertThat(alertById(stuck, "follower-stalled-behind-leader")).isNull();
 
-    final JSONArray stalledOnly = scan(false, stall, false, -1L);
+    final JSONArray stalledOnly = scan(false, stall, false, null);
     assertThat(alertById(stalledOnly, "follower-stalled-behind-leader")).isNotNull();
   }
 
   @Test
   void noUnreachableLeaderNoAlert() {
-    assertThat(alertById(scan(false, null, true, -1L), "follower-leader-unreachable-since-restart")).isNull();
+    assertThat(alertById(scan(false, null, true, null), "follower-leader-unreachable-since-restart")).isNull();
   }
 
   // ---- helpers -----------------------------------------------------------------------------------------------------
 
   private static JSONArray scan(final boolean stuck, final FollowerStallTracker.Stall stall, final boolean unproven,
-      final long unreachableForMs) {
+      final LeaderReachSinceRestartTracker.Unreachable unreachable) {
     final ArcadeDBServer server = mock(ArcadeDBServer.class);
     when(server.getDatabaseNames()).thenReturn(Set.of());
     return ClusterAlerts.scan(server, null, List.of(), Set.of(), null, null, null,
-        new ClusterAlerts.NodeStatus(null, null, false, true), stuck, stall, unproven, unreachableForMs);
+        new ClusterAlerts.NodeStatus(null, null, false, true), stuck, stall, unproven, unreachable);
+  }
+
+  private static long unreachableMs(final RaftHAServer raft) {
+    final LeaderReachSinceRestartTracker.Unreachable unreachable = raft.getLeaderUnreachableSinceRestart();
+    return unreachable != null ? unreachable.unreachableForMs() : -1L;
+  }
+
+  private static long ms(final LeaderReachSinceRestartTracker tracker) {
+    final LeaderReachSinceRestartTracker.Unreachable unreachable = tracker.current();
+    return unreachable != null ? unreachable.unreachableForMs() : -1L;
   }
 
   private static JSONObject alertById(final JSONArray alerts, final String id) {
@@ -279,7 +309,7 @@ class Issue9399ReplicationPathStateTest {
     f.tick(0L);
     f.tick(3_000L);
     f.tick(3_000L + f.grace);
-    assertThat(f.raft.getLeaderUnreachableSinceRestartMs()).as("precondition: reported").isGreaterThanOrEqualTo(0L);
+    assertThat(unreachableMs(f.raft)).as("precondition: reported").isGreaterThanOrEqualTo(0L);
     return f;
   }
 

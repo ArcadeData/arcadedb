@@ -198,8 +198,9 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
     // takes to deliver them. raftState reads RUNNING throughout - the new division is running - and
     // leaderContactElapsedMs cannot show it either, because a follower nobody reaches resets it on every rejected
     // pre-vote. Masked on the leader for the reason the stall above is.
-    final long leaderUnreachableForMs = isLeader ? -1L : raftHAServer.getLeaderUnreachableSinceRestartMs();
-    response.put("localLeaderUnreachableSinceRestart", leaderUnreachableForMs >= 0);
+    final LeaderReachSinceRestartTracker.Unreachable leaderUnreachable =
+        isLeader ? null : raftHAServer.getLeaderUnreachableSinceRestart();
+    response.put("localLeaderUnreachableSinceRestart", leaderUnreachable != null);
 
     // This follower stalled behind its leader at the current term (issue #8342): its log stopped receiving entries
     // with no term change, so localReplicationLag above can read 0 and localStuckAtStaleTerm false, and only the
@@ -397,7 +398,7 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
     response.put("alerts",
         ClusterAlerts.scan(httpServer.getServer(), stateMachine, followerSamples, authorizedDatabases, membership,
             localPeerId.toString(), localResync, nodeStatus, stuckAtStaleTerm, stalledBehindLeader,
-            replicationPathUnproven, leaderUnreachableForMs));
+            replicationPathUnproven, leaderUnreachable));
 
     return new ExecutionResponse(200, response.toString());
   }

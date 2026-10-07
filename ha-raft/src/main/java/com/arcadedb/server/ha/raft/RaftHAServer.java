@@ -341,7 +341,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private          RaftPeerId                followerStallLeader;
   private volatile LongSupplier              followerStallClock     = System::currentTimeMillis;
   // Issue #8953: whether a leader has been failing to reach this follower since its in-place restart. Written by the
-  // health-monitor thread (trackLeaderReachSinceRestart), read by GET /api/v1/cluster. Measured on followerStallClock.
+  // health-monitor thread (trackLeaderReachSinceRestart), read by GET /api/v1/cluster. Measured on followerStallClock,
+  // which is shared on purpose: it is the health tick's test seam for every follower-side spell, not the stall's own.
   private final    LeaderReachSinceRestartTracker leaderReachTracker = new LeaderReachSinceRestartTracker();
   /**
    * The HTTPS client that requests forwarded to the leader are sent on (issue #7508). A second cache rather than
@@ -4583,27 +4584,28 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       leaderReachTracker.reset();
       return;
     }
-    final boolean wasReported = leaderReachTracker.unreachableForMs() >= 0;
-    leaderReachTracker.observe(followerStallClock.getAsLong(), holds, leaderUnreachableGraceMs());
-    final long unreachableForMs = leaderReachTracker.unreachableForMs();
-    if (!wasReported && unreachableForMs >= 0)
+    final boolean wasReported = leaderReachTracker.current() != null;
+    leaderReachTracker.observe(followerStallClock.getAsLong(), holds, leaderKnown, leaderUnreachableGraceMs());
+    final LeaderReachSinceRestartTracker.Unreachable unreachable = leaderReachTracker.current();
+    if (!wasReported && unreachable != null)
       LogManager.instance().log(this, Level.WARNING,
           "No leader has reached this follower for %dms since its in-place Ratis restart: its division reports RUNNING, "
               + "but no replicated entry arrived while %s. The leader's appends may still be bound to the replaced "
               + "instance; the leader resets its channel after arcadedb.ha.peerChannelResetDuration, restart this node "
-              + "if it persists (issue #8953)", unreachableForMs,
-          leaderKnown ? "the leader reports entries this node does not hold" : "no leader made itself known");
-    else if (wasReported && unreachableForMs < 0)
+              + "if it persists (issue #8953)", unreachable.unreachableForMs(),
+          leaderKnown ? "the leader reports entries this node does not hold"
+              : "no leader made itself known (also the case on every node of a cluster without a quorum)");
+    else if (wasReported && unreachable == null)
       LogManager.instance().log(this, Level.INFO, "A leader reaches this follower again after its in-place Ratis restart");
   }
 
   /**
-   * How long a leader has been failing to reach this follower since its in-place restart, or {@code -1} when that is
-   * not being reported (issue #8953). See {@link #trackLeaderReachSinceRestart()}. Always {@code -1} while the health
-   * monitor is not running.
+   * A leader failing to reach this follower since its in-place restart, or {@code null} when that is not being reported
+   * (issue #8953). See {@link #trackLeaderReachSinceRestart()}. Always {@code null} while the health monitor is not
+   * running.
    */
-  long getLeaderUnreachableSinceRestartMs() {
-    return leaderReachTracker.unreachableForMs();
+  LeaderReachSinceRestartTracker.Unreachable getLeaderUnreachableSinceRestart() {
+    return leaderReachTracker.current();
   }
 
   /** Twice the effective election timeout maximum: see {@link #trackLeaderReachSinceRestart()}. */

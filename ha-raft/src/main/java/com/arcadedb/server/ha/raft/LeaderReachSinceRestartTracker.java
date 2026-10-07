@@ -31,18 +31,34 @@ package com.arcadedb.server.ha.raft;
  * {@link RaftHAServer#isReplicationPathUnprovenSinceRestart()}) while either no leader has made itself known at all,
  * or the leader reports a commit index past everything this node holds - entries a live path would have delivered.
  * <p>
+ * The two arms are not equally conclusive, and {@link Unreachable#leaderKnown()} says which one is reported. A leader
+ * that reports entries this node does not hold is direct evidence that its appends are not arriving. No leader known
+ * is also what every node of a cluster that has lost its quorum sees, so on that arm the condition may be a symptom
+ * of the cluster rather than of this node's path.
+ * <p>
  * The condition must hold on every tick for a grace before it is reported, so the heartbeat and catch-up a healthy
  * path delivers within an election timeout of the restart never surface as one. A node whose path is genuinely
  * idle (no new entry on the leader) is never reported: a leader that is known and has nothing new to send gives no
  * evidence either way, and the leader-side channel reset ({@code arcadedb.ha.peerChannelResetDuration}) covers it.
  * <p>
- * Written only by the health-monitor thread ({@link #observe}, {@link #reset}); {@link #unreachableForMs()} is read
- * from HTTP workers, hence the volatile.
+ * Written only by the health-monitor thread ({@link #observe}, {@link #reset}); {@link #current()} is read from HTTP
+ * workers, hence the single volatile snapshot.
  */
 final class LeaderReachSinceRestartTracker {
 
-  private          long sinceMs          = -1L;
-  private volatile long unreachableForMs = -1L;
+  /**
+   * A leader not reaching this node, as last observed.
+   *
+   * @param unreachableForMs how long the condition has held, uninterrupted
+   * @param leaderKnown      {@code true} when a leader is known and reports entries this node does not hold (direct
+   *                         evidence), {@code false} when no leader has made itself known (which a cluster without a
+   *                         quorum shows too)
+   */
+  record Unreachable(long unreachableForMs, boolean leaderKnown) {
+  }
+
+  private          long        sinceMs = -1L;
+  private volatile Unreachable current;
 
   /**
    * Pure predicate for one tick.
@@ -66,11 +82,12 @@ final class LeaderReachSinceRestartTracker {
   /**
    * Records one health tick.
    *
-   * @param nowMs   the tick's wall-clock time
-   * @param holds   whether {@link #leaderNotReaching} holds on this tick
-   * @param graceMs how long it must hold, uninterrupted, before it is reported
+   * @param nowMs       the tick's wall-clock time
+   * @param holds       whether {@link #leaderNotReaching} holds on this tick
+   * @param leaderKnown whether a leader was known on this tick, reported with the condition
+   * @param graceMs     how long it must hold, uninterrupted, before it is reported
    */
-  void observe(final long nowMs, final boolean holds, final long graceMs) {
+  void observe(final long nowMs, final boolean holds, final boolean leaderKnown, final long graceMs) {
     if (!holds) {
       reset();
       return;
@@ -78,17 +95,17 @@ final class LeaderReachSinceRestartTracker {
     if (sinceMs == -1L)
       sinceMs = nowMs;
     final long elapsed = nowMs - sinceMs;
-    unreachableForMs = elapsed >= graceMs ? elapsed : -1L;
+    current = elapsed >= graceMs ? new Unreachable(elapsed, leaderKnown) : null;
   }
 
   /** Forgets the spell: the next observation starts from scratch. */
   void reset() {
     sinceMs = -1L;
-    unreachableForMs = -1L;
+    current = null;
   }
 
-  /** How long the leader has not been reaching this node, or {@code -1} when that is not being reported. */
-  long unreachableForMs() {
-    return unreachableForMs;
+  /** The condition being reported, or {@code null} when it is not. */
+  Unreachable current() {
+    return current;
   }
 }

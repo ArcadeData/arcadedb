@@ -648,7 +648,9 @@ public class PluginApiSpec implements OpenApiContributor {
         "True when 'localReplicationPathUnproven' has held, while no leader made itself known to this node or while "
             + "'leaderCommitIndex' is past every entry this node holds, for more than twice the election timeout. The "
             + "leader's appends are not reaching this node and it does not count toward quorum. Always false on the "
-            + "leader. See the 'follower-leader-unreachable-since-restart' alert for the operator-facing explanation"));
+            + "leader. No leader known is also what every node of a cluster without a quorum sees; the "
+            + "'follower-leader-unreachable-since-restart' alert says which case applies in 'details.leaderKnown' and is "
+            + "critical only when a known leader reports entries this node does not hold"));
     // Issue #8342: a follower whose log stops receiving entries while the term does not change also reads
     // 'localReplicationLag' 0 and 'localStuckAtStaleTerm' false; only the leader's commit index shows the gap.
     schema.addProperty("leaderCommitIndex", SpecBuilders.integer(
