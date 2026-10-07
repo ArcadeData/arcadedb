@@ -33,6 +33,9 @@ import com.arcadedb.database.DatabaseInternal;
  * The forward now carries the budget, and the leader's HTTP layer publishes it here, under the cluster token only,
  * for {@link BasicCommandContext#getCommandTimeout()} to read at the root of every command it resolves.
  * <p>
+ * The Postgres wire layer publishes it too, for the {@code statement_timeout} of the session, taking the earlier of that
+ * and the database setting, and clears it when the statement ends (issue #9329).
+ * <p>
  * Published and cleared by the HTTP request handling on a pooled worker thread, so {@link #clear()} must run in a
  * finally block.
  *
