@@ -182,6 +182,14 @@ class GetClusterHandlerIT extends BaseRaftHATest {
       assertThat(response.has("localStalledBehindLeader")).as("every node must carry the stall signal").isTrue();
       assertThat(response.getBoolean("localStalledBehindLeader")).as("a healthy node is not stalled").isFalse();
       assertThat(response.getJSONArray("alerts").toString()).doesNotContain("follower-stalled-behind-leader");
+
+      // Issues #9013 and #8953: written by every node, and false on a node never restarted in place.
+      assertThat(response.has("localReplicationPathUnproven")).as("every node must carry the path signal").isTrue();
+      assertThat(response.getBoolean("localReplicationPathUnproven")).as("never restarted in place").isFalse();
+      assertThat(response.has("localLeaderUnreachableSinceRestart")).as("every node must carry the reach signal")
+          .isTrue();
+      assertThat(response.getBoolean("localLeaderUnreachableSinceRestart")).as("never restarted in place").isFalse();
+      assertThat(response.getJSONArray("alerts").toString()).doesNotContain("follower-leader-unreachable-since-restart");
     }
   }
 
