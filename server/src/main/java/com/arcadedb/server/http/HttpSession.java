@@ -182,7 +182,10 @@ public class HttpSession implements QuerySession {
    * the single-argument form means and what it has always done: the command failed part way, so the transaction
    * it was running in cannot be trusted and is rolled back before the exception leaves.
    * <p>
-   * It is false for a route whose documented contract is that it does not participate in that transaction at all
+   * It is false for a route that must not destroy the transaction when it fails. That is a different question from
+   * whether the route runs in it, which the five-argument form's {@code joinsTransaction} answers (issue #9312): the
+   * /ws insert session passes false here and still writes into the caller's transaction. It is also false for a route
+   * whose documented contract is that it does not participate in that transaction at all
    * - the three {@code /api/v1/ts} routes since issue #7402, which resolve the session for its lock, principal
    * and idle clock but write through {@code TimeSeriesShard.appendSamples}' own nested begin/commit or read
    * without touching it. For those the rollback was pure collateral damage: a 400 from a body the line-protocol
@@ -199,6 +202,11 @@ public class HttpSession implements QuerySession {
     return execute(user, callback, rollbackOnFailure, false);
   }
 
+  public HttpSession execute(final ServerSecurityUser user, final Callable callback, final boolean rollbackOnFailure,
+      final boolean endsSession) throws Exception {
+    return execute(user, callback, rollbackOnFailure, endsSession, rollbackOnFailure);
+  }
+
   /** True when a failed command rolled the transaction back (issue #9006). */
   public boolean isRolledBackByFailure() {
     return rolledBackByFailure;
@@ -207,9 +215,12 @@ public class HttpSession implements QuerySession {
   /**
    * @param endsSession true for the routes that end the session (/commit, /rollback): they run even when a failed command already
    *                    rolled the transaction back, every other one is refused (issue #9006)
+   * @param joinsTransaction true when the callback writes into the session's transaction, whatever it wants done with that
+   *                    transaction on failure: such a request is refused once a failed command rolled the transaction back, because
+   *                    the work would otherwise autocommit into the gap (issue #9312). Independent of {@code rollbackOnFailure}
    */
   public HttpSession execute(final ServerSecurityUser user, final Callable callback, final boolean rollbackOnFailure,
-      final boolean endsSession) throws Exception {
+      final boolean endsSession, final boolean joinsTransaction) throws Exception {
     if (!this.user.equals(user))
       throw new SecurityException("Cannot use the requested transaction because in use by a different user");
 
@@ -224,7 +235,7 @@ public class HttpSession implements QuerySession {
         if (!manager.isSessionRegistered(id))
           throw new HttpSessionException("Remote transaction '" + id + "' not found or expired");
 
-        if (rolledBackByFailure && rollbackOnFailure && !endsSession)
+        if (rolledBackByFailure && joinsTransaction && !endsSession)
           throw new HttpSessionException("Remote transaction '" + id
               + "' was rolled back after a failed command and cannot run anything more. Send /rollback to end the session");
 

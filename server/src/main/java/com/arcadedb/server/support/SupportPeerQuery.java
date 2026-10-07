@@ -246,12 +246,14 @@ public final class SupportPeerQuery {
   }
 
   /** The peer's own error text, shortened and without control characters: "detail" first, then "error". */
-  private static String detailOf(final String text) {
+  static String detailOf(final String text) {
     try {
       final JSONObject json = new JSONObject(text);
       final String detail = json.getString("detail", json.getString("error", ""));
-      if (!detail.isBlank())
-        return ": " + detail.replaceAll("\\p{Cntrl}", " ").trim().substring(0, Math.min(300, detail.trim().length()));
+      if (!detail.isBlank()) {
+        final String clean = detail.replaceAll("\\p{Cntrl}", " ").trim();
+        return ": " + clean.substring(0, Math.min(300, clean.length()));
+      }
     } catch (final Exception ignored) {
       // not JSON
     }
