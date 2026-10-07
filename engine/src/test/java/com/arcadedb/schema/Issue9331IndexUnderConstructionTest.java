@@ -53,6 +53,20 @@ class Issue9331IndexUnderConstructionTest extends TestHelper {
   }
 
   @Test
+  void theMarkerBelongsToTheTypeBeingIndexed() {
+    final LocalDocumentType first = (LocalDocumentType) database.getSchema().createDocumentType("First");
+    final LocalDocumentType second = (LocalDocumentType) database.getSchema().createDocumentType("Second");
+    final List<String> properties = List.of("id");
+
+    first.beginIndexConstruction(properties);
+
+    assertThat(first.isIndexUnderConstruction(properties)).isTrue();
+    assertThat(second.isIndexUnderConstruction(properties)).as("another type with the same property names").isFalse();
+
+    first.endIndexConstruction(properties);
+  }
+
+  @Test
   void anIndexOnAParentTypeIsReadyOnlyOnceItsBuildIsOver() {
     final DocumentType parent = database.getSchema().createDocumentType("Parent");
     parent.createProperty("id", Type.LONG);
