@@ -91,9 +91,9 @@ public class OtlpMetricsPlugin implements ServerPlugin {
   /**
    * The OTLP registry's configuration: the endpoint and the push interval from the ArcadeDB settings, and the resource
    * attributes resolved by {@link OtelResourceAttributes}, the same resolution the tracing plugin uses, so metrics and
-   * spans report the same {@code service.name} (issue #7295). Micrometer's own default read the OpenTelemetry variables too, but let a
-   * {@code service.name} in {@code OTEL_RESOURCE_ATTRIBUTES} win over {@code OTEL_SERVICE_NAME} and otherwise reported
-   * {@code unknown_service}.
+   * spans report the same {@code service.name} (issue #7295). Micrometer's own default read the OpenTelemetry
+   * variables too, but let a {@code service.name} in {@code OTEL_RESOURCE_ATTRIBUTES} win over {@code OTEL_SERVICE_NAME}
+   * and otherwise reported {@code unknown_service}.
    */
   static OtlpConfig otlpConfig(final ContextConfiguration configuration, final Map<String, String> environment) {
     final String configured = configuration.getValueAsString(GlobalConfiguration.SERVER_METRICS_OTLP_ENDPOINT);
