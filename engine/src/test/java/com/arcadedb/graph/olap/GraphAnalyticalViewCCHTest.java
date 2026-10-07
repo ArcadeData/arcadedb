@@ -263,6 +263,42 @@ class GraphAnalyticalViewCCHTest {
     edge.asEdge().modify().set("distance", distance).save();
   }
 
+  /**
+   * A weight update to one of two parallel roads rebuilds the view (the column slot cannot be told), and the hierarchy is
+   * UNAVAILABLE meanwhile. It keeps its metric across that state: on the rebuilt base it re-reads the view and finds one
+   * arc changed, so it updates the metric partially instead of customizing it afresh.
+   */
+  @Test
+  void aViewRebuildEndsInAPartialCustomization() {
+    grid(12, new Random(81));
+    database.transaction(() -> road(0, 1, 100.0)); // a parallel twin of the 0 -> 1 road, and the longer of the two
+    final GraphAnalyticalView view = syncView("roads");
+    final ContractionHierarchy cch = view.getContractionHierarchy("distance", "ROAD");
+    assertThat(cch.awaitReady(false, 60, TimeUnit.SECONDS)).isTrue();
+    final long buildTimestamp = view.getBuildTimestamp();
+    final long fullCustomizations = cch.getCustomizationCount();
+    final long partials = cch.getPartialCustomizationCount();
+
+    RID twin = null;
+    for (final Map.Entry<RID, double[]> road : roads.entrySet())
+      if ((int) road.getValue()[0] == 0 && (int) road.getValue()[1] == 1 && road.getValue()[2] == 100.0)
+        twin = road.getKey();
+    final RID edge = twin;
+    database.transaction(() -> setDistance(edge, 0.5));
+
+    final long deadline = System.currentTimeMillis() + 60_000;
+    while ((view.getBuildTimestamp() == buildTimestamp || cch.getPartialCustomizationCount() == partials)
+        && System.currentTimeMillis() < deadline)
+      Thread.yield();
+    assertThat(view.getBuildTimestamp()).as("the parallel pair made the view rebuild").isNotEqualTo(buildTimestamp);
+    assertThat(cch.awaitReady(false, 60, TimeUnit.SECONDS)).isTrue();
+    assertThat(cch.getPartialCustomizationCount()).isGreaterThan(partials);
+    assertThat(cch.getCustomizationCount()).as("no full customization after the rebuild").isEqualTo(fullCustomizations);
+    assertThat(cch.getTopologyBuildCount()).isEqualTo(1);
+    assertThat(find(0, 1, Vertex.DIRECTION.OUT).weight()).isEqualTo(0.5);
+    assertRandomPairs(new Random(82), 60, Vertex.DIRECTION.OUT, ShortestPathFinder.Engine.CONTRACTION_HIERARCHY);
+  }
+
   private void assertCaughtUp(final ContractionHierarchy cch, final long partialsBefore, final Random random) {
     assertThat(cch.awaitReady(true, 60, TimeUnit.SECONDS)).isTrue();
     assertThat(cch.getPartialCustomizationCount()).isGreaterThan(partialsBefore);
