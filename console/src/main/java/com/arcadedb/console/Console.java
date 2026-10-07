@@ -65,6 +65,7 @@ import java.io.File;
 import java.io.FileReader;
 import java.io.IOException;
 import java.io.PrintWriter;
+import java.nio.file.Files;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -78,6 +79,7 @@ public class Console {
   private static final String               REMOTE_PREFIX            = "remote:";
   private static final String               LOCAL_PREFIX             = "local:";
   private static final String               SQL_LANGUAGE             = "SQL";
+  private static final String               SQL_SCRIPT_LANGUAGE      = "sqlscript";
   private static final String               HISTORY_FILE             = ".history";
   private static final String               CONNECT_PORTAL           = "connect portal";
   private static final String               CONNECT_PORTAL_USAGE_SHORT = "connect portal remote:<host>[:<port>] <user> [<password>]";
@@ -1028,6 +1030,11 @@ public class Console {
         outputLine(3, "Command executed in %dms", elapsed);
     }
 
+    private void outputFileProcessed(final long elapsedMs) {
+        output(2, "\nFile processed in " + (elapsedMs / 1000) + " seconds");
+        flushOutput();
+    }
+
     private void executeLoad(final String fileName) throws IOException {
         checkIsEmpty("File name", fileName);
 
@@ -1036,6 +1043,15 @@ public class Console {
             throw new ConsoleException("File name '" + fileName + "' not found");
 
         output(2, "\nExecuting commands from file %s...", fileName);
+
+        if (SQL_SCRIPT_LANGUAGE.equalsIgnoreCase(language)) {
+            // A SQL SCRIPT IS ONE UNIT: LET VARIABLES, FOREACH, IF AND WHILE SPAN SEVERAL STATEMENTS, SO SENDING THEM ONE BY ONE
+            // LOSES THE VARIABLES AND BREAKS THE BLOCKS (ISSUE #9454). HAND THE WHOLE FILE TO THE SCRIPT ENGINE, AS STUDIO DOES
+            final long scriptStartedOn = System.currentTimeMillis();
+            executeSQL(Files.readString(file.toPath(), DatabaseFactory.getDefaultCharset()));
+            outputFileProcessed(System.currentTimeMillis() - scriptStartedOn);
+            return;
+        }
 
         final long startedOn = System.currentTimeMillis();
         final long fileSize = file.length();
@@ -1131,8 +1147,7 @@ public class Console {
 
         elapsed = System.currentTimeMillis() - startedOn;
 
-        output(2, "\nFile processed in " + (elapsed / 1000) + " seconds");
-        flushOutput();
+        outputFileProcessed(elapsed);
     }
 
     public boolean parse(final String line) throws IOException {
