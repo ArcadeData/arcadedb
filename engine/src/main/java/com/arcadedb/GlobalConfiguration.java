@@ -997,7 +997,8 @@ public enum GlobalConfiguration {
 
   QUERY_BATCH_MAX_BYTES("arcadedb.queryBatchMaxBytes", SCOPE.DATABASE,
       """
-      Maximum bytes a scan of a bucket reads ahead of the query in one batch (issue #9404). A scan prefetches up to 1,024 \
+      Maximum bytes the scan of one bucket reads ahead of the query in one batch (issue #9404): per bucket scan, so a type with N \
+      buckets reads ahead up to N times this. A scan prefetches up to 1,024 \
       records per bucket, which is cheap for small records but holds 1,024 whole records when they span several pages (a \
       vertex with a big nested document): that memory is no query's buffer, so no budget accounts for it, and a few dozen \
       concurrent queries exhaust the heap. The batch ends as soon as the bytes it copied out of the pages reach this \
