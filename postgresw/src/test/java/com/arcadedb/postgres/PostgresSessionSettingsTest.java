@@ -37,10 +37,10 @@ class PostgresSessionSettingsTest {
   @Test
   void showAnswersWhatSetStored() {
     final PostgresSessionSettings settings = new PostgresSessionSettings();
-    assertThat(settings.show("search_path")).isEmpty();
+    assertThat(settings.show("work_mem")).isEmpty();
 
-    settings.set("search_path", "x");
-    assertThat(settings.show("search_path")).isEqualTo("x");
+    settings.set("work_mem", "x");
+    assertThat(settings.show("work_mem")).isEqualTo("x");
   }
 
   @Test
@@ -55,8 +55,8 @@ class PostgresSessionSettingsTest {
   void settingsAreNotSharedBetweenInstances() {
     final PostgresSessionSettings first = new PostgresSessionSettings();
     final PostgresSessionSettings second = new PostgresSessionSettings();
-    first.set("search_path", "x");
-    assertThat(second.show("search_path")).isEmpty();
+    first.set("work_mem", "x");
+    assertThat(second.show("work_mem")).isEmpty();
   }
 
   @Test
@@ -191,35 +191,35 @@ class PostgresSessionSettingsTest {
   void rollbackUndoesTheSessionSetsOfTheTransaction() {
     // Issue #8242
     final PostgresSessionSettings settings = new PostgresSessionSettings();
-    settings.set("search_path", "before");
+    settings.set("work_mem", "before");
     settings.commit();
 
-    settings.set("search_path", "x");
+    settings.set("work_mem", "x");
     settings.set("datestyle", "DMY");
     settings.rollback();
-    assertThat(settings.show("search_path")).isEqualTo("before");
+    assertThat(settings.show("work_mem")).isEqualTo("before");
     assertThat(settings.show("datestyle")).isEqualTo("ISO, MDY");
 
-    settings.set("search_path", "kept");
+    settings.set("work_mem", "kept");
     settings.commit();
     settings.rollback();
-    assertThat(settings.show("search_path")).as("a rollback after the commit has nothing to undo").isEqualTo("kept");
+    assertThat(settings.show("work_mem")).as("a rollback after the commit has nothing to undo").isEqualTo("kept");
   }
 
   @Test
   void setLocalEndsWithItsTransaction() {
     // Issue #8242
     final PostgresSessionSettings settings = new PostgresSessionSettings();
-    settings.set("search_path", "session");
-    settings.set("search_path", "local", true);
-    assertThat(settings.show("search_path")).isEqualTo("local");
+    settings.set("work_mem", "session");
+    settings.set("work_mem", "local", true);
+    assertThat(settings.show("work_mem")).isEqualTo("local");
     settings.commit();
-    assertThat(settings.show("search_path")).isEqualTo("session");
+    assertThat(settings.show("work_mem")).isEqualTo("session");
 
-    settings.set("search_path", "local", true);
-    settings.set("search_path", "later");
+    settings.set("work_mem", "local", true);
+    settings.set("work_mem", "later");
     settings.commit();
-    assertThat(settings.show("search_path")).as("a SET after a SET LOCAL supersedes it").isEqualTo("later");
+    assertThat(settings.show("work_mem")).as("a SET after a SET LOCAL supersedes it").isEqualTo("later");
 
     settings.set("datestyle", "YMD", true);
     assertThat(settings.show("datestyle")).isEqualTo("ISO, YMD");
@@ -259,7 +259,7 @@ class PostgresSessionSettingsTest {
     assertThat(reported).isEmpty();
 
     settings.set("DateStyle", "SQL, DMY");
-    settings.set("search_path", "x");
+    settings.set("work_mem", "x");
     settings.set("client_encoding", "LATIN1");
     settings.reportChanges(reported::put);
     assertThat(reported).containsExactly(Map.entry("DateStyle", "ISO, DMY"));
