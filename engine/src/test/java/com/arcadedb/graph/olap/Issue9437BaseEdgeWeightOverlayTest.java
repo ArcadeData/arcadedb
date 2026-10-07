@@ -21,6 +21,7 @@ package com.arcadedb.graph.olap;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.NodeEdgeWeights;
 import com.arcadedb.graph.Vertex;
@@ -32,6 +33,7 @@ import org.junit.jupiter.api.Test;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -117,7 +119,75 @@ class Issue9437BaseEdgeWeightOverlayTest {
     }
   }
 
+  /** An edge added after the build is a parallel twin of the overlay's, not of the base: each keeps its own value. */
+  @Test
+  void aSoleBaseEdgeUpdatedAfterAParallelEdgeWasAdded() {
+    graph(false);
+    final GraphAnalyticalView view = syncView();
+    try {
+      final long built = view.getBuildTimestamp();
+      database.transaction(() -> vertex("A").newEdge("ROAD", vertex("B"), true, new Object[] { "w", 15.0 }).save());
+      setWeightOfBaseEdge(3.0);
+
+      final int a = view.getNodeId(vertex("A").getIdentity());
+      final NodeEdgeWeights edges = view.edgeWeightsForSlice(a, Vertex.DIRECTION.OUT, "ROAD", "w", -1.0, null);
+      assertThat(edges).isNotNull();
+      assertThat(edges.weights()).containsExactlyInAnyOrder(3.0, 15.0, 20.0);
+      assertThat(costTo("B")).isEqualTo(3.0);
+      assertThat(view.getBuildTimestamp()).as("no rebuild was forced").isEqualTo(built);
+    } finally {
+      view.drop();
+    }
+  }
+
+  /**
+   * An update carries every materialised value of the edge as committed, so a change to another property keeps the
+   * weight, and a removed weight reads as the default, exactly as a rebuilt column would.
+   */
+  @Test
+  void otherPropertiesAndARemovedWeight() {
+    graph(false);
+    final GraphAnalyticalView view = syncView();
+    try {
+      final long built = view.getBuildTimestamp();
+      final int a = view.getNodeId(vertex("A").getIdentity());
+      updateEdge("A", "B", edge -> edge.set("note", "resurfaced"));
+      assertThat(weightsByName(view, a, Vertex.DIRECTION.OUT)).containsExactlyInAnyOrderEntriesOf(
+          Map.of("B", 10.0, "C", 20.0));
+
+      updateEdge("A", "B", edge -> edge.remove("w"));
+      assertThat(weightsByName(view, a, Vertex.DIRECTION.OUT)).containsExactlyInAnyOrderEntriesOf(
+          Map.of("B", -1.0, "C", 20.0));
+      assertThat(view.getBuildTimestamp()).as("no rebuild was forced").isEqualTo(built);
+    } finally {
+      view.drop();
+    }
+  }
+
   // ---------------------------------------------------------------------------------------------------------------
+
+  /** Sets the weight of the A -> B edge that was there when the view was built (the one at 10). */
+  private void setWeightOfBaseEdge(final double weight) {
+    database.transaction(() -> {
+      for (final Edge edge : vertex("A").getEdges(Vertex.DIRECTION.OUT, "ROAD"))
+        if ("B".equals(edge.getInVertex().get("name")) && ((Number) edge.get("w")).doubleValue() == 10.0) {
+          edge.modify().set("w", weight).save();
+          return;
+        }
+    });
+  }
+
+  private void updateEdge(final String from, final String to, final Consumer<MutableEdge> change) {
+    database.transaction(() -> {
+      for (final Edge edge : vertex(from).getEdges(Vertex.DIRECTION.OUT, "ROAD"))
+        if (to.equals(edge.getInVertex().get("name"))) {
+          final MutableEdge mutable = edge.modify();
+          change.accept(mutable);
+          mutable.save();
+          return;
+        }
+    });
+  }
 
   /** A -> B at 10, A -> C at 20, plus a second A -> B at 15 when {@code parallel}. */
   private void graph(final boolean parallel) {

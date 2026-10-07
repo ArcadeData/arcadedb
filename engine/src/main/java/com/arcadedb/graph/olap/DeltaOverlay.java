@@ -133,6 +133,9 @@ class DeltaOverlay {
   // parallel roads of one type between two junctions are rare, then costs nothing but this entry. A pair with parallel
   // edges is still ambiguous and still marks the type dirty, as before.
   private final Map<String, Map<Long, Object[]>> updatedBaseEdgeValues;
+  // How many pairs updatedBaseEdgeValues holds, counted once: the view asks on every commit, for the compaction threshold
+  private final int                              updatedBaseEdgeCount;
+  private static final Object[]                  NO_VALUES = new Object[0];
 
   @SuppressWarnings("unchecked")
   DeltaOverlay(final int baseNodeCount) {
@@ -157,6 +160,7 @@ class DeltaOverlay {
     this.dirtyEdgeTypes = Collections.emptySet();
     this.allEdgeTypesDirty = false;
     this.updatedBaseEdgeValues = Collections.emptyMap();
+    this.updatedBaseEdgeCount = 0;
   }
 
   // The private constructor takes ownership of all passed collections — callers MUST NOT
@@ -200,6 +204,10 @@ class DeltaOverlay {
     this.dirtyEdgeTypes = dirtyEdgeTypes;
     this.allEdgeTypesDirty = allEdgeTypesDirty;
     this.updatedBaseEdgeValues = updatedBaseEdgeValues;
+    int baseEdgeCount = 0;
+    for (final Map<Long, Object[]> values : updatedBaseEdgeValues.values())
+      baseEdgeCount += values.size();
+    this.updatedBaseEdgeCount = baseEdgeCount;
   }
 
   /**
@@ -457,7 +465,9 @@ class DeltaOverlay {
           for (final var entry : updatedBaseEdgeValues.entrySet())
             newBaseEdgeValues.put(entry.getKey(), new HashMap<>(entry.getValue()));
         }
-        newBaseEdgeValues.computeIfAbsent(ed.edgeType, k -> new HashMap<>()).put(packEdge(srcId, tgtId), ed.properties);
+        // no values at all: every materialised property was removed, so each reads as missing, as a rebuilt column would
+        newBaseEdgeValues.computeIfAbsent(ed.edgeType, k -> new HashMap<>())
+            .put(packEdge(srcId, tgtId), ed.properties != null ? ed.properties : NO_VALUES);
       } else if (!newDirtyTypes.contains(ed.edgeType)) {
         if (!dirtyTypesCopied) {
           newDirtyTypes = new HashSet<>(dirtyEdgeTypes);
@@ -587,7 +597,7 @@ class DeltaOverlay {
    */
   private boolean isSoleBaseEdge(final TxDelta.EdgeDelta ed, final NodeIdMapping baseMapping,
       final Map<String, CSRAdjacencyIndex> baseForUpdates, final Map<RID, Integer> overflowIds, final BitSet deletedBase) {
-    if (baseForUpdates == null || ed.properties == null)
+    if (baseForUpdates == null)
       return false;
     final CSRAdjacencyIndex csr = baseForUpdates.get(ed.edgeType);
     if (csr == null)
@@ -705,10 +715,7 @@ class DeltaOverlay {
 
   /** How many base edges have new property values here, which counts toward the compaction threshold. */
   int getUpdatedBaseEdgeCount() {
-    int count = 0;
-    for (final Map<Long, Object[]> values : updatedBaseEdgeValues.values())
-      count += values.size();
-    return count;
+    return updatedBaseEdgeCount;
   }
 
   /**
