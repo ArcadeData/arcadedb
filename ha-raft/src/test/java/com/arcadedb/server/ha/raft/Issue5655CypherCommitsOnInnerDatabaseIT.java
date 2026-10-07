@@ -19,6 +19,7 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
@@ -27,6 +28,7 @@ import org.junit.jupiter.api.Test;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for issue #5655, the Cypher half of #5492: {@code OpenCypherQueryEngine} held the inner
@@ -43,9 +45,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       {@code RemoveStep}, {@code ForeachStep} - which calls {@code begin()}/{@code commit()} directly on
  *       {@code context.getDatabase()} when no transaction is already open.</li>
  * </ul>
- * A third test pins the entry point rather than the commit site: a write can reach execution through
- * {@code query()} via {@code PROFILE}, which is why the fix keys off {@code isReadOnly()} instead of off
- * {@code command()}-vs-{@code query()} as the SQL fix could.
+ * A third test covers {@code PROFILE} of a write: profile mode skips the plan cache, so it runs the uncached
+ * branch of {@code execute()}. Since #9313 {@code query()} refuses a profiled write, so it goes through
+ * {@code command()} and the test also pins that refusal.
  * <p>
  * {@code CreateStep} is deliberately not covered: it wraps its work in {@code database.transaction(...)},
  * and {@code LocalDatabase.transaction()} drives {@code wrappedDatabaseInstance} internally, so a bare
@@ -158,15 +160,11 @@ class Issue5655CypherCommitsOnInnerDatabaseIT extends BaseRaftHATest {
   }
 
   /**
-   * The reason {@code executionDatabase()} switches on {@code isReadOnly()} rather than on the entry point, which is
-   * how the SQL fix (#5652) drew the same line.
-   * <p>
-   * {@code query()} does not imply read-only on this engine: {@code PROFILE} deliberately bypasses the idempotency
-   * gate so a plan can be inspected under execution, so {@code PROFILE MATCH ... SET ...} arrives through
-   * {@code query()} and writes. Switching on the entry point would leave exactly this statement committing on the
-   * inner instance, and nothing else in the suite would notice - which is what makes it worth its own test rather
-   * than a comment. It also covers the uncached branch of {@code execute()}, since profile mode never uses the plan
-   * cache.
+   * {@code PROFILE} executes the statement it wraps, so a profiled write is a write: since #9313 {@code query()}
+   * refuses it exactly like the bare write, and {@code command()} is the legitimate entry point. The profiled write
+   * must still commit on the replicated instance, and nothing else in the suite would notice if it did not - which is
+   * what makes it worth its own test rather than a comment. It also covers the uncached branch of {@code execute()},
+   * since profile mode never uses the plan cache.
    */
   @Test
   void profiledCypherWriteThroughQueryReachesFollowers() throws Exception {
@@ -184,19 +182,26 @@ class Issue5655CypherCommitsOnInnerDatabaseIT extends BaseRaftHATest {
 
     ArcadeStateMachine.TEST_WAL_GAP_COUNTER = new AtomicInteger(0);
 
-    // query(), not command(): the whole point is that a write reaches execution through the read entry point.
-    leaderDb.query("cypher", "PROFILE MATCH (n:" + TYPE_PROFILE + " {id: 1}) SET n.marked = 1").close();
+    final String profiledWrite = "PROFILE MATCH (n:" + TYPE_PROFILE + " {id: 1}) SET n.marked = 1";
+
+    // The read entry point refuses a profiled write (#9313) and must leave nothing behind.
+    assertThatThrownBy(() -> leaderDb.query("cypher", profiledWrite).close())
+        .isInstanceOf(QueryNotIdempotentException.class);
+    assertThat(markedCountOn(leaderIndex, TYPE_PROFILE)).as("a refused profiled write must not be applied")
+        .isZero();
+
+    leaderDb.command("cypher", profiledWrite).close();
 
     assertThat(markedCountOn(leaderIndex, TYPE_PROFILE)).as("leader applied the profiled SET").isEqualTo(1);
 
     waitForAllServers();
 
     assertThat(ArcadeStateMachine.TEST_WAL_GAP_COUNTER.get())
-        .as("follower must see no WAL version gap: a profiled write executed through query() still commits")
+        .as("follower must see no WAL version gap: a profiled write still commits on the replicated instance")
         .isZero();
 
     assertThat(awaitMarkedCountOn(followerIndex, TYPE_PROFILE, 1))
-        .as("a write that reaches execution through query() via PROFILE must replicate like any other")
+        .as("a profiled write must replicate like any other")
         .isEqualTo(1);
   }
 
