@@ -6178,6 +6178,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * @throws Exception when the database cannot be opened or its directory cannot be read; callers
    *                   decide what an unreadable local copy means for them.
    */
+  // @VisibleForTesting (package-private, issue #8843)
   BootstrapBaseline readLocalBootstrapState(final String dbName) throws Exception {
     return readLocalBootstrapState(dbName, BootstrapFingerprint.SETTLE_MAX_WAIT_MILLIS);
   }

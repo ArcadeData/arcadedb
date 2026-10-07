@@ -1011,6 +1011,12 @@ public class PageManagerFlushThread extends Thread {
    * caller found. A database under sustained writes therefore costs the caller the time its backlog takes to drain,
    * never the duration of the writes, and the deadline caps even that (a wedged disk, a suspended flush).
    * <p>
+   * <b>The watermark is approximate.</b> It counts page WRITES: a page modified again by a later commit can be written
+   * more than once while the backlog drains, so the count can be reached before every page of the original backlog
+   * has landed. That can only happen under concurrent writes, where a reader of the files sees them change anyway. And
+   * when this database has no flushed-pages counter (a close racing the call removed it) the watermark exit is
+   * disabled: the wait degrades to "pipeline empty or deadline".
+   * <p>
    * On a database with no further commits - the case the bootstrap fingerprint cares about - the first condition is
    * the one that ends the wait, so it is exact: every committed page is on disk when this returns {@code true}.
    *
@@ -1028,15 +1034,15 @@ public class PageManagerFlushThread extends Thread {
     // would outlive the database - and the pipeline-empty exit below still ends the wait, or the deadline does.
     final AtomicLong existing = flushedPagesPerDatabase.get(database);
     final AtomicLong flushedCounter = existing != null ? existing : new AtomicLong();
-    // THE TWO READS ARE NOT ATOMIC: PAGES FLUSHED BETWEEN THEM RAISE THE TARGET ABOVE THE TRUE BACKLOG. HARMLESS - THE
-    // WAIT THEN ENDS ON THE PIPELINE EMPTYING OR ON THE DEADLINE, ONLY THE EARLY WATERMARK EXIT IS LOST FOR THAT CALL
+    // The two reads are not atomic: pages flushed between them raise the target above the true backlog. Harmless - the
+    // wait then ends on the pipeline emptying or on the deadline, only the early watermark exit is lost for that call.
     final long target = flushedCounter.get() + pendingAtStart;
     while (pageIndex.pendingOf(database) > 0 && flushedCounter.get() < target) {
       final long remaining = deadlineMillis - System.currentTimeMillis();
       if (remaining <= 0)
         return false;
-      // THE DRAIN SIGNAL ONLY FIRES WHEN THE PIPELINE EMPTIES, WHICH UNDER SUSTAINED WRITES MAY NEVER HAPPEN: THE POLL
-      // INTERVAL IS WHAT RE-CHECKS THE FLUSHED-PAGES WATERMARK IN THAT CASE
+      // The drain signal only fires when the pipeline empties, which under sustained writes may never happen: the poll
+      // interval is what re-checks the flushed-pages watermark in that case.
       pageIndex.awaitDrain(database, Math.min(remaining, flushWaitPollMillis));
     }
     return true;

@@ -980,6 +980,7 @@ class BootstrapElection {
   /** Prefix of the {@link ProbeOutcome#detail()} {@link #probeOutcomeOf} gives an answer it cannot parse. */
   static final String MALFORMED_ANSWER = "malformed JSON: ";
 
+  // @VisibleForTesting
   Map<String, PeerState> computeLocalStates(final RaftPeerId localId, final Set<String> dbFilter) {
     final Map<String, PeerState> result = new HashMap<>();
     final long settleDeadline = System.currentTimeMillis() + BootstrapFingerprint.SETTLE_MAX_WAIT_MILLIS;
