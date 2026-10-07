@@ -122,7 +122,9 @@ public final class BootstrapFingerprint {
    */
   public static String computeSettled(final LocalDatabase database, final long maxWaitMillis) {
     if (!database.getPageManager().waitPagesPendingNowOfDatabaseAreFlushed(database, maxWaitMillis))
-      LogManager.instance().log(BootstrapFingerprint.class, Level.WARNING,
+      // A zero bound is a sweep whose shared budget an earlier database already spent, and that one was logged at
+      // WARNING: the rest of the sweep is reported at FINE so one wedged flush does not log once per database.
+      LogManager.instance().log(BootstrapFingerprint.class, maxWaitMillis > 0 ? Level.WARNING : Level.FINE,
           "Bootstrap fingerprint of database '%s': the pending page flushes did not reach the disk within %d ms, "
               + "hashing the files as they stand (the fingerprint may not match a settled copy of the same data)",
           database.getName(), maxWaitMillis);

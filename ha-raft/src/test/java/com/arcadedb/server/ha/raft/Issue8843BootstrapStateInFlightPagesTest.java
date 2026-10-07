@@ -206,6 +206,8 @@ class Issue8843BootstrapStateInFlightPagesTest {
       boolean parked = false;
       while (!parked && !answered.isDone() && System.currentTimeMillis() < deadline) {
         final Thread t = readerThread.get();
+        // Any waiting state counts, not only the drain: a brief wait elsewhere can only release the hold early, which
+        // weakens the test towards passing on an unfixed reader, never towards failing a fixed one.
         parked = t != null && (t.getState() == Thread.State.TIMED_WAITING || t.getState() == Thread.State.WAITING);
         if (!parked)
           Thread.sleep(5);

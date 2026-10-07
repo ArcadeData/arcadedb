@@ -153,6 +153,8 @@ class Issue8843SettledBootstrapFingerprintTest {
     final long deadline = System.currentTimeMillis() + 60_000L;
     while (!future.isDone() && System.currentTimeMillis() < deadline) {
       final Thread t = thread.get();
+      // Any waiting state counts, not only the drain: a brief wait elsewhere (class loading, logging) can only release
+      // the hold early, which weakens the test towards passing on an unfixed reader, never towards failing a fixed one.
       if (t != null && (t.getState() == Thread.State.TIMED_WAITING || t.getState() == Thread.State.WAITING))
         return;
       Thread.sleep(5);
