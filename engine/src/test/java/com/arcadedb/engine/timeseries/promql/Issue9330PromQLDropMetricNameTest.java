@@ -92,6 +92,12 @@ class Issue9330PromQLDropMetricNameTest extends TestHelper {
     assertThat(empty.samples()).hasSize(1);
     assertThat(empty.samples().getFirst().value()).isEqualTo(1.0);
 
+    // an absent label is "" for the regex matchers too
+    assertThat(evaluate("e9363{host=~\".*\"}").samples()).hasSize(2);
+    assertThat(evaluate("e9363{host=~\"\"}").samples()).hasSize(1);
+    assertThat(evaluate("e9363{host!~\"h.*\"}").samples()).hasSize(1);
+    assertThat(evaluate("e9363{host!~\".+\"}").samples()).hasSize(1);
+
     final InstantVector present = evaluate("e9363{host!=\"\"}");
     assertThat(present.samples()).hasSize(1);
     assertThat(present.samples().getFirst().value()).isEqualTo(2.0);

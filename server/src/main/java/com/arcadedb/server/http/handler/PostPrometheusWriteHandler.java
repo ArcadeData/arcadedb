@@ -23,6 +23,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
+import com.arcadedb.engine.timeseries.TimeSeriesGateway;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.security.SecurityDatabaseUser;
@@ -41,8 +42,11 @@ import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HttpString;
 
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -176,8 +180,9 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
     // the same flag, because either one applied to a transaction this handler did not open would settle the
     // caller's session transaction behind its back.
     final boolean ownTransaction = !database.isTransactionActive();
-    final boolean rejectUndeclared = !"ignore".equalsIgnoreCase(
-        database.getConfiguration().getValueAsString(GlobalConfiguration.TIMESERIES_UNDECLARED_KEYS));
+    final boolean rejectUndeclared = TimeSeriesGateway.rejectsUndeclaredKeys(database);
+    // TAG column names per type, built once per request instead of scanning the columns for every label of every series
+    final Map<String, Set<String>> tagNamesByType = new HashMap<>();
     // `metric.label` of every label that made a series be dropped, bounded because the labels come from the client
     final Set<String> undeclaredLabels = new LinkedHashSet<>();
     int droppedSeries = 0;
@@ -204,7 +209,8 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
         // A label the type has no TAG column for would be silently dropped, filing the samples under a different
         // series than the one sent (issue #9365). Prometheus cannot extend an existing type, so it follows the same
         // policy as the line protocol (issue #8646): reject drops the series and names the label, ignore discards it.
-        if (rejectUndeclared && hasUndeclaredLabel(ts.getLabels(), columns, typeName, undeclaredLabels)) {
+        if (rejectUndeclared && hasUndeclaredLabel(ts.getLabels(),
+            tagNamesByType.computeIfAbsent(typeName, k -> tagNamesOf(columns)), typeName, undeclaredLabels)) {
           ++droppedSeries;
           continue;
         }
@@ -267,25 +273,27 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
     return new ExecutionResponse(204, "");
   }
 
+  private static Set<String> tagNamesOf(final List<ColumnDefinition> columns) {
+    final Set<String> names = new HashSet<>();
+    for (final ColumnDefinition col : columns)
+      if (col.getRole() == ColumnDefinition.ColumnRole.TAG)
+        names.add(col.getName());
+    return names;
+  }
+
   /**
    * Whether {@code labels} carries a non-empty label the type has no TAG column for, adding each such label to
    * {@code undeclared} (as {@code type.label}, up to {@link #MAX_REPORTED_UNDECLARED_LABELS}). An empty value is an
    * absent label in the Prometheus data model, so it never counts (issue #9363).
    */
-  private static boolean hasUndeclaredLabel(final List<Label> labels, final List<ColumnDefinition> columns,
+  private static boolean hasUndeclaredLabel(final List<Label> labels, final Set<String> tagNames,
       final String typeName, final Set<String> undeclared) {
     boolean found = false;
     for (final Label label : labels) {
       if ("__name__".equals(label.name()) || label.value() == null || label.value().isEmpty())
         continue;
       final String column = sanitizeColumnName(label.name());
-      boolean declared = false;
-      for (final ColumnDefinition col : columns)
-        if (col.getRole() == ColumnDefinition.ColumnRole.TAG && col.getName().equals(column)) {
-          declared = true;
-          break;
-        }
-      if (!declared) {
+      if (!tagNames.contains(column)) {
         found = true;
         if (undeclared.size() < MAX_REPORTED_UNDECLARED_LABELS)
           undeclared.add(typeName + "." + column);

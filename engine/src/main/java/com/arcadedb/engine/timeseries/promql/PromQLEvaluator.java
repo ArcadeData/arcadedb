@@ -884,7 +884,7 @@ public class PromQLEvaluator {
 
   /**
    * The functions that keep the metric name, as in Prometheus: they reorder or relabel a series instead of deriving a
-   * new value from it. Every other function drops it.
+   * new value from it. Every other function drops it. Mirrors {@code DropMetricName()} in Prometheus' promql/functions.go.
    */
   private static boolean functionKeepsMetricName(final String name) {
     return switch (name) {

@@ -344,6 +344,10 @@ public final class ColumnDefinition {
    * fixed-width (numeric, boolean, datetime) type, because they read the value as a number.</li>
    * <li>{@code NONE} and {@code DELTA_OF_DELTA} on a non-timestamp column have no encoder.</li>
    * </ul>
+   * Keep this in step with {@code TimeSeriesSealedStore.compressColumn}; {@code Issue9310TimeSeriesCodecValidationTest}
+   * drives every accepted combination through a compaction so a drift fails there. "Numeric" is {@code getFixedSize() > 0},
+   * which is exactly the set of types {@code storedNumericValueOf}/{@code integerValueOf} can read; a new fixed-width type
+   * that is not a number must be excluded here.
    */
   public static String codecRefusal(final String name, final Type dataType, final ColumnRole role, final TimeSeriesCodec codec) {
     if (role == ColumnRole.TIMESTAMP)

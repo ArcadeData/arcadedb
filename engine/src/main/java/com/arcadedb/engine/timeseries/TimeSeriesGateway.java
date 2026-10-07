@@ -19,6 +19,7 @@
 package com.arcadedb.engine.timeseries;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.LineProtocolParser.Sample;
 import com.arcadedb.schema.DocumentType;
@@ -168,6 +169,16 @@ public final class TimeSeriesGateway {
   }
 
   /**
+   * Whether a time-series write carrying a tag, field or property its type does not declare is refused
+   * ({@link GlobalConfiguration#TIMESERIES_UNDECLARED_KEYS} is {@code reject}, the default) rather than stored with the
+   * key discarded. The one place the policy is parsed, so line protocol, gRPC, SQL INSERT and Prometheus cannot diverge
+   * (issues #8646, #9365).
+   */
+  public static boolean rejectsUndeclaredKeys(final Database database) {
+    return !"ignore".equalsIgnoreCase(database.getConfiguration().getValueAsString(GlobalConfiguration.TIMESERIES_UNDECLARED_KEYS));
+  }
+
+  /**
    * Appends {@code samples} to the time-series types their measurement names select.
    * <p>
    * Samples are grouped by measurement and each group is appended as ONE batch. Appending sample-by-sample
@@ -205,8 +216,7 @@ public final class TimeSeriesGateway {
     final Set<String> unavailableTypes = new LinkedHashSet<>();
     final Set<String> undeclaredKeys = new LinkedHashSet<>();
     final Map<String, MeasurementBatch> byMeasurement = new LinkedHashMap<>();
-    final boolean rejectUndeclared = !"ignore".equalsIgnoreCase(
-        database.getConfiguration().getValueAsString(GlobalConfiguration.TIMESERIES_UNDECLARED_KEYS));
+    final boolean rejectUndeclared = rejectsUndeclaredKeys(database);
 
     for (final Sample sample : samples) {
       final String measurement = sample.getMeasurement();

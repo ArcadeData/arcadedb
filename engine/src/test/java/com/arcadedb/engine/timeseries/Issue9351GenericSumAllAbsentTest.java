@@ -19,6 +19,7 @@
 package com.arcadedb.engine.timeseries;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.function.sql.math.SQLFunctionSum;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.LocalTimeSeriesType;
@@ -66,6 +67,33 @@ class Issue9351GenericSumAllAbsentTest extends TestHelper {
     try (final ResultSet rs = database.query("sql", "SELECT sum(v) AS s FROM P9351 WHERE ts < " + HOUR)) {
       assertThat(rs.next().<Number>getProperty("s").doubleValue()).isEqualTo(55.0);
     }
+  }
+
+  @Test
+  void aGroupWithSomeNullsStillSumsTheRest() {
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Partial9351");
+      database.newDocument("Partial9351").set("g", "a").set("x", 5).save();
+      database.newDocument("Partial9351").set("g", "a").save();
+      database.newDocument("Partial9351").set("g", "b").save();
+    });
+    try (final ResultSet rs = database.query("sql", "SELECT g, sum(x) AS s FROM Partial9351 GROUP BY g ORDER BY g")) {
+      assertThat(rs.next().<Number>getProperty("s").intValue()).isEqualTo(5);
+      assertThat(rs.next().<Object>getProperty("s")).as("the all-NULL group").isNull();
+    }
+  }
+
+  @Test
+  void mergingAPartialThatSawNoValueKeepsTheOtherSide() {
+    final SQLFunctionSum seen = new SQLFunctionSum();
+    seen.execute(null, null, null, new Object[] { 4 }, null);
+    final SQLFunctionSum none = new SQLFunctionSum();
+
+    seen.mergePartial(none);
+    assertThat(seen.getResult()).isEqualTo(4);
+
+    none.mergePartial(new SQLFunctionSum());
+    assertThat(none.getResult()).as("neither side saw a value").isNull();
   }
 
   @Test
