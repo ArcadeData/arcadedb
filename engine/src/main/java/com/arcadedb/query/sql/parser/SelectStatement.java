@@ -42,8 +42,8 @@ import java.util.function.Function;
 import java.util.logging.Level;
 
 public class SelectStatement extends Statement {
-  /** How many times a SELECT is planned in all when the index its plan reads is gone by the time it starts (issue #9331). */
-  private static final int STALE_INDEX_PLAN_RETRIES = 3;
+  /** How many attempts in all a SELECT gets when the index its plan reads is gone by the time it starts (issue #9331). */
+  private static final int STALE_INDEX_PLAN_MAX_ATTEMPTS = 3;
 
   public FromClause  target;
   public Projection  projection;
@@ -220,11 +220,12 @@ public class SelectStatement extends Statement {
    * rebuilt meanwhile (issue #9331) it plans the statement again. The planner validates an index, picks it, and reads it again
    * a few calls later; the steps read it once more when they start. A concurrent {@code DROP INDEX} in any of those gaps left
    * a plan that no longer matches the schema, and the {@link IndexException} reached the caller of a read-only query.
+   * <p>
    * Only the planning and the first batch are covered: an index dropped after the first rows were returned surfaces as the
-   * {@link IndexException} of {@code FetchFromIndexStep}, which beats a silently short answer. Nothing has been returned yet at that point and a SELECT writes nothing (a function with side effects, such as
-   * {@code sequence.next()}, would run twice, but the exception comes from the index, before the first row), so running it again
-   * is safe. Every attempt after
-   * the first plans without the cache, which may still hold the stale plan.
+   * {@link IndexException} of {@code FetchFromIndexStep}, which beats a silently short answer. Before the first row nothing has
+   * been returned, so running the statement again is safe (a function with side effects, such as {@code sequence.next()},
+   * would run twice, but the exception comes from the index, before the first row). Every attempt after the first plans
+   * without the cache, which may still hold the stale plan.
    */
   private ResultSet openResultSet(final CommandContext context, final Function<CommandContext, InternalExecutionPlan> firstPlanner) {
     for (int attempt = 1; ; attempt++) {
@@ -233,10 +234,10 @@ public class SelectStatement extends Statement {
         plan = attempt == 1 ? firstPlanner.apply(context) : createExecutionPlanNoCache(context);
         return new LocalResultSet(plan);
       } catch (final IndexException e) {
-        if (attempt >= STALE_INDEX_PLAN_RETRIES)
+        if (attempt >= STALE_INDEX_PLAN_MAX_ATTEMPTS)
           throw e;
-        LogManager.instance().log(this, Level.FINE, "Planning the statement again after attempt %d: %s", null, attempt,
-            e.getMessage());
+        LogManager.instance().log(this, Level.INFO, "Planning the statement again after attempt %d, its index was dropped or "
+            + "rebuilt: %s", null, attempt, e.getMessage());
         if (plan != null)
           try {
             plan.close();

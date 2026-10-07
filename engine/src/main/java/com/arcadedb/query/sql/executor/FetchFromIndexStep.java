@@ -255,7 +255,8 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
    * {@link IndexException} that makes the statement be planned again (issue #9331); otherwise the exception is the caller's own.
    */
   private RuntimeException staleIndexOr(final IllegalArgumentException e) {
-    if (index instanceof TypeIndex typeIndex && !typeIndex.isValid())
+    if (index instanceof TypeIndex typeIndex && !typeIndex.isValid() && e.getMessage() != null
+        && e.getMessage().startsWith("File with id"))
       return new IndexException("Index '" + indexName + "' was dropped or rebuilt while it was being read", e);
     return e;
   }
