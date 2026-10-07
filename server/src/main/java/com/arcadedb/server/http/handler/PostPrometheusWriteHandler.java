@@ -209,7 +209,7 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
         // A label the type has no TAG column for would be silently dropped, filing the samples under a different
         // series than the one sent (issue #9365). Prometheus cannot extend an existing type, so it follows the same
         // policy as the line protocol (issue #8646): reject drops the series and names the label, ignore discards it.
-        if (rejectUndeclared && hasUndeclaredLabel(ts.getLabels(),
+        if (rejectUndeclared && collectUndeclaredLabels(ts.getLabels(),
             tagNamesByType.computeIfAbsent(typeName, k -> tagNamesOf(columns)), typeName, undeclaredLabels)) {
           ++droppedSeries;
           continue;
@@ -286,7 +286,7 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
    * {@code undeclared} (as {@code type.label}, up to {@link #MAX_REPORTED_UNDECLARED_LABELS}). An empty value is an
    * absent label in the Prometheus data model, so it never counts (issue #9363).
    */
-  private static boolean hasUndeclaredLabel(final List<Label> labels, final Set<String> tagNames,
+  private static boolean collectUndeclaredLabels(final List<Label> labels, final Set<String> tagNames,
       final String typeName, final Set<String> undeclared) {
     boolean found = false;
     for (final Label label : labels) {
