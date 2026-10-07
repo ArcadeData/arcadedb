@@ -24,8 +24,8 @@ import com.arcadedb.database.DatabaseRID;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
-import com.arcadedb.engine.PageManager;
 import com.arcadedb.database.Record;
+import com.arcadedb.engine.PageManager;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.log.LogManager;
@@ -391,7 +391,11 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
             if (prevStep instanceof FetchFromIndexStep indexStep && finalVal instanceof RID rid) {
               final Object key = val.getProperty("key");
               final boolean unique = indexStep.isIndexUnique();
-              if (!unique) {
+              // Only a non-unique point lookup can overlap a commit AND serve several entries per key: those are the ones
+              // that must not serve a record twice when a reconciliation re-reads the key. A range scan has no such
+              // overlap check and retries just the entry that vanished.
+              final boolean track = !unique && indexStep.isPointLookup();
+              if (track) {
                 trackKey(key);
                 // already served by a reconciliation of this key
                 if (!trackingOverflow && servedForKey.contains(rid))
@@ -400,15 +404,15 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
               nextItem = toResult(finalVal, context);
               if (nextItem == null || overlappedACommit(context, indexStep)) {
                 // The entry names a record that is gone, or the lookup that produced it overlapped a commit (#9369)
-                recovered.addAll(reconcile(indexStep, key, rid, unique ? null : trackingOverflow ? NOT_TRACKED : servedForKey, context));
+                recovered.addAll(reconcile(indexStep, key, rid, unique ? null : !track || trackingOverflow ? NOT_TRACKED : servedForKey, context));
                 nextItem = recovered.pollFirst();
-                if (!unique && !trackingOverflow) {
+                if (track && !trackingOverflow) {
                   for (final Result row : recovered)
                     servedForKey.add(row.getIdentity().orElseThrow());
                   if (nextItem != null)
                     servedForKey.add(nextItem.getIdentity().orElseThrow());
                 }
-              } else if (!unique && !trackingOverflow)
+              } else if (track && !trackingOverflow)
                 trackServed(rid);
             } else
               nextItem = toResult(finalVal, context);
@@ -585,7 +589,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
 
   private static final int      MAX_TRACKED_RIDS_PER_KEY = 256;
   private static final int      MAX_RECONCILE_ATTEMPTS   = 8;
-  private static final int      MAX_POINT_LOOKUP_ENTRIES = 1024;
+  private static final int      MAX_POINT_LOOKUP_ENTRIES = 256;
   private static final Set<RID> NOT_TRACKED              = Set.of();
 
   private static boolean sameKey(final Object a, final Object b) {
@@ -639,7 +643,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
   /** The rows of every entry the index step returns, or null once there are more entries than are held. */
   private ArrayDeque<Result> readAndLoad(final CommandContext context, final FetchFromIndexStep indexStep, final int nRecords) {
     final List<Result> entries = new ArrayList<>();
-    unpinRepeatableReadPages((DatabaseInternal) context.getDatabase(), indexStep);
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
     prevResult = indexStep.syncPull(context, nRecords);
     while (true) {
       while (prevResult.hasNext()) {
@@ -658,6 +662,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
       final Object value = entry.getProperty("rid");
       if (!passesBucketFilter(value))
         continue;
+      guard.checkPeriodically(rows.size());
       final Result row = toResult(value, context);
       if (row != null)
         rows.add(row);
@@ -665,13 +670,19 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
     return rows;
   }
 
+  /** Starts the lookup over after a commit overlapped it, releasing what REPEATABLE_READ pinned of the torn state. */
   private void restartLookup(final DatabaseInternal database, final FetchFromIndexStep indexStep) {
     indexStep.reset();
     prevResult = null;
     pendingEntries.clear();
+    unpinRepeatableReadPages(database, indexStep);
   }
 
-  /** Under REPEATABLE_READ the pages this transaction pinned may be the very two states that disagree. */
+  /**
+   * Under REPEATABLE_READ the pages this transaction pinned while a commit overlapped the lookup may be the very two states
+   * that disagree. Only called once an overlap was detected, so a lookup that no commit touched keeps its snapshot; the
+   * pinned pages of the files involved are read again from the committed state, which is the one the lookup is repeated on.
+   */
   private void unpinRepeatableReadPages(final DatabaseInternal database, final FetchFromIndexStep indexStep) {
     if (!database.isTransactionActive() || database.getTransactionIsolationLevel() != Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ)
       return;
