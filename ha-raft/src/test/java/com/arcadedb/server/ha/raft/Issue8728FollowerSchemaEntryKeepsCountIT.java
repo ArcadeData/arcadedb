@@ -22,9 +22,12 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalSchema;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
 import java.util.UUID;
@@ -47,11 +50,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class Issue8728FollowerSchemaEntryKeepsCountIT extends BaseRaftHATest {
 
-  private static final String TYPE     = "Issue8728Counted";
-  private static final String DROPPED  = "Issue8728Dropped";
-  private static final int    INITIAL  = 200;
-  private static final int    INSERTED = 150;
-  private static final long   TOTAL    = INITIAL + INSERTED;
+  private static final String TYPE            = "Issue8728Counted";
+  private static final int    INITIAL         = 200;
+  private static final int    INSERTED        = 150;
+  private static final long   TOTAL           = INITIAL + INSERTED;
+  private static final int    INDEX_PAGE_SIZE = 8192;
 
   @Override
   protected boolean persistentRaftStorage() {
@@ -102,9 +105,9 @@ class Issue8728FollowerSchemaEntryKeepsCountIT extends BaseRaftHATest {
   }
 
   /**
-   * Dropping a type retires its files, and {@code loadIncremental()} refuses any entry with a retired file, so the
-   * follower takes the full {@code load()}. An index compaction would reach the same fallback, but is not used here
-   * because of the unrelated post-compaction index-name split filed as #9213, which fails the cluster comparison.
+   * An LSM index compaction retires the index's mutable file, and {@code loadIncremental()} refuses any entry with a
+   * retired file, so the follower takes the full {@code load()}. This is the trigger #8728 asked for; it was replaced
+   * by a DROP TYPE until #9213 made the leader and the reloaded followers agree on the compacted index's name.
    */
   @Test
   void aFullSchemaReloadKeepsTheFollowerCountOfInsertsSinceItsRestart() throws Exception {
@@ -112,23 +115,30 @@ class Issue8728FollowerSchemaEntryKeepsCountIT extends BaseRaftHATest {
     assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
 
     final Database leaderDb = getServerDatabase(leaderIndex, getDatabaseName());
-    leaderDb.transaction(() -> {
-      createCountedType(leaderDb);
-      leaderDb.getSchema().getOrCreateDocumentType(DROPPED);
-    });
+    leaderDb.transaction(() -> createCountedType(leaderDb).getOrCreateProperty("uuid", Type.STRING));
+    // A small page so the few hundred keys of this test span the 2 mutable pages a compaction needs to run at all.
+    leaderDb.getSchema().buildTypeIndex(TYPE, new String[] { "uuid" }).withType(Schema.INDEX_TYPE.LSM_TREE)
+        .withUnique(false).withPageSize(INDEX_PAGE_SIZE).withIgnoreIfExists(true).create();
 
     final int followerIndex = restartFollowerAfterInsertsAndInsertMore(leaderIndex);
     final LocalBucket bucketBefore = followerBucket(followerIndex);
 
-    leaderDb.getSchema().dropType(DROPPED);
+    final LSMTreeIndex leaderBucketIndex = (LSMTreeIndex) leaderDb.getSchema().getType(TYPE).getIndexesByProperties("uuid")
+        .getFirst().getIndexesOnBuckets()[0];
+    leaderDb.async().waitCompletion();
+    leaderBucketIndex.scheduleCompaction();
+    assertThat(leaderBucketIndex.compact()).as("the compaction must actually run to ship a compaction entry").isTrue();
     waitForReplicationOnAllServers();
 
-    assertThat(getServerDatabase(followerIndex, getDatabaseName()).getSchema().existsType(DROPPED))
-        .as("the drop-type entry must have been applied on follower %d", followerIndex).isFalse();
     assertThat(followerBucket(followerIndex))
-        .as("the drop-type entry must take the full load(), which rebuilds every component (if loadIncremental() ever "
+        .as("the compaction entry must take the full load(), which rebuilds every component (if loadIncremental() ever "
             + "learns retired files, pick another fallback trigger, see Issue6988FullRebuildFallbackIT)")
         .isNotSameAs(bucketBefore);
+
+    final String leaderName = leaderBucketIndex.getName();
+    testEachServer(serverIndex -> assertThat(getServerDatabase(serverIndex, getDatabaseName()).getSchema().getType(TYPE)
+        .getIndexesByProperties("uuid").getFirst().getIndexesOnBuckets()[0].getName())
+        .as("bucket index name on server %d (issue #9213)", serverIndex).isEqualTo(leaderName));
 
     assertCachedCountOnEveryServer();
     assertClusterConsistency();
