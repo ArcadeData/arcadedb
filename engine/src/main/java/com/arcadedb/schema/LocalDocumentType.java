@@ -1879,7 +1879,14 @@ public class LocalDocumentType implements DocumentType {
 
   /** Marks the index on {@code propertyNames} as being populated, see {@link #indexesUnderConstruction}. */
   void beginIndexConstruction(final List<String> propertyNames) {
-    indexesUnderConstruction.computeIfAbsent(propertyNames, k -> new AtomicInteger()).incrementAndGet();
+    // One map operation: a computeIfAbsent() then an increment could take the counter an end is just removing, and the build
+    // would count on a detached one
+    indexesUnderConstruction.compute(propertyNames, (key, count) -> {
+      if (count == null)
+        return new AtomicInteger(1);
+      count.incrementAndGet();
+      return count;
+    });
   }
 
   void endIndexConstruction(final List<String> propertyNames) {
