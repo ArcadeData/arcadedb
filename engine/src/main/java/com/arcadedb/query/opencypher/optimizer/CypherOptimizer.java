@@ -71,6 +71,7 @@ import com.arcadedb.query.opencypher.optimizer.statistics.CostModel;
 import com.arcadedb.query.opencypher.optimizer.statistics.StatisticsProvider;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.SelectExecutionPlanner;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
@@ -373,7 +374,7 @@ public class CypherOptimizer {
       // The scan may carry a case-insensitive index, whose order is that of its folded keys (issue #8700). An index the
       // schema no longer offers cannot give an order either
       final TypeIndex scanIndex = type.getPolymorphicIndexByProperties(rangeScan.getIndexProperties());
-      if (scanIndex == null || (scanIndex.getMetadata() != null && scanIndex.getMetadata().hasAnyCaseInsensitive()))
+      if (scanIndex == null || SelectExecutionPlanner.holdsFoldedKeys(scanIndex))
         return null;
       final List<String> indexProperties = rangeScan.getIndexProperties();
       if (orderedProperties.size() > indexProperties.size()
@@ -394,7 +395,7 @@ public class CypherOptimizer {
     final TypeIndex index = type.getPolymorphicIndexByProperties(property);
     if (!(index instanceof RangeIndex) || !index.supportsOrderedIterations() || index.getType() != Schema.INDEX_TYPE.LSM_TREE
         || index.getPropertyNames().size() != 1
-        || (index.getMetadata() != null && index.getMetadata().hasAnyCaseInsensitive()))
+        || SelectExecutionPlanner.holdsFoldedKeys(index))
       return null;
 
     final boolean nullKeysInIndex = index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.INDEX;

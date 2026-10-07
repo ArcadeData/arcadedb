@@ -516,6 +516,9 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     // Held across the whole build rather than only across the scan: the registration is what the window is measured
     // from, and it happens inside recordFileChanges. Reentrant, so the nested quiescence of any builder reached from
     // here simply rides on this one.
+    // Registered from here to the end of the build: the index is visible to the planners bucket by bucket while it is
+    // populated, and until it is complete it must not answer a query (issue #9331)
+    type.beginIndexConstruction(metadata.propertyNames);
     try (final AsyncQuiesce asyncPaused = database.quiesceAsync()) {
       final long recordFileChangesStarted = System.nanoTime();
       schema.recordFileChanges(() -> {
@@ -601,6 +604,8 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
       // type, ...) reaches the user as a bare "Error on creating index" with nowhere to go (issue #5607).
       throw new IndexException("Error on creating index on type '" + metadata.typeName + "', properties " + metadata.propertyNames
           + (e.getMessage() != null ? ": " + e.getMessage() : ""), e);
+    } finally {
+      type.endIndexConstruction(metadata.propertyNames);
     }
 
     // An index is half of what decides whether a partition is any use, so one created after the strategy was assigned

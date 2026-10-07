@@ -163,6 +163,7 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
@@ -5483,10 +5484,20 @@ public class CypherExecutionPlan {
       return null;
 
     final TypeIndex index = type.getIndexByProperties(propertyName);
-    if (!(index instanceof RangeIndex) || !index.supportsOrderedIterations() || index.getType() != Schema.INDEX_TYPE.LSM_TREE
-        || index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.INDEX || index.getMetadata() == null
-        || index.getMetadata().isCaseInsensitive(0))
+    if (!(index instanceof RangeIndex) || !index.isReadyForQueries())
       return null;
+    // The metadata is read once (issue #9332) and the whole check is guarded: a concurrent DROP INDEX can take the index
+    // away between any two of these reads, and the planner then answers as it does for an index that is not there
+    try {
+      if (!index.supportsOrderedIterations() || index.getType() != Schema.INDEX_TYPE.LSM_TREE
+          || index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.INDEX)
+        return null;
+      final IndexMetadata metadata = index.getMetadata();
+      if (metadata == null || metadata.isCaseInsensitive(0))
+        return null;
+    } catch (final IndexException e) {
+      return null;
+    }
 
     if (whereClause == null)
       return new IndexMinMaxStep(typeName, propertyName, max, returnItem.getOutputName(), context);
