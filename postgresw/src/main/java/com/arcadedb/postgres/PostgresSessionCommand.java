@@ -18,8 +18,12 @@
  */
 package com.arcadedb.postgres;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * A session-reset statement the protocol layer answers itself (issue #9328): {@code DISCARD ALL | PLANS | SEQUENCES |
@@ -52,6 +56,8 @@ record PostgresSessionCommand(Kind kind, String name) {
     }
   }
 
+  // A double-quoted identifier may hold spaces and doubled quotes; anything else ends at whitespace
+  private static final Pattern TOKEN = Pattern.compile("\"(?:[^\"]|\"\")*\"|`[^`]*`|\\S+");
   private static final Set<String> TAGS = Set.of("DISCARD ALL", "DISCARD PLANS", "DISCARD SEQUENCES", "DISCARD TEMP", "DEALLOCATE",
       "DEALLOCATE ALL", "CLOSE CURSOR", "CLOSE CURSOR ALL");
 
@@ -78,8 +84,12 @@ record PostgresSessionCommand(Kind kind, String name) {
    * @throws PostgresSessionSettings.SettingException {@code 42601} for a statement that is not one of the forms above
    */
   static PostgresSessionCommand parse(final String query) {
-    final String[] tokens = query.trim().split("\\s+");
-    final String keyword = tokens[0].toUpperCase(Locale.ENGLISH);
+    final List<String> found = new ArrayList<>(4);
+    final Matcher matcher = TOKEN.matcher(query);
+    while (matcher.find())
+      found.add(matcher.group());
+    final String[] tokens = found.toArray(new String[0]);
+    final String keyword = tokens.length > 0 ? tokens[0].toUpperCase(Locale.ENGLISH) : "";
     switch (keyword) {
     case "DISCARD" -> {
       if (tokens.length == 2)
@@ -124,6 +134,9 @@ record PostgresSessionCommand(Kind kind, String name) {
    * An identifier as PostgreSQL reads it: a double-quoted one keeps its case, an unquoted one folds to lower case.
    */
   private static String identifier(final String token) {
+    // The simple-query path hands a double-quoted identifier over already rewritten into back-ticks
+    if (token.length() >= 2 && token.charAt(0) == '`' && token.charAt(token.length() - 1) == '`')
+      return token.substring(1, token.length() - 1);
     if (token.length() >= 2 && token.charAt(0) == '"' && token.charAt(token.length() - 1) == '"')
       return token.substring(1, token.length() - 1).replace("\"\"", "\"");
     return token.toLowerCase(Locale.ENGLISH);

@@ -155,6 +155,9 @@ final class PostgresSessionSettings {
   private       String              sessionUser    = "";
   // The one namespace this server resolves names in, which search_path answers (issue #9329)
   private       String              currentSchema  = "";
+  // The last statement_timeout text parsed and its value in milliseconds, compared by identity
+  private       String              timeoutText    = null;
+  private       long                timeoutMillis  = 0L;
   // The isolation level the open transaction runs at (the default one when none is open), and the default level of
   // every new transaction. Read at SET time, because a database's default level can change while connected.
   private       Supplier<Database.TRANSACTION_ISOLATION_LEVEL> currentIsolation = () -> Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
@@ -277,7 +280,14 @@ final class PostgresSessionSettings {
    */
   long statementTimeoutMillis() {
     final String value = current(STATEMENT_TIMEOUT);
-    return value != null ? parseDurationMillis(STATEMENT_TIMEOUT, value) : 0L;
+    if (value == null)
+      return 0L;
+    // Stored values are the same String instance until the next SET, so the last parse is reused without a regex per statement
+    if (value != timeoutText) {
+      timeoutMillis = parseDurationMillis(STATEMENT_TIMEOUT, value);
+      timeoutText = value;
+    }
+    return timeoutMillis;
   }
 
   /**

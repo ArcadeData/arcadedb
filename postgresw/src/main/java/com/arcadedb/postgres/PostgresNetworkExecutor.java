@@ -1107,6 +1107,7 @@ public class PostgresNetworkExecutor extends Thread {
       profile.addDeserializationNanos(System.nanoTime() - deserStart);
       if (DEBUG)
         LogManager.instance().log(this, Level.INFO, "PSQL: query -> %s ", query);
+      // Read before the statement runs: a DISCARD ALL or RESET in this very statement changes the timeout from the next one on
       publishStatementTimeout();
 
       // COPY ... TO STDOUT is answered by the protocol itself (issue #7188): its rows travel as CopyData rather than

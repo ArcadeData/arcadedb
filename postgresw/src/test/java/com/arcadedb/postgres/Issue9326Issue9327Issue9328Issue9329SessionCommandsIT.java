@@ -172,6 +172,12 @@ class Issue9326Issue9327Issue9328Issue9329SessionCommandsIT extends PostgresWire
       assertThat(commandTag(simple(out, in, "DEALLOCATE PREPARE s2"))).isEqualTo("DEALLOCATE");
       assertThat(commandTag(simple(out, in, "DEALLOCATE ALL"))).isEqualTo("DEALLOCATE ALL");
 
+      // A quoted identifier keeps its spaces and its case
+      sendParse(out, "My Stmt", "SELECT 4");
+      sendSync(out);
+      readUntilReadyForQuery(in);
+      assertThat(commandTag(simple(out, in, "DEALLOCATE \"My Stmt\""))).isEqualTo("DEALLOCATE");
+
       assertThat(sqlStateOf(simple(out, in, "CLOSE nosuch"))).isEqualTo("34000");
       assertThat(commandTag(simple(out, in, "CLOSE ALL"))).isEqualTo("CLOSE CURSOR ALL");
 
