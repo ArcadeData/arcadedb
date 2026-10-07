@@ -1684,8 +1684,9 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     // Wait for server final summary or error (tiny grace after deadline)
     final boolean finished = done.await(Math.max(1, timeoutMs) + 1_000, TimeUnit.MILLISECONDS);
     if (!finished) {
-      throw new TimeoutException("ingestStream timed out waiting for server completion: the rows already sent may be partially "
-          + "applied, because the stream commits as it goes");
+      throw new TimeoutException("ingestStream timed out waiting for server completion" + (effOptions.getValidateOnly() ?
+          "" :
+          ": the rows already sent may be partially applied, because the stream commits as it goes"));
     }
 
     // If wrapObserver mapped an error, rethrow it directly
@@ -1971,8 +1972,9 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
           } catch (Throwable ignore) {
           }
         }
-        throw new TimeoutException("ingestBidirectional timed out waiting for server completion: the rows already sent may be "
-            + "partially applied, because the stream commits as it goes");
+        throw new TimeoutException("ingestBidirectional timed out waiting for server completion" + (appliesWrites ?
+            ": the rows already sent may be partially applied, because the stream commits as it goes" :
+            ""));
       }
 
       final Throwable err = errRef.get();
