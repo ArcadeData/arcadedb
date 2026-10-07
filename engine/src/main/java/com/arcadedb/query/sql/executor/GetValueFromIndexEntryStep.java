@@ -763,6 +763,8 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
 
   private List<Result> loadKeyAgain(final DatabaseInternal database, final FetchFromIndexStep indexStep, final Object key,
       final RID missing, final Set<RID> served, final CommandContext context) {
+    // The streaming path does not note the buckets it reads (a set insert per row): the entry that needs reconciling names one
+    readBucketIds.add(missing.getBucketId());
     unpinRepeatableReadPages(database, indexStep);
     final List<Result> found = new ArrayList<>(2);
     final List<RID> fresh = served == NOT_TRACKED ? null : indexStep.lookupKeyAgain(key);
