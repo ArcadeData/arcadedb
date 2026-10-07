@@ -1,6 +1,12 @@
 {
   "reflection": [
     {
+      "type": "android.app.Application"
+    },
+    {
+      "type": "android.os.Build$VERSION"
+    },
+    {
       "type": "apple.security.AppleProvider",
       "methods": [
         {
@@ -23,6 +29,9 @@
     },
     {
       "type": "com.arcadedb.bolt.BoltProtocolPlugin"
+    },
+    {
+      "type": "com.arcadedb.engine.PaginatedComponentFile"
     },
     {
       "type": "com.arcadedb.function.sql.coll.SQLFunctionDifference",
@@ -658,6 +667,18 @@
       "type": "com.arcadedb.server.ha.raft.RaftHAPlugin"
     },
     {
+      "type": "com.arcadedb.server.ha.raft.ratis.FixedGrpcRpcType",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.arcadedb.server.security.PinnedInetAddressResolverProvider"
+    },
+    {
       "type": "com.arcadedb.tracing.TracingPlugin"
     },
     {
@@ -787,6 +808,9 @@
       ]
     },
     {
+      "type": "com.sun.jndi.dns.DnsContextFactory"
+    },
+    {
       "type": "com.sun.management.GarbageCollectionNotificationInfo"
     },
     {
@@ -807,7 +831,29 @@
       "type": "com.sun.management.HotSpotDiagnosticMXBean"
     },
     {
-      "type": "com.sun.management.OperatingSystemMXBean"
+      "type": "com.sun.management.OperatingSystemMXBean",
+      "methods": [
+        {
+          "name": "getCpuLoad",
+          "parameterTypes": []
+        },
+        {
+          "name": "getFreePhysicalMemorySize",
+          "parameterTypes": []
+        },
+        {
+          "name": "getProcessCpuLoad",
+          "parameterTypes": []
+        },
+        {
+          "name": "getProcessCpuTime",
+          "parameterTypes": []
+        },
+        {
+          "name": "getTotalPhysicalMemorySize",
+          "parameterTypes": []
+        }
+      ]
     },
     {
       "type": "com.sun.management.ThreadMXBean"
@@ -946,6 +992,9 @@
       ]
     },
     {
+      "type": "io.grpc.netty.shaded.io.netty.buffer.AdaptivePoolingAllocator$Magazine"
+    },
+    {
       "type": "io.grpc.netty.shaded.io.netty.channel.AbstractChannelHandlerContext"
     },
     {
@@ -1003,6 +1052,18 @@
       "type": "io.grpc.netty.shaded.io.netty.util.ReferenceCountUtil"
     },
     {
+      "type": "io.grpc.netty.shaded.io.netty.util.ResourceLeakDetector$DefaultResourceLeak"
+    },
+    {
+      "type": "io.grpc.netty.shaded.io.netty.util.concurrent.ConcurrentSkipListIntObjMultimap"
+    },
+    {
+      "type": "io.grpc.netty.shaded.io.netty.util.concurrent.ConcurrentSkipListIntObjMultimap$Index"
+    },
+    {
+      "type": "io.grpc.netty.shaded.io.netty.util.concurrent.ConcurrentSkipListIntObjMultimap$Node"
+    },
+    {
       "type": "io.grpc.netty.shaded.io.netty.util.concurrent.DefaultPromise"
     },
     {
@@ -1031,6 +1092,30 @@
           "name": "producerIndex"
         }
       ]
+    },
+    {
+      "type": "io.grpc.netty.shaded.io.netty.util.internal.shaded.org.jctools.queues.atomic.BaseMpscLinkedAtomicArrayQueueColdProducerFields"
+    },
+    {
+      "type": "io.grpc.netty.shaded.io.netty.util.internal.shaded.org.jctools.queues.atomic.BaseMpscLinkedAtomicArrayQueueConsumerFields"
+    },
+    {
+      "type": "io.grpc.netty.shaded.io.netty.util.internal.shaded.org.jctools.queues.atomic.BaseMpscLinkedAtomicArrayQueueProducerFields"
+    },
+    {
+      "type": "io.grpc.netty.shaded.io.netty.util.internal.shaded.org.jctools.queues.atomic.MpmcAtomicArrayQueueConsumerIndexField"
+    },
+    {
+      "type": "io.grpc.netty.shaded.io.netty.util.internal.shaded.org.jctools.queues.atomic.MpmcAtomicArrayQueueProducerIndexField"
+    },
+    {
+      "type": "io.grpc.netty.shaded.io.netty.util.internal.shaded.org.jctools.queues.atomic.unpadded.MpscAtomicUnpaddedArrayQueueConsumerIndexField"
+    },
+    {
+      "type": "io.grpc.netty.shaded.io.netty.util.internal.shaded.org.jctools.queues.atomic.unpadded.MpscAtomicUnpaddedArrayQueueProducerIndexField"
+    },
+    {
+      "type": "io.grpc.netty.shaded.io.netty.util.internal.shaded.org.jctools.queues.atomic.unpadded.MpscAtomicUnpaddedArrayQueueProducerLimitField"
     },
     {
       "type": "io.grpc.netty.shaded.io.netty.util.internal.shaded.org.jctools.queues.unpadded.MpscUnpaddedArrayQueueConsumerIndexField",
@@ -1117,6 +1202,9 @@
       "type": "io.netty.util.ReferenceCountUtil"
     },
     {
+      "type": "io.netty.util.ResourceLeakDetector$DefaultResourceLeak"
+    },
+    {
       "type": "io.netty.util.concurrent.ConcurrentSkipListIntObjMultimap"
     },
     {
@@ -1150,7 +1238,86 @@
       "type": "io.netty.util.internal.shaded.org.jctools.queues.atomic.MpmcAtomicArrayQueueProducerIndexField"
     },
     {
+      "type": "io.netty.util.internal.shaded.org.jctools.queues.varhandle.BaseMpscLinkedVarHandleArrayQueueColdProducerFields",
+      "fields": [
+        {
+          "name": "producerLimit"
+        }
+      ]
+    },
+    {
+      "type": "io.netty.util.internal.shaded.org.jctools.queues.varhandle.BaseMpscLinkedVarHandleArrayQueueConsumerFields",
+      "fields": [
+        {
+          "name": "consumerIndex"
+        }
+      ]
+    },
+    {
+      "type": "io.netty.util.internal.shaded.org.jctools.queues.varhandle.BaseMpscLinkedVarHandleArrayQueueProducerFields",
+      "fields": [
+        {
+          "name": "producerIndex"
+        }
+      ]
+    },
+    {
+      "type": "io.netty.util.internal.shaded.org.jctools.queues.varhandle.MpmcVarHandleArrayQueueConsumerIndexField",
+      "fields": [
+        {
+          "name": "consumerIndex"
+        }
+      ]
+    },
+    {
+      "type": "io.netty.util.internal.shaded.org.jctools.queues.varhandle.MpmcVarHandleArrayQueueProducerIndexField",
+      "fields": [
+        {
+          "name": "producerIndex"
+        }
+      ]
+    },
+    {
+      "type": "io.opentelemetry.api.incubator.ExtendedOpenTelemetry"
+    },
+    {
+      "type": "io.opentelemetry.api.incubator.metrics.ExtendedDefaultMeterProvider"
+    },
+    {
+      "type": "io.opentelemetry.api.incubator.trace.ExtendedDefaultTracerProvider"
+    },
+    {
+      "type": "io.opentelemetry.exporter.internal.marshal.VarHandleStringEncoder",
+      "methods": [
+        {
+          "name": "createIfAvailable",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "io.opentelemetry.exporter.sender.okhttp.internal.OkHttpGrpcSenderProvider"
+    },
+    {
+      "type": "io.opentelemetry.sdk.trace.internal.shaded.jctools.queues.atomic.MpscAtomicArrayQueueConsumerIndexField"
+    },
+    {
+      "type": "io.opentelemetry.sdk.trace.internal.shaded.jctools.queues.atomic.MpscAtomicArrayQueueProducerIndexField"
+    },
+    {
+      "type": "io.opentelemetry.sdk.trace.internal.shaded.jctools.queues.atomic.MpscAtomicArrayQueueProducerLimitField"
+    },
+    {
       "type": "io.perfmark.impl.SecretPerfMarkImpl$PerfMarkImpl"
+    },
+    {
+      "type": "io.prometheus.metrics.expositionformats.internal.PrometheusProtobufWriterImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
     },
     {
       "type": "io.undertow.UndertowLogger_$logger",
@@ -1170,6 +1337,9 @@
       "type": "io.undertow.UndertowLogger_$logger_en_US"
     },
     {
+      "type": "io.undertow.protocols.http2.Http2Channel"
+    },
+    {
       "type": "io.undertow.server.ConnectorStatisticsImpl"
     },
     {
@@ -1180,6 +1350,12 @@
     },
     {
       "type": "io.undertow.server.HttpServerExchange"
+    },
+    {
+      "type": "io.undertow.server.protocol.framed.AbstractFramedChannel"
+    },
+    {
+      "type": "io.undertow.server.protocol.framed.AbstractFramedStreamSinkChannel"
     },
     {
       "type": "io.undertow.server.protocol.http.HttpReadListener"
@@ -1532,6 +1708,9 @@
       "type": "io.undertow.util.HttpString"
     },
     {
+      "type": "io.undertow.util.ReferenceCountedPooled"
+    },
+    {
       "type": "java.io.FileDescriptor"
     },
     {
@@ -1572,7 +1751,12 @@
     },
     {
       "type": "java.lang.Class",
+      "jniAccessible": true,
       "methods": [
+        {
+          "name": "getClassLoader",
+          "parameterTypes": []
+        },
         {
           "name": "getModule",
           "parameterTypes": []
@@ -1581,9 +1765,18 @@
     },
     {
       "type": "java.lang.ClassLoader",
+      "jniAccessible": true,
       "fields": [
         {
           "name": "classLoaderValueMap"
+        }
+      ],
+      "methods": [
+        {
+          "name": "loadClass",
+          "parameterTypes": [
+            "java.lang.String"
+          ]
         }
       ]
     },
@@ -1605,6 +1798,14 @@
           "name": "TYPE"
         }
       ]
+    },
+    {
+      "type": "java.lang.IllegalArgumentException",
+      "jniAccessible": true
+    },
+    {
+      "type": "java.lang.IllegalStateException",
+      "jniAccessible": true
     },
     {
       "type": "java.lang.Integer",
@@ -1635,6 +1836,10 @@
       ]
     },
     {
+      "type": "java.lang.OutOfMemoryError",
+      "jniAccessible": true
+    },
+    {
       "type": "java.lang.ProcessHandle",
       "methods": [
         {
@@ -1659,7 +1864,15 @@
       "type": "java.lang.StackTraceElement"
     },
     {
-      "type": "java.lang.String"
+      "type": "java.lang.String",
+      "fields": [
+        {
+          "name": "coder"
+        },
+        {
+          "name": "value"
+        }
+      ]
     },
     {
       "type": "java.lang.String[]"
@@ -1911,7 +2124,12 @@
       "type": "java.math.BigInteger"
     },
     {
-      "type": "java.nio.Bits"
+      "type": "java.nio.Bits",
+      "fields": [
+        {
+          "name": "UNALIGNED"
+        }
+      ]
     },
     {
       "type": "java.nio.Buffer",
@@ -1958,7 +2176,23 @@
       ]
     },
     {
-      "type": "java.nio.DirectByteBuffer"
+      "type": "java.nio.DirectByteBuffer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "long",
+            "int"
+          ]
+        },
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "long",
+            "long"
+          ]
+        }
+      ]
     },
     {
       "type": "java.nio.channels.FileChannel"
@@ -1979,6 +2213,9 @@
     },
     {
       "type": "java.security.KeyStoreSpi"
+    },
+    {
+      "type": "java.security.SecureRandomParameters"
     },
     {
       "type": "java.sql.Date"
@@ -2089,8 +2326,24 @@
       "type": "javax.management.openmbean.TabularData"
     },
     {
+      "type": "javax.naming.directory.InitialDirContext"
+    },
+    {
+      "type": "jdk.internal.jrtfs.JrtFileSystemProvider"
+    },
+    {
+      "type": "jdk.internal.loader.ClassLoaders$AppClassLoader"
+    },
+    {
       "type": "jdk.internal.misc.Unsafe",
       "methods": [
+        {
+          "name": "allocateUninitializedArray",
+          "parameterTypes": [
+            "java.lang.Class",
+            "int"
+          ]
+        },
         {
           "name": "getUnsafe",
           "parameterTypes": []
@@ -2125,10 +2378,427 @@
       "type": "long[]"
     },
     {
+      "type": "net.jpountz.lz4.LZ4HCJNICompressor",
+      "fields": [
+        {
+          "name": "INSTANCE"
+        }
+      ],
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "int"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "net.jpountz.lz4.LZ4JNICompressor",
+      "fields": [
+        {
+          "name": "INSTANCE"
+        }
+      ]
+    },
+    {
+      "type": "net.jpountz.lz4.LZ4JNISafeDecompressor",
+      "fields": [
+        {
+          "name": "INSTANCE"
+        }
+      ]
+    },
+    {
+      "type": "okhttp3.internal.connection.RealCall"
+    },
+    {
       "type": "org.apache.log4j.LogManager"
     },
     {
       "type": "org.apache.logging.log4j.Logger"
+    },
+    {
+      "type": "org.apache.ratis.metrics.impl.MetricRegistriesImpl"
+    },
+    {
+      "type": "org.apache.ratis.protocol.AdminAsynchronousProtocol",
+      "methods": [
+        {
+          "name": "getGroupInfoAsync",
+          "parameterTypes": [
+            "org.apache.ratis.protocol.GroupInfoRequest"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.apache.ratis.protocol.RaftClientAsynchronousProtocol",
+      "methods": [
+        {
+          "name": "submitClientRequestAsync",
+          "parameterTypes": [
+            "org.apache.ratis.protocol.RaftClientRequest"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.apache.ratis.server.DisabledDataStreamServerFactory",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.ratis.conf.Parameters"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.apache.ratis.server.RaftServer",
+      "methods": [
+        {
+          "name": "getId",
+          "parameterTypes": []
+        },
+        {
+          "name": "getProperties",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.ratis.server.RaftServerMXBean"
+    },
+    {
+      "type": "org.apache.ratis.server.impl.FollowerInfoImpl"
+    },
+    {
+      "type": "org.apache.ratis.server.impl.RaftServerJmxAdapter"
+    },
+    {
+      "type": "org.apache.ratis.server.impl.ServerImplUtils",
+      "methods": [
+        {
+          "name": "newRaftServer",
+          "parameterTypes": [
+            "org.apache.ratis.protocol.RaftPeerId",
+            "org.apache.ratis.protocol.RaftGroup",
+            "org.apache.ratis.server.storage.RaftStorage$StartupOption",
+            "org.apache.ratis.statemachine.StateMachine$Registry",
+            "java.lang.ThreadGroup",
+            "org.apache.ratis.conf.RaftProperties",
+            "org.apache.ratis.conf.Parameters"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.apache.ratis.server.leader.LogAppenderDefault"
+    },
+    {
+      "type": "org.apache.ratis.server.protocol.RaftServerAsynchronousProtocol",
+      "methods": [
+        {
+          "name": "appendEntriesAsync",
+          "parameterTypes": [
+            "org.apache.ratis.proto.RaftProtos$AppendEntriesRequestProto"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.apache.ratis.server.protocol.RaftServerProtocol",
+      "methods": [
+        {
+          "name": "requestVote",
+          "parameterTypes": [
+            "org.apache.ratis.proto.RaftProtos$RequestVoteRequestProto"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.apache.ratis.statemachine.impl.TransactionContextImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.ratis.proto.RaftProtos$RaftPeerRole",
+            "org.apache.ratis.statemachine.StateMachine",
+            "org.apache.ratis.proto.RaftProtos$LogEntryProto"
+          ]
+        },
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.ratis.protocol.RaftClientRequest",
+            "org.apache.ratis.statemachine.StateMachine",
+            "org.apache.ratis.proto.RaftProtos$StateMachineLogEntryProto",
+            "org.apache.ratis.thirdparty.com.google.protobuf.ByteString",
+            "org.apache.ratis.thirdparty.com.google.protobuf.ByteString",
+            "java.lang.Object"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.com.codahale.metrics.jmx.JmxReporter$JmxCounter"
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.com.codahale.metrics.jmx.JmxReporter$JmxCounterMBean"
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.com.codahale.metrics.jmx.JmxReporter$JmxGauge"
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.com.codahale.metrics.jmx.JmxReporter$JmxGaugeMBean"
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.com.codahale.metrics.jmx.JmxReporter$JmxTimer"
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.com.codahale.metrics.jmx.JmxReporter$JmxTimerMBean"
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.com.google.common.util.concurrent.AbstractFutureState",
+      "fields": [
+        {
+          "name": "listenersField"
+        },
+        {
+          "name": "valueField"
+        },
+        {
+          "name": "waitersField"
+        }
+      ]
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.com.google.common.util.concurrent.AbstractFutureState$Waiter",
+      "fields": [
+        {
+          "name": "next"
+        },
+        {
+          "name": "thread"
+        }
+      ]
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.com.google.protobuf.ExtensionRegistry",
+      "methods": [
+        {
+          "name": "getEmptyRegistry",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.grpc.census.InternalCensusStatsAccessor"
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.grpc.census.InternalCensusTracingAccessor"
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.grpc.internal.DnsNameResolverProvider"
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.grpc.internal.JndiResourceResolverFactory",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.grpc.internal.PickFirstLoadBalancerProvider"
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.grpc.internal.SerializingExecutor"
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.grpc.netty.NettyClientHandler"
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.grpc.netty.NettyServer$1"
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.grpc.netty.NettyServerHandler"
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.grpc.netty.ProtocolNegotiators$GrpcNegotiationHandler"
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.grpc.netty.ProtocolNegotiators$PlaintextHandler"
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.grpc.netty.ProtocolNegotiators$WaitUntilActiveHandler"
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.grpc.netty.UdsNameResolverProvider"
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.grpc.netty.WriteBufferingAndExceptionHandler"
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.grpc.override.ContextStorageOverride"
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.grpc.util.OutlierDetectionLoadBalancerProvider"
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.grpc.util.RandomSubsettingLoadBalancerProvider"
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.grpc.util.SecretRoundRobinLoadBalancerProvider$Provider"
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.netty.bootstrap.ServerBootstrap$1"
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.netty.bootstrap.ServerBootstrap$ServerBootstrapAcceptor"
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.netty.buffer.AbstractByteBufAllocator"
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.netty.buffer.AbstractReferenceCountedByteBuf",
+      "fields": [
+        {
+          "name": "refCnt"
+        }
+      ]
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.netty.channel.AbstractChannelHandlerContext"
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.netty.channel.ChannelOutboundBuffer"
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.netty.channel.DefaultChannelConfig"
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.netty.channel.DefaultChannelPipeline"
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.netty.channel.DefaultChannelPipeline$HeadContext"
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.netty.channel.DefaultChannelPipeline$TailContext"
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.netty.channel.DefaultFileRegion"
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.netty.channel.epoll.Epoll",
+      "methods": [
+        {
+          "name": "isAvailable",
+          "parameterTypes": []
+        },
+        {
+          "name": "unavailabilityCause",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.netty.channel.epoll.NativeDatagramPacketArray$NativeDatagramPacket"
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.netty.channel.socket.nio.NioSocketChannel",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.netty.channel.unix.PeerCredentials"
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.netty.util.AbstractReferenceCounted",
+      "fields": [
+        {
+          "name": "refCnt"
+        }
+      ]
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.netty.util.DefaultAttributeMap"
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.netty.util.Recycler$DefaultHandle"
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.netty.util.ReferenceCountUtil"
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.netty.util.ResourceLeakDetector$DefaultResourceLeak"
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.netty.util.concurrent.DefaultPromise"
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.netty.util.concurrent.SingleThreadEventExecutor"
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.netty.util.internal.shaded.org.jctools.queues.BaseMpscLinkedArrayQueueColdProducerFields",
+      "fields": [
+        {
+          "name": "producerLimit"
+        }
+      ]
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.netty.util.internal.shaded.org.jctools.queues.BaseMpscLinkedArrayQueueConsumerFields",
+      "fields": [
+        {
+          "name": "consumerIndex"
+        }
+      ]
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.netty.util.internal.shaded.org.jctools.queues.BaseMpscLinkedArrayQueueProducerFields",
+      "fields": [
+        {
+          "name": "producerIndex"
+        }
+      ]
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.netty.util.internal.shaded.org.jctools.queues.unpadded.MpscUnpaddedArrayQueueConsumerIndexField",
+      "fields": [
+        {
+          "name": "consumerIndex"
+        }
+      ]
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.netty.util.internal.shaded.org.jctools.queues.unpadded.MpscUnpaddedArrayQueueProducerIndexField",
+      "fields": [
+        {
+          "name": "producerIndex"
+        }
+      ]
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.netty.util.internal.shaded.org.jctools.queues.unpadded.MpscUnpaddedArrayQueueProducerLimitField",
+      "fields": [
+        {
+          "name": "producerLimit"
+        }
+      ]
+    },
+    {
+      "type": "org.apache.ratis.thirdparty.io.perfmark.impl.SecretPerfMarkImpl$PerfMarkImpl"
+    },
+    {
+      "type": "org.graalvm.home.impl.DefaultHomeFinder"
     },
     {
       "type": "org.graalvm.polyglot.io.IOHelper",
@@ -2319,6 +2989,19 @@
       ]
     },
     {
+      "type": "sun.reflect.misc.Trampoline",
+      "methods": [
+        {
+          "name": "invoke",
+          "parameterTypes": [
+            "java.lang.reflect.Method",
+            "java.lang.Object",
+            "java.lang.Object[]"
+          ]
+        }
+      ]
+    },
+    {
       "type": "sun.security.pkcs12.PKCS12KeyStore",
       "methods": [
         {
@@ -2355,8 +3038,21 @@
       ]
     },
     {
+      "type": "sun.security.provider.MD5",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
       "type": "sun.security.provider.NativePRNG",
       "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        },
         {
           "name": "<init>",
           "parameterTypes": [
@@ -2626,6 +3322,13 @@
     {
       "type": {
         "proxy": [
+          "org.apache.ratis.server.RaftServer"
+        ]
+      }
+    },
+    {
+      "type": {
+        "proxy": [
           "sun.nio.ch.Interruptible"
         ]
       }
@@ -2648,13 +3351,70 @@
       "glob": "META-INF/services/com.oracle.truffle.api.TruffleRuntimeAccess"
     },
     {
+      "glob": "META-INF/services/com.oracle.truffle.api.impl.TruffleLocator"
+    },
+    {
+      "glob": "META-INF/services/com.oracle.truffle.api.instrumentation.provider.TruffleInstrumentProvider"
+    },
+    {
+      "glob": "META-INF/services/com.oracle.truffle.api.library.provider.DefaultExportProvider"
+    },
+    {
+      "glob": "META-INF/services/com.oracle.truffle.api.provider.InternalResourceProvider"
+    },
+    {
+      "glob": "META-INF/services/com.oracle.truffle.api.provider.TruffleLanguageProvider"
+    },
+    {
+      "glob": "META-INF/services/com.oracle.truffle.js.runtime.Evaluator"
+    },
+    {
+      "glob": "META-INF/services/com.oracle.truffle.runtime.EngineCacheSupport"
+    },
+    {
+      "glob": "META-INF/services/com.oracle.truffle.runtime.FloodControlHandler"
+    },
+    {
+      "glob": "META-INF/services/com.oracle.truffle.runtime.LoopNodeFactory"
+    },
+    {
+      "glob": "META-INF/services/com.oracle.truffle.runtime.TruffleTypes"
+    },
+    {
+      "glob": "META-INF/services/com.oracle.truffle.runtime.jfr.EventFactory$Provider"
+    },
+    {
+      "glob": "META-INF/services/io.opentelemetry.context.ContextStorageProvider"
+    },
+    {
+      "glob": "META-INF/services/io.opentelemetry.sdk.common.export.GrpcSenderProvider"
+    },
+    {
+      "glob": "META-INF/services/java.net.spi.InetAddressResolverProvider"
+    },
+    {
       "glob": "META-INF/services/java.net.spi.URLStreamHandlerProvider"
     },
     {
       "glob": "META-INF/services/java.nio.channels.spi.SelectorProvider"
     },
     {
+      "glob": "META-INF/services/java.nio.file.spi.FileSystemProvider"
+    },
+    {
       "glob": "META-INF/services/java.time.zone.ZoneRulesProvider"
+    },
+    {
+      "glob": "META-INF/services/org.apache.ratis.metrics.MetricRegistries"
+    },
+    {
+      "glob": "META-INF/services/org.apache.ratis.thirdparty.io.grpc.LoadBalancerProvider"
+    },
+    {
+      "glob": "META-INF/services/org.apache.ratis.thirdparty.io.grpc.NameResolverProvider"
+    },
+    {
+      "glob": "META-INF/services/org.graalvm.home.HomeFinder"
     },
     {
       "glob": "META-INF/services/org.graalvm.polyglot.impl.AbstractPolyglotImpl"
@@ -2678,13 +3438,25 @@
       "glob": "io/undertow/version.properties"
     },
     {
+      "glob": "net/jpountz/util/darwin/aarch64/liblz4-java.dylib"
+    },
+    {
       "glob": "org/jboss/threads/Version.properties"
+    },
+    {
+      "glob": "org/slf4j/impl/StaticLoggerBinder.class"
     },
     {
       "glob": "org/xnio/Version.properties"
     },
     {
       "glob": "org/xnio/nio/Version.properties"
+    },
+    {
+      "glob": "prometheus.properties"
+    },
+    {
+      "glob": "ratis-version.properties"
     },
     {
       "glob": "static/ai.html"
@@ -2721,6 +3493,9 @@
     },
     {
       "glob": "static/settings.html"
+    },
+    {
+      "glob": "static/support.html"
     },
     {
       "glob": "static/timeseries.html"
