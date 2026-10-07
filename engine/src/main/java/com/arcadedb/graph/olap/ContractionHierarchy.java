@@ -112,11 +112,11 @@ public final class ContractionHierarchy {
   private final LongAdder customizations         = new LongAdder();
   private final LongAdder customizationsSaved    = new LongAdder();
   private final LongAdder partialCustomizations  = new LongAdder();
+  private final LongAdder queries                = new LongAdder();
+  private final LongAdder fallbacks              = new LongAdder();
   private volatile long   lastPartialCustomizationMicros;
   private volatile int    lastPartialArcs;
   private volatile long   lastCatchUpMicros;
-  private final LongAdder queries                = new LongAdder();
-  private final LongAdder fallbacks              = new LongAdder();
   private volatile long   lastTopologyBuildMs;
   private volatile long   lastCustomizationMs;
 
