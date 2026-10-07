@@ -67,8 +67,7 @@ public class ArcadeFilterByTypeStep<S, E extends Element> extends AbstractStep<S
 
     if (typeName.startsWith(BUCKET_PREFIX)) {
       this.bucketName = typeName.substring(BUCKET_PREFIX.length());
-      final DocumentType type = graph.getDatabase().getSchema().getTypeByBucketName(bucketName);
-      this.typeName = type == null ? null : type.getName();
+      this.typeName = typeNameOfBucket(graph.getDatabase(), bucketName);
     } else {
       this.bucketName = null;
       this.typeName = typeName;
@@ -81,6 +80,14 @@ public class ArcadeFilterByTypeStep<S, E extends Element> extends AbstractStep<S
     // EARLIER STEP OF THE SAME TRAVERSAL (addV()) MAY CREATE THE TYPE BEFORE THIS STEP EXECUTES (ISSUE #9335).
   }
 
+  /** The type owning the bucket, or null when the bucket does not exist (yet): an earlier step may still create it. */
+  private static String typeNameOfBucket(final BasicDatabase database, final String bucketName) {
+    if (!database.getSchema().existsBucket(bucketName))
+      return null;
+    final DocumentType type = database.getSchema().getTypeByBucketName(bucketName);
+    return type == null ? null : type.getName();
+  }
+
   @SuppressWarnings("unchecked")
   private Iterator<E> openIterator() {
     final BasicDatabase database = graph.getDatabase();
@@ -88,8 +95,7 @@ public class ArcadeFilterByTypeStep<S, E extends Element> extends AbstractStep<S
     // A bucket may have been added to a type (or the type created) after compilation: resolve the name again
     final String resolvedTypeName;
     if (bucketName != null) {
-      final DocumentType bucketType = database.getSchema().getTypeByBucketName(bucketName);
-      resolvedTypeName = bucketType == null ? null : bucketType.getName();
+      resolvedTypeName = typeNameOfBucket(database, bucketName);
     } else
       resolvedTypeName = typeName;
 

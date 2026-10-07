@@ -395,6 +395,33 @@ class BackupRetentionManagerTest {
     }
   }
 
+  /** The fall-back of Australia/Lord_Howe repeats only 30 minutes, so the truncated hour must keep the offset of the archive. */
+  @Test
+  void hourlyTierKeepsBothArchivesOfAHalfHourDstFallBack() throws Exception {
+    final TimeZone previous = TimeZone.getDefault();
+    TimeZone.setDefault(TimeZone.getTimeZone("Australia/Lord_Howe"));
+    try {
+      final ZoneId zone = ZoneId.of("Australia/Lord_Howe");
+      final Instant[] instants = { Instant.parse("2026-04-04T14:40:00Z"), Instant.parse("2026-04-04T15:10:00Z"),
+          Instant.parse("2026-04-04T17:00:00Z") };
+      final List<File> files = new ArrayList<>();
+      for (int i = 0; i < instants.length; i++) {
+        final File file = writeBackupFile(DATABASE_NAME + "-backup-"
+            + LocalDateTime.ofInstant(instants[i], zone).plusNanos(i * 1_000_000L).format(BACKUP_FORMAT_MILLIS) + ".zip");
+        assertThat(file.setLastModified(instants[i].toEpochMilli())).isTrue();
+        files.add(file);
+      }
+
+      registerTiered(24, 0, 0, 0, 0);
+      assertThat(retentionManager.applyRetention(DATABASE_NAME)).isZero();
+
+      for (final File file : files)
+        assertThat(file).exists();
+    } finally {
+      TimeZone.setDefault(previous);
+    }
+  }
+
   @Test
   void resolveInstantUsesTheModificationTimeInTheRepeatedHour() {
     final ZoneId lisbon = ZoneId.of("Europe/Lisbon");

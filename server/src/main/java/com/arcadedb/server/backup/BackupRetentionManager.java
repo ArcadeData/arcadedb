@@ -311,8 +311,12 @@ public class BackupRetentionManager {
    * granularity, where the local calendar is unambiguous, and use {@link #bucketStart}.
    */
   private static Instant bucketInstant(final BackupFileInfo info, final ChronoUnit unit, final ZoneId zone) {
-    if (unit == ChronoUnit.HOURS)
-      return info.instant.atZone(zone).truncatedTo(ChronoUnit.HOURS).toInstant();
+    if (unit == ChronoUnit.HOURS) {
+      // Truncate the LOCAL time but keep the offset that was in force: a zone whose fall-back repeats only 30 minutes
+      // (Australia/Lord_Howe) would otherwise resolve both occurrences of a truncated hour to the earlier offset
+      final ZoneOffset offset = zone.getRules().getOffset(info.instant);
+      return LocalDateTime.ofInstant(info.instant, offset).truncatedTo(ChronoUnit.HOURS).toInstant(offset);
+    }
     return bucketStart(info.timestamp, unit).atZone(zone).toInstant();
   }
 
