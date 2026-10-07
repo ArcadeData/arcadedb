@@ -30,12 +30,15 @@ import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexCompacted;
+import com.arcadedb.index.vector.LSMVectorIndexMutable;
 import com.arcadedb.integration.TestHelper;
+import com.arcadedb.integration.backup.format.FullBackupFormat;
 import com.arcadedb.integration.restore.Restore;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
@@ -153,6 +156,21 @@ class Issue8848BackupSkipsCompactionTemporaryTest {
       assertThat(restored.countType("temp_readings", true)).isEqualTo(10);
     }
     TestHelper.checkActiveDatabases();
+  }
+
+  /**
+   * The contract of the filter itself, including the vector-index temporary ({@code LSMVectorIndex} builds its
+   * compaction output on {@code TEMP_EXT + FILE_EXT} too), which the end-to-end tests above do not drive.
+   */
+  @Test
+  void theArchiveFilterTestsTheExtension() {
+    final String stem = "Doc_0_123.3.262144.v1.";
+    assertThat(FullBackupFormat.isArchivedPageFile(stem + PaginatedComponent.TEMP_EXT + "umtidx")).as("LSM-tree temporary").isFalse();
+    assertThat(FullBackupFormat.isArchivedPageFile(stem + PaginatedComponent.TEMP_EXT + LSMVectorIndexMutable.FILE_EXT))
+        .as("vector-index temporary").isFalse();
+    assertThat(FullBackupFormat.isArchivedPageFile(stem + "umtidx")).as("published LSM-tree file").isTrue();
+    assertThat(FullBackupFormat.isArchivedPageFile(stem + LSMVectorIndexMutable.FILE_EXT)).as("published vector-index file").isTrue();
+    assertThat(FullBackupFormat.isArchivedPageFile("temp_readings_0.1.65536.v0.bucket")).as("a type named temp_readings").isTrue();
   }
 
   // ------------------------------------------------------------------------------------------------------- HELPERS

@@ -330,7 +330,7 @@ public class FullBackupFormat extends AbstractBackupFormat {
    * database directory, where the open-time scan does not register it. Same predicate the HA snapshot ship (#8019)
    * and the checksum endpoints (#7955) use; it tests the extension, so a type named {@code temp_readings} is kept.
    */
-  static boolean isArchivedPageFile(final String fileName) {
+  public static boolean isArchivedPageFile(final String fileName) {
     return !PaginatedComponent.isTemporaryFileName(fileName);
   }
 
