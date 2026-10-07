@@ -101,10 +101,9 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
           if (engine == null)
             throw new CommandExecutionException(
                 "TimeSeries engine for type '" + tsType.getName() + "' is not initialized");
-          // The bound belongs to the FETCH in both directions (issues #5414, #7663). iterateQuery is kept for the
-          // genuinely unbounded ascending read and for nothing else: its own javadoc says the sealed layer
-          // materialises every matching row before the iterator is handed out, so it saves the sort and the second
-          // copy against query(), never the series.
+          // The bound belongs to the FETCH in both directions (issues #5414, #7663). iterateQuery is the genuinely
+          // unbounded ascending read: it streams the sealed layer one block per shard (issue #9420), so a SELECT with
+          // no LIMIT holds a block per shard and the mutable buckets, not the series.
           resultIterator = descending
               ? engine.queryDescending(fromTs, toTs, null, tagFilter, limit, null).iterator()
               : limit > 0

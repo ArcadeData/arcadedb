@@ -22,12 +22,12 @@ package com.arcadedb.engine.timeseries;
  * Receives the rows of a time-series scan one at a time, so a reader that only needs to fold them into an answer
  * never holds the series (issue #7354).
  * <p>
- * The alternative on the read path is {@code query()} / {@code iterateQuery()}, both of which materialise every
- * matching row into an {@code ArrayList} before the caller sees the first one - {@code query()} then sorts the
- * whole list by timestamp. That is what a query returning rows needs. A question whose answer is O(label
- * cardinality) - the distinct values of a TAG column, the label combinations a metric carries - does not: it reads
- * every row and keeps a handful of strings, so materialising the series to produce a set of five is the whole
- * cost of the call.
+ * The alternatives on the read path are {@code query()}, which materialises every matching row into an
+ * {@code ArrayList} and sorts it by timestamp, and {@code iterateQuery()}, which streams (issue #9420) but keeps
+ * one block per shard resident to merge them in timestamp order. That is what a query returning rows needs. A
+ * question whose answer is O(label cardinality) - the distinct values of a TAG column, the label combinations a
+ * metric carries - does not: it reads every row and keeps a handful of strings, so materialising the series to
+ * produce a set of five is the whole cost of the call.
  * <p>
  * A visitor sees the rows of one block at a time and in whatever order the shards hold them, NOT merged by
  * timestamp: the merge is what forces every shard's rows to be resident at once, and no folding answer needs it.

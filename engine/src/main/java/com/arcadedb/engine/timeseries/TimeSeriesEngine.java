@@ -20,6 +20,7 @@ package com.arcadedb.engine.timeseries;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.simd.TimeSeriesVectorOpsProvider;
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.schema.LocalSchema;
 
 import java.io.IOException;
@@ -390,14 +391,24 @@ public class TimeSeriesEngine implements AutoCloseable {
    * Returns a merge-sorted iterator across all shards, using a min-heap to merge the per-shard iterators by
    * timestamp.
    * <p>
-   * <b>It is not lazy end to end,</b> whatever the merge itself is: {@link TimeSeriesSealedStore#iterateRange}
-   * materialises every matching row of the sealed layer before it returns an iterator over them, because the
-   * directory read lock has to be released before the caller iterates. So the residency of this method is
-   * O(matching rows), the same as {@link #query} without the sort. What it saves against {@code query} is the
-   * second copy and the sort, not the series.
+   * Lazy end to end (issue #9420): each shard's sealed layer is read one block at a time as the merge reaches it,
+   * so the residency is one decoded block per shard plus each shard's mutable bucket, which
+   * {@link TimeSeriesShard#iterateRange} reads up front and which is bounded by the bucket rather than the series.
+   * It used to materialise every matching sealed row before returning, which made an unbounded
+   * {@code SELECT FROM <type>} need heap for the whole range. The read holds no lock between two blocks, so it
+   * shares {@link #forEachRow}'s consistency rules: a block a retention pass removed mid-read is skipped and
+   * counted in {@code vanishedBlocks}, one a downsample replaced raises {@link TimeSeriesWalkCoarsenedException}.
+   * <p>
+   * Because the rows are produced as the iterator advances, failures can surface mid-stream, after rows were
+   * already returned: an I/O error reading a later block - or the first one, read while the merge is being primed -
+   * as a {@link DatabaseOperationException} rather than the {@code IOException} this method
+   * declares, and a downsample as {@link TimeSeriesWalkCoarsenedException}, which every wire protocol already maps
+   * to "retry the read" (issue #8166). A streaming caller must therefore end its stream with an error, never with a
+   * completion, when either escapes.
    * <p>
    * A reader that folds the rows into an answer - a set of label values, a set of label combinations, an
-   * aggregate - wants {@link #forEachRow} instead, which is bounded by one block (issue #7354).
+   * aggregate - still wants {@link #forEachRow}: it needs no merge, so it holds one block in total rather than one
+   * per shard (issue #7354).
    */
   public Iterator<Object[]> iterateQuery(final long fromTs, final long toTs, final int[] columnIndices,
       final TagFilter tagFilter) throws IOException {
