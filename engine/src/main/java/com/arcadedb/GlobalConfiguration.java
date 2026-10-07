@@ -4435,4 +4435,17 @@ public enum GlobalConfiguration {
   public SCOPE getScope() {
     return scope;
   }
+
+  /**
+   * Whether this setting is a security control: it decides what the server may reach or read on behalf of a query, so
+   * changing it needs the administrative {@code updateSecurity} permission and not merely the per-database
+   * {@code updateDatabaseSettings} one that is meant for tuning. Declare any new database-scoped setting of that kind here.
+   */
+  public boolean isSecuritySensitive() {
+    return switch (this) {
+      case OPENCYPHER_LOAD_CSV_ALLOW_FILE_URLS, OPENCYPHER_LOAD_CSV_IMPORT_DIRECTORY, OPENCYPHER_LOAD_CSV_ALLOW_REMOTE_URLS,
+           OPENCYPHER_LOAD_CSV_BLOCKED_IP_RANGES -> true;
+      default -> false;
+    };
+  }
 }
