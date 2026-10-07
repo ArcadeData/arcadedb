@@ -392,15 +392,17 @@ public class TimeSeriesShard implements AutoCloseable {
   /**
    * Returns an iterator over both sealed and mutable layers.
    * Sealed data is iterated first, then mutable. Tag filter is applied inline.
-   * Both iterators are eagerly materialized under the read lock to prevent
-   * concurrent {@link #compact()} from clearing the mutable bucket and causing
-   * stale reads after the lock is released.
    * <p>
-   * The window DOES freeze the sealed store's block directory for this method, and that is what separates it from
-   * {@link #forEachRow} (issue #8052, correcting a paragraph that was on this method and described that one).
-   * {@code sealedStore.iterateRange} materialises its rows into an {@code ArrayList} before it returns, inside the
-   * read lock taken here, so no retention pass and no replicated install can land part-way through its answer. The
-   * price is the one {@code forEachRow} refuses to pay: every matching row of the range is resident at once.
+   * The same read {@link #forEachRow} is, handed out as an iterator (issue #9420): the sealed store's directory
+   * snapshot and the mutable bucket are taken in ONE {@code compactionLock} window, so a compaction cannot seal the
+   * bucket's rows into blocks the walk then returns as well, and the lock is released before the first row. The
+   * mutable bucket is materialised in that window - a lazy read of it could see pages a concurrent
+   * {@link #compact()} has cleared - and it is bounded by the bucket, not by the series. The sealed layer is read
+   * lazily, one block at a time, so the residency is one block instead of the range.
+   * <p>
+   * What that trades is the frozen directory this method used to have while it materialised every sealed row
+   * under the lock (issue #8052): a retention pass, a downsample or an HA install can now land between two blocks
+   * of the read, exactly as for {@code forEachRow}, and is handled the same way - see the paragraph there.
    */
   public Iterator<Object[]> iterateRange(final long fromTs, final long toTs, final int[] columnIndices,
                                          final TagFilter tagFilter) throws IOException {
@@ -420,11 +422,11 @@ public class TimeSeriesShard implements AutoCloseable {
   public Iterator<Object[]> iterateRange(final long fromTs, final long toTs, final int[] columnIndices,
                                          final TagFilter tagFilter, final AggregationMetrics metrics)
       throws IOException {
-    final Iterator<Object[]> sealedIter;
+    final BlockDirectorySnapshot sealedBlocks;
     final Iterator<Object[]> mutableIter;
     compactionLock.readLock().lock();
     try {
-      sealedIter = sealedStore.iterateRange(fromTs, toTs, columnIndices, tagFilter, metrics);
+      sealedBlocks = sealedStore.snapshotBlockDirectory(fromTs, toTs);
       // Eagerly materialize the mutable iterator under the lock.
       // A lazy iterator would risk reading stale (cleared) pages if compaction
       // acquires the write lock and clears the bucket before next() is called.
@@ -433,6 +435,8 @@ public class TimeSeriesShard implements AutoCloseable {
     } finally {
       compactionLock.readLock().unlock();
     }
+    final Iterator<Object[]> sealedIter = sealedStore.iterateRange(sealedBlocks, fromTs, toTs, columnIndices, tagFilter,
+        metrics);
 
     // Chain sealed then mutable, with inline tag filtering.
     // The sealed iterator is fully materialised; the mutable iterator is lazy but its
@@ -511,8 +515,8 @@ public class TimeSeriesShard implements AutoCloseable {
    * The rows arrive sealed-then-mutable, NOT merged by timestamp. Merging is what forces every shard's rows to be
    * resident at once; a folding answer does not need the order, and one that does wants {@code iterateQuery}.
    * <p>
-   * <b>What the window does NOT freeze is the sealed store's block directory</b> (issue #8052 moved this here from
-   * {@link #iterateRange}, where the hazard cannot occur). The sealed walk takes {@code directoryLock} one block at
+   * <b>What the window does NOT freeze is the sealed store's block directory</b> (issue #8052; since issue #9420 the
+   * same holds for {@link #iterateRange}, which reads the sealed layer through the same walk). The sealed walk takes {@code directoryLock} one block at
    * a time and holds nothing of this shard's in between, so a pass that rewrites the sealed file - a retention
    * {@code truncateBefore} or {@code downsampleBlocks}, both of which run under
    * {@code TimeSeriesEngine.runSealedMaintenanceReplicated} holding this shard's compaction WRITE lock, or an HA
