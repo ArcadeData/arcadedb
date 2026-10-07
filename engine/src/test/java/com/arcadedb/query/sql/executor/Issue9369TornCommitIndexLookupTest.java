@@ -31,6 +31,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -158,28 +159,35 @@ class Issue9369TornCommitIndexLookupTest extends TestHelper {
     final AtomicBoolean stop = new AtomicBoolean();
     final AtomicLong[] reads = { new AtomicLong(), new AtomicLong(), new AtomicLong() };
     final AtomicLong[] missing = { new AtomicLong(), new AtomicLong(), new AtomicLong() };
+    final AtomicReference<Throwable>[] readerFailures = new AtomicReference[] { new AtomicReference<Throwable>(), new AtomicReference<Throwable>(),
+        new AtomicReference<Throwable>() };
     final Thread[] readers = new Thread[3];
     for (int m = 0; m < 3; m++) {
       final int mode = m;
       readers[m] = new Thread(() -> {
-        while (!stop.get()) {
-          if (mode == 2)
-            database.setTransactionIsolationLevel(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
-          if (mode != 0)
-            database.begin();
-          int rows = 0;
-          try (final ResultSet rs = database.query("sql", "SELECT pid FROM Product WHERE pid IN :ids", Map.of("ids", ids))) {
-            while (rs.hasNext()) {
-              rs.next();
-              rows++;
-            }
-          } finally {
+        try {
+          while (!stop.get()) {
+            if (mode == 2)
+              database.setTransactionIsolationLevel(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
             if (mode != 0)
-              database.rollback();
+              database.begin();
+            int rows = 0;
+            try (final ResultSet rs = database.query("sql", "SELECT pid FROM Product WHERE pid IN :ids", Map.of("ids", ids))) {
+              while (rs.hasNext()) {
+                rs.next();
+                rows++;
+              }
+            } finally {
+              if (mode != 0)
+                database.rollback();
+            }
+            reads[mode].incrementAndGet();
+            if (rows != IDS)
+              missing[mode].incrementAndGet();
           }
-          reads[mode].incrementAndGet();
-          if (rows != IDS)
-            missing[mode].incrementAndGet();
+        } catch (final Throwable e) {
+          // a crashed reader must fail the test, not leave its counters at zero
+          readerFailures[mode].set(e);
         }
       }, "reader-" + mode);
       readers[m].setDaemon(true);
@@ -199,6 +207,9 @@ class Issue9369TornCommitIndexLookupTest extends TestHelper {
     stop.set(true);
     for (final Thread t : readers)
       t.join();
+
+    for (int m = 0; m < 3; m++)
+      assertThat(readerFailures[m].get()).as(modes[m] + " reader failed").isNull();
 
     final StringBuilder report = new StringBuilder();
     for (int m = 0; m < 3; m++)
