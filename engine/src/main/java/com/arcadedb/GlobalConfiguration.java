@@ -3036,7 +3036,7 @@ public enum GlobalConfiguration {
       "Whether the gRPC plugin starts. Default is true", Boolean.class, true),
 
   GRPC_HOST("arcadedb.grpc.host", SCOPE.SERVER,
-      "Host name or address the gRPC plugin binds to. Default is '0.0.0.0'", String.class, "0.0.0.0"),
+      "Host name or address the gRPC plugin binds to. Default is '0.0.0.0'. Applies to the standard server only: the xDS server (mode 'xds' or 'both') has no host setting and listens on every interface", String.class, "0.0.0.0"),
 
   GRPC_MODE("arcadedb.grpc.mode", SCOPE.SERVER,
       "gRPC server mode: 'standard', 'xds' or 'both'. Default is 'standard'", String.class, "standard"),
