@@ -2945,11 +2945,13 @@ public class TransactionContext implements Transaction {
    * the committed state again. The pages this transaction modified are kept. Pages are pinned the first time they are
    * read, so a transaction that read an index page before a commit and the record page after it holds two states that
    * never coexisted (#9369); a caller that has caught that - an index entry whose record is gone - uses this to read both
-   * again against one state.
+   * again against one state. This deliberately weakens the snapshot of those files for the rest of the transaction, and only
+   * a caller that detected a torn read may use it.
    */
   public void unpinFiles(final Collection<Integer> fileIds) {
-    immutablePages.values().removeIf(page -> fileIds.contains(page.getPageId().getFileId()));
-    immutableRecordsCache.values().removeIf(r -> fileIds.contains(r.getIdentity().getBucketId()));
+    final Set<Integer> files = new HashSet<>(fileIds);
+    immutablePages.values().removeIf(page -> files.contains(page.getPageId().getFileId()));
+    immutableRecordsCache.values().removeIf(r -> files.contains(r.getIdentity().getBucketId()));
   }
 
   public void removeFile(final int fileId) {

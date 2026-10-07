@@ -610,7 +610,13 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
    * <p>
    * The rows are held until all are loaded, so a lookup of more than {@link #MAX_POINT_LOOKUP_ENTRIES} entries is not
    * held: it returns null, leaving the entries read in {@link #pendingEntries} for the streaming path, which reconciles
-   * them one by one.
+   * them one by one. That path detects a commit that overlapped the lookup per entry, but a lookup of more than
+   * {@link #MAX_POINT_LOOKUP_ENTRIES} entries is not one state, so a slot reused between two of its entries can still be served
+   * for another key: the residual window of this fix.
+   * <p>
+   * The last-resort lock cannot deadlock: it is the page-manager lock, which is reentrant and which a committer takes last,
+   * inside the file locks, only to publish pages; this reader holds no file lock, and nothing it runs under the lock waits on
+   * a committer.
    */
   @SuppressWarnings("unchecked")
   private ArrayDeque<Result> loadPointLookup(final CommandContext context, final FetchFromIndexStep indexStep, final int nRecords) {
