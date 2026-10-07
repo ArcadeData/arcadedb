@@ -41,7 +41,7 @@ import java.util.concurrent.atomic.LongAdder;
 public final class QueryHeapBudget {
   private static final AtomicLong RESERVED = new AtomicLong();
   private static final AtomicLong PEAK     = new AtomicLong();
-  private static final LongAdder  REFUSALS = new LongAdder();
+  private static final LongAdder  REFUSALS     = new LongAdder();
   private static final LongAdder  SCAN_SHRINKS = new LongAdder();
 
   private QueryHeapBudget() {

@@ -95,7 +95,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
   private       String              usedIndexName; // Track which index was used (if any)
   // The full type scan the step reads from, kept only to report in a profile whether the heap budget reduced its read-ahead (#9404)
   private volatile Object              scanIterator;
-  private long                         completedScansShrunkBatches;
+  private volatile long                completedScansShrunkBatches;
   private       String              usedPartitionBucket; // Track partition bucket pruning (if any) - same write-once-per-execution contract as usedIndexName
   // Full snapshot of a row-independent full-type-scan's candidates, populated (via recordingIterator) only
   // once the first getVertexIterator() call of a CHAINED match (prev != null) has been fully drained by the
