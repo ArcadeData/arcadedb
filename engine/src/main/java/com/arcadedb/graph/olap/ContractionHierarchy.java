@@ -106,17 +106,17 @@ public final class ContractionHierarchy {
   private volatile GraphAnalyticalView.Snapshot lastAttempt;
   private final    Object        readyMonitor   = new Object();
 
-  private final LongAdder topologyBuilds      = new LongAdder();
-  private final LongAdder topologyRestores    = new LongAdder();
+  private final LongAdder topologyBuilds         = new LongAdder();
+  private final LongAdder topologyRestores       = new LongAdder();
   private final LongAdder topologyRecontractions = new LongAdder();
-  private final LongAdder customizations      = new LongAdder();
-  private final LongAdder customizationsSaved = new LongAdder();
-  private final LongAdder partialCustomizations          = new LongAdder();
+  private final LongAdder customizations         = new LongAdder();
+  private final LongAdder customizationsSaved    = new LongAdder();
+  private final LongAdder partialCustomizations  = new LongAdder();
   private volatile long   lastPartialCustomizationMicros;
   private volatile int    lastPartialArcs;
   private volatile long   lastCatchUpMicros;
-  private final LongAdder queries             = new LongAdder();
-  private final LongAdder fallbacks           = new LongAdder();
+  private final LongAdder queries                = new LongAdder();
+  private final LongAdder fallbacks              = new LongAdder();
   private volatile long   lastTopologyBuildMs;
   private volatile long   lastCustomizationMs;
 
@@ -491,7 +491,8 @@ public final class ContractionHierarchy {
   /**
    * The previous metric, brought up to these input costs by a partial customization of the arcs that differ (none: as
    * it is), or a fresh full customization when there is none for this topology or too much has changed for a partial
-   * one to be cheaper.
+   * one to be cheaper. Comparing the costs walks every arc; this is the path of a full re-read of the view (a new base
+   * after a compaction or a rebuild), which costs that much already - commits on the same base take catchUp() instead.
    */
   private CCHMetric metric(final Prepared previous, final TopologyRoot topologyRoot, final double[][] input,
       final boolean undirected) {
@@ -605,8 +606,10 @@ public final class ContractionHierarchy {
         if (previous.undirected != null)
           partialUpdate(previous.undirected, arcs, undirectedCost, undirectedCost, count);
       } catch (final RuntimeException e) {
-        // One metric may be updated and the other not: the full path diffs both against the snapshot's arcs and brings
+        // One metric may be updated and the other not, so neither may answer for the previous snapshot any more: the
+        // preparation is detached from it, and the full path diffs both against the new snapshot's arcs and brings
         // whichever is behind up to date, partially or fully
+        prepared = previous.detached();
         LogManager.instance().log(this, Level.WARNING, "Incremental update of contraction hierarchy on '%s' failed, "
             + "re-reading the view", e, weightProperty);
         return false;
