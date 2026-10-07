@@ -174,6 +174,11 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
    * entries under the old name, and nothing has hashed it, so the change of {@link #hashCode()} is unobservable.
    */
   public void restoreLogicalName(final String logicalName) {
+    // Only an instance still named after its file, i.e. one a load has just built: renaming a live index would hide the
+    // entries transactions queued under its current name (see LSMTreeIndexCursor, #8817).
+    if (!name.equals(mutable.getName()))
+      throw new IllegalStateException(
+          "Cannot restore the name '" + logicalName + "' on index '" + name + "': it no longer answers to its file name");
     this.name = logicalName;
   }
 

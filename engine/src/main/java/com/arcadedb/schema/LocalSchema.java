@@ -3311,6 +3311,8 @@ public class LocalSchema implements Schema {
               final String bucketName = indexJSON.getString("bucket");
               final Bucket bucket = lookupBucket(bucketName);
               if (bucket == null) {
+                // Orphans stay keyed by the FILE name, like the schema entry: the relinking pass below matches them to a
+                // bucket by that name's "<bucketName>_" prefix, which a restored logical name need not share.
                 orphanIndexes.put(indexName, indexJSON);
                 indexJSON.put("type", typeName);
                 LogManager.instance()

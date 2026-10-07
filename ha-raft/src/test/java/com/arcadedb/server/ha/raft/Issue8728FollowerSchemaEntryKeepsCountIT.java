@@ -50,10 +50,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class Issue8728FollowerSchemaEntryKeepsCountIT extends BaseRaftHATest {
 
-  private static final String TYPE     = "Issue8728Counted";
-  private static final int    INITIAL  = 200;
-  private static final int    INSERTED = 150;
-  private static final long   TOTAL    = INITIAL + INSERTED;
+  private static final String TYPE            = "Issue8728Counted";
+  private static final int    INITIAL         = 200;
+  private static final int    INSERTED        = 150;
+  private static final long   TOTAL           = INITIAL + INSERTED;
   private static final int    INDEX_PAGE_SIZE = 8192;
 
   @Override
