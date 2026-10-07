@@ -31,6 +31,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.InstanceOfAssertFactories.LIST;
 
 /**
  * Regression test for issue #9117: a label expression with {@code !}, {@code %} or a mix of {@code &} and {@code |}
@@ -149,6 +150,38 @@ class CypherLabelExpressionVarLengthIssue9117Test {
   }
 
   @Test
+  void allShortestPathsKeepsEveryEqualLengthRouteThatQualifies() {
+    // A second two-hop route from 1 to 4, over U: 1-U->6-U->4 next to 1-R->2-T->4.
+    database.transaction(() -> database.command("opencypher",
+        "MATCH (a {id: 1}), (d {id: 4}) CREATE (a)-[:U]->(:X {id: 6})-[:U]->(d)"));
+
+    assertThat(column("MATCH p = allShortestPaths((a {id: 1})-[:!S*..3]-(b {id: 4})) "
+        + "RETURN reduce(s = '', n IN nodes(p) | s + n.id) AS route ORDER BY route", "route"))
+        .containsExactly("124", "164");
+    assertThat(column("MATCH p = allShortestPaths((a {id: 1})-[:!R*..3]-(b {id: 4})) "
+        + "RETURN reduce(s = '', n IN nodes(p) | s + n.id) AS route", "route"))
+        .containsExactly("164");
+    assertThat(column("MATCH p = allShortestPaths((a {id: 1})-[:!U&!T*..3]-(b {id: 4})) RETURN p", "p")).isEmpty();
+  }
+
+  @Test
+  void combinesWithAnInlinePropertyMap() {
+    database.transaction(() -> database.command("opencypher",
+        "MATCH (a)-[r]->(b) WHERE type(r) = 'S' OR (type(r) = 'R' AND a.id = 3) SET r.w = 1"));
+
+    // Both the expression and the property map are checked on every hop.
+    assertThat(column("MATCH (a {id: 1})-[:!T*1..3 {w: 1}]->(b) RETURN b.id AS id ORDER BY id", "id")).containsExactly(3, 5);
+    assertThat(column("MATCH (a {id: 1})-[:!S*1..3 {w: 1}]->(b) RETURN b.id AS id", "id")).isEmpty();
+    assertThat(column("MATCH (a {id: 3})-[:!S*1..3 {w: 1}]->(b) RETURN b.id AS id", "id")).containsExactly(5);
+    final List<Object> viaParameter = new ArrayList<>();
+    try (final ResultSet rs = database.query("opencypher", "MATCH (a {id: 1})-[:!T*1..3 {w: $w}]->(b) RETURN b.id AS id ORDER BY id",
+        Map.of("w", 1))) {
+      rs.stream().forEach(r -> viaParameter.add(r.getProperty("id")));
+    }
+    assertThat(viaParameter).containsExactly(3, 5);
+  }
+
+  @Test
   void shortestPathAsAnExpression() {
     assertThat(column("MATCH (a {id: 1}), (b {id: 4}) RETURN shortestPath((a)-[:!R*]-(b)) AS p", "p")).containsExactly((Object) null);
     final List<Object> paths = column("MATCH (a {id: 1}), (b {id: 4}) RETURN length(shortestPath((a)-[:!S*]-(b))) AS l", "l");
@@ -165,8 +198,9 @@ class CypherLabelExpressionVarLengthIssue9117Test {
   @Test
   void insideAPatternComprehension() {
     assertThat(column("MATCH (n {id: 1}) RETURN [(n)-[:!R*1..3]->(m) | m.id] AS ids", "ids")).containsExactly(List.of(3));
-    assertThat(column("MATCH (n {id: 1}) RETURN [(n)-[:(R|S)&!T*1..3]->(m) | m.id] AS ids", "ids"))
-        .satisfiesExactly(ids -> assertThat((List<Object>) ids).containsExactlyInAnyOrder(2, 3, 5));
+    final List<Object> ids = column("MATCH (n {id: 1}) RETURN [(n)-[:(R|S)&!T*1..3]->(m) | m.id] AS ids", "ids");
+    assertThat(ids).hasSize(1);
+    assertThat(ids.getFirst()).asInstanceOf(LIST).containsExactlyInAnyOrder(2, 3, 5);
   }
 
   @Test
