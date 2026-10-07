@@ -7187,6 +7187,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     if (bodyCtx.COMPACTION() != null && bodyCtx.THRESHOLD() != null)
       stmt.compactionThreshold = parseCompactionThreshold(bodyCtx.INTEGER_LITERAL().getText());
 
+    if (bodyCtx.cchWeightList != null)
+      stmt.cchWeights = visitIdentifierList(bodyCtx.cchWeightList.identifier());
+
     return stmt;
   }
 

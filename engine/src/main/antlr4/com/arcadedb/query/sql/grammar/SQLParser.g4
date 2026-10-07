@@ -897,6 +897,7 @@ refreshContinuousAggregateBody
  *         [EDGE PROPERTIES (prop1, prop2, ...)]
  *         [UPDATE MODE OFF|SYNCHRONOUS|ASYNCHRONOUS]
  *         [COMPACTION THRESHOLD n]
+ *         [CCH (weightProperty, ...)]
  */
 createGraphAnalyticalViewBody
     : (IF NOT EXISTS)? viewName=identifier
@@ -906,6 +907,7 @@ createGraphAnalyticalViewBody
       (EDGE PROPERTIES LPAREN edgePropertyList=gavTypeList RPAREN)?
       (UPDATE MODE updateModeName=identifier)?
       (COMPACTION THRESHOLD INTEGER_LITERAL)?
+      (CCH LPAREN cchWeightList=gavTypeList RPAREN)?
     ;
 
 gavTypeList: identifier (COMMA identifier)*;
@@ -1720,6 +1722,7 @@ identifier
     | POLICY
     | GRANULARITY
     | CODEC
+    | CCH
     // Additional keywords allowed as identifiers (matching JavaCC parser)
     | PROPERTY
     | BUCKETS

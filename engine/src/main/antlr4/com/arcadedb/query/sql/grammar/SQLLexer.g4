@@ -281,6 +281,7 @@ PROPERTIES: P R O P E R T I E S;
 COMPACTION: C O M P A C T I O N;
 COMPACT: C O M P A C T;
 THRESHOLD: T H R E S H O L D;
+CCH: C C H;
 
 // ============================================================================
 // COMPARISON OPERATORS

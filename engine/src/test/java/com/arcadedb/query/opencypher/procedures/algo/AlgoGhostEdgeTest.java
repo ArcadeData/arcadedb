@@ -111,6 +111,11 @@ class AlgoGhostEdgeTest {
         "MATCH (a:Node {name:'A'}), (c:Node {name:'C'}) "
             + "CALL algo.dijkstra(a, c, 'LINK', 'w') YIELD path, weight RETURN path, weight");
 
+    // the contraction-hierarchy procedure answers through bidirectional Dijkstra on the records when no view keeps one
+    assertProcedureDoesNotThrow(
+        "MATCH (a:Node {name:'A'}), (c:Node {name:'C'}) "
+            + "CALL algo.cch.shortestPath(a, c, 'LINK', 'w', 'OUT') YIELD path, weight RETURN path, weight");
+
     // path.expand is an APOC-style traversal over live edges (procedures/path/PathExpand).
     assertProcedureDoesNotThrow(
         "MATCH (a:Node {name:'A'}) "
@@ -181,6 +186,7 @@ class AlgoGhostEdgeTest {
     }
     assertSqlDoesNotThrow("SELECT bellmanFord(?, ?, 'w') AS p FROM (SELECT 1)", a, c);
     assertSqlDoesNotThrow("SELECT duanSSSP(?, ?, 'w') AS p FROM (SELECT 1)", a, c);
+    assertSqlDoesNotThrow("SELECT cchShortestPath(?, ?, 'w', 'BOTH') AS p FROM (SELECT 1)", a, c);
   }
 
   private void assertSqlDoesNotThrow(final String sql, final Object... params) {

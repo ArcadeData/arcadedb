@@ -43,6 +43,7 @@ public class CreateGraphAnalyticalViewStatement extends DDLStatement {
   public Identifier[] edgeProperties;
   public String       updateModeStr;          // "OFF", "SYNCHRONOUS", "ASYNCHRONOUS"
   public int          compactionThreshold = -1; // -1 means not set (use default)
+  public Identifier[] cchWeights;               // weight properties to keep a contraction hierarchy for
   public boolean      ifNotExists  = false;
 
   public CreateGraphAnalyticalViewStatement() {
@@ -87,6 +88,10 @@ public class CreateGraphAnalyticalViewStatement extends DDLStatement {
     builder.withUpdateMode(resolveUpdateMode());
     if (compactionThreshold >= 0)
       builder.withCompactionThreshold(compactionThreshold);
+    final String[] cchArray = toStringArray(cchWeights);
+    if (cchArray != null)
+      for (final String weight : cchArray)
+        builder.withContractionHierarchy(weight);
     builder.buildAsync();
 
     final InternalResultSet result = new InternalResultSet();
@@ -139,6 +144,11 @@ public class CreateGraphAnalyticalViewStatement extends DDLStatement {
       builder.append(" UPDATE MODE ").append(mode.name());
     if (compactionThreshold >= 0)
       builder.append(" COMPACTION THRESHOLD ").append(compactionThreshold);
+    if (cchWeights != null && cchWeights.length > 0) {
+      builder.append(" CCH (");
+      appendIdentifiers(params, builder, cchWeights);
+      builder.append(')');
+    }
   }
 
   private GraphAnalyticalView.UpdateMode resolveUpdateMode() {
@@ -180,6 +190,7 @@ public class CreateGraphAnalyticalViewStatement extends DDLStatement {
     result.edgeProperties = copyIdentifiers(edgeProperties);
     result.updateModeStr = updateModeStr;
     result.compactionThreshold = compactionThreshold;
+    result.cchWeights = copyIdentifiers(cchWeights);
     result.ifNotExists = ifNotExists;
     return result;
   }
@@ -198,6 +209,7 @@ public class CreateGraphAnalyticalViewStatement extends DDLStatement {
         edgeTypes == null ? List.of() : Arrays.asList(edgeTypes),
         properties == null ? List.of() : Arrays.asList(properties),
         edgeProperties == null ? List.of() : Arrays.asList(edgeProperties),
-        updateModeStr, compactionThreshold, ifNotExists };
+        updateModeStr, compactionThreshold, ifNotExists,
+        cchWeights == null ? List.of() : Arrays.asList(cchWeights) };
   }
 }

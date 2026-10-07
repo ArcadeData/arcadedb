@@ -529,7 +529,7 @@ class LetQueryStepCorrelatedResultCacheTest extends TestHelper {
    * registered name that is in neither list, until it is classified.
    */
   private static final Set<String> REVIEWED_REPEATABLE_FUNCTIONS = Set.of(
-      "abs", "astar", "avg", "bellmanford", "bool_and", "bool_or", "both", "bothe", "bothv", "circle",
+      "abs", "astar", "avg", "bellmanford", "bool_and", "bool_or", "both", "bothe", "bothv", "cchshortestpath", "circle",
       "coalesce", "concat", "count", "cypherrid", "date", "decode", "difference", "dijkstra", "distance",
       "duansssp", "duration", "encode", "first", "format", "fulltext.searchfields",
       "fulltext.searchfieldsmore", "fulltext.searchindex", "fulltext.searchindexmore", "geo.area",

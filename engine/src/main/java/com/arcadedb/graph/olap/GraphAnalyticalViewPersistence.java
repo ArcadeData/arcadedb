@@ -149,6 +149,16 @@ public class GraphAnalyticalViewPersistence {
           builder.withCompactionThreshold(ct);
         if (gavDef.has("useWhenStale"))
           builder.withUseWhenStale(gavDef.getBoolean("useWhenStale"));
+        final JSONArray hierarchies = gavDef.getJSONArray("contractionHierarchies", null);
+        if (hierarchies != null)
+          for (int i = 0; i < hierarchies.length(); i++) {
+            final JSONObject hierarchy = hierarchies.getJSONObject(i);
+            final JSONArray types = hierarchy.getJSONArray("edgeTypes", null);
+            final String[] edgeTypes = new String[types == null ? 0 : types.length()];
+            for (int t = 0; t < edgeTypes.length; t++)
+              edgeTypes[t] = types.getString(t);
+            builder.withContractionHierarchy(hierarchy.getString("weightProperty"), edgeTypes);
+          }
         // Defers to a persisted CSR from disk if one plausibly applies (issue #6583, made lazy by #6632 —
         // the actual read waits for a real query or an explicit awaitReady()) and only falls back to the
         // async full rebuild below when there is none — see restoreFromDiskOrBuildAsync() for the check
@@ -253,6 +263,23 @@ public class GraphAnalyticalViewPersistence {
     final Boolean useWhenStale = view.getUseWhenStaleOverride();
     if (useWhenStale != null)
       json.put("useWhenStale", useWhenStale.booleanValue());
+    final List<ContractionHierarchy> hierarchies = view.getContractionHierarchies();
+    if (!hierarchies.isEmpty()) {
+      final JSONArray array = new JSONArray();
+      for (final ContractionHierarchy hierarchy : hierarchies) {
+        final JSONObject entry = new JSONObject();
+        entry.put("weightProperty", hierarchy.getWeightProperty());
+        final String[] types = hierarchy.getEdgeTypes();
+        if (types != null) {
+          final JSONArray typeArray = new JSONArray();
+          for (final String type : types)
+            typeArray.put(type);
+          entry.put("edgeTypes", typeArray);
+        }
+        array.put(entry);
+      }
+      json.put("contractionHierarchies", array);
+    }
     return json;
   }
 }

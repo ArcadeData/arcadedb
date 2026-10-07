@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.graph.olap.ContractionHierarchy;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.graph.olap.GraphAnalyticalViewPersistence;
 import com.arcadedb.graph.olap.GraphAnalyticalViewRegistry;
@@ -28,6 +29,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Returns an Result containing metadata regarding the graph analytical views.
@@ -68,6 +70,13 @@ public class FetchFromSchemaGraphAnalyticalViewsStep extends AbstractFetchFromSc
           r.setProperty("memoryUsageBytes", liveView.getMemoryUsageBytes());
           r.setProperty("buildTimestamp", liveView.getBuildTimestamp());
           r.setProperty("buildDurationMs", liveView.getBuildDurationMs());
+          final List<ContractionHierarchy> hierarchies = liveView.getContractionHierarchies();
+          if (!hierarchies.isEmpty()) {
+            final List<Map<String, Object>> hierarchyStats = new ArrayList<>(hierarchies.size());
+            for (final ContractionHierarchy hierarchy : hierarchies)
+              hierarchyStats.add(hierarchy.getStats());
+            r.setProperty("contractionHierarchies", hierarchyStats);
+          }
         } else {
           r.setProperty("status", liveView != null ? liveView.getStatus().name() : "NOT_BUILT");
           r.setProperty("nodeCount", 0);
