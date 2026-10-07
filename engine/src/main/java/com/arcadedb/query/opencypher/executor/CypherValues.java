@@ -22,6 +22,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.exception.InvalidPropertyTypeException;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
+import com.arcadedb.serializer.BinaryComparator;
 
 import java.util.List;
 import java.util.Map;
@@ -49,8 +50,9 @@ public final class CypherValues {
   /**
    * Numeric-tolerant equality: a stored {@code Integer} 1 equals a supplied {@code Long} 1, which is what makes a
    * MERGE pattern match a record written with a different integral width. A {@code Float} and a {@code Double} may
-   * still report unequal after widening (0.1f != 0.1d); that is conservative on purpose, since every caller pays for
-   * a false negative with a redundant write or an extra probe, never with a wrong answer.
+   * still report unequal after widening (0.1f != 0.1d). The two zeros are one value (-0.0 equals 0.0), as in a MATCH
+   * and in the index (issue #9303). A false negative is not free for a caller that creates when nothing matches (MERGE),
+   * so such a caller must not count on this being conservative.
    */
   public static boolean equalValues(final Object a, final Object b) {
     if (a == null)
@@ -59,7 +61,7 @@ public final class CypherValues {
       return true;
     if (a instanceof Number numberA && b instanceof Number numberB)
       return numberA.longValue() == numberB.longValue()
-          && Double.compare(numberA.doubleValue(), numberB.doubleValue()) == 0;
+          && BinaryComparator.compareDoubles(numberA.doubleValue(), numberB.doubleValue()) == 0;
     return false;
   }
 
