@@ -364,9 +364,9 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
         record = (Document) db.lookupByRID(rid, true);
       } catch (final RecordNotFoundException e) {
         // Skip records that no longer exist in the bucket (issue #3717).
-        staleSkipped[0] = true;
         // This can happen when the vector index has stale entries pointing to deleted records,
         // e.g., after crash recovery, backup restore, or index/storage inconsistencies.
+        staleSkipped[0] = true;
         continue;
       }
 

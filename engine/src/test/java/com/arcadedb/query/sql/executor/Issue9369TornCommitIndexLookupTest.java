@@ -82,6 +82,48 @@ class Issue9369TornCommitIndexLookupTest extends TestHelper {
   }
 
   @Test
+  void theSamePointLookupRunTwiceServesTheSameRows() {
+    database.command("sql", "CREATE INDEX ON Product (pid) UNIQUE_HASH");
+    database.transaction(() -> {
+      for (int i = 0; i < 10; i++)
+        database.command("sql", "CREATE VERTEX Product SET pid = :p, views = 1", Map.of("p", (long) i)).close();
+    });
+    final List<Long> ids = List.of(1L, 3L, 5L);
+    for (int run = 0; run < 3; run++) {
+      final List<Integer> pids = new ArrayList<>();
+      try (final ResultSet rs = database.query("sql", "SELECT pid FROM Product WHERE pid IN :ids ORDER BY pid", Map.of("ids", ids))) {
+        rs.forEachRemaining(r -> pids.add(r.getProperty("pid")));
+      }
+      assertThat(pids).as("run " + run).containsExactly(1, 3, 5);
+    }
+  }
+
+  @Test
+  void repeatableReadKeepsItsSnapshotWhenNoCommitOverlapsTheLookup() {
+    database.command("sql", "CREATE INDEX ON Product (pid) UNIQUE_HASH");
+    database.transaction(() -> database.command("sql", "CREATE VERTEX Product SET pid = 1, views = 1").close());
+    database.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+    try {
+      try (final ResultSet rs = database.query("sql", "SELECT views FROM Product WHERE pid = 1")) {
+        assertThat(rs.next().<Integer>getProperty("views")).isEqualTo(1);
+      }
+      // another thread commits a change of the record the transaction has already read
+      final Thread writer = new Thread(() -> database.transaction(() -> database.command("sql", "UPDATE Product SET views = 2 WHERE pid = 1").close()));
+      writer.start();
+      try {
+        writer.join();
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+      try (final ResultSet rs = database.query("sql", "SELECT views FROM Product WHERE pid = 1")) {
+        assertThat(rs.next().<Integer>getProperty("views")).as("the snapshot the transaction pinned").isEqualTo(1);
+      }
+    } finally {
+      database.rollback();
+    }
+  }
+
+  @Test
   void largePointLookupIsServedInFull() {
     database.command("sql", "CREATE INDEX ON Product (pid) UNIQUE_HASH");
     final int count = 3000;
