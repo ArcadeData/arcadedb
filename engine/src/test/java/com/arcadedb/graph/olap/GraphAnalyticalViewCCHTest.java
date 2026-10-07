@@ -49,6 +49,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.within;
 
 /**
@@ -234,6 +235,12 @@ class GraphAnalyticalViewCCHTest {
         junctions[t])) {
       assertThat(pathWeight(rs.next().getProperty("path"), Vertex.DIRECTION.OUT)).isCloseTo(expected, within(EPS));
     }
+    assertThatThrownBy(() -> {
+      try (final ResultSet rs = database.query("sql", "SELECT cchShortestPath(?, ?, 'distance', 'SIDEWAYS') AS path",
+          junctions[s], junctions[t])) {
+        rs.next();
+      }
+    }).hasStackTraceContaining("use OUT, IN or BOTH");
 
     final long queriesBefore = cch.getQueryCount();
     try (final ResultSet rs = database.query("opencypher",

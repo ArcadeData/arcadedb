@@ -328,8 +328,11 @@ public final class ContractionHierarchy {
     } catch (final Exception | OutOfMemoryError e) {
       // An OutOfMemoryError is caught on purpose, like the CSR and order persistence do: the arc budget bounds the
       // supergraph, but a large one can still exhaust a tight heap, and the view itself must stay usable. What was
-      // prepared is let go so the collector can take it back; queries answer through Dijkstra meanwhile.
+      // prepared is let go so the collector can take it back; queries answer through Dijkstra meanwhile. After an
+      // OutOfMemoryError the topology goes too, at the price of ordering again: the heap needs it back more.
       prepared = null;
+      if (e instanceof OutOfMemoryError)
+        root = null;
       final String reason = e.toString();
       // every later snapshot retries; a failure that keeps repeating is logged once at WARNING, then at FINE
       final boolean repeated = reason.equals(statusReason) && status == Status.UNAVAILABLE;
@@ -469,6 +472,9 @@ public final class ContractionHierarchy {
    */
   private int[] mapOnto(final TopologyRoot topologyRoot, final GraphAnalyticalView.Snapshot snap, final int nodeCount) {
     final int known = topologyRoot.topology.nodeCount;
+    // Same base mapping: the overlay that sits on it now grew out of the one the topology was built with, and an overlay
+    // keeps every id it ever handed out (a deleted vertex's slot is never reused), so an id names the same vertex in both.
+    // A vertex deleted since keeps its node and simply has no arcs left; no liveness check is needed, unlike below.
     if (snap.nodeMapping == topologyRoot.mapping) {
       final int[] result = new int[nodeCount];
       for (int d = 0; d < nodeCount; d++)
