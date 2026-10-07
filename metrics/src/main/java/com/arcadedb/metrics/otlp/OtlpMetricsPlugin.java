@@ -47,6 +47,9 @@ public class OtlpMetricsPlugin implements ServerPlugin {
   private static final Pattern GRPC_PORT        = Pattern.compile("^[a-zA-Z][a-zA-Z0-9+.-]*://(?:[^/?#@\\s]*@)?[^/?#@\\s]*:4317(?:[/?#].*)?$");
 
 
+  /** The shortest push interval honoured: a smaller step would push to the collector in a near busy loop. */
+  static final long MIN_STEP_MS = 1_000L;
+
   private OtlpMeterRegistry registry;
   private boolean           enabled;
 
@@ -107,10 +110,13 @@ public class OtlpMetricsPlugin implements ServerPlugin {
         return "otlp.url".equals(key) ? endpoint : null;
       }
 
-      /** The push interval of {@code arcadedb.serverMetrics.otlp.step}, or Micrometer's one minute when not positive. */
+      /**
+       * The push interval of {@code arcadedb.serverMetrics.otlp.step}, at least {@link #MIN_STEP_MS} ms, or Micrometer's
+       * one minute when not positive.
+       */
       @Override
       public Duration step() {
-        return stepMs > 0 ? Duration.ofMillis(stepMs) : OtlpConfig.super.step();
+        return stepMs > 0 ? Duration.ofMillis(Math.max(stepMs, MIN_STEP_MS)) : OtlpConfig.super.step();
       }
 
       @Override

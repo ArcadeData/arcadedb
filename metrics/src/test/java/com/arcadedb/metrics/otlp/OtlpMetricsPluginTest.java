@@ -108,6 +108,10 @@ class OtlpMetricsPluginTest {
     cfg.setValue(GlobalConfiguration.SERVER_METRICS_OTLP_STEP, 2_000L);
     assertThat(OtlpMetricsPlugin.otlpConfig(cfg, Map.of()).step()).isEqualTo(Duration.ofSeconds(2));
 
+    // A positive value below the floor is raised to it rather than hammering the collector
+    cfg.setValue(GlobalConfiguration.SERVER_METRICS_OTLP_STEP, 1L);
+    assertThat(OtlpMetricsPlugin.otlpConfig(cfg, Map.of()).step()).isEqualTo(Duration.ofSeconds(1));
+
     cfg.setValue(GlobalConfiguration.SERVER_METRICS_OTLP_STEP, 0L);
     assertThat(OtlpMetricsPlugin.otlpConfig(cfg, Map.of()).step()).isEqualTo(Duration.ofMinutes(1));
   }

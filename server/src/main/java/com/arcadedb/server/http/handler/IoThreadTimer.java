@@ -46,7 +46,8 @@ final class IoThreadTimer {
   }
 
   /**
-   * Runs {@code task} on {@code ioThread} after {@code delayMs}.
+   * Runs {@code task} on {@code ioThread} after {@code delayMs}. From another thread the delay starts when the I/O
+   * thread runs the hand-over, not at this call: a skew of one I/O-thread turn, nothing next to a watchdog's budget.
    *
    * @return the cancel of the task: idempotent, callable from any thread, and harmless after the task fired. A cancel
    *     that completes before the task fires guarantees it never runs, even when it races the hand-over to the I/O
@@ -95,7 +96,8 @@ final class IoThreadTimer {
         scheduled.remove();
     }
 
-    private void cancel() {
+    // Not private: it is reached only through the method reference schedule() returns, which PMD does not see as a use
+    void cancel() {
       cancelled = true;
       final XnioExecutor.Key scheduled = key;
       if (scheduled != null)

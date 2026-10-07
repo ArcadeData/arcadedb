@@ -90,6 +90,8 @@ final class PageShadow implements AutoCloseable {
   private long        spillBytes = 0L;
 
   private boolean closed = false;
+  /** Reopens of the spill channel so far: the first is logged at WARNING, the rest at FINE (an interrupt storm). */
+  private int     reopens = 0;
 
   PageShadow(final File spillFile, final long maxRAMBytes, final long maxTotalBytes) {
     this.spillFile = spillFile;
@@ -162,7 +164,9 @@ final class PageShadow implements AutoCloseable {
           buffer.limit(length).position(0);
           writeFully(c, buffer, offset);
         }))
-          // CLOSED WHILE THE WRITE WAS IN FLIGHT: THE SAME ANSWER AS THE closed CHECK BELOW
+          // CLOSED WHILE THE WRITE WAS IN FLIGHT: true, LIKE THE closed CHECK AFTER THE WRITE BELOW AND UNLIKE THE ONE
+          // AT THE TOP. false MEANS "CAP BREACHED" AND WOULD INVALIDATE THE WINDOW AS OVERFLOWED, WHILE A WINDOW BEING
+          // CLOSED IS NEVER READ AGAIN
           return true;
       }
     } catch (final IOException e) {
@@ -286,14 +290,16 @@ final class PageShadow implements AutoCloseable {
    * @return the channel to retry on, or {@code null} when the shadow is closed: {@link #close()} deleted the file, and
    *     reopening it - even without {@code CREATE} - is exactly the resurrection a closed shadow must refuse.
    */
+  @SuppressWarnings("PMD.CompareObjectsWithEquals") // identity on purpose: "is it still the channel I saw closed?"
   private synchronized FileChannel reopenSpillChannel(final FileChannel closedChannel) throws IOException {
     if (closed)
       return null;
     if (spillChannel != closedChannel && spillChannel != null && spillChannel.isOpen())
       return spillChannel;
     LogManager.instance()
-        .log(this, Level.WARNING, "Snapshot shadow file '%s' was closed (thread interrupted?). Reopen it and retry...", null,
-            spillFile.getName());
+        .log(this, reopens++ == 0 ? Level.WARNING : Level.FINE,
+            "Snapshot shadow file '%s' was closed (thread interrupted?). Reopen it and retry... (reopen #%d)", null,
+            spillFile.getName(), reopens);
     if (spillChannel != null)
       try {
         spillChannel.close();
