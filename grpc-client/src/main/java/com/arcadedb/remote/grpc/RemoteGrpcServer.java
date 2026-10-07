@@ -1024,7 +1024,9 @@ public class RemoteGrpcServer implements AutoCloseable {
     try {
       return body.run(withDeadline(adminServiceBlockingV2Stub(), defaultTimeoutMs));
     } catch (final StatusException e) {
-      final RuntimeException mapped = write ? GrpcClientErrorMapper.toAutoCommitWriteException(e, operation) : GrpcClientErrorMapper.toException(e);
+      final RuntimeException mapped = write ?
+          GrpcClientErrorMapper.toAutoCommitWriteException(e, operation) :
+          GrpcClientErrorMapper.toException(e);
       if (mapped.getMessage() == null || mapped.getMessage().isBlank())
         throw new RemoteException("Failed to " + operation, e);
       throw mapped;

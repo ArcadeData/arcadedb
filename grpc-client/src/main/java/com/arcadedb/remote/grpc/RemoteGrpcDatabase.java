@@ -1685,7 +1685,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     final boolean finished = done.await(Math.max(1, timeoutMs) + 1_000, TimeUnit.MILLISECONDS);
     if (!finished) {
       throw new TimeoutException("ingestStream timed out waiting for server completion: the rows already sent may be partially "
-          + "applied, because the stream commits as it goes (issue #8822)");
+          + "applied, because the stream commits as it goes");
     }
 
     // If wrapObserver mapped an error, rethrow it directly
@@ -1972,7 +1972,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
           }
         }
         throw new TimeoutException("ingestBidirectional timed out waiting for server completion: the rows already sent may be "
-            + "partially applied, because the stream commits as it goes (issue #8822)");
+            + "partially applied, because the stream commits as it goes");
       }
 
       final Throwable err = errRef.get();
@@ -2570,7 +2570,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     try {
       if (!completed.await(getTimeout(), TimeUnit.MILLISECONDS))
         throw new RemoteException("Timeout waiting for the TimeSeriesWriteStream summary: the points already sent may be "
-            + "partially applied, because each chunk commits as it is appended (issue #8822)");
+            + "partially applied, because each chunk commits as it is appended");
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
       throw new RemoteException("Interrupted while waiting for the TimeSeriesWriteStream summary", e);
