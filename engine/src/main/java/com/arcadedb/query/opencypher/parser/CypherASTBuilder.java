@@ -2017,13 +2017,13 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     }
 
     // Label expression (relationship types). A negation, the wildcard or a mix of '&' and '|' is checked as a
-    // predicate on the relationship, keeping as its type filter only a type every match must have (#8992).
+    // predicate on the relationship, keeping as its type filter only a type every match must have (#8992). On a
+    // variable-length relationship the predicate rides the inline WHERE, which every expansion evaluates per hop, so
+    // each relationship of the path is checked (#9117).
     BooleanExpression labelCheck = null;
     final LabelPredicate labelPredicate = ParserUtils.buildRelationshipTypePredicate(ctx.labelExpression());
     if (labelPredicate != null) {
       rejectLabelExpressionInWriteClause(ctx.labelExpression());
-      if (ctx.pathLength() != null)
-        ParserUtils.rejectOnVariableLengthRelationship(ctx.labelExpression());
       final List<String> required = labelPredicate.requiredLabels();
       types = required.isEmpty() ? null : required;
       if (variable == null)
