@@ -153,6 +153,8 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
     started = true;
     prefetchIndex = 0;
     nextBatch[prefetchIndex] = position.getRecord();
+    // THE POSITIONED RECORD IS A BATCH OF ONE: THE SCAN GOES ON FROM THE SLOT AFTER IT WHEN IT IS CONSUMED
+    writeIndex = 1;
     nextPageNumber = (int) (position.getPosition() / bucket.getMaxRecordsInPage());
     currentRecordInPage = (int) (position.getPosition() % bucket.getMaxRecordsInPage()) + 1;
     currentPage = database.getTransaction().getPage(new PageId(database, position.getBucketId(), nextPageNumber),

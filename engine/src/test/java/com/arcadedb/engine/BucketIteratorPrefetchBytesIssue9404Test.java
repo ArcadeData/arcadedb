@@ -137,8 +137,8 @@ class BucketIteratorPrefetchBytesIssue9404Test extends TestHelper {
       final long shrunkBefore = QueryHeapBudget.getScanBatchesShrunk();
 
       // WITH THE BUDGET NEARLY FULL THE SLOW SCAN NAMES ITS CAUSE, IN SQL AND IN OPENCYPHER
-      assertThat(profile("sql", sql)).contains("read-ahead reduced in").contains("query heap budget nearly full");
-      assertThat(profile("opencypher", cypher)).contains("read-ahead reduced in").contains("query heap budget nearly full");
+      assertThat(profile("sql", sql)).contains("read-ahead reduced in").contains("by the query heap budget");
+      assertThat(profile("opencypher", cypher)).contains("read-ahead reduced in").contains("by the query heap budget");
       assertThat(profile("opencypher", legacyCypher)).contains("MATCH NODE").contains("read-ahead reduced in");
 
       // AND THE SERVER PROFILER COUNTS THEM
@@ -303,6 +303,27 @@ class BucketIteratorPrefetchBytesIssue9404Test extends TestHelper {
     }
     assertThat(ids).hasSize(LARGE_RECORDS);
     assertThat(changedSeen).isTrue();
+  }
+
+  @Test
+  void aPositionedIteratorReturnsTheRecordAtThePositionAndGoesOn() throws Exception {
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getType("Large").getBuckets(false).getFirst();
+    final Iterator<Record> all = bucket.iterator();
+    all.next();
+    all.next();
+    final Record third = all.next();
+
+    final BucketIterator positioned = (BucketIterator) bucket.iterator();
+    positioned.setPosition(third.getIdentity());
+    // THE RECORD AT THE POSITION FIRST, THEN THE ONES AFTER IT
+    int expected = ((Document) third).getInteger("id");
+    int count = 0;
+    while (positioned.hasNext()) {
+      assertThat(((Document) positioned.next()).getInteger("id")).isEqualTo(expected);
+      ++expected;
+      ++count;
+    }
+    assertThat(count).isEqualTo(LARGE_RECORDS - 2);
   }
 
   @Test
