@@ -27,6 +27,7 @@ import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.utility.StringUtils;
 import com.arcadedb.server.http.HttpAuthSessionManager;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.network.MultiAddressServerSocket;
 import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.credential.DefaultCredentialsValidator;
 import io.grpc.CompressorRegistry;
@@ -46,6 +47,8 @@ import io.micrometer.core.instrument.Metrics;
 
 import java.io.File;
 import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -57,7 +60,8 @@ import java.util.logging.Level;
  * Configuration options:
  * - grpc.enabled: Enable/disable gRPC server (default: true)
  * - grpc.port: Port for standard gRPC server (default: 50051)
- * - grpc.host: Host to bind (default: 0.0.0.0)
+ * - grpc.host: Host to bind, every local address it resolves to (default: 0.0.0.0). Applies to the standard server only;
+ *   the xDS server has no host setting and listens on every interface
  * - grpc.mode: Server mode - "standard", "xds", or "both" (default: standard)
  * - grpc.xds.port: Port for XDS server (default: 50052)
  * - grpc.tls.enabled: Enable TLS (default: false)
@@ -149,9 +153,9 @@ public class GrpcServerPlugin implements ServerPlugin {
 
     // Configure TLS if enabled
     if (getConfigBoolean(config, GlobalConfiguration.GRPC_TLS_ENABLED)) {
-      serverBuilder = configureStandardTls(port, config);
+      serverBuilder = configureStandardTls(host, port, config);
     } else {
-      serverBuilder = NettyServerBuilder.forPort(port);
+      serverBuilder = newListeningBuilder(host, port);
     }
 
     // Configure keepalive settings to prevent GOAWAY ENHANCE_YOUR_CALM errors
@@ -211,7 +215,7 @@ public class GrpcServerPlugin implements ServerPlugin {
         .maxInboundMetadataSize(getMaxMetadataSizeBytes(config))
         .build().start();
 
-    LogManager.instance().log(this, Level.INFO, "gRPC XDS server started on port %s (xDS management enabled)", port);
+    LogManager.instance().log(this, Level.INFO, "gRPC XDS server started on all interfaces, port %s (xDS management enabled; %s does not apply)", port, GlobalConfiguration.GRPC_HOST.getKey());
   }
 
   // synchronized so the check-then-act initialization of the shared grpcService/healthManager fields stays thread-safe
@@ -325,11 +329,11 @@ public class GrpcServerPlugin implements ServerPlugin {
     }
   }
 
-  private NettyServerBuilder configureStandardTls(int port, ContextConfiguration config) {
+  private NettyServerBuilder configureStandardTls(final String host, final int port, ContextConfiguration config) {
     final File[] certKey = resolveTlsCertKey(config);
     try {
       // Configure Netty with TLS using SslContext
-      return NettyServerBuilder.forPort(port)
+      return newListeningBuilder(host, port)
           .sslContext(GrpcSslContexts
               .forServer(certKey[0], certKey[1])
               .build());
@@ -339,6 +343,24 @@ public class GrpcServerPlugin implements ServerPlugin {
           "gRPC TLS is enabled but the SSL context could not be built from cert '" + certKey[0] + "' and key '" + certKey[1]
               + "'. Refusing to start with cleartext.", e);
     }
+  }
+
+  /**
+   * Creates the builder listening on every local address {@code host} resolves to (issue #9318). {@code forPort(int)}
+   * binds the wildcard address, so {@code grpc.host=127.0.0.1} used to leave the endpoint open on every interface
+   * while the startup line reported the restriction. Same resolution as the other wire listeners (issue #9224).
+   */
+  static NettyServerBuilder newListeningBuilder(final String host, final int port) {
+    final List<String> hosts = MultiAddressServerSocket.resolveListenHosts(host);
+    NettyServerBuilder builder = null;
+    for (final String listenHost : hosts) {
+      final InetSocketAddress address = new InetSocketAddress(listenHost, port);
+      if (builder == null)
+        builder = NettyServerBuilder.forAddress(address);
+      else
+        builder.addListenAddress(address);
+    }
+    return builder != null ? builder : NettyServerBuilder.forPort(port);
   }
 
   private ServerCredentials configureTlsCredentials(ContextConfiguration config) {

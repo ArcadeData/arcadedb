@@ -585,6 +585,9 @@ public final class TemporalUtil {
     // into Cypher temporal values so a stored native datetime reads back as a comparable temporal.
     if (value instanceof Temporal || value instanceof Date) {
       final Object coerced = fromCoreJavaType(value);
+      // A stored datetime keeps no zone: mark it so a comparison lets it adopt the other operand's zone (issue #9325)
+      if (coerced instanceof CypherDateTime dateTime)
+        return CypherDateTime.ofStored(dateTime.getValue());
       if (coerced instanceof CypherTemporalValue)
         return coerced;
     }
