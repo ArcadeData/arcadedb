@@ -57,7 +57,7 @@ public final class ScanReadAheadBudget {
     final long megabytes = GlobalConfiguration.QUERY_SCAN_READ_AHEAD_MAX_RAM.getValueAsLong();
     if (megabytes <= 0)
       return 0L;
-    return megabytes < Long.MAX_VALUE / (1024 * 1024) ? megabytes * 1024 * 1024 : Long.MAX_VALUE;
+    return megabytes < Long.MAX_VALUE / (1024L * 1024) ? megabytes * 1024L * 1024 : Long.MAX_VALUE;
   }
 
   public static boolean isEnabled() {

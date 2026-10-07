@@ -54,6 +54,7 @@ import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.ScanPressureReporter;
 
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -94,9 +95,9 @@ public class MatchNodeStep extends AbstractExecutionStep {
   // (including cachedFullScanCandidates below) need to move to a per-execution scope or be guarded.
   private       String              usedIndexName; // Track which index was used (if any)
   // The full type scan the step reads from, kept only to report in a profile whether the heap budget reduced its read-ahead (#9404)
-  // WRITTEN ONLY BY THE THREAD THAT RUNS THE STEP, READ BY THE PROFILE: VOLATILE FOR THE VISIBILITY, AND A SINGLE WRITER MAKES += SAFE
+  // READ BY THE PROFILE WHILE THE THREAD THAT RUNS THE STEP WRITES THEM
   private volatile ScanPressureReporter scanIterator;
-  private volatile long                completedScansShrunkBatches;
+  private final    AtomicLong           completedScansShrunkBatches = new AtomicLong();
   private       String              usedPartitionBucket; // Track partition bucket pruning (if any) - same write-once-per-execution contract as usedIndexName
   // Full snapshot of a row-independent full-type-scan's candidates, populated (via recordingIterator) only
   // once the first getVertexIterator() call of a CHAINED match (prev != null) has been fully drained by the
@@ -676,7 +677,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
           if (context.isProfiling()) {
             // A CHAINED MATCH OPENS A SCAN PER INPUT ROW: THE ONES DONE STAY IN THE COUNT
             if (scanIterator != null)
-              completedScansShrunkBatches += scanIterator.getBudgetShrunkBatches();
+              completedScansShrunkBatches.addAndGet(scanIterator.getBudgetShrunkBatches());
             scanIterator = iter instanceof ScanPressureReporter reporter ? reporter : null;
           }
           return iter;
@@ -1154,7 +1155,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
         builder.append(", ").append(getRowCountFormatted());
       builder.append(")");
       // #9404: A SCAN THAT READ WITH ITS READ-AHEAD REDUCED BY THE QUERY HEAP BUDGET IS SLOWER FOR IT: SAY SO
-      builder.append(ScanPressureReporter.describe(completedScansShrunkBatches
+      builder.append(ScanPressureReporter.describe(completedScansShrunkBatches.get()
           + (scanIterator != null ? scanIterator.getBudgetShrunkBatches() : 0L)));
     }
     return builder.toString();
