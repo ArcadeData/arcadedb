@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.HeapBufferingFunction;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.GroupBy;
@@ -518,19 +519,15 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
         return;
       final Result next = preProjection != null ? preProjection.calculateSingle(context, row) : row;
       final GroupByKey key = groupKey(workerGroupBy, next, context);
-      final HashMap<GroupByKey, PartialGroup> groups = partitions[Math.floorMod(key.hashCode(), partitions.length)];
-      PartialGroup group = groups.get(key);
+      final int partition = Math.floorMod(key.hashCode(), partitions.length);
+      PartialGroup group = partitions[partition].get(key);
       boolean flush = false;
       if (group == null) {
         checkGroupCount(groupCount);
         group = new PartialGroup(newGroup(workerProjection, next, context), key.values, position);
-        groups.put(key, group);
+        chargeNewGroup(key.values, context);
+        partitions[partition].put(key, group);
         ++groupCount;
-        // THE MONITOR IS UNCONTENDED BUT FOR A CANCELLED WORKER: TAKEN PER NEW GROUP, NOT PER ROW
-        synchronized (this) {
-          if (!heapReleased)
-            heapLimit.chargeElement(key.values, groupOverhead);
-        }
         // CHECKED WHEN A GROUP IS CREATED ONLY: THE CHARGE GROWS ONLY THEN
         flush = workerFlushBytes > 0 && heapLimit.getChargedBytes() >= workerFlushBytes;
       }
@@ -540,6 +537,30 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
       // AFTER THE ROW IS IN: THE FLUSH HANDS THE GROUP OVER, AND THE SHARED SIDE IS NOT TOUCHED WITHOUT ITS LOCK
       if (flush)
         flushToShared(context);
+    }
+
+    /**
+     * Charges a group about to be added. A refusal may come only from the duplicates this worker holds of groups the shared
+     * side has already (each charged here and there at once, until a flush gives one of them back): the worker then flushes
+     * what it holds, which hands its charge over and releases the duplicates, and asks again. A refusal that persists is
+     * the budget really being exceeded by the groups alone, and propagates.
+     */
+    private void chargeNewGroup(final Object[] keyValues, final CommandContext context) {
+      try {
+        synchronized (this) {
+          // THE MONITOR IS UNCONTENDED BUT FOR A CANCELLED WORKER: TAKEN PER NEW GROUP, NOT PER ROW
+          if (!heapReleased)
+            heapLimit.chargeElement(keyValues, groupOverhead);
+        }
+      } catch (final CommandExecutionException e) {
+        if (workerFlushBytes <= 0 || groupCount == 0)
+          throw e;
+        flushToShared(context);
+        synchronized (this) {
+          if (!heapReleased)
+            heapLimit.chargeElement(keyValues, groupOverhead);
+        }
+      }
     }
 
     /** Whether the row passes the filters between the source and the aggregation, as their steps would decide. */
