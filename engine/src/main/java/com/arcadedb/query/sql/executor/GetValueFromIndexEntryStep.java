@@ -650,8 +650,6 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
         restartLookup(database, indexStep);
         return readAndLoad(context, indexStep, nRecords);
       });
-      if (rows != null)
-        restartLookup(database, indexStep);
       return rows;
     } finally {
       if (context.isProfiling())
