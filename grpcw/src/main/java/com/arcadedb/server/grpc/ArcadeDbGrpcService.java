@@ -2143,8 +2143,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           // The executor is still iterating the result set: stop it at its next batch boundary instead of letting it
           // write into the call this CANCELLED terminal closes (issue #8752). Not future.cancel(true): an interrupt
           // aimed at the transaction's thread would hit its file I/O
+          // Flagged BEFORE taking the monitor: monitors are not fair, so a producer sending in a tight loop could
+          // otherwise keep winning it and write the whole rest of the result set before this handler gets in
+          stopInTransactionStream(future, cancelled);
           synchronized (scso) {
-            stopInTransactionStream(future, cancelled);
             responseObserver.onError(
                 Status.CANCELLED.withDescription("Stream query execution was interrupted").asRuntimeException());
           }
@@ -3570,9 +3572,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           terminated = true;
           // A client cancel already closed the call, so it needs no terminal; either way the executor must stop
           // streaming into it (issue #8752)
+          final boolean clientCancelled = cancelled.get();
+          // Flagged before taking the monitor, for the same fairness reason as in streamQuery
+          stopInTransactionStream(streamFuture, cancelled);
           synchronized (call) {
-            final boolean clientCancelled = cancelled.get();
-            stopInTransactionStream(streamFuture, cancelled);
             if (!clientCancelled)
               resp.onError(Status.CANCELLED
                   .withDescription("TimeSeriesQuery was interrupted while streaming inside the transaction")
