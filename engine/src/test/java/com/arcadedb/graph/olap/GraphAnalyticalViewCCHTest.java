@@ -385,6 +385,44 @@ class GraphAnalyticalViewCCHTest {
       assertRandomPairs(random, 60, direction, ShortestPathFinder.Engine.VIEW);
   }
 
+  /**
+   * A negative weight makes its edge unusable (a shortest path is not defined over it) and a missing weight counts 1, on
+   * the hierarchy exactly as on the Dijkstra fallbacks: a negative shortcut must not leak into the customized metric.
+   */
+  @Test
+  void negativeAndMissingWeightsOnAHierarchy() {
+    grid(10, new Random(41));
+    database.transaction(() -> {
+      // a very negative shortcut across the grid: walking it would make every far route look cheap
+      final MutableEdge negative = junctions[0].asVertex().modify().newEdge("ROAD", junctions[99].asVertex());
+      negative.set("distance", -1000.0).save();
+      // a weightless shortcut counts 1
+      final MutableEdge missing = junctions[5].asVertex().modify().newEdge("ROAD", junctions[94].asVertex());
+      missing.save();
+      roads.put(missing.getIdentity(), new double[] { 5, 94, 1.0 });
+    });
+    final GraphAnalyticalView view = syncView("roads");
+    final ContractionHierarchy cch = view.getContractionHierarchy("distance", "ROAD");
+    assertThat(cch.awaitReady(true, 60, TimeUnit.SECONDS)).isTrue();
+
+    final ShortestPathFinder.Result corner = find(0, 99, Vertex.DIRECTION.OUT);
+    assertThat(corner.engine()).isEqualTo(ShortestPathFinder.Engine.CONTRACTION_HIERARCHY);
+    assertThat(corner.weight()).isGreaterThan(0).isCloseTo(reference(0, Vertex.DIRECTION.OUT)[99], within(EPS));
+    assertThat(find(5, 94, Vertex.DIRECTION.OUT).weight()).isEqualTo(1.0);
+
+    final Random random = new Random(43);
+    for (final Vertex.DIRECTION direction : Vertex.DIRECTION.values())
+      assertRandomPairs(random, 80, direction, ShortestPathFinder.Engine.CONTRACTION_HIERARCHY);
+
+    // the records fallback agrees
+    database.begin();
+    database.newVertex("Junction").set("i", -1).save(); // any uncommitted change withholds the view
+    final ShortestPathFinder.Result records = find(0, 99, Vertex.DIRECTION.OUT);
+    assertThat(records.engine()).isEqualTo(ShortestPathFinder.Engine.RECORDS);
+    assertThat(records.weight()).isCloseTo(corner.weight(), within(EPS));
+    database.rollback();
+  }
+
   @Test
   void otherEdgeTypesAndUnmatchedRequestsFallBack() {
     grid(8, new Random(1));
