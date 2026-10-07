@@ -2949,6 +2949,8 @@ public class TransactionContext implements Transaction {
    * a caller that detected a torn read may use it.
    */
   public void unpinFiles(final Collection<Integer> fileIds) {
+    LogManager.instance().log(this, Level.FINE, "Releasing the pinned pages of files %s: a commit overlapped a read of this transaction", null, fileIds);
+    // A bucket is a file, so its id is the file id the pinned pages are keyed by
     final Set<Integer> files = new HashSet<>(fileIds);
     immutablePages.values().removeIf(page -> files.contains(page.getPageId().getFileId()));
     immutableRecordsCache.values().removeIf(r -> files.contains(r.getIdentity().getBucketId()));
