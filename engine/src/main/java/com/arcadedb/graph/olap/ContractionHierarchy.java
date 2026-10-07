@@ -506,6 +506,7 @@ public final class ContractionHierarchy {
         int[] changed = new int[16];
         int count = 0;
         for (int a = 0; a < arcs && count <= limit; a++)
+          // Double.compare, not !=: equal for two NaNs (never produced, but harmless), and costs are never -0.0
           if (Double.compare(input[0][a], old.inputUp[a]) != 0
               || (!undirected && Double.compare(input[1][a], old.inputDown[a]) != 0)) {
             if (count == changed.length)
