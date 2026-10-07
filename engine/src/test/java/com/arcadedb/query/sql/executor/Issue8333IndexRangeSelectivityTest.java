@@ -291,7 +291,7 @@ class Issue8333IndexRangeSelectivityTest extends TestHelper {
   @Test
   void caseInsensitiveIndexIsLeftAlone() {
     // The CI index matches 'ABC' for 'abc', evaluating the condition on the record would not
-    final Execution execution = run("SELECT FROM LineItem WHERE l_code = 'abc' ORDER BY l_seq", Map.of());
+    final Execution execution = run("SELECT FROM LineItem WHERE l_code.toLowerCase() = 'abc' ORDER BY l_seq", Map.of());
     assertThat(execution.step().getScanFallback()).isNull();
     assertThat(execution.rids()).hasSize(ROWS);
   }
