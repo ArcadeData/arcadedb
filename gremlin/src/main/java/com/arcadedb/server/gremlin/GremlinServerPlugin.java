@@ -27,6 +27,7 @@ import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ServerPlugin;
 import org.apache.tinkerpop.gremlin.server.GremlinServer;
 import org.apache.tinkerpop.gremlin.server.Settings;
+import org.apache.tinkerpop.gremlin.server.channel.WebSocketChannelizer;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -127,6 +128,16 @@ public class GremlinServerPlugin implements ServerPlugin {
     for (final String key : configuration.getContextKeys())
       if (key.startsWith("gremlin."))
         applyServerSetting(settings, key.substring("gremlin.".length()), configuration.getValue(key, null));
+
+    // Production mode conceals the text of an engine failure on every surface (issue #9317). The default WebSocket
+    // channelizer is swapped for one that applies it; another channelizer chosen in gremlin-server.yaml answers with
+    // TinkerPop's own text, which the operator is told about rather than left to discover
+    if (WebSocketChannelizer.class.getName().equals(settings.channelizer))
+      settings.channelizer = ConcealingWebSocketChannelizer.class.getName();
+    else if (server.isProductionMode())
+      LogManager.instance().log(this, Level.WARNING,
+          "Gremlin Server channelizer '%s' does not conceal engine error messages in production mode; use the default channelizer",
+          settings.channelizer);
 
     // GremlinServer cannot report an OS-chosen port, so a configured 0 becomes a concrete free port here
     if (settings.port == 0)
