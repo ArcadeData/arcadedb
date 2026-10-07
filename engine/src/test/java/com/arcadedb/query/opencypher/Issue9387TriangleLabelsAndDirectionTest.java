@@ -151,6 +151,29 @@ class Issue9387TriangleLabelsAndDirectionTest extends TestHelper {
     assertAllAgree(UNDIRECTED, 6L);
   }
 
+  @Test
+  void conflictingLabelsOnOneVariableDeclineThePushDown() throws InterruptedException {
+    final RID[] p = graph("Person");
+    knows(p[0], p[1]);
+    knows(p[1], p[2]);
+    knows(p[2], p[0]);
+    // person1 is a Person in its chain and a Company in the cycle: nothing is both
+    final String conflicting = UNDIRECTED.replace("MATCH (person1)-[:KNOWS]-", "MATCH (person1:Company)-[:KNOWS]-");
+    assertAllAgree(conflicting, 0L);
+  }
+
+  @Test
+  void labelOnTheChainEndOfOneChainOnlyIsEnforced() throws InterruptedException {
+    final RID[] p = graph("Person");
+    knows(p[0], p[1]);
+    knows(p[1], p[2]);
+    knows(p[2], p[0]);
+    // only the second chain labels its end as a Company, which the country is not: the three chains share the anchor
+    final String mixed = UNDIRECTED.replaceFirst("\\(city2:City\\)-\\[:IS_PART_OF\\]->\\(country\\)",
+        "(city2:City)-[:IS_PART_OF]->(country:Company)");
+    assertAllAgree(mixed, 0L);
+  }
+
   private void assertAllAgree(final String match, final long expected) throws InterruptedException {
     assertThat(count(match + " WITH " + VARS + " RETURN count(*) AS n")).as("row pipeline").isEqualTo(expected);
     final String written = match + " RETURN count(*) AS n";
