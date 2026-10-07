@@ -131,7 +131,7 @@ class Issue8177BootstrapFingerprintInFlightPagesTest {
 
     // Not only a check: the drain inside it is what puts the commit on disk before the state machine reads the
     // directory below, so the apply deterministically sees the other side of the flush.
-    assertThat(SettledBootstrapFingerprint.of(localDb))
+    assertThat(BootstrapFingerprint.computeSettled(localDb))
         .as("the commit's pages reached the disk after the sample was taken, so the directory hashes differently now. "
             + "If this fails, suspendFlushAndExecute no longer defers the pages of a commit made inside its window, and "
             + "this test no longer reproduces the race")
@@ -149,14 +149,15 @@ class Issue8177BootstrapFingerprintInFlightPagesTest {
   /**
    * The fix: the baseline is sampled from the settled copy, so the state machine's recomputation reads the same bytes
    * and a peer whose copy IS the baseline installs nothing, is marked nothing and stays in the Service. A guard for
-   * the helper on the same in-flight commit, deterministic by construction: the drain is explicit. The control for the
-   * test above: same commit, same held flush, only the sampling differs.
+   * {@code BootstrapFingerprint.computeSettled} (issue #8843) on the same in-flight commit, deterministic by
+   * construction: the drain is explicit. The control for the test above: same commit, same held flush, only the
+   * sampling differs.
    */
   @Test
   void aBaselineSampledFromTheSettledCopyMatchesThePeer() throws Exception {
     commitWhileTheFlushIsHeld();
 
-    final String settled = SettledBootstrapFingerprint.of(localDb);
+    final String settled = BootstrapFingerprint.computeSettled(localDb);
     final ArcadeStateMachine sm = stateMachine();
     assertThatNoException().isThrownBy(() -> sm.applyBootstrapFingerprintEntry(baseline(settled, localDb.getLastTransactionId()), 7L));
 

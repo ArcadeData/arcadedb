@@ -18,6 +18,7 @@
  */
 package com.arcadedb.database;
 
+import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalSchema;
 
 import java.io.File;
@@ -31,6 +32,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.logging.Level;
 
 /**
  * Deterministic SHA-256 fingerprint over the persistent content of an ArcadeDB database directory.
@@ -88,6 +90,43 @@ public final class BootstrapFingerprint {
    */
   public static String compute(final File databaseDir) {
     return compute(databaseDir, DEFAULT_INCLUDED_EXTENSIONS);
+  }
+
+  /**
+   * Upper bound, in milliseconds, of the flush wait {@link #computeSettled(LocalDatabase)} takes before hashing (issue
+   * #8843). It caps only the pathological cases - a wedged disk, a flush suspended for a long backup - because the wait
+   * is already bounded by the backlog found at the call, never by later commits: on a quiet database it is the time
+   * the last commit's pages take to land, normally milliseconds.
+   */
+  public static final long SETTLE_MAX_WAIT_MILLIS = 5_000L;
+
+  /**
+   * Fingerprint of an OPEN database, taken once the pages of the commits made so far have reached the disk (issue
+   * #8843). {@link #compute(File)} hashes the files as they are, and a commit hands its pages to the asynchronous flush
+   * thread rather than writing them itself, so two fingerprints of one unchanged copy taken either side of a flush
+   * would differ - and the bootstrap protocol would read a matching peer as a mismatched one. Every caller that
+   * fingerprints a database the server holds open must go through here.
+   * <p>
+   * The wait is bounded by {@link #SETTLE_MAX_WAIT_MILLIS}; see {@link #computeSettled(LocalDatabase, long)}.
+   */
+  public static String computeSettled(final LocalDatabase database) {
+    return computeSettled(database, SETTLE_MAX_WAIT_MILLIS);
+  }
+
+  /**
+   * {@link #computeSettled(LocalDatabase)} with an explicit bound. When the backlog does not drain in time the
+   * fingerprint is computed anyway, over the files as they stand, and the outcome is logged: a database whose flush
+   * cannot drain is either under writes - its fingerprint drifts with every commit, settled or not - or held by
+   * something else (a wedged disk, a suspended flush), and in both cases a caller blocked indefinitely is worse than a
+   * digest the bootstrap protocol already treats as a mismatch.
+   */
+  public static String computeSettled(final LocalDatabase database, final long maxWaitMillis) {
+    if (!database.getPageManager().waitPagesPendingNowOfDatabaseAreFlushed(database, maxWaitMillis))
+      LogManager.instance().log(BootstrapFingerprint.class, Level.WARNING,
+          "Bootstrap fingerprint of database '%s': the pending page flushes did not reach the disk within %d ms, "
+              + "hashing the files as they stand (the fingerprint may not match a settled copy of the same data)",
+          database.getName(), maxWaitMillis);
+    return compute(new File(database.getDatabasePath()));
   }
 
   /**

@@ -19,14 +19,10 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.database.BootstrapFingerprint;
-import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
-import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
 import com.arcadedb.server.http.handler.ExecutionResponse;
@@ -34,7 +30,6 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 import org.apache.ratis.server.protocol.TermIndex;
 
-import java.io.File;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -163,45 +158,7 @@ public class PostBootstrapStateHandler extends AbstractServerHttpHandler {
     applyPassMarker(payload, raftHAServer.getStateMachine(),
         2L * server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_BOOTSTRAP_TIMEOUT_MS));
 
-    final JSONArray dbs = new JSONArray();
-
-    for (final String dbName : server.getDatabaseNames()) {
-      // Reserved internal databases (e.g. ".raft") are not part of the operator-visible state and
-      // their fingerprint would be meaningless to a peer that's about to seed itself; skip them.
-      if (ArcadeDBServer.isReservedDatabaseName(dbName))
-        continue;
-
-      try {
-        final ServerDatabase serverDb = server.getDatabase(dbName);
-        // Unwrap to LocalDatabase: getEmbedded() returns the underlying engine even when the
-        // server has wrapped it for HA (RaftReplicatedDatabase) - same pattern as #4144.
-        final DatabaseInternal embedded = serverDb.getWrappedDatabaseInstance().getEmbedded();
-        if (!(embedded instanceof LocalDatabase localDb))
-          continue;
-
-        final File dbDir = new File(localDb.getDatabasePath());
-        final String fingerprint = BootstrapFingerprint.compute(dbDir);
-        final long lastTxId = localDb.getLastTransactionId();
-
-        final JSONObject dbJson = new JSONObject();
-        dbJson.put("name", dbName);
-        dbJson.put("fingerprint", fingerprint);
-        dbJson.put("lastTxId", lastTxId);
-        dbs.put(dbJson);
-      } catch (final Exception e) {
-        // A single broken database must not poison the whole RPC: report it with -1 so the
-        // bootstrap leader treats this peer as "no usable state for this db" and falls through to
-        // the full-snapshot path.
-        LogManager.instance().log(this, Level.WARNING,
-            "Could not compute bootstrap state for '%s': %s", dbName, e.getMessage());
-        final JSONObject dbJson = new JSONObject();
-        dbJson.put("name", dbName);
-        dbJson.put("fingerprint", "");
-        dbJson.put("lastTxId", -1L);
-        dbJson.put("error", e.getMessage());
-        dbs.put(dbJson);
-      }
-    }
+    final JSONArray dbs = localDatabaseStates(server);
 
     final JSONObject response = new JSONObject();
     response.put("databases", dbs);
@@ -214,6 +171,48 @@ public class PostBootstrapStateHandler extends AbstractServerHttpHandler {
     putSnapshotMarker(response, raftHAServer.getStateMachine());
 
     return new ExecutionResponse(200, response.toString());
+  }
+
+  /**
+   * This node's {@code (fingerprint, lastTxId)} for every operator-visible database, as the {@code databases} array of
+   * the answer. A database whose state cannot be read is reported with an empty fingerprint and {@code lastTxId -1}.
+   */
+  static JSONArray localDatabaseStates(final ArcadeDBServer server) {
+    final JSONArray dbs = new JSONArray();
+
+    for (final String dbName : server.getDatabaseNames()) {
+      // Reserved internal databases (e.g. ".raft") are not part of the operator-visible state and
+      // their fingerprint would be meaningless to a peer that's about to seed itself; skip them.
+      if (ArcadeDBServer.isReservedDatabaseName(dbName))
+        continue;
+
+      try {
+        // Unwraps to the LocalDatabase under the HA wrapper (same pattern as #4144) and fingerprints the SETTLED copy
+        // (issue #8843): the same reading the state machine and the election take of their own state.
+        final ArcadeStateMachine.BootstrapBaseline local = ArcadeStateMachine.localBootstrapState(server.getDatabase(dbName));
+        if (local == null)
+          continue;
+
+        final JSONObject dbJson = new JSONObject();
+        dbJson.put("name", dbName);
+        dbJson.put("fingerprint", local.fingerprint());
+        dbJson.put("lastTxId", local.lastTxId());
+        dbs.put(dbJson);
+      } catch (final Exception e) {
+        // A single broken database must not poison the whole RPC: report it with -1 so the
+        // bootstrap leader treats this peer as "no usable state for this db" and falls through to
+        // the full-snapshot path.
+        LogManager.instance().log(PostBootstrapStateHandler.class, Level.WARNING,
+            "Could not compute bootstrap state for '%s': %s", dbName, e.getMessage());
+        final JSONObject dbJson = new JSONObject();
+        dbJson.put("name", dbName);
+        dbJson.put("fingerprint", "");
+        dbJson.put("lastTxId", -1L);
+        dbJson.put("error", e.getMessage());
+        dbs.put(dbJson);
+      }
+    }
+    return dbs;
   }
 
   private static void putSnapshotMarker(final JSONObject response, final ArcadeStateMachine stateMachine) {

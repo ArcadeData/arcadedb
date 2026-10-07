@@ -6178,13 +6178,27 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * @throws Exception when the database cannot be opened or its directory cannot be read; callers
    *                   decide what an unreadable local copy means for them.
    */
-  private BootstrapBaseline readLocalBootstrapState(final String dbName) throws Exception {
-    final ServerDatabase serverDb = server.getDatabase(dbName);
+  BootstrapBaseline readLocalBootstrapState(final String dbName) throws Exception {
+    return localBootstrapState(server.getDatabase(dbName));
+  }
+
+  /**
+   * The {@code (fingerprint, lastTxId)} pair of one open database, or {@code null} when it is not backed by a
+   * {@link LocalDatabase}. The ONE place every bootstrap participant reads its own state from - the state machine's
+   * verification and re-verification, the election's local sample, and the {@code bootstrap-state} answer to a peer -
+   * so the pair means the same thing wherever two of them are compared.
+   * <p>
+   * The fingerprint is taken with {@link BootstrapFingerprint#computeSettled}, never over the raw files (issue #8843):
+   * the database is open, its last commits may still be queued in the asynchronous page flush, and two samples of one
+   * unchanged copy either side of that flush would otherwise read a matching peer as a mismatched one. The wait is
+   * bounded by the backlog found at the call and by {@link BootstrapFingerprint#SETTLE_MAX_WAIT_MILLIS}, so the Raft
+   * apply thread and a leader under sustained writes are never held for the duration of the writes.
+   */
+  static BootstrapBaseline localBootstrapState(final ServerDatabase serverDb) {
     final DatabaseInternal embedded = serverDb.getWrappedDatabaseInstance().getEmbedded();
     if (!(embedded instanceof LocalDatabase localDb))
       return null;
-    return new BootstrapBaseline(BootstrapFingerprint.compute(new File(localDb.getDatabasePath())),
-        localDb.getLastTransactionId());
+    return new BootstrapBaseline(BootstrapFingerprint.computeSettled(localDb), localDb.getLastTransactionId());
   }
 
   /**

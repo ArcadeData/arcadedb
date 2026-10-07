@@ -1004,6 +1004,39 @@ public class PageManagerFlushThread extends Thread {
   }
 
   /**
+   * Waits for the pages of a database that are in the flush pipeline NOW to reach the disk, bounded by a hard
+   * wall-clock deadline (issue #8843). Unlike {@link #waitAllPagesOfDatabaseAreFlushed}, the wait is not extended by
+   * commits that land after the call: it ends as soon as the pipeline is empty OR as many pages of this database have
+   * been written since the call as were pending at its start - the pipeline is FIFO, so that is the backlog the
+   * caller found. A database under sustained writes therefore costs the caller the time its backlog takes to drain,
+   * never the duration of the writes, and the deadline caps even that (a wedged disk, a suspended flush).
+   * <p>
+   * On a database with no further commits - the case the bootstrap fingerprint cares about - the first condition is
+   * the one that ends the wait, so it is exact: every committed page is on disk when this returns {@code true}.
+   *
+   * @return {@code true} when the backlog found at the call reached the disk, {@code false} when the deadline expired
+   *     first.
+   */
+  boolean waitPagesPendingNowOfDatabaseAreFlushedUntil(final Database database, final long deadlineMillis)
+      throws InterruptedException {
+    final int pendingAtStart = pageIndex.pendingOf(database);
+    if (pendingAtStart <= 0)
+      return true;
+
+    final AtomicLong flushedCounter = flushedPagesPerDatabase.computeIfAbsent(database, k -> new AtomicLong());
+    final long target = flushedCounter.get() + pendingAtStart;
+    while (pageIndex.pendingOf(database) > 0 && flushedCounter.get() < target) {
+      final long remaining = deadlineMillis - System.currentTimeMillis();
+      if (remaining <= 0)
+        return false;
+      // THE DRAIN SIGNAL ONLY FIRES WHEN THE PIPELINE EMPTIES, WHICH UNDER SUSTAINED WRITES MAY NEVER HAPPEN: THE POLL
+      // INTERVAL IS WHAT RE-CHECKS THE FLUSHED-PAGES WATERMARK IN THAT CASE
+      pageIndex.awaitDrain(database, Math.min(remaining, flushWaitPollMillis));
+    }
+    return true;
+  }
+
+  /**
    * Bounded {@link #setSuspended(Database, boolean)} acquisition for the snapshot t0 barrier (#6125).
    * <p>
    * The unbounded version parks on {@code suspendLock} for as long as another suspender's resume is in flight, and
