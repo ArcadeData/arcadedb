@@ -316,9 +316,10 @@ public final class SnapshotManager {
    * in a closed database's directory, which this endpoint does not checksum, and the leader deletes it when it
    * reopens the copy; skipped anyway, so no node's own bookkeeping can ever read as a data difference.</li>
    * </ul>
-   * The last three exist only on a FOLLOWER, and only while it is catching up, which is the worst possible
-   * combination for a divergence detector: the node being interrogated is the one carrying a key the leader cannot
-   * have, and the endpoint reports that as a difference in the data.
+   * The last three are written on a node that is receiving a snapshot or a sealed store, which is the worst possible
+   * combination for a divergence detector: the node being interrogated is the one carrying a key its peers cannot
+   * have, and the endpoint reports that as a difference in the data. Some outlive the transfer: the swap-state and
+   * verdict records can stay beside a database that is serving again, whatever role the node holds by then.
    * <p>
    * The final entry is #7955, and it is the odd one out: an index-compaction temporary is a fully REGISTERED
    * component file rather than unregistered scratch, so unlike everything above it also reaches the page snapshot

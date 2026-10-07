@@ -129,7 +129,9 @@ public final class SnapshotInstaller {
    * ({@code SnapshotManager.computeFileChecksums}) leaves them out: issue #9307 was the verdict record above, added
    * without being added there. Exact names on purpose, not the {@code .snapshot} prefix: a bucket may legally be named
    * {@code .snapshot...}, and its component files must stay in the answer. {@code SnapshotManagerTest} fails when a
-   * new {@code SNAPSHOT_*_FILE} constant is not listed here.
+   * new {@code SNAPSHOT_*_FILE} constant is not listed here, so a new regular file the install writes into a database
+   * directory must be declared under that naming convention ({@code SNAPSHOT_*_DIR} for a directory): a marker named
+   * otherwise escapes the guard.
    */
   private static final Set<String> SNAPSHOT_MACHINERY_FILES = Set.of(SNAPSHOT_PENDING_FILE, SNAPSHOT_COMPLETE_FILE,
       SNAPSHOT_QUARANTINE_FILE, SNAPSHOT_SWAP_STATE_FILE, SNAPSHOT_SWAP_STATE_TMP_FILE, SNAPSHOT_VALIDATION_FAILED_FILE);
