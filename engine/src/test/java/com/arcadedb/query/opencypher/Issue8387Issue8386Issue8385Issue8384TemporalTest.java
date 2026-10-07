@@ -73,9 +73,9 @@ class Issue8387Issue8386Issue8385Issue8384TemporalTest extends TestHelper {
 
       // Trailing zeros are stripped, which the ASCII-only strip silently stopped doing on localized digits.
       final CypherDuration trailingZeros = new CypherDuration(0, 0, 1, 123_000_000);
-      final Object stored = TemporalUtil.toCoreJavaType(trailingZeros);
+      final String stored = TemporalUtil.toStorageText(trailingZeros);
       assertThat(stored).isEqualTo("PT1.123S");
-      assertThat(TemporalUtil.convertFromStorage(stored)).isEqualTo(trailingZeros);
+      assertThat(CypherDuration.parse(stored)).isEqualTo(trailingZeros);
 
       assertThat(new CypherDuration(0, 0, 0, 1).toString()).isEqualTo("PT0.000000001S");
       assertThat(new CypherDuration(0, 0, -1, 500_000_000).toString()).isEqualTo("PT-0.5S");

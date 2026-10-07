@@ -23,6 +23,7 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.Property;
 import com.arcadedb.serializer.json.JSONObject;
@@ -34,7 +35,9 @@ import java.math.BigInteger;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.time.OffsetDateTime;
+import java.time.OffsetTime;
 import java.time.ZonedDateTime;
 import java.util.Calendar;
 import java.util.Date;
@@ -74,6 +77,10 @@ public class BinaryTypes {
   public final static byte TYPE_COMPRESSED_GEOMETRY = 28; // @SINCE 26.2.1 - Binary geometry storage (Point, Circle, Rectangle, etc.)
   public final static byte TYPE_EXTERNAL                 = 29; // @SINCE 26.5.1 - Property value stored uncompressed in a paired external bucket. Followed by [bucketIdVarint][positionVarint].
   public final static byte TYPE_EXTERNAL_COMPRESSED_FAST = 30; // @SINCE 26.5.1 - Same as TYPE_EXTERNAL but the value bytes in the external blob are LZ4-fast-compressed; the type byte is the dispatcher (no per-blob algo marker needed).
+  public final static byte TYPE_OFFSET_TIME              = 32; // @SINCE 26.11.1 - OffsetTime: nanoOfDay, offsetSeconds (Cypher time())
+  public final static byte TYPE_LOCAL_TIME               = 33; // @SINCE 26.11.1 - LocalTime: nanoOfDay (Cypher localtime())
+  public final static byte TYPE_ZONED_DATETIME           = 34; // @SINCE 26.11.1 - ZonedDateTime: epochSecond, nano, zone (Cypher datetime())
+  public final static byte TYPE_DURATION                 = 35; // @SINCE 26.11.1 - months, days, seconds, nanos (Cypher duration())
   public final static byte TYPE_EXTERNAL_COMPRESSED_MAX  = 31; // @SINCE 26.5.1 - Same as TYPE_EXTERNAL_COMPRESSED_FAST but compressed with LZ4 HC (high compression, ~10pp smaller output, 8-20x slower compress; decompression is identical to FAST since LZ4 HC uses the same format).
 
   // Geometry subtypes for TYPE_COMPRESSED_GEOMETRY
@@ -155,12 +162,19 @@ public class BinaryTypes {
         type = propertyType.getType().getBinaryType();
       else
         type = DateUtils.getBestBinaryTypeForPrecision(DateUtils.getPrecision(time.getNano()));
-    } else if (value instanceof ZonedDateTime time) {
+    } else if (value instanceof ZonedDateTime) {
+      // THE ZONE IS PART OF THE VALUE (Cypher datetime()): KEEP IT UNLESS THE SCHEMA ASKED FOR AN INSTANT
       if (propertyType != null)
         type = propertyType.getType().getBinaryType();
       else
-        type = DateUtils.getBestBinaryTypeForPrecision(DateUtils.getPrecision(time.getNano()));
-    } else if (value instanceof OffsetDateTime time) {
+        type = TYPE_ZONED_DATETIME;
+    } else if (value instanceof OffsetTime)
+      type = propertyType != null ? propertyType.getType().getBinaryType() : TYPE_OFFSET_TIME;
+    else if (value instanceof LocalTime)
+      type = propertyType != null ? propertyType.getType().getBinaryType() : TYPE_LOCAL_TIME;
+    else if (value instanceof CypherDuration)
+      type = propertyType != null ? propertyType.getType().getBinaryType() : TYPE_DURATION;
+    else if (value instanceof OffsetDateTime time) {
       if (propertyType != null)
         type = propertyType.getType().getBinaryType();
       else
@@ -316,6 +330,10 @@ public class BinaryTypes {
            BinaryTypes.TYPE_DATETIME_NANOS,
            BinaryTypes.TYPE_DATETIME_SECOND -> GlobalConfiguration.DATE_TIME_IMPLEMENTATION.getValue();
       case BinaryTypes.TYPE_DATE -> GlobalConfiguration.DATE_IMPLEMENTATION.getValue();
+      case BinaryTypes.TYPE_OFFSET_TIME -> OffsetTime.class;
+      case BinaryTypes.TYPE_LOCAL_TIME -> LocalTime.class;
+      case BinaryTypes.TYPE_ZONED_DATETIME -> ZonedDateTime.class;
+      case BinaryTypes.TYPE_DURATION -> CypherDuration.class;
       case BinaryTypes.TYPE_RID, BinaryTypes.TYPE_UUID -> RID.class;
       case BinaryTypes.TYPE_EMBEDDED -> Document.class;
       case BinaryTypes.TYPE_ARRAY_OF_SHORTS -> short[].class;

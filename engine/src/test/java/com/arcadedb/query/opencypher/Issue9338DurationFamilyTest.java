@@ -229,7 +229,8 @@ class Issue9338DurationFamilyTest {
     });
     for (final String text : new String[] { "Paris", "Peter", "P", "Paris1", "P-" })
       assertThat(scalar("MATCH (n:W) WHERE n.w = '" + text + "' RETURN count(n) AS r")).as(text + " stays a string").isEqualTo(1L);
-    assertThat(scalar("MATCH (n:W) WHERE n.w = duration('P1D') RETURN count(n) AS r")).as("a valid short duration is restored")
+    // 'P1D' was written as a String, so it stays one: a duration is stored as a duration (issue #8572)
+    assertThat(scalar("MATCH (n:W) WHERE n.w = 'P1D' RETURN count(n) AS r")).as("a valid short duration text stays a string")
         .isEqualTo(1L);
   }
 

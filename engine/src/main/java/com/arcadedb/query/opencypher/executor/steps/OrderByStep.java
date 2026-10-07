@@ -38,6 +38,9 @@ import com.arcadedb.serializer.BinaryComparator;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.OffsetTime;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -271,7 +274,7 @@ public class OrderByStep extends AbstractExecutionStep {
         // temporal there - so a String in it IS a string: sniffing it again turned a declared STRING "P10D" (or a
         // string literal) into a duration and sorted it as one (issue #8384)
         if (expression != null && result.getPropertyNames().contains(expression))
-          return convertFromStorage(result.getProperty(expression), false);
+          return convertFromStorage(result.getProperty(expression));
 
         // If we have a parsed Expression AST, use ExpressionEvaluator for full expression support
         final Expression exprAST = item.getExpressionAST();
@@ -287,13 +290,11 @@ public class OrderByStep extends AbstractExecutionStep {
             final Document document = (Document) obj;
             final Object value = document.get(parts[1]);
             // A schema-declared STRING property is never sniffed as a temporal (issue #8384)
-            if (value instanceof String str && TemporalUtil.mayBeTemporalString(str) && TemporalUtil.isDeclaredString(document, parts[1]))
-              return value;
-            return convertFromStorage(value, true);
+            return convertFromStorage(value);
           }
         }
 
-        return convertFromStorage(result.getProperty(expression), true);
+        return convertFromStorage(result.getProperty(expression));
       }
 
       /**
@@ -301,7 +302,7 @@ public class OrderByStep extends AbstractExecutionStep {
        * Duration, LocalTime, and Time are stored as Strings because ArcadeDB
        * doesn't have native binary types for them.
        */
-      private static Object convertFromStorage(final Object value, final boolean sniffStrings) {
+      private static Object convertFromStorage(final Object value) {
         // Fast path: common non-temporal types don't need conversion
         if (value == null || value instanceof Number || value instanceof Boolean)
           return value;
@@ -311,26 +312,26 @@ public class OrderByStep extends AbstractExecutionStep {
           return new CypherDate(ld);
         if (value instanceof LocalDateTime ldt)
           return new CypherLocalDateTime(ldt);
+        // The native types of the other Cypher temporals (issue #8572)
+        if (value instanceof OffsetTime || value instanceof LocalTime || value instanceof ZonedDateTime || value instanceof CypherDuration)
+          return TemporalUtil.convertFromStorage(value);
 
         // Handle collections (lists/arrays of temporal values)
         if (value instanceof Collection<?> collection) {
           final List<Object> converted = new ArrayList<>(collection.size());
           for (final Object item : collection) {
-            converted.add(convertFromStorage(item, sniffStrings));
+            converted.add(convertFromStorage(item));
           }
           return converted;
         }
         if (value instanceof Object[] array) {
           final Object[] converted = new Object[array.length];
           for (int i = 0; i < array.length; i++) {
-            converted[i] = convertFromStorage(array[i], sniffStrings);
+            converted[i] = convertFromStorage(array[i]);
           }
           return converted;
         }
 
-        // One sniff for every Cypher read path: this copy had drifted from TemporalUtil's (it missed the short HH:MM form)
-        if (sniffStrings && value instanceof String)
-          return TemporalUtil.convertFromStorage(value);
         return value;
       }
 
