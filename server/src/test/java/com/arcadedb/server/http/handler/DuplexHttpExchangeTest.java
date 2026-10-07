@@ -19,6 +19,7 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.server.http.FakeLeader;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -29,6 +30,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
+import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -145,6 +147,69 @@ class DuplexHttpExchangeTest {
         assertThatThrownBy(() -> send(leader, PAYLOAD.length).close()).as(head).isInstanceOf(IOException.class)
             .hasMessageContaining("Content-Length");
       }
+  }
+
+  /** A head dripped a byte at a time keeps the socket busy but is not an answer: the deadline still applies. */
+  @Test
+  @Timeout(value = 60, unit = TimeUnit.SECONDS)
+  void aHeadDrippedAByteAtATimeIsGivenUpOn() throws Exception {
+    try (final FakeLeader leader = FakeLeader.scripted(out -> {
+      write(out, "HTTP/1.1 200 OK\r\nX-Drip: ");
+      for (int i = 0; i < 150; i++) {
+        write(out, "a");
+        try {
+          Thread.sleep(200);
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+          return;
+        }
+      }
+    })) {
+      final HttpRequest request = PostBatchHandler.buildForwardRequest("http://" + leader.address() + "/api/v1/batch/mydb",
+          "application/x-ndjson", "test-token", "root", PAYLOAD.length, new ByteArrayInputStream(PAYLOAD),
+          NdJsonResultStream.CONTENT_TYPE, null, null);
+
+      final StallAwareStopwatch watch = StallAwareStopwatch.start();
+      assertThatThrownBy(() -> DuplexHttpExchange.send(client, request, new ByteArrayInputStream(PAYLOAD), 1_000L,
+          () -> 0L).close()).isInstanceOf(HttpTimeoutException.class);
+      watch.assertGaveUpWithin(15_000L, "a 1s bound on a dripped head from a wait the drip renews forever (30s)");
+    }
+  }
+
+  @Test
+  @Timeout(value = 60, unit = TimeUnit.SECONDS)
+  void aSignedChunkSizeIsRefused() throws Exception {
+    try (final FakeLeader leader = FakeLeader.scripted(out -> write(out,
+        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n+5\r\nhello\r\n0\r\n\r\n"))) {
+      try (final DuplexHttpExchange response = send(leader, PAYLOAD.length)) {
+        assertThatThrownBy(() -> readAll(response.body())).isInstanceOf(IOException.class)
+            .hasMessageContaining("Malformed chunk size");
+      }
+    }
+  }
+
+  @Test
+  @Timeout(value = 60, unit = TimeUnit.SECONDS)
+  void aHeadLargerThanTheCapIsRefused() throws Exception {
+    final StringBuilder head = new StringBuilder("HTTP/1.1 200 OK\r\n");
+    for (int i = 0; i < 100; i++)
+      head.append("X-Big-").append(i).append(": ").append("v".repeat(1_000)).append("\r\n");
+    head.append("\r\n");
+    try (final FakeLeader leader = FakeLeader.scripted(out -> write(out, head.toString()))) {
+      assertThatThrownBy(() -> send(leader, PAYLOAD.length).close()).isInstanceOf(IOException.class)
+          .hasMessageContaining("response head");
+    }
+  }
+
+  @Test
+  @Timeout(value = 60, unit = TimeUnit.SECONDS)
+  void a204HasNoBody() throws Exception {
+    try (final FakeLeader leader = FakeLeader.scripted(out -> write(out, "HTTP/1.1 204 No Content\r\n\r\n"))) {
+      try (final DuplexHttpExchange response = send(leader, PAYLOAD.length)) {
+        assertThat(response.statusCode()).isEqualTo(204);
+        assertThat(readAll(response.body())).isEmpty();
+      }
+    }
   }
 
   @Test

@@ -106,9 +106,10 @@ final class DuplexHttpExchange implements HttpResponse<InputStream>, AutoCloseab
   /** The longest the wait for the response headers goes between two samples of the upload's progress counter. */
   private static final long   MAX_PROGRESS_SAMPLE_MS = 1_000L;
   private static final int    UPLOAD_BUFFER          = 8_192;
-  /** Bounds a single status or header line, and the number of headers, so a broken peer cannot grow them forever. */
-  private static final int    MAX_HEAD_LINE          = 64 * 1_024;
+  /** Bounds a single head or chunk-size line, the number of headers and the whole head, against a broken peer. */
+  private static final int    MAX_HEAD_LINE          = 16 * 1_024;
   private static final int    MAX_HEADERS            = 256;
+  private static final int    MAX_HEAD_BYTES         = 64 * 1_024;
   private static final byte[] CRLF                   = { '\r', '\n' };
   private static final byte[] LAST_CHUNK             = "0\r\n\r\n".getBytes(StandardCharsets.US_ASCII);
   /** The JDK client's own switch for hostname verification, honoured so both transports verify alike. */
@@ -130,6 +131,7 @@ final class DuplexHttpExchange implements HttpResponse<InputStream>, AutoCloseab
   /** One byte, for the single-byte reads of the response body; only the thread reading the response uses it. */
   private final    byte[]        oneByte      = new byte[1];
   /** The response head is written by send() before it returns, and read only by the thread it returned to. */
+  private          int           headBytes;
   private          int           statusCode;
   private          HttpHeaders   headers;
   private          InputStream   body;
@@ -174,6 +176,8 @@ final class DuplexHttpExchange implements HttpResponse<InputStream>, AutoCloseab
     try {
       final long connectMs = client.connectTimeout().map(Duration::toMillis).orElse(0L);
       try {
+        // The name is resolved here, before the connect timeout applies, as the JDK client resolves it too: cluster
+        // peers are addressed by the names the cluster is configured with.
         raw.connect(new InetSocketAddress(host, port), (int) Math.min(connectMs, Integer.MAX_VALUE));
       } catch (final SocketTimeoutException e) {
         final HttpConnectTimeoutException timeout = new HttpConnectTimeoutException(
@@ -260,8 +264,10 @@ final class DuplexHttpExchange implements HttpResponse<InputStream>, AutoCloseab
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
     }
+    // A WARNING: the thread is not lost - it ends with its current read of the client - but it outlives the forward
+    // that bounded it, and an operator seeing this repeatedly has clients that stall mid-upload.
     if (uploader.isAlive())
-      LogManager.instance().log(this, Level.FINE,
+      LogManager.instance().log(this, Level.WARNING,
           "The upload relaying a batch to %s was still reading the client's body %,d ms after the forward ended",
           request.uri(), joinUploadMs);
   }
@@ -432,19 +438,16 @@ final class DuplexHttpExchange implements HttpResponse<InputStream>, AutoCloseab
           abort();
           throw new InterruptedException("Interrupted while waiting for " + request.uri() + " to answer");
         }
-        final long now = progress.getAsLong();
-        if (now != still[0]) {
-          still[0] = now;
-          still[1] = System.nanoTime();
-        } else if (System.nanoTime() - still[1] >= deadlineNanos) {
-          abort();
-          throw new HttpTimeoutException("No response from " + request.uri() + " within "
-              + TimeUnit.NANOSECONDS.toMillis(deadlineNanos) + " ms of the last byte of the upload sent");
-        }
+        failIfStill(deadlineNanos, progress, still);
         continue;
       }
+      // Also after a byte that arrived: only the upload counts as progress, so a peer dripping its head a byte at a
+      // time is given up on like one that sends nothing (it would otherwise reset the socket timeout forever).
+      failIfStill(deadlineNanos, progress, still);
       if (b < 0)
         throw new IOException("The connection to " + request.uri() + " closed before a complete response head");
+      if (++headBytes > MAX_HEAD_BYTES)
+        throw new IOException("The response head from " + request.uri() + " is longer than " + MAX_HEAD_BYTES + " bytes");
       if (b == '\n') {
         final byte[] bytes = line.toByteArray();
         final int length = bytes.length > 0 && bytes[bytes.length - 1] == '\r' ? bytes.length - 1 : bytes.length;
@@ -453,6 +456,20 @@ final class DuplexHttpExchange implements HttpResponse<InputStream>, AutoCloseab
       if (line.size() >= MAX_HEAD_LINE)
         throw new IOException("A response head line from " + request.uri() + " is longer than " + MAX_HEAD_LINE + " bytes");
       line.write(b);
+    }
+  }
+
+  /** Gives up once the upload has not moved for the whole deadline; a move restarts the window. */
+  private void failIfStill(final long deadlineNanos, final LongSupplier progress, final long[] still)
+      throws HttpTimeoutException {
+    final long now = progress.getAsLong();
+    if (now != still[0]) {
+      still[0] = now;
+      still[1] = System.nanoTime();
+    } else if (System.nanoTime() - still[1] >= deadlineNanos) {
+      abort();
+      throw new HttpTimeoutException("No complete response from " + request.uri() + " within "
+          + TimeUnit.NANOSECONDS.toMillis(deadlineNanos) + " ms of the last byte of the upload sent");
     }
   }
 
@@ -545,7 +562,16 @@ final class DuplexHttpExchange implements HttpResponse<InputStream>, AutoCloseab
 
     @Override
     public int available() throws IOException {
-      return closed.get() ? 0 : framed.available();
+      if (closed.get())
+        return 0;
+      try {
+        return framed.available();
+      } catch (final IOException e) {
+        // Closed by the silence timer between the check and the probe: nothing is available, which is not a failure.
+        if (closed.get())
+          return 0;
+        throw e;
+      }
     }
 
     /** Never blocks: the relay's silence timer closes the body from the server's I/O thread. */
@@ -631,14 +657,13 @@ final class DuplexHttpExchange implements HttpResponse<InputStream>, AutoCloseab
       final String line = readBodyLine();
       final int extension = line.indexOf(';');
       final String size = (extension >= 0 ? line.substring(0, extension) : line).trim();
-      try {
-        final long parsed = Long.parseLong(size, 16);
-        if (parsed < 0)
-          throw new NumberFormatException(size);
-        return parsed;
-      } catch (final NumberFormatException e) {
+      // Hex digits only, which Long.parseLong alone does not enforce (it takes a sign), and few enough to fit a long.
+      boolean valid = !size.isEmpty() && size.length() <= 15;
+      for (int i = 0; valid && i < size.length(); i++)
+        valid = Character.digit(size.charAt(i), 16) >= 0;
+      if (!valid)
         throw new IOException("Malformed chunk size in the response from " + request.uri() + ": " + line);
-      }
+      return Long.parseLong(size, 16);
     }
 
     private String readBodyLine() throws IOException {
