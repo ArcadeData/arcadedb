@@ -259,12 +259,13 @@ final class PageShadow implements AutoCloseable {
    *
    * @return {@code false} when the shadow was closed in the meantime: the channel is not reopened and nothing was done.
    */
-  private boolean reopenAndRetry(FileChannel closedChannel, final SpillOperation operation) throws IOException {
+  private boolean reopenAndRetry(final FileChannel closedChannel, final SpillOperation operation) throws IOException {
+    FileChannel lastClosed = closedChannel;
     boolean wasInterrupted = false;
     try {
       for (int attempt = 1; ; attempt++) {
         wasInterrupted |= Thread.interrupted();
-        final FileChannel channel = reopenSpillChannel(closedChannel);
+        final FileChannel channel = reopenSpillChannel(lastClosed);
         if (channel == null)
           return false;
         try {
@@ -273,7 +274,7 @@ final class PageShadow implements AutoCloseable {
         } catch (final ClosedChannelException e) {
           if (attempt >= REOPEN_ATTEMPTS)
             throw e;
-          closedChannel = channel;
+          lastClosed = channel;
         }
       }
     } finally {
@@ -296,10 +297,11 @@ final class PageShadow implements AutoCloseable {
       return null;
     if (spillChannel != closedChannel && spillChannel != null && spillChannel.isOpen())
       return spillChannel;
+    final int reopen = ++reopens;
     LogManager.instance()
-        .log(this, reopens++ == 0 ? Level.WARNING : Level.FINE,
+        .log(this, reopen == 1 ? Level.WARNING : Level.FINE,
             "Snapshot shadow file '%s' was closed (thread interrupted?). Reopen it and retry... (reopen #%d)", null,
-            spillFile.getName(), reopens);
+            spillFile.getName(), reopen);
     if (spillChannel != null)
       try {
         spillChannel.close();

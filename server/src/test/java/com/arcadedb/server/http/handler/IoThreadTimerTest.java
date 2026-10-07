@@ -73,11 +73,12 @@ class IoThreadTimerTest {
   /**
    * Schedules each timer the instant the I/O thread finishes a task: that is when it computes its next wait and then
    * parks in the selector, the window a direct {@code executeAfter} from this thread falls into. With the direct call
-   * this loses timers within the first few hundred rounds on a laptop; through {@link IoThreadTimer} none is lost.
+   * this lost a timer at round 9 on a laptop; through {@link IoThreadTimer} none is lost. 500 rounds keep a wide margin
+   * over that while bounding the run: each round waits for a 1 ms timer, which the OS can stretch past 10 ms under load.
    */
   @Test
   void aTimerScheduledFromAnotherThreadIsNeverLostToTheSelectorWakeupRace() throws InterruptedException {
-    for (int round = 0; round < 2_000; round++) {
+    for (int round = 0; round < 500; round++) {
       final AtomicBoolean taskDone = new AtomicBoolean();
       ioThread.execute(() -> taskDone.set(true));
       while (!taskDone.get())
