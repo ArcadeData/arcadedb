@@ -192,6 +192,18 @@ public final class OperationHeapLimit {
   }
 
   /**
+   * Forwards to the tracker what the operation has charged but not yet reported, so the budget answers now for every byte
+   * held, and may refuse it. Charges accumulate up to {@link #FORWARD_BYTES} before they reach the tracker, and a buffer
+   * taken over from another operation ({@link #transferFrom}) brings its unreported bytes along.
+   */
+  public void settle() {
+    if (tracker == null || parent != null || pending <= 0L)
+      return;
+    tracker.charge(pending, operation);
+    pending = 0L;
+  }
+
+  /**
    * Adjusts the charge, in one step, to what {@code elements} - everything the operation holds now - are estimated to
    * take: a buffer that dropped some of its elements (a top-N sort keeping its best rows) gives back what the dropped
    * ones took, whatever their size. Every element is estimated, not sampled: the ones kept are the exception, not the

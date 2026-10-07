@@ -557,8 +557,12 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
           throw e;
         flushToShared(context);
         synchronized (this) {
-          if (!heapReleased)
+          if (!heapReleased) {
             heapLimit.chargeElement(keyValues, groupOverhead);
+            // ASKED NOW: A CHARGE BELOW THE FORWARDING THRESHOLD WOULD PASS WITHOUT THE BUDGET EVER ANSWERING, AND THE
+            // REFUSAL THIS RETRY EXISTS TO CONFIRM WOULD NEVER COME
+            heapLimit.settle();
+          }
         }
       }
     }
@@ -653,6 +657,8 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
       if (transferred)
         synchronized (target.heapLimit) {
           target.heapLimit.release(duplicateBytes[0]);
+          // WHAT THE WORKER HAD NOT REPORTED YET CAME ALONG WITH ITS CHARGE: THE BUDGET ANSWERS FOR IT NOW
+          target.heapLimit.settle();
         }
       // THE SAME CONVENTION AS THE FINAL CHECK: checkGroupCount(n) ASKS FOR n + 1, SO PASSING THE COUNT MINUS ONE CHECKS THE
       // COUNT. A FAILURE HERE LEAVES THE STEP TO RELEASE EVERY CHARGE: THE TARGET IS IN workerPartials, AND THE WORKER'S
