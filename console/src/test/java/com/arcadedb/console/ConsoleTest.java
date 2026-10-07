@@ -165,10 +165,6 @@ class ConsoleTest {
   }
 
   /**
-   * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/5457">...</a>: a script is loaded line by line, but a block comment can span
-   * multiple lines.
-   */
-  /**
    * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/9454">#9454</a>: with `set language = sqlscript`, `load` must
    * hand the whole file to the script engine, so a LET variable is still visible to the FOREACH that follows it.
    */
@@ -197,12 +193,16 @@ class ConsoleTest {
       assertThat(console.parse("set language = sql")).isTrue();
       buffer.setLength(0);
       assertThat(console.parse("select count(*) as c from Dst")).isTrue();
-      assertThat(buffer.toString()).contains("2").doesNotContain("ERROR");
+      assertThat(buffer.toString()).containsPattern("\\b2\\b").doesNotContain("ERROR");
     } finally {
       script.delete();
     }
   }
 
+  /**
+   * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/5457">...</a>: a script is loaded line by line, but a block comment can span
+   * multiple lines.
+   */
   @Test
   void loadScriptWithComments() throws Exception {
     assertThat(console.parse("connect " + DB_NAME)).isTrue();
