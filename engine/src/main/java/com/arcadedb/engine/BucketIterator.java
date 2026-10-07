@@ -32,6 +32,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.QueryHeapBudget;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.utility.ScanPressureReporter;
 
 import java.io.IOException;
 import java.util.Iterator;
@@ -39,8 +40,11 @@ import java.util.logging.Level;
 
 import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
 
-public class BucketIterator implements Iterator<Record> {
+public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
   private final static int              PREFETCH_SIZE = 1_024;
+  // #9404: AN ITERATOR MAY READ AHEAD AT MOST THIS FRACTION OF WHAT IS LEFT OF THE QUERY HEAP BUDGET, SO A BUDGET CLOSE TO FULL
+  // SHRINKS THE BATCH DOWN TO ONE RECORD INSTEAD OF HOLDING MEMORY NO QUERY ACCOUNTS FOR
+  private final static int              BUDGET_SHARE  = 64;
   private final        DatabaseInternal database;
   // THE INSTANCE A RECORD LOOKED UP BY RID BELONGS TO (e.g. THE SERVER/HA WRAPPER), SO A SCANNED RECORD MODIFIES AND
   // SAVES THROUGH THE SAME ONE
@@ -65,10 +69,9 @@ public class BucketIterator implements Iterator<Record> {
   // #9404: THE BYTES THE CURRENT BATCH COPIED OUT OF THE PAGES (A MULTI-PAGE OR PLACEHOLDER RECORD IS ASSEMBLED INTO A BUFFER OF
   // ITS OWN; A RECORD ON ITS OWN PAGE IS A VIEW OF THE CACHED PAGE AND COSTS NOTHING MORE), AND WHAT A BATCH MAY HOLD
   private long batchBytes     = 0;
+  // #9404: THE BATCHES READ WITH THE READ-AHEAD REDUCED BY THE QUERY HEAP BUDGET, WHICH A PROFILED QUERY REPORTS
+  private long shrunkBatches  = 0;
   private final long maxBatchBytes;
-  // #9404: AN ITERATOR MAY READ AHEAD AT MOST THIS FRACTION OF WHAT IS LEFT OF THE QUERY HEAP BUDGET, SO A BUDGET CLOSE TO FULL
-  // SHRINKS THE BATCH DOWN TO ONE RECORD INSTEAD OF HOLDING MEMORY NO QUERY ACCOUNTS FOR
-  private static final int BUDGET_SHARE = 64;
   private long skippedRecords = 0;
   // POSITIONS MODE (#8333): THE SORTED POSITIONS [positionIndex, positionsEnd) TO READ, INSTEAD OF EVERY SLOT OF THE PAGES
   private final long[] positions;
@@ -329,6 +332,8 @@ public class BucketIterator implements Iterator<Record> {
       final Record record = newRecord(rid, content, pageVersion);
       if (record != null) {
         nextBatch[writeIndex++] = record;
+        // ONLY A RECORD ASSEMBLED INTO A BUFFER OF ITS OWN (A MULTI-PAGE CHAIN OR A PLACEHOLDER'S CONTENT) ADDS HEAP: A RECORD ON ITS
+        // OWN PAGE IS A VIEW OF THE CACHED PAGE, AND ONE THE TRANSACTION ALREADY HOLDS IS ANSWERED FROM IT ABOVE, BOTH ALREADY IN MEMORY
         if (!inPage)
           batchBytes += content.size();
       }
@@ -383,7 +388,17 @@ public class BucketIterator implements Iterator<Record> {
   private long batchByteLimit() {
     if (maxBatchBytes <= 0)
       return Long.MAX_VALUE;
-    return Math.min(maxBatchBytes, QueryHeapBudget.getAvailableBytes() / BUDGET_SHARE);
+    final long budgetShare = QueryHeapBudget.getAvailableBytes() / BUDGET_SHARE;
+    if (budgetShare >= maxBatchBytes)
+      return maxBatchBytes;
+    ++shrunkBatches;
+    QueryHeapBudget.scanBatchShrunk();
+    return budgetShare;
+  }
+
+  @Override
+  public long getBudgetShrunkBatches() {
+    return shrunkBatches;
   }
 
   private void fetchNext() {

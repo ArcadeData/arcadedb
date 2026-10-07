@@ -391,6 +391,8 @@ public class Profiler {
     json.put("queryHeapReservedPeak", new JSONObject().put("space", QueryHeapBudget.getPeakReservedBytes()));
     json.put("queryHeapBudget", new JSONObject().put("space", QueryHeapBudget.getLimitBytes()));
     json.put("queryHeapRefusals", new JSONObject().put("count", QueryHeapBudget.getRefusals()));
+    // #9404: BATCHES A SCAN READ WITH ITS READ-AHEAD REDUCED BECAUSE THE BUDGET WAS NEARLY FULL: A REASON FOR A SLOW SCAN
+    json.put("queryHeapScanShrinks", new JSONObject().put("count", QueryHeapBudget.getScanBatchesShrunk()));
     json.put("commands", new JSONObject().put("count", commands));
     json.put("scanType", new JSONObject().put("count", scanType));
     json.put("scanBucket", new JSONObject().put("count", scanBucket));
@@ -714,9 +716,10 @@ public class Profiler {
           scanBucket, iterateType,
           iterateBucket, countType, countBucket));
 
-      buffer.append("%n QUERY-HEAP reserved=%s peak=%s budget=%s refusals=%d".formatted(
+      buffer.append("%n QUERY-HEAP reserved=%s peak=%s budget=%s refusals=%d scanShrinks=%d".formatted(
           FileUtils.getSizeAsString(QueryHeapBudget.getReservedBytes()), FileUtils.getSizeAsString(QueryHeapBudget.getPeakReservedBytes()),
-          FileUtils.getSizeAsString(QueryHeapBudget.getLimitBytes()), QueryHeapBudget.getRefusals()));
+          FileUtils.getSizeAsString(QueryHeapBudget.getLimitBytes()), QueryHeapBudget.getRefusals(),
+          QueryHeapBudget.getScanBatchesShrunk()));
 
       buffer.append("%n INDEXES compactions=%d".formatted(indexCompactions));
 

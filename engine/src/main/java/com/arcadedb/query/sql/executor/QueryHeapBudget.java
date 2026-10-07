@@ -42,6 +42,7 @@ public final class QueryHeapBudget {
   private static final AtomicLong RESERVED = new AtomicLong();
   private static final AtomicLong PEAK     = new AtomicLong();
   private static final LongAdder  REFUSALS = new LongAdder();
+  private static final LongAdder  SCAN_SHRINKS = new LongAdder();
 
   private QueryHeapBudget() {
   }
@@ -76,6 +77,16 @@ public final class QueryHeapBudget {
   /** The most bytes the queries held reserved at once since the JVM started. */
   public static long getPeakReservedBytes() {
     return PEAK.get();
+  }
+
+  /** How many batches a scan read with its read-ahead reduced because the budget was nearly full, since the JVM started (issue #9404). */
+  public static long getScanBatchesShrunk() {
+    return SCAN_SHRINKS.sum();
+  }
+
+  /** A scan read a batch with its read-ahead reduced by the budget: see {@link #getAvailableBytes()}. */
+  public static void scanBatchShrunk() {
+    SCAN_SHRINKS.increment();
   }
 
   /** How many times a query was refused heap since the JVM started. */

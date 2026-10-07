@@ -19,14 +19,19 @@
 package com.arcadedb.engine;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.Profiler;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.Record;
 import com.arcadedb.query.sql.executor.QueryHeapBudget;
 import com.arcadedb.query.sql.executor.QueryHeapTracker;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.utility.MultiIterator;
 import org.junit.jupiter.api.Test;
+
+import java.util.Iterator;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -111,6 +116,68 @@ class BucketIteratorPrefetchBytesIssue9404Test extends TestHelper {
   }
 
   @Test
+  void aProfiledScanReportsTheReadAheadTheBudgetReduced() {
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_BATCH_MAX_BYTES, 16L * 1024 * 1024);
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN, false);
+    final String sql = "PROFILE SELECT id FROM Large";
+    final String cypher = "PROFILE MATCH (n:Large) RETURN n.id AS id";
+    // A CLAUSE ORDER THE OPTIMIZER DECLINES, WHICH TAKES THE STEP-BY-STEP PATH
+    final String legacyCypher = "PROFILE UNWIND [1] AS x MATCH (n:Large) RETURN n.id AS id";
+
+    // WITH THE BUDGET FREE A PROFILE SAYS NOTHING OF IT
+    assertThat(profile("sql", sql)).contains("FETCH FROM BUCKET").doesNotContain("read-ahead reduced");
+    assertThat(profile("opencypher", cypher)).contains("NodeByLabelScan").doesNotContain("read-ahead reduced");
+    assertThat(profile("opencypher", legacyCypher)).contains("MATCH NODE").doesNotContain("read-ahead reduced");
+
+    final long previousBudget = GlobalConfiguration.QUERY_MAX_HEAP_RAM.getValueAsLong();
+    GlobalConfiguration.QUERY_MAX_HEAP_RAM.setValue(1024L);
+    final QueryHeapTracker otherQuery = new QueryHeapTracker();
+    try {
+      otherQuery.charge(QueryHeapBudget.getAvailableBytes() - 4L * 1024 * 1024, "test");
+      final long shrunkBefore = QueryHeapBudget.getScanBatchesShrunk();
+
+      // WITH THE BUDGET NEARLY FULL THE SLOW SCAN NAMES ITS CAUSE, IN SQL AND IN OPENCYPHER
+      assertThat(profile("sql", sql)).contains("read-ahead reduced in").contains("query heap budget nearly full");
+      assertThat(profile("opencypher", cypher)).contains("read-ahead reduced in").contains("query heap budget nearly full");
+      assertThat(profile("opencypher", legacyCypher)).contains("MATCH NODE").contains("read-ahead reduced in");
+
+      // AND THE SERVER PROFILER COUNTS THEM
+      assertThat(QueryHeapBudget.getScanBatchesShrunk()).isGreaterThan(shrunkBefore);
+      assertThat(Profiler.INSTANCE.toJSON().toString()).contains("queryHeapScanShrinks");
+    } finally {
+      otherQuery.close();
+      GlobalConfiguration.QUERY_MAX_HEAP_RAM.setValue(previousBudget);
+    }
+  }
+
+  @Test
+  void theIteratorsCountTheBatchesTheBudgetReduced() {
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_BATCH_MAX_BYTES, 16L * 1024 * 1024);
+    final long previousBudget = GlobalConfiguration.QUERY_MAX_HEAP_RAM.getValueAsLong();
+    GlobalConfiguration.QUERY_MAX_HEAP_RAM.setValue(1024L);
+    final QueryHeapTracker otherQuery = new QueryHeapTracker();
+    try {
+      final BucketIterator free = openIterator("Large");
+      drain(free);
+      assertThat(free.getBudgetShrunkBatches()).isZero();
+
+      otherQuery.charge(QueryHeapBudget.getAvailableBytes() - 4L * 1024 * 1024, "test");
+      final BucketIterator pressed = openIterator("Large");
+      drain(pressed);
+      // ONE BATCH PER RECORD, UNDER PRESSURE
+      assertThat(pressed.getBudgetShrunkBatches()).isGreaterThanOrEqualTo(LARGE_RECORDS);
+
+      // A SCAN OF A TYPE SUMS THE ITERATORS OF ITS BUCKETS
+      final MultiIterator<Record> scan = (MultiIterator<Record>) database.iterateType("Large", true);
+      drain(scan);
+      assertThat(scan.getBudgetShrunkBatches()).isGreaterThanOrEqualTo(LARGE_RECORDS);
+    } finally {
+      otherQuery.close();
+      GlobalConfiguration.QUERY_MAX_HEAP_RAM.setValue(previousBudget);
+    }
+  }
+
+  @Test
   void aDisabledBudgetLeavesTheConfiguredBound() {
     database.getConfiguration().setValue(GlobalConfiguration.QUERY_BATCH_MAX_BYTES, 1024L * 1024);
     final long previousBudget = GlobalConfiguration.QUERY_MAX_HEAP_RAM.getValueAsLong();
@@ -123,6 +190,39 @@ class BucketIteratorPrefetchBytesIssue9404Test extends TestHelper {
     } finally {
       GlobalConfiguration.QUERY_MAX_HEAP_RAM.setValue(previousBudget);
     }
+  }
+
+  @Test
+  void aBackwardScanAndAScanOfPositionsAreBoundedToo() {
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_BATCH_MAX_BYTES, 1024L * 1024);
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getType("Large").getBuckets(false).getFirst();
+    final long bound = 1024L * 1024 / LARGE_PAYLOAD + 1;
+
+    // BACKWARD: THE LAST RECORD FIRST, EVERY RECORD ONCE
+    long before = recordsRead();
+    final Iterator<Record> backward = bucket.inverseIterator();
+    assertThat(recordsRead() - before).isGreaterThan(0).isLessThanOrEqualTo(bound);
+    int expected = LARGE_RECORDS - 1;
+    while (backward.hasNext()) {
+      assertThat(((Document) backward.next()).getInteger("id")).isEqualTo(expected);
+      --expected;
+    }
+    assertThat(expected).isEqualTo(-1);
+
+    // POSITIONS: THE RECORDS AT THE GIVEN POSITIONS, IN ORDER
+    final long[] positions = new long[LARGE_RECORDS];
+    final Iterator<Record> all = bucket.iterator();
+    for (int i = 0; i < LARGE_RECORDS; i++)
+      positions[i] = all.next().getIdentity().getPosition();
+    before = recordsRead();
+    final BucketIterator byPosition = bucket.iterator(positions, 0, positions.length);
+    assertThat(recordsRead() - before).isGreaterThan(0).isLessThanOrEqualTo(bound);
+    int count = 0;
+    while (byPosition.hasNext()) {
+      assertThat(((Document) byPosition.next()).getInteger("id")).isEqualTo(count);
+      ++count;
+    }
+    assertThat(count).isEqualTo(LARGE_RECORDS);
   }
 
   @Test
@@ -165,6 +265,19 @@ class BucketIteratorPrefetchBytesIssue9404Test extends TestHelper {
   }
 
   /** Opens an iterator on the first bucket of the type and remembers how many records the scan read to fill its first batch. */
+  private String profile(final String language, final String query) {
+    try (final ResultSet rs = database.query(language, query)) {
+      while (rs.hasNext())
+        rs.next();
+      return rs.getExecutionPlan().get().prettyPrint(0, 2);
+    }
+  }
+
+  private static void drain(final Iterator<?> iterator) {
+    while (iterator.hasNext())
+      iterator.next();
+  }
+
   private BucketIterator openIterator(final String typeName) {
     final DocumentType type = database.getSchema().getType(typeName);
     final long before = recordsRead();
