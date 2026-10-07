@@ -205,7 +205,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       return rids;
     } catch (final RuntimeException e) {
       // The caller keeps the entry it has; say why a re-read was not possible rather than losing the cause
-      LogManager.instance().log(this, Level.FINE, "Cannot look the key %s of index '%s' up again", e, key, indexName);
+      LogManager.instance().log(this, Level.WARNING, "Cannot look the key %s of index '%s' up again", e, key, indexName);
       return null;
     }
   }

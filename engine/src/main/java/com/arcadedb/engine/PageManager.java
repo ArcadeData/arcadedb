@@ -1770,6 +1770,8 @@ public class PageManager extends LockContext {
               component.updatePageCount(pid.getPageNumber() + 1);
           }
       } finally {
+        // Even again also when the publication failed midway: the cache then holds a partial publish, a failure path in which
+        // the database is fenced anyway, and a sequence left odd would stall every lookup that waits for it
         ++publicationSequence;
       }
 
@@ -2068,7 +2070,9 @@ public class PageManager extends LockContext {
    * being put in the read cache and even otherwise. A transaction's pages become visible one at a time, so a reader that
    * touches two of them - an index page and the record page it points to - can see them at different commits. Sampling this
    * before the first read and again after the last tells whether a commit overlapped: the two samples must be equal and even
-   * for the reads to have seen one state (#9369). Reading it costs a volatile load and takes no lock.
+   * for the reads to have seen one state (#9369). Reading it costs a volatile load and takes no lock. It does not cover
+   * {@link #writePages}, which index compaction uses to rewrite pages with the same content and no record change, so it
+   * cannot pair an index entry with a record of another state.
    */
   public long getPublicationSequence() {
     return publicationSequence;
