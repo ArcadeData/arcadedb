@@ -282,7 +282,7 @@ public final class GAVVertex implements Vertex {
   @Override
   public boolean isConnectedTo(final Identifiable toVertex, final DIRECTION direction, final String edgeType) {
     final int targetNodeId = provider.getNodeId(toVertex.getIdentity());
-    if (targetNodeId >= 0 && providerCovers(new String[] { edgeType }))
+    if (targetNodeId >= 0 && edgeType != null && provider.coversEdgeType(edgeType))
       return provider.isConnectedTo(nodeId, targetNodeId, direction, edgeType);
     return resolve().isConnectedTo(toVertex, direction, edgeType);
   }

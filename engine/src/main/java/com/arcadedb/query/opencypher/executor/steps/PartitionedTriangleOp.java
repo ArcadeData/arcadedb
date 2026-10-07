@@ -232,7 +232,7 @@ public final class PartitionedTriangleOp implements CountOp {
             break;
           }
           if (hNbrs.length > 1)
-            return null;
+            return null; // ambiguous chain: the caller takes the weighted path
           current = hNbrs[0];
         }
         if (valid)
@@ -253,7 +253,7 @@ public final class PartitionedTriangleOp implements CountOp {
       if (fStart == fEnd)
         continue;
       if (fEnd - fStart > 1)
-        return null;
+        return null; // ambiguous chain: the caller takes the weighted path
 
       int current = firstNbrs[fStart];
       boolean valid = true;
@@ -265,7 +265,7 @@ public final class PartitionedTriangleOp implements CountOp {
           break;
         }
         if (hEnd - hStart > 1)
-          return null;
+          return null; // ambiguous chain: the caller takes the weighted path
         current = views[h].neighbors()[hStart];
       }
       if (valid)
