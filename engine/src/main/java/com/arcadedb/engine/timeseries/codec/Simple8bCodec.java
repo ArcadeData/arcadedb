@@ -31,7 +31,8 @@ import java.nio.ByteBuffer;
  * value outside this range (a snowflake id, a 64-bit hash, an epoch-nanosecond instant) is written in a raw escape
  * layout instead of being refused (issue #9309): the header count is stored negated, followed by the values as plain
  * 64-bit longs. A non-negative header count is the packed layout, so blocks written before the escape existed decode
- * unchanged.
+ * unchanged. The trade-off: one outlier makes its whole block 8 bytes per value, so a column of mostly small values
+ * with an occasional wide one compresses worse for the blocks that hold it.
  * <p>
  * Packs multiple integers into 64-bit words using a selector scheme.
  * The top 4 bits of each word are the selector (0-14), determining how many
@@ -152,6 +153,9 @@ public final class Simple8bCodec {
         // Raw escape layout (issue #9309). Integer.MIN_VALUE has no positive counterpart: malformed
         if (totalCount == Integer.MIN_VALUE)
           throw new IOException("Simple8bCodec: invalid count " + totalCount + " in header");
+        // Checked before allocating: a corrupt header must not request an array the buffer cannot fill
+        if ((long) -totalCount * Long.BYTES > buf.remaining())
+          throw new IOException("Simple8bCodec: malformed data (raw count " + -totalCount + " exceeds buffer, size=" + data.length + ")");
         final long[] raw = new long[-totalCount];
         for (int i = 0; i < raw.length; i++)
           raw[i] = buf.getLong();
