@@ -337,12 +337,16 @@ function displayMetrics() {
   // are: pool.size, pool.active, queue.depth, queue.capacity_remaining, tasks.completed,
   // tasks.caller_run_fallbacks, tasks.reclaimed. The sparse-vector pool adds pool.reserved, queries.in_flight and
   // queries.split, which explain its per-query decision to parallelise or not (#4085). The per-server pools
-  // (security_refresh, and on an HA node security_seed and security_catch_up) add tasks.coalesced (#7856).
+  // (security_refresh, and on an HA node security_seed and security_catch_up) add tasks.coalesced (#7856). The
+  // other HA per-instance pools (#8856) add tasks.rejected where they refuse work (snapshot_install,
+  // channel_recovery) and tasks.coalesced where they skip work already queued (channel_recovery).
   var ex = serverData.metrics.executors || {};
   var executorRowLabels = { "query": "Query Parallelism", "sparse_vector": "Sparse Vector Scoring",
       "parallel_scan": "Parallel Scan Producers", "async_command": "Async DDL Commands",
       "security_refresh": "Security Permission Refresh", "security_seed": "HA Security Seed",
-      "security_catch_up": "HA Security Catch-Up" };
+      "security_catch_up": "HA Security Catch-Up", "snapshot_install": "HA Snapshot Install",
+      "sm_lifecycle": "HA State Machine Lifecycle", "database_deleter": "HA Dropped Database Deleter",
+      "channel_recovery": "HA Channel Recovery", "stalled_resync": "HA Stalled Replica Resync" };
   var executorPoolNames = Object.keys(ex).sort();
   var executorsHtml = "";
   for (var i = 0; i < executorPoolNames.length; i++) {
@@ -370,6 +374,10 @@ function displayMetrics() {
     // them. Only those pools publish it, so the singleton pools show "-" - and it is not highlighted, since a
     // coalesced refresh is the design working; the number to worry about is one climbing on a quiet node.
     executorsHtml += "<td class='text-end'>" + gaugeOrDash(pool, "tasks.coalesced") + "</td>";
+    // Rejected (#8856): tasks an abort-policy per-server pool refused while running, which nothing ran in their
+    // place. Unlike Coalesced this is loss, so a non-zero value is highlighted like the fallback cell.
+    var rejectedCellClass = (pool["tasks.rejected"] || 0) > 0 ? "text-end text-warning fw-bold" : "text-end";
+    executorsHtml += "<td class='" + rejectedCellClass + "'>" + gaugeOrDash(pool, "tasks.rejected") + "</td>";
     // Split-decision columns (#4085). Only the sparse-vector pool decides per query whether to
     // parallelise, so a pool that does not report them shows "-" rather than a zero that would read
     // as "nothing is splitting" when the concept simply does not apply. "Queries Split" is the
@@ -380,7 +388,7 @@ function displayMetrics() {
     executorsHtml += "<td class='text-end'>" + gaugeOrDash(pool, "queries.split") + "</td>";
     executorsHtml += "</tr>";
   }
-  $("#srvMetricExecutorsTable").html(executorsHtml || "<tr><td colspan='11' class='text-muted text-center'>No executor pool metrics available.</td></tr>");
+  $("#srvMetricExecutorsTable").html(executorsHtml || "<tr><td colspan='12' class='text-muted text-center'>No executor pool metrics available.</td></tr>");
 
   // Sparse Vector Indexes table - rendered from metrics.sparseVectorIndexes. Shape:
   //   { dbName: { typeIndexName: { memtablePostings, segmentCount, totalPostings } } }

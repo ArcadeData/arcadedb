@@ -203,4 +203,68 @@ class ChaosRunnerTest {
     assertThat(harness.runner().run().kind()).isEqualTo(ResultKind.PASS);
     assertThat(sleeps).containsSubsequence(Duration.ofSeconds(5), ChaosRunner.MIN_AVAILABILITY_WINDOW);
   }
+
+  @Test
+  void longPauseHoldsTheFollowerFrozenLongerThanTheRatisCloseThreshold() throws IOException {
+    final Harness harness = harness(config("chaos.faults", "longpause", "chaos.maxSteps", "1", "chaos.holdMin", "PT10S",
+        "chaos.holdMax", "PT10S", "chaos.availabilityGrace", "PT5S"));
+    assertThat(harness.runner().run().kind()).isEqualTo(ResultKind.PASS);
+    final Duration rest = LongPauseFault.MIN_HOLD.minusSeconds(5);
+    assertThat(sleeps).containsSubsequence(Duration.ofSeconds(5), rest);
+    assertThat(Duration.ofSeconds(5).plus(rest)).isGreaterThan(Duration.ofSeconds(60));
+    assertThat(harness.control().calls).filteredOn(call -> call.startsWith("pause:") || call.startsWith("unpause:"))
+        .hasSize(2);
+  }
+
+  @Test
+  void reformatAfterALongPauseIsASafetyFailure() throws IOException {
+    final Harness harness = harness(config("chaos.faults", "longpause"));
+    harness.control().reformatOnUnpause = true;
+    final ChaosResult result = harness.runner().run();
+    assertThat(result.kind()).isEqualTo(ResultKind.SAFETY);
+    assertThat(result.steps()).isEqualTo(1);
+    assertThat(result.violations().getFirst().invariant()).isEqualTo("REFORMAT");
+    assertThat(result.message()).contains("reformat").contains("longpause");
+  }
+
+  @Test
+  void inPlaceRecoveryAfterALongPauseIsAccepted() throws IOException {
+    final Harness harness = harness(config("chaos.faults", "longpause"));
+    harness.control().recoverOnUnpause = true;
+    final ChaosResult result = harness.runner().run();
+    assertThat(result.kind()).isEqualTo(ResultKind.PASS);
+    // one thawed follower per step, each recovered in place once
+    assertThat(Arrays.stream(harness.control().recovered).sum()).isEqualTo(result.steps());
+  }
+
+  @Test
+  void reformatIsReportedEvenWhenTheCheckpointAlsoFails() throws IOException {
+    final Harness harness = harness(config("chaos.faults", "longpause"));
+    harness.control().reformatOnUnpause = true;
+    harness.reader().dropKey = Ledger.key(0, 0);
+    final ChaosResult result = harness.runner().run();
+    assertThat(result.kind()).isEqualTo(ResultKind.SAFETY);
+    assertThat(result.steps()).isEqualTo(1);
+    assertThat(result.violations()).extracting(Violation::invariant).contains("I1", "REFORMAT");
+  }
+
+  @Test
+  void restartCountThatShrinksIsAHarnessFailureNotAPass() throws IOException {
+    final Harness harness = harness(config("chaos.faults", "longpause"));
+    // a log that lost lines (rotation, recreated container) could hide a reformat behind a lower count
+    harness.control().reformatted[0] = 3;
+    harness.control().reformatted[1] = 3;
+    harness.control().reformatted[2] = 3;
+    harness.control().shrinkLogsOnUnpause = true;
+    final ChaosResult result = harness.runner().run();
+    assertThat(result.kind()).isEqualTo(ResultKind.HARNESS);
+    assertThat(result.message()).contains("went down");
+  }
+
+  @Test
+  void reformatIsOnlyForbiddenForTheLongPause() throws IOException {
+    final Harness harness = harness(config("chaos.faults", "pause"));
+    harness.control().reformatOnUnpause = true;
+    assertThat(harness.runner().run().kind()).isEqualTo(ResultKind.PASS);
+  }
 }

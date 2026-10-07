@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.procedures.algo;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.EdgeWeight;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.olap.GraphAlgorithms;
@@ -196,13 +197,9 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
         final Integer nbrIdx = ridToIdx.get(neighborRid);
         if (nbrIdx == null)
           continue;
-        double weight = 1.0;
-        if (weightProperty != null) {
-          final Object w = edge.get(weightProperty);
-          if (w instanceof Number num)
-            weight = num.doubleValue();
-        }
-        if (weight < 0)
+        // the rule every weighted path finder shares (issue #9443): a NaN weight used to slip past `weight < 0`
+        final double weight = weightProperty != null ? EdgeWeight.of(edge.get(weightProperty)) : EdgeWeight.MISSING;
+        if (!EdgeWeight.isWalkable(weight))
           continue;
         nbrs.add(new int[]{ nbrIdx });
         wts.add(weight);

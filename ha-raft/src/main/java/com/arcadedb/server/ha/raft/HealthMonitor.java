@@ -273,6 +273,17 @@ public final class HealthMonitor {
      */
     default void trackFollowerStall() {
     }
+
+    /**
+     * Tracks whether a leader has been failing to reach this follower since its Raft layer was restarted in place
+     * (issue #8953): the replication path is still unproven since the restart (see
+     * {@link #isReplicationPathUnprovenSinceRestart()}) while no leader has made itself known, or while the leader
+     * reports entries this node does not hold. The division itself reads RUNNING, so the lifecycle branch of this
+     * monitor cannot see it. Report-only: the leader's channel reset is what rebuilds the path. Implementations never
+     * propagate.
+     */
+    default void trackLeaderReachSinceRestart() {
+    }
   }
 
   // How long (as a multiple of the recovery duration) the follower must look healthy before a prior
@@ -550,6 +561,8 @@ public final class HealthMonitor {
     // reporting instead of keeping it until it recovers (issue #8342). It reads the leader commit index the
     // previous tick's refreshLeaderCommitIndex() learned: at most one tick old, and a lower bound either way.
     target.trackFollowerStall();
+    // Same placement and same leader figure, for the same reason (issue #8953).
+    target.trackLeaderReachSinceRestart();
     final LifeCycle.State state = target.getRaftLifeCycleState();
     if (state == LifeCycle.State.CLOSING) {
       // One tick in CLOSING is an ordinary close in progress; the same state on consecutive ticks is a division whose

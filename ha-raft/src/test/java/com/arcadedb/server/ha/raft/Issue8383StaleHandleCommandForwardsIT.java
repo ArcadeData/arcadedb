@@ -86,7 +86,7 @@ class Issue8383StaleHandleCommandForwardsIT extends BaseRaftHATest {
         staleHandle.set(starting.getDatabase(getDatabaseName()));
     };
     try {
-      server.start();
+      startServer(restarted);
     } finally {
       RaftHAPlugin.TEST_BEFORE_START_HOOK = null;
     }

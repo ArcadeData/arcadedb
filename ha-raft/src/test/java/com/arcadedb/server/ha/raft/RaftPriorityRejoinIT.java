@@ -151,7 +151,7 @@ class RaftPriorityRejoinIT extends BaseRaftHATest {
 
     // Step 4: restart server 0. Its Raft storage was wiped (persistStorage=false) so it joins fresh.
     LogManager.instance().log(this, Level.INFO, "TEST: restarting server 0");
-    getServer(0).start();
+    startServer(0);
 
     // Step 5: with priority 10, server 0 should become the leader again. Wait for that.
     final int reLeader = waitForLeader(0, 60_000);
@@ -193,7 +193,7 @@ class RaftPriorityRejoinIT extends BaseRaftHATest {
 
     // Step 7: restart the replica. Storage is wiped so it joins as a fresh peer.
     LogManager.instance().log(this, Level.INFO, "TEST: restarting replica (server 3)");
-    getServer(3).start();
+    startServer(3);
 
     // Step 8: the replica must catch up. The leader must NOT get stuck in an INCONSISTENCY loop.
     waitForReplicationIsCompleted(3);

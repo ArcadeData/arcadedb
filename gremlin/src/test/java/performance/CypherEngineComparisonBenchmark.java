@@ -21,6 +21,7 @@ package performance;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.utility.FileUtils;
@@ -157,33 +158,34 @@ class CypherEngineComparisonBenchmark {
       }
     });
 
+    // Create the edges through the Java API: the MATCH-per-edge form ran 51,000 unindexed lookups (the indexes are only
+    // built after the data) and took over 3 hours on CI, which pushed the whole benchmark lane towards the job timeout.
+    final Vertex[] persons = loadVerticesById("Person", PERSON_COUNT);
+    final Vertex[] companies = loadVerticesById("Company", COMPANY_COUNT);
+
     database.transaction(() -> {
       // Create KNOWS relationships (social network)
       System.out.println("Creating " + RELATIONSHIPS_PER_PERSON + " edges per person...");
-      for (int i = 0; i < PERSON_COUNT; i++) {
-
-        if ((i + 1) % 100 == 0)
-          System.out.println("- " + i + "/" + PERSON_COUNT + " persons processed");
-
-        for (int j = 0; j < RELATIONSHIPS_PER_PERSON; j++) {
-          final int targetId = (i + j + 1) % PERSON_COUNT;
-          database.command("opencypher",
-              "MATCH (a:Person {id: " + i + "}), (b:Person {id: " + targetId + "}) " +
-                  "CREATE (a)-[:KNOWS]->(b)");
-        }
-      }
+      for (int i = 0; i < PERSON_COUNT; i++)
+        for (int j = 0; j < RELATIONSHIPS_PER_PERSON; j++)
+          persons[i].newEdge("KNOWS", persons[(i + j + 1) % PERSON_COUNT]);
     });
 
     database.transaction(() -> {
       // Create WORKS_AT relationships (person to company)
       System.out.println("Creating " + PERSON_COUNT + " WORKS_AT edges person/company...");
-      for (int i = 0; i < PERSON_COUNT; i++) {
-        final int companyId = i % COMPANY_COUNT;
-        database.command("opencypher",
-            "MATCH (p:Person {id: " + i + "}), (c:Company {id: " + companyId + "}) " +
-                "CREATE (p)-[:WORKS_AT]->(c)");
-      }
+      for (int i = 0; i < PERSON_COUNT; i++)
+        persons[i].newEdge("WORKS_AT", companies[i % COMPANY_COUNT]);
     });
+  }
+
+  private static Vertex[] loadVerticesById(final String typeName, final int count) {
+    final Vertex[] vertices = new Vertex[count];
+    database.iterateType(typeName, false).forEachRemaining(record -> {
+      final Vertex vertex = record.asVertex();
+      vertices[vertex.getInteger("id")] = vertex;
+    });
+    return vertices;
   }
 
   /**
