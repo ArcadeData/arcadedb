@@ -1121,6 +1121,48 @@ public class RemoteHttpComponent extends RWLockContext {
     return bounded <= 0 ? 0L : bounded + ThreadLocalRandom.current().nextLong(bounded / 10 + 1);
   }
 
+  /**
+   * Maps the in-band {@code error} line of a streamed query onto the exception the buffered encoding raises for the
+   * same failure (issue #8874). Since #8235 the line carries the {@code status}, {@code exception} and
+   * {@code exceptionArgs} the buffered body would have, so it goes through the same {@link #manageException} mapping
+   * rather than a second one that could drift from it; {@code message} plays the role of the buffered {@code detail}.
+   *
+   * @return the typed exception, or null when the line does not name one the mapping recognizes: a server that
+   * predates #8235 (no {@code status}, no {@code exception}), an exception type this client has no class for, or
+   * arguments too malformed to rebuild it from. The caller then raises its generic {@link RemoteException}, so the
+   * message an existing caller reads does not change for a failure that gains no type.
+   */
+  RuntimeException manageStreamedError(final JSONObject error, final String operation) {
+    final String exception = error.getString("exception", null);
+    final int status = error.getInt("status", 0);
+    if (exception == null && status == 0)
+      return null;
+
+    final JSONObject body = new JSONObject().put("detail", error.getString("message", "unknown error"));
+    if (exception != null)
+      body.put("exception", exception);
+    final String exceptionArgs = error.getString("exceptionArgs", null);
+    if (exceptionArgs != null)
+      body.put("exceptionArgs", exceptionArgs);
+
+    final Exception mapped;
+    try {
+      mapped = manageException(status, body.toString(), operation);
+    } catch (final RuntimeException e) {
+      // Malformed exceptionArgs (a DuplicatedKeyException without its three parts): reporting the failure matters
+      // more than typing it, so it must not escape hasNext() as an ArrayIndexOutOfBoundsException
+      LogManager.instance()
+          .log(this, Level.FINE, "Cannot rebuild the typed exception of the streamed error line %s", e, error);
+      return null;
+    }
+
+    // The generic RemoteException is the mapping saying "no type": the caller's own message says the same, the way
+    // it always has
+    if (!(mapped instanceof final RuntimeException runtime) || mapped.getClass() == RemoteException.class)
+      return null;
+    return runtime;
+  }
+
   protected Exception manageException(final int statusCode, final String responseBody, final String operation) {
     String detail = null;
     String reason = null;

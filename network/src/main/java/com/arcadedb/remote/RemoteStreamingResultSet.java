@@ -18,6 +18,7 @@
  */
 package com.arcadedb.remote;
 
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -40,13 +41,20 @@ import java.util.logging.Level;
  * a dropped connection - is reported as such rather than silently read as an empty or complete result, which is
  * the failure mode a bare line-per-row encoding would have.
  * <p>
+ * The {@code error} line carries the {@code status}, {@code exception} and {@code exceptionArgs} the buffered encoding
+ * would have answered the same failure with (issue #8235). An error mapper rebuilds the typed exception from them
+ * (issue #8874), so a caller of the streamed encoding catches a retryable conflict as a {@link NeedRetryException}
+ * exactly as on the buffered one. A line the mapper cannot type - a server that predates #8235 sends only
+ * {@code message} - keeps the generic {@link RemoteException} it always raised.
+ * <p>
  * {@link #close()} closes the underlying connection, so a caller that stops early does not leave it hanging;
  * it is idempotent, and reaching the trailer closes it too. Not thread-safe - a {@link ResultSet} never is.
  */
 public class RemoteStreamingResultSet implements ResultSet {
-  private final BufferedReader               reader;
-  private final Function<JSONObject, Result> rowMapper;
-  private final boolean                      warnOnTruncation;
+  private final BufferedReader                         reader;
+  private final Function<JSONObject, Result>           rowMapper;
+  private final boolean                                warnOnTruncation;
+  private final Function<JSONObject, RuntimeException> errorMapper;
 
   private Result  next;
   private boolean closed;
@@ -63,9 +71,20 @@ public class RemoteStreamingResultSet implements ResultSet {
    */
   public RemoteStreamingResultSet(final BufferedReader reader, final Function<JSONObject, Result> rowMapper,
       final boolean warnOnTruncation) {
+    this(reader, rowMapper, warnOnTruncation, null);
+  }
+
+  /**
+   * @param errorMapper turns the payload of an {@code error} line into the typed exception it stands for, or returns
+   *                    null when the line carries nothing to type it by. Then, and when the mapper itself is null, the
+   *                    failure is raised as a generic {@link RemoteException}
+   */
+  public RemoteStreamingResultSet(final BufferedReader reader, final Function<JSONObject, Result> rowMapper,
+      final boolean warnOnTruncation, final Function<JSONObject, RuntimeException> errorMapper) {
     this.reader = reader;
     this.rowMapper = rowMapper;
     this.warnOnTruncation = warnOnTruncation;
+    this.errorMapper = errorMapper;
   }
 
   @Override
@@ -131,8 +150,12 @@ public class RemoteStreamingResultSet implements ResultSet {
     }
     if (event.has("error")) {
       trailerSeen = true;
-      final String message = event.getJSONObject("error").getString("message", "unknown error");
+      final JSONObject error = event.getJSONObject("error");
       close();
+      final RuntimeException typed = errorMapper != null ? errorMapper.apply(error) : null;
+      if (typed != null)
+        throw typed;
+      final String message = error.getString("message", "unknown error");
       throw new RemoteException("The server failed while streaming the result: " + message);
     }
 
