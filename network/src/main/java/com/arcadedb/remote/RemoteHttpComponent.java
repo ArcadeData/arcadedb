@@ -1150,9 +1150,10 @@ public class RemoteHttpComponent extends RWLockContext {
       mapped = manageException(status, body.toString(), operation);
     } catch (final RuntimeException e) {
       // Malformed exceptionArgs (a DuplicatedKeyException without its three parts): reporting the failure matters
-      // more than typing it, so it must not escape hasNext() as an ArrayIndexOutOfBoundsException
+      // more than typing it, so it must not escape hasNext() as an ArrayIndexOutOfBoundsException. Logged at WARNING:
+      // a line the mapping cannot read is a server/client contract mismatch (or a mapping bug) someone should see
       LogManager.instance()
-          .log(this, Level.FINE, "Cannot rebuild the typed exception of the streamed error line %s", e, error);
+          .log(this, Level.WARNING, "Cannot rebuild the typed exception of the streamed error line %s", e, error);
       return null;
     }
 

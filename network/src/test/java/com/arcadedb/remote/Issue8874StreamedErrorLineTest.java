@@ -150,7 +150,10 @@ class Issue8874StreamedErrorLineTest {
     }
   }
 
-  /** A driver that never reaches the network: the port is never dialed because nothing is sent. */
+  /**
+   * A driver that never reaches the network. The port is only an address the constructor requires: the cluster probe
+   * is overridden away and the test feeds the response body itself, so nothing ever binds or dials it.
+   */
   private static final class OfflineDatabase extends RemoteDatabase {
     OfflineDatabase() {
       super("127.0.0.1", 9, "db", "root", "test", new ContextConfiguration());
