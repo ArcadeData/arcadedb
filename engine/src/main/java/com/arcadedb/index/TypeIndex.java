@@ -740,6 +740,9 @@ public class TypeIndex implements RangeIndex, IndexInternal {
    * concurrently with queries: an index being created is registered before its sub-indexes exist (no type yet) and one being
    * dropped stays registered for a while after it was invalidated. Best effort, the index can still go away right after the
    * call, so a caller that reads the metadata of an index must also be ready for an {@link IndexException}. Never throws.
+   * <p>
+   * An index still being populated by {@code TypeIndexBuilder} is not ready either (issue #9331). The answer is for the
+   * planners and lookups: writes, uniqueness checks and index maintenance do not consult it.
    */
   public boolean isReadyForQueries() {
     if (!valid)

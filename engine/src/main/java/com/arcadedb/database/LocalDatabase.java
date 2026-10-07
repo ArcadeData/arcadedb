@@ -3494,7 +3494,13 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         serializer.setDateTimeImplementation(configuration.getValue(GlobalConfiguration.DATE_TIME_IMPLEMENTATION));
 
         if (recoveryPending) {
-          performRecovery();
+          try {
+            performRecovery();
+          } catch (final RuntimeException | Error e) {
+            // The open fails: the engines it deferred are not built over a replay that did not finish
+            schema.discardDeferredTimeSeriesEngines();
+            throw e;
+          }
           schema.openDeferredTimeSeriesEngines();
         }
 

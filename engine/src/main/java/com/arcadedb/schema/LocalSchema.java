@@ -3062,6 +3062,10 @@ public class LocalSchema implements Schema {
    * sealed blocks, which the replay then followed by clearing the mutable pages that still held the same rows; the tag
    * dictionary loaded a map without the values interned since the last flush, and interned them again under new ids.
    */
+  public void discardDeferredTimeSeriesEngines() {
+    timeSeriesEnginesAwaitingReplay = null;
+  }
+
   public void openDeferredTimeSeriesEngines() {
     final List<LocalTimeSeriesType> pending = timeSeriesEnginesAwaitingReplay;
     timeSeriesEnginesAwaitingReplay = null;
