@@ -285,6 +285,27 @@ class BucketIteratorPrefetchBytesIssue9404Test extends TestHelper {
   }
 
   @Test
+  void aTypeScanReadsTheRecordsAsTheyAreWhenItIsFirstRead() {
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_BATCH_MAX_BYTES, 1024L * 1024);
+
+    // THE PAGES A SCAN COVERS ARE FIXED WHEN IT IS CREATED, BUT ITS FIRST BATCH IS READ WHEN IT IS FIRST READ: A RECORD CHANGED IN
+    // BETWEEN IS RETURNED AS IT IS THEN, EXACTLY ONCE, AND EVERY RECORD THAT EXISTED WHEN THE SCAN WAS CREATED IS RETURNED
+    final Iterator<Record> scan = database.iterateType("Large", true);
+    database.transaction(() -> database.command("sql", "UPDATE Large SET marker = 'changed' WHERE id = 0").close());
+
+    final java.util.Set<Integer> ids = new java.util.HashSet<>();
+    boolean changedSeen = false;
+    while (scan.hasNext()) {
+      final Document record = (Document) scan.next();
+      assertThat(ids.add(record.getInteger("id"))).as("record %d returned once", record.getInteger("id")).isTrue();
+      if (record.getInteger("id") == 0)
+        changedSeen = "changed".equals(record.getString("marker"));
+    }
+    assertThat(ids).hasSize(LARGE_RECORDS);
+    assertThat(changedSeen).isTrue();
+  }
+
+  @Test
   void aNonPositiveBoundKeepsTheCountOnlyBatch() {
     database.getConfiguration().setValue(GlobalConfiguration.QUERY_BATCH_MAX_BYTES, 0L);
 
