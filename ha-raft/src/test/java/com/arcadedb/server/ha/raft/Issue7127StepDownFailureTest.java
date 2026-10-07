@@ -25,6 +25,7 @@ import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.utility.SubclassMocks;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -43,7 +44,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doAnswer;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -55,7 +55,7 @@ import static org.mockito.Mockito.when;
  */
 class Issue7127StepDownFailureTest {
   private final ContextConfiguration config = configuration();
-  private final ArcadeDBServer server = mock(ArcadeDBServer.class);
+  private final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
   private final CountDownLatch stopped = new CountDownLatch(1);
   private ControlledTransfers raft;
 
@@ -215,7 +215,7 @@ class Issue7127StepDownFailureTest {
       return getLivePeers().stream().map(peer -> peer.getId().toString()).collect(Collectors.toSet());
     }
 
-    private final RaftTransactionBroker broker = mock(RaftTransactionBroker.class);
+    private final RaftTransactionBroker broker = SubclassMocks.mock(RaftTransactionBroker.class);
     private int targetedAttempts;
     private int fallbackAttempts;
     private boolean leader = true;

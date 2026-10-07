@@ -26,6 +26,7 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.ExecutionResponse;
 import com.arcadedb.server.security.ServerSecurityUser;
+import com.arcadedb.utility.SubclassMocks;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.client.api.AdminApi;
 import org.apache.ratis.protocol.RaftClientReply;
@@ -67,7 +68,7 @@ class Issue7134TargetedTransferRequiresLeaderTest {
    */
   @Test
   void aTargetedTransferOnAFollowerIsRefusedWithoutReachingRatis() {
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
     when(raft.isLeader()).thenReturn(false);
     when(raft.getLeaderId()).thenReturn(RaftPeerId.valueOf(REAL_LEADER));
 
@@ -86,7 +87,7 @@ class Issue7134TargetedTransferRequiresLeaderTest {
   /** The same refusal when no leader is known at all: still nothing to transfer from here. */
   @Test
   void aTargetedTransferOnAFollowerWithNoKnownLeaderIsAlsoRefused() {
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
     when(raft.isLeader()).thenReturn(false);
     when(raft.getLeaderId()).thenReturn(null);
 
@@ -101,7 +102,7 @@ class Issue7134TargetedTransferRequiresLeaderTest {
   /** Control: the leader still transfers, or the guard above would have broken the endpoint outright. */
   @Test
   void theLeaderStillTransfersToTheRequestedTarget() throws Exception {
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
     when(raft.isLeader()).thenReturn(true);
 
     final RaftClientReply reply = mock(RaftClientReply.class);
@@ -139,7 +140,7 @@ class Issue7134TargetedTransferRequiresLeaderTest {
    */
   @Test
   void theNoTargetTransferKeepsItsBooleanContractOnAFollower() {
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
     when(raft.isLeader()).thenReturn(false);
     when(raft.getClient()).thenReturn(mock(RaftClient.class));
 
@@ -155,11 +156,11 @@ class Issue7134TargetedTransferRequiresLeaderTest {
    */
   @Test
   void aLeaderSideTransferFailureIsNotReportedAsAFollowerRefusal() throws Exception {
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
     doThrow(new ConfigurationException("Failed to transfer leadership to " + TARGET_PEER + ": timeout"))
         .when(raft).transferLeadership(any(String.class), anyLong());
 
-    final PostTransferLeaderHandler handler = new PostTransferLeaderHandler(mock(HttpServer.class), pluginFor(raft));
+    final PostTransferLeaderHandler handler = new PostTransferLeaderHandler(SubclassMocks.mock(HttpServer.class), pluginFor(raft));
 
     assertThatThrownBy(() -> handler.execute(null, rootUser(), new JSONObject().put("peerId", TARGET_PEER)))
         .as("the handler must not swallow a leader-side failure into a 409")
@@ -169,10 +170,10 @@ class Issue7134TargetedTransferRequiresLeaderTest {
   /** The HTTP contract: a follower answers 409 naming the leader, not 200 for an effect that landed elsewhere. */
   @Test
   void theStepDownEndpointAnswers409OnAFollower() throws Exception {
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
     doThrowNotLeader(raft);
 
-    final ExecutionResponse response = new PostStepDownHandler(mock(HttpServer.class), pluginFor(raft))
+    final ExecutionResponse response = new PostStepDownHandler(SubclassMocks.mock(HttpServer.class), pluginFor(raft))
         .execute(null, rootUser(), new JSONObject());
 
     assertThat(response.getCode()).isEqualTo(409);
@@ -185,11 +186,11 @@ class Issue7134TargetedTransferRequiresLeaderTest {
    */
   @Test
   void theNoTargetTransferEndpointAnswers409OnAFollower() throws Exception {
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
     when(raft.isLeader()).thenReturn(false);
     when(raft.getLeaderId()).thenReturn(RaftPeerId.valueOf(REAL_LEADER));
 
-    final ExecutionResponse response = new PostTransferLeaderHandler(mock(HttpServer.class), pluginFor(raft))
+    final ExecutionResponse response = new PostTransferLeaderHandler(SubclassMocks.mock(HttpServer.class), pluginFor(raft))
         .execute(null, rootUser(), new JSONObject());
 
     assertThat(response.getCode()).isEqualTo(409);
@@ -199,10 +200,10 @@ class Issue7134TargetedTransferRequiresLeaderTest {
 
   @Test
   void theTargetedTransferEndpointAnswers409OnAFollower() throws Exception {
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
     doThrowNotLeaderOnTransfer(raft);
 
-    final ExecutionResponse response = new PostTransferLeaderHandler(mock(HttpServer.class), pluginFor(raft))
+    final ExecutionResponse response = new PostTransferLeaderHandler(SubclassMocks.mock(HttpServer.class), pluginFor(raft))
         .execute(null, rootUser(), new JSONObject().put("peerId", TARGET_PEER));
 
     assertThat(response.getCode()).isEqualTo(409);
@@ -222,13 +223,13 @@ class Issue7134TargetedTransferRequiresLeaderTest {
   }
 
   private static RaftHAPlugin pluginFor(final RaftHAServer raft) {
-    final RaftHAPlugin plugin = mock(RaftHAPlugin.class);
+    final RaftHAPlugin plugin = SubclassMocks.mock(RaftHAPlugin.class);
     when(plugin.getRaftHAServer()).thenReturn(raft);
     return plugin;
   }
 
   private static ServerSecurityUser rootUser() {
-    final ServerSecurityUser user = mock(ServerSecurityUser.class);
+    final ServerSecurityUser user = SubclassMocks.mock(ServerSecurityUser.class);
     when(user.getName()).thenReturn("root");
     return user;
   }
@@ -238,7 +239,7 @@ class Issue7134TargetedTransferRequiresLeaderTest {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_SERVER_LIST, "localhost:2434:2480,localhost:2435:2481,localhost:2436:2482");
 
-    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
+    final ArcadeDBServer mockServer = SubclassMocks.mock(ArcadeDBServer.class);
     when(mockServer.getServerName()).thenReturn("ArcadeDB_0");
 
     return new RaftHAServer(mockServer, config);

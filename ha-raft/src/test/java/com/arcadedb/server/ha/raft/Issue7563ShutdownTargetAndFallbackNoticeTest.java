@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
+import com.arcadedb.utility.SubclassMocks;
 
 import org.apache.ratis.protocol.RaftPeerId;
 import org.junit.jupiter.api.AfterEach;
@@ -30,7 +31,6 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
@@ -187,7 +187,7 @@ class Issue7563ShutdownTargetAndFallbackNoticeTest {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_SERVER_LIST, serverList);
 
-    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
+    final ArcadeDBServer mockServer = SubclassMocks.mock(ArcadeDBServer.class);
     when(mockServer.getServerName()).thenReturn("ArcadeDB_0");
 
     return new RaftHAServer(mockServer, config);

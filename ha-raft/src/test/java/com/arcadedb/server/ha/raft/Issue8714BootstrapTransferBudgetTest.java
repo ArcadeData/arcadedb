@@ -19,6 +19,7 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.utility.SubclassMocks;
 import org.junit.jupiter.api.Test;
 
 import java.util.Set;
@@ -28,7 +29,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -43,9 +43,9 @@ class Issue8714BootstrapTransferBudgetTest {
 
   @Test
   void transferIsCappedToACandidateSlice() {
-    final RaftHAServer ha = mock(RaftHAServer.class);
+    final RaftHAServer ha = SubclassMocks.mock(RaftHAServer.class);
     when(ha.followerContactPeers()).thenReturn(Set.of("peer-b"));
-    final BootstrapElection election = new BootstrapElection(ha, mock(ArcadeDBServer.class));
+    final BootstrapElection election = new BootstrapElection(ha, SubclassMocks.mock(ArcadeDBServer.class));
 
     election.transferToElectedSource("peer-b", 120_000L);
 
@@ -54,9 +54,9 @@ class Issue8714BootstrapTransferBudgetTest {
 
   @Test
   void aSourceThatBecomesReachableAfterAFewPollsIsTransferredTo() {
-    final RaftHAServer ha = mock(RaftHAServer.class);
+    final RaftHAServer ha = SubclassMocks.mock(RaftHAServer.class);
     when(ha.followerContactPeers()).thenReturn(Set.of(), Set.of(), Set.of("peer-b"));
-    final BootstrapElection election = new BootstrapElection(ha, mock(ArcadeDBServer.class));
+    final BootstrapElection election = new BootstrapElection(ha, SubclassMocks.mock(ArcadeDBServer.class));
 
     election.transferToElectedSource("peer-b", 120_000L, 5_000L);
 
@@ -65,9 +65,9 @@ class Issue8714BootstrapTransferBudgetTest {
 
   @Test
   void unreachableSourceIsNeverTransferredTo() {
-    final RaftHAServer ha = mock(RaftHAServer.class);
+    final RaftHAServer ha = SubclassMocks.mock(RaftHAServer.class);
     when(ha.followerContactPeers()).thenReturn(Set.of("peer-c"));
-    final BootstrapElection election = new BootstrapElection(ha, mock(ArcadeDBServer.class));
+    final BootstrapElection election = new BootstrapElection(ha, SubclassMocks.mock(ArcadeDBServer.class));
 
     final AtomicBoolean announced = new AtomicBoolean();
     assertThatThrownBy(() -> election.transferToElectedSource("peer-b", 120_000L, 150L, () -> announced.set(true)))

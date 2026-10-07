@@ -21,17 +21,17 @@ package com.arcadedb.server.http;
 import com.arcadedb.server.http.handler.ExecutionResponse;
 import com.arcadedb.server.http.handler.GetHealthHandler;
 import com.arcadedb.server.security.ServerSecurityUser;
+import com.arcadedb.utility.SubclassMocks;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
 
 class GetHealthHandlerTest {
 
   @Test
   void alwaysReturns204() throws Exception {
     // Liveness only: if the handler runs at all, the HTTP layer is up. Server status is irrelevant.
-    final GetHealthHandler handler = new GetHealthHandler(mock(HttpServer.class));
+    final GetHealthHandler handler = new GetHealthHandler(SubclassMocks.mock(HttpServer.class));
 
     final ExecutionResponse response = handler.execute(null, (ServerSecurityUser) null, null);
     assertThat(response.getCode()).isEqualTo(204);
@@ -39,7 +39,7 @@ class GetHealthHandlerTest {
 
   @Test
   void doesNotRequireAuthentication() {
-    final GetHealthHandler handler = new GetHealthHandler(mock(HttpServer.class));
+    final GetHealthHandler handler = new GetHealthHandler(SubclassMocks.mock(HttpServer.class));
 
     assertThat(handler.isRequireAuthentication()).isFalse();
   }

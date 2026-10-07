@@ -21,6 +21,7 @@ package com.arcadedb.server;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.server.ServerControlPlane.OperationNotAvailableException;
 import com.arcadedb.server.security.ServerSecurity;
+import com.arcadedb.utility.SubclassMocks;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -33,7 +34,6 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyLong;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -56,9 +56,9 @@ class Issue8077ConnectClusterConsumesPluginSeedReportTest {
 
   @BeforeEach
   void setUp() {
-    server = mock(ArcadeDBServer.class);
+    server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getConfiguration()).thenReturn(new ContextConfiguration());
-    security = mock(ServerSecurity.class);
+    security = SubclassMocks.mock(ServerSecurity.class);
     when(security.seedSecurityStateClusterWide(anyLong())).thenReturn(List.of());
     when(server.getSecurity()).thenReturn(security);
   }

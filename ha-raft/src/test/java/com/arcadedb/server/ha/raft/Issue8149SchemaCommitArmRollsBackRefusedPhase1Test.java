@@ -25,6 +25,7 @@ import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.utility.SubclassMocks;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -40,7 +41,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -87,8 +87,8 @@ class Issue8149SchemaCommitArmRollsBackRefusedPhase1Test {
     proxied.transaction(() -> proxied.newDocument(UNIQUE_TYPE).set("key", "taken").save());
     proxied.transaction(() -> proxied.command("sql", "DELETE FROM " + TYPE));
 
-    broker = mock(RaftTransactionBroker.class);
-    final RaftHAServer raftServer = mock(RaftHAServer.class, RETURNS_DEEP_STUBS);
+    broker = SubclassMocks.mock(RaftTransactionBroker.class);
+    final RaftHAServer raftServer = SubclassMocks.mock(RaftHAServer.class, RETURNS_DEEP_STUBS);
     when(raftServer.isLeader()).thenReturn(true);
     when(raftServer.getTransactionBroker()).thenReturn(broker);
 

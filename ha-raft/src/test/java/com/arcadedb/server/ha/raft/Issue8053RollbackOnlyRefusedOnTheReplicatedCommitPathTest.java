@@ -24,6 +24,7 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.schema.Type;
+import com.arcadedb.utility.SubclassMocks;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -38,7 +39,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -84,8 +84,8 @@ class Issue8053RollbackOnlyRefusedOnTheReplicatedCommitPathTest {
     proxied.transaction(() -> warmUp[0] = proxied.newDocument(TYPE).set("name", "warm-up").save());
     proxied.transaction(() -> warmUp[0].delete());
 
-    broker = mock(RaftTransactionBroker.class);
-    final RaftHAServer raftServer = mock(RaftHAServer.class, RETURNS_DEEP_STUBS);
+    broker = SubclassMocks.mock(RaftTransactionBroker.class);
+    final RaftHAServer raftServer = SubclassMocks.mock(RaftHAServer.class, RETURNS_DEEP_STUBS);
     when(raftServer.isLeader()).thenReturn(true);
     when(raftServer.getTransactionBroker()).thenReturn(broker);
 

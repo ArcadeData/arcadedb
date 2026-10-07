@@ -49,6 +49,7 @@ import com.arcadedb.server.http.ResultSetTooLargeException;
 import com.arcadedb.server.http.RetryLaterException;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
+import com.arcadedb.utility.SubclassMocks;
 
 import io.micrometer.observation.ObservationRegistry;
 import io.undertow.io.Sender;
@@ -485,12 +486,12 @@ class Issue6201ErrorStatusParityTest {
   }
 
   private ThrowingHandler handler(final RuntimeException toThrow) {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getObservationRegistry()).thenReturn(ObservationRegistry.create());
     when(server.getConfiguration()).thenReturn(new ContextConfiguration());
     when(server.getServerName()).thenReturn("test");
 
-    final HttpServer httpServer = mock(HttpServer.class);
+    final HttpServer httpServer = SubclassMocks.mock(HttpServer.class);
     when(httpServer.getServer()).thenReturn(server);
     return new ThrowingHandler(httpServer, toThrow);
   }

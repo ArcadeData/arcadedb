@@ -25,6 +25,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
+import com.arcadedb.utility.SubclassMocks;
 import com.sun.net.httpserver.HttpServer;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
@@ -48,7 +49,6 @@ import java.util.zip.ZipOutputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNoException;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
@@ -96,7 +96,7 @@ class Issue8367BootstrapReplacementRearmTest {
 
     leader = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
 
-    raft = mock(RaftHAServer.class);
+    raft = SubclassMocks.mock(RaftHAServer.class);
     when(raft.isLeader()).thenReturn(false);
     when(raft.getLocalPeerId()).thenReturn(LOCAL);
     when(raft.getLocalHttpAddress()).thenReturn("local-host:2480");

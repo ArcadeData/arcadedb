@@ -27,6 +27,7 @@ import com.arcadedb.server.ClusterCapabilityNotReadyException;
 import com.arcadedb.server.ServerControlPlane;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
+import com.arcadedb.utility.SubclassMocks;
 import io.micrometer.observation.ObservationRegistry;
 import io.undertow.io.Sender;
 import io.undertow.server.HttpServerExchange;
@@ -164,12 +165,12 @@ class Issue7511ClusterNotReadyHttpStatusTest {
     final ContextConfiguration configuration = new ContextConfiguration();
     configuration.setValue(GlobalConfiguration.SERVER_MODE, serverMode);
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getObservationRegistry()).thenReturn(ObservationRegistry.create());
     when(server.getConfiguration()).thenReturn(configuration);
     when(server.getServerName()).thenReturn("test");
 
-    final HttpServer httpServer = mock(HttpServer.class);
+    final HttpServer httpServer = SubclassMocks.mock(HttpServer.class);
     when(httpServer.getServer()).thenReturn(server);
 
     final Sender sender = mock(Sender.class);

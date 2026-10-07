@@ -19,6 +19,7 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.utility.SubclassMocks;
 import io.micrometer.core.instrument.Timer;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.PathTemplateMatch;
@@ -27,7 +28,6 @@ import org.junit.jupiter.api.Test;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
@@ -73,7 +73,7 @@ class AbstractServerHttpHandlerMetricsTest {
 
   @Test
   void databaseTagKeepsTheNameOfADatabaseThatExists() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.existsDatabase("graph")).thenReturn(true);
 
     final HttpServerExchange exchange = new HttpServerExchange(null);
@@ -88,7 +88,7 @@ class AbstractServerHttpHandlerMetricsTest {
     // Issue #6805: {database} matches any path segment and the RED timer is recorded in a finally block that
     // also runs for the 401 an unauthenticated caller gets, so echoing the raw parameter registered one
     // permanent percentile-histogram Timer per invented name - the #5025 leak on the other half of the tuple.
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.existsDatabase("db12345")).thenReturn(false);
 
     final HttpServerExchange exchange = new HttpServerExchange(null);
@@ -100,7 +100,7 @@ class AbstractServerHttpHandlerMetricsTest {
 
   @Test
   void databaseTagIsNoneForRoutesThatAreNotDatabaseScoped() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
 
     final HttpServerExchange withoutParameter = new HttpServerExchange(null);
     withoutParameter.putAttachment(PathTemplateMatch.ATTACHMENT_KEY, new PathTemplateMatch("/ready", Map.of()));

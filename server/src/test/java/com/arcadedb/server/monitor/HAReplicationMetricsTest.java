@@ -22,6 +22,7 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.FollowerSample;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.HAReplicationStats;
+import com.arcadedb.utility.SubclassMocks;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 
@@ -30,7 +31,6 @@ import java.util.List;
 import java.util.concurrent.ScheduledExecutorService;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
@@ -72,7 +72,7 @@ class HAReplicationMetricsTest {
 
   @Test
   void gaugesReflectLeaderProviderSnapshot() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getPlugins()).thenReturn(List.of(new FakeHAPlugin(
         new HAReplicationStats(true, 1234L, 7L, 2))));
 
@@ -89,7 +89,7 @@ class HAReplicationMetricsTest {
 
   @Test
   void gaugesReportNotApplicableWhenNoHAPlugin() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getPlugins()).thenReturn(List.of());
 
     final SimpleMeterRegistry registry = new SimpleMeterRegistry();
@@ -106,7 +106,7 @@ class HAReplicationMetricsTest {
 
   @Test
   void perFollowerGaugesAreTaggedByPeer() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getPlugins()).thenReturn(List.of(new FakeHAPlugin(
         new HAReplicationStats(true, 900, 4200, 2),
         List.of(
@@ -131,7 +131,7 @@ class HAReplicationMetricsTest {
 
   @Test
   void gaugeValuesAreFinite() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getPlugins()).thenReturn(List.of(new FakeHAPlugin(
         new HAReplicationStats(false, -1, -1, 0))));
 
@@ -148,7 +148,7 @@ class HAReplicationMetricsTest {
 
   @Test
   void closeShutsDownTheFollowerMetricsScheduler() throws Exception {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getPlugins()).thenReturn(List.of());
 
     final HAReplicationMetrics metrics = new HAReplicationMetrics(server);
@@ -166,7 +166,7 @@ class HAReplicationMetricsTest {
 
   @Test
   void closeIsNullSafeWhenNeverBound() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     new HAReplicationMetrics(server).close();
   }
 

@@ -24,6 +24,7 @@ import com.arcadedb.log.DefaultLogger;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.log.Logger;
 import com.arcadedb.server.security.ServerSecurity;
+import com.arcadedb.utility.SubclassMocks;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -258,7 +259,7 @@ class Issue8446SharedSecurityConvergenceWindowTest extends StaticBaseServerTest 
     when(ha.getRuntimeJoinIndex()).thenAnswer(invocation -> joinIndex.get());
     when(ha.securityDocumentsNotInstalledSinceRuntimeJoin()).thenReturn(List.of("users"));
 
-    final ServerSecurity security = mock(ServerSecurity.class);
+    final ServerSecurity security = SubclassMocks.mock(ServerSecurity.class);
     when(security.unconvergedClusterSecurityDocuments()).thenReturn(List.of("users"));
 
     final ContextConfiguration configuration = new ContextConfiguration();
@@ -266,7 +267,7 @@ class Issue8446SharedSecurityConvergenceWindowTest extends StaticBaseServerTest 
     configuration.setValue(GlobalConfiguration.SERVER_READINESS_REQUIRES_HA, true);
     configuration.setValue(GlobalConfiguration.HA_SECURITY_CONVERGENCE_READINESS_TIMEOUT, windowMs);
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getStatus()).thenReturn(ArcadeDBServer.STATUS.ONLINE);
     when(server.getConfiguration()).thenReturn(configuration);
     when(server.getHA()).thenReturn(ha);

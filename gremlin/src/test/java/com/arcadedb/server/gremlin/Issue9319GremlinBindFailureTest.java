@@ -23,6 +23,7 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.StaticBaseServerTest;
 import org.junit.jupiter.api.Test;
+import org.mockito.MockMakers;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.net.InetAddress;
@@ -34,6 +35,7 @@ import java.nio.file.Path;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.withSettings;
 import static org.mockito.Mockito.when;
 
 /**
@@ -48,7 +50,7 @@ class Issue9319GremlinBindFailureTest {
   Path configDirectory;
 
   private GremlinServerPlugin newPlugin(final int port) {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = mock(ArcadeDBServer.class, withSettings().mockMaker(MockMakers.SUBCLASS));
     when(server.getConfigPath()).thenReturn(configDirectory.toString());
     final ContextConfiguration configuration = new ContextConfiguration();
     configuration.setValue("gremlin.host", "127.0.0.1");

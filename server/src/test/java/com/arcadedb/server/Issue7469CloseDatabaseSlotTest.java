@@ -21,6 +21,7 @@ package com.arcadedb.server;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.MaintenanceCoordinator.Operation;
 import com.arcadedb.server.backup.BackupCoordinator;
+import com.arcadedb.utility.SubclassMocks;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -50,7 +51,7 @@ class Issue7469CloseDatabaseSlotTest {
   @Test
   void closeDatabaseIsRefusedWhileABackupIsRunning() {
     final BackupCoordinator coordinator = new BackupCoordinator();
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getBackupCoordinator()).thenReturn(coordinator);
 
     assertThat(coordinator.begin(DB_NAME, Operation.BACKUP)).isNull();
@@ -74,7 +75,7 @@ class Issue7469CloseDatabaseSlotTest {
   void closeDatabaseIsRefusedWhileAnExportOrAnImportIsRunning() {
     for (final Operation running : new Operation[] { Operation.EXPORT, Operation.IMPORT, Operation.RESTORE }) {
       final BackupCoordinator coordinator = new BackupCoordinator();
-      final ArcadeDBServer server = mock(ArcadeDBServer.class);
+      final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
       when(server.getBackupCoordinator()).thenReturn(coordinator);
 
       assertThat(coordinator.begin(DB_NAME, running)).isNull();
@@ -109,8 +110,8 @@ class Issue7469CloseDatabaseSlotTest {
   @Test
   void closeDatabaseSucceedsAndReleasesItsSlotAfterwards() {
     final BackupCoordinator coordinator = new BackupCoordinator();
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    final ServerDatabase database = mock(ServerDatabase.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
+    final ServerDatabase database = SubclassMocks.mock(ServerDatabase.class);
     final DatabaseInternal embedded = mock(DatabaseInternal.class);
 
     when(server.getBackupCoordinator()).thenReturn(coordinator);
@@ -136,7 +137,7 @@ class Issue7469CloseDatabaseSlotTest {
   @Test
   void aFailedCloseStillReleasesItsSlot() {
     final BackupCoordinator coordinator = new BackupCoordinator();
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
 
     when(server.getBackupCoordinator()).thenReturn(coordinator);
     when(server.getDatabase(DB_NAME)).thenThrow(new IllegalArgumentException("Database '" + DB_NAME + "' not found"));

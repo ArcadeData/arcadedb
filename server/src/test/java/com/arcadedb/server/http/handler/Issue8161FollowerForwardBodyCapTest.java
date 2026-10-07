@@ -26,6 +26,7 @@ import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.http.FakeLeader;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
+import com.arcadedb.utility.SubclassMocks;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.server.RequestTooBigException;
 import org.junit.jupiter.api.Test;
@@ -61,9 +62,9 @@ class Issue8161FollowerForwardBodyCapTest {
     cfg.setValue(GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT, 5_000L);
     cfg.setValue(GlobalConfiguration.HA_PROXY_BATCH_READ_TIMEOUT, 60_000L);
     cfg.setValue(GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE, CAP_BYTES);
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getConfiguration()).thenReturn(cfg);
-    final HttpServer httpServer = mock(HttpServer.class);
+    final HttpServer httpServer = SubclassMocks.mock(HttpServer.class);
     when(httpServer.getServer()).thenReturn(server);
     return new PostBatchHandler(httpServer);
   }
@@ -76,7 +77,7 @@ class Issue8161FollowerForwardBodyCapTest {
   }
 
   private static ServerSecurityUser rootUser() {
-    final ServerSecurityUser user = mock(ServerSecurityUser.class);
+    final ServerSecurityUser user = SubclassMocks.mock(ServerSecurityUser.class);
     when(user.getName()).thenReturn("root");
     return user;
   }

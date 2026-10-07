@@ -25,6 +25,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.FollowerSample;
 import com.arcadedb.utility.FileUtils;
+import com.arcadedb.utility.SubclassMocks;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -34,7 +35,6 @@ import java.util.List;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
@@ -224,7 +224,7 @@ class ClusterAlertsTest {
 
   @Test
   void scanIncludesStuckAtStaleTermAlertWhenFlagged() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getDatabaseNames()).thenReturn(Set.of());
 
     final JSONArray alerts = ClusterAlerts.scan(server, null, List.of(), Set.of(), null, null, null,
@@ -236,7 +236,7 @@ class ClusterAlertsTest {
 
   @Test
   void scanOmitsStuckAtStaleTermAlertWhenNotFlagged() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getDatabaseNames()).thenReturn(Set.of());
 
     final JSONArray alerts = ClusterAlerts.scan(server, null, List.of(), Set.of(), null, null, null,

@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.utility.StallAwareStopwatch;
+import com.arcadedb.utility.SubclassMocks;
 import com.sun.net.httpserver.HttpServer;
 import org.apache.ratis.protocol.RaftGroup;
 import org.apache.ratis.protocol.RaftGroupId;
@@ -46,7 +47,6 @@ import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
@@ -198,7 +198,7 @@ class Issue8472PeerQueryBodyDeadlineTest {
   void aPassConclusionWhosePeerStallsInsideItsBodyOverTlsIsGivenUpOn() throws Exception {
     try (final StallingBodyPeer peer = new StallingBodyPeer(tls())) {
       final RaftPeerId peerId = RaftPeerId.valueOf("peer-1");
-      final RaftHAServer raft = mock(RaftHAServer.class);
+      final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
       when(raft.getLocalPeerId()).thenReturn(RaftPeerId.valueOf("self"));
       when(raft.getLivePeers()).thenReturn(List.of(RaftPeer.newBuilder().setId(peerId).build()));
       when(raft.getHttpAddresses()).thenReturn(Map.of(peerId, "127.0.0.1:1"));
@@ -254,7 +254,7 @@ class Issue8472PeerQueryBodyDeadlineTest {
   }
 
   private static ArcadeDBServer plainServer() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getConfiguration()).thenReturn(new ContextConfiguration());
     return server;
   }
@@ -265,14 +265,14 @@ class Issue8472PeerQueryBodyDeadlineTest {
     cfg.setValue(GlobalConfiguration.NETWORK_USE_SSL, true);
     cfg.setValue(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE, pki.trustStore().toAbsolutePath().toString());
     cfg.setValue(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE_PASSWORD, RaftTestPki.password());
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getConfiguration()).thenReturn(cfg);
     return server;
   }
 
   private static RaftHAServer raftDialling(final RaftPeerId peerId, final ArcadeDBServer server,
       final String httpAddress, final String httpsAddress, final TrustedHttpClientCache clients) {
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
     when(raft.getServer()).thenReturn(server);
     when(raft.getLocalPeerId()).thenReturn(RaftPeerId.valueOf("self"));
     when(raft.getLocalHttpAddress()).thenReturn("127.0.0.1:2");

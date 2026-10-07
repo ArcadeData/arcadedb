@@ -36,8 +36,8 @@ import java.util.stream.Stream;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Source-level guard for issue #8851: no test mocks one of the engine classes the HA and HTTP layers delegate to with
- * Mockito's default INLINE mock maker.
+ * Source-level guard for issues #8851 and #8867: no test mocks one of the engine, server or HA classes that the HA and
+ * HTTP layers call on every request with Mockito's default INLINE mock maker.
  * <p>
  * An inline mock retransforms the mocked class in place, and on the Graal JIT code compiled earlier against the
  * unmocked class survives the retransformation: production code a real-server test warmed up in the same fork then
@@ -59,13 +59,19 @@ class InlineMocksOfJitWarmTypesTest {
   private static final List<String> SKIPPED_TOP_LEVEL = List.of(".worktrees", "e2e", "load-tests", "node_modules");
 
   /**
-   * Concrete engine classes whose methods {@code RaftReplicatedDatabase}, {@code ServerDatabase} and the HTTP handlers
-   * call on every request, so they are compiled - and inlined - by the time any real-server test in the fork is done.
-   * Extend it with any further non-final class that production code calls on a hot path and tests hand in as a mock,
-   * after converting that type's existing inline mocks (issue #8867 tracks the server/HA types still outside the list).
-   * A final class does not belong here: the subclass maker cannot mock it.
+   * Concrete classes whose methods {@code RaftReplicatedDatabase}, {@code ServerDatabase}, the HTTP handlers and the
+   * Raft state machine call on every request, so they are compiled - and inlined - by the time any real-server test in
+   * the fork is done: the engine types of issue #8851 and the server/HA types of issue #8867. Extend it with any further
+   * non-final class that production code calls on a hot path and tests hand in as a mock, after converting that type's
+   * existing inline mocks. A final class does not belong here: the subclass maker cannot mock it. Nor does a type with
+   * a final method a test stubs: a subclass mock runs the REAL final method, so a {@code when(...)} on it stubs nothing
+   * (none of the types below declares one, nor do the parents they extend: Ratis' {@code BaseStateMachine} and
+   * {@code RWLockContext}).
    */
-  private static final String GUARDED_TYPES = "LocalDatabase|TransactionContext|TransactionManager|LocalSchema|FileManager|ComponentFile";
+  private static final String GUARDED_TYPES = "LocalDatabase|TransactionContext|TransactionManager|LocalSchema|FileManager|ComponentFile"
+      // issue #8867: the server and HA types
+      + "|ArcadeDBServer|ServerDatabase|HttpServer|ServerSecurity|ServerSecurityUser|HttpAuthSession|HttpAuthSessionManager"
+      + "|RaftHAServer|RaftHAPlugin|RaftTransactionBroker|ArcadeStateMachine|ClusterMonitor";
 
   /** A guarded type by its simple or fully qualified name ({@code com.arcadedb.database.LocalDatabase}). */
   private static final String GUARDED_TYPE = "(?:[a-z_]\\w*\\.)*(?:" + GUARDED_TYPES + ")";
@@ -108,9 +114,9 @@ class InlineMocksOfJitWarmTypesTest {
     assertThat(sources).as("the scan must find the test sources of every module").hasSizeGreaterThan(EXPECTED_MINIMUM_SOURCES);
 
     assertThat(offenders(sources))
-        .as("mock LocalDatabase, TransactionContext and the other engine types the HA/HTTP layers delegate to through "
-            + "com.arcadedb.utility.SubclassMocks: an inline mock reads stale fields through JIT-warm code on the Graal JIT "
-            + "(issues #8021, #8851)")
+        .as("mock LocalDatabase, ArcadeDBServer, RaftHAServer and the other engine/server/HA types the HA/HTTP layers "
+            + "delegate to through com.arcadedb.utility.SubclassMocks: an inline mock reads stale fields through JIT-warm "
+            + "code on the Graal JIT (issues #8021, #8851, #8867)")
         .isEmpty();
   }
 
@@ -138,6 +144,37 @@ class InlineMocksOfJitWarmTypesTest {
         class AnnotatedSpy { @Spy private FileManager files = new FileManager(); @Test void t() { } }""");
     sources.put("a/Annotated.java", """
         class Annotated { @Mock private LocalSchema schema; @Test void t() { } }""");
+    // issue #8867: the server and HA types, one shape each.
+    sources.put("a/Server.java", """
+        import static org.mockito.Mockito.mock;
+        class Server { @Test void t() { ArcadeDBServer s = mock(ArcadeDBServer.class); } }""");
+    sources.put("a/ServerDatabase.java", """
+        import static org.mockito.Mockito.mock;
+        class ServerDatabase { @Test void t() { Object d = mock(com.arcadedb.server.ServerDatabase.class); } }""");
+    sources.put("a/HttpServer.java", """
+        class HttpServer { @Test void t() { Object h = Mockito.mock(HttpServer.class, RETURNS_DEEP_STUBS); } }""");
+    sources.put("a/Security.java", """
+        import static org.mockito.Mockito.*;
+        class Security { @Test void t() { ServerSecurity s = mock(ServerSecurity.class); } }""");
+    sources.put("a/SecurityUser.java", """
+        class SecurityUser { @Mock ServerSecurityUser user; @Test void t() { } }""");
+    sources.put("a/HaServer.java", """
+        import static org.mockito.Mockito.mock;
+        class HaServer { @Test void t() { RaftHAServer ha = mock(RaftHAServer.class); } }""");
+    sources.put("a/HaPlugin.java", """
+        class HaPlugin { @Test void t() { RaftHAPlugin p = Mockito.spy(RaftHAPlugin.class); } }""");
+    sources.put("a/Broker.java", """
+        import static org.mockito.Mockito.mock;
+        class Broker { @Test void t() { RaftTransactionBroker b = mock(RaftTransactionBroker.class); } }""");
+    sources.put("a/Session.java", """
+        import static org.mockito.Mockito.mock;
+        class Session { @Test void t() { HttpAuthSession s = mock(HttpAuthSession.class); HttpAuthSessionManager m = mock(HttpAuthSessionManager.class); } }""");
+    sources.put("a/Monitor.java", """
+        import static org.mockito.Mockito.mock;
+        class Monitor { @Test void t() { ClusterMonitor m = mock(ClusterMonitor.class); } }""");
+    sources.put("a/StateMachine.java", """
+        import static org.mockito.Mockito.spy;
+        class StateMachine { @Test void t() { ArcadeStateMachine sm = spy(new ArcadeStateMachine(server, ha)); } }""");
 
     // The shapes that are fine: an explicit subclass mock, a file importing SubclassMocks.mock, an unguarded type, a
     // mock whose own settings choose the maker.
@@ -154,10 +191,18 @@ class InlineMocksOfJitWarmTypesTest {
     sources.put("b/Unguarded.java", """
         import static org.mockito.Mockito.mock;
         class Unguarded { @Test void t() { LocalDatabaseFactory f = mock(LocalDatabaseFactory.class); } }""");
+    // A guarded name that is only the prefix of another type's name is not that type.
+    sources.put("b/UnguardedPrefix.java", """
+        import static org.mockito.Mockito.mock;
+        class UnguardedPrefix { @Test void t() { Object e = mock(HttpServerExchange.class); Object p = mock(HAServerPlugin.class); } }""");
+    sources.put("b/ImportedServer.java", """
+        import static com.arcadedb.utility.SubclassMocks.mock;
+        class ImportedServer { @Test void t() { ArcadeDBServer s = mock(ArcadeDBServer.class); RaftHAServer ha = mock(RaftHAServer.class); } }""");
 
     final List<String> offenders = offenders(sources);
     for (final String name : List.of("Bare", "BareWithAnswer", "Qualified", "FullyQualified", "SpyOfClass", "SpyOfNew", "AnnotatedSpy",
-        "Annotated"))
+        "Annotated", "Server", "ServerDatabase", "HttpServer", "Security", "SecurityUser", "HaServer", "HaPlugin", "Broker", "StateMachine",
+        "Session", "Monitor"))
       assertThat(offenders).as("the scan must flag %s", name).anyMatch(o -> o.startsWith("a/" + name + ".java"));
     assertThat(offenders).as("the scan must not flag a shape that is fine").noneMatch(o -> o.startsWith("b/"));
   }

@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.utility.FileUtils;
+import com.arcadedb.utility.SubclassMocks;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -33,7 +34,6 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
@@ -215,7 +215,7 @@ class Issue8329RuntimeJoinMarkerTest {
 
   /** A {@link RaftHAServer} whose constructor has run but whose Ratis server was never started. */
   private static RaftHAServer detachedServer(final ContextConfiguration config) {
-    final ArcadeDBServer arcadeServer = mock(ArcadeDBServer.class);
+    final ArcadeDBServer arcadeServer = SubclassMocks.mock(ArcadeDBServer.class);
     when(arcadeServer.getServerName()).thenReturn("arcadedb-0");
     return new RaftHAServer(arcadeServer, config);
   }

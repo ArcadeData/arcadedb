@@ -19,6 +19,7 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.exception.ConfigurationException;
+import com.arcadedb.utility.SubclassMocks;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
@@ -63,8 +64,8 @@ class Issue8592LeaveClusterHandOffTargetTest {
 
   @BeforeEach
   void setUp() {
-    raft = mock(RaftHAServer.class);
-    monitor = mock(ClusterMonitor.class);
+    raft = SubclassMocks.mock(RaftHAServer.class);
+    monitor = SubclassMocks.mock(ClusterMonitor.class);
     leader = new AtomicBoolean(true);
     when(raft.getClient()).thenReturn(mock(RaftClient.class));
     when(raft.getLocalPeerId()).thenReturn(SELF);

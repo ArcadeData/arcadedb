@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ClusterCapabilityNotReadyException;
 import com.arcadedb.server.security.credential.DefaultCredentialsValidator;
+import com.arcadedb.utility.SubclassMocks;
 import io.grpc.Status;
 import io.grpc.StatusException;
 import org.junit.jupiter.api.Test;
@@ -29,7 +30,6 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
@@ -71,7 +71,7 @@ class Issue7511GrpcClusterNotReadyStatusTest {
   }
 
   private static ArcadeDbGrpcAdminService adminService() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getConfiguration()).thenReturn(new ContextConfiguration());
     return new ArcadeDbGrpcAdminService(server, new DefaultCredentialsValidator());
   }

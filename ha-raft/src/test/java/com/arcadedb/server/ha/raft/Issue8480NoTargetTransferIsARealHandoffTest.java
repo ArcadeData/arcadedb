@@ -24,6 +24,7 @@ import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.utility.SubclassMocks;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.client.api.AdminApi;
 import org.apache.ratis.protocol.RaftClientReply;
@@ -71,7 +72,7 @@ class Issue8480NoTargetTransferIsARealHandoffTest {
 
   @BeforeEach
   void setUp() {
-    raft = mock(RaftHAServer.class);
+    raft = SubclassMocks.mock(RaftHAServer.class);
     admin = mock(AdminApi.class);
     final RaftClient client = mock(RaftClient.class);
     when(client.admin()).thenReturn(admin);
@@ -388,7 +389,7 @@ class Issue8480NoTargetTransferIsARealHandoffTest {
   }
 
   private static ArcadeDBServer detachedServer() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getServerName()).thenReturn("ArcadeDB_0");
     return server;
   }
@@ -400,7 +401,7 @@ class Issue8480NoTargetTransferIsARealHandoffTest {
   }
 
   private void everyPeerLags() {
-    final ClusterMonitor monitor = mock(ClusterMonitor.class);
+    final ClusterMonitor monitor = SubclassMocks.mock(ClusterMonitor.class);
     when(monitor.isReplicaLagging(anyString())).thenReturn(true);
     when(raft.getClusterMonitor()).thenReturn(monitor);
   }

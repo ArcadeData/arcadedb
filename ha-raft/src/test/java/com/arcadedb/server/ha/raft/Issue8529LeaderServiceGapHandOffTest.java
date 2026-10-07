@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.utility.SubclassMocks;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -40,7 +41,6 @@ import java.util.concurrent.atomic.AtomicLong;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -324,7 +324,7 @@ class Issue8529LeaderServiceGapHandOffTest {
   private static RaftHAServer tickServer(final boolean isLeader) {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_SERVER_LIST, "localhost:2434:2480,localhost:2435:2481,localhost:2436:2482");
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getServerName()).thenReturn("ArcadeDB_0");
     when(server.getConfiguration()).thenReturn(config);
     return new RaftHAServer(server, config) {
@@ -336,7 +336,7 @@ class Issue8529LeaderServiceGapHandOffTest {
   }
 
   private static RaftHAServer leader(final boolean isLeader) {
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
     when(raft.isLeader()).thenReturn(isLeader);
     when(raft.transferLeadership(anyLong(), eq(false))).thenReturn(true);
     return raft;
@@ -345,7 +345,7 @@ class Issue8529LeaderServiceGapHandOffTest {
   private ArcadeStateMachine stateMachine(final RaftHAServer raft) {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, serverDir.toString());
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getConfiguration()).thenReturn(config);
     when(server.existsDatabase(MISSING_DB)).thenReturn(false);
     when(server.existsDatabase(KEPT_DB)).thenReturn(false);

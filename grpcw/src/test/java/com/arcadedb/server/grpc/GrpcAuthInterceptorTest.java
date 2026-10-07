@@ -22,6 +22,7 @@ import com.arcadedb.server.http.HttpAuthSession;
 import com.arcadedb.server.http.HttpAuthSessionManager;
 import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityUser;
+import com.arcadedb.utility.SubclassMocks;
 import io.grpc.Metadata;
 import io.grpc.MethodDescriptor;
 import io.grpc.ServerCall;
@@ -51,8 +52,8 @@ class GrpcAuthInterceptorTest {
   @BeforeEach
   @SuppressWarnings("unchecked")
   void setUp() {
-    mockSecurity = mock(ServerSecurity.class);
-    mockSessionManager = mock(HttpAuthSessionManager.class);
+    mockSecurity = SubclassMocks.mock(ServerSecurity.class);
+    mockSessionManager = SubclassMocks.mock(HttpAuthSessionManager.class);
     interceptor = new GrpcAuthInterceptor(mockSecurity);
     mockCall = mock(ServerCall.class);
     mockHandler = mock(ServerCallHandler.class);
@@ -111,8 +112,8 @@ class GrpcAuthInterceptorTest {
 
   @Test
   void validateTokenReturnsTrueForValidSession() {
-    HttpAuthSession mockSession = mock(HttpAuthSession.class);
-    ServerSecurityUser mockUser = mock(ServerSecurityUser.class);
+    HttpAuthSession mockSession = SubclassMocks.mock(HttpAuthSession.class);
+    ServerSecurityUser mockUser = SubclassMocks.mock(ServerSecurityUser.class);
     when(mockSession.getUser()).thenReturn(mockUser);
     when(mockUser.getName()).thenReturn("testuser");
     when(mockSessionManager.getSessionByToken("valid-token")).thenReturn(mockSession);
@@ -145,8 +146,8 @@ class GrpcAuthInterceptorTest {
     // is dropped (or its password rotated), the token must stop working AT ONCE rather than lingering
     // until the session idle-expires, so the interceptor re-checks the name against the live users map and
     // drops the now-orphaned session.
-    final HttpAuthSession mockSession = mock(HttpAuthSession.class);
-    final ServerSecurityUser mockUser = mock(ServerSecurityUser.class);
+    final HttpAuthSession mockSession = SubclassMocks.mock(HttpAuthSession.class);
+    final ServerSecurityUser mockUser = SubclassMocks.mock(ServerSecurityUser.class);
     when(mockSession.getUser()).thenReturn(mockUser);
     when(mockUser.getName()).thenReturn("droppeduser");
     when(mockSessionManager.getSessionByToken("orphan-token")).thenReturn(mockSession);

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.utility.SubclassMocks;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.client.api.AdminApi;
 import org.apache.ratis.protocol.RaftClientReply;
@@ -57,7 +58,7 @@ class RaftAtomicMembershipTest {
 
   @Test
   void addPeerUsesCompareAndSetMode() throws Exception {
-    final RaftHAServer server = mock(RaftHAServer.class);
+    final RaftHAServer server = SubclassMocks.mock(RaftHAServer.class);
     final RaftClient client = mock(RaftClient.class);
     final AdminApi admin = mock(AdminApi.class);
     final RaftClientReply reply = mock(RaftClientReply.class);
@@ -87,7 +88,7 @@ class RaftAtomicMembershipTest {
 
   @Test
   void removePeerUsesCompareAndSetMode() throws Exception {
-    final RaftHAServer server = mock(RaftHAServer.class);
+    final RaftHAServer server = SubclassMocks.mock(RaftHAServer.class);
     final RaftClient client = mock(RaftClient.class);
     final AdminApi admin = mock(AdminApi.class);
     final RaftClientReply reply = mock(RaftClientReply.class);

@@ -21,6 +21,7 @@ package com.arcadedb.server;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.MaintenanceCoordinator.Operation;
 import com.arcadedb.server.backup.BackupCoordinator;
+import com.arcadedb.utility.SubclassMocks;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -58,7 +59,7 @@ class Issue7641DropDatabaseSlotTest {
   @Test
   void dropDatabaseIsRefusedWhileABackupIsRunning() {
     final BackupCoordinator coordinator = new BackupCoordinator();
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.existsDatabase(DB_NAME)).thenReturn(true);
     when(server.getBackupCoordinator()).thenReturn(coordinator);
 
@@ -82,7 +83,7 @@ class Issue7641DropDatabaseSlotTest {
   @Test
   void dropDatabaseIsRefusedWhileARestoreIsRunning() {
     final BackupCoordinator coordinator = new BackupCoordinator();
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.existsDatabase(DB_NAME)).thenReturn(true);
     when(server.getBackupCoordinator()).thenReturn(coordinator);
 
@@ -102,7 +103,7 @@ class Issue7641DropDatabaseSlotTest {
   @Test
   void dropDatabaseIsRefusedWhileAnExportIsRunning() {
     final BackupCoordinator coordinator = new BackupCoordinator();
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.existsDatabase(DB_NAME)).thenReturn(true);
     when(server.getBackupCoordinator()).thenReturn(coordinator);
 
@@ -140,8 +141,8 @@ class Issue7641DropDatabaseSlotTest {
   @Test
   void dropDatabaseSucceedsAndReleasesItsSlotAfterwards() {
     final BackupCoordinator coordinator = new BackupCoordinator();
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    final ServerDatabase database = mock(ServerDatabase.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
+    final ServerDatabase database = SubclassMocks.mock(ServerDatabase.class);
     final DatabaseInternal embedded = mock(DatabaseInternal.class);
 
     when(server.existsDatabase(DB_NAME)).thenReturn(true);
@@ -170,8 +171,8 @@ class Issue7641DropDatabaseSlotTest {
   @Test
   void aFailedDropStillReleasesItsSlot() {
     final BackupCoordinator coordinator = new BackupCoordinator();
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    final ServerDatabase database = mock(ServerDatabase.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
+    final ServerDatabase database = SubclassMocks.mock(ServerDatabase.class);
     final DatabaseInternal embedded = mock(DatabaseInternal.class);
 
     when(server.existsDatabase(DB_NAME)).thenReturn(true);
@@ -211,8 +212,8 @@ class Issue7641DropDatabaseSlotTest {
   @Timeout(30)
   void twoConcurrentDropDatabaseCallsDeleteItExactlyOnce() throws Exception {
     final BackupCoordinator coordinator = new BackupCoordinator();
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    final ServerDatabase database = mock(ServerDatabase.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
+    final ServerDatabase database = SubclassMocks.mock(ServerDatabase.class);
     final DatabaseInternal embedded = mock(DatabaseInternal.class);
 
     // THE DATABASE STOPS EXISTING THE MOMENT IT IS DROPPED, WHICH IS WHAT THE LOSER MUST BE ABLE TO OBSERVE

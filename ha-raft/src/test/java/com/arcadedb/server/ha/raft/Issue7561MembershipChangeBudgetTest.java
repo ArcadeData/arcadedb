@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.utility.StallAwareStopwatch;
+import com.arcadedb.utility.SubclassMocks;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.client.api.AdminApi;
 import org.apache.ratis.protocol.RaftClientReply;
@@ -210,7 +211,7 @@ class Issue7561MembershipChangeBudgetTest {
    */
   @Test
   void aNodeWithNoRaftClientIsRefusedInASentence() {
-    final RaftHAServer server = mock(RaftHAServer.class);
+    final RaftHAServer server = SubclassMocks.mock(RaftHAServer.class);
     when(server.getLivePeers()).thenReturn(List.of(peer("A"), peer("B"), peer("C")));
 
     assertThatThrownBy(() -> new RaftClusterManager(server, 1_000L).addPeer("D", "localhost:2447"))
@@ -226,7 +227,7 @@ class Issue7561MembershipChangeBudgetTest {
    */
   @Test
   void aMembershipClientThatCannotBeBuiltIsReportedAsAConfigurationFailure() {
-    final RaftHAServer server = mock(RaftHAServer.class);
+    final RaftHAServer server = SubclassMocks.mock(RaftHAServer.class);
     when(server.getLivePeers()).thenReturn(List.of(peer("A"), peer("B"), peer("C")));
     when(server.newMembershipClient()).thenThrow(new IllegalStateException("no transport parameters"));
 
@@ -249,7 +250,7 @@ class Issue7561MembershipChangeBudgetTest {
    * started - and makes the manager fall back to {@link RaftHAServer#getClient()}, the one this test drives.
    */
   private static RaftHAServer stubServer() throws Exception {
-    final RaftHAServer server = mock(RaftHAServer.class);
+    final RaftHAServer server = SubclassMocks.mock(RaftHAServer.class);
     final RaftClient client = mock(RaftClient.class);
     final AdminApi admin = mock(AdminApi.class);
 

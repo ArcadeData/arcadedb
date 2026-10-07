@@ -21,6 +21,7 @@ package com.arcadedb.server;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.security.ServerSecurity;
+import com.arcadedb.utility.SubclassMocks;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -132,7 +133,7 @@ class Issue7819RuntimeJoinArmsSecurityGateTest {
   }
 
   private static ServerSecurity securityMissing(final String... documents) {
-    final ServerSecurity security = mock(ServerSecurity.class);
+    final ServerSecurity security = SubclassMocks.mock(ServerSecurity.class);
     when(security.unconvergedClusterSecurityDocuments()).thenReturn(List.of(documents));
     return security;
   }
@@ -143,7 +144,7 @@ class Issue7819RuntimeJoinArmsSecurityGateTest {
     configuration.setValue(GlobalConfiguration.HA_ENABLED, true);
     configuration.setValue(GlobalConfiguration.SERVER_READINESS_REQUIRES_HA, true);
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getStatus()).thenReturn(ArcadeDBServer.STATUS.ONLINE);
     when(server.getConfiguration()).thenReturn(configuration);
     when(server.getHA()).thenReturn(ha);

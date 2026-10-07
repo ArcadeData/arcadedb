@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.utility.SubclassMocks;
 import org.apache.ratis.proto.RaftProtos;
 import org.apache.ratis.protocol.RaftGroupId;
 import org.apache.ratis.protocol.RaftPeerId;
@@ -37,7 +38,6 @@ import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
@@ -107,7 +107,7 @@ class Issue7253SnapshotInstallReadsHAServerOnceTest {
    * the exact instant at which a second read of the field would see {@code null}.
    */
   private static RaftHAServer haServerThatIsTornDownMidResolution(final ArcadeStateMachine sm) {
-    final RaftHAServer raftHA = mock(RaftHAServer.class);
+    final RaftHAServer raftHA = SubclassMocks.mock(RaftHAServer.class);
     when(raftHA.isLeader()).thenReturn(false);
     when(raftHA.getLocalPeerId()).thenReturn(LOCAL);
     when(raftHA.getLeaderId()).thenReturn(LEADER);
@@ -131,7 +131,7 @@ class Issue7253SnapshotInstallReadsHAServerOnceTest {
     configuration.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, databaseDirectory.toString());
     configuration.setValue(GlobalConfiguration.HA_AUTO_ACQUIRE_DATABASES, false);
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getConfiguration()).thenReturn(configuration);
     when(server.getDatabaseNames()).thenReturn(Set.of());
     return server;

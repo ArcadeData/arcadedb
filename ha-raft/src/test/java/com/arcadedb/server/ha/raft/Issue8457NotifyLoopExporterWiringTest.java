@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.utility.SubclassMocks;
 import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.junit.jupiter.api.BeforeEach;
@@ -29,7 +30,6 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
@@ -58,7 +58,7 @@ class Issue8457NotifyLoopExporterWiringTest {
 
   @BeforeEach
   void setUp() {
-    haServer = mock(RaftHAServer.class);
+    haServer = SubclassMocks.mock(RaftHAServer.class);
     monitor = new ClusterMonitor(1000L, 60_000L, id -> {
     });
     monitor.setClock(now::get);

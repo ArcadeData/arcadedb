@@ -20,6 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.server.ha.raft.RaftPeerAddressResolver.JoinTarget;
+import com.arcadedb.utility.SubclassMocks;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.client.api.AdminApi;
 import org.apache.ratis.protocol.RaftClientReply;
@@ -68,7 +69,7 @@ class Issue8330DeclaredHttpAddressTest {
 
   /** A cluster whose Raft and HTTP ports are NOT in step, so a derived address is detectably wrong. */
   private RaftHAServer stubServer(final Map<RaftPeerId, String> httpAddresses, final AdminApi admin) {
-    final RaftHAServer server = mock(RaftHAServer.class);
+    final RaftHAServer server = SubclassMocks.mock(RaftHAServer.class);
     final RaftClient client = mock(RaftClient.class);
     when(server.getClient()).thenReturn(client);
     when(client.admin()).thenReturn(admin);

@@ -21,13 +21,13 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.utility.SubclassMocks;
 
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
 
 import static org.mockito.Mockito.anyBoolean;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -49,8 +49,8 @@ class Issue4837DoubleLeaveTest {
 
   @Test
   void stopServiceDoesNotLeaveClusterItselfInK8s() throws Exception {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
 
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_K8S, true);
@@ -70,8 +70,8 @@ class Issue4837DoubleLeaveTest {
 
   @Test
   void stopServiceDoesNotLeaveClusterItselfWhenNotK8s() throws Exception {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
 
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_K8S, false);

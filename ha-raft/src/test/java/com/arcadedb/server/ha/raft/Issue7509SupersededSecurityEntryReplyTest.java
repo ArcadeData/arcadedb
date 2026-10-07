@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.security.ServerSecurity;
+import com.arcadedb.utility.SubclassMocks;
 import org.apache.ratis.proto.RaftProtos.LogEntryProto;
 import org.apache.ratis.proto.RaftProtos.StateMachineLogEntryProto;
 import org.apache.ratis.protocol.Message;
@@ -33,7 +34,6 @@ import java.util.concurrent.CompletableFuture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -74,7 +74,7 @@ class Issue7509SupersededSecurityEntryReplyTest {
 
   @Test
   void anInstalledUsersEntryAnswersSomethingElse() {
-    final ServerSecurity security = mock(ServerSecurity.class);
+    final ServerSecurity security = SubclassMocks.mock(ServerSecurity.class);
     when(security.applyReplicatedUsers(anyString(), anyString())).thenReturn(true);
     final ArcadeStateMachine sm = stateMachine(security);
 
@@ -87,7 +87,7 @@ class Issue7509SupersededSecurityEntryReplyTest {
 
   @Test
   void aRefusedGroupsEntryAnswersTheSupersededMarker() {
-    final ServerSecurity security = mock(ServerSecurity.class);
+    final ServerSecurity security = SubclassMocks.mock(ServerSecurity.class);
     when(security.applyReplicatedGroups(anyString(), anyString())).thenReturn(false);
     final ArcadeStateMachine sm = stateMachine(security);
 
@@ -100,7 +100,7 @@ class Issue7509SupersededSecurityEntryReplyTest {
 
   @Test
   void aRefusedApiTokensEntryAnswersTheSupersededMarker() {
-    final ServerSecurity security = mock(ServerSecurity.class);
+    final ServerSecurity security = SubclassMocks.mock(ServerSecurity.class);
     when(security.applyReplicatedApiTokens(anyString(), anyString())).thenReturn(false);
     final ArcadeStateMachine sm = stateMachine(security);
 
@@ -117,7 +117,7 @@ class Issue7509SupersededSecurityEntryReplyTest {
    */
   @Test
   void anEntryWithoutAPreconditionTakesTheUnconditionalApply() {
-    final ServerSecurity security = mock(ServerSecurity.class);
+    final ServerSecurity security = SubclassMocks.mock(ServerSecurity.class);
     final ArcadeStateMachine sm = stateMachine(security);
 
     final CompletableFuture<Message> future = sm.applyTransaction(
@@ -129,13 +129,13 @@ class Issue7509SupersededSecurityEntryReplyTest {
   }
 
   private static ServerSecurity securityThatRefuses() {
-    final ServerSecurity security = mock(ServerSecurity.class);
+    final ServerSecurity security = SubclassMocks.mock(ServerSecurity.class);
     when(security.applyReplicatedUsers(anyString(), anyString())).thenReturn(false);
     return security;
   }
 
   private static ArcadeStateMachine stateMachine(final ServerSecurity security) {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getSecurity()).thenReturn(security);
     when(server.getConfiguration()).thenReturn(new ContextConfiguration());
 

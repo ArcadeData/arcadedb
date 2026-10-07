@@ -28,6 +28,7 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
+import com.arcadedb.utility.SubclassMocks;
 import io.undertow.websockets.core.WebSocketChannel;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -263,14 +264,14 @@ class Issue6762WebSocketEventBusTest {
   void aSubscriberWhoseAccessWasRevokedStopsReceivingEvents() throws Exception {
     final String db = record.getDatabase().getName();
 
-    final ServerSecurityUser revoked = mock(ServerSecurityUser.class);
+    final ServerSecurityUser revoked = SubclassMocks.mock(ServerSecurityUser.class);
     when(revoked.getName()).thenReturn("someone");
     when(revoked.canAccessToDatabase(db)).thenReturn(false);
 
-    final ServerSecurity security = mock(ServerSecurity.class);
+    final ServerSecurity security = SubclassMocks.mock(ServerSecurity.class);
     when(security.revalidate(revoked)).thenReturn(revoked);
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getConfiguration()).thenReturn(new ContextConfiguration());
     when(server.getSecurity()).thenReturn(security);
 
@@ -296,14 +297,14 @@ class Issue6762WebSocketEventBusTest {
   void aSubscriberWhoStillHasAccessKeepsReceivingEvents() throws Exception {
     final String db = record.getDatabase().getName();
 
-    final ServerSecurityUser allowed = mock(ServerSecurityUser.class);
+    final ServerSecurityUser allowed = SubclassMocks.mock(ServerSecurityUser.class);
     when(allowed.getName()).thenReturn("someone");
     when(allowed.canAccessToDatabase(db)).thenReturn(true);
 
-    final ServerSecurity security = mock(ServerSecurity.class);
+    final ServerSecurity security = SubclassMocks.mock(ServerSecurity.class);
     when(security.revalidate(allowed)).thenReturn(allowed);
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getConfiguration()).thenReturn(new ContextConfiguration());
     when(server.getSecurity()).thenReturn(security);
 
@@ -330,14 +331,14 @@ class Issue6762WebSocketEventBusTest {
   void aSubscriberWhoseUserWasDroppedStopsReceivingEvents() throws Exception {
     final String db = record.getDatabase().getName();
 
-    final ServerSecurityUser captured = mock(ServerSecurityUser.class);
+    final ServerSecurityUser captured = SubclassMocks.mock(ServerSecurityUser.class);
     when(captured.getName()).thenReturn("gone");
     when(captured.canAccessToDatabase(db)).thenReturn(true); // the stale snapshot still says yes
 
-    final ServerSecurity security = mock(ServerSecurity.class);
+    final ServerSecurity security = SubclassMocks.mock(ServerSecurity.class);
     when(security.revalidate(captured)).thenThrow(new ServerSecurityException("User 'gone' no longer exists")); // ...but the principal no longer exists
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getConfiguration()).thenReturn(new ContextConfiguration());
     when(server.getSecurity()).thenReturn(security);
 

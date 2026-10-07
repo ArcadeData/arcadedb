@@ -21,12 +21,12 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.utility.SubclassMocks;
 
 import org.apache.ratis.protocol.RaftPeerId;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
@@ -131,7 +131,7 @@ class Issue7563DivergenceProbeLeaderIdentityTest {
     config.setValue(GlobalConfiguration.HA_SERVER_LIST, serverList);
     config.setValue(GlobalConfiguration.NETWORK_USE_SSL, true);
 
-    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
+    final ArcadeDBServer mockServer = SubclassMocks.mock(ArcadeDBServer.class);
     when(mockServer.getServerName()).thenReturn("ArcadeDB_0");
 
     return new RaftHAServer(mockServer, config);

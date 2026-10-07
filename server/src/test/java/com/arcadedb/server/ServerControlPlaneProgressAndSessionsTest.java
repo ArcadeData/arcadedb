@@ -24,13 +24,13 @@ import com.arcadedb.server.http.HttpAuthSession;
 import com.arcadedb.server.http.HttpAuthSessionManager;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
+import com.arcadedb.utility.SubclassMocks;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
@@ -46,7 +46,7 @@ class ServerControlPlaneProgressAndSessionsTest {
 
   @Test
   void sessionsAreEmptyWhenTheServerRunsWithoutAnHttpListener() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getHttpServer()).thenReturn(null);
 
     assertThat(new ServerControlPlane(server).listHttpSessions()).isEmpty();
@@ -56,15 +56,15 @@ class ServerControlPlaneProgressAndSessionsTest {
   void sessionsAreReadLiveFromTheHttpSessionManager() {
     final HttpAuthSessionManager manager = new HttpAuthSessionManager(60_000);
     try {
-      final ArcadeDBServer server = mock(ArcadeDBServer.class);
-      final HttpServer httpServer = mock(HttpServer.class);
+      final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
+      final HttpServer httpServer = SubclassMocks.mock(HttpServer.class);
       when(httpServer.getAuthSessionManager()).thenReturn(manager);
       when(server.getHttpServer()).thenReturn(httpServer);
 
       final ServerControlPlane controlPlane = new ServerControlPlane(server);
       assertThat(controlPlane.listHttpSessions()).isEmpty();
 
-      final ServerSecurityUser user = mock(ServerSecurityUser.class);
+      final ServerSecurityUser user = SubclassMocks.mock(ServerSecurityUser.class);
       when(user.getName()).thenReturn("root");
       final HttpAuthSession session = manager.createSession(user);
 
@@ -80,7 +80,7 @@ class ServerControlPlaneProgressAndSessionsTest {
 
   @Test
   void progressReportsTheOperationsOfTheNamedDatabaseOnly() {
-    final ServerControlPlane controlPlane = new ServerControlPlane(mock(ArcadeDBServer.class));
+    final ServerControlPlane controlPlane = new ServerControlPlane(SubclassMocks.mock(ArcadeDBServer.class));
 
     final OperationProgress operation = OperationProgressRegistry.instance().register("cp7310db", "check database");
     try {
@@ -103,7 +103,7 @@ class ServerControlPlaneProgressAndSessionsTest {
    */
   @Test
   void progressRefusesAMissingDatabaseName() {
-    final ServerControlPlane controlPlane = new ServerControlPlane(mock(ArcadeDBServer.class));
+    final ServerControlPlane controlPlane = new ServerControlPlane(SubclassMocks.mock(ArcadeDBServer.class));
 
     assertThatThrownBy(() -> controlPlane.getProgress(null)).isInstanceOf(IllegalArgumentException.class);
     assertThatThrownBy(() -> controlPlane.getProgress("")).isInstanceOf(IllegalArgumentException.class);

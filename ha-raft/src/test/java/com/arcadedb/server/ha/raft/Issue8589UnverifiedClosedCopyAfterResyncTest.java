@@ -28,6 +28,7 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.StaticBaseServerTest;
+import com.arcadedb.utility.SubclassMocks;
 import com.sun.net.httpserver.HttpServer;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.server.protocol.TermIndex;
@@ -104,7 +105,7 @@ class Issue8589UnverifiedClosedCopyAfterResyncTest {
     leader.start();
     leaderAddress = "localhost:" + leader.getAddress().getPort();
 
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
     when(raft.isLeader()).thenReturn(false);
     when(raft.getLocalPeerId()).thenReturn(LOCAL);
     when(raft.getLocalHttpAddress()).thenReturn("local-host:2480");

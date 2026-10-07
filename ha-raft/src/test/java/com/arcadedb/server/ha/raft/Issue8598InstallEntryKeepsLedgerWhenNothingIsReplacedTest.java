@@ -28,6 +28,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.utility.SubclassMocks;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -38,7 +39,6 @@ import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
@@ -97,7 +97,7 @@ class Issue8598InstallEntryKeepsLedgerWhenNothingIsReplacedTest {
 
   @Test
   void theLeaderSkippingItsOwnForcedReinstallKeepsTheReservations() {
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
     when(raft.isLeader()).thenReturn(true);
     stateMachine.setRaftHAServer(raft);
 

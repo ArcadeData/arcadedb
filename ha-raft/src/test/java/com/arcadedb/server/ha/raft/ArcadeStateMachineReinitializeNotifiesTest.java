@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.utility.SubclassMocks;
 import org.apache.ratis.protocol.RaftGroupId;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.server.RaftServer;
@@ -32,7 +33,6 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThatNoException;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -66,7 +66,7 @@ class ArcadeStateMachineReinitializeNotifiesTest {
     final RaftStorage raftStorage = newFormattedStorage(tempDir);
 
     final ArcadeStateMachine sm = new ArcadeStateMachine();
-    final RaftHAServer mockRaft = mock(RaftHAServer.class);
+    final RaftHAServer mockRaft = SubclassMocks.mock(RaftHAServer.class);
     try {
       sm.initialize(stubServer(), groupId, raftStorage);
 
@@ -99,7 +99,7 @@ class ArcadeStateMachineReinitializeNotifiesTest {
     final RaftStorage raftStorage = newFormattedStorage(tempDir);
 
     final ArcadeStateMachine sm = new ArcadeStateMachine();
-    final RaftHAServer mockRaft = mock(RaftHAServer.class);
+    final RaftHAServer mockRaft = SubclassMocks.mock(RaftHAServer.class);
     try {
       sm.initialize(stubServer(), groupId, raftStorage);
       sm.setRaftHAServer(mockRaft);

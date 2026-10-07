@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ClusterCapabilityNotReadyException;
+import com.arcadedb.utility.SubclassMocks;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -31,7 +32,6 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -121,7 +121,7 @@ class Issue7511SecurityEntryCapabilityGateTest {
   /** An ungated type never asks the cluster anything, so it cannot be refused - or slowed down - by this gate. */
   @Test
   void anUngatedEntryTypeNeverQueriesThePeers() {
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
 
     SecurityEntryCapabilityGate.requireEveryPeerCanDecode(serverWithGate(true), raft,
         RaftLogEntryType.BOOTSTRAP_FINGERPRINT_ENTRY, "bootstrap fingerprint");
@@ -135,7 +135,7 @@ class Issue7511SecurityEntryCapabilityGateTest {
 
   @Test
   void aClusterWhereEveryPeerAdvertisesTheCapabilityIsNotRefused() {
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
     when(raft.peersMissingCapabilityNow(PeerCapabilities.SECURITY_GROUPS_ENTRY)).thenReturn(List.of());
 
     assertThatCode(() -> SecurityEntryCapabilityGate.requireEveryPeerCanDecode(serverWithGate(true), raft,
@@ -144,7 +144,7 @@ class Issue7511SecurityEntryCapabilityGateTest {
 
   @Test
   void aPeerThatHasNotAdvertisedTheCapabilityRefusesTheGroupChange() {
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
     when(raft.peersMissingCapabilityNow(PeerCapabilities.SECURITY_GROUPS_ENTRY)).thenReturn(List.of(LAGGING_PEER));
     when(raft.getPeerCapabilityRegistry()).thenReturn(registryWhereThePeerAnswered404());
 
@@ -157,7 +157,7 @@ class Issue7511SecurityEntryCapabilityGateTest {
 
   @Test
   void aPeerThatHasNotAdvertisedTheCapabilityRefusesTheTokenChangeToo() {
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
     when(raft.peersMissingCapabilityNow(PeerCapabilities.SECURITY_API_TOKENS_ENTRY)).thenReturn(List.of(LAGGING_PEER));
 
     assertThatThrownBy(() -> SecurityEntryCapabilityGate.requireEveryPeerCanDecode(serverWithGate(true), raft,
@@ -172,7 +172,7 @@ class Issue7511SecurityEntryCapabilityGateTest {
    */
   @Test
   void theGateIsOnWhenNoServerConfigurationCanBeRead() {
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
     when(raft.peersMissingCapabilityNow(PeerCapabilities.SECURITY_GROUPS_ENTRY)).thenReturn(List.of(LAGGING_PEER));
 
     assertThatThrownBy(() -> SecurityEntryCapabilityGate.requireEveryPeerCanDecode(null, raft,
@@ -183,7 +183,7 @@ class Issue7511SecurityEntryCapabilityGateTest {
   /** Turned off, the operation goes through as it did before #7511 - and the peers are not even asked. */
   @Test
   void theInterlockCanBeTurnedOffForAnOperatorWhoKnowsBetter() {
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
     when(raft.peersMissingCapabilityNow(PeerCapabilities.SECURITY_GROUPS_ENTRY)).thenReturn(List.of(LAGGING_PEER));
 
     assertThatCode(() -> SecurityEntryCapabilityGate.requireEveryPeerCanDecode(serverWithGate(false), raft,
@@ -263,8 +263,8 @@ class Issue7511SecurityEntryCapabilityGateTest {
    */
   @Test
   void aRefusedGroupChangeSubmitsNothingToTheRaftLog() {
-    final RaftTransactionBroker broker = mock(RaftTransactionBroker.class);
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final RaftTransactionBroker broker = SubclassMocks.mock(RaftTransactionBroker.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
     when(raft.getTransactionBroker()).thenReturn(broker);
     when(raft.peersMissingCapabilityNow(PeerCapabilities.SECURITY_GROUPS_ENTRY)).thenReturn(List.of(LAGGING_PEER));
 
@@ -282,8 +282,8 @@ class Issue7511SecurityEntryCapabilityGateTest {
    */
   @Test
   void aRefusedApiTokenChangeSubmitsNothingToTheRaftLog() {
-    final RaftTransactionBroker broker = mock(RaftTransactionBroker.class);
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final RaftTransactionBroker broker = SubclassMocks.mock(RaftTransactionBroker.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
     when(raft.getTransactionBroker()).thenReturn(broker);
     when(raft.peersMissingCapabilityNow(PeerCapabilities.SECURITY_API_TOKENS_ENTRY)).thenReturn(List.of(LAGGING_PEER));
 
@@ -298,8 +298,8 @@ class Issue7511SecurityEntryCapabilityGateTest {
   /** The other direction, so the test above cannot pass because the plugin submits nothing under any condition. */
   @Test
   void aFullyUpgradedClusterStillReplicatesBothDocuments() {
-    final RaftTransactionBroker broker = mock(RaftTransactionBroker.class);
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final RaftTransactionBroker broker = SubclassMocks.mock(RaftTransactionBroker.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
     when(raft.getTransactionBroker()).thenReturn(broker);
     when(raft.peersMissingCapabilityNow(anyString())).thenReturn(List.of());
 
@@ -319,8 +319,8 @@ class Issue7511SecurityEntryCapabilityGateTest {
    */
   @Test
   void theUsersEntryIsNotGatedAndStillReplicatesOnAMixedCluster() {
-    final RaftTransactionBroker broker = mock(RaftTransactionBroker.class);
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final RaftTransactionBroker broker = SubclassMocks.mock(RaftTransactionBroker.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
     when(raft.getTransactionBroker()).thenReturn(broker);
     when(raft.peersMissingCapabilityNow(anyString())).thenReturn(List.of(LAGGING_PEER));
 
@@ -349,7 +349,7 @@ class Issue7511SecurityEntryCapabilityGateTest {
   }
 
   private static ArcadeDBServer serverWith(final ContextConfiguration configuration) {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getConfiguration()).thenReturn(configuration);
     return server;
   }

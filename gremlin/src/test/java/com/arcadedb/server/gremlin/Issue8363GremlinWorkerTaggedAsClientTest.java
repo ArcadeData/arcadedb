@@ -21,6 +21,7 @@ package com.arcadedb.server.gremlin;
 import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.server.ArcadeDBServer;
 import org.junit.jupiter.api.Test;
+import org.mockito.MockMakers;
 
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -28,6 +29,7 @@ import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.withSettings;
 
 /**
  * Issue #8363: under HA, {@code RaftReplicatedDatabase} refuses a CLIENT request on a database whose directory is
@@ -42,7 +44,7 @@ class Issue8363GremlinWorkerTaggedAsClientTest {
     final ExecutorService pool = Executors.newSingleThreadExecutor();
     try {
       final GremlinPrincipalPropagatingExecutorService executor =
-          new GremlinPrincipalPropagatingExecutorService(pool, mock(ArcadeDBServer.class));
+          new GremlinPrincipalPropagatingExecutorService(pool, mock(ArcadeDBServer.class, withSettings().mockMaker(MockMakers.SUBCLASS)));
 
       assertThat(executor.submit(ProtocolContext::get).get(10, TimeUnit.SECONDS)).isEqualTo("gremlin");
       assertThat(pool.submit(ProtocolContext::get).get(10, TimeUnit.SECONDS))

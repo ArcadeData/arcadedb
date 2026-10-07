@@ -24,6 +24,7 @@ import com.arcadedb.log.DefaultLogger;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.log.Logger;
 import com.arcadedb.server.security.ServerSecurity;
+import com.arcadedb.utility.SubclassMocks;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -170,7 +171,7 @@ class Issue7532SecurityConvergenceReadinessTest {
   /** Convergence is the one thing that clears the window, so a later join is measured from itself. */
   @Test
   void convergenceClearsTheWindow() {
-    final ServerSecurity security = mock(ServerSecurity.class);
+    final ServerSecurity security = SubclassMocks.mock(ServerSecurity.class);
     when(security.unconvergedClusterSecurityDocuments())
         .thenReturn(List.of("users"), List.of(), List.of("users"));
 
@@ -193,7 +194,7 @@ class Issue7532SecurityConvergenceReadinessTest {
    */
   @Test
   void aFreshWindowReportsItsOwnGiveUpDecision() {
-    final ServerSecurity security = mock(ServerSecurity.class);
+    final ServerSecurity security = SubclassMocks.mock(ServerSecurity.class);
     when(security.unconvergedClusterSecurityDocuments())
         .thenReturn(List.of("users"), List.of("users"), List.of(), List.of("users"), List.of("users"));
 
@@ -242,7 +243,7 @@ class Issue7532SecurityConvergenceReadinessTest {
    */
   @Test
   void aSignalThatCannotBeReadDoesNotFailTheProbe() {
-    final ServerSecurity security = mock(ServerSecurity.class);
+    final ServerSecurity security = SubclassMocks.mock(ServerSecurity.class);
     when(security.unconvergedClusterSecurityDocuments()).thenThrow(new IllegalStateException("not installed"));
 
     assertThat(new ServerControlPlane(
@@ -304,7 +305,7 @@ class Issue7532SecurityConvergenceReadinessTest {
   }
 
   private static ServerSecurity securityMissing(final String... documents) {
-    final ServerSecurity security = mock(ServerSecurity.class);
+    final ServerSecurity security = SubclassMocks.mock(ServerSecurity.class);
     when(security.unconvergedClusterSecurityDocuments()).thenReturn(List.of(documents));
     return security;
   }
@@ -320,7 +321,7 @@ class Issue7532SecurityConvergenceReadinessTest {
 
   private static ArcadeDBServer onlineServerWith(final HAServerPlugin ha, final ServerSecurity security,
       final ContextConfiguration configuration) {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getStatus()).thenReturn(ArcadeDBServer.STATUS.ONLINE);
     when(server.getConfiguration()).thenReturn(configuration);
     when(server.getHA()).thenReturn(ha);

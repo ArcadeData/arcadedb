@@ -30,6 +30,7 @@ import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.ExecutionResponse;
 import com.arcadedb.server.ha.raft.UnverifiedClosedCopyCheck.CopyState;
 import com.arcadedb.server.security.ServerSecurityUser;
+import com.arcadedb.utility.SubclassMocks;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -55,7 +56,6 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
@@ -83,7 +83,7 @@ class Issue8605UnverifiedClosedCopyCheckTest {
   @BeforeEach
   void setUp() throws IOException {
     server = startServer();
-    raft = mock(RaftHAServer.class);
+    raft = SubclassMocks.mock(RaftHAServer.class);
     when(raft.getLocalPeerId()).thenReturn(RaftPeerId.valueOf("local"));
     sm = new ArcadeStateMachine();
     sm.setServer(server);
@@ -449,11 +449,11 @@ class Issue8605UnverifiedClosedCopyCheckTest {
   }
 
   private ExecutionResponse handlerResponse(final String name) throws Exception {
-    final HttpServer httpServer = mock(HttpServer.class);
+    final HttpServer httpServer = SubclassMocks.mock(HttpServer.class);
     when(httpServer.getServer()).thenReturn(server);
-    final RaftHAPlugin plugin = mock(RaftHAPlugin.class);
+    final RaftHAPlugin plugin = SubclassMocks.mock(RaftHAPlugin.class);
     when(plugin.getRaftHAServer()).thenReturn(raft);
-    final ServerSecurityUser root = mock(ServerSecurityUser.class);
+    final ServerSecurityUser root = SubclassMocks.mock(ServerSecurityUser.class);
     when(root.getName()).thenReturn("root");
 
     return new PostBootstrapStateHandler(httpServer, plugin).execute(null, root,

@@ -28,6 +28,7 @@ import com.arcadedb.server.LeaderForwardContext;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.PostBatchHandler.CountingInputStream;
 import com.arcadedb.server.security.ServerSecurityUser;
+import com.arcadedb.utility.SubclassMocks;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HttpString;
 import io.undertow.util.Methods;
@@ -188,10 +189,10 @@ class Issue8393UndeterminedForwardRefusalTest {
 
   private static HttpServer httpServerWith(final HAServerPlugin ha) {
     final ContextConfiguration cfg = new ContextConfiguration();
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getHA()).thenReturn(ha);
     when(server.getConfiguration()).thenReturn(cfg);
-    final HttpServer httpServer = mock(HttpServer.class);
+    final HttpServer httpServer = SubclassMocks.mock(HttpServer.class);
     when(httpServer.getServer()).thenReturn(server);
     return httpServer;
   }
@@ -206,7 +207,7 @@ class Issue8393UndeterminedForwardRefusalTest {
   }
 
   private static ServerSecurityUser user() {
-    final ServerSecurityUser user = mock(ServerSecurityUser.class);
+    final ServerSecurityUser user = SubclassMocks.mock(ServerSecurityUser.class);
     when(user.getName()).thenReturn("root");
     return user;
   }

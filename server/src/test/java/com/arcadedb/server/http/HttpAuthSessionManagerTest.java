@@ -19,13 +19,13 @@
 package com.arcadedb.server.http;
 
 import com.arcadedb.server.security.ServerSecurityUser;
+import com.arcadedb.utility.SubclassMocks;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
@@ -49,7 +49,7 @@ class HttpAuthSessionManagerTest {
   }
 
   private ServerSecurityUser createMockUser(final String username) {
-    final ServerSecurityUser user = mock(ServerSecurityUser.class);
+    final ServerSecurityUser user = SubclassMocks.mock(ServerSecurityUser.class);
     when(user.getName()).thenReturn(username);
     when(user.getAuthorizedDatabases()).thenReturn(Set.of());
     return user;

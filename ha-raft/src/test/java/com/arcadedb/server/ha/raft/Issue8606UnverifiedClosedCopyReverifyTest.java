@@ -31,6 +31,7 @@ import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.StaticBaseServerTest;
 import com.arcadedb.server.http.handler.ExecutionResponse;
 import com.arcadedb.server.security.ServerSecurityUser;
+import com.arcadedb.utility.SubclassMocks;
 import com.sun.net.httpserver.HttpServer;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.util.LifeCycle;
@@ -137,7 +138,7 @@ class Issue8606UnverifiedClosedCopyReverifyTest {
     leader.start();
     leaderAddress = "localhost:" + leader.getAddress().getPort();
 
-    raft = mock(RaftHAServer.class);
+    raft = SubclassMocks.mock(RaftHAServer.class);
     when(raft.isLeader()).thenReturn(false);
     when(raft.getLocalPeerId()).thenReturn(LOCAL);
     when(raft.getLocalHttpAddress()).thenReturn("local-host:2480");
@@ -471,11 +472,11 @@ class Issue8606UnverifiedClosedCopyReverifyTest {
 
   private JSONObject handlerAnswer(final String name) throws Exception {
     // Fully qualified: the JDK's HttpServer, imported above, is the fake leader.
-    final com.arcadedb.server.http.HttpServer httpServer = mock(com.arcadedb.server.http.HttpServer.class);
+    final com.arcadedb.server.http.HttpServer httpServer = SubclassMocks.mock(com.arcadedb.server.http.HttpServer.class);
     when(httpServer.getServer()).thenReturn(server);
-    final RaftHAPlugin plugin = mock(RaftHAPlugin.class);
+    final RaftHAPlugin plugin = SubclassMocks.mock(RaftHAPlugin.class);
     when(plugin.getRaftHAServer()).thenReturn(raft);
-    final ServerSecurityUser root = mock(ServerSecurityUser.class);
+    final ServerSecurityUser root = SubclassMocks.mock(ServerSecurityUser.class);
     when(root.getName()).thenReturn("root");
     final ExecutionResponse response = new PostBootstrapStateHandler(httpServer, plugin).execute(null, root,
         new JSONObject().put(UnverifiedClosedCopyCheck.COPY_OF, name));

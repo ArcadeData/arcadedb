@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.utility.FileUtils;
+import com.arcadedb.utility.SubclassMocks;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -35,7 +36,6 @@ import java.nio.file.Path;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -139,7 +139,7 @@ class Issue7221ForceSnapshotGuardMissingDatabaseTest {
     // copy of the database to justify the skip.
     wipeTheLocalCopy();
 
-    final RaftHAServer leader = mock(RaftHAServer.class);
+    final RaftHAServer leader = SubclassMocks.mock(RaftHAServer.class);
     when(leader.isLeader()).thenReturn(true);
     sm.setRaftHAServer(leader);
 
@@ -157,7 +157,7 @@ class Issue7221ForceSnapshotGuardMissingDatabaseTest {
     final ArcadeStateMachine sm = newStateMachine();
     sm.writePersistedAppliedIndex(ENTRY_INDEX + 8, DB);
 
-    final RaftHAServer leader = mock(RaftHAServer.class);
+    final RaftHAServer leader = SubclassMocks.mock(RaftHAServer.class);
     when(leader.isLeader()).thenReturn(true);
     sm.setRaftHAServer(leader);
 

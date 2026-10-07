@@ -21,6 +21,7 @@ package com.arcadedb.server.grpc;
 import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
+import com.arcadedb.utility.SubclassMocks;
 import io.grpc.Metadata;
 import io.grpc.MethodDescriptor;
 import io.grpc.ServerCall;
@@ -68,8 +69,8 @@ class Issue7320GrpcAuthInterceptorDatabaseHeaderTest {
   @BeforeEach
   @SuppressWarnings("unchecked")
   void setUp() {
-    security = mock(ServerSecurity.class);
-    scopedUser = mock(ServerSecurityUser.class);
+    security = SubclassMocks.mock(ServerSecurity.class);
+    scopedUser = SubclassMocks.mock(ServerSecurityUser.class);
     call = mock(ServerCall.class);
     handler = mock(ServerCallHandler.class);
 

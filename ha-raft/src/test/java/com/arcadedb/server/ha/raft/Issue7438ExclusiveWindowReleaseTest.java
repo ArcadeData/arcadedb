@@ -25,6 +25,7 @@ import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.utility.SubclassMocks;
 import org.apache.ratis.protocol.ClientId;
 import org.apache.ratis.protocol.Message;
 import org.apache.ratis.protocol.RaftClientRequest;
@@ -40,7 +41,6 @@ import java.util.Collections;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
@@ -76,9 +76,9 @@ class Issue7438ExclusiveWindowReleaseTest {
       }
     };
     // No transaction broker: every replicate call fails, which is the exit these tests take.
-    raft = mock(RaftHAServer.class);
+    raft = SubclassMocks.mock(RaftHAServer.class);
     when(raft.getStateMachine()).thenReturn(stateMachine);
-    replicated = new RaftReplicatedDatabase(mock(ArcadeDBServer.class), db, raft);
+    replicated = new RaftReplicatedDatabase(SubclassMocks.mock(ArcadeDBServer.class), db, raft);
   }
 
   @AfterEach

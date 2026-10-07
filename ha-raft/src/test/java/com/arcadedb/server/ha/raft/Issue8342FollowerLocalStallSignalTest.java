@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.utility.SubclassMocks;
 import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.server.DivisionInfo;
@@ -285,7 +286,7 @@ class Issue8342FollowerLocalStallSignalTest {
   // ---- helpers ---------------------------------------------------------------------------------------------------
 
   private static ArcadeDBServer emptyServer() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getDatabaseNames()).thenReturn(Set.of());
     return server;
   }
@@ -343,7 +344,7 @@ class Issue8342FollowerLocalStallSignalTest {
       config.setValue(GlobalConfiguration.HA_REPLICATION_LAG_WARNING, THRESHOLD);
       config.setValue(GlobalConfiguration.SERVER_READINESS_REQUIRES_HA, false);
 
-      final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
+      final ArcadeDBServer mockServer = SubclassMocks.mock(ArcadeDBServer.class);
       when(mockServer.getServerName()).thenReturn("ArcadeDB_0");
       raft = new RaftHAServer(mockServer, config);
 
@@ -376,7 +377,7 @@ class Issue8342FollowerLocalStallSignalTest {
       field.setAccessible(true);
       field.set(raft, ratis);
 
-      stateMachine = mock(ArcadeStateMachine.class);
+      stateMachine = SubclassMocks.mock(ArcadeStateMachine.class);
       when(stateMachine.isResyncInProgress()).thenReturn(false);
       final Field smField = RaftHAServer.class.getDeclaredField("stateMachine");
       smField.setAccessible(true);

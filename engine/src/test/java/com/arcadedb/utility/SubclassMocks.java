@@ -42,7 +42,7 @@ import org.mockito.stubbing.Answer;
  * <p>
  * A test class can route every bare {@code mock(...)} call through this class by statically importing
  * {@code SubclassMocks.mock} in place of {@code Mockito.mock}. {@code InlineMocksOfJitWarmTypesTest} (server module)
- * holds the rule for the engine types the HA and HTTP layers delegate to.
+ * holds the rule for the engine, server and HA types the HA and HTTP layers delegate to (issues #8851, #8867).
  */
 public final class SubclassMocks {
   private SubclassMocks() {

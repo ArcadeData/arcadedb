@@ -25,6 +25,7 @@ import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.PostBatchHandler.CountingInputStream;
 import com.arcadedb.server.security.ServerSecurityUser;
+import com.arcadedb.utility.SubclassMocks;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HttpString;
 import io.undertow.util.Methods;
@@ -56,7 +57,6 @@ import java.util.function.BiPredicate;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
@@ -294,10 +294,10 @@ class Issue7508LeaderForwardSchemeTest {
   // ---------------------------------------------------------------------------------------------------------------
 
   private static HttpServer httpServerWith(final HAServerPlugin ha) {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getHA()).thenReturn(ha);
     when(server.getConfiguration()).thenReturn(new ContextConfiguration());
-    final HttpServer httpServer = mock(HttpServer.class);
+    final HttpServer httpServer = SubclassMocks.mock(HttpServer.class);
     when(httpServer.getServer()).thenReturn(server);
     return httpServer;
   }
@@ -319,7 +319,7 @@ class Issue7508LeaderForwardSchemeTest {
   }
 
   private static ServerSecurityUser user(final String name) {
-    final ServerSecurityUser user = mock(ServerSecurityUser.class);
+    final ServerSecurityUser user = SubclassMocks.mock(ServerSecurityUser.class);
     when(user.getName()).thenReturn(name);
     return user;
   }

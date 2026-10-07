@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.utility.SubclassMocks;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.client.api.AdminApi;
 import org.apache.ratis.protocol.RaftClientReply;
@@ -221,7 +222,7 @@ class Issue8556HandOffTargetReachabilityTest {
   void theStepDownNeverTargetsAnUnreachablePeer() {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_SERVER_LIST, "localhost:2434:2480,localhost:2435:2481,localhost:2436:2482");
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getServerName()).thenReturn("ArcadeDB_0");
     when(server.getConfiguration()).thenReturn(config);
     final RecordingStepDown raft = new RecordingStepDown(server, config);
@@ -252,7 +253,7 @@ class Issue8556HandOffTargetReachabilityTest {
   void theReplacingLeaderHandOffPausesAfterAnAttemptEndsAndBacksOff() throws Exception {
     final AtomicLong clock = new AtomicLong(1_000_000L);
     final AtomicInteger attempts = new AtomicInteger();
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
     when(raft.isLeader()).thenReturn(true);
     when(raft.transferLeadership(anyLong(), eq(false))).thenAnswer(invocation -> {
       attempts.incrementAndGet();
@@ -291,7 +292,7 @@ class Issue8556HandOffTargetReachabilityTest {
   void aSuccessfulHandOffResetsTheBackOff() throws Exception {
     final AtomicLong clock = new AtomicLong(1_000_000L);
     final AtomicInteger attempts = new AtomicInteger();
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
     when(raft.isLeader()).thenReturn(true);
     when(raft.transferLeadership(anyLong(), eq(false))).thenAnswer(invocation -> attempts.incrementAndGet() == 3);
     final ArcadeStateMachine sm = new ArcadeStateMachine();
@@ -315,7 +316,7 @@ class Issue8556HandOffTargetReachabilityTest {
   void theBackOffDoesNotOutliveTheReplacement() throws Exception {
     final AtomicLong clock = new AtomicLong(1_000_000L);
     final AtomicInteger attempts = new AtomicInteger();
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
     when(raft.isLeader()).thenReturn(true);
     when(raft.transferLeadership(anyLong(), eq(false))).thenAnswer(invocation -> {
       attempts.incrementAndGet();
@@ -349,7 +350,7 @@ class Issue8556HandOffTargetReachabilityTest {
   void theHealthTickEndsTheBackOffWhenNothingIsBeingReplaced() throws Exception {
     final AtomicLong clock = new AtomicLong(1_000_000L);
     final AtomicInteger attempts = new AtomicInteger();
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
     when(raft.isLeader()).thenReturn(true);
     when(raft.transferLeadership(anyLong(), eq(false))).thenAnswer(invocation -> {
       attempts.incrementAndGet();
@@ -370,7 +371,7 @@ class Issue8556HandOffTargetReachabilityTest {
 
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_SERVER_LIST, "localhost:2434:2480,localhost:2435:2481,localhost:2436:2482");
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getServerName()).thenReturn("ArcadeDB_0");
     when(server.getConfiguration()).thenReturn(config);
     final RecordingStepDown tick = new RecordingStepDown(server, config);
@@ -400,7 +401,7 @@ class Issue8556HandOffTargetReachabilityTest {
   // -- helpers --
 
   private static RaftHAServer leaderWithPeers(final AdminApi admin) {
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
     final RaftClient client = mock(RaftClient.class);
     when(client.admin()).thenReturn(admin);
     when(raft.getClient()).thenReturn(client);

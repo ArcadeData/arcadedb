@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.utility.SubclassMocks;
 import org.apache.ratis.protocol.RaftGroupId;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.server.DivisionInfo;
@@ -95,7 +96,7 @@ class Issue6111StaleSnapshotReadFloorTest {
   void staleMarkerPublishesAFloorAndWithholdsTheAppliedNotification(@TempDir final Path tempDir) throws Exception {
     final RaftStorage raftStorage = newFormattedStorage(tempDir.resolve("raft-storage"));
     final ArcadeStateMachine sm = newStateMachine(tempDir);
-    final RaftHAServer mockRaft = mock(RaftHAServer.class);
+    final RaftHAServer mockRaft = SubclassMocks.mock(RaftHAServer.class);
     try {
       sm.initialize(stubRaftServer(), RaftGroupId.valueOf(UUID.randomUUID()), raftStorage);
 
@@ -160,7 +161,7 @@ class Issue6111StaleSnapshotReadFloorTest {
   void markerWithinToleranceSeedsAndNotifiesAsBefore(@TempDir final Path tempDir) throws Exception {
     final RaftStorage raftStorage = newFormattedStorage(tempDir.resolve("raft-storage"));
     final ArcadeStateMachine sm = newStateMachine(tempDir);
-    final RaftHAServer mockRaft = mock(RaftHAServer.class);
+    final RaftHAServer mockRaft = SubclassMocks.mock(RaftHAServer.class);
     try {
       sm.initialize(stubRaftServer(), RaftGroupId.valueOf(UUID.randomUUID()), raftStorage);
 
@@ -439,7 +440,7 @@ class Issue6111StaleSnapshotReadFloorTest {
   @Test
   void retryStandsDownWhenTheResolvedLeaderAddressIsOurOwn(@TempDir final Path tempDir) throws Exception {
     final ArcadeStateMachine sm = newStateMachine(tempDir);
-    final RaftHAServer mockRaft = mock(RaftHAServer.class);
+    final RaftHAServer mockRaft = SubclassMocks.mock(RaftHAServer.class);
     when(mockRaft.isLeader()).thenReturn(false);
     when(mockRaft.getLeaderId()).thenReturn(LEADER_PEER_ID);
     when(mockRaft.getUnambiguousPeerHttpAddress(LEADER_PEER_ID)).thenReturn("localhost:2480");
@@ -519,7 +520,7 @@ class Issue6111StaleSnapshotReadFloorTest {
   @Test
   void retryIsANoOpWhileNoLeaderIsKnown(@TempDir final Path tempDir) throws Exception {
     final ArcadeStateMachine sm = newStateMachine(tempDir);
-    final RaftHAServer mockRaft = mock(RaftHAServer.class); // getLeaderHttpAddress() defaults to null
+    final RaftHAServer mockRaft = SubclassMocks.mock(RaftHAServer.class); // getLeaderHttpAddress() defaults to null
     sm.setRaftHAServer(mockRaft);
     try {
       setStaleSnapshotAppliedFloor(sm, PERSISTED_APPLIED);
@@ -547,7 +548,7 @@ class Issue6111StaleSnapshotReadFloorTest {
   @Test
   void aLeaderMustNotResolveItsOwnFloorByDownloadingFromItself(@TempDir final Path tempDir) throws Exception {
     final ArcadeStateMachine sm = newStateMachine(tempDir);
-    final RaftHAServer mockRaft = mock(RaftHAServer.class);
+    final RaftHAServer mockRaft = SubclassMocks.mock(RaftHAServer.class);
     when(mockRaft.isLeader()).thenReturn(true);
     when(mockRaft.getUnambiguousPeerHttpAddress(LEADER_PEER_ID)).thenReturn("localhost:2480");
     sm.setRaftHAServer(mockRaft);
@@ -583,7 +584,7 @@ class Issue6111StaleSnapshotReadFloorTest {
   @Test
   void aResolvedLeaderAddressEqualToOurOwnIsAlsoRefused(@TempDir final Path tempDir) throws Exception {
     final ArcadeStateMachine sm = newStateMachine(tempDir);
-    final RaftHAServer mockRaft = mock(RaftHAServer.class);
+    final RaftHAServer mockRaft = SubclassMocks.mock(RaftHAServer.class);
     when(mockRaft.isLeader()).thenReturn(false); // role flag has not caught up...
     when(mockRaft.getLeaderId()).thenReturn(LEADER_PEER_ID);
     when(mockRaft.getUnambiguousPeerHttpAddress(LEADER_PEER_ID)).thenReturn("localhost:2480");
@@ -628,7 +629,7 @@ class Issue6111StaleSnapshotReadFloorTest {
   // ---------------------------------------------------------------------------------------------
 
   private static RaftHAServer followerRaftHAServerMock() {
-    final RaftHAServer mockRaft = mock(RaftHAServer.class);
+    final RaftHAServer mockRaft = SubclassMocks.mock(RaftHAServer.class);
     when(mockRaft.isLeader()).thenReturn(false);
     when(mockRaft.getLeaderId()).thenReturn(LEADER_PEER_ID);
     // The resolver every resync path now goes through: it withholds an address that does not identify one
@@ -727,7 +728,7 @@ class Issue6111StaleSnapshotReadFloorTest {
     config.setValue(GlobalConfiguration.HA_SERVER_LIST, "localhost:2434:2480");
     config.setValue(GlobalConfiguration.HA_QUORUM_TIMEOUT, quorumTimeoutMs);
 
-    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
+    final ArcadeDBServer mockServer = SubclassMocks.mock(ArcadeDBServer.class);
     when(mockServer.getServerName()).thenReturn("localhost");
 
     final RaftHAServer raft = new RaftHAServer(mockServer, config);

@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.utility.SubclassMocks;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.client.impl.ClientProtoUtils;
 import org.apache.ratis.client.api.AdminApi;
@@ -83,7 +84,7 @@ class Issue8557ConcurrentLeadershipHandOffsTest {
 
   @BeforeEach
   void setUp() {
-    raft = mock(RaftHAServer.class);
+    raft = SubclassMocks.mock(RaftHAServer.class);
     admin = mock(AdminApi.class);
     final RaftClient client = mock(RaftClient.class);
     when(client.admin()).thenReturn(admin);
@@ -319,7 +320,7 @@ class Issue8557ConcurrentLeadershipHandOffsTest {
         return true;
       }
     };
-    final ArcadeStateMachine sm = mock(ArcadeStateMachine.class);
+    final ArcadeStateMachine sm = SubclassMocks.mock(ArcadeStateMachine.class);
     when(sm.hasLeaderServiceGap()).thenReturn(true);
     final CountDownLatch started = new CountDownLatch(1);
     final CountDownLatch release = new CountDownLatch(1);
@@ -364,9 +365,9 @@ class Issue8557ConcurrentLeadershipHandOffsTest {
         return true;
       }
     };
-    final ArcadeStateMachine stale = mock(ArcadeStateMachine.class);
+    final ArcadeStateMachine stale = SubclassMocks.mock(ArcadeStateMachine.class);
     when(stale.hasLeaderServiceGap()).thenReturn(true);
-    final ArcadeStateMachine current = mock(ArcadeStateMachine.class);
+    final ArcadeStateMachine current = SubclassMocks.mock(ArcadeStateMachine.class);
     setStateMachine(server, current);
     final CountDownLatch ran = new CountDownLatch(1);
     doAnswer(invocation -> {
@@ -413,7 +414,7 @@ class Issue8557ConcurrentLeadershipHandOffsTest {
         return true;
       }
     };
-    final ArcadeStateMachine sm = mock(ArcadeStateMachine.class);
+    final ArcadeStateMachine sm = SubclassMocks.mock(ArcadeStateMachine.class);
     when(sm.hasLeaderServiceGap()).thenReturn(false);
 
     server.queueReplacingDatabaseHandOff(sm);
@@ -490,7 +491,7 @@ class Issue8557ConcurrentLeadershipHandOffsTest {
   }
 
   private static ArcadeDBServer detachedServer() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getServerName()).thenReturn("ArcadeDB_0");
     return server;
   }

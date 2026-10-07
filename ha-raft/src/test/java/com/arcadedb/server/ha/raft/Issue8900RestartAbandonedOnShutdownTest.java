@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.utility.SubclassMocks;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.util.LifeCycle;
@@ -91,7 +92,7 @@ class Issue8900RestartAbandonedOnShutdownTest {
       return LifeCycle.State.CLOSING;
     });
     final RaftClient client = mock(RaftClient.class);
-    final RaftTransactionBroker broker = mock(RaftTransactionBroker.class);
+    final RaftTransactionBroker broker = SubclassMocks.mock(RaftTransactionBroker.class);
     setField(raft, "raftServer", old);
     setField(raft, "raftClient", client);
     setField(raft, "transactionBroker", broker);
@@ -135,7 +136,7 @@ class Issue8900RestartAbandonedOnShutdownTest {
   private static RaftHAServer detachedServer() {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_SERVER_LIST, SERVER_LIST);
-    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
+    final ArcadeDBServer mockServer = SubclassMocks.mock(ArcadeDBServer.class);
     when(mockServer.getServerName()).thenReturn("ArcadeDB_0");
     return new RaftHAServer(mockServer, config);
   }

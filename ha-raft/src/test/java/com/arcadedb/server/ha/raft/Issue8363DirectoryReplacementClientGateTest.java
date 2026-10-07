@@ -29,6 +29,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.utility.FileUtils;
+import com.arcadedb.utility.SubclassMocks;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -47,7 +48,6 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNoException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
@@ -84,10 +84,10 @@ class Issue8363DirectoryReplacementClientGateTest {
     localDb.getSchema().createDocumentType("Seed");
     localDb.transaction(() -> seedRid = localDb.newDocument("Seed").set("k", 1).save().getIdentity());
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getConfiguration()).thenReturn(configuration());
-    stateMachine = mock(ArcadeStateMachine.class);
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    stateMachine = SubclassMocks.mock(ArcadeStateMachine.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
     // The leader, so a read-only command executes here rather than being forwarded: the gate must hold on the
     // local path, which is the one that reads the copy on disk.
     when(raft.isLeader()).thenReturn(true);
@@ -262,7 +262,7 @@ class Issue8363DirectoryReplacementClientGateTest {
    */
   @Test
   void anInstallDrivenFromAClientThreadRunsAsTheEngineAndHandsTheTagBack() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     // Observed from inside the install, where it reads its retry settings - after it has registered the directory.
     final ContextConfiguration config = configuration();
     final List<String> protocolsInsideTheInstall = new CopyOnWriteArrayList<>();
@@ -295,10 +295,10 @@ class Issue8363DirectoryReplacementClientGateTest {
   @Test
   void aClientReadingDuringARealBootstrapReinstallIsRefusedAndTheInstallIsNot() throws Exception {
     final ArcadeStateMachine realStateMachine = new ArcadeStateMachine();
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
     when(raft.isLeader()).thenReturn(true);
     when(raft.getStateMachine()).thenReturn(realStateMachine);
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getConfiguration()).thenReturn(configuration());
     when(server.existsDatabase(DB_NAME)).thenReturn(true);
     final RaftReplicatedDatabase wrapper = new RaftReplicatedDatabase(server, localDb, raft);

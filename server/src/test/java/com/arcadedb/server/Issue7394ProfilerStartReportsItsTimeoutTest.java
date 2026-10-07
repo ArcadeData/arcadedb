@@ -20,6 +20,7 @@ package com.arcadedb.server;
 
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.monitor.ServerQueryProfiler;
+import com.arcadedb.utility.SubclassMocks;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -28,7 +29,6 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
@@ -55,7 +55,7 @@ class Issue7394ProfilerStartReportsItsTimeoutTest {
 
   @BeforeEach
   void setup(@TempDir final Path rootPath) {
-    server = mock(ArcadeDBServer.class);
+    server = SubclassMocks.mock(ArcadeDBServer.class);
     // stop() persists the run under <rootPath>/profiler. Unstubbed, getRootPath() answers null and that path
     // becomes the literal "null/profiler", dropped into whatever the working directory happens to be.
     when(server.getRootPath()).thenReturn(rootPath.toString());

@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.utility.StallAwareStopwatch;
+import com.arcadedb.utility.SubclassMocks;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.client.api.AdminApi;
 import org.apache.ratis.protocol.RaftClientReply;
@@ -183,7 +184,7 @@ class Issue7514UnreachablePeerRefusalTest {
         + "seq=null, RW, null, ADD, servers:[localhost_2436|localhost:2436], listeners:[] for 60 attempts "
         + "with RetryLimited(maxAttempts=60, sleepTime=1s)";
 
-    final RaftHAServer server = mock(RaftHAServer.class);
+    final RaftHAServer server = SubclassMocks.mock(RaftHAServer.class);
     final RaftClient client = mock(RaftClient.class);
     final AdminApi admin = mock(AdminApi.class);
     final RaftClientReply reply = mock(RaftClientReply.class);
@@ -209,7 +210,7 @@ class Issue7514UnreachablePeerRefusalTest {
   /** The removal path shares the helper and gets its own sentence, not the add's. */
   @Test
   void aRemovalThatRanOutOfBudgetIsReportedInItsOwnSentence() throws Exception {
-    final RaftHAServer server = mock(RaftHAServer.class);
+    final RaftHAServer server = SubclassMocks.mock(RaftHAServer.class);
     final RaftClient client = mock(RaftClient.class);
     final AdminApi admin = mock(AdminApi.class);
     final RaftClientReply reply = mock(RaftClientReply.class);

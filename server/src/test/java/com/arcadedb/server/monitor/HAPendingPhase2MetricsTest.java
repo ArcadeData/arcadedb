@@ -22,13 +22,13 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.HAReplicationStats;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.PendingPhase2Stats;
+import com.arcadedb.utility.SubclassMocks;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
@@ -64,7 +64,7 @@ class HAPendingPhase2MetricsTest {
 
   @Test
   void gaugesExposeAnOutstandingPhase2Hold() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getPlugins()).thenReturn(List.of(new FakeHAPlugin(new PendingPhase2Stats(2, 620_000L, 4711L))));
 
     final SimpleMeterRegistry registry = new SimpleMeterRegistry();
@@ -81,7 +81,7 @@ class HAPendingPhase2MetricsTest {
 
   @Test
   void gaugesReportNothingHeldOnAnIdleNode() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getPlugins()).thenReturn(List.of(new FakeHAPlugin(new PendingPhase2Stats(0, 0, -1))));
 
     final SimpleMeterRegistry registry = new SimpleMeterRegistry();
@@ -98,7 +98,7 @@ class HAPendingPhase2MetricsTest {
 
   @Test
   void gaugesDegradeWhenHAIsDisabled() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getPlugins()).thenReturn(List.of());
 
     final SimpleMeterRegistry registry = new SimpleMeterRegistry();
@@ -114,7 +114,7 @@ class HAPendingPhase2MetricsTest {
   /** A provider that never overrides the default must still publish usable numbers. */
   @Test
   void providerDefaultReportsNothingHeld() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getPlugins()).thenReturn(List.of(new ServerPlugin() {
       @Override
       public void startService() {

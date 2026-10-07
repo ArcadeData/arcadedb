@@ -26,6 +26,7 @@ import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.utility.FileUtils;
+import com.arcadedb.utility.SubclassMocks;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -37,7 +38,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNoException;
 import static org.mockito.Mockito.doAnswer;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -94,7 +94,7 @@ class ArcadeStateMachineBootstrapMismatchTest {
 
     // Track database registration: should NOT be removed, since the download fails before the swap.
     final AtomicBoolean dbRegistered = new AtomicBoolean(true);
-    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
+    final ArcadeDBServer mockServer = SubclassMocks.mock(ArcadeDBServer.class);
     when(mockServer.getConfiguration()).thenReturn(config);
     when(mockServer.existsDatabase(DB_NAME)).thenAnswer(inv -> dbRegistered.get());
 
@@ -139,7 +139,7 @@ class ArcadeStateMachineBootstrapMismatchTest {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, "./target/databases");
 
-    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
+    final ArcadeDBServer mockServer = SubclassMocks.mock(ArcadeDBServer.class);
     when(mockServer.getConfiguration()).thenReturn(config);
     when(mockServer.existsDatabase(DB_NAME)).thenReturn(true);
 

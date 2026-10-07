@@ -26,6 +26,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.utility.FileUtils;
+import com.arcadedb.utility.SubclassMocks;
 import com.sun.net.httpserver.HttpServer;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.junit.jupiter.api.AfterEach;
@@ -51,7 +52,6 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.contains;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -101,7 +101,7 @@ class Issue8067LeaderForceSnapshotReplayMissingDatabaseTest {
     otherPeer.start();
     otherPeerAddress = "localhost:" + otherPeer.getAddress().getPort();
 
-    raft = mock(RaftHAServer.class);
+    raft = SubclassMocks.mock(RaftHAServer.class);
     when(raft.isLeader()).thenAnswer(inv -> leading.get());
     when(raft.getLocalPeerId()).thenReturn(LOCAL);
     when(raft.getLocalHttpAddress()).thenReturn("local-host:2480");

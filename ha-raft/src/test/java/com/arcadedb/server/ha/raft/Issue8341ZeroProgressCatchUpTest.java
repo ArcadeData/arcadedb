@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.FollowerSample;
+import com.arcadedb.utility.SubclassMocks;
 import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.server.protocol.TermIndex;
 import org.apache.ratis.protocol.RaftPeerId;
@@ -233,7 +234,7 @@ class Issue8341ZeroProgressCatchUpTest {
    */
   @Test
   void staleCatchUpFlagNoLongerHidesTheStuckAtStaleTermSignature() throws Exception {
-    final ArcadeStateMachine sm = mock(ArcadeStateMachine.class);
+    final ArcadeStateMachine sm = SubclassMocks.mock(ArcadeStateMachine.class);
     when(sm.isCatchingUp()).thenReturn(true); // set by an earlier gap, never cleared
     when(sm.isSnapshotDownloadPending()).thenReturn(false);
     when(sm.getLastAppliedTermIndex()).thenReturn(TermIndex.valueOf(8, 228_631));
@@ -250,7 +251,7 @@ class Issue8341ZeroProgressCatchUpTest {
    */
   @Test
   void stalledCatchUpIsReportedLaggingOnTheSecondTick() throws Exception {
-    final ArcadeStateMachine sm = mock(ArcadeStateMachine.class);
+    final ArcadeStateMachine sm = SubclassMocks.mock(ArcadeStateMachine.class);
     when(sm.isCatchingUp()).thenReturn(true);
     when(sm.isSnapshotDownloadPending()).thenReturn(false);
 
@@ -264,7 +265,7 @@ class Issue8341ZeroProgressCatchUpTest {
 
   @Test
   void progressingCatchUpIsStillExemptFromTheLagCheck() throws Exception {
-    final ArcadeStateMachine sm = mock(ArcadeStateMachine.class);
+    final ArcadeStateMachine sm = SubclassMocks.mock(ArcadeStateMachine.class);
     when(sm.isCatchingUp()).thenReturn(true);
     when(sm.isSnapshotDownloadPending()).thenReturn(false);
 
@@ -281,7 +282,7 @@ class Issue8341ZeroProgressCatchUpTest {
 
   private static RaftHAServer followerWith(final ArcadeStateMachine sm, final long currentTerm, final long commitIndex,
       final long appliedIndex) throws Exception {
-    final RaftHAServer server = mock(RaftHAServer.class);
+    final RaftHAServer server = SubclassMocks.mock(RaftHAServer.class);
     setField(server, "raftServer", mock(RaftServer.class));
     setField(server, "stateMachine", sm);
     setField(server, "shutdownRequested", false);

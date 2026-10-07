@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.utility.StallAwareStopwatch;
+import com.arcadedb.utility.SubclassMocks;
 import org.apache.ratis.proto.RaftProtos;
 import org.apache.ratis.protocol.RaftGroupId;
 import org.apache.ratis.protocol.RaftPeerId;
@@ -45,7 +46,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
@@ -102,7 +102,7 @@ class Issue8182StateMachineCloseAwaitsLifecycleTasksTest {
     config.setValue(GlobalConfiguration.HA_AUTO_ACQUIRE_DATABASES, false);
     config.setValue(GlobalConfiguration.NETWORK_USE_SSL, false);
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getConfiguration()).thenReturn(config);
     when(server.existsDatabase(DB_NAME)).thenReturn(false);
     when(server.getDatabaseNames()).thenReturn(Set.of());
@@ -121,7 +121,7 @@ class Issue8182StateMachineCloseAwaitsLifecycleTasksTest {
    * snapshot-install thread - runs {@code onInstallThread}.
    */
   private static RaftHAServer raftHAWhoseInstallRuns(final Runnable onInstallThread) {
-    final RaftHAServer raftHA = mock(RaftHAServer.class);
+    final RaftHAServer raftHA = SubclassMocks.mock(RaftHAServer.class);
     when(raftHA.isLeader()).thenReturn(false);
     when(raftHA.getLocalPeerId()).thenReturn(LOCAL);
     when(raftHA.getLeaderId()).thenReturn(LEADER);

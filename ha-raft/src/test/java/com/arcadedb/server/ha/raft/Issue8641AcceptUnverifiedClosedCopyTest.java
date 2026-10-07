@@ -33,6 +33,7 @@ import com.arcadedb.server.http.handler.ExecutionResponse;
 import com.arcadedb.server.ha.raft.UnverifiedClosedCopyCheck.CopyState;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
+import com.arcadedb.utility.SubclassMocks;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -51,7 +52,6 @@ import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
@@ -80,7 +80,7 @@ class Issue8641AcceptUnverifiedClosedCopyTest {
   @BeforeEach
   void setUp() throws IOException {
     server = startServer();
-    raft = mock(RaftHAServer.class);
+    raft = SubclassMocks.mock(RaftHAServer.class);
     when(raft.getLocalPeerId()).thenReturn(RaftPeerId.valueOf("local"));
     when(raft.isLeader()).thenReturn(true);
     sm = new ArcadeStateMachine();
@@ -225,18 +225,18 @@ class Issue8641AcceptUnverifiedClosedCopyTest {
   @Test
   void theHandlerGuardsItsCaller() throws IOException {
     createClosedCopy();
-    final ServerSecurityUser notRoot = mock(ServerSecurityUser.class);
+    final ServerSecurityUser notRoot = SubclassMocks.mock(ServerSecurityUser.class);
     when(notRoot.getName()).thenReturn("alice");
     assertThatThrownBy(() -> handler().execute(null, notRoot, new JSONObject()))
         .isInstanceOf(ServerSecurityException.class);
     assertThat(Files.exists(marker())).isTrue();
 
-    final ServerSecurityUser root = mock(ServerSecurityUser.class);
+    final ServerSecurityUser root = SubclassMocks.mock(ServerSecurityUser.class);
     when(root.getName()).thenReturn("root");
     assertThat(handler().execute(null, root, new JSONObject()).getCode()).as("no database in the path").isEqualTo(400);
 
-    final RaftHAPlugin noRaft = mock(RaftHAPlugin.class);
-    final HttpServer httpServer = mock(HttpServer.class);
+    final RaftHAPlugin noRaft = SubclassMocks.mock(RaftHAPlugin.class);
+    final HttpServer httpServer = SubclassMocks.mock(HttpServer.class);
     when(httpServer.getServer()).thenReturn(server);
     assertThat(new PostAcceptCopyHandler(httpServer, noRaft).execute(null, root, new JSONObject()).getCode())
         .isEqualTo(400);
@@ -254,9 +254,9 @@ class Issue8641AcceptUnverifiedClosedCopyTest {
   }
 
   private PostAcceptCopyHandler handler() {
-    final HttpServer httpServer = mock(HttpServer.class);
+    final HttpServer httpServer = SubclassMocks.mock(HttpServer.class);
     when(httpServer.getServer()).thenReturn(server);
-    final RaftHAPlugin plugin = mock(RaftHAPlugin.class);
+    final RaftHAPlugin plugin = SubclassMocks.mock(RaftHAPlugin.class);
     when(plugin.getRaftHAServer()).thenReturn(raft);
     return new PostAcceptCopyHandler(httpServer, plugin);
   }

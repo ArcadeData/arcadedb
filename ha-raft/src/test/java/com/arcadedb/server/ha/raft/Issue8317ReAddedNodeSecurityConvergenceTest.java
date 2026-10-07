@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.security.ReplicatedUsersPersistenceException;
 import com.arcadedb.server.security.ServerSecurity;
+import com.arcadedb.utility.SubclassMocks;
 import org.apache.ratis.proto.RaftProtos.LogEntryProto;
 import org.apache.ratis.proto.RaftProtos.StateMachineLogEntryProto;
 import org.apache.ratis.protocol.RaftPeerId;
@@ -39,7 +40,6 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doThrow;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
@@ -154,7 +154,7 @@ class Issue8317ReAddedNodeSecurityConvergenceTest {
   void theStateMachineReportsEachInstallWithItsIndex(@TempDir final Path databaseDirectory) throws Exception {
     final ArcadeStateMachine sm = new ArcadeStateMachine();
     try {
-      sm.setServer(serverWith(mock(ServerSecurity.class), databaseDirectory));
+      sm.setServer(serverWith(SubclassMocks.mock(ServerSecurity.class), databaseDirectory));
       final RuntimeJoinDetector detector = new RuntimeJoinDetector();
       sm.setRuntimeJoinDetector(detector);
 
@@ -181,7 +181,7 @@ class Issue8317ReAddedNodeSecurityConvergenceTest {
    */
   @Test
   void aSupersededEntryIsNotAnInstall(@TempDir final Path databaseDirectory) throws Exception {
-    final ServerSecurity security = mock(ServerSecurity.class);
+    final ServerSecurity security = SubclassMocks.mock(ServerSecurity.class);
     when(security.applyReplicatedUsers(anyString(), anyString())).thenReturn(false);
     final ArcadeStateMachine sm = new ArcadeStateMachine();
     try {
@@ -204,7 +204,7 @@ class Issue8317ReAddedNodeSecurityConvergenceTest {
    */
   @Test
   void aDocumentInForceInMemoryWhoseWriteFailedIsAnInstall(@TempDir final Path databaseDirectory) throws Exception {
-    final ServerSecurity security = mock(ServerSecurity.class);
+    final ServerSecurity security = SubclassMocks.mock(ServerSecurity.class);
     doThrow(new ReplicatedUsersPersistenceException("applied in memory, not persisted",
         new IOException("No space left on device"))).when(security).applyReplicatedUsers(anyString());
     final ArcadeStateMachine sm = new ArcadeStateMachine();
@@ -253,7 +253,7 @@ class Issue8317ReAddedNodeSecurityConvergenceTest {
     final ContextConfiguration configuration = new ContextConfiguration();
     configuration.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, databaseDirectory.toString());
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getSecurity()).thenReturn(security);
     when(server.getConfiguration()).thenReturn(configuration);
     return server;

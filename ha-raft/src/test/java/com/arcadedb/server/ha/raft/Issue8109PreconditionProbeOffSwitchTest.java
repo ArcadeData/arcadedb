@@ -21,12 +21,12 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.utility.SubclassMocks;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -51,7 +51,7 @@ class Issue8109PreconditionProbeOffSwitchTest {
 
   @Test
   void withTheGateOffAUserChangeNeverRunsAProbeRound() {
-    final RaftTransactionBroker broker = mock(RaftTransactionBroker.class);
+    final RaftTransactionBroker broker = SubclassMocks.mock(RaftTransactionBroker.class);
     final RaftHAServer raft = raftWhoseCacheSays(broker, List.of());
 
     pluginOn(raft, false).replicateSecurityUsers(USERS, FINGERPRINT);
@@ -63,7 +63,7 @@ class Issue8109PreconditionProbeOffSwitchTest {
   /** The gated documents' own round was already switched off by the gate; the precondition's must be too. */
   @Test
   void withTheGateOffAGroupChangeNeverRunsAProbeRound() {
-    final RaftTransactionBroker broker = mock(RaftTransactionBroker.class);
+    final RaftTransactionBroker broker = SubclassMocks.mock(RaftTransactionBroker.class);
     final RaftHAServer raft = raftWhoseCacheSays(broker, List.of());
 
     pluginOn(raft, false).replicateSecurityGroups(GROUPS, FINGERPRINT);
@@ -78,7 +78,7 @@ class Issue8109PreconditionProbeOffSwitchTest {
    */
   @Test
   void withTheGateOffAPeerTheCacheDoesNotKnowWithholdsThePrecondition() {
-    final RaftTransactionBroker broker = mock(RaftTransactionBroker.class);
+    final RaftTransactionBroker broker = SubclassMocks.mock(RaftTransactionBroker.class);
     final RaftHAServer raft = raftWhoseCacheSays(broker, List.of("arcadedb2"));
 
     pluginOn(raft, false).replicateSecurityUsers(USERS, FINGERPRINT);
@@ -90,7 +90,7 @@ class Issue8109PreconditionProbeOffSwitchTest {
   /** The control: with the gate on - the default - the decision still asks now, as #7559 requires. */
   @Test
   void withTheGateOnTheDecisionStillAsksNow() {
-    final RaftTransactionBroker broker = mock(RaftTransactionBroker.class);
+    final RaftTransactionBroker broker = SubclassMocks.mock(RaftTransactionBroker.class);
     final RaftHAServer raft = raftWhoseCacheSays(broker, List.of("arcadedb2"));
     when(raft.peersMissingCapabilityNow(anyString())).thenReturn(List.of());
 
@@ -101,7 +101,7 @@ class Issue8109PreconditionProbeOffSwitchTest {
   }
 
   private static RaftHAServer raftWhoseCacheSays(final RaftTransactionBroker broker, final List<String> missing) {
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
     when(raft.getTransactionBroker()).thenReturn(broker);
     when(raft.peersMissingCapability(anyString())).thenReturn(missing);
     return raft;
@@ -111,7 +111,7 @@ class Issue8109PreconditionProbeOffSwitchTest {
     final RaftHAPlugin plugin = new RaftHAPlugin();
     final ContextConfiguration configuration = new ContextConfiguration();
     configuration.setValue(GlobalConfiguration.HA_SECURITY_ENTRY_CAPABILITY_GATE, gate);
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getConfiguration()).thenReturn(configuration);
     plugin.configure(server, configuration);
     plugin.setRaftHAServer(raft);

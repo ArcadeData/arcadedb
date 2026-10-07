@@ -20,6 +20,7 @@ package com.arcadedb.server.grpc;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.utility.SubclassMocks;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -27,7 +28,6 @@ import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 class GrpcServerPluginTest {
@@ -38,7 +38,7 @@ class GrpcServerPluginTest {
   @Test
   void pluginConfiguresWithDefaults() {
     GrpcServerPlugin plugin = new GrpcServerPlugin();
-    ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
+    ArcadeDBServer mockServer = SubclassMocks.mock(ArcadeDBServer.class);
     ContextConfiguration config = new ContextConfiguration();
 
     when(mockServer.getRootPath()).thenReturn(tempDir.toString());
@@ -54,7 +54,7 @@ class GrpcServerPluginTest {
   @Test
   void pluginDisabledWhenConfigured() {
     GrpcServerPlugin plugin = new GrpcServerPlugin();
-    ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
+    ArcadeDBServer mockServer = SubclassMocks.mock(ArcadeDBServer.class);
     ContextConfiguration config = new ContextConfiguration();
     config.setValue("arcadedb.grpc.enabled", "false");
 
@@ -84,7 +84,7 @@ class GrpcServerPluginTest {
   @Test
   void tlsEnabledWithANonBooleanValueRefusesToStart() {
     final GrpcServerPlugin plugin = new GrpcServerPlugin();
-    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
+    final ArcadeDBServer mockServer = SubclassMocks.mock(ArcadeDBServer.class);
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue("arcadedb.grpc.tls.enabled", "yes");
 
@@ -102,7 +102,7 @@ class GrpcServerPluginTest {
   @Test
   void enabledAcceptsTrimmedCaseInsensitiveBooleans() {
     final GrpcServerPlugin plugin = new GrpcServerPlugin();
-    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
+    final ArcadeDBServer mockServer = SubclassMocks.mock(ArcadeDBServer.class);
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue("arcadedb.grpc.enabled", " FALSE ");
 

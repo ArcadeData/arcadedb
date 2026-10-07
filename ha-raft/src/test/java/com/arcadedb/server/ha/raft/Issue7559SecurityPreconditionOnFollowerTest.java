@@ -21,12 +21,12 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.utility.SubclassMocks;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -86,7 +86,7 @@ class Issue7559SecurityPreconditionOnFollowerTest {
 
   @Test
   void aFollowerStillWritesThePreconditionOnAUsersEntry() {
-    final RaftTransactionBroker broker = mock(RaftTransactionBroker.class);
+    final RaftTransactionBroker broker = SubclassMocks.mock(RaftTransactionBroker.class);
     final RaftHAPlugin plugin = pluginOn(followerWhoseCacheIsEmptyButWhoseClusterIsUniform(broker));
 
     plugin.replicateSecurityUsers(USERS, FINGERPRINT);
@@ -96,7 +96,7 @@ class Issue7559SecurityPreconditionOnFollowerTest {
 
   @Test
   void aFollowerStillWritesThePreconditionOnAGroupsEntry() {
-    final RaftTransactionBroker broker = mock(RaftTransactionBroker.class);
+    final RaftTransactionBroker broker = SubclassMocks.mock(RaftTransactionBroker.class);
     final RaftHAPlugin plugin = pluginOn(followerWhoseCacheIsEmptyButWhoseClusterIsUniform(broker));
 
     plugin.replicateSecurityGroups(GROUPS, FINGERPRINT);
@@ -106,7 +106,7 @@ class Issue7559SecurityPreconditionOnFollowerTest {
 
   @Test
   void aFollowerStillWritesThePreconditionOnAnApiTokensEntry() {
-    final RaftTransactionBroker broker = mock(RaftTransactionBroker.class);
+    final RaftTransactionBroker broker = SubclassMocks.mock(RaftTransactionBroker.class);
     final RaftHAPlugin plugin = pluginOn(followerWhoseCacheIsEmptyButWhoseClusterIsUniform(broker));
 
     plugin.replicateSecurityApiTokens(API_TOKENS, FINGERPRINT);
@@ -127,8 +127,8 @@ class Issue7559SecurityPreconditionOnFollowerTest {
    */
   @Test
   void aStaleAllClearCacheDoesNotOutrankAPeerThatCannotReadAPrecondition() {
-    final RaftTransactionBroker broker = mock(RaftTransactionBroker.class);
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final RaftTransactionBroker broker = SubclassMocks.mock(RaftTransactionBroker.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
     when(raft.getTransactionBroker()).thenReturn(broker);
     // What a recently demoted leader still believes...
     when(raft.peersMissingCapability(PeerCapabilities.SECURITY_PRECONDITION)).thenReturn(List.of());
@@ -147,8 +147,8 @@ class Issue7559SecurityPreconditionOnFollowerTest {
    */
   @Test
   void theDecisionIsNeverTakenOnTheLeaderOnlyCachedAnswer() {
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.getTransactionBroker()).thenReturn(mock(RaftTransactionBroker.class));
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
+    when(raft.getTransactionBroker()).thenReturn(SubclassMocks.mock(RaftTransactionBroker.class));
     when(raft.peersMissingCapabilityNow(anyString())).thenReturn(List.of());
 
     pluginOn(raft).replicateSecurityUsers(USERS, FINGERPRINT);
@@ -170,8 +170,8 @@ class Issue7559SecurityPreconditionOnFollowerTest {
    */
   @Test
   void aSeedSubmissionWithNoFingerprintNeverAsksTheClusterAboutAPrecondition() {
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.getTransactionBroker()).thenReturn(mock(RaftTransactionBroker.class));
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
+    when(raft.getTransactionBroker()).thenReturn(SubclassMocks.mock(RaftTransactionBroker.class));
     when(raft.peersMissingCapabilityNow(anyString())).thenReturn(List.of());
 
     pluginOn(raft).replicateSecurityUsers(USERS);
@@ -187,8 +187,8 @@ class Issue7559SecurityPreconditionOnFollowerTest {
    */
   @Test
   void aSeedGroupsSubmissionAsksOnlyAboutTheEntryTypeAndNotAboutAPrecondition() {
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.getTransactionBroker()).thenReturn(mock(RaftTransactionBroker.class));
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
+    when(raft.getTransactionBroker()).thenReturn(SubclassMocks.mock(RaftTransactionBroker.class));
     when(raft.peersMissingCapabilityNow(anyString())).thenReturn(List.of());
 
     pluginOn(raft).replicateSecurityGroups(GROUPS);
@@ -205,8 +205,8 @@ class Issue7559SecurityPreconditionOnFollowerTest {
    */
   @Test
   void aGatedDocumentWithAFingerprintAsksAboutBothTokens() {
-    final RaftTransactionBroker broker = mock(RaftTransactionBroker.class);
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final RaftTransactionBroker broker = SubclassMocks.mock(RaftTransactionBroker.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
     when(raft.getTransactionBroker()).thenReturn(broker);
     when(raft.peersMissingCapability(anyString())).thenReturn(List.of(LAGGING_PEER));
     when(raft.peersMissingCapabilityNow(anyString())).thenReturn(List.of());
@@ -226,7 +226,7 @@ class Issue7559SecurityPreconditionOnFollowerTest {
    */
   private static RaftHAServer followerWhoseCacheIsEmptyButWhoseClusterIsUniform(
       final RaftTransactionBroker broker) {
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
     when(raft.getTransactionBroker()).thenReturn(broker);
     when(raft.peersMissingCapability(anyString())).thenReturn(List.of(LAGGING_PEER, "arcadedb1"));
     when(raft.peersMissingCapabilityNow(anyString())).thenReturn(List.of());
@@ -237,7 +237,7 @@ class Issue7559SecurityPreconditionOnFollowerTest {
     final RaftHAPlugin plugin = new RaftHAPlugin();
     final ContextConfiguration configuration = new ContextConfiguration();
     configuration.setValue(GlobalConfiguration.HA_SECURITY_ENTRY_CAPABILITY_GATE, true);
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getConfiguration()).thenReturn(configuration);
     plugin.configure(server, configuration);
     plugin.setRaftHAServer(raft);

@@ -21,10 +21,10 @@ package com.arcadedb.server.grpc;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.utility.SubclassMocks;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
@@ -45,7 +45,7 @@ class Issue7233GrpcReadsServerConfigurationTest {
     final ContextConfiguration configuration = new ContextConfiguration();
     configuration.fromJSON("{\"configuration\":{\"server.grpcQueryMaxResultRows\":4242}}");
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getConfiguration()).thenReturn(configuration);
 
     final ArcadeDbGrpcService service = new ArcadeDbGrpcService("./target/databases", server);

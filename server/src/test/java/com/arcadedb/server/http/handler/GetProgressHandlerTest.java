@@ -25,6 +25,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
+import com.arcadedb.utility.SubclassMocks;
 
 import io.undertow.server.HttpServerExchange;
 import org.junit.jupiter.api.Test;
@@ -59,8 +60,8 @@ class GetProgressHandlerTest {
    * {@code UngatedHandlerPerTypeAclIT}.
    */
   private HttpServer httpServer() {
-    final HttpServer httpServer = mock(HttpServer.class);
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final HttpServer httpServer = SubclassMocks.mock(HttpServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.existsDatabase(anyString())).thenReturn(false);
     when(httpServer.getServer()).thenReturn(server);
     return httpServer;
@@ -79,7 +80,7 @@ class GetProgressHandlerTest {
   }
 
   private ServerSecurityUser userAuthorizedOn(final String... databases) {
-    final ServerSecurityUser user = mock(ServerSecurityUser.class);
+    final ServerSecurityUser user = SubclassMocks.mock(ServerSecurityUser.class);
     final Set<String> authorized = Set.of(databases);
     when(user.canAccessToDatabase(anyString()))
         .thenAnswer(invocation -> authorized.contains("*") || authorized.contains((String) invocation.getArgument(0)));

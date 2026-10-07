@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.http.SilentPeer;
 import com.arcadedb.utility.StallAwareStopwatch;
+import com.arcadedb.utility.SubclassMocks;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -37,7 +38,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
@@ -80,7 +80,7 @@ class Issue7985BoundedClientReleaseOnStopTest {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_SERVER_LIST, "localhost:2434:2480");
 
-    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
+    final ArcadeDBServer mockServer = SubclassMocks.mock(ArcadeDBServer.class);
     when(mockServer.getServerName()).thenReturn("localhost");
 
     final RaftHAServer raft = new RaftHAServer(mockServer, config);
@@ -114,7 +114,7 @@ class Issue7985BoundedClientReleaseOnStopTest {
   @Timeout(value = 180, unit = TimeUnit.SECONDS)
   void closingTheTrustedClientCacheDoesNotWaitOutAnInFlightRequest() throws Exception {
     final ContextConfiguration config = new ContextConfiguration();
-    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
+    final ArcadeDBServer mockServer = SubclassMocks.mock(ArcadeDBServer.class);
     when(mockServer.getConfiguration()).thenReturn(config);
 
     final TrustedHttpClientCache cache = new TrustedHttpClientCache();

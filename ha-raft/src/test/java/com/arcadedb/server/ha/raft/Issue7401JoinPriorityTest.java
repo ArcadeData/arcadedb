@@ -19,6 +19,7 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.server.ha.raft.RaftPeerAddressResolver.JoinTarget;
+import com.arcadedb.utility.SubclassMocks;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.client.api.AdminApi;
 import org.apache.ratis.protocol.RaftClientReply;
@@ -74,7 +75,7 @@ class Issue7401JoinPriorityTest {
    * {@code entry}.
    */
   private static RaftPeer addedPeerFor(final String entry) throws Exception {
-    final RaftHAServer server = mock(RaftHAServer.class);
+    final RaftHAServer server = SubclassMocks.mock(RaftHAServer.class);
     final RaftClient client = mock(RaftClient.class);
     final AdminApi admin = mock(AdminApi.class);
     final RaftClientReply reply = mock(RaftClientReply.class);

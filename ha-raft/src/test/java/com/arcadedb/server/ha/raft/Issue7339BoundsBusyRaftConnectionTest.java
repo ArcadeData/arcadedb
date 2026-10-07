@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.utility.SubclassMocks;
 import org.apache.ratis.conf.Parameters;
 import org.apache.ratis.grpc.GrpcConfigKeys;
 import org.apache.ratis.grpc.server.GrpcServices;
@@ -34,7 +35,6 @@ import java.util.EnumSet;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
@@ -226,7 +226,7 @@ class Issue7339BoundsBusyRaftConnectionTest {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_SERVER_LIST, SERVER_LIST);
 
-    final ArcadeDBServer arcadeServer = mock(ArcadeDBServer.class);
+    final ArcadeDBServer arcadeServer = SubclassMocks.mock(ArcadeDBServer.class);
     when(arcadeServer.getServerName()).thenReturn("ArcadeDB_0");
 
     return new RaftHAServer(arcadeServer, config);

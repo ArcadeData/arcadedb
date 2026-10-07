@@ -22,6 +22,7 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityUser;
+import com.arcadedb.utility.SubclassMocks;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -82,15 +83,15 @@ class ClusterAuthSessionResolverTest {
     fakeNow = 1_000_000L;
     sessions = new HttpAuthSessionManager(30_000L, 0L, 0, 0, "node-b", () -> fakeNow);
     peer = new ScriptedPeer();
-    alice = mock(ServerSecurityUser.class);
+    alice = SubclassMocks.mock(ServerSecurityUser.class);
     when(alice.getName()).thenReturn("alice");
     when(alice.getAuthorizedDatabases()).thenReturn(Set.of());
-    final ServerSecurity security = mock(ServerSecurity.class);
+    final ServerSecurity security = SubclassMocks.mock(ServerSecurity.class);
     when(security.getUser(anyString())).thenReturn(null);
     when(security.getUser("alice")).thenReturn(alice);
     // Built before the stubbing below opens: a mock created inside thenReturn(...) is a nested stubbing.
     final HAServerPlugin plugin = peer.asPlugin();
-    server = mock(ArcadeDBServer.class);
+    server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getHA()).thenReturn(plugin);
     when(server.getSecurity()).thenReturn(security);
   }

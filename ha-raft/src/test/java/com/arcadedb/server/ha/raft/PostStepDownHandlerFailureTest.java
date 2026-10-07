@@ -21,12 +21,12 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.handler.ExecutionResponse;
 import com.arcadedb.server.security.ServerSecurityUser;
+import com.arcadedb.utility.SubclassMocks;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.doThrow;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
@@ -44,7 +44,7 @@ import static org.mockito.Mockito.when;
  */
 class PostStepDownHandlerFailureTest {
 
-  private final RaftHAServer raftHAServer = mock(RaftHAServer.class);
+  private final RaftHAServer raftHAServer = SubclassMocks.mock(RaftHAServer.class);
   private final PostStepDownHandler handler = new PostStepDownHandler(null, pluginReturning(raftHAServer));
 
   @Test
@@ -82,13 +82,13 @@ class PostStepDownHandlerFailureTest {
   }
 
   private static RaftHAPlugin pluginReturning(final RaftHAServer raftHAServer) {
-    final RaftHAPlugin plugin = mock(RaftHAPlugin.class);
+    final RaftHAPlugin plugin = SubclassMocks.mock(RaftHAPlugin.class);
     when(plugin.getRaftHAServer()).thenReturn(raftHAServer);
     return plugin;
   }
 
   private static ServerSecurityUser rootUser() {
-    final ServerSecurityUser user = mock(ServerSecurityUser.class);
+    final ServerSecurityUser user = SubclassMocks.mock(ServerSecurityUser.class);
     when(user.getName()).thenReturn("root");
     return user;
   }

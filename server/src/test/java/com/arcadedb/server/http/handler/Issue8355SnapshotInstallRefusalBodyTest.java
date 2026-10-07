@@ -24,6 +24,7 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.RetryLaterException;
 import com.arcadedb.server.security.ServerSecurityUser;
+import com.arcadedb.utility.SubclassMocks;
 import io.micrometer.observation.ObservationRegistry;
 import io.undertow.io.Sender;
 import io.undertow.server.HttpServerExchange;
@@ -62,12 +63,12 @@ class Issue8355SnapshotInstallRefusalBodyTest {
     when(exchange.getRelativePath()).thenReturn("/command/graph");
     when(exchange.getResponseSender()).thenReturn(sender);
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getObservationRegistry()).thenReturn(ObservationRegistry.create());
     when(server.getConfiguration()).thenReturn(new ContextConfiguration());
     when(server.getServerName()).thenReturn("test");
     when(server.isSnapshotInstallInProgress()).thenReturn(true);
-    final HttpServer httpServer = mock(HttpServer.class);
+    final HttpServer httpServer = SubclassMocks.mock(HttpServer.class);
     when(httpServer.getServer()).thenReturn(server);
 
     final boolean[] executed = { false };

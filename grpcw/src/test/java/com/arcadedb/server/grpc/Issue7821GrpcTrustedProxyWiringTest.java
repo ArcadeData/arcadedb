@@ -21,6 +21,7 @@ package com.arcadedb.server.grpc;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.utility.SubclassMocks;
 import io.grpc.ServerBuilder;
 import io.grpc.ServerInterceptor;
 import org.junit.jupiter.api.Test;
@@ -54,7 +55,7 @@ class Issue7821GrpcTrustedProxyWiringTest {
   @Test
   void theRegisteredInterceptorHonorsTheServersTrustedProxyList() {
     final ContextConfiguration serverConfiguration = new ContextConfiguration();
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getRootPath()).thenReturn(tempDir.toString());
     when(server.getConfiguration()).thenReturn(serverConfiguration);
 

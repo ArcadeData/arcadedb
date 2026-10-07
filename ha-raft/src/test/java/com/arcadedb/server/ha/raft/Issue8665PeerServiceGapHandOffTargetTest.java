@@ -19,6 +19,7 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.SubclassMocks;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.client.api.AdminApi;
 import org.apache.ratis.protocol.RaftPeer;
@@ -150,7 +151,7 @@ class Issue8665PeerServiceGapHandOffTargetTest {
     final AdminApi admin = mock(AdminApi.class);
     final RaftClient client = mock(RaftClient.class);
     when(client.admin()).thenReturn(admin);
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
     when(raft.getClient()).thenReturn(client);
     when(raft.getLocalPeerId()).thenReturn(SELF);
     when(raft.isLeader()).thenReturn(true);
@@ -166,7 +167,7 @@ class Issue8665PeerServiceGapHandOffTargetTest {
 
   @Test
   void theGapHandOffAsksForNoBareStepDown() throws Exception {
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
     when(raft.isLeader()).thenReturn(true);
     when(raft.transferLeadership(anyLong(), eq(false))).thenReturn(false);
     final ArcadeStateMachine sm = new ArcadeStateMachine();

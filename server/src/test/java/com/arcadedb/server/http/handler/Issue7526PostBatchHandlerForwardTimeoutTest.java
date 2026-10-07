@@ -27,6 +27,7 @@ import com.arcadedb.server.http.FakeLeader;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.StallAwareStopwatch;
+import com.arcadedb.utility.SubclassMocks;
 import io.undertow.server.HttpServerExchange;
 import org.junit.jupiter.api.Test;
 
@@ -57,9 +58,9 @@ class Issue7526PostBatchHandlerForwardTimeoutTest {
   private static final long GAVE_UP_BOUND_MS = 30_000L;
 
   private static PostBatchHandler handlerWith(final ContextConfiguration cfg) {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getConfiguration()).thenReturn(cfg);
-    final HttpServer httpServer = mock(HttpServer.class);
+    final HttpServer httpServer = SubclassMocks.mock(HttpServer.class);
     when(httpServer.getServer()).thenReturn(server);
     return new PostBatchHandler(httpServer);
   }
@@ -72,7 +73,7 @@ class Issue7526PostBatchHandlerForwardTimeoutTest {
   }
 
   private static ServerSecurityUser rootUser() {
-    final ServerSecurityUser user = mock(ServerSecurityUser.class);
+    final ServerSecurityUser user = SubclassMocks.mock(ServerSecurityUser.class);
     when(user.getName()).thenReturn("root");
     return user;
   }

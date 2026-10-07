@@ -21,13 +21,13 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.utility.SubclassMocks;
 import org.junit.jupiter.api.Test;
 
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.lenient;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -73,13 +73,13 @@ class BootstrapElectionGateTest {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_BOOTSTRAP_FROM_LOCAL_DATABASE, true);
 
-    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
+    final ArcadeDBServer mockServer = SubclassMocks.mock(ArcadeDBServer.class);
     when(mockServer.getConfiguration()).thenReturn(config);
     // If the gate were bypassed, collectLocalDatabaseNames() would call this. Stub it (lenient, as a
     // correctly-gated run never reaches it) so we can assert below that it is NEVER invoked.
     lenient().when(mockServer.getDatabaseNames()).thenReturn(Set.of("beta", "alpha"));
 
-    final RaftHAServer mockHa = mock(RaftHAServer.class);
+    final RaftHAServer mockHa = SubclassMocks.mock(RaftHAServer.class);
     when(mockHa.isLeader()).thenReturn(true);
     when(mockHa.getCommitIndex()).thenReturn(-1L); // persistent IOException / division never ready
 
@@ -104,11 +104,11 @@ class BootstrapElectionGateTest {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_BOOTSTRAP_FROM_LOCAL_DATABASE, true);
 
-    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
+    final ArcadeDBServer mockServer = SubclassMocks.mock(ArcadeDBServer.class);
     when(mockServer.getConfiguration()).thenReturn(config);
     when(mockServer.getDatabaseNames()).thenReturn(Set.of());
 
-    final RaftHAServer mockHa = mock(RaftHAServer.class);
+    final RaftHAServer mockHa = SubclassMocks.mock(RaftHAServer.class);
     when(mockHa.isLeader()).thenReturn(true);
     // -1 (division not ready) on the first read, then the real first-formation index 0.
     when(mockHa.getCommitIndex()).thenReturn(-1L, -1L, 0L);
@@ -132,11 +132,11 @@ class BootstrapElectionGateTest {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_BOOTSTRAP_FROM_LOCAL_DATABASE, true);
 
-    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
+    final ArcadeDBServer mockServer = SubclassMocks.mock(ArcadeDBServer.class);
     when(mockServer.getConfiguration()).thenReturn(config);
     lenient().when(mockServer.getDatabaseNames()).thenReturn(Set.of("alpha"));
 
-    final RaftHAServer mockHa = mock(RaftHAServer.class);
+    final RaftHAServer mockHa = SubclassMocks.mock(RaftHAServer.class);
     // Leader at the entry guard and on the first loop check, then leadership is lost.
     when(mockHa.isLeader()).thenReturn(true, true, false);
     when(mockHa.getCommitIndex()).thenReturn(-1L); // never resolves
@@ -158,11 +158,11 @@ class BootstrapElectionGateTest {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_BOOTSTRAP_FROM_LOCAL_DATABASE, true);
 
-    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
+    final ArcadeDBServer mockServer = SubclassMocks.mock(ArcadeDBServer.class);
     when(mockServer.getConfiguration()).thenReturn(config);
     when(mockServer.getDatabaseNames()).thenReturn(Set.of());
 
-    final RaftHAServer mockHa = mock(RaftHAServer.class);
+    final RaftHAServer mockHa = SubclassMocks.mock(RaftHAServer.class);
     when(mockHa.isLeader()).thenReturn(true);
     when(mockHa.getCommitIndex()).thenReturn(0L);
 
@@ -183,11 +183,11 @@ class BootstrapElectionGateTest {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_BOOTSTRAP_FROM_LOCAL_DATABASE, true);
 
-    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
+    final ArcadeDBServer mockServer = SubclassMocks.mock(ArcadeDBServer.class);
     when(mockServer.getConfiguration()).thenReturn(config);
     lenient().when(mockServer.getDatabaseNames()).thenReturn(Set.of("alpha"));
 
-    final RaftHAServer mockHa = mock(RaftHAServer.class);
+    final RaftHAServer mockHa = SubclassMocks.mock(RaftHAServer.class);
     when(mockHa.isLeader()).thenReturn(true);
     when(mockHa.getCommitIndex()).thenReturn(42L);
 

@@ -28,6 +28,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.utility.FileUtils;
+import com.arcadedb.utility.SubclassMocks;
 import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
@@ -53,7 +54,6 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.when;
 
@@ -108,7 +108,7 @@ class Issue8368BootstrapPassWindowTest {
   }
 
   private ArcadeDBServer stubbedServer() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getConfiguration()).thenReturn(configuration());
     when(server.existsDatabase(DB_NAME)).thenReturn(true);
     when(server.getDatabase(DB_NAME)).thenReturn(new ServerDatabase(null, localDb));
@@ -264,10 +264,10 @@ class Issue8368BootstrapPassWindowTest {
   @Test
   void aClientIsRefusedWhileThePassDecidesAndServedOnceItHas() throws Exception {
     final ArcadeStateMachine sm = stateMachine();
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
     when(raft.isLeader()).thenReturn(true);
     when(raft.getStateMachine()).thenReturn(sm);
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getConfiguration()).thenReturn(configuration());
     final RaftReplicatedDatabase replicated = new RaftReplicatedDatabase(server, localDb, raft);
     localDb.setAutoTransaction(true);
@@ -368,7 +368,7 @@ class Issue8368BootstrapPassWindowTest {
   void aLeaderThatIsTheSourceIsReleasedByItsOwnBaseline() throws Exception {
     final ArcadeStateMachine sm = stateMachine();
     final RaftHAServer ha = leaderOfAPassThatElects(sm);
-    when(ha.getTransactionBroker()).thenReturn(mock(RaftTransactionBroker.class));
+    when(ha.getTransactionBroker()).thenReturn(SubclassMocks.mock(RaftTransactionBroker.class));
     final BootstrapElection election = spy(new BootstrapElection(ha, passServer));
     election.probeRetryBackoffMs = 0L;
     final boolean[] heldWhileCollecting = new boolean[1];
@@ -488,7 +488,7 @@ class Issue8368BootstrapPassWindowTest {
     sm.setServer(server);
     passServer = server;
 
-    final RaftHAServer ha = mock(RaftHAServer.class);
+    final RaftHAServer ha = SubclassMocks.mock(RaftHAServer.class);
     when(ha.isLeader()).thenReturn(true);
     when(ha.getCommitIndex()).thenReturn(0L);
     when(ha.getStateMachine()).thenReturn(sm);

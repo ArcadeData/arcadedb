@@ -20,6 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.utility.SubclassMocks;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.client.api.AdminApi;
 import org.apache.ratis.protocol.RaftClientReply;
@@ -63,7 +64,7 @@ class Issue7802ConcurrentAddSameAddressTest {
   @Test
   void theLoserOfTheRaceIsRefusedAgainstTheConfigurationHoldingTheWinner() throws Exception {
     final List<RaftPeer> live = new ArrayList<>(List.of(peer("A", "h1:2434"), peer("B", "h2:2434"), peer("C", "h3:2434")));
-    final RaftHAServer server = mock(RaftHAServer.class);
+    final RaftHAServer server = SubclassMocks.mock(RaftHAServer.class);
     final RaftClient client = mock(RaftClient.class);
     final AdminApi admin = mock(AdminApi.class);
     final AtomicInteger attempts = new AtomicInteger();
@@ -97,7 +98,7 @@ class Issue7802ConcurrentAddSameAddressTest {
   @Test
   void aRaceBetweenTwoDifferentPeersStillCommitsBoth() throws Exception {
     final List<RaftPeer> live = new ArrayList<>(List.of(peer("A", "h1:2434"), peer("B", "h2:2434"), peer("C", "h3:2434")));
-    final RaftHAServer server = mock(RaftHAServer.class);
+    final RaftHAServer server = SubclassMocks.mock(RaftHAServer.class);
     final RaftClient client = mock(RaftClient.class);
     final AdminApi admin = mock(AdminApi.class);
     final List<SetConfigurationRequest.Arguments> sent = new ArrayList<>();
@@ -135,7 +136,7 @@ class Issue7802ConcurrentAddSameAddressTest {
   /** A configuration that cannot be read is reported as such, not papered over with the declared list; the wait is cut short by an interrupt. */
   @Test
   void anUnreadableConfigurationIsReportedNotGuessed() {
-    final RaftHAServer server = mock(RaftHAServer.class);
+    final RaftHAServer server = SubclassMocks.mock(RaftHAServer.class);
     when(server.getCommittedPeersOrNull()).thenReturn(null);
     when(server.getClient()).thenReturn(mock(RaftClient.class));
     when(server.getRaftGroup()).thenReturn(RaftGroup.valueOf(RaftGroupId.randomId()));

@@ -27,6 +27,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
 import com.arcadedb.server.monitor.ServerQueryProfiler;
+import com.arcadedb.utility.SubclassMocks;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -207,7 +208,7 @@ class Issue8383StaleServerDatabaseRoutingTest extends TestHelper {
 
   @Test
   void theProfilingPathOfAStaleHandleReachesTheWrapperToo() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     final ServerQueryProfiler profiler = mock(ServerQueryProfiler.class);
     when(profiler.isRecording()).thenReturn(true);
     when(server.getQueryProfiler()).thenReturn(profiler);

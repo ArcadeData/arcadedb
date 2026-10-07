@@ -23,6 +23,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.http.handler.openapi.OpenApiContributor;
 import com.arcadedb.server.http.handler.openapi.PluginApiSpec;
+import com.arcadedb.utility.SubclassMocks;
 import io.swagger.v3.oas.models.Components;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.Paths;
@@ -33,7 +34,6 @@ import java.util.List;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
@@ -153,7 +153,7 @@ class Issue7872HaltAndLogFailureArePublishedTest {
    */
   @Test
   void theThreeNodeLevelConditionsAreNotSuppressedForAScopedCaller() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getDatabaseNames()).thenReturn(Set.of());
 
     // A caller authorized on no database at all: the strictest filter the endpoint can build.

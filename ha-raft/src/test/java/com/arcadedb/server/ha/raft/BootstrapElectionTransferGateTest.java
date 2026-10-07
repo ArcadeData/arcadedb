@@ -21,13 +21,13 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.utility.SubclassMocks;
 import org.junit.jupiter.api.Test;
 
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.lenient;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -56,14 +56,14 @@ class BootstrapElectionTransferGateTest {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_BOOTSTRAP_FROM_LOCAL_DATABASE, true);
 
-    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
+    final ArcadeDBServer mockServer = SubclassMocks.mock(ArcadeDBServer.class);
     when(mockServer.getConfiguration()).thenReturn(config);
     when(mockServer.getDatabaseNames()).thenReturn(Set.of());
 
-    final ArcadeStateMachine mockSm = mock(ArcadeStateMachine.class);
+    final ArcadeStateMachine mockSm = SubclassMocks.mock(ArcadeStateMachine.class);
     when(mockSm.hasNeverAppliedApplicationEntry()).thenReturn(true);
 
-    final RaftHAServer mockHa = mock(RaftHAServer.class);
+    final RaftHAServer mockHa = SubclassMocks.mock(RaftHAServer.class);
     when(mockHa.isLeader()).thenReturn(true);
     when(mockHa.getCommitIndex()).thenReturn(2L); // post-transfer: internal no-op/config entries
     when(mockHa.getStateMachine()).thenReturn(mockSm);
@@ -83,14 +83,14 @@ class BootstrapElectionTransferGateTest {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_BOOTSTRAP_FROM_LOCAL_DATABASE, true);
 
-    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
+    final ArcadeDBServer mockServer = SubclassMocks.mock(ArcadeDBServer.class);
     when(mockServer.getConfiguration()).thenReturn(config);
     lenient().when(mockServer.getDatabaseNames()).thenReturn(Set.of("alpha"));
 
-    final ArcadeStateMachine mockSm = mock(ArcadeStateMachine.class);
+    final ArcadeStateMachine mockSm = SubclassMocks.mock(ArcadeStateMachine.class);
     when(mockSm.hasNeverAppliedApplicationEntry()).thenReturn(false);
 
-    final RaftHAServer mockHa = mock(RaftHAServer.class);
+    final RaftHAServer mockHa = SubclassMocks.mock(RaftHAServer.class);
     when(mockHa.isLeader()).thenReturn(true);
     when(mockHa.getCommitIndex()).thenReturn(2L);
     when(mockHa.getStateMachine()).thenReturn(mockSm);
@@ -110,11 +110,11 @@ class BootstrapElectionTransferGateTest {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_BOOTSTRAP_FROM_LOCAL_DATABASE, true);
 
-    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
+    final ArcadeDBServer mockServer = SubclassMocks.mock(ArcadeDBServer.class);
     when(mockServer.getConfiguration()).thenReturn(config);
     lenient().when(mockServer.getDatabaseNames()).thenReturn(Set.of("alpha"));
 
-    final RaftHAServer mockHa = mock(RaftHAServer.class);
+    final RaftHAServer mockHa = SubclassMocks.mock(RaftHAServer.class);
     when(mockHa.isLeader()).thenReturn(true);
     when(mockHa.getCommitIndex()).thenReturn(2L);
     when(mockHa.getStateMachine()).thenReturn(null); // state machine not wired yet

@@ -20,10 +20,10 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.utility.SubclassMocks;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
@@ -43,7 +43,7 @@ class Issue8356RaftHAPluginNullTransactionBrokerTest {
   @Test
   void replicateSecurityUsersReportsANullBrokerInsteadOfThrowingNPE() {
     final RaftHAPlugin plugin = new RaftHAPlugin();
-    final RaftHAServer raftServer = mock(RaftHAServer.class);
+    final RaftHAServer raftServer = SubclassMocks.mock(RaftHAServer.class);
     when(raftServer.getTransactionBroker()).thenReturn(null);
     plugin.setRaftHAServer(raftServer);
 

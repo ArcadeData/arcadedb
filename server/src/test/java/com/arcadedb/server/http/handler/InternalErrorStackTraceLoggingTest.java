@@ -28,6 +28,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
+import com.arcadedb.utility.SubclassMocks;
 
 import io.micrometer.observation.ObservationRegistry;
 import io.undertow.io.Sender;
@@ -200,14 +201,14 @@ class InternalErrorStackTraceLoggingTest {
 
   /** Runs the real catch chain against a handler whose execute() throws, capturing status and body. */
   private HandledResponse handle(final RuntimeException toThrow, final String serverMode) {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getObservationRegistry()).thenReturn(ObservationRegistry.create());
     final ContextConfiguration configuration = new ContextConfiguration();
     configuration.setValue(GlobalConfiguration.SERVER_MODE, serverMode);
     when(server.getConfiguration()).thenReturn(configuration);
     when(server.getServerName()).thenReturn("test");
 
-    final HttpServer httpServer = mock(HttpServer.class);
+    final HttpServer httpServer = SubclassMocks.mock(HttpServer.class);
     when(httpServer.getServer()).thenReturn(server);
 
     final Sender sender = mock(Sender.class);

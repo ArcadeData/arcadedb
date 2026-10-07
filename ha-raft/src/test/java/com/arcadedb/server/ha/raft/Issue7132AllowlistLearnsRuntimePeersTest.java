@@ -21,13 +21,13 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.utility.SubclassMocks;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
@@ -206,7 +206,7 @@ class Issue7132AllowlistLearnsRuntimePeersTest {
 
   /** A {@link RaftHAServer} whose constructor has run but whose Ratis server was never started. */
   private static RaftHAServer detachedServer(final ContextConfiguration config) {
-    final ArcadeDBServer arcadeServer = mock(ArcadeDBServer.class);
+    final ArcadeDBServer arcadeServer = SubclassMocks.mock(ArcadeDBServer.class);
     when(arcadeServer.getServerName()).thenReturn("arcadedb-0");
     return new RaftHAServer(arcadeServer, config);
   }

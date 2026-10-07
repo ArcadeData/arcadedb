@@ -27,6 +27,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityUser;
+import com.arcadedb.utility.SubclassMocks;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -38,7 +39,6 @@ import java.util.Map;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
@@ -68,7 +68,7 @@ final class BoltHandlerProbe {
    * answering the user it is handed: these tests drive handlers with a user already bound and are not about it.
    */
   static void withPassThroughSecurity(final ArcadeDBServer server) {
-    final ServerSecurity security = mock(ServerSecurity.class);
+    final ServerSecurity security = SubclassMocks.mock(ServerSecurity.class);
     when(security.revalidate(any(ServerSecurityUser.class))).thenAnswer(invocation -> invocation.getArgument(0));
     when(server.getSecurity()).thenReturn(security);
   }
@@ -93,7 +93,7 @@ final class BoltHandlerProbe {
   @SuppressWarnings("unchecked")
   static Map<String, Object> failureMetadataOf(final String handlerName, final String state,
       final RuntimeException failure) throws Exception {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     withPassThroughSecurity(server);
     when(server.getConfiguration()).thenReturn(new ContextConfiguration());
 
@@ -182,7 +182,7 @@ final class BoltHandlerProbe {
    * with no user, and these probes are about what it answers once the database has been authorized.
    */
   private static ServerSecurityUser grantedEverywhere() {
-    final ServerSecurityUser user = mock(ServerSecurityUser.class);
+    final ServerSecurityUser user = SubclassMocks.mock(ServerSecurityUser.class);
     when(user.getName()).thenReturn("root");
     when(user.canAccessToDatabase(anyString())).thenReturn(true);
     return user;

@@ -20,6 +20,7 @@ package com.arcadedb.server;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.utility.SubclassMocks;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -46,7 +47,7 @@ import static org.mockito.Mockito.when;
 class Issue7118ReadinessRaftLogFailureTest {
 
   private static ArcadeDBServer onlineServerWith(final HAServerPlugin ha, final ContextConfiguration configuration) {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getStatus()).thenReturn(ArcadeDBServer.STATUS.ONLINE);
     when(server.getConfiguration()).thenReturn(configuration);
     when(server.getHA()).thenReturn(ha);
@@ -122,7 +123,7 @@ class Issue7118ReadinessRaftLogFailureTest {
   void aServerStillStartingReportsItsStatusNotTheLogFailure() {
     final HAServerPlugin ha = mock(HAServerPlugin.class);
     when(ha.getRaftLogFailure()).thenReturn("at index 1: boom");
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getStatus()).thenReturn(ArcadeDBServer.STATUS.STARTING);
     when(server.getHA()).thenReturn(ha);
 

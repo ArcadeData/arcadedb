@@ -23,6 +23,7 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.ExecutionResponse;
 import com.arcadedb.server.security.ServerSecurityUser;
+import com.arcadedb.utility.SubclassMocks;
 import io.undertow.server.HttpServerExchange;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -35,7 +36,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.doThrow;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -330,7 +330,7 @@ class Issue8490StaleForcedResyncTest {
   class TheFollowerCheck {
 
     private RaftHAServer follower(final long term, final long trustedApplied) {
-      final RaftHAServer raft = mock(RaftHAServer.class);
+      final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
       when(raft.getCurrentTerm()).thenReturn(term);
       when(raft.getTrustedAppliedIndex(DB)).thenReturn(trustedApplied);
       return raft;
@@ -367,18 +367,18 @@ class Issue8490StaleForcedResyncTest {
   @Nested
   class TheDrop {
 
-    private final ArcadeStateMachine stateMachine = mock(ArcadeStateMachine.class);
+    private final ArcadeStateMachine stateMachine = SubclassMocks.mock(ArcadeStateMachine.class);
 
     private PostResyncDatabaseHandler handlerOnFollower() {
-      final RaftHAServer raft = mock(RaftHAServer.class);
+      final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
       when(raft.isLeader()).thenReturn(false);
       when(raft.getLeaderHttpAddress()).thenReturn("leader:2480");
       when(raft.getStateMachine()).thenReturn(stateMachine);
 
-      final RaftHAPlugin plugin = mock(RaftHAPlugin.class);
+      final RaftHAPlugin plugin = SubclassMocks.mock(RaftHAPlugin.class);
       when(plugin.getRaftHAServer()).thenReturn(raft);
-      final HttpServer httpServer = mock(HttpServer.class);
-      final ArcadeDBServer server = mock(ArcadeDBServer.class);
+      final HttpServer httpServer = SubclassMocks.mock(HttpServer.class);
+      final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
       when(server.getServerName()).thenReturn("arcadedb-1");
       when(httpServer.getServer()).thenReturn(server);
       return new PostResyncDatabaseHandler(httpServer, plugin);
@@ -387,7 +387,7 @@ class Issue8490StaleForcedResyncTest {
     private ExecutionResponse post(final PostResyncDatabaseHandler handler, final JSONObject body) {
       final HttpServerExchange exchange = new HttpServerExchange(null);
       exchange.setRelativePath("/" + DB);
-      final ServerSecurityUser root = mock(ServerSecurityUser.class);
+      final ServerSecurityUser root = SubclassMocks.mock(ServerSecurityUser.class);
       when(root.getName()).thenReturn("root");
       return handler.execute(exchange, root, body);
     }

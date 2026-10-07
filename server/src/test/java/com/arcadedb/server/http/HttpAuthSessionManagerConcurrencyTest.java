@@ -19,6 +19,7 @@
 package com.arcadedb.server.http;
 
 import com.arcadedb.server.security.ServerSecurityUser;
+import com.arcadedb.utility.SubclassMocks;
 import org.junit.jupiter.api.Test;
 
 import java.util.Set;
@@ -27,7 +28,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
@@ -39,7 +39,7 @@ import static org.mockito.Mockito.when;
 class HttpAuthSessionManagerConcurrencyTest {
 
   private ServerSecurityUser createMockUser(final String username) {
-    final ServerSecurityUser user = mock(ServerSecurityUser.class);
+    final ServerSecurityUser user = SubclassMocks.mock(ServerSecurityUser.class);
     when(user.getName()).thenReturn(username);
     when(user.getAuthorizedDatabases()).thenReturn(Set.of());
     return user;

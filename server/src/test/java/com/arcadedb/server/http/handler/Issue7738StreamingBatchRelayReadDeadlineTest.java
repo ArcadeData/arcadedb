@@ -26,6 +26,7 @@ import com.arcadedb.server.http.FakeLeader;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.StallAwareStopwatch;
+import com.arcadedb.utility.SubclassMocks;
 import io.undertow.Undertow;
 import io.undertow.server.handlers.BlockingHandler;
 import org.junit.jupiter.api.AfterEach;
@@ -167,16 +168,16 @@ class Issue7738StreamingBatchRelayReadDeadlineTest {
     cfg.setValue(GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT, 5_000L);
     cfg.setValue(GlobalConfiguration.HA_PROXY_BATCH_READ_TIMEOUT, BUDGET_MS);
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getConfiguration()).thenReturn(cfg);
-    final HttpServer httpServer = mock(HttpServer.class);
+    final HttpServer httpServer = SubclassMocks.mock(HttpServer.class);
     when(httpServer.getServer()).thenReturn(server);
     final PostBatchHandler handler = new PostBatchHandler(httpServer);
 
     final HAServerPlugin ha = mock(HAServerPlugin.class);
     when(ha.getLeaderAddress()).thenReturn(leaderAddress);
     when(ha.getClusterToken()).thenReturn("test-token");
-    final ServerSecurityUser user = mock(ServerSecurityUser.class);
+    final ServerSecurityUser user = SubclassMocks.mock(ServerSecurityUser.class);
     when(user.getName()).thenReturn("root");
 
     final RelayResult result = new RelayResult();

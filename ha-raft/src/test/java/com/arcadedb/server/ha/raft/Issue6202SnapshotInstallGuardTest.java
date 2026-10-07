@@ -24,6 +24,7 @@ import com.arcadedb.log.DefaultLogger;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.log.Logger;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.utility.SubclassMocks;
 
 import org.apache.ratis.proto.RaftProtos;
 import org.apache.ratis.protocol.RaftGroupId;
@@ -51,7 +52,6 @@ import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
@@ -91,7 +91,7 @@ class Issue6202SnapshotInstallGuardTest {
    */
   @Test
   void anInstallFromThisNodesOwnAddressIsRefused(@TempDir final Path tempDir) throws Exception {
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
     when(raft.isLeader()).thenReturn(false);
     when(raft.getUnambiguousPeerHttpAddress(RaftPeerId.valueOf(LEADER_PEER_ID))).thenReturn(LOCAL_HTTP);
     when(raft.getLocalHttpAddress()).thenReturn(LOCAL_HTTP);
@@ -106,7 +106,7 @@ class Issue6202SnapshotInstallGuardTest {
    */
   @Test
   void anInstallOnANodeThatBelievesItIsTheLeaderIsRefused(@TempDir final Path tempDir) throws Exception {
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
     when(raft.isLeader()).thenReturn(true);
     when(raft.getUnambiguousPeerHttpAddress(RaftPeerId.valueOf(LEADER_PEER_ID))).thenReturn("peer-b:2480");
 
@@ -119,7 +119,7 @@ class Issue6202SnapshotInstallGuardTest {
    */
   @Test
   void anInstallFromAnAddressThatIdentifiesNoSinglePeerIsRefused(@TempDir final Path tempDir) throws Exception {
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
     when(raft.isLeader()).thenReturn(false);
     // The resolver withheld the address: it is claimed by more than one peer, or resolves to nothing.
     when(raft.getUnambiguousPeerHttpAddress(RaftPeerId.valueOf(LEADER_PEER_ID))).thenReturn(null);
@@ -134,7 +134,7 @@ class Issue6202SnapshotInstallGuardTest {
    */
   @Test
   void aGenuinePeerLeaderIsStillInstalledFrom(@TempDir final Path tempDir) throws Exception {
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
     when(raft.isLeader()).thenReturn(false);
     when(raft.getUnambiguousPeerHttpAddress(RaftPeerId.valueOf(LEADER_PEER_ID))).thenReturn("peer-b:2480");
     when(raft.getLocalHttpAddress()).thenReturn(LOCAL_HTTP);
@@ -168,7 +168,7 @@ class Issue6202SnapshotInstallGuardTest {
    */
   @Test
   void aRefusalIsLoggedAsAWarningAndNotAsAFault(@TempDir final Path tempDir) throws Exception {
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
     when(raft.isLeader()).thenReturn(false);
     when(raft.getUnambiguousPeerHttpAddress(RaftPeerId.valueOf(LEADER_PEER_ID))).thenReturn(LOCAL_HTTP);
     when(raft.getLocalHttpAddress()).thenReturn(LOCAL_HTTP);
@@ -219,7 +219,7 @@ class Issue6202SnapshotInstallGuardTest {
    */
   @Test
   void aWithheldHttpsEndpointDoesNotReachTheReconciler(@TempDir final Path tempDir) throws Exception {
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
     when(raft.isLeader()).thenReturn(false);
     when(raft.getUnambiguousPeerHttpAddress(RaftPeerId.valueOf(LEADER_PEER_ID))).thenReturn("peer-b:2480");
     when(raft.getLocalHttpAddress()).thenReturn(LOCAL_HTTP);
@@ -248,7 +248,7 @@ class Issue6202SnapshotInstallGuardTest {
   /** Control: an encrypted endpoint that passes the guard is still used, so the guard costs SSL nothing. */
   @Test
   void aGuardedHttpsEndpointIsStillHandedToTheReconciler(@TempDir final Path tempDir) throws Exception {
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
     when(raft.isLeader()).thenReturn(false);
     when(raft.getUnambiguousPeerHttpAddress(RaftPeerId.valueOf(LEADER_PEER_ID))).thenReturn("peer-b:2480");
     when(raft.getLocalHttpAddress()).thenReturn(LOCAL_HTTP);
@@ -307,7 +307,7 @@ class Issue6202SnapshotInstallGuardTest {
    */
   @Test
   void everyDownloadAttemptOfAnOperatorResyncIsReGuarded(@TempDir final Path tempDir) throws Exception {
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
     when(raft.isLeader()).thenReturn(false);
     when(raft.getLeaderId()).thenReturn(RaftPeerId.valueOf(LEADER_PEER_ID));
     when(raft.getLocalHttpAddress()).thenReturn(LOCAL_HTTP);
@@ -348,7 +348,7 @@ class Issue6202SnapshotInstallGuardTest {
   @Test
   void closingTheStateMachineUnwindsAnInstallParkedBehindAnInFlightResync(@TempDir final Path tempDir)
       throws Exception {
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
     when(raft.isLeader()).thenReturn(false);
     when(raft.getUnambiguousPeerHttpAddress(RaftPeerId.valueOf(LEADER_PEER_ID))).thenReturn("peer-b:2480");
     when(raft.getLocalHttpAddress()).thenReturn(LOCAL_HTTP);

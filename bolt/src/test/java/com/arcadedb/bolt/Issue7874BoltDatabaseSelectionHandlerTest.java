@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
+import com.arcadedb.utility.SubclassMocks;
 import org.junit.jupiter.api.Test;
 
 import java.util.Set;
@@ -30,7 +31,6 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
@@ -54,7 +54,7 @@ class Issue7874BoltDatabaseSelectionHandlerTest {
    */
   @Test
   void aServerWithNoDatabaseAtAllAnswersTransientlyUnavailable() throws Exception {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     BoltHandlerProbe.withPassThroughSecurity(server);
     when(server.getConfiguration()).thenReturn(new ContextConfiguration());
     when(server.getDatabaseNames()).thenReturn(Set.of());
@@ -73,10 +73,10 @@ class Issue7874BoltDatabaseSelectionHandlerTest {
    */
   @Test
   void aClosedDatabaseIsUnavailableRatherThanNotFound() throws Exception {
-    final ServerDatabase closed = mock(ServerDatabase.class);
+    final ServerDatabase closed = SubclassMocks.mock(ServerDatabase.class);
     when(closed.isOpen()).thenReturn(false);
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     BoltHandlerProbe.withPassThroughSecurity(server);
     when(server.getConfiguration()).thenReturn(new ContextConfiguration());
     when(server.getDatabase(anyString())).thenReturn(closed);
@@ -97,7 +97,7 @@ class Issue7874BoltDatabaseSelectionHandlerTest {
    */
   @Test
   void aNameTheServerThrowsForIsThePermanentClientError() throws Exception {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     BoltHandlerProbe.withPassThroughSecurity(server);
     when(server.getConfiguration()).thenReturn(new ContextConfiguration());
     when(server.getDatabase(anyString()))
@@ -119,7 +119,7 @@ class Issue7874BoltDatabaseSelectionHandlerTest {
     final ContextConfiguration configuration = new ContextConfiguration();
     configuration.setValue(GlobalConfiguration.BOLT_DEFAULT_DATABASE, "configured");
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     BoltHandlerProbe.withPassThroughSecurity(server);
     when(server.getConfiguration()).thenReturn(configuration);
     when(server.getDatabase(anyString()))

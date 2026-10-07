@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.utility.SubclassMocks;
 import org.apache.ratis.proto.RaftProtos;
 import org.apache.ratis.protocol.RaftGroupId;
 import org.apache.ratis.protocol.RaftPeerId;
@@ -42,7 +43,6 @@ import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
@@ -250,7 +250,7 @@ class Issue8432StaticMemberSnapshotInstallHoldTest {
     config.setValue(GlobalConfiguration.HA_SERVER_LIST, "arcadedb-0:2434:2480");
     config.setValue(GlobalConfiguration.HA_RAFT_STORAGE_DIRECTORY, tempDir.getAbsolutePath());
     config.setValue(GlobalConfiguration.HA_RAFT_PERSIST_STORAGE, false);
-    final ArcadeDBServer arcadeServer = mock(ArcadeDBServer.class);
+    final ArcadeDBServer arcadeServer = SubclassMocks.mock(ArcadeDBServer.class);
     when(arcadeServer.getServerName()).thenReturn("arcadedb-0");
     return new RaftHAServer(arcadeServer, config);
   }
@@ -265,7 +265,7 @@ class Issue8432StaticMemberSnapshotInstallHoldTest {
   }
 
   private static RaftHAServer followerRaft() {
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final RaftHAServer raft = SubclassMocks.mock(RaftHAServer.class);
     when(raft.isLeader()).thenReturn(false);
     when(raft.getLeaderId()).thenReturn(RaftPeerId.valueOf(LEADER_PEER_ID));
     when(raft.getUnambiguousPeerHttpAddress(RaftPeerId.valueOf(LEADER_PEER_ID))).thenReturn("peer-b:2480");
@@ -288,7 +288,7 @@ class Issue8432StaticMemberSnapshotInstallHoldTest {
     config.setValue(GlobalConfiguration.HA_AUTO_ACQUIRE_DATABASES, false);
     config.setValue(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRIES, 0);
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = SubclassMocks.mock(ArcadeDBServer.class);
     when(server.getConfiguration()).thenReturn(config);
     when(server.getDatabaseNames()).thenReturn(Set.of());
 
