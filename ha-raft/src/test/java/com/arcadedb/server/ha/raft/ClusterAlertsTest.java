@@ -203,7 +203,7 @@ class ClusterAlertsTest {
   @Test
   void stuckAtStaleTermAlertIsRaisedAsCritical() {
     final JSONArray alerts = new JSONArray();
-    ClusterAlerts.addStuckAtStaleTermAlert(true, alerts);
+    ClusterAlerts.addStuckAtStaleTermAlert(true, false, alerts);
 
     assertThat(alerts.length()).isEqualTo(1);
     final JSONObject alert = alerts.getJSONObject(0);
@@ -218,7 +218,7 @@ class ClusterAlertsTest {
   @Test
   void stuckAtStaleTermAlertIsAbsentWhenNotStuck() {
     final JSONArray empty = new JSONArray();
-    ClusterAlerts.addStuckAtStaleTermAlert(false, empty);
+    ClusterAlerts.addStuckAtStaleTermAlert(false, true, empty);
     assertThat(empty.length()).isZero();
   }
 

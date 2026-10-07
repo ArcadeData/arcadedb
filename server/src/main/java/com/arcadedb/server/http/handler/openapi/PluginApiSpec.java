@@ -637,6 +637,18 @@ public class PluginApiSpec implements OpenApiContributor {
             + "although it has applied everything it could locally commit. It does not count toward quorum while "
             + "this is true, even though 'localReplicationLag' can read 0. See the 'follower-stuck-at-stale-term' "
             + "alert for the operator-facing explanation"));
+    // Issues #9013 and #8953: the replication path of a node whose Raft layer was restarted in place. raftState reads
+    // RUNNING throughout, because the new division is running; these say whether the leader has been seen reaching it.
+    schema.addProperty("localReplicationPathUnproven", SpecBuilders.bool(
+        "True when this node's Raft layer was restarted in place and has taken no replicated entry since, and no newer "
+            + "term with a known leader either. It holds back the automatic Raft-storage reformat of a node stuck at a "
+            + "stale term, so with 'localStuckAtStaleTerm' it means 'restart this node by hand' rather than 'will "
+            + "self-heal'. On its own it is not an incident: an idle cluster sends a restarted node no entry either"));
+    schema.addProperty("localLeaderUnreachableSinceRestart", SpecBuilders.bool(
+        "True when 'localReplicationPathUnproven' has held, while no leader made itself known to this node or while "
+            + "'leaderCommitIndex' is past every entry this node holds, for more than twice the election timeout. The "
+            + "leader's appends are not reaching this node and it does not count toward quorum. Always false on the "
+            + "leader. See the 'follower-leader-unreachable-since-restart' alert for the operator-facing explanation"));
     // Issue #8342: a follower whose log stops receiving entries while the term does not change also reads
     // 'localReplicationLag' 0 and 'localStuckAtStaleTerm' false; only the leader's commit index shows the gap.
     schema.addProperty("leaderCommitIndex", SpecBuilders.integer(
@@ -685,6 +697,7 @@ public class PluginApiSpec implements OpenApiContributor {
     schema.setRequired(List.of("implementation", "clusterName", "localPeerId", "capabilities", "raftState",
         "leaderContactElapsedMs", "isLeader", "leaderReady", "leaderId", "leaderHttpAddress", "electionCount", "lastElectionTime",
         "uptime", "localAppliedIndex", "localCommitIndex", "localReplicationLag", "localStuckAtStaleTerm",
+        "localReplicationPathUnproven", "localLeaderUnreachableSinceRestart",
         "leaderCommitIndex", "localStalledBehindLeader", "peers",
         "databases", "localResync", "criticalHalt", "raftLogFailure", "crashLoopEscalated", "bootstrapInstalls",
         "bootstrapDeciding", "securityConvergence", "alerts"));
