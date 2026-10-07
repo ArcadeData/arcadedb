@@ -211,16 +211,17 @@ public class GrpcServerPlugin implements ServerPlugin {
     // Configure the XDS server as a ServerBuilder
     configureServer(xdsBuilder, config);
 
+    final String host = getConfigString(config, GlobalConfiguration.GRPC_HOST);
+    if (host != null && !host.isEmpty() && !"0.0.0.0".equals(host) && !"::".equals(host))
+      LogManager.instance().log(this, Level.WARNING, "%s=%s restricts the standard gRPC server only: the xDS server listens on every interface",
+          GlobalConfiguration.GRPC_HOST.getKey(), host);
+
     xdsServer = xdsBuilder
         .maxInboundMetadataSize(getMaxMetadataSizeBytes(config))
         .build().start();
 
     LogManager.instance().log(this, Level.INFO, "gRPC XDS server started on all interfaces, port %s (xDS management enabled; %s does not apply)",
         port, GlobalConfiguration.GRPC_HOST.getKey());
-    final String host = getConfigString(config, GlobalConfiguration.GRPC_HOST);
-    if (host != null && !host.isEmpty() && !"0.0.0.0".equals(host) && !"::".equals(host))
-      LogManager.instance().log(this, Level.WARNING, "%s=%s restricts the standard gRPC server only: the xDS server listens on every interface",
-          GlobalConfiguration.GRPC_HOST.getKey(), host);
   }
 
   // synchronized so the check-then-act initialization of the shared grpcService/healthManager fields stays thread-safe
