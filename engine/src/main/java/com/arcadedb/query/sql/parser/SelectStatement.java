@@ -237,7 +237,12 @@ public class SelectStatement extends Statement {
         LogManager.instance().log(this, Level.FINE, "Planning the statement again after attempt %d: %s", null, attempt,
             e.getMessage());
         if (plan != null)
-          plan.close();
+          try {
+            plan.close();
+          } catch (final RuntimeException closeFailure) {
+            // The stale index is the reason for the retry, not the close of the plan it spoiled
+            e.addSuppressed(closeFailure);
+          }
       }
     }
   }
