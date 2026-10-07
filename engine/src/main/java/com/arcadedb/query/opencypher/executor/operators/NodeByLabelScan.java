@@ -301,7 +301,8 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
       sb.append(" [filter: ").append(whereFilter.getText()).append("]");
     if (Boolean.TRUE.equals(servedInParallel.get()))
       sb.append(" [parallel]");
-    sb.append(ScanPressureReporter.describe(scanShrunkBatches.get() == null ? 0L : scanShrunkBatches.get()));
+    final Long shrunkBatches = scanShrunkBatches.get();
+    sb.append(ScanPressureReporter.describe(shrunkBatches == null ? 0L : shrunkBatches));
     sb.append(" [cost=").append(String.format(Locale.US, "%.2f", estimatedCost));
     sb.append(", rows=").append(estimatedCardinality);
     sb.append("]\n");

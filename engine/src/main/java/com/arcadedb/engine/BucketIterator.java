@@ -35,6 +35,7 @@ import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.utility.ScanPressureReporter;
 
 import java.io.IOException;
+import java.util.Arrays;
 import java.util.Iterator;
 import java.util.logging.Level;
 
@@ -151,9 +152,11 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
 
   public void setPosition(final RID position) throws IOException {
     started = true;
+    // WHATEVER BATCH WAS READ BEFORE IS DROPPED: THE POSITIONED RECORD IS A BATCH OF ONE, AND THE SCAN GOES ON FROM THE SLOT AFTER IT
+    // WHEN IT IS CONSUMED
+    Arrays.fill(nextBatch, 0, Math.max(writeIndex, 1), null);
     prefetchIndex = 0;
     nextBatch[prefetchIndex] = position.getRecord();
-    // THE POSITIONED RECORD IS A BATCH OF ONE: THE SCAN GOES ON FROM THE SLOT AFTER IT WHEN IT IS CONSUMED
     writeIndex = 1;
     nextPageNumber = (int) (position.getPosition() / bucket.getMaxRecordsInPage());
     currentRecordInPage = (int) (position.getPosition() % bucket.getMaxRecordsInPage()) + 1;

@@ -327,6 +327,39 @@ class BucketIteratorPrefetchBytesIssue9404Test extends TestHelper {
   }
 
   @Test
+  void aPositionedIteratorDropsTheBatchItAlreadyRead() throws Exception {
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getType("Large").getBuckets(false).getFirst();
+    final Iterator<Record> all = bucket.iterator();
+    final Record first = all.next();
+    all.next();
+    final Record third = all.next();
+
+    // THE ITERATOR HAS READ ITS FIRST BATCH WHEN IT IS POSITIONED: THAT BATCH IS GONE, THE POSITIONED RECORD COMES NEXT
+    final BucketIterator positioned = (BucketIterator) bucket.iterator();
+    assertThat(positioned.hasNext()).isTrue();
+    positioned.setPosition(third.getIdentity());
+    assertThat(((Document) positioned.next()).getInteger("id")).isEqualTo(((Document) third).getInteger("id"));
+    assertThat(((Document) positioned.next()).getInteger("id")).isEqualTo(((Document) third).getInteger("id") + 1);
+    assertThat(((Document) first).getInteger("id")).isZero();
+  }
+
+  @Test
+  void aDisabledBoundAlsoDisablesTheBudgetShrinking() {
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_BATCH_MAX_BYTES, 0L);
+    final long previousBudget = GlobalConfiguration.QUERY_MAX_HEAP_RAM.getValueAsLong();
+    GlobalConfiguration.QUERY_MAX_HEAP_RAM.setValue(1024L);
+    final QueryHeapTracker otherQuery = new QueryHeapTracker();
+    try {
+      otherQuery.charge(QueryHeapBudget.getAvailableBytes() - 4L * 1024 * 1024, "test");
+      assertThat(batchOf("Large")).isEqualTo(LARGE_RECORDS);
+      assertThat(lastBatch).isEqualTo(LARGE_RECORDS);
+    } finally {
+      otherQuery.close();
+      GlobalConfiguration.QUERY_MAX_HEAP_RAM.setValue(previousBudget);
+    }
+  }
+
+  @Test
   void aNonPositiveBoundKeepsTheCountOnlyBatch() {
     database.getConfiguration().setValue(GlobalConfiguration.QUERY_BATCH_MAX_BYTES, 0L);
 
