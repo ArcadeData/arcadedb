@@ -929,24 +929,16 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   }
 
   /**
-   * Whether a state machine on this node will apply the log entries the one the commit registered with did not: that one
-   * itself while it lives, or the one an in-place Ratis restart builds to replace it. Only when none will can the
-   * committing thread publish an acknowledged entry itself without racing an apply of the same entry, which would fold
-   * its record delta into the bucket counters twice (issues #8781, #8785).
+   * Whether a state machine on this node will apply the entries the one the commit registered with did not: that one
+   * while it lives, or the replacement an in-place Ratis restart builds. Only when none will can the committing thread
+   * publish an acknowledged entry without racing an apply of it, which folds its record delta twice (#8781, #8785).
    * <p>
-   * A replaced or closed state machine is not enough to publish (issue #8785). The replacement replays the log from the
-   * Ratis snapshot marker, which the old machine can only have taken at an index it applied: either the old machine
-   * applied this entry from its WAL bytes before it closed, or the replacement applies it as soon as it starts, possibly
-   * while this thread would still be inside phase 2. Either way an apply publishes the entry. A state machine closed
-   * without a shutdown is the window of that restart before the replacement is wired, or a division Ratis closed by
-   * itself, which the health monitor restarts in place; a restart that keeps failing ends in a server stop, after which
-   * the log replay on the next start applies the entry. The waits the caller then does read the CURRENT division's
-   * applied index, so they track the replacement.
-   * <p>
-   * Only a requested shutdown leaves the entry to the committing thread: no apply runs again in this process.
-   * <p>
-   * Evaluated once: a shutdown requested right after it answers true leaves the transaction released unpublished after
-   * the bounded wait, which the log replay on restart covers.
+   * A replaced or closed state machine is not enough (#8785): the replacement replays the log from the snapshot marker,
+   * which cannot be past an entry the old machine never applied, possibly while this thread is still in phase 2. A
+   * machine closed without a shutdown is the restart window before {@code RaftHAServer.restartRatis} reassigns the field,
+   * which it never clears. The caller's waits read the current division, so they track the replacement, and are bounded
+   * by the quorum timeout. Only a requested shutdown, after which no apply runs in this process, leaves the entry to
+   * the committing thread.
    */
   private boolean stateMachineWillApply(final ArcadeStateMachine stateMachine) {
     final RaftHAServer raft = raftHAServer;
@@ -1124,8 +1116,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
   /**
    * Publishes the pages on this thread, the pre-#6965 phase 2, for the cases where no state machine can do it at
-   * the log position: the Raft server is not wired yet, or a shutdown stops every apply (issue #8785). A failure after the quorum accepted the entry is reconciled
-   * from the replicated payload and surfaced as {@link TransactionCommittedRemotelyException} (issue #5064).
+   * the log position: the Raft server is not wired yet, or a shutdown stops every apply (issue #8785). A failure after
+   * the quorum accepted the entry is reconciled from the replicated payload and surfaced as
+   * {@link TransactionCommittedRemotelyException} (issue #5064).
    */
   private void commitLocallyWithoutStateMachine(final ReplicationPayload payload) {
     proxied.executeInReadLock(() -> {
