@@ -69,11 +69,12 @@ import static org.mockito.Mockito.when;
  * ended the client's stream without a terminal line, logging the failure as the leader's. The leader, fed the same
  * body directly, writes an in-band {@code error} line carrying {@code "status": 413}; the relay now writes that line.
  * <p>
- * The relay is driven with a scripted leader answer rather than through a live forward, because on the JDKs the server
- * runs on the live forward cannot reach it with a refused body: {@link HttpClient} hands back an HTTP/1.1 response only
- * after the request body has been published whole, so a cap trip fails the send itself and #8161's 413 answers it.
- * {@link #theJdkClientHandsBackTheResponseOnlyOnceTheUploadIsPublished} pins that, so the day a JDK starts delivering
- * the response mid-upload this class says the defended path has gone live, rather than leaving it to be rediscovered.
+ * The relay is driven here with a scripted leader answer, which reaches every shape of the leader's ending. The live
+ * forward reaches the same path since issue #9216 sent it full duplex ({@link DuplexHttpExchange}), and
+ * {@code Issue9216StreamedForwardIncrementalAcksTest} drives it there. Before that the forward used {@link HttpClient},
+ * which hands back an HTTP/1.1 response only after the request body has been published whole, so a cap trip always
+ * failed the send itself; {@link #theJdkClientHandsBackTheResponseOnlyOnceTheUploadIsPublished} still pins that JDK
+ * behaviour, as the reason the streaming forward does not go back to it.
  * <p>
  * Driven through a real Undertow exchange, like {@link Issue7738StreamingBatchRelayReadDeadlineTest}, because the relay
  * writes through the exchange's own output stream.
@@ -196,10 +197,10 @@ class Issue8674StreamedRelayBodyCapTerminalLineTest {
   }
 
   /**
-   * Why the path above is defended rather than live: the JDK client holds the response back until the upload is
-   * published whole, so the cap cannot trip once {@code forwardBatchToLeader} has handed the leader's answer to the
-   * relay. If this starts failing, a JDK now delivers the response mid-upload: the relay above is then reachable
-   * (and handled), and the streaming forward's header-only deadline no longer bounds the whole upload.
+   * Why the streaming forward does not use the JDK client (issue #9216): it holds the response back until the upload is
+   * published whole, so a client loading through a follower would see none of the leader's acknowledgements until its
+   * upload ended. If this starts failing, a JDK now delivers the response mid-upload and {@link DuplexHttpExchange}
+   * could be retired in favour of it.
    */
   @Test
   @Timeout(value = 60, unit = TimeUnit.SECONDS)

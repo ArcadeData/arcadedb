@@ -33,7 +33,9 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -118,6 +120,48 @@ class ReadBoundedInputStreamTest {
     assertThatThrownBy(in::read).isInstanceOf(IOException.class).isNotInstanceOf(HttpTimeoutException.class)
         .hasMessage("connection reset");
     assertThat(in.hasExpired()).isFalse();
+  }
+
+  /**
+   * Issue #9216: the leader's answer is relayed while the upload is still going, and a leader taking the upload in may
+   * say nothing for longer than the budget. A read is not silent while the upload moves, and is released once both have
+   * stood still for a budget.
+   */
+  @Test
+  void aReadIsNotSilentWhileTheActivityMovesAndIsReleasedOnceItStops() throws Exception {
+    final AtomicLong uploaded = new AtomicLong();
+    final AtomicBoolean uploading = new AtomicBoolean(true);
+    final ScheduledFuture<?> upload = scheduler.scheduleAtFixedRate(() -> {
+      if (uploading.get())
+        uploaded.incrementAndGet();
+    }, BUDGET_MS / 5, BUDGET_MS / 5, TimeUnit.MILLISECONDS);
+    try {
+      final ReadBoundedInputStream in = new ReadBoundedInputStream(new SilentLeaderBody(false), BUDGET_MS,
+          timer(new AtomicInteger()), uploaded::get);
+      final CountDownLatch readReturned = new CountDownLatch(1);
+      final Thread reader = new Thread(() -> {
+        try {
+          in.read();
+        } catch (final IOException ignored) {
+          // asserted through hasExpired()
+        } finally {
+          readReturned.countDown();
+        }
+      }, "issue9216-reader");
+      reader.setDaemon(true);
+      reader.start();
+
+      assertThat(readReturned.await(BUDGET_MS * 6, TimeUnit.MILLISECONDS))
+          .as("six budgets of leader silence while the upload moves are not a stall").isFalse();
+
+      uploading.set(false);
+      final StallAwareStopwatch watch = StallAwareStopwatch.start();
+      assertThat(readReturned.await(SEPARATION_MS * 2, TimeUnit.MILLISECONDS)).isTrue();
+      watch.assertGaveUpWithin(SEPARATION_MS, "two budgets after the upload stopped from a read nothing releases");
+      assertThat(in.hasExpired()).isTrue();
+    } finally {
+      upload.cancel(false);
+    }
   }
 
   // ---------------------------------------------------------------------------------------------------------
