@@ -43,4 +43,19 @@ class Issue9454ForEachNullSourceTest extends TestHelper {
 
     assertThat(database.countType("Dst", true)).isZero();
   }
+
+  @Test
+  void foreachOverNonNullSourceStillIterates() {
+    database.getSchema().createDocumentType("Dst");
+
+    database.command("sqlscript", """
+        begin;
+        foreach ($p IN [1, 2, 3]) {
+          insert into Dst set id = $p;
+        }
+        commit;
+        """);
+
+    assertThat(database.countType("Dst", true)).isEqualTo(3);
+  }
 }
