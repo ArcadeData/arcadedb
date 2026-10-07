@@ -2946,7 +2946,8 @@ public class TransactionContext implements Transaction {
    * read, so a transaction that read an index page before a commit and the record page after it holds two states that
    * never coexisted (#9369); a caller that has caught that - an index entry whose record is gone - uses this to read both
    * again against one state. This deliberately weakens the snapshot of those files for the rest of the transaction, and only
-   * a caller that detected a torn read may use it.
+   * a caller that detected a torn read may use it. {@code immutableRecordsCache} only holds records read through this
+   * transaction's pinned pages, never one it modified: those live in its modified-record bookkeeping, which this does not touch.
    */
   public void unpinFiles(final Collection<Integer> fileIds) {
     LogManager.instance().log(this, Level.FINE, "Releasing the pinned pages of files %s: a commit overlapped a read of this transaction", null, fileIds);

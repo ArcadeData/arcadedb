@@ -1759,7 +1759,11 @@ public class PageManager extends LockContext {
       handedOver = true;
       // ODD WHILE THE PAGES OF ONE TRANSACTION ARE BEING PUBLISHED (#9369): they reach the read cache one by one, so a reader
       // can see the index page of the commit and the record page of the previous one. See getPublicationSequence().
-      ++publicationSequence;
+      // Only the outermost publication moves the counter: the lock is reentrant, and an inner call that turned it even again while the
+      // outer one is still publishing would let a reader accept a torn state
+      final boolean outermost = (publicationSequence & 1) == 0;
+      if (outermost)
+        ++publicationSequence;
       try {
         writePagesNoBackpressure(pagesToWrite, asyncFlush, flushSlotReserved);
 
@@ -1774,7 +1778,8 @@ public class PageManager extends LockContext {
       } finally {
         // Even again also when the publication failed midway: the cache then holds a partial publish, a failure path in which
         // the database is fenced anyway, and a sequence left odd would stall every lookup that waits for it
-        ++publicationSequence;
+        if (outermost)
+          ++publicationSequence;
       }
 
     } finally {
