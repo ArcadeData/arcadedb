@@ -29,6 +29,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.index.IndexException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalExecutionPlan;
@@ -38,6 +39,7 @@ import com.arcadedb.query.sql.executor.SelectExecutionPlanner;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.function.Function;
+import java.util.logging.Level;
 
 public class SelectStatement extends Statement {
   /** How many times a SELECT is planned in all when the index its plan reads is gone by the time it starts (issue #9331). */
@@ -230,6 +232,8 @@ public class SelectStatement extends Statement {
       } catch (final IndexException e) {
         if (attempt >= STALE_INDEX_PLAN_RETRIES)
           throw e;
+        LogManager.instance().log(this, Level.FINE, "Planning the statement again after attempt %d: %s", null, attempt,
+            e.getMessage());
         if (plan != null)
           plan.close();
       }
