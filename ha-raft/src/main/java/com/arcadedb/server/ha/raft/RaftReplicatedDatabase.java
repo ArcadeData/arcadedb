@@ -892,14 +892,24 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // plainly here what is being risked and what to look at.
       // getLastAppliedIndex() reports -1 ("unknown") while an in-place restart re-initializes the Ratis
       // division (#5271). That is not a race with another committer, so do not raise the alarm for it -
-      // the wait above will simply have run its full deadline, which is inherent to the restart window.
+      // the wait above will simply have run its full deadline, which is inherent to the restart window. Since
+      // #8785 that includes a leader commit acknowledged across the restart: it is left to the replacement state
+      // machine instead of being published here, and so stalls here for the restart.
       final long applied = raft.getLastAppliedIndex();
+      final ArcadeStateMachine current = raft.getStateMachine();
       if (applied >= 0 && applied < committedLogIndex)
         LogManager.instance().log(this, Level.WARNING,
             "Commit on database '%s' is releasing its commit locks before entry %d was applied locally "
                 + "(applied=%d). Concurrent transactions on these files can now validate against stale page "
                 + "versions - the condition behind issue #5503. Investigate the state machine apply lag.",
             getName(), committedLogIndex, applied);
+      else if (current != null && current.isClosed())
+        // #8785: still no replacement for a closed state machine after the whole wait. The transaction is released
+        // unpublished; the entry is applied by the replacement once there is one, or by the log replay on restart.
+        LogManager.instance().log(this, Level.WARNING,
+            "Commit on database '%s' is releasing entry %d unpublished: the local state machine is closed and none "
+                + "has replaced it yet. The entry is applied by its replacement or by the log replay on restart; "
+                + "check why the Raft server did not restart in place.", getName(), committedLogIndex);
     }
     payload.tx().reset();
     final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());

@@ -367,7 +367,10 @@ class Issue6965LocalCommitHandshakeTest {
   /**
    * Issue #8785: a state machine closed without a shutdown is the window of an in-place Ratis restart before the
    * replacement is wired (or a division Ratis closed itself, which the health monitor restarts in place). The replacement
-   * applies the entry from the log, so the committing thread must not publish it as well.
+   * applies the entry from the log, so the committing thread must not publish it as well. The applied index reads -1
+   * here, as it does while a restart re-initializes the division, which is the branch that warns the machine is still
+   * closed after the wait. The race itself (the replacement applying the entry exactly once) needs a real Ratis restart
+   * mid-commit and is not reproduced deterministically by these mocks.
    */
   @Test
   void anUnclaimedEntryIsNeverPublishedByTheCommittingThreadWhileAClosedStateMachineAwaitsItsReplacement() {
@@ -375,6 +378,7 @@ class Issue6965LocalCommitHandshakeTest {
     assertThat(closed.getClass()).as("a subclass spy (issue #8021)").isNotEqualTo(ArcadeStateMachine.class);
     doReturn(true).when(closed).isClosed();
     when(raftServer.getStateMachine()).thenReturn(closed);
+    when(raftServer.getLastAppliedIndex()).thenReturn(-1L);
     when(broker.replicateTransaction(anyString(), any(), any())).thenReturn(7L);
 
     database.replicateAndCommitLocally(payload, true, closed);
