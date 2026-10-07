@@ -113,10 +113,11 @@ class FetchFromIndexStepResetTest extends TestHelper {
 
     final ResultSet resultSet = database.query("sql", "SELECT id FROM " + TYPE_NAME + " WHERE id > 10");
     try {
-      assertThat(resultSet.hasNext()).isTrue();
-      resultSet.next();
-
-      final FetchFromIndexStep step = indexStep(resultSet);
+      // A copy of the index step is driven directly: the statement above is a point lookup, which the step that loads its
+      // records reads to the end before serving a row (#9369), leaving no pending cursor to restart from
+      final FetchFromIndexStep planned = indexStep(resultSet);
+      final FetchFromIndexStep step = (FetchFromIndexStep) planned.copy(planned.context);
+      assertThat(step.syncPull(step.context, 1).hasNext()).isTrue();
       // mid-scan: the step is holding an open cursor, which is exactly the state reset() has to release
       assertThat((Object) step.cursor).as("precondition: the scan must still be holding a cursor").isNotNull();
 
@@ -143,10 +144,11 @@ class FetchFromIndexStepResetTest extends TestHelper {
     final ResultSet resultSet = database.query("sql",
         "SELECT id FROM " + TYPE_NAME + " WHERE id IN [11, 12, 13] AND id > 0");
     try {
-      assertThat(resultSet.hasNext()).isTrue();
-      resultSet.next();
-
-      final FetchFromIndexStep step = indexStep(resultSet);
+      // A copy of the index step is driven directly: the statement above is a point lookup, which the step that loads its
+      // records reads to the end before serving a row (#9369), leaving no pending cursor to restart from
+      final FetchFromIndexStep planned = indexStep(resultSet);
+      final FetchFromIndexStep step = (FetchFromIndexStep) planned.copy(planned.context);
+      assertThat(step.syncPull(step.context, 1).hasNext()).isTrue();
       assertThat(step.nextCursors).as("precondition: a multi-value key must have planned more than one cursor")
           .isNotEmpty();
 
@@ -209,12 +211,13 @@ class FetchFromIndexStepResetTest extends TestHelper {
 
     final ResultSet resultSet = database.query("sql",
         "SELECT id FROM " + TYPE_NAME + " WHERE id IN [11, 12, 13] AND id > 0");
-    assertThat(resultSet.hasNext()).isTrue();
-    resultSet.next();
-
     // NOT closed: the step is restarted with its pending cursors still loaded, which is the state reset() must handle
     // on its own. Closing the result set first would clear them through close() and make this hold vacuously.
-    final FetchFromIndexStep step = indexStep(resultSet);
+    // A copy of the index step is driven directly: the statement above is a point lookup, which the step that loads its
+    // records reads to the end before serving a row (#9369), leaving no pending cursor to restart from
+    final FetchFromIndexStep planned = indexStep(resultSet);
+    final FetchFromIndexStep step = (FetchFromIndexStep) planned.copy(planned.context);
+    assertThat(step.syncPull(step.context, 1).hasNext()).isTrue();
     assertThat(step.nextCursors).as("precondition: the restart must happen with a pending cursor loaded").isNotEmpty();
 
     final List<Object> firstRun = new ArrayList<>();
