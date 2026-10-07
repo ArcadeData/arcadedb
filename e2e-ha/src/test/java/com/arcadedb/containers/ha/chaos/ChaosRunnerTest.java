@@ -203,4 +203,42 @@ class ChaosRunnerTest {
     assertThat(harness.runner().run().kind()).isEqualTo(ResultKind.PASS);
     assertThat(sleeps).containsSubsequence(Duration.ofSeconds(5), ChaosRunner.MIN_AVAILABILITY_WINDOW);
   }
+
+  @Test
+  void longPauseHoldsTheFollowerFrozenLongerThanTheRatisCloseThreshold() throws IOException {
+    final Harness harness = harness(config("chaos.faults", "longpause", "chaos.maxSteps", "1", "chaos.holdMin", "PT10S",
+        "chaos.holdMax", "PT10S", "chaos.availabilityGrace", "PT5S"));
+    assertThat(harness.runner().run().kind()).isEqualTo(ResultKind.PASS);
+    final Duration rest = LongPauseFault.MIN_HOLD.minusSeconds(5);
+    assertThat(sleeps).containsSubsequence(Duration.ofSeconds(5), rest);
+    assertThat(Duration.ofSeconds(5).plus(rest)).isGreaterThan(Duration.ofSeconds(60));
+    assertThat(harness.control().calls).filteredOn(call -> call.startsWith("pause:") || call.startsWith("unpause:"))
+        .hasSize(2);
+  }
+
+  @Test
+  void reformatAfterALongPauseIsASafetyFailure() throws IOException {
+    final Harness harness = harness(config("chaos.faults", "longpause"));
+    harness.control().reformatOnUnpause = true;
+    final ChaosResult result = harness.runner().run();
+    assertThat(result.kind()).isEqualTo(ResultKind.SAFETY);
+    assertThat(result.steps()).isEqualTo(1);
+    assertThat(result.violations().getFirst().invariant()).isEqualTo("REFORMAT");
+    assertThat(result.message()).contains("reformat").contains("longpause");
+  }
+
+  @Test
+  void inPlaceRecoveryAfterALongPauseIsAccepted() throws IOException {
+    final Harness harness = harness(config("chaos.faults", "longpause"));
+    harness.control().recoverOnUnpause = true;
+    assertThat(harness.runner().run().kind()).isEqualTo(ResultKind.PASS);
+    assertThat(Arrays.stream(harness.control().recovered).sum()).isEqualTo(5);
+  }
+
+  @Test
+  void reformatIsOnlyForbiddenForTheLongPause() throws IOException {
+    final Harness harness = harness(config("chaos.faults", "pause"));
+    harness.control().reformatOnUnpause = true;
+    assertThat(harness.runner().run().kind()).isEqualTo(ResultKind.PASS);
+  }
 }

@@ -131,6 +131,8 @@ public final class ChaosRunner {
     final int leaderBefore = control.findLeader();
     LOGGER.info("CHAOS step {} fault={} leader={} state={}", step, fault.name(), leaderBefore, state);
 
+    // Snapshot before inject: a reformat during the hold or the catch-up counts against the step
+    final NodeControl.InPlaceRestarts[] restartsBefore = fault.forbidsReformat() ? inPlaceRestarts() : null;
     String targets = "(inject failed)";
     try {
       try {
@@ -141,7 +143,7 @@ public final class ChaosRunner {
         failIfANodeIsUnhealthy(step);
         throw e;
       }
-      return holdHealAndCheck(step, fault, targets, leaderBefore, random);
+      return holdHealAndCheck(step, fault, targets, leaderBefore, random, restartsBefore);
     } catch (final ChaosFailure e) {
       report.stepFailed(step, fault.name(), targets, single(e.kind(), e.getMessage(), step));
       throw e;
@@ -156,8 +158,9 @@ public final class ChaosRunner {
   }
 
   private ChaosResult holdHealAndCheck(final int step, final Fault fault, final String targets, final int leaderBefore,
-      final Random random) throws Exception {
-    final Duration hold = between(random, config.holdMin(), config.holdMax());
+      final Random random, final NodeControl.InPlaceRestarts[] restartsBefore) throws Exception {
+    final Duration drawn = between(random, config.holdMin(), config.holdMax());
+    final Duration hold = drawn.compareTo(fault.minHold()) < 0 ? fault.minHold() : drawn;
     long ackedDuringHold = -1;
     if (fault.expectsWritesAvailable()) {
       sleeper.sleep(config.availabilityGrace());
@@ -203,7 +206,45 @@ public final class ChaosRunner {
         ledger.count(Ledger.UNKNOWN), ledger.count(Ledger.FAILED)));
     if (trends != null)
       report.trend(trends.sample(step, acksPerSecond(), result.durationMillis()));
-    return result.violations().isEmpty() ? null : fromViolations(result.violations(), step);
+    if (!result.violations().isEmpty())
+      return fromViolations(result.violations(), step);
+    if (restartsBefore != null) {
+      final Violation reformat = reformatViolation(step, fault, targets, restartsBefore);
+      if (reformat != null)
+        return fromViolations(List.of(reformat), step);
+    }
+    return null;
+  }
+
+  private NodeControl.InPlaceRestarts[] inPlaceRestarts() {
+    final NodeControl.InPlaceRestarts[] restarts = new NodeControl.InPlaceRestarts[state.size()];
+    for (int i = 0; i < restarts.length; i++)
+      restarts[i] = control.inPlaceRestarts(i);
+    return restarts;
+  }
+
+  /**
+   * Logs which recovery path each node took during the step and returns a SAFETY violation when any node reformatted
+   * its Raft storage, which the fault gave it no reason to do (issue #8954).
+   */
+  private Violation reformatViolation(final int step, final Fault fault, final String targets,
+      final NodeControl.InPlaceRestarts[] before) {
+    final NodeControl.InPlaceRestarts[] after = inPlaceRestarts();
+    final StringBuilder reformatted = new StringBuilder();
+    for (int i = 0; i < after.length; i++) {
+      final int recovered = after[i].recovered() - before[i].recovered();
+      final int reformats = after[i].reformatted() - before[i].reformatted();
+      if (recovered > 0 || reformats > 0)
+        LOGGER.info("CHAOS step {} fault={}: node {} restarted Ratis in place {} time(s) keeping its storage, {} time(s) reformatting it",
+            step, fault.name(), i, recovered, reformats);
+      if (reformats > 0)
+        reformatted.append(reformatted.isEmpty() ? "" : ", ").append("node ").append(i).append(" x").append(reformats);
+    }
+    if (reformatted.isEmpty())
+      return null;
+    return new Violation(ResultKind.SAFETY, "REFORMAT",
+        "Raft storage reformatted during fault '" + fault.name() + "' " + targets + " (step " + step + "): " + reformatted
+            + "; the node should have caught up, or been recovered in place keeping its log", new long[0]);
   }
 
   /**

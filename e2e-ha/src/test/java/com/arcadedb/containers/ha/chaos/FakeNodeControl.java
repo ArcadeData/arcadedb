@@ -39,6 +39,12 @@ final class FakeNodeControl implements NodeControl {
   /** Returned by {@link #leaderView()}. */
   String                 leaderView       = "";
   int                    checksBeforeExit;
+  /** In-place restarts per node, reported by {@link #inPlaceRestarts}. */
+  final int[]            recovered        = new int[5];
+  final int[]            reformatted      = new int[5];
+  /** An unpaused node restarts Ratis in place reformatting (or recovering) its storage. */
+  boolean                reformatOnUnpause;
+  boolean                recoverOnUnpause;
 
   private void log(final String call) {
     if (failure != null)
@@ -69,6 +75,10 @@ final class FakeNodeControl implements NodeControl {
   @Override
   public void unpause(final int node) {
     log("unpause:" + node);
+    if (reformatOnUnpause)
+      ++reformatted[node];
+    if (recoverOnUnpause)
+      ++recovered[node];
   }
 
   @Override
@@ -105,6 +115,11 @@ final class FakeNodeControl implements NodeControl {
   public boolean awaitLeader(final Duration timeout) {
     calls.add("awaitLeader");
     return leaderAvailable;
+  }
+
+  @Override
+  public InPlaceRestarts inPlaceRestarts(final int node) {
+    return new InPlaceRestarts(recovered[node], reformatted[node]);
   }
 
   @Override

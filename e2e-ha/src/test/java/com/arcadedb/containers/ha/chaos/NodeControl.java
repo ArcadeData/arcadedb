@@ -26,6 +26,13 @@ import java.time.Duration;
  * {@code FakeNodeControl}.
  */
 public interface NodeControl {
+  /**
+   * How many times a node restarted Ratis in place since the run started, by storage outcome: {@code recovered} kept
+   * the log (the health monitor's CLOSED/EXCEPTION recovery), {@code reformatted} discarded it (divergence reformat).
+   */
+  record InPlaceRestarts(int recovered, int reformatted) {
+  }
+
   void kill(int node) throws Exception;
 
   void stopGracefully(int node) throws Exception;
@@ -74,4 +81,7 @@ public interface NodeControl {
    * heap usually keeps running, so {@link #unexpectedExit} cannot see it
    */
   String outOfMemory();
+
+  /** @return the in-place Ratis restarts the node has logged since the run started */
+  InPlaceRestarts inPlaceRestarts(int node);
 }
