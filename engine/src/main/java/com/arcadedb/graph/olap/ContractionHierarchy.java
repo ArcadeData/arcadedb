@@ -111,7 +111,7 @@ public final class ContractionHierarchy {
   private final LongAdder topologyRecontractions = new LongAdder();
   private final LongAdder customizations      = new LongAdder();
   private final LongAdder customizationsSaved = new LongAdder();
-  private final LongAdder partialCustomizations = new LongAdder();
+  private final LongAdder partialCustomizations          = new LongAdder();
   private volatile long   lastPartialCustomizationMicros;
   private volatile int    lastPartialArcs;
   private volatile long   lastCatchUpMicros;
@@ -499,21 +499,21 @@ public final class ContractionHierarchy {
       final CCHMetric old = undirected ? previous.undirected : previous.directed;
       if (old != null) {
         final int arcs = topologyRoot.topology.arcCount();
-        final int[] changed = new int[Math.min(arcs, PARTIAL_LIMIT_MIN + arcs / PARTIAL_LIMIT_DIVISOR)];
+        final int limit = partialLimit(arcs);
+        int[] changed = new int[16];
         int count = 0;
-        for (int a = 0; a < arcs && count <= changed.length; a++)
-          if (input[0][a] != old.inputUp[a] || (!undirected && input[1][a] != old.inputDown[a])) {
-            if (count == changed.length) {
-              count++;
-              break;
-            }
+        for (int a = 0; a < arcs && count <= limit; a++)
+          if (Double.compare(input[0][a], old.inputUp[a]) != 0
+              || (!undirected && Double.compare(input[1][a], old.inputDown[a]) != 0)) {
+            if (count == changed.length)
+              changed = Arrays.copyOf(changed, count * 2);
             changed[count++] = a;
           }
         if (count == 0) {
           customizationsSaved.increment();
           return old;
         }
-        if (count <= changed.length) {
+        if (count <= limit) {
           final double[] ups = new double[count];
           final double[] downs = new double[count];
           for (int i = 0; i < count; i++) {
@@ -538,6 +538,11 @@ public final class ContractionHierarchy {
    * Brings the previous preparation up to {@code snap}, which sits on the same base CSR, by re-pricing only the pairs
    * of vertices whose edges the overlay difference between the two snapshots names, then partially customizing the arcs
    * that changed. That is what keeps a weight update, a closed road or a removed edge in the milliseconds.
+   * <p>
+   * The metrics are updated in place, so they belong to the hierarchy rather than to one snapshot: a query that started
+   * on the previous preparation and overlaps the update reads either the costs before it or the costs after it, never a
+   * mix (see {@link CCHMetric#update}), and from the moment the view publishes the new snapshot until this preparation
+   * is published for it, queries are answered by Dijkstra as with any other preparation.
    *
    * @return false when the change cannot be handled this way - a vertex deleted, an edge between two vertices the
    * topology does not join, an exact answer refused - and the whole graph has to be read again
@@ -590,11 +595,22 @@ public final class ContractionHierarchy {
       count++;
     }
 
+    // past the point where a full customization is cheaper, let the full path decide: it diffs every arc
+    if (count > partialLimit(topology.arcCount()))
+      return false;
     if (count > 0) {
-      if (previous.directed != null)
-        partialUpdate(previous.directed, arcs, directedUp, directedDown, count);
-      if (previous.undirected != null)
-        partialUpdate(previous.undirected, arcs, undirectedCost, undirectedCost, count);
+      try {
+        if (previous.directed != null)
+          partialUpdate(previous.directed, arcs, directedUp, directedDown, count);
+        if (previous.undirected != null)
+          partialUpdate(previous.undirected, arcs, undirectedCost, undirectedCost, count);
+      } catch (final RuntimeException e) {
+        // One metric may be updated and the other not: the full path diffs both against the snapshot's arcs and brings
+        // whichever is behind up to date, partially or fully
+        LogManager.instance().log(this, Level.WARNING, "Incremental update of contraction hierarchy on '%s' failed, "
+            + "re-reading the view", e, weightProperty);
+        return false;
+      }
     } else
       customizationsSaved.increment();
 
@@ -624,6 +640,11 @@ public final class ContractionHierarchy {
       if (neighbors[i] == v && EdgeWeight.isWalkable(weights[i]) && weights[i] < best)
         best = weights[i];
     return best;
+  }
+
+  /** How many changed arcs a partial customization handles before a full one becomes cheaper. */
+  private static int partialLimit(final int arcs) {
+    return Math.min(arcs, PARTIAL_LIMIT_MIN + arcs / PARTIAL_LIMIT_DIVISOR);
   }
 
   private void partialUpdate(final CCHMetric metric, final int[] arcs, final double[] ups, final double[] downs,

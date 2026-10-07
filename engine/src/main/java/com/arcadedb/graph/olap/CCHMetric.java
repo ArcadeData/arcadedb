@@ -204,9 +204,10 @@ final class CCHMetric {
    * An arc is recomputed from its input cost and all its lower triangles, not merely relaxed, because a cost can go UP
    * (heavier traffic, a closed road) as well as down.
    *
-   * @param arcs      the arcs whose input cost changes
-   * @param inputUps  their new lower -> higher cost
+   * @param arcs       the arcs whose input cost changes
+   * @param inputUps   their new lower -> higher cost
    * @param inputDowns their new higher -> lower cost (ignored when undirected)
+   * @param count      how many entries of the three arrays to apply
    *
    * @return how many arcs were recomputed
    */
