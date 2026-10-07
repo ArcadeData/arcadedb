@@ -70,6 +70,35 @@ class Issue9370EqualsListIndexTest extends TestHelper {
   }
 
   @Test
+  void compositeKeyExpandsOnlyTheInSlot() {
+    database.command("sql", "CREATE DOCUMENT TYPE Pair");
+    database.command("sql", "CREATE PROPERTY Pair.a INTEGER");
+    database.command("sql", "CREATE PROPERTY Pair.b INTEGER");
+    database.command("sql", "CREATE INDEX ON Pair (a, b) NOTUNIQUE");
+    database.transaction(() -> {
+      for (int a = 1; a <= 3; a++)
+        for (int b = 1; b <= 3; b++)
+          database.command("sql", "INSERT INTO Pair SET a = " + a + ", b = " + b).close();
+    });
+    assertThat(count("SELECT FROM Pair WHERE a = 1 AND b IN :v", Map.of("v", List.of(1, 2)))).as("IN in the last slot").isEqualTo(2);
+    assertThat(count("SELECT FROM Pair WHERE a IN :v AND b = 1", Map.of("v", List.of(1, 2)))).as("IN in the first slot").isEqualTo(2);
+    assertThat(count("SELECT FROM Pair WHERE a = 1 AND b = :v", Map.of("v", List.of(1, 2)))).as("= with a list in the last slot").isZero();
+    assertThat(count("SELECT FROM Pair WHERE a = :v AND b = 1", Map.of("v", List.of(1, 2)))).as("= with a list in the first slot").isZero();
+    assertThat(count("SELECT FROM Pair WHERE a = 2 AND b = 3", Map.of())).as("scalars").isEqualTo(1);
+  }
+
+  private int count(final String sql, final Map<String, Object> params) {
+    int count = 0;
+    try (final ResultSet rs = database.query("sql", sql, params)) {
+      while (rs.hasNext()) {
+        rs.next();
+        count++;
+      }
+    }
+    return count;
+  }
+
+  @Test
   void inStillExpandsAndScalarEqualsStillWorks() {
     for (final String[] t : TYPES) {
       assertThat(rows("SELECT k FROM " + t[0] + " WHERE k IN :v ORDER BY k", Map.of("v", List.of(1, 2)))).as(t[0] + " IN")
