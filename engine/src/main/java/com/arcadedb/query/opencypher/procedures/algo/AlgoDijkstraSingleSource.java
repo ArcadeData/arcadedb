@@ -121,7 +121,7 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
     // upper bound rather than the base node mapping (issue #6792) - so this procedure no longer has to refuse
     // the whole call just because a commit landed since the view was last built (issue #6791).
     if (provider instanceof GraphAnalyticalView gav && gav.servesEdgeProperty(weightProperty, relTypes)) {
-      final Stream<Result> accelerated = executeWithCSR(context, gav, startNode.getIdentity(), relTypes, weightProperty, dir);
+      final Stream<Result> accelerated = executeWithCSR(gav, startNode.getIdentity(), relTypes, weightProperty, dir);
       // Null means the kernel refused outright: a node it popped could not be answered exactly even through
       // the overlay-aware fallback GraphAlgorithms.dijkstraSingleSource takes while an overlay is active
       // (issue #6791) - an ambiguous parallel-edge deletion is the one case that can still happen.
@@ -135,7 +135,7 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
     return executeWithOLTP(db, startNode, relTypes, weightProperty, dir);
   }
 
-  private Stream<Result> executeWithCSR(final CommandContext context, final GraphAnalyticalView gav, final RID startRid,
+  private Stream<Result> executeWithCSR(final GraphAnalyticalView gav, final RID startRid,
       final String[] relTypes, final String weightProperty, final Vertex.DIRECTION dir) {
     // The exclusive bound of the dense id space, not the live node count: while an overlay is active the two
     // diverge (issue #6792) - an added node's id sits above the base mapping regardless of how many nodes are
@@ -152,12 +152,16 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
         gav, src, weightProperty, dir, relTypes);
     if (dist == null)
       return null; // a popped node could not be answered exactly; the caller reads the edges instead
-    long reachable = 0;
+    // The reached ids up front rather than a filter() on the stream: a filtered stream no longer knows its size, and
+    // the exact size is what lets a count-only CALL answer without building a row per node (issue #9453)
+    int reachable = 0;
     for (int i = 0; i < n; i++)
       if (i != src && dist[i] < Double.POSITIVE_INFINITY) reachable++;
-    context.setVariable(CommandContext.RESULT_COUNT_HINT_VAR, reachable);
+    final int[] reached = new int[reachable];
+    for (int i = 0, r = 0; i < n; i++)
+      if (i != src && dist[i] < Double.POSITIVE_INFINITY) reached[r++] = i;
 
-    return IntStream.range(0, n).filter(i -> i != src && dist[i] < Double.POSITIVE_INFINITY).mapToObj(i -> {
+    return IntStream.of(reached).mapToObj(i -> {
       final ResultInternal r = new ResultInternal();
       r.setProperty("node", gav.getRID(i));
       r.setProperty("cost", dist[i]);

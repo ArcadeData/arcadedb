@@ -101,20 +101,19 @@ public class AlgoWCC extends AbstractAlgoProcedure {
     // as wide as the id space the view now reports - see GraphTraversalProvider#hasPendingChanges (issue #6792).
     if (provider instanceof GraphAnalyticalView gav && !gav.hasPendingChanges()) {
       context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
-      return executeWithCSR(context, gav, relTypes);
+      return executeWithCSR(gav, relTypes);
     }
 
     // Fall back to OLTP path
     return executeWithOLTP(db, relTypes);
   }
 
-  private Stream<Result> executeWithCSR(final CommandContext context, final GraphAnalyticalView gav, final String[] relTypes) {
+  private Stream<Result> executeWithCSR(final GraphAnalyticalView gav, final String[] relTypes) {
     final int n = gav.getNodeCount();
     if (n == 0)
       return Stream.empty();
 
     final int[] componentId = GraphAlgorithms.connectedComponents(gav, relTypes);
-    context.setVariable(CommandContext.RESULT_COUNT_HINT_VAR, (long) n);
 
     return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal result = new ResultInternal();

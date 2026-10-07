@@ -115,11 +115,15 @@ public class AlgoBFS extends AbstractAlgoProcedure {
         return Stream.empty();
       final int n = gav.getNodeCount();
       final int[] depths = GraphAlgorithms.shortestPathAll(gav, startIdx, dir, relTypes);
-      long reachable = 0;
+      // The reached ids up front rather than a filter() on the stream: a filtered stream no longer knows its size,
+      // and the exact size is what lets a count-only CALL answer without building a row per node (issue #9453)
+      int reachable = 0;
       for (int i = 0; i < n; i++)
         if (i != startIdx && depths[i] >= 0 && depths[i] <= maxDepth) reachable++;
-      context.setVariable(CommandContext.RESULT_COUNT_HINT_VAR, reachable);
-      return IntStream.range(0, n).filter(i -> i != startIdx && depths[i] >= 0 && depths[i] <= maxDepth).mapToObj(i -> {
+      final int[] reached = new int[reachable];
+      for (int i = 0, r = 0; i < n; i++)
+        if (i != startIdx && depths[i] >= 0 && depths[i] <= maxDepth) reached[r++] = i;
+      return IntStream.of(reached).mapToObj(i -> {
         final ResultInternal r = new ResultInternal();
         r.setProperty("node", gav.getRID(i));
         r.setProperty("depth", depths[i]);
