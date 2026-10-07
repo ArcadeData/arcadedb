@@ -38,7 +38,8 @@ set -euo pipefail
 #   DB         - database to create and replicate, default hasmoke
 #   KEEP_WORK  - "1" to keep the per-node directories and logs after the run instead of deleting them
 # Both port bases must be free on this machine (a locally running ArcadeDB on 2480 / 2434 is the
-# usual reason for an override), the same caveat as smoke.sh.
+# usual reason for an override), the same caveat as smoke.sh. The defaults suit CI's fixed runners;
+# the script checks them up front and fails by name if one is taken.
 
 EXE="${1:?path to server executable required}"
 shift || true
@@ -57,18 +58,27 @@ PIDS=()
 
 cleanup() {
   local rc=$?
-  for pid in "${PIDS[@]:-}"; do
-    [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
-  done
-  for pid in "${PIDS[@]:-}"; do
-    [ -n "$pid" ] && wait "$pid" 2>/dev/null || true
-  done
+  # Logs first: after the nodes are stopped the tail is mostly shutdown noise, and a node stuck
+  # shutting down must not be able to keep the failure output from ever being printed.
   if [ "$rc" -ne 0 ]; then
     for i in $(seq 0 $((NODES - 1))); do
       echo "[ha-smoke] ---- node $i log (tail) ----"
       tail -40 "$WORK/node$i.log" 2>/dev/null || true
     done
   fi
+  for pid in "${PIDS[@]:-}"; do
+    [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
+  done
+  # Bounded: a node that ignores SIGTERM is killed after 30s instead of hanging the job until its timeout.
+  for pid in "${PIDS[@]:-}"; do
+    [ -n "$pid" ] || continue
+    for _ in $(seq 1 30); do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 1
+    done
+    kill -9 "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  done
   if [ "${KEEP_WORK:-0}" = "1" ]; then
     echo "[ha-smoke] node directories and logs kept in $WORK"
   else
