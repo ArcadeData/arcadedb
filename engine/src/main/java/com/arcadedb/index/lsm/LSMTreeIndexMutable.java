@@ -211,8 +211,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
   }
 
   public LSMTreeIndexCompacted createNewForCompaction() throws IOException {
-    final int last_ = componentName.lastIndexOf('_');
-    final String newName = componentName.substring(0, last_) + "_" + System.nanoTime();
+    final String newName = LSMTreeIndexAbstract.compactionBaseName(componentName) + "_" + System.nanoTime();
 
     final LSMTreeIndexCompacted compacted = new LSMTreeIndexCompacted(mainIndex, database, newName, unique,
         database.getDatabasePath() + File.separator + newName, keyTypes, storageKeyTypes, pageSize);

@@ -74,9 +74,22 @@ class Issue8932PlainRangeOnCiIndexTest extends TestHelper {
   }
 
   @Test
-  void equalityAndInKeepTheCaseInsensitiveLookup() {
-    assertThat(names("SELECT name FROM P WHERE name = 'JOHN'")).containsExactly("John");
-    assertThat(names("SELECT name FROM P WHERE name IN ['JOHN', 'mary']")).containsExactlyInAnyOrder("John", "MARY");
+  void plainEqualityAndInAgreeWithTheScan() {
+    // The index folds its keys, but the plain predicate is case sensitive: with or without the index it answers the same (issue #9403)
+    for (final String predicate : List.of("name = 'JOHN'", "name = 'John'", "name IN ['JOHN', 'mary']", "name IN ['John', 'MARY', 'zed']")) {
+      final List<String> indexed = names("SELECT name FROM P WHERE " + predicate);
+      final List<String> scanned = names("SELECT name FROM (SELECT FROM P) WHERE " + predicate);
+      assertThat(indexed).as(predicate).containsExactlyInAnyOrderElementsOf(scanned);
+    }
+    assertThat(names("SELECT name FROM P WHERE name = 'JOHN'")).isEmpty();
+    assertThat(names("SELECT name FROM P WHERE name = 'John'")).containsExactly("John");
+    assertThat(names("SELECT name FROM P WHERE name IN ['John', 'MARY', 'zed']")).containsExactlyInAnyOrder("John", "MARY");
+  }
+
+  @Test
+  void toLowerCaseEqualityAndInKeepTheCaseInsensitiveLookup() {
+    assertThat(names("SELECT name FROM P WHERE name.toLowerCase() = 'john'")).containsExactly("John");
+    assertThat(names("SELECT name FROM P WHERE name.toLowerCase() IN ['john', 'mary']")).containsExactlyInAnyOrder("John", "MARY");
   }
 
   @Test

@@ -52,19 +52,21 @@ class CaseInsensitiveIndexTest extends TestHelper {
   }
 
   @Test
-  void cILookupWithExactCase() {
+  void cIPlainEqualityIsCaseSensitive() {
+    // The index folds its keys, but a plain comparison is the one a scan makes, with or without the index (issue #9403)
     database.transaction(() -> {
       final ResultSet rs = database.query("sql", "SELECT FROM Product WHERE Name = 'Hello World'");
-      // CI index: all 3 case variants of "hello world" should match
-      assertThat(rs.stream().count()).isEqualTo(3);
+      assertThat(rs.stream().count()).isEqualTo(1);
     });
   }
 
   @Test
-  void cILookupWithDifferentCase() {
+  void cIPlainEqualityAgreesWithTheScan() {
     database.transaction(() -> {
       final ResultSet rs = database.query("sql", "SELECT FROM Product WHERE Name = 'HELLO WORLD'");
-      assertThat(rs.stream().count()).isEqualTo(3);
+      assertThat(rs.stream().count()).isEqualTo(1);
+      final ResultSet scanned = database.query("sql", "SELECT FROM (SELECT FROM Product) WHERE Name = 'HELLO WORLD'");
+      assertThat(scanned.stream().count()).isEqualTo(1);
     });
   }
 
@@ -100,7 +102,7 @@ class CaseInsensitiveIndexTest extends TestHelper {
   @Test
   void cILookupDistinctValue() {
     database.transaction(() -> {
-      final ResultSet rs = database.query("sql", "SELECT FROM Product WHERE Name = 'arcadedb'");
+      final ResultSet rs = database.query("sql", "SELECT FROM Product WHERE Name.toLowerCase() = 'arcadedb'");
       assertThat(rs.stream().count()).isEqualTo(1);
     });
   }
@@ -112,7 +114,7 @@ class CaseInsensitiveIndexTest extends TestHelper {
 
     database.transaction(() -> {
       // After reopen, CI index should still work
-      final ResultSet rs = database.query("sql", "SELECT FROM Product WHERE Name = 'ARCADEDB'");
+      final ResultSet rs = database.query("sql", "SELECT FROM Product WHERE Name.toLowerCase() = 'arcadedb'");
       assertThat(rs.stream().count()).isEqualTo(1);
     });
   }
@@ -151,7 +153,7 @@ class CaseInsensitiveIndexTest extends TestHelper {
 
     database.transaction(() -> {
       // Name is CI, so "foo" matches both
-      final ResultSet rs = database.query("sql", "SELECT FROM Composite WHERE Name = 'foo'");
+      final ResultSet rs = database.query("sql", "SELECT FROM Composite WHERE Name.toLowerCase() = 'foo'");
       assertThat(rs.stream().count()).isEqualTo(2);
     });
   }

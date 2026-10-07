@@ -292,6 +292,22 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   }
 
   /**
+   * The part of an index file name a compaction keeps when it names the replacement file {@code <base>_<nanoTime>}: the
+   * name without its trailing {@code _<digits>} stamp. A file with no stamp - a MANUAL index is created under exactly the
+   * name its creator chose, which may hold no underscore at all or a non-numeric tail like {@code Manual_Idx} - keeps
+   * its whole name instead of losing a tail that was never a stamp (issue #9434).
+   */
+  public static String compactionBaseName(final String fileName) {
+    final int last_ = fileName.lastIndexOf('_');
+    if (last_ < 1 || last_ == fileName.length() - 1)
+      return fileName;
+    for (int i = last_ + 1; i < fileName.length(); i++)
+      if (!Character.isDigit(fileName.charAt(i)))
+        return fileName;
+    return fileName.substring(0, last_);
+  }
+
+  /**
    * Checks if all the key values are NULL.
    */
   public static boolean isKeyNull(final Object[] keys) {

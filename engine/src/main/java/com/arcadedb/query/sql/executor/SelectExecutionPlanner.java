@@ -5241,14 +5241,18 @@ public class SelectExecutionPlanner {
   }
 
   /**
-   * True when a condition answered through {@code field.toLowerCase()} must still be checked on what the index returns:
-   * an equality or IN whose operand is not a lower-case literal (a parameter cannot be judged now). A range or BETWEEN is
-   * index-aware only with lower-case literal bounds, and an operand that is its own lower-case form is probed as written,
-   * so neither needs the check (issue #8560).
+   * True when a condition answered by a case-insensitive index must still be checked on what the index returns: the plain
+   * property's equality or IN (issue #9403), and through {@code field.toLowerCase()} an equality or IN whose operand is
+   * not a lower-case literal (a parameter cannot be judged now). A range or BETWEEN is index-aware only with lower-case
+   * literal bounds, and an operand that is its own lower-case form is probed as written, so neither needs the check
+   * (issue #8560).
    */
   private static boolean needsLowerCaseResidual(final BooleanExpression expression, final IndexSearchInfo info) {
+    // The plain property compared to a value is case sensitive, but the folded probe also returns the rows that differ
+    // from it only in case: the condition stays as a filter, so the answer is the one a scan gives (issue #9403)
     if (!isLowerCaseRewrite(expression, info))
-      return false;
+      return (expression instanceof BinaryCondition condition && condition.getOperator() instanceof EqualsCompareOperator)
+          || expression instanceof InCondition;
     final CommandContext context = info.getContext();
     if (expression instanceof BinaryCondition condition)
       return condition.getOperator() instanceof EqualsCompareOperator && !BinaryCondition.isLowerCaseLiteral(condition.getRight(), context);
