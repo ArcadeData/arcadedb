@@ -67,6 +67,10 @@ class InlineMocksOfJitWarmTypesTest {
    * a final method a test stubs: a subclass mock runs the REAL final method, so a {@code when(...)} on it stubs nothing
    * (none of the types below declares one, nor do the parents they extend: Ratis' {@code BaseStateMachine} and
    * {@code RWLockContext}).
+   * <p>
+   * To find candidates, list the types still mocked inline across the reactor and keep the concrete, non-final ones that
+   * a real-server test exercises: {@code grep -rhoE "(^|[^.A-Za-z])mock\([A-Za-z.]+\.class" --include='*.java'
+   * --exclude-dir=.worktrees . | sort | uniq -c | sort -rn}.
    */
   private static final String GUARDED_TYPES = "LocalDatabase|TransactionContext|TransactionManager|LocalSchema|FileManager|ComponentFile"
       // issue #8867: the server and HA types
@@ -186,6 +190,9 @@ class InlineMocksOfJitWarmTypesTest {
         class Imported { @Test void t() { FileManager fm = mock(FileManager.class); ComponentFile f = mock(ComponentFile.class); } }""");
     sources.put("b/OwnSettings.java", """
         class OwnSettings { @Test void t() { LocalDatabase db = Mockito.mock(LocalDatabase.class, withSettings().mockMaker(MockMakers.SUBCLASS)); } }""");
+    sources.put("b/BareOwnSettings.java", """
+        import static org.mockito.Mockito.mock;
+        class BareOwnSettings { @Test void t() { ArcadeDBServer s = mock(ArcadeDBServer.class, withSettings().mockMaker(MockMakers.SUBCLASS)); } }""");
     sources.put("b/SubclassSpy.java", """
         class SubclassSpy { @Test void t() { LocalDatabase db = SubclassMocks.spy(real); } }""");
     sources.put("b/Unguarded.java", """
