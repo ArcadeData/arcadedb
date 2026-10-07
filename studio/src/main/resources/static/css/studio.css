@@ -909,7 +909,8 @@ body.col-resizing * {
   transition: background-color 0.1s;
 }
 
-.history-entry:hover {
+.history-entry:hover,
+.history-entry:focus-within {
   background-color: var(--color-brand-light);
 }
 
@@ -918,10 +919,20 @@ body.col-resizing * {
   flex-shrink: 0;
 }
 
+/* A BUTTON (ISSUE #8740): STRIP THE NATIVE CHROME SO IT STILL LOOKS LIKE THE PLAIN ROW IT REPLACED */
 .history-entry-content {
   flex: 1;
   min-width: 0;
   overflow: hidden;
+  display: block;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
 }
 
 .history-meta {
@@ -997,7 +1008,8 @@ body.col-resizing * {
   position: relative;
 }
 
-.saved-query-entry:hover {
+.saved-query-entry:hover,
+.saved-query-entry:focus-within {
   background-color: var(--color-brand-light);
 }
 
@@ -1017,13 +1029,33 @@ body.col-resizing * {
   gap: 6px;
 }
 
+/* THE NAME, RUN AND DELETE CONTROLS ARE BUTTONS (ISSUE #8740): STRIP THE NATIVE CHROME SO THEY LOOK AS BEFORE */
+.saved-query-load,
+.saved-query-name .saved-query-delete,
+.saved-query-name .saved-query-run {
+  margin: 0;
+  border: 0;
+  background: none;
+  font-family: inherit;
+  line-height: inherit;
+  cursor: pointer;
+}
+
+.saved-query-load {
+  padding: 0;
+  min-width: 0;
+  color: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  text-align: left;
+}
+
 /* THE PADDING GIVES EACH ICON A FINGER-SIZED HIT AREA, SO A TAP ON "RUN" CANNOT LAND ON "DELETE" */
 .saved-query-name .saved-query-delete,
 .saved-query-name .saved-query-run {
   opacity: 0;
   font-size: 0.7rem;
   padding: 4px 6px;
-  cursor: pointer;
   transition: opacity 0.15s;
 }
 
@@ -1035,9 +1067,21 @@ body.col-resizing * {
   color: var(--color-brand);
 }
 
+/* KEYBOARD FOCUS ANYWHERE IN THE ENTRY REVEALS THE ICONS TOO, OR TAB WOULD LAND ON AN INVISIBLE BUTTON (ISSUE #8740) */
 .saved-query-entry:hover .saved-query-delete,
-.saved-query-entry:hover .saved-query-run {
+.saved-query-entry:hover .saved-query-run,
+.saved-query-entry:focus-within .saved-query-delete,
+.saved-query-entry:focus-within .saved-query-run {
   opacity: 1;
+}
+
+.saved-query-load:focus-visible,
+.saved-query-name .saved-query-delete:focus-visible,
+.saved-query-name .saved-query-run:focus-visible,
+.history-entry-content:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 1px;
+  border-radius: 3px;
 }
 
 /* NO HOVER ON TOUCH DEVICES: KEEP THE RUN AND DELETE BUTTONS VISIBLE THERE */
