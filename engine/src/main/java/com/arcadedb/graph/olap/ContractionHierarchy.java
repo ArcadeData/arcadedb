@@ -325,21 +325,14 @@ public final class ContractionHierarchy {
           continue;
         prepare(snap);
       } while (rerunRequested && !closed && status != Status.UNSUITABLE);
-    } catch (final Exception | OutOfMemoryError e) {
-      // An OutOfMemoryError is caught on purpose, like the CSR and order persistence do: the arc budget bounds the
-      // supergraph, but a large one can still exhaust a tight heap, and the view itself must stay usable. What was
-      // prepared is let go so the collector can take it back; queries answer through Dijkstra meanwhile. After an
-      // OutOfMemoryError the topology goes too, at the price of ordering again: the heap needs it back more.
-      prepared = null;
-      if (e instanceof OutOfMemoryError)
-        root = null;
-      final String reason = e.toString();
-      // every later snapshot retries; a failure that keeps repeating is logged once at WARNING, then at FINE
-      final boolean repeated = reason.equals(statusReason) && status == Status.UNAVAILABLE;
-      statusReason = reason;
-      status = Status.UNAVAILABLE;
-      LogManager.instance().log(this, repeated ? Level.FINE : Level.WARNING,
-          "Contraction hierarchy on '%s' of view '%s' could not be prepared", e, weightProperty, view.getName());
+    } catch (final OutOfMemoryError e) {
+      // Caught on purpose, like the CSR and order persistence do: the arc budget bounds the supergraph, but a large one
+      // can still exhaust a tight heap, and the view itself must stay usable. The topology goes too, at the price of
+      // ordering again: the heap needs it back more.
+      root = null;
+      failed(e);
+    } catch (final Exception e) {
+      failed(e);
     } finally {
       running.set(false);
       synchronized (readyMonitor) {
@@ -349,6 +342,21 @@ public final class ContractionHierarchy {
       if (rerunRequested && !closed && status != Status.UNSUITABLE)
         schedule();
     }
+  }
+
+  /**
+   * A preparation that failed: what was prepared is let go so the collector can take it back, and queries answer through
+   * Dijkstra meanwhile. Every later snapshot retries, so a cause that keeps repeating is logged once at WARNING, then at
+   * FINE.
+   */
+  private void failed(final Throwable e) {
+    prepared = null;
+    final String reason = e.toString();
+    final boolean repeated = reason.equals(statusReason) && status == Status.UNAVAILABLE;
+    statusReason = reason;
+    status = Status.UNAVAILABLE;
+    LogManager.instance().log(this, repeated ? Level.FINE : Level.WARNING,
+        "Contraction hierarchy on '%s' of view '%s' could not be prepared", e, weightProperty, view.getName());
   }
 
   private boolean hasRequestedModes(final Prepared p) {
