@@ -3055,6 +3055,14 @@ public class LocalSchema implements Schema {
   }
 
   /**
+   * Forgets the engines a {@link #load(ComponentFile.MODE, boolean, boolean)} deferred, for an open whose WAL replay failed: they
+   * must not be built over a replay that did not finish (issue #9452).
+   */
+  public void discardDeferredTimeSeriesEngines() {
+    timeSeriesEnginesAwaitingReplay = null;
+  }
+
+  /**
    * Builds the engines of the TimeSeries types a {@link #load(ComponentFile.MODE, boolean, boolean)} deferred, once the
    * WAL replay of the open is over (issue #9452). Before the replay the pages of a crashed database are whatever the
    * dead process had flushed, and an engine built on them acts on a past that the WAL is about to overwrite: the shard
@@ -3062,16 +3070,21 @@ public class LocalSchema implements Schema {
    * sealed blocks, which the replay then followed by clearing the mutable pages that still held the same rows; the tag
    * dictionary loaded a map without the values interned since the last flush, and interned them again under new ids.
    */
-  public void discardDeferredTimeSeriesEngines() {
-    timeSeriesEnginesAwaitingReplay = null;
-  }
-
   public void openDeferredTimeSeriesEngines() {
     final List<LocalTimeSeriesType> pending = timeSeriesEnginesAwaitingReplay;
     timeSeriesEnginesAwaitingReplay = null;
     if (pending != null)
       for (final LocalTimeSeriesType tsType : pending)
-        openTimeSeriesEngine(tsType);
+        try {
+          openTimeSeriesEngine(tsType);
+        } catch (final RuntimeException e) {
+          // One type must not leave the ones after it without an engine: it stays registered and fails loudly, as a type whose
+          // engine could not be opened does (issue #6356)
+          tsType.markEngineUnavailable(e.toString());
+          LogManager.instance().log(this, Level.SEVERE,
+              "Error initializing TimeSeries engine for type '%s' after the recovery, the type is registered but its storage is "
+                  + "unavailable until this is resolved: %s", e, tsType.getName(), e.getMessage());
+        }
   }
 
   /**
