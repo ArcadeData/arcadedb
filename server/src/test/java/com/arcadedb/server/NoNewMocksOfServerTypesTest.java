@@ -172,7 +172,10 @@ class NoNewMocksOfServerTypesTest {
           continue;
         final String[] parts = trimmed.split("\\s+", 2);
         assertThat(parts).as("allow-list line '%s' must be '<path> <Type>[,<Type>...]'", trimmed).hasSize(2);
-        allowed.computeIfAbsent(parts[0], k -> new TreeSet<>()).addAll(List.of(parts[1].split(",")));
+        final List<String> types = List.of(parts[1].split(","));
+        assertThat(types).as("allow-list line '%s' names a type outside the guarded set", trimmed)
+            .allMatch(t -> t.matches(GUARDED_TYPES));
+        allowed.computeIfAbsent(parts[0], k -> new TreeSet<>()).addAll(types);
       }
     }
     return allowed;
