@@ -30,6 +30,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.utility.ScanPressureReporter;
 
 import java.util.ArrayList;
 import java.util.Iterator;
@@ -64,6 +65,8 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
    * worker thread per cached plan, weakly keyed on this operator, so it goes with the plan.
    */
   private final ThreadLocal<Boolean> servedInParallel = new ThreadLocal<>();
+  /** The type scan the calling thread's last execution read from, for the PROFILE to say whether the heap budget reduced its read-ahead (#9404). Same lifetime as {@link #servedInParallel}. */
+  private final ThreadLocal<Object> scanIterator = new ThreadLocal<>();
 
   public NodeByLabelScan(final String variable, final String label,
                         final double estimatedCost, final long estimatedCardinality) {
@@ -179,6 +182,7 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
             final Iterator<Identifiable> iter = (Iterator<Identifiable>) (Object)
                 context.getDatabase().iterateType(label, true);
             iterator = iter;
+            scanIterator.set(iter);
           }
         }
 
@@ -283,6 +287,7 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
       sb.append(" [filter: ").append(whereFilter.getText()).append("]");
     if (Boolean.TRUE.equals(servedInParallel.get()))
       sb.append(" [parallel]");
+    sb.append(ScanPressureReporter.describe(scanIterator.get()));
     sb.append(" [cost=").append(String.format(Locale.US, "%.2f", estimatedCost));
     sb.append(", rows=").append(estimatedCardinality);
     sb.append("]\n");
