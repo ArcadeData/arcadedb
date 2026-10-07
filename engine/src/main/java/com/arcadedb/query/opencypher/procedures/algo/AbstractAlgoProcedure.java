@@ -1238,10 +1238,13 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
           if (!toRid.equals(otherRid))
             continue;
           final Object w = weightProperty != null ? edge.get(weightProperty) : null;
-          final double edgeWeight = walkableOnly ? EdgeWeight.of(w) :
-              w instanceof Number num ? num.doubleValue() : EdgeWeight.MISSING;
-          if (walkableOnly && !EdgeWeight.isWalkable(edgeWeight))
-            continue;
+          final double edgeWeight;
+          if (walkableOnly) {
+            edgeWeight = EdgeWeight.of(w);
+            if (!EdgeWeight.isWalkable(edgeWeight))
+              continue;
+          } else
+            edgeWeight = w instanceof Number num ? num.doubleValue() : EdgeWeight.MISSING;
           if (bestEdge == null || edgeWeight < bestWeight) {
             bestWeight = edgeWeight;
             bestEdge = edge;

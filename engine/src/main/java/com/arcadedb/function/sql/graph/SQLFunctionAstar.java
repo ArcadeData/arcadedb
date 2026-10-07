@@ -400,6 +400,9 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
    * restricts itself to {@code paramEdgeTypeNames} and this did not, so with an {@code edgeTypeNames} option in
    * play the heuristic could price a step off an edge of a type the search is forbidden to walk. The empty array
    * the option defaults to means "every type", which is how every other call site here already reads it.
+   * <p>
+   * {@link Double#POSITIVE_INFINITY} when no walkable edge joins the two (issue #9443): pricing a missing or
+   * unwalkable step at the missing-weight default would make it look like a hop the search could take.
    */
   @Override
   protected double getDistance(final Vertex node, final Vertex parent, final Vertex target) {
@@ -418,7 +421,7 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
       }
     }
 
-    return cheapest == Double.POSITIVE_INFINITY ? EdgeWeight.MISSING : cheapest;
+    return cheapest;
   }
 
   /** The weight of {@code edge} by the rule every weighted path finder shares, {@link EdgeWeight#of(Object)}. */
