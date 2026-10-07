@@ -26,6 +26,7 @@ import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.TimeBoundRegex;
 
+import java.lang.reflect.Array;
 import java.math.BigDecimal;
 import java.util.Arrays;
 import java.util.Collection;
@@ -273,32 +274,62 @@ public class DocumentValidator {
    * too instead of failing every later write.
    */
   public static void requireReadableBound(final Database database, final DocumentType owner, final Property p, final String bound, final String side) {
-    final Type type = p.getType();
-    if (bound == null)
-      return;
-    if (type == Type.STRING || type == Type.BINARY || type == Type.LIST || type == Type.MAP) {
-      // a length, a size: parsed as an int by the write path
-      try {
-        Integer.parseInt(bound);
-      } catch (final NumberFormatException e) {
-        throw new CommandExecutionException("The " + side + " '" + bound + "' of property '" + owner.getName() + "." + p.getName()
-            + "' cannot be read as a number of " + (type == Type.STRING ? "characters" : type == Type.BINARY ? "bytes" : "items"), e);
-      }
-      return;
-    }
-    if (!isScalarType(type))
-      return;
-    Object converted;
-    Throwable cause = null;
-    try {
-      converted = Type.convert(database, bound, type.getJavaImplementation(database), p);
-    } catch (final RuntimeException e) {
-      converted = null;
-      cause = e;
-    }
-    if (converted == null)
+    final String reason = unreadableBound(database, p.getType(), bound);
+    if (reason != null)
       throw new CommandExecutionException("The " + side + " '" + bound + "' of property '" + owner.getName() + "." + p.getName()
-          + "' cannot be read as " + type, cause);
+          + "' " + reason);
+  }
+
+  /**
+   * @return false for a type whose values have no order and no size, so a MIN or MAX on it could never be checked: the
+   * write path would refuse every value (issue #9026)
+   */
+  public static boolean isBoundApplicable(final Type type) {
+    return switch (type) {
+      case BOOLEAN, LINK, EMBEDDED, OFFSET_TIME, LOCAL_TIME, ZONED_DATETIME, DURATION -> false;
+      default -> true;
+    };
+  }
+
+  /**
+   * Why {@code bound} cannot serve as a MIN or MAX of a property of {@code type}, or null when it can. The bound is parsed
+   * exactly the way {@link #validateMinValue}/{@link #validateMaxValue} parse it on every write, so a bound accepted here
+   * never makes a later write fail on the bound itself (issue #9026): an INTEGER bound must be an int, not merely
+   * something {@link Type#convert} could round to one.
+   */
+  public static String unreadableBound(final Database database, final Type type, final String bound) {
+    if (bound == null)
+      return null;
+    try {
+      switch (type) {
+      case STRING, BINARY, LIST, MAP, ARRAY_OF_SHORTS, ARRAY_OF_INTEGERS, ARRAY_OF_LONGS, ARRAY_OF_FLOATS, ARRAY_OF_DOUBLES -> {
+        // a length, a size
+        final String unit = type == Type.STRING ? "characters" : type == Type.BINARY ? "bytes" : "items";
+        final int size;
+        try {
+          size = Integer.parseInt(bound);
+        } catch (final NumberFormatException e) {
+          return "cannot be read as a number of " + unit;
+        }
+        if (size < 0)
+          return "cannot be a negative number of " + unit;
+      }
+      case LONG -> Long.parseLong(bound);
+      case INTEGER, SHORT, BYTE -> Integer.parseInt(bound);
+      case FLOAT -> Float.parseFloat(bound);
+      case DOUBLE -> Double.parseDouble(bound);
+      case DECIMAL -> new BigDecimal(bound);
+      case DATE, DATETIME, DATETIME_SECOND, DATETIME_MICROS, DATETIME_NANOS -> {
+        if (Type.convert(database, bound, Date.class) == null)
+          return "cannot be read as a date";
+      }
+      default -> {
+      }
+      }
+    } catch (final RuntimeException e) {
+      return "cannot be read as " + type;
+    }
+    return null;
   }
 
   private static boolean isScalarType(final Type type) {
@@ -586,6 +617,12 @@ public class DocumentValidator {
       if (((Map) fieldValue).size() > maxAsInteger)
         throwValidationException(document.getType(), p, "contains more items than " + max + " requested");
     }
+    case ARRAY_OF_SHORTS, ARRAY_OF_INTEGERS, ARRAY_OF_LONGS, ARRAY_OF_FLOATS, ARRAY_OF_DOUBLES -> {
+      // the number of elements, as for a LIST (issue #9026)
+      final int maxAsInteger = Integer.parseInt(max);
+      if (sizeOf(fieldValue) > maxAsInteger)
+        throwValidationException(document.getType(), p, "contains more items than " + max + " requested");
+    }
     default -> throwValidationException(document.getType(), p, "value " + fieldValue + " is greater than " + max);
     }
   }
@@ -670,6 +707,13 @@ public class DocumentValidator {
           yield new ValidationResult(true, "contains fewer items than " + min + " requested");
         yield new ValidationResult(false, null);
       }
+      case ARRAY_OF_SHORTS, ARRAY_OF_INTEGERS, ARRAY_OF_LONGS, ARRAY_OF_FLOATS, ARRAY_OF_DOUBLES -> {
+        // the number of elements, as for a LIST (issue #9026)
+        final int minAsInteger = Integer.parseInt(min);
+        if (sizeOf(fieldValue) < minAsInteger)
+          yield new ValidationResult(true, "contains fewer items than " + min + " requested");
+        yield new ValidationResult(false, null);
+      }
       default -> new ValidationResult(true, "value " + fieldValue + " is less than " + min);
     };
 
@@ -678,6 +722,13 @@ public class DocumentValidator {
   }
 
   private record ValidationResult(boolean hasError, String message) {
+  }
+
+  /** The number of elements of an ARRAY_OF_* value: a primitive or boxed array, or a collection not converted yet. */
+  private static int sizeOf(final Object value) {
+    if (value instanceof Collection<?> collection)
+      return collection.size();
+    return Array.getLength(value);
   }
 
   private static void validateEmbeddedValues(final Document document, final Property p, final Type propertyType,

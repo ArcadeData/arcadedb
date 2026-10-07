@@ -690,7 +690,7 @@ public class LocalDocumentType implements DocumentType {
    */
   @Override
   public LocalProperty createProperty(final String propertyName, final String propertyType) {
-    return createProperty(propertyName, Type.getTypeByName(propertyType));
+    return createProperty(propertyName, propertyTypeByName(propertyName, propertyType));
   }
 
   /**
@@ -701,7 +701,29 @@ public class LocalDocumentType implements DocumentType {
    */
   @Override
   public Property createProperty(final String propertyName, final Class<?> propertyType) {
-    return createProperty(propertyName, Type.getTypeByClass(propertyType));
+    return createProperty(propertyName, propertyTypeByClass(propertyName, propertyType));
+  }
+
+  /**
+   * Resolves the type of a property about to be created from its name, refusing a name that names no {@link Type}.
+   * {@link Type#getTypeByName} answers null for it, and a null type used to reach the {@link #properties} map and break
+   * every later schema save of the database (issue #9042).
+   */
+  private Type propertyTypeByName(final String propertyName, final String propertyType) {
+    final Type type = propertyType != null ? Type.getTypeByName(propertyType) : null;
+    if (type == null)
+      throw new SchemaException("Cannot create the property '" + propertyName + "' in type '" + name + "' because '" + propertyType
+          + "' is not a known property type");
+    return type;
+  }
+
+  /** The {@link Class} counterpart of {@link #propertyTypeByName}: a class no {@link Type} maps to is refused. */
+  private Type propertyTypeByClass(final String propertyName, final Class<?> propertyType) {
+    final Type type = Type.getTypeByClass(propertyType);
+    if (type == null)
+      throw new SchemaException("Cannot create the property '" + propertyName + "' in type '" + name + "' because the class '"
+          + (propertyType != null ? propertyType.getName() : null) + "' maps to no property type");
+    return type;
   }
 
   /**
@@ -838,6 +860,11 @@ public class LocalDocumentType implements DocumentType {
   public LocalProperty createProperty(final String propertyName, final Type propertyType, final String ofType) {
     checkForSchemaMutation();
 
+    if (propertyType == null)
+      // Refused before anything changes: a property with a null type cannot be serialized, so once in the map it made
+      // every later schema save of the database fail until a reopen (issue #9042)
+      throw new SchemaException("Cannot create the property '" + propertyName + "' in type '" + name + "' because its type is not known");
+
     return recordFileChanges(() -> {
       if (this instanceof LocalEdgeType edgeType && edgeType.isLightweight())
         // A lightweight edge is a pair of pointers inside the two vertices: there is no record to hold a value, so a
@@ -883,7 +910,7 @@ public class LocalDocumentType implements DocumentType {
    */
   @Override
   public Property getOrCreateProperty(final String propertyName, final String propertyType) {
-    return getOrCreateProperty(propertyName, Type.getTypeByName(propertyType), null);
+    return getOrCreateProperty(propertyName, propertyTypeByName(propertyName, propertyType), null);
   }
 
   /**
@@ -895,7 +922,7 @@ public class LocalDocumentType implements DocumentType {
    */
   @Override
   public Property getOrCreateProperty(final String propertyName, final String propertyType, final String ofType) {
-    return getOrCreateProperty(propertyName, Type.getTypeByName(propertyType), ofType);
+    return getOrCreateProperty(propertyName, propertyTypeByName(propertyName, propertyType), ofType);
   }
 
   /**
@@ -906,7 +933,7 @@ public class LocalDocumentType implements DocumentType {
    */
   @Override
   public Property getOrCreateProperty(final String propertyName, final Class<?> propertyType) {
-    return getOrCreateProperty(propertyName, Type.getTypeByClass(propertyType), null);
+    return getOrCreateProperty(propertyName, propertyTypeByClass(propertyName, propertyType), null);
   }
 
   /**
@@ -929,6 +956,10 @@ public class LocalDocumentType implements DocumentType {
    */
   @Override
   public Property getOrCreateProperty(final String propertyName, final Type propertyType, final String ofType) {
+    if (propertyType == null)
+      // checked before the drop below, which would otherwise remove the existing property and then fail to recreate it
+      throw new SchemaException("Cannot create the property '" + propertyName + "' in type '" + name + "' because its type is not known");
+
     final Property p = getPolymorphicPropertyIfExists(propertyName);
     if (p != null) {
       if (p.getType().equals(propertyType) && Objects.equals(p.getOfType(), ofType))
