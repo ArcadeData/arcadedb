@@ -89,12 +89,16 @@ public final class ShortestPathFinder {
     }
 
     final WorkGuard searchGuard = guard != null ? guard : WorkGuard.forCommand(null, "shortest path");
+    // The view's accessors each read whichever snapshot the view serves at that moment, and a compaction renumbers
+    // its dense ids: one snapshot is captured and every read of the search - endpoints, adjacency, RIDs - goes
+    // through it, so a path can never be stitched together from two numberings.
     final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(database, types);
-    if (provider != null && provider.servesEdgeProperty(weightProperty, types)) {
-      final int s = provider.getNodeId(source);
-      final int t = provider.getNodeId(target);
+    if (provider instanceof GraphAnalyticalView view && provider.servesEdgeProperty(weightProperty, types)) {
+      final GraphAnalyticalView.Snapshot snap = view.currentSnapshot();
+      final int s = snap != null ? view.nodeIdOf(snap, source) : -1;
+      final int t = snap != null ? view.nodeIdOf(snap, target) : -1;
       if (s >= 0 && t >= 0) {
-        final ViewGraph graph = new ViewGraph(provider, weightProperty, direction, types);
+        final ViewGraph graph = new ViewGraph(view, snap, weightProperty, direction, types);
         final Search search = new Search(graph, searchGuard);
         if (search.run(s, t)) {
           if (search.meet < 0)
@@ -103,7 +107,7 @@ public final class ShortestPathFinder {
           final List<RID> vertices = new ArrayList<>(nodes.length);
           boolean complete = true;
           for (final int node : nodes) {
-            final RID rid = provider.getRID(node);
+            final RID rid = view.ridOf(snap, node);
             if (rid == null) {
               complete = false;
               break;
@@ -162,17 +166,19 @@ public final class ShortestPathFinder {
     };
   }
 
-  /** Arcs read from a view's columns, overlay included. */
+  /** Arcs read from one snapshot of a view's columns, overlay included. */
   private static final class ViewGraph implements Graph {
-    private final GraphTraversalProvider provider;
-    private final String                 weightProperty;
-    private final Vertex.DIRECTION       forward;
-    private final Vertex.DIRECTION       backward;
-    private final String[]               edgeTypes;
+    private final GraphAnalyticalView          view;
+    private final GraphAnalyticalView.Snapshot snapshot;
+    private final String                       weightProperty;
+    private final Vertex.DIRECTION             forward;
+    private final Vertex.DIRECTION             backward;
+    private final String[]                     edgeTypes;
 
-    ViewGraph(final GraphTraversalProvider provider, final String weightProperty, final Vertex.DIRECTION direction,
-        final String[] edgeTypes) {
-      this.provider = provider;
+    ViewGraph(final GraphAnalyticalView view, final GraphAnalyticalView.Snapshot snapshot, final String weightProperty,
+        final Vertex.DIRECTION direction, final String[] edgeTypes) {
+      this.view = view;
+      this.snapshot = snapshot;
       this.weightProperty = weightProperty;
       this.forward = direction;
       this.backward = reverse(direction);
@@ -181,7 +187,7 @@ public final class ShortestPathFinder {
 
     @Override
     public boolean expand(final int node, final boolean isForward, final ArcSink sink) {
-      final NodeEdgeWeights edges = provider.edgeWeightsOf(node, isForward ? forward : backward, weightProperty,
+      final NodeEdgeWeights edges = view.edgeWeightsOf(snapshot, node, isForward ? forward : backward, weightProperty,
           MISSING_WEIGHT, edgeTypes);
       if (edges == null)
         return false;

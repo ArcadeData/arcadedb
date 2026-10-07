@@ -287,6 +287,10 @@ public final class ContractionHierarchy {
   void onSnapshotPublished() {
     if (!closed && status != Status.UNSUITABLE)
       schedule();
+    // a waiter in awaitReady() re-reads the snapshot it is waiting for right away instead of at its next slice
+    synchronized (readyMonitor) {
+      readyMonitor.notifyAll();
+    }
   }
 
   /** Called by the view when it is built from scratch on request: an unsuitable graph may have become suitable. */
@@ -321,11 +325,18 @@ public final class ContractionHierarchy {
           continue;
         prepare(snap);
       } while (rerunRequested && !closed && status != Status.UNSUITABLE);
-    } catch (final Throwable e) {
-      statusReason = e.toString();
+    } catch (final Exception | OutOfMemoryError e) {
+      // An OutOfMemoryError is caught on purpose, like the CSR and order persistence do: the arc budget bounds the
+      // supergraph, but a large one can still exhaust a tight heap, and the view itself must stay usable. What was
+      // prepared is let go so the collector can take it back; queries answer through Dijkstra meanwhile.
+      prepared = null;
+      final String reason = e.toString();
+      // every later snapshot retries; a failure that keeps repeating is logged once at WARNING, then at FINE
+      final boolean repeated = reason.equals(statusReason) && status == Status.UNAVAILABLE;
+      statusReason = reason;
       status = Status.UNAVAILABLE;
-      LogManager.instance().log(this, Level.WARNING, "Contraction hierarchy on '%s' of view '%s' could not be prepared", e,
-          weightProperty, view.getName());
+      LogManager.instance().log(this, repeated ? Level.FINE : Level.WARNING,
+          "Contraction hierarchy on '%s' of view '%s' could not be prepared", e, weightProperty, view.getName());
     } finally {
       running.set(false);
       synchronized (readyMonitor) {

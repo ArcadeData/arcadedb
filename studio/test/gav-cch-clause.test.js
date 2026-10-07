@@ -52,7 +52,9 @@ function extractFn(src, name) {
 }
 
 eval(extractFn(utilsSrc, "quoteSqlName"));
+eval(extractFn(dbSrc, "parseGavCchWeights"));
 eval(extractFn(dbSrc, "buildGavCchClause"));
+eval(extractFn(dbSrc, "gavCchEstimateBytes"));
 
 test("no weight, no clause", () => {
   assert.equal(buildGavCchClause(undefined), "");
@@ -67,4 +69,11 @@ test("each weight is trimmed and quoted", () => {
 
 test("a weight name cannot break out of its quotes", () => {
   assert.equal(buildGavCchClause("a`b"), " CCH (`a\\`b`)");
+});
+
+test("the RAM estimate counts each hierarchy over the routed edges", () => {
+  assert.equal(gavCchEstimateBytes(1000, 0), 0);
+  assert.equal(gavCchEstimateBytes(1000, 1), 1000 * 4 * 52);
+  assert.equal(gavCchEstimateBytes(1000, 2), 2 * 1000 * 4 * 52);
+  assert.deepEqual(parseGavCchWeights(" distance , ,time"), ["distance", "time"]);
 });
