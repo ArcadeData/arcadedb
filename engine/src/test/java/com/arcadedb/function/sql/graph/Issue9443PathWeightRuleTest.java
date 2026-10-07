@@ -174,6 +174,8 @@ class Issue9443PathWeightRuleTest {
     assertThat(sqlPath("duanSSSP", "TX", "TX", "")).containsExactly("TX");
     assertThat(namesOf(sqlRids("SELECT duanSSSP(?, ?) AS p", rid("TX"), rid("TY")))).as("the weight property defaults to 'weight'")
         .containsExactly("TX", "TM", "TY");
+    assertThat(namesOf(sqlRids("SELECT duanSSSP(?, ?, null, {edgeTypeNames: ['road']}) AS p", rid("TX"), rid("TY"))))
+        .as("a null weight property defaults to 'weight' too").containsExactly("TX", "TY");
     assertThatThrownBy(() -> sqlPath("duanSSSP", "TX", "TY", ", 'SIDEWAYS'")).hasMessageContaining("Invalid direction 'SIDEWAYS'")
         .hasMessageContaining("duanSSSP()");
     assertThatThrownBy(() -> sqlPath("duanSSSP", "TX", "TY", ", {maxDepth: 3}")).as("an option it does not support is refused")

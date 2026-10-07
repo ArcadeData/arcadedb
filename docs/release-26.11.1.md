@@ -34,7 +34,8 @@ edges; use `bellmanFord()` when they are meant to be walked.
 **`duanSSSP()` accepts an edge type filter.** Its fourth argument may now be an options map,
 `{ direction, edgeTypeNames }`, like `dijkstra()` and `cchShortestPath()`; a plain direction string still works. It now
 answers through the same engine as `cchShortestPath()` (a Customizable Contraction Hierarchy when a Graph Analytical
-View keeps one, bidirectional Dijkstra otherwise) and honours the command timeout.
+View keeps one, bidirectional Dijkstra otherwise) and honours the command timeout. Among several paths of the same total
+weight it may return a different one than before, since the search is no longer a one-directional Dijkstra.
 
 `algo.steinerTree` also picks the cheapest of several parallel edges for the tree it reports, rather than the first
 one the adjacency listed.
