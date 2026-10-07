@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.compression.CompressionFactory;
 import com.arcadedb.network.binary.ReplicatedEntryTooLargeException;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
@@ -57,7 +58,7 @@ public final class RaftLogEntryCodec {
    * at or above {@code GlobalConfiguration.maxReplicatedRaftEntrySize}'s default, or an INCOMPRESSIBLE
    * transaction that replicates fine today (raw size ~= compressed size) would start being rejected here.
    */
-  static final int MAX_ENTRY_BYTES = 64 * 1024 * 1024;
+  static final int MAX_ENTRY_BYTES = GlobalConfiguration.MAX_REPLICATED_UNCOMPRESSED_ENTRY_BYTES;
 
   /**
    * Ceiling a CONSUMER accepts when decoding (512 MB), deliberately well above {@link #MAX_ENTRY_BYTES}.
