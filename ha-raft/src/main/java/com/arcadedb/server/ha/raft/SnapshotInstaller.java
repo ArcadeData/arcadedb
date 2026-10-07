@@ -123,6 +123,21 @@ public final class SnapshotInstaller {
    * only {@link #rollbackAfterFailedValidation} publishes it, and every swap-state cleanup deletes it.
    */
   static final String SNAPSHOT_VALIDATION_FAILED_FILE = SNAPSHOT_SWAP_STATE_FILE + ".validation-failed";
+  /**
+   * Every regular file the install writes into a database directory (the {@code SNAPSHOT_*_DIR} entries are
+   * directories). None of them is part of the database, so the cross-node checksum scan
+   * ({@code SnapshotManager.computeFileChecksums}) leaves them out: issue #9307 was the verdict record above, added
+   * without being added there. Exact names on purpose, not the {@code .snapshot} prefix: a bucket may legally be named
+   * {@code .snapshot...}, and its component files must stay in the answer. {@code SnapshotManagerTest} fails when a
+   * new {@code SNAPSHOT_*_FILE} constant is not listed here.
+   */
+  private static final Set<String> SNAPSHOT_MACHINERY_FILES = Set.of(SNAPSHOT_PENDING_FILE, SNAPSHOT_COMPLETE_FILE,
+      SNAPSHOT_QUARANTINE_FILE, SNAPSHOT_SWAP_STATE_FILE, SNAPSHOT_SWAP_STATE_TMP_FILE, SNAPSHOT_VALIDATION_FAILED_FILE);
+
+  /** Whether {@code name} is one of the files the snapshot install keeps in a database directory, see {@link #SNAPSHOT_MACHINERY_FILES}. */
+  static boolean isSnapshotMachineryFileName(final String name) {
+    return SNAPSHOT_MACHINERY_FILES.contains(name);
+  }
 
   private enum SwapPhase {
     BACKING_UP, INSTALLING, INSTALLED,

@@ -27,6 +27,8 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.File;
 import java.io.FileFilter;
 import java.io.IOException;
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -194,6 +196,57 @@ class SnapshotManagerTest {
   }
 
   /**
+   * #9307: every other regular file the snapshot install can leave in a live database directory. The prepared
+   * VALIDATION_FAILED record (#8942) survives a failed swap beside the reopened database until the next install; the
+   * quarantine list and the completion marker are transient, and are named here so the whole family is covered.
+   */
+  @Test
+  void everySnapshotMachineryFileIsNotChecksummed(@TempDir final Path tempDir) throws Exception {
+    Files.writeString(tempDir.resolve("database.json"), "{}");
+    Files.writeString(tempDir.resolve(SnapshotInstaller.SNAPSHOT_VALIDATION_FAILED_FILE), "VALIDATION_FAILED");
+    Files.writeString(tempDir.resolve(SnapshotInstaller.SNAPSHOT_QUARANTINE_FILE), "Item_0.1.65536.v0.bucket");
+    Files.writeString(tempDir.resolve(SnapshotInstaller.SNAPSHOT_COMPLETE_FILE), "");
+
+    final Map<String, Long> checksums = SnapshotManager.computeFileChecksums(tempDir.toFile());
+
+    assertThat(checksums).containsOnlyKeys("database.json");
+  }
+
+  /**
+   * #9307 guard: the verdict record reached the checksum answer because it was declared in {@code SnapshotInstaller}
+   * and never added to the skip. Every {@code SNAPSHOT_*_FILE} constant the installer declares must be one the skip
+   * knows, so the next marker added the same way fails here instead of reaching a peer's checksum answer.
+   */
+  @Test
+  void everySnapshotInstallerFileIsKnownToTheChecksumSkip() throws Exception {
+    final List<String> names = new ArrayList<>();
+    for (final Field field : SnapshotInstaller.class.getDeclaredFields())
+      if (Modifier.isStatic(field.getModifiers()) && field.getType() == String.class && field.getName().startsWith("SNAPSHOT_")
+          && field.getName().endsWith("_FILE")) {
+        field.setAccessible(true);
+        names.add((String) field.get(null));
+      }
+
+    assertThat(names).contains(SnapshotInstaller.SNAPSHOT_VALIDATION_FAILED_FILE, SnapshotInstaller.SNAPSHOT_SWAP_STATE_FILE,
+        SnapshotInstaller.SNAPSHOT_PENDING_FILE);
+    assertThat(names).allSatisfy(name -> assertThat(SnapshotInstaller.isSnapshotMachineryFileName(name)).as(name).isTrue());
+  }
+
+  /**
+   * #9307: the skip names the installer's files exactly rather than everything starting with {@code .snapshot},
+   * because a bucket name may start with it too, and such a bucket's component file is data a peer must agree on.
+   */
+  @Test
+  void aBucketNamedLikeASnapshotMarkerIsStillChecksummed(@TempDir final Path tempDir) throws Exception {
+    Files.writeString(tempDir.resolve("database.json"), "{}");
+    Files.writeString(tempDir.resolve(".snapshotItems_0.1.65536.v0.bucket"), "pages");
+
+    final Map<String, Long> checksums = SnapshotManager.computeFileChecksums(tempDir.toFile());
+
+    assertThat(checksums).containsOnlyKeys("database.json", ".snapshotItems_0.1.65536.v0.bucket");
+  }
+
+  /**
    * #7459, the property behind the three tests above stated once: two nodes holding the SAME database must agree,
    * however much node-local scratch either of them happens to be carrying at the moment it is asked. This is what
    * {@code /api/v1/cluster/checksums} compares, and it is the assertion that fails if a new scratch family is added
@@ -214,6 +267,8 @@ class SnapshotManagerTest {
     Files.writeString(follower.resolve("weather_shard_0.ts.sealed.incoming"), "half an install");
     Files.writeString(follower.resolve("weather_shard_1.ts.sealed.parts"), "three slices of seven");
     Files.writeString(follower.resolve(".snapshot-pending"), "");
+    // #9307: the verdict record a failed swap leaves beside the reopened database.
+    Files.writeString(follower.resolve(SnapshotInstaller.SNAPSHOT_VALIDATION_FAILED_FILE), "VALIDATION_FAILED");
     Files.writeString(leader.resolve("schema.json.1234567890.tmp"), "{\"types\":[]}");
 
     assertThat(SnapshotManager.computeFileChecksums(follower.toFile()))
