@@ -27,6 +27,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.within;
 
 /**
@@ -162,6 +163,24 @@ class CCHCoreTest {
         assertPairs(arcs, metric, undirected, random, 40);
       }
     }
+  }
+
+  /**
+   * An update that fails half way has already written some input costs, so a later diff of the inputs would see nothing
+   * to repair: the metric says it is broken, and the hierarchy then customizes afresh instead of updating it.
+   */
+  @Test
+  void anUpdateFailingHalfWayMarksTheMetricBroken() {
+    final Arcs arcs = grid(10, new Random(37), false);
+    final CCHTopology topology = CCHTopology.build(arcs.nodeCount(), arcs.tails(), arcs.heads(), arcs.count(), Long.MAX_VALUE);
+    final CCHMetric metric = CCHMetric.customize(topology, arcs.tails(), arcs.heads(), arcs.weights(), arcs.count(), false);
+    assertThat(metric.isBroken()).isFalse();
+
+    final double[] costs = { 1, 2 };
+    assertThatThrownBy(() -> metric.update(new int[] { 0, topology.arcCount() }, costs, costs, 2)).isInstanceOf(
+        IndexOutOfBoundsException.class);
+    assertThat(metric.inputUp[0]).as("the first input was written before the failure").isEqualTo(1);
+    assertThat(metric.isBroken()).isTrue();
   }
 
   @Test
