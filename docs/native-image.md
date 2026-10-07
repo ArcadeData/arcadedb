@@ -173,13 +173,24 @@ Included and working in the native binary:
   [JS scripting caveat](#js-scripting-is-included-but-with-a-security-caveat) below for the one
   thing to be aware of)
 - The `console` and `graphql` modules
+- **Raft HA** (`arcadedb-ha-raft`): the same clustering as the JVM distribution, enabled the same way
+  (`-Darcadedb.ha.enabled=true` and `-Darcadedb.ha.serverList=...`). `ha-smoke.sh` boots three native
+  nodes, writes through the leader and reads the row back from every node
+- **Metrics** (`arcadedb-metrics`): the Prometheus scrape endpoint (`/prometheus`, activated by naming
+  `com.arcadedb.metrics.prometheus.PrometheusMetricsPlugin` in `arcadedb.server.plugins`) and OTLP metrics
+  push (`-Darcadedb.serverMetrics.otlp.enabled=true`)
+- **Tracing** (`arcadedb-tracing`): OpenTelemetry spans over OTLP, activated by
+  `-Darcadedb.serverMetrics.tracing.enabled=true`
 
-Deliberately excluded from the native build (`native/pom.xml`'s dependency list omits them):
+Deliberately excluded from the native build (`native/pom.xml`'s dependency list omits it):
 
 - **Gremlin** (Apache TinkerPop) - not on the native module's classpath
-- **`arcadedb-tracing`** (OpenTelemetry) - not on the native module's classpath
 
-If your deployment needs Gremlin or OpenTelemetry tracing, use the JVM distribution instead.
+If your deployment needs Gremlin, use the JVM distribution instead.
+
+A plugin named in `arcadedb.server.plugins` that is not in the image is skipped without a log line, so a
+setting that silently does nothing usually means the module is missing from the build, not that it is
+misconfigured.
 
 ## Target matrix
 
@@ -381,12 +392,30 @@ native-image builder to a Truffle version that keeps the blocklist enforced.
 
 ### Binary size
 
-The native binary is currently large - around 732 MiB - mostly because `native/pom.xml` passes
+The native binary is currently large - around 907 MiB for macOS arm64 (it was around 732 MiB before
+Raft HA, metrics and tracing joined the image, #9407) - mostly because `native/pom.xml` passes
 `-H:IncludeResources=.*` to the build, which embeds every classpath resource (Studio's web assets,
 config templates, Lucene codec files, etc.) into the image. This is deliberately broad for
 correctness first; tightening `-H:IncludeResources` to the specific resource patterns each embedded
 module actually needs at runtime is a known follow-up, not something this experimental add-on has
 done yet.
+
+### Builder memory
+
+`native-image` sizes its own heap from the memory it can see. Measured on macOS arm64 with Raft HA,
+metrics and tracing in the image (#9407): a 9 GB builder heap ran out of memory ("Terminating due to
+java.lang.OutOfMemoryError: Java heap space"), a 12 GB heap built it with a peak RSS of 13.6 GB (a
+quarter of the time spent in GC), and a 24 GB heap peaked at 11.6 GB. The default can pick far too little
+when other processes hold memory (one run chose 8.16 GB from "available memory" and failed). Pin it
+with `NATIVE_IMAGE_OPTIONS="-J-Xmx24g"` when building locally. The Docker build script now requires a
+16 GiB Docker VM.
+
+### What CI verifies
+
+The single-node smoke (including Prometheus, OTLP metrics and tracing) and the three-node HA smoke
+run on the two required Linux legs; macOS and Windows run the base smoke only. The tracing and OTLP
+metrics checks assert that the plugin started (its SDK was built), not that a span or metric batch
+reached a collector, so the export path itself is not covered.
 
 ### JVector and SIMD
 
@@ -418,9 +447,24 @@ The build's `native-maven-plugin` configuration enables GraalVM's
 [reachability metadata repository](https://github.com/oracle/graalvm-reachability-metadata) (Netty,
 gRPC, Undertow, Jackson, HdrHistogram, Apache HttpClient) alongside a hand-generated
 `reachability-metadata.json` produced by running the assembled JVM server under the native-image
-tracing agent (`native/src/test/scripts/trace.sh`) while exercising the smoke-test surface. This
-combination has been sufficient so far - no manual edits to the generated JSON have been required
-when adding new smoke-tested surface. Regenerate it with `trace.sh` if you add a code path that
-reflects, serializes, or loads resources in a way the current metadata doesn't cover; the script
-needs GraalVM's own `java` (point `JAVA_HOME` at it, same requirement as above) because it launches
-the server with `-agentlib:native-image-agent`.
+tracing agent (`native/src/test/scripts/trace.sh`) while exercising the smoke-test surface. The
+script has two phases: one server driven by `exercise.sh` (SQL, Cypher, JS, every wire protocol,
+Prometheus, OTLP metrics, tracing), then a three-node Raft cluster driven by `ha-smoke.sh`. The
+second phase is not optional: Ratis only reaches most of its reflective code (the leader's log
+appenders, the follower apply path) once there are peers, and a single node never exercises it. The
+agent holds an exclusive lock on its output directory, so each cluster node writes its own and
+`native-image-configure` folds them into the committed file. Regenerate it with `trace.sh` if you
+add a code path that reflects, serializes, or loads resources in a way the current metadata doesn't
+cover; the script needs GraalVM's own `java` (point `JAVA_HOME` at it, same requirement as above)
+because it launches the server with `-agentlib:native-image-agent`.
+
+One part is hand-curated because the agent cannot record it. Ratis ships a relocated copy of Netty
+(`org.apache.ratis.thirdparty.io.netty`), and Netty's `PlatformDependent0` reads a handful of JDK
+internals through `Unsafe` (`java.nio.Bits.UNALIGNED`, `java.nio.Buffer.address`,
+`sun.misc.Unsafe.theUnsafe`, `sun.nio.ch.SelectorImpl`'s key sets and similar). The agent does not
+log `Unsafe` field-offset lookups, and the reachability metadata repository registers those entries
+only under a `typeReached` condition on the unshaded `io.netty` class, which the relocated copy never
+satisfies. They are therefore listed unconditionally in `reachability-metadata.json`. Regenerating
+with `trace.sh` keeps them, because both phases merge into the existing file rather than replacing it.
+Without them the Raft server fails to start with a `MissingReflectionRegistrationError` on the first
+of them it touches, and the node exits, which `ha-smoke.sh` reports as a node that exited early.
