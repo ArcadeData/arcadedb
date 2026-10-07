@@ -54,6 +54,7 @@ import java.util.logging.Level;
 public final class ConsistentKeyLookup {
   /** More entries than this in one lookup are streamed by the caller instead of held. */
   public static final int MAX_ENTRIES  = 256;
+  /** Attempts made without a lock before the lookup runs under the publication lock. */
   public static final int MAX_ATTEMPTS = 8;
 
   // for tests: called on the thread of a lookup once it has settled on the state it returns, to interleave a commit after it
@@ -87,6 +88,7 @@ public final class ConsistentKeyLookup {
       final List<Object[]> keys) {
     final PageManager pageManager = database.getPageManager();
     boolean unpinnedForDangling = false;
+    Set<Integer> lastBucketIds = Set.of();
     for (int attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       if ((pageManager.getPublicationSequence() & 1) != 0)
         // a commit is publishing: wait for it to let go of the lock instead of spending an attempt inside its window
@@ -101,6 +103,7 @@ public final class ConsistentKeyLookup {
       final Read read = readAndLoad(database, index, keys);
       if (read == null)
         return null;
+      lastBucketIds = read.bucketIds;
       final boolean overlapped = pageManager.getPublicationSequence() != before;
       // an entry without a record, in a REPEATABLE_READ transaction, may be a page this transaction pinned before the
       // record was created: the pins are released and the lookup read once more on the committed state
@@ -114,6 +117,8 @@ public final class ConsistentKeyLookup {
 
     LogManager.instance().log(ConsistentKeyLookup.class, Level.FINE,
         "Lookup on index '%s' overlapped a commit %d times, reading it under the publication lock", null, index.getName(), MAX_ATTEMPTS);
+    // the pages pinned by the attempts that overlapped a commit must not serve the locked read either
+    unpinRepeatableRead(database, index, lastBucketIds);
     final Read read = (Read) pageManager.executeInLock(() -> readAndLoad(database, index, keys));
     return read == null ? null : read.entries;
   }
@@ -125,6 +130,7 @@ public final class ConsistentKeyLookup {
    */
   public static IndexCursor lookupCursor(final Database database, final Index index, final List<Object[]> keys) {
     if (!(database instanceof DatabaseInternal internal))
+      // a remote database has no page manager to sample: the caller reads the index as it did before
       return null;
     final List<IndexCursorEntry> entries = lookup(internal, index, keys);
     return entries == null ? null : new TempIndexCursor(entries);
