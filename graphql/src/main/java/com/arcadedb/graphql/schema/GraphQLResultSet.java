@@ -625,17 +625,21 @@ public class GraphQLResultSet implements ResultSet {
     if (value instanceof Identifiable identifiable && !(value instanceof Document))
       return loadLink(identifiable);
 
-    if (value instanceof Iterable<?> iterable) {
-      final List<Object> loaded = new ArrayList<>();
-      for (final Object o : iterable) {
+    // ONLY A LIST IS SCANNED, AND COPIED ONLY WHEN IT HOLDS A LINK: A LAZY ITERABLE IS NEVER MATERIALIZED HERE
+    if (value instanceof List<?> list) {
+      List<Object> loaded = null;
+      for (int i = 0; i < list.size(); i++) {
+        final Object o = list.get(i);
         if (o instanceof Identifiable identifiable && !(o instanceof Document)) {
+          if (loaded == null)
+            loaded = new ArrayList<>(list.subList(0, i));
           final Object record = loadLink(identifiable);
           if (record != null)
             loaded.add(record);
-        } else
+        } else if (loaded != null)
           loaded.add(o);
       }
-      return loaded;
+      return loaded != null ? loaded : value;
     }
     return value;
   }
