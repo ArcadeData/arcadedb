@@ -92,6 +92,12 @@ public class LocalDocumentType implements DocumentType {
   protected final Map<String, Property>             properties                   = new ConcurrentHashMap<>();
   protected final Map<Integer, List<IndexInternal>> bucketIndexesByBucket        = new HashMap<>();
   protected final Map<List<String>, TypeIndex>      indexesByProperties          = new ConcurrentHashMap<>();
+  /**
+   * The property lists of the indexes {@link TypeIndexBuilder} is populating right now (issue #9331). The index is registered
+   * bucket by bucket, each bucket index before its entries are committed, so for the whole build it covers only part of
+   * the records: a query that picked it answered with the rows of the buckets built so far, empty ones included.
+   */
+  private final Set<List<String>>                   indexesUnderConstruction     = ConcurrentHashMap.newKeySet();
   protected final RecordEventsRegistry              events                       = new RecordEventsRegistry();
   protected final Map<String, Object>               custom                       = new HashMap<>();
   // The four bucket lists are copy-on-write: reassigned under the schema mutation lock and read lock-free by query
@@ -1865,6 +1871,22 @@ public class LocalDocumentType implements DocumentType {
   @Override
   public int hashCode() {
     return Objects.hash(name);
+  }
+
+  /** Marks the index on {@code propertyNames} as being populated, see {@link #indexesUnderConstruction}. */
+  void beginIndexConstruction(final List<String> propertyNames) {
+    indexesUnderConstruction.add(propertyNames);
+  }
+
+  void endIndexConstruction(final List<String> propertyNames) {
+    indexesUnderConstruction.remove(propertyNames);
+  }
+
+  /**
+   * Whether the index on {@code propertyNames} is still being populated, and so cannot answer a query yet.
+   */
+  public boolean isIndexUnderConstruction(final List<String> propertyNames) {
+    return !indexesUnderConstruction.isEmpty() && indexesUnderConstruction.contains(propertyNames);
   }
 
   protected void addIndexInternal(final IndexInternal index, final int bucketId, final String[] propertyNames,

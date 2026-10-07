@@ -746,7 +746,10 @@ public class TypeIndex implements RangeIndex, IndexInternal {
       return false;
     try {
       final IndexInternal first = firstOrNull();
-      return first != null && first.getType() != null;
+      if (first == null || first.getType() == null)
+        return false;
+      // Complete: while TypeIndexBuilder populates it, the index holds the entries of the buckets built so far only (#9331)
+      return !(type instanceof LocalDocumentType local) || !local.isIndexUnderConstruction(first.getPropertyNames());
     } catch (final IndexException e) {
       LogManager.instance().log(this, Level.FINE, "Index '%s' is not ready for queries: %s", null, getName(), e.getMessage());
       return false;
@@ -769,13 +772,13 @@ public class TypeIndex implements RangeIndex, IndexInternal {
 
   /**
    * The property names of this index when it can answer an exact key lookup (not a FULL_TEXT, vector or geospatial one, which
-   * answer by token or similarity), null when it cannot or when it went away while being read: a concurrent DDL can drop or
-   * rebuild an index right after {@link #isReadyForQueries()} said yes (issue #8918).
+   * answer by token or similarity), null when it cannot, when it is still being populated, or when it went away while being
+   * read: a concurrent DDL can drop or rebuild an index right after {@link #isReadyForQueries()} said yes (issue #8918).
    */
   public List<String> getPropertyNamesIfExactKeyLookup() {
     try {
       final Schema.INDEX_TYPE indexType = getType();
-      return indexType != null && indexType.isExactKeyLookup() ? getPropertyNames() : null;
+      return indexType != null && indexType.isExactKeyLookup() && isReadyForQueries() ? getPropertyNames() : null;
     } catch (final IndexException e) {
       return null;
     }

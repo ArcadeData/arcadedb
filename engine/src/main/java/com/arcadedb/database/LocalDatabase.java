@@ -1131,12 +1131,18 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       if (idx == null)
         throw new IllegalArgumentException(
             "No index has been created on type '" + type + "' properties " + Arrays.toString(keyNames));
-      if (!idx.getType().isExactKeyLookup())
+      // An index a concurrent DDL has taken away, or is still populating, is no index yet (#9331): isReadyForQueries() is
+      // false for both and getType() of the former is null, which a bare dereference would turn into a NullPointerException
+      final Schema.INDEX_TYPE indexType = idx.isReadyForQueries() ? idx.getType() : null;
+      if (indexType == null)
+        throw new IllegalArgumentException(
+            "No index has been created on type '" + type + "' properties " + Arrays.toString(keyNames));
+      if (!indexType.isExactKeyLookup())
         // A FULL_TEXT (or vector, geospatial) index does not answer "value equals key": handing its answer back as one
         // attached edges to every vertex sharing a token with the key, and to none when the key has no token (#8439)
         throw new IllegalArgumentException(
             "No key index has been created on type '" + type + "' properties " + Arrays.toString(keyNames) + ": index '"
-                + idx.getName() + "' is " + idx.getType() + " and cannot look up a record by exact key");
+                + idx.getName() + "' is " + indexType + " and cannot look up a record by exact key");
 
       // the entries and their records are read against one committed state: a commit that deletes and re-creates the key
       // cannot make it vanish, appear twice or name a record that is gone by the time the caller loads it (#9397)
@@ -3480,13 +3486,17 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         if (fileManager.getFiles().isEmpty())
           schema.create(mode);
         else
-          schema.load(mode, true);
+          // THE TIMESERIES ENGINES READ THEIR PAGES WHEN THEY ARE BUILT, SO ON A CRASHED DATABASE THEY ARE BUILT AFTER
+          // THE WAL REPLAY, NOT FROM THE STALE PAGES THE SCHEMA LOAD FINDS ON DISK (ISSUE #9452)
+          schema.load(mode, true, recoveryPending);
 
         serializer.setDateImplementation(configuration.getValue(GlobalConfiguration.DATE_IMPLEMENTATION));
         serializer.setDateTimeImplementation(configuration.getValue(GlobalConfiguration.DATE_TIME_IMPLEMENTATION));
 
-        if (recoveryPending)
+        if (recoveryPending) {
           performRecovery();
+          schema.openDeferredTimeSeriesEngines();
+        }
 
         if (security != null)
           security.updateSchema(this);

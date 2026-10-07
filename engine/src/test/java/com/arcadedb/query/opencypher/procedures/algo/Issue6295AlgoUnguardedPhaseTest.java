@@ -84,10 +84,15 @@ class Issue6295AlgoUnguardedPhaseTest {
    * {@code algo.hashgnn}'s MinHash reduction, with the {@code iterations} loop deliberately reduced to a single
    * round so that the checkpoint #6264 put inside it runs once, before any real work, and cannot be what fires.
    * <p>
-   * 300 nodes at {@code embeddingDimension: 2048} is 300 x 2048 x 8192 ≈ 5e9 inner iterations in the reduction
-   * against 300 x 2 x 8192 ≈ 5e6 in the single message-passing round - three orders of magnitude apart, so a 1 s
-   * deadline can only land in the reduction. Without a checkpoint there the call grinds through all of it and
+   * 300 nodes at {@code embeddingDimension: 4096} (the ceiling #6065 set) is 300 x 4096 x 16384 ≈ 2e10 inner iterations
+   * in the reduction against 300 x 2 x 16384 ≈ 1e7 in the single message-passing round - three orders of magnitude apart,
+   * so a 1 s deadline can only land in the reduction. Without a checkpoint there the call grinds through all of it and
    * returns embeddings; with one it gives up about a second in.
+   * <p>
+   * The size is what keeps the test from racing the clock (issue #9360). The reduction costs {@code embeddingDimension²}
+   * per node, so the same 300-node cycle took 4.0 s to 5.4 s at 2048 (a 4x to 5x margin over the 1 s deadline, the
+   * headroom that sent the sibling APSP test red on a fast runner in #8653) and takes ~21 s at 4096 on an Apple-silicon
+   * workstation with no deadline: about 21x. The dimension cannot go higher, so the margin comes from the quadratic.
    */
   @Test
   @Tag("slow")
@@ -98,11 +103,13 @@ class Issue6295AlgoUnguardedPhaseTest {
 
     final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
     assertThatThrownBy(() -> drain(
-        "CALL algo.hashgnn({embeddingDimension: 2048, iterations: 1, seed: 1}) YIELD node RETURN node"))
+        "CALL algo.hashgnn({embeddingDimension: 4096, iterations: 1, seed: 1}) YIELD node RETURN node"))
         .as("the reduction is where an algo.hashgnn call spends its time, so it is where the deadline has to be seen")
         .hasStackTraceContaining(GlobalConfiguration.COMMAND_TIMEOUT.getKey());
 
-    stopwatch.assertGaveUpWithin(120_000L, "a reduction aborted from inside, not one run to completion");
+    // Between the two outcomes: the abort lands ~1 s after the deadline is armed, the same call run to completion takes
+    // ~21 s here. Generous on purpose, a wider bound cannot turn a passing run red, and it stays below the full run
+    stopwatch.assertGaveUpWithin(10_000L, "a reduction aborted from inside, not one run to completion");
   }
 
   /**
