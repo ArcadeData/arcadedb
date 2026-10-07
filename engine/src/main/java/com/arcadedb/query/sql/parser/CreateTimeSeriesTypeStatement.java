@@ -170,7 +170,8 @@ public class CreateTimeSeriesTypeStatement extends DDLStatement {
       return TimeSeriesCodec.valueOf(codecName);
     } catch (final IllegalArgumentException e) {
       final StringBuilder valid = new StringBuilder();
-      // NONE is declared in the enum but no encoder implements it (issue #9310), so it is not offered
+      // NONE stays in the enum because schemas persisted by earlier builds may name it and must still load, but no encoder
+      // implements it (issue #9310), so it is not offered
       for (final TimeSeriesCodec codec : TimeSeriesCodec.values())
         if (codec != TimeSeriesCodec.NONE)
           valid.append(valid.isEmpty() ? "" : ", ").append(codec.name());
