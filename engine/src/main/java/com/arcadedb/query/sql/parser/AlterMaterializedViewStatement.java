@@ -88,8 +88,9 @@ public class AlterMaterializedViewStatement extends DDLStatement {
     builder.append("ALTER MATERIALIZED VIEW ");
     name.toString(params, builder);
     builder.append(" REFRESH ");
-    if ("PERIODIC".equalsIgnoreCase(refreshMode) && refreshInterval > 0)
-      builder.append("EVERY ").append(refreshInterval).append(' ').append(refreshUnit);
+    // PERIODIC is not a keyword of the grammar: EVERY 0 SECOND (PERIODIC with no schedule) re-renders as EVERY too
+    if ("PERIODIC".equalsIgnoreCase(refreshMode))
+      builder.append("EVERY ").append(refreshInterval).append(' ').append(refreshUnit == null ? "SECOND" : refreshUnit);
     else
       builder.append(refreshMode);
   }

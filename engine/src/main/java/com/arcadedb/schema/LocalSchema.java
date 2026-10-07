@@ -2142,6 +2142,9 @@ public class LocalSchema implements Schema {
   public void alterMaterializedView(final String viewName, final MaterializedViewRefreshMode newMode,
       final long newIntervalMs) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+    // The same refusals the remote alter makes before rendering ALTER MATERIALIZED VIEW (issue #8726): an interval on a
+    // non-PERIODIC mode used to be stored here although nothing schedules it, and a null mode reached the view
+    MaterializedViewBuilder.validateRefresh(newMode, newIntervalMs);
 
     // See dropMaterializedView for why the monitor is not held across recordFileChanges, and why the teardown of the
     // old refresh resources and the setup of the new ones both run inside it (#7457)
