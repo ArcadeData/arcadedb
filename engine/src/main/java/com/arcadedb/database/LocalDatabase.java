@@ -68,6 +68,7 @@ import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.graph.olap.GraphAnalyticalViewPersistence;
 import com.arcadedb.graph.olap.GraphAnalyticalViewRegistry;
+import com.arcadedb.index.ConsistentKeyLookup;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexInternal;
@@ -1137,7 +1138,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
             "No key index has been created on type '" + type + "' properties " + Arrays.toString(keyNames) + ": index '"
                 + idx.getName() + "' is " + idx.getType() + " and cannot look up a record by exact key");
 
-      return idx.get(keyValues);
+      // the entries and their records are read against one committed state: a commit that deletes and re-creates the key
+      // cannot make it vanish, appear twice or name a record that is gone by the time the caller loads it (#9397)
+      return ConsistentKeyLookup.get(this, idx, keyValues);
     });
   }
 

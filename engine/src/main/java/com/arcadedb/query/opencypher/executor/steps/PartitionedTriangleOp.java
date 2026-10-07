@@ -493,10 +493,143 @@ public final class PartitionedTriangleOp implements CountOp {
     return total;
   }
 
+  /**
+   * The partitions a vertex reaches, each with the number of paths of the partition chain that reach it (issue #9350). Most
+   * vertices reach exactly one, so that case is a pair of fields and no map: the common case of one neighbour per hop pays
+   * nothing for the weighted answer (issue #9400).
+   */
+  private static final class Partitions {
+    private static final int INDEXED_FROM = 8;
+
+    final RID[]              rids;
+    final long[]             weights;
+    // only for a vertex reaching many partitions, where a linear scan per lookup would cost more than the map
+    final HashMap<RID, Long> index;
+
+    Partitions(final RID[] rids, final long[] weights) {
+      this.rids = rids;
+      this.weights = weights;
+      if (rids.length > INDEXED_FROM) {
+        index = new HashMap<>(rids.length * 2);
+        for (int i = 0; i < rids.length; i++)
+          index.put(rids[i], weights[i]);
+      } else
+        index = null;
+    }
+
+    /** The number of paths reaching {@code partition}, 0 when none does. */
+    long weightOf(final RID partition) {
+      if (index != null) {
+        final Long w = index.get(partition);
+        return w == null ? 0L : w;
+      }
+      for (int i = 0; i < rids.length; i++)
+        if (rids[i].equals(partition))
+          return weights[i];
+      return 0L;
+    }
+  }
+
+  /** Whether {@code n}, reached by hop {@code h} of the chain, carries the label the pattern asks for there, if any. */
+  private boolean passesHopLabel(final Database db, final RID n, final int h) {
+    return nodeLabels == null || nodeLabels[h + 1] == null
+        || typeCarriesLabel(db.getSchema().getTypeByBucketId(n.getBucketId()), nodeLabels[h + 1]);
+  }
+
+  /** The partitions of {@code v}, or null when its chain ends before reaching any. */
+  private Partitions partitionsOf(final Database db, final Vertex v) {
+    RID[] rids = { v.getIdentity() };
+    long[] weights = { 1L };
+    for (int h = 0; h < partitionEdgeTypes.length; h++) {
+      if (rids.length == 1) {
+        // fast path: one vertex to expand, and when it has one neighbour that neighbour inherits its weight as it is
+        final Vertex from = h == 0 ? v : db.lookupByRID(rids[0], true).asVertex();
+        final Iterator<RID> neighbors = from.getConnectedVertexRIDs(partitionDirections[h], partitionEdgeTypes[h]).iterator();
+        RID first = null;
+        while (first == null && neighbors.hasNext()) {
+          final RID candidate = neighbors.next();
+          if (passesHopLabel(db, candidate, h))
+            first = candidate;
+        }
+        if (first == null)
+          return null;
+        RID second = null;
+        while (second == null && neighbors.hasNext()) {
+          final RID candidate = neighbors.next();
+          if (passesHopLabel(db, candidate, h))
+            second = candidate;
+        }
+        if (second == null) {
+          rids = new RID[] { first };
+          continue;
+        }
+        // several neighbours: every path is a match of its own, so a neighbour reached twice weighs twice
+        final HashMap<RID, Long> next = new HashMap<>();
+        next.merge(first, weights[0], Long::sum);
+        next.merge(second, weights[0], Long::sum);
+        while (neighbors.hasNext()) {
+          final RID n = neighbors.next();
+          if (passesHopLabel(db, n, h))
+            next.merge(n, weights[0], Long::sum);
+        }
+        final int size = next.size();
+        rids = new RID[size];
+        weights = new long[size];
+        int i = 0;
+        for (final Map.Entry<RID, Long> e : next.entrySet()) {
+          rids[i] = e.getKey();
+          weights[i++] = e.getValue();
+        }
+        continue;
+      }
+
+      final HashMap<RID, Long> next = new HashMap<>();
+      for (int i = 0; i < rids.length; i++)
+        for (final RID n : db.lookupByRID(rids[i], true).asVertex().getConnectedVertexRIDs(partitionDirections[h], partitionEdgeTypes[h]))
+          if (passesHopLabel(db, n, h))
+            next.merge(n, weights[i], Long::sum);
+      if (next.isEmpty())
+        return null;
+      final int size = next.size();
+      rids = new RID[size];
+      weights = new long[size];
+      int i = 0;
+      for (final Map.Entry<RID, Long> e : next.entrySet()) {
+        rids[i] = e.getKey();
+        weights[i++] = e.getValue();
+      }
+    }
+    return new Partitions(rids, weights);
+  }
+
+  /** The number of paths of the partition chain that reach the same partition from the three vertices. */
+  private static long sharedWeight(final Partitions u, final Partitions v, final Partitions w) {
+    long shared = 0;
+    for (int i = 0; i < u.rids.length; i++) {
+      final long wv = v.weightOf(u.rids[i]);
+      if (wv == 0L)
+        continue;
+      final long ww = w.weightOf(u.rids[i]);
+      if (ww != 0L)
+        shared = Math.addExact(shared, Math.multiplyExact(Math.multiplyExact(u.weights[i], wv), ww));
+    }
+    return shared;
+  }
+
+  /** The length of the run of {@code value} that starts at {@code from} in {@code sorted}. */
+  private static int runLength(final int[] sorted, final int from) {
+    int to = from + 1;
+    while (to < sorted.length && sorted[to] == sorted[from])
+      ++to;
+    return to - from;
+  }
+
   @Override
   public long executeOLTP(final Database db, final WorkGuard guard) {
     // every path of the partition chain is a match of its own, so a vertex carries the number of paths per country (issue #9350)
-    final HashMap<RID, HashMap<RID, Long>> personToPartitions = new HashMap<>();
+    final ArrayList<RID> persons = new ArrayList<>();
+    final ArrayList<Partitions> personPartitions = new ArrayList<>();
+    final HashMap<RID, Integer> indexOf = new HashMap<>();
 
     for (final DocumentType dt : db.getSchema().getTypes()) {
       if (!(dt instanceof VertexType) || !typeCarriesLabel(dt, nodeLabels == null ? null : nodeLabels[0]))
@@ -504,57 +637,63 @@ public final class PartitionedTriangleOp implements CountOp {
       for (final Iterator<? extends Identifiable> it = db.iterateType(dt.getName(), false); it.hasNext(); ) {
         guard.check();
         final Vertex v = it.next().asVertex();
-        HashMap<RID, Long> current = new HashMap<>();
-        current.put(v.getIdentity(), 1L);
-        for (int h = 0; h < partitionEdgeTypes.length && !current.isEmpty(); h++) {
-          final HashMap<RID, Long> next = new HashMap<>();
-          for (final Map.Entry<RID, Long> e : current.entrySet())
-            for (final RID n : db.lookupByRID(e.getKey(), true).asVertex().getConnectedVertexRIDs(partitionDirections[h],
-                partitionEdgeTypes[h]))
-              if (nodeLabels == null || nodeLabels[h + 1] == null || typeCarriesLabel(db.getSchema().getTypeByBucketId(n.getBucketId()),
-                  nodeLabels[h + 1]))
-                next.merge(n, e.getValue(), Long::sum);
-          current = next;
+        final Partitions partitions = partitionsOf(db, v);
+        if (partitions != null) {
+          indexOf.put(v.getIdentity(), persons.size());
+          persons.add(v.getIdentity());
+          personPartitions.add(partitions);
         }
-        if (!current.isEmpty())
-          personToPartitions.put(v.getIdentity(), current);
       }
     }
 
     // Try GAV provider for accelerated neighbor lookups
     final GraphTraversalProvider gavProvider = GraphTraversalProviderRegistry.findProvider(db, triangleEdgeType);
 
-    long total = 0;
-    for (final Map.Entry<RID, HashMap<RID, Long>> entry : personToPartitions.entrySet()) {
+    // The edge list of every vertex is read ONCE (issue #9400): the triangle loop below meets each vertex once per
+    // neighbour, and reloading its edges each time dominated the whole count. Only the in-partition neighbours are kept,
+    // as sorted indexes, a neighbour reached by parallel edges once per edge (a parallel edge is a match of its own, issue #9298)
+    final int count = persons.size();
+    final int[][] adjacency = new int[count][];
+    int[] buffer = new int[16];
+    for (int i = 0; i < count; i++) {
       guard.check();
-      final RID uRid = entry.getKey();
-      final HashMap<RID, Long> uCountries = entry.getValue();
+      final RID[] neighbors = getNeighborRIDs(db, gavProvider, persons.get(i), Vertex.DIRECTION.BOTH, triangleEdgeType);
+      if (buffer.length < neighbors.length)
+        buffer = new int[Math.max(neighbors.length, buffer.length * 2)];
+      int size = 0;
+      for (final RID n : neighbors) {
+        final Integer index = indexOf.get(n);
+        if (index != null)
+          buffer[size++] = index;
+      }
+      final int[] sorted = Arrays.copyOf(buffer, size);
+      Arrays.sort(sorted);
+      adjacency[i] = sorted;
+    }
 
-      final RID[] uNeighbors = getNeighborRIDs(db, gavProvider, uRid, Vertex.DIRECTION.BOTH, triangleEdgeType);
-      // multiplicity of each in-partition neighbour of u: a parallel edge is a match of its own (issue #9298). The boxing is
-      // deliberate: this is the no-view fallback, which already materializes RIDs and a RID-keyed partition map per call
-      final HashMap<RID, Integer> uNeighborCounts = new HashMap<>();
-      for (final RID nRid : uNeighbors)
-        if (personToPartitions.containsKey(nRid))
-          uNeighborCounts.merge(nRid, 1, Integer::sum);
-      for (final RID vRid : uNeighbors) {
-        final HashMap<RID, Long> vCountries = personToPartitions.get(vRid);
-        if (vCountries == null)
-          continue;
-
-        final RID[] vNeighbors = getNeighborRIDs(db, gavProvider, vRid, Vertex.DIRECTION.BOTH, triangleEdgeType);
-        for (final RID wRid : vNeighbors) {
-          final Integer multiplicity = uNeighborCounts.get(wRid);
-          if (multiplicity == null)
-            continue;
-          final HashMap<RID, Long> wCountries = personToPartitions.get(wRid);
-          long shared = 0;
-          for (final Map.Entry<RID, Long> c : uCountries.entrySet()) {
-            final Long wv = vCountries.get(c.getKey()), ww = wCountries.get(c.getKey());
-            if (wv != null && ww != null)
-              shared = Math.addExact(shared, Math.multiplyExact(Math.multiplyExact(c.getValue(), wv), ww));
+    final Partitions[] partitions = personPartitions.toArray(new Partitions[0]);
+    long total = 0;
+    for (int u = 0; u < count; u++) {
+      guard.check();
+      final int[] uAdjacent = adjacency[u];
+      for (final int v : uAdjacent) {
+        // the triangles closing the wedge u-v: the vertices w both are connected to, with the multiplicity of each edge
+        final int[] vAdjacent = adjacency[v];
+        int i = 0, j = 0;
+        while (i < uAdjacent.length && j < vAdjacent.length) {
+          final int a = uAdjacent[i], b = vAdjacent[j];
+          if (a < b)
+            ++i;
+          else if (a > b)
+            ++j;
+          else {
+            final int uRun = runLength(uAdjacent, i), vRun = runLength(vAdjacent, j);
+            final long shared = sharedWeight(partitions[u], partitions[v], partitions[a]);
+            if (shared != 0L)
+              total = Math.addExact(total, Math.multiplyExact(Math.multiplyExact((long) uRun, vRun), shared));
+            i += uRun;
+            j += vRun;
           }
-          total = Math.addExact(total, Math.multiplyExact((long) multiplicity, shared));
         }
       }
     }

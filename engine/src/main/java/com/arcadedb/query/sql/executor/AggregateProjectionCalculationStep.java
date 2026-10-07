@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.HeapBufferingFunction;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.GroupBy;
@@ -28,6 +29,7 @@ import com.arcadedb.schema.Type;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Created by luigidellaquila on 12/07/16.
@@ -48,6 +50,18 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
   private final OperationHeapLimit        groupsLimit;
   // #8591: THE PARTIAL AGGREGATIONS OF THE WORKERS OF A PARALLEL SCAN, SO A FAILURE CAN GIVE BACK WHAT THEY CHARGED
   private final Queue<PartialAggregation> workerPartials = new ConcurrentLinkedQueue<>();
+
+  // #9402: A WORKER THAT HOLDS MORE THAN THIS MANY CHARGED BYTES FOLDS ITS GROUPS INTO sharedGroups AND STARTS OVER, SO THE
+  // MEMORY OF A GROUP BY WITH MANY GROUPS IS ABOUT ONE COPY OF THE GROUPS PLUS ONE BOUNDED PARTIAL PER WORKER, NOT ONE
+  // COPY PER WORKER (EVERY WORKER MEETS MOST KEYS WHEN THE ROWS OF A KEY ARE SPREAD ALL OVER THE TYPE). 0 = NEVER FLUSH
+  private static final long MIN_WORKER_FLUSH_BYTES = 1024L * 1024;
+  private volatile long                workerFlushBytes = 0L;
+  private final    Object              sharedGroupsLock = new Object();
+  private volatile PartialAggregation  sharedGroups;
+  private final    AtomicInteger       sharedGroupCount = new AtomicInteger();
+  // RESOLVED ONCE BEFORE THE SCAN: THE MERGES RUN CONCURRENTLY AND MUST NOT MEMOIZE ANYTHING ON THE SHARED PROJECTION
+  private          String[]            mergeAliases;
+  private          boolean[]           mergeAggregates;
 
   //the key is the GROUP BY key, the value is the (partially) aggregated value
   private final Map<GroupByKey, ResultInternal> aggregateResults = new LinkedHashMap<>();
@@ -277,6 +291,20 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
       final int partitions = groupBy == null ? 1 : firstScan.getWorkerCount();
       final int groupOverhead = groupOverheadBytes(projection);
 
+      final List<ProjectionItem> items = projection.getItems();
+      mergeAliases = new String[items.size()];
+      mergeAggregates = new boolean[items.size()];
+      for (int i = 0; i < mergeAliases.length; i++) {
+        mergeAliases[i] = items.get(i).getProjectionAlias().getStringValue();
+        mergeAggregates[i] = items.get(i).isAggregate(context);
+      }
+      sharedGroups = null;
+      sharedGroupCount.set(0);
+      // A QUARTER OF THE BUDGET SPLIT BETWEEN THE WORKERS: THE REST IS LEFT TO THE MERGED GROUPS AND THE OTHER QUERIES
+      workerFlushBytes = groupBy != null && groupsLimit.isCharging() ?
+          Math.max(MIN_WORKER_FLUSH_BYTES, QueryHeapBudget.getLimitBytes() / (4L * Math.max(1, firstScan.getWorkerCount()))) :
+          0L;
+
       // EVERY PARTIAL OF EVERY ROUND. A ROUND TAKES THE PARTIALS OF THE PREVIOUS ONES BACK BEFORE IT CREATES ANY, SO A
       // SOURCE SERVED IN MANY ROUNDS STILL ENDS WITH NO MORE PARTIALS THAN WORKERS TO MERGE
       final List<PartialAggregation> partials = new ArrayList<>();
@@ -311,24 +339,22 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
 
       // PARTITION p OF EVERY WORKER HOLDS THE SAME KEYS, AND NO OTHER PARTITION DOES: EACH ONE IS MERGED ON ITS OWN, IN
       // PARALLEL WHEN THERE ARE ENOUGH GROUPS FOR IT TO PAY
-      final PartialAggregation merged = partials.getFirst();
-      long partialGroups = 0;
+      // #9402: THE GROUPS THE WORKERS FLUSHED ARE MERGED ALREADY: THE REMAINING PARTIALS JOIN THEM. WITHOUT A FLUSH THE FIRST
+      // PARTIAL IS THE TARGET, AS IT ALWAYS WAS
+      final PartialAggregation shared = sharedGroups;
+      final PartialAggregation merged = shared != null ? shared : partials.getFirst();
+      long partialGroups = shared != null ? sharedGroupCount.get() : 0;
       for (final PartialAggregation partial : partials)
         partialGroups += partial.groupCount;
-      // RESOLVED HERE, ONCE: THE MERGES RUN CONCURRENTLY AND MUST NOT MEMOIZE ANYTHING ON THE SHARED PROJECTION
-      final List<ProjectionItem> items = projection.getItems();
-      final String[] aliases = new String[items.size()];
-      final boolean[] aggregates = new boolean[items.size()];
-      for (int i = 0; i < aliases.length; i++) {
-        aliases[i] = items.get(i).getProjectionAlias().getStringValue();
-        aggregates[i] = items.get(i).isAggregate(context);
-      }
+      final String[] aliases = mergeAliases;
+      final boolean[] aggregates = mergeAggregates;
       final List<Runnable> merges = new ArrayList<>(partitions);
       for (int p = 0; p < partitions; p++) {
         final int partition = p;
         merges.add(() -> {
-          for (int i = 1; i < partials.size(); i++)
-            merged.mergeFrom(partials.get(i), partition, aliases, aggregates);
+          for (final PartialAggregation partial : partials)
+            if (partial != merged)
+              merged.mergeFrom(partial, partition, aliases, aggregates);
         });
       }
       firstScan.run(merges, partialGroups >= PARALLEL_MERGE_MIN_GROUPS);
@@ -351,6 +377,8 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
       // WOULD MISS A LARGE KEY ONE WORKER HELD NEXT TO SMALL ONES THE OTHERS DID
       for (final PartialAggregation partial : partials)
         partial.handOverHeap(groupsLimit);
+      if (shared != null)
+        shared.handOverHeap(groupsLimit);
       long kept = 0L;
       for (int i = 0; i < size; i++)
         kept += HeapEstimator.estimate(groups.get(i).keyValues) + groupOverhead;
@@ -491,22 +519,52 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
         return;
       final Result next = preProjection != null ? preProjection.calculateSingle(context, row) : row;
       final GroupByKey key = groupKey(workerGroupBy, next, context);
-      final HashMap<GroupByKey, PartialGroup> groups = partitions[Math.floorMod(key.hashCode(), partitions.length)];
-      PartialGroup group = groups.get(key);
+      final int partition = Math.floorMod(key.hashCode(), partitions.length);
+      PartialGroup group = partitions[partition].get(key);
+      boolean flush = false;
       if (group == null) {
         checkGroupCount(groupCount);
         group = new PartialGroup(newGroup(workerProjection, next, context), key.values, position);
-        groups.put(key, group);
+        chargeNewGroup(key.values, context);
+        partitions[partition].put(key, group);
         ++groupCount;
-        // THE MONITOR IS UNCONTENDED BUT FOR A CANCELLED WORKER: TAKEN PER NEW GROUP, NOT PER ROW
-        synchronized (this) {
-          if (!heapReleased)
-            heapLimit.chargeElement(key.values, groupOverhead);
-        }
+        // CHECKED WHEN A GROUP IS CREATED ONLY: THE CHARGE GROWS ONLY THEN
+        flush = workerFlushBytes > 0 && heapLimit.getChargedBytes() >= workerFlushBytes;
       }
       // NO OPERATION FOR THE AGGREGATES: ONLY THE ONES THAT MERGE PARTIALS RUN IN THE WORKERS (count, sum, avg, min, max),
       // AND NONE KEEPS THE VALUES IT AGGREGATES, SO NOTHING OUTSIDE THE MONITOR ABOVE EVER CHARGES THIS WORKER'S OPERATION
       applyAggregates(workerProjection, group.row, next, context, null);
+      // AFTER THE ROW IS IN: THE FLUSH HANDS THE GROUP OVER, AND THE SHARED SIDE IS NOT TOUCHED WITHOUT ITS LOCK
+      if (flush)
+        flushToShared(context);
+    }
+
+    /**
+     * Charges a group about to be added. A refusal may come only from the duplicates this worker holds of groups the shared
+     * side has already (each charged here and there at once, until a flush gives one of them back): the worker then flushes
+     * what it holds, which hands its charge over and releases the duplicates, and asks again. A refusal that persists is
+     * the budget really being exceeded by the groups alone, and propagates.
+     */
+    private void chargeNewGroup(final Object[] keyValues, final CommandContext context) {
+      try {
+        synchronized (this) {
+          // THE MONITOR IS UNCONTENDED BUT FOR A CANCELLED WORKER: TAKEN PER NEW GROUP, NOT PER ROW
+          if (!heapReleased)
+            heapLimit.chargeElement(keyValues, groupOverhead);
+        }
+      } catch (final CommandExecutionException e) {
+        if (workerFlushBytes <= 0 || groupCount == 0)
+          throw e;
+        flushToShared(context);
+        synchronized (this) {
+          if (!heapReleased) {
+            heapLimit.chargeElement(keyValues, groupOverhead);
+            // ASKED NOW: A CHARGE BELOW THE FORWARDING THRESHOLD WOULD PASS WITHOUT THE BUDGET EVER ANSWERING, AND THE
+            // REFUSAL THIS RETRY EXISTS TO CONFIRM WOULD NEVER COME
+            heapLimit.settle();
+          }
+        }
+      }
     }
 
     /** Whether the row passes the filters between the source and the aggregation, as their steps would decide. */
@@ -516,12 +574,29 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
 
     /** Folds one partition of another worker's groups into this one: the aggregations merge, the earliest first row wins. */
     void mergeFrom(final PartialAggregation other, final int partition, final String[] aliases, final boolean[] aggregates) {
-      final HashMap<GroupByKey, PartialGroup> groups = partitions[partition];
-      for (final Map.Entry<GroupByKey, PartialGroup> entry : other.partitions[partition].entrySet()) {
+      mergePartition(partitions[partition], other.partitions[partition], aliases, aggregates, null);
+    }
+
+    /**
+     * Folds {@code source} into {@code groups}.
+     *
+     * @param duplicateBytes when not null, receives in [0] the estimated bytes of the groups of {@code source} whose key
+     *                       was in {@code groups} already, which the caller had charged and now gives back
+     *
+     * @return the number of groups of {@code source} that {@code groups} adopted
+     */
+    private int mergePartition(final HashMap<GroupByKey, PartialGroup> groups, final HashMap<GroupByKey, PartialGroup> source,
+        final String[] aliases, final boolean[] aggregates, final long[] duplicateBytes) {
+      int adopted = 0;
+      for (final Map.Entry<GroupByKey, PartialGroup> entry : source.entrySet()) {
         final PartialGroup theirs = entry.getValue();
         final PartialGroup ours = groups.putIfAbsent(entry.getKey(), theirs);
-        if (ours == null)
+        if (ours == null) {
+          ++adopted;
           continue;
+        }
+        if (duplicateBytes != null)
+          duplicateBytes[0] += HeapEstimator.estimate(theirs.keyValues) + groupOverhead;
 
         for (int i = 0; i < aliases.length; i++) {
           if (aggregates[i])
@@ -533,6 +608,62 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
         if (theirs.firstSeen < ours.firstSeen)
           ours.firstSeen = theirs.firstSeen;
       }
+      return adopted;
+    }
+
+    /**
+     * #9402: folds the groups of this worker into the shared ones and starts over, so what the worker holds stays bounded
+     * while the others still scan. The worker's charge goes to the shared groups with its groups, then the bytes of the
+     * ones that merged into groups the shared side held already are given back, so the query is never charged twice for
+     * the same bytes nor free of them in between.
+     */
+    private void flushToShared(final CommandContext context) {
+      PartialAggregation target = sharedGroups;
+      if (target == null)
+        synchronized (sharedGroupsLock) {
+          target = sharedGroups;
+          if (target == null) {
+            target = new PartialAggregation(types, conditions, preProjection, workerProjection, workerGroupBy, partitions.length,
+                OperationHeapLimit.of(context, "groups", "GROUP BY"), groupOverhead);
+            workerPartials.add(target);
+            sharedGroups = target;
+          }
+        }
+
+      final boolean transferred;
+      synchronized (this) {
+        if (heapReleased)
+          // CANCELLED: THE GROUPS ARE DISCARDED WITH THE QUERY, AND THE CHARGE IS GIVEN BACK BY THE CALLER
+          return;
+        synchronized (target.heapLimit) {
+          transferred = target.heapLimit.transferFrom(heapLimit);
+        }
+        // NOT TRANSFERRED ONLY WHEN THE BUDGET WAS SWITCHED ON OR OFF BETWEEN THE CREATIONS OF THE TWO: THE WORKER CHARGED
+        // NOTHING THE SHARED SIDE COULD TAKE OVER, SO IT HAS NOTHING TO GIVE BACK FOR THE DUPLICATES EITHER
+        if (!transferred)
+          heapLimit.release();
+      }
+
+      final long[] duplicateBytes = new long[1];
+      int adopted = 0;
+      for (int p = 0; p < partitions.length; p++) {
+        final HashMap<GroupByKey, PartialGroup> groups = target.partitions[p];
+        synchronized (groups) {
+          adopted += mergePartition(groups, partitions[p], mergeAliases, mergeAggregates, duplicateBytes);
+        }
+        partitions[p] = new HashMap<>();
+      }
+      groupCount = 0;
+      if (transferred)
+        synchronized (target.heapLimit) {
+          target.heapLimit.release(duplicateBytes[0]);
+          // WHAT THE WORKER HAD NOT REPORTED YET CAME ALONG WITH ITS CHARGE: THE BUDGET ANSWERS FOR IT NOW
+          target.heapLimit.settle();
+        }
+      // THE SAME CONVENTION AS THE FINAL CHECK: checkGroupCount(n) ASKS FOR n + 1, SO PASSING THE COUNT MINUS ONE CHECKS THE
+      // COUNT. A FAILURE HERE LEAVES THE STEP TO RELEASE EVERY CHARGE: THE TARGET IS IN workerPartials, AND THE WORKER'S
+      // GROUPS ARE DISCARDED WITH THE QUERY
+      checkGroupCount(sharedGroupCount.addAndGet(adopted) - 1);
     }
   }
 

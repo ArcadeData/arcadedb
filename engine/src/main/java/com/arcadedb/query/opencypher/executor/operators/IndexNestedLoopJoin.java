@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.executor.operators;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.index.ConsistentKeyLookup;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
@@ -229,7 +230,7 @@ public class IndexNestedLoopJoin extends AbstractPhysicalOperator {
 
       // A key covering every index property is a single-entry lookup; a prefix is a range of the ordered index
       private IndexCursor seek(final Object[] key) {
-        return wholeKey ? index.get(key) : index.range(true, key, true, key, true);
+        return wholeKey ? ConsistentKeyLookup.get(context.getDatabase(), index, key) : index.range(true, key, true, key, true);
       }
 
       private void closeRight() {
