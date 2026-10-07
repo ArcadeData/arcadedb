@@ -81,4 +81,20 @@ class ProfilerTest {
     Profiler.INSTANCE.dumpMetrics(new PrintStream(out));
     assertThat(out.toString()).contains("chunkChainReadRevalidations=").contains("chunkChainReadRetries=");
   }
+
+  /**
+   * #9235: the bucket count() recomputes refused because a replicated apply ran under the scan (#8649) are what an
+   * operator alerts on for a follower whose count(*) keeps being a full scan, so they must leave the process like
+   * every other monotonic counter: nested under "count", which is what the Micrometer binder reads.
+   */
+  @Test
+  void recountPublishesRefusedIsExposed() {
+    final JSONObject json = Profiler.INSTANCE.toJSON();
+    assertThat(json.has("recountPublishesRefused")).isTrue();
+    assertThat(json.getJSONObject("recountPublishesRefused").getLong("count", -1L)).isGreaterThanOrEqualTo(0L);
+
+    final ByteArrayOutputStream out = new ByteArrayOutputStream();
+    Profiler.INSTANCE.dumpMetrics(new PrintStream(out));
+    assertThat(out.toString()).contains("recountPublishesRefused=");
+  }
 }
