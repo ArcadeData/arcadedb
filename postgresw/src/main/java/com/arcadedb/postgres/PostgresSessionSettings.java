@@ -37,6 +37,7 @@ import java.util.Set;
 import java.util.function.BiConsumer;
 import java.util.function.Supplier;
 import java.util.logging.Level;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
@@ -89,7 +90,9 @@ import java.util.regex.Pattern;
  * Not thread-safe: a connection is served by one thread.
  */
 final class PostgresSessionSettings {
-  static final String DATESTYLE = "datestyle";
+  static final String DATESTYLE         = "datestyle";
+  static final String STATEMENT_TIMEOUT = "statement_timeout";
+  static final String SEARCH_PATH       = "search_path";
 
   /**
    * The parameters PostgreSQL marks {@code GUC_REPORT} and this server answers, spelled as PostgreSQL spells them in
@@ -102,6 +105,7 @@ final class PostgresSessionSettings {
   // PostgreSQL's parameters by lower-cased name: canonical spelling and pg_settings context (issue #8573)
   private static final Map<String, String[]> KNOWN_PARAMETERS = loadKnownParameters();
   private static final String  DEFAULT_DATE_ORDER  = "MDY";
+  private static final Pattern DURATION            = Pattern.compile("(\\d+(?:\\.\\d+)?)\\s*(us|ms|s|min|h|d)?", Pattern.CASE_INSENSITIVE);
   private static final Pattern DATESTYLE_SEPARATOR = Pattern.compile("[,\\s]+");
 
   /**
@@ -149,6 +153,11 @@ final class PostgresSessionSettings {
   private       Set<String>         placeholders   = null;
   private       boolean             superuser      = false;
   private       String              sessionUser    = "";
+  // The one namespace this server resolves names in, which search_path answers (issue #9329)
+  private       String              currentSchema  = "";
+  // The last statement_timeout text parsed and its value in milliseconds, compared by value
+  private       String              timeoutText    = null;
+  private       long                timeoutMillis  = 0L;
   // The isolation level the open transaction runs at (the default one when none is open), and the default level of
   // every new transaction. Read at SET time, because a database's default level can change while connected.
   private       Supplier<Database.TRANSACTION_ISOLATION_LEVEL> currentIsolation = () -> Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
@@ -258,6 +267,30 @@ final class PostgresSessionSettings {
   }
 
   /**
+   * The schema this connection resolves names in: the database it is connected to, which {@code search_path} answers
+   * and {@code current_schema()} already answers (issue #9329).
+   */
+  void setCurrentSchema(final String currentSchema) {
+    this.currentSchema = currentSchema != null ? currentSchema : "";
+  }
+
+  /**
+   * The {@code statement_timeout} this connection runs its statements under, in milliseconds; {@code 0} when there is
+   * none, which is PostgreSQL's default and what {@code 0} means there too (issue #9329).
+   */
+  long statementTimeoutMillis() {
+    final String value = current(STATEMENT_TIMEOUT);
+    if (value == null)
+      return 0L;
+    // The last parse is reused while the value is unchanged, so a statement costs no regex
+    if (!value.equals(timeoutText)) {
+      timeoutMillis = parseDurationMillis(STATEMENT_TIMEOUT, value);
+      timeoutText = value;
+    }
+    return timeoutMillis;
+  }
+
+  /**
    * Where the isolation levels a {@code SET TRANSACTION} / {@code SET SESSION CHARACTERISTICS} is checked against come
    * from: the level of the open transaction (the default one when none is open) and the default level.
    */
@@ -329,7 +362,7 @@ final class PostgresSessionSettings {
     for (final String reported : REPORTED_PARAMETERS)
       names.add(reported.toLowerCase(Locale.ENGLISH));
     names.addAll(List.of("role", "session_authorization", "transaction_isolation", "default_transaction_isolation",
-        "transaction_read_only", "default_transaction_read_only"));
+        "transaction_read_only", "default_transaction_read_only", SEARCH_PATH, STATEMENT_TIMEOUT));
     names.addAll(resetValues.keySet());
     names.addAll(sessionValues.keySet());
     for (final Map.Entry<String, String> local : localValues.entrySet())
@@ -357,12 +390,14 @@ final class PostgresSessionSettings {
       case "transaction_isolation" -> isolationName(currentIsolation.get());
       case "default_transaction_isolation" -> isolationName(defaultIsolation.get());
       case "transaction_read_only", "default_transaction_read_only" -> "off";
+      case SEARCH_PATH -> currentSchema;
       default -> {
         final String value = current(key);
         if (value != null)
           yield value;
         yield switch (key) {
           case "timezone" -> "UTC";
+          case STATEMENT_TIMEOUT -> "0";
           case "intervalstyle" -> "postgres";
           default -> "";
         };
@@ -401,6 +436,9 @@ final class PostgresSessionSettings {
           throw new SettingException("parameter \"" + key + "\" cannot be changed", SQLSTATE_CANT_CHANGE_RUNTIME);
       // Accepted, as drivers send them routinely, but not stored: show() answers what the server really does.
       case "client_encoding", "standard_conforming_strings" -> false;
+      // Accepted, as drivers and ORMs send it on connect, but not stored: this server has one namespace per database and
+      // resolves names in it whatever the client names, so SHOW answers that one, as current_schema() does (issue #9329)
+      case SEARCH_PATH -> false;
       case "role" -> {
         if (value != null && !"none".equalsIgnoreCase(value.trim()))
           throw new SettingException("SET ROLE is not supported by this server: the session keeps the privileges of the user it "
@@ -517,6 +555,30 @@ final class PostgresSessionSettings {
   }
 
   /**
+   * A PostgreSQL duration parameter value in milliseconds: a number with an optional unit ({@code us}, {@code ms},
+   * {@code s}, {@code min}, {@code h}, {@code d}), milliseconds when it has none, as {@code statement_timeout} reads it.
+   * A positive value below one millisecond rounds up to one, so it never reads as "no timeout".
+   */
+  static long parseDurationMillis(final String key, final String value) {
+    final Matcher matcher = DURATION.matcher(value.trim());
+    if (!matcher.matches())
+      throw new SettingException("invalid value for parameter \"" + key + "\": \"" + value + "\"", SQLSTATE_INVALID_VALUE);
+    final double amount = Double.parseDouble(matcher.group(1));
+    final String unit = matcher.group(2);
+    final double millis = switch (unit == null ? "ms" : unit.toLowerCase(Locale.ENGLISH)) {
+      case "us" -> amount / 1000;
+      case "s" -> amount * 1000;
+      case "min" -> amount * 60_000;
+      case "h" -> amount * 3_600_000;
+      case "d" -> amount * 86_400_000;
+      default -> amount;
+    };
+    if (millis <= 0)
+      return 0L;
+    return millis >= Long.MAX_VALUE ? Long.MAX_VALUE : Math.max(1L, (long) millis);
+  }
+
+  /**
    * An isolation level spelled as PostgreSQL reports it, e.g. {@code read committed}.
    */
   static String isolationName(final Database.TRANSACTION_ISOLATION_LEVEL level) {
@@ -545,6 +607,10 @@ final class PostgresSessionSettings {
     return switch (key) {
       case DATESTYLE -> parseDateOrder(value);
       case "intervalstyle" -> parseIntervalStyle(value);
+      case STATEMENT_TIMEOUT -> {
+        parseDurationMillis(key, value);
+        yield value.trim();
+      }
       default -> value;
     };
   }

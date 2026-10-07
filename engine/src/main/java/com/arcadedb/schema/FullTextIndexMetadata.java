@@ -114,6 +114,10 @@ public class FullTextIndexMetadata extends IndexMetadata {
   // updates.
   private final AtomicLong totalDocs     = new AtomicLong(0L);
   private final AtomicLong sumDocLength  = new AtomicLong(0L);
+  // Bumped by every addDocument()/removeDocument(): lets a scan tell "no writer touched the counters" from "writers cancelled out"
+  private final AtomicLong mutations     = new AtomicLong(0L);
+  // Set when a scan result could not be proven exact: the next drift check must rescan even if the document counts agree
+  private final AtomicBoolean rescanRequired = new AtomicBoolean(false);
   private volatile boolean countersValid = false;
   // Not persisted (no toJSON/fromJSON): whether the persisted counters have already been checked for staleness against the live
   // data this session. Persisted counters can lag the on-disk data if documents were indexed after the last schema save, so the
@@ -637,6 +641,18 @@ public class FullTextIndexMetadata extends IndexMetadata {
     return countersValid;
   }
 
+  public long getMutations() {
+    return mutations.get();
+  }
+
+  /**
+   * Returns true once after an inexact scan publication: the next drift check must rescan even when the document counts agree,
+   * because a concurrent writer may have changed the document lengths the scan had already read.
+   */
+  public boolean consumeRescanRequired() {
+    return rescanRequired.getAndSet(false);
+  }
+
   /**
    * Atomically claims the one-per-session staleness check: returns true to exactly one caller (which must then run the
    * live-count validation), false to everyone else. Prevents concurrent first-queries from all rescanning the type.
@@ -675,6 +691,40 @@ public class FullTextIndexMetadata extends IndexMetadata {
   }
 
   /**
+   * Publishes the result of a full-type scan that started when the counters read {@code docsAtStart} / {@code lenAtStart}.
+   * <p>
+   * Unlike {@link #setCounters}, this does NOT overwrite the counters: indexing transactions bump them lock-free for the whole
+   * duration of the scan, and an absolute write would discard every increment (or decrement) applied since the scan began. The
+   * scan result is applied as a delta against the values captured at the start ({@code addAndGet} is atomic, so a concurrent
+   * writer is never lost). When the counters did not move during the scan the result is exact and the once-per-session stale
+   * check is consumed, as {@link #setCounters} does. When they moved, a record may be counted twice (bumped by the writer and
+   * already visible to the scan) or the scan may not have seen it, so the result is only approximate: the stale check is
+   * re-armed, so the next query validates against the live count and repairs it.
+   *
+   * @param totalDocs    document count found by the scan
+   * @param sumDocLength sum of document lengths found by the scan
+   * @param docsAtStart  value of {@link #getTotalDocs()} captured immediately before the scan
+   * @param lenAtStart   value of {@link #getSumDocLength()} captured immediately before the scan
+   * @param mutationsAtStart value of {@link #getMutations()} captured immediately before the scan
+   *
+   * @return true when the published counters equal the scan result, which is what happens when nothing moved them during the scan
+   */
+  public boolean publishScannedCounters(final long totalDocs, final long sumDocLength, final long docsAtStart, final long lenAtStart,
+      final long mutationsAtStart) {
+    // sumDocLength first, then totalDocs: same ordering rationale as addDocument()
+    final long lenDelta = sumDocLength - lenAtStart;
+    final long docsDelta = totalDocs - docsAtStart;
+    final long newLen = this.sumDocLength.updateAndGet(v -> Math.max(0L, v + lenDelta));
+    final long newDocs = this.totalDocs.updateAndGet(v -> Math.max(0L, v + docsDelta));
+    this.countersValid = true;
+    // Exact only when no writer touched the counters at all: equal net values can hide an add and a remove that cancelled out
+    final boolean exact = mutations.get() == mutationsAtStart && newDocs == totalDocs && newLen == sumDocLength;
+    this.rescanRequired.set(!exact);
+    this.staleChecked.set(exact);
+    return exact;
+  }
+
+  /**
    * Records a newly indexed document in the corpus counters. Thread-safe: concurrent indexing transactions may call this on the
    * shared metadata.
    * <p>
@@ -690,6 +740,9 @@ public class FullTextIndexMetadata extends IndexMetadata {
     // observes the new totalDocs is then guaranteed to observe the new sumDocLength too, so a concurrent reader never sees a
     // half-applied (totalDocs bumped, sumDocLength not) state that would momentarily DEFLATE avgdl and over-penalize. The only
     // possible torn read is sumDocLength-new / totalDocs-old, which inflates avgdl slightly (under-penalizes) - the safe side.
+    // counted before the counters move: a scan can at worst see a mutation whose bump is not visible yet, i.e. a spurious
+    // "inexact", which is the safe direction
+    mutations.incrementAndGet();
     sumDocLength.addAndGet(docLength);
     totalDocs.incrementAndGet();
   }
@@ -703,6 +756,7 @@ public class FullTextIndexMetadata extends IndexMetadata {
     // Decrement totalDocs before sumDocLength so a concurrent reader's worst torn read is totalDocs-decremented /
     // sumDocLength-not-yet, which inflates avgdl slightly (under-penalizes) rather than deflating it - the safe side, matching
     // addDocument's bias.
+    mutations.incrementAndGet();
     totalDocs.updateAndGet(v -> v > 0 ? v - 1 : v);
     sumDocLength.updateAndGet(v -> Math.max(0L, v - docLength));
   }
