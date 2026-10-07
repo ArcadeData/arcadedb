@@ -48,11 +48,14 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.backup.BackupCoordinator;
 import com.arcadedb.server.ha.raft.ratis.RatisSnapshotDigestWarningFilter;
+import com.arcadedb.server.monitor.CountingRejectionPolicy;
+import com.arcadedb.server.monitor.PoolMetrics;
 import com.arcadedb.server.security.ApiTokenConfiguration;
 import com.arcadedb.server.security.ReplicatedSecurityConfigPersistenceException;
 import com.arcadedb.server.security.ReplicatedUsersPersistenceException;
 import com.arcadedb.server.security.SecurityGroupFileRepository;
 import com.arcadedb.server.security.SecurityUserFileRepository;
+import com.arcadedb.utility.DedicatedThreadPool.PoolStats;
 import com.arcadedb.utility.FileUtils;
 import org.apache.ratis.proto.RaftProtos;
 import org.apache.ratis.proto.RaftProtos.LogEntryProto;
@@ -103,7 +106,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -310,7 +313,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
   private volatile Thread lifecycleWorker;
   private volatile Thread snapshotInstallWorker;
 
-  private final ExecutorService lifecycleExecutor = Executors.newSingleThreadExecutor(r -> {
+  // What Executors.newSingleThreadExecutor builds, spelled out so the pool's row can read it (issue #8856).
+  private final ThreadPoolExecutor lifecycleExecutor = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
+      new LinkedBlockingQueue<>(), r -> {
     final Thread t = new Thread(r, LIFECYCLE_THREAD_NAME);
     lifecycleWorker = t;
     t.setDaemon(true);
@@ -340,7 +345,37 @@ public class ArcadeStateMachine extends BaseStateMachine {
       snapshotInstallWorker = t;
       t.setDaemon(true);
       return t;
-    }, new ThreadPoolExecutor.AbortPolicy());
+    }, CountingRejectionPolicy.abort());
+  }
+
+  /**
+   * The {@code pool=sm_lifecycle} executor row (issue #8856): the single worker the leader-facing downloads, the
+   * bootstrap retries and the re-verifications queue on. Unbounded, so it never rejects running work: queue depth is
+   * the signal, a download queued behind another.
+   */
+  PoolStats getLifecyclePoolStats() {
+    return PoolMetrics.statsOf(lifecycleExecutor);
+  }
+
+  /** The {@code pool=snapshot_install} executor row (issue #8856); see {@link #getSnapshotInstallRejections}. */
+  PoolStats getSnapshotInstallPoolStats() {
+    return PoolMetrics.statsOf(snapshotInstallExecutor);
+  }
+
+  /**
+   * Leader-initiated snapshot installs the install executor refused while running (issue #8856). Each one became a
+   * failed future Ratis retries, so a rejection is not lost for good, but the node stays behind until the retry.
+   */
+  long getSnapshotInstallRejections() {
+    // A metrics scrape must never throw: read the count only from the policy this class installs.
+    return snapshotInstallExecutor.getRejectedExecutionHandler() instanceof CountingRejectionPolicy policy ?
+        policy.getSaturations() :
+        0L;
+  }
+
+  /** The {@code pool=database_deleter} executor row (issue #8856), read through whichever deleter is installed. */
+  PoolStats getDatabaseDeleterPoolStats() {
+    return deferredDatabaseDeleter.getPoolStats();
   }
 
   /**

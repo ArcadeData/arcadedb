@@ -30,8 +30,11 @@ import com.arcadedb.server.ha.raft.ratis.RatisRefusedEntryErrorFilter;
 import com.arcadedb.server.ha.raft.ratis.RatisSnapshotDigestWarningFilter;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.LeaderDial;
+import com.arcadedb.server.monitor.CountingRejectionPolicy;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider;
+import com.arcadedb.server.monitor.PoolMetrics;
 import com.arcadedb.utility.CodeUtils;
+import com.arcadedb.utility.DedicatedThreadPool.PoolStats;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.client.RaftClientConfigKeys;
 import org.apache.ratis.conf.Parameters;
@@ -382,6 +385,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // Whether a #8491 hand-off (a leader replacing a database) is queued or running on channelRecoveryExecutor, so a
   // health tick does not queue a second one behind it (issue #8557).
   private final    AtomicBoolean             replacingHandOffQueued = new AtomicBoolean();
+  // Health ticks that found a #8491 hand-off already queued or running and did not queue another: the
+  // channel_recovery row's tasks.coalesced (issue #8856). Climbing on every tick means that hand-off is not draining.
+  // On this RaftHAServer, like the channel-recovery executor it describes, so it survives an in-place Ratis restart -
+  // unlike the state machine pools' counters, which restart with the state machine that owns them.
+  private final    AtomicLong                replacingHandOffsCoalesced = new AtomicLong();
   // Wall-clock of the last admitted quarantine handoff, for the cooldown above; 0 = none yet.
   private final    AtomicLong                lastQuarantineHandoffAtMs = new AtomicLong();
   // Wall-clock of the last "no other peer to hand leadership to" report, throttled to the same window; 0 = none yet.
@@ -844,7 +852,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * that Gap 1 was previously left to; when its bounded retry budget is exhausted the monitor escalates
    * to {@link #escalateWedgedPeerChannel} (issue #5346).
    * <p>
-   * The reset runs on {@link #stalledResyncExecutor} rather than inline: closing a channel and resolving
+   * The reset runs on {@link #channelRecoveryExecutor} rather than inline: closing a channel and resolving
    * the peer's address are both blocking operations, and the caller is the single lag-monitor thread that
    * classifies every replica.
    */
@@ -1237,8 +1245,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * Single-worker pool for replication-channel recovery (issue #5346). Unlike the resync executor it must
    * never run a task on the caller, which is the lag-monitor thread that classifies every replica: a
    * blocking DNS lookup or a 10 s leadership transfer there would defeat the point of moving the work
-   * off-thread. It therefore keeps the default abort policy and each submitter decides what a rejection
-   * means for it - see {@link #resetPeerReplicationChannel} (free to drop, retried next interval) and
+   * off-thread. It therefore keeps an abort policy (one that counts, for the executor row of issue #8856)
+   * and each submitter decides what a rejection means for it - see {@link #resetPeerReplicationChannel}
+   * (free to drop, retried next interval) and
    * {@link #escalateWedgedPeerChannel} (a one-shot, so a drop must be surfaced to the operator).
    */
   private static ThreadPoolExecutor createChannelRecoveryExecutor() {
@@ -1247,7 +1256,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       final Thread t = new Thread(r, "arcadedb-raft-channel-recovery");
       t.setDaemon(true);
       return t;
-    });
+    }, CountingRejectionPolicy.abort());
     executor.allowCoreThreadTimeOut(true);
     return executor;
   }
@@ -1258,8 +1267,39 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       final Thread t = new Thread(r, "arcadedb-raft-stalled-resync");
       t.setDaemon(true);
       return t;
-    }, new ThreadPoolExecutor.CallerRunsPolicy());
+    }, CountingRejectionPolicy.callerRuns());
     return executor;
+  }
+
+  /**
+   * The {@code pool=stalled_resync} executor row (issue #8856). Caller-runs, so its saturations are the row's
+   * {@code caller_run_fallbacks}: a resync request sent from the lag-monitor thread, delaying replica classification
+   * for as long as the follower takes to answer.
+   */
+  PoolStats getStalledResyncPoolStats() {
+    return PoolMetrics.statsOf(stalledResyncExecutor);
+  }
+
+  /** The {@code pool=channel_recovery} executor row (issue #8856). */
+  PoolStats getChannelRecoveryPoolStats() {
+    return PoolMetrics.statsOf(channelRecoveryExecutor);
+  }
+
+  /**
+   * Channel-recovery tasks refused while the pool was running (issue #8856): channel resets, wedged-channel
+   * escalations, quarantine hand-offs and #8491 hand-offs alike. Each submitter logs what its own drop means; the
+   * escalation is the one that is not retried.
+   */
+  long getChannelRecoveryRejections() {
+    // A metrics scrape must never throw: read the count only from the policy this class installs.
+    return channelRecoveryExecutor.getRejectedExecutionHandler() instanceof CountingRejectionPolicy policy ?
+        policy.getSaturations() :
+        0L;
+  }
+
+  /** #8491 hand-offs not queued because one was already queued or running; see {@link #replacingHandOffsCoalesced}. */
+  long getReplacingHandOffsCoalesced() {
+    return replacingHandOffsCoalesced.get();
   }
 
   /**
@@ -1888,8 +1928,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       sm.resetReplacingLeaderHandOffBackOff();
       return;
     }
-    if (!replacingHandOffQueued.compareAndSet(false, true))
+    if (!replacingHandOffQueued.compareAndSet(false, true)) {
+      replacingHandOffsCoalesced.incrementAndGet();
       return;
+    }
     try {
       channelRecoveryExecutor.execute(() -> {
         try {
