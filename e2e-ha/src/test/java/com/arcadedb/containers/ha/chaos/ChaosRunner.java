@@ -24,6 +24,7 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 
@@ -206,14 +207,14 @@ public final class ChaosRunner {
         ledger.count(Ledger.UNKNOWN), ledger.count(Ledger.FAILED)));
     if (trends != null)
       report.trend(trends.sample(step, acksPerSecond(), result.durationMillis()));
-    if (!result.violations().isEmpty())
-      return fromViolations(result.violations(), step);
-    if (restartsBefore != null) {
-      final Violation reformat = reformatViolation(step, fault, targets, restartsBefore);
-      if (reformat != null)
-        return fromViolations(List.of(reformat), step);
-    }
-    return null;
+    // Checked whatever the checkpoint found: a node that reformatted and then failed to converge is the case where the
+    // reformat is the most useful diagnostic
+    final Violation reformat = restartsBefore != null ? reformatViolation(step, fault, targets, restartsBefore) : null;
+    if (reformat == null)
+      return result.violations().isEmpty() ? null : fromViolations(result.violations(), step);
+    final List<Violation> violations = new ArrayList<>(result.violations());
+    violations.add(reformat);
+    return fromViolations(violations, step);
   }
 
   private NodeControl.InPlaceRestarts[] inPlaceRestarts() {
@@ -225,7 +226,9 @@ public final class ChaosRunner {
 
   /**
    * Logs which recovery path each node took during the step and returns a SAFETY violation when any node reformatted
-   * its Raft storage, which the fault gave it no reason to do (issue #8954).
+   * its Raft storage, which the fault gave it no reason to do (issue #8954). Every node is checked, not only the
+   * fault's targets, on purpose: with the rest of the cluster healthy no node has a legitimate reason to discard its log,
+   * so a leader or a bystander that reformats is as much a finding as the frozen follower.
    */
   private Violation reformatViolation(final int step, final Fault fault, final String targets,
       final NodeControl.InPlaceRestarts[] before) {

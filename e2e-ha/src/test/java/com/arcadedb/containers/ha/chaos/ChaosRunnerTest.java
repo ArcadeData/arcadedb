@@ -231,8 +231,21 @@ class ChaosRunnerTest {
   void inPlaceRecoveryAfterALongPauseIsAccepted() throws IOException {
     final Harness harness = harness(config("chaos.faults", "longpause"));
     harness.control().recoverOnUnpause = true;
-    assertThat(harness.runner().run().kind()).isEqualTo(ResultKind.PASS);
-    assertThat(Arrays.stream(harness.control().recovered).sum()).isEqualTo(5);
+    final ChaosResult result = harness.runner().run();
+    assertThat(result.kind()).isEqualTo(ResultKind.PASS);
+    // one thawed follower per step, each recovered in place once
+    assertThat(Arrays.stream(harness.control().recovered).sum()).isEqualTo(result.steps());
+  }
+
+  @Test
+  void reformatIsReportedEvenWhenTheCheckpointAlsoFails() throws IOException {
+    final Harness harness = harness(config("chaos.faults", "longpause"));
+    harness.control().reformatOnUnpause = true;
+    harness.reader().dropKey = Ledger.key(0, 0);
+    final ChaosResult result = harness.runner().run();
+    assertThat(result.kind()).isEqualTo(ResultKind.SAFETY);
+    assertThat(result.steps()).isEqualTo(1);
+    assertThat(result.violations()).extracting(Violation::invariant).contains("I1", "REFORMAT");
   }
 
   @Test

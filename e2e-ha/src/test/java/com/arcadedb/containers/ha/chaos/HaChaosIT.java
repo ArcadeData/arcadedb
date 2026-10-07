@@ -347,33 +347,31 @@ class HaChaosIT extends ContainersTestTemplate {
     }
 
     /**
-     * Counts the "Ratis restarted in place (recovered|reformatted storage)" lines in the node's whole log. The whole log
-     * is read every time, not only the lines since the previous check, because Docker's one-second {@code since}
-     * granularity reads the boundary second twice and would count a line twice. Docker keeps a container's log across
-     * restarts, so the counts only grow. Called twice per long-pause step, never on the hot path.
+     * Counts the "Ratis restarted in place (recovered|reformatted storage)" lines in the node's whole log, line by line as
+     * it streams in, without buffering it. The whole log is read every time, not only the lines since the previous
+     * check, because Docker's one-second {@code since} granularity reads the boundary second twice and would count a line
+     * twice. Docker keeps a container's log across restarts, so the counts only grow. Called twice per long-pause step.
      */
     @Override
     public InPlaceRestarts inPlaceRestarts(final int node) {
-      final StringBuilder logs = new StringBuilder();
+      final LogLineCounter counter = new LogLineCounter(IN_PLACE_RECOVERED, IN_PLACE_REFORMATTED);
       try (final ResultCallback.Adapter<Frame> callback = new ResultCallback.Adapter<>() {
         @Override
         public void onNext(final Frame frame) {
-          logs.append(new String(frame.getPayload(), StandardCharsets.UTF_8));
+          counter.accept(new String(frame.getPayload(), StandardCharsets.UTF_8));
         }
       }) {
-        docker().logContainerCmd(id(node)).withStdOut(true).withStdErr(true).exec(callback).awaitCompletion(30, TimeUnit.SECONDS);
+        // A partial read would undercount and hide a reformat
+        if (!docker().logContainerCmd(id(node)).withStdOut(true).withStdErr(true).exec(callback)
+            .awaitCompletion(60, TimeUnit.SECONDS))
+          throw new ChaosFailure(ResultKind.HARNESS, "Reading the logs of node " + node + " did not complete within 60 s");
+      } catch (final ChaosFailure e) {
+        throw e;
       } catch (final Exception e) {
         throw new ChaosFailure(ResultKind.HARNESS, "Could not read the logs of node " + node + ": " + e.getMessage());
       }
-      return new InPlaceRestarts(occurrences(logs, IN_PLACE_RECOVERED), occurrences(logs, IN_PLACE_REFORMATTED));
-    }
-
-    private static int occurrences(final CharSequence text, final String what) {
-      final String haystack = text.toString();
-      int count = 0;
-      for (int at = haystack.indexOf(what); at >= 0; at = haystack.indexOf(what, at + what.length()))
-        ++count;
-      return count;
+      final int[] counts = counter.finish();
+      return new InPlaceRestarts(counts[0], counts[1]);
     }
 
     private static String describeExit(final int node, final InspectContainerResponse.ContainerState container,
