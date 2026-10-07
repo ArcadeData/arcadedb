@@ -26,11 +26,13 @@ import java.nio.ByteBuffer;
  * Simple-8b encoding for signed integer arrays using zigzag encoding.
  * Signed values are converted to non-negative via zigzag encoding before packing.
  * <p>
- * <b>Supported value range:</b> [-(2^59), (2^59)-1].
- * Values outside this range cause encode() to throw {@link IllegalArgumentException}
- * because the maximum selector packs 1 value × 60 bits and ZigZag encoding of the
- * boundary value -(2^59) produces exactly (1L&lt;&lt;60)-1, which is the largest encodable value.
- * Values with |v| &gt;= 2^59 would silently truncate — validation prevents silent data corruption.
+ * <b>Packed range:</b> [-(2^59), (2^59)-1]. The maximum selector packs 1 value × 60 bits and ZigZag encoding of the
+ * boundary value -(2^59) produces exactly (1L&lt;&lt;60)-1, which is the largest packable value. A block holding any
+ * value outside this range (a snowflake id, a 64-bit hash, an epoch-nanosecond instant) is written in a raw escape
+ * layout instead of being refused (issue #9309): the header count is stored negated, followed by the values as plain
+ * 64-bit longs. A non-negative header count is the packed layout, so blocks written before the escape existed decode
+ * unchanged. The trade-off: one outlier makes its whole block 8 bytes per value, so a column of mostly small values
+ * with an occasional wide one compresses worse for the blocks that hold it.
  * <p>
  * Packs multiple integers into 64-bit words using a selector scheme.
  * The top 4 bits of each word are the selector (0-14), determining how many
@@ -60,15 +62,13 @@ public final class Simple8bCodec {
     if (values == null || values.length == 0)
       return new byte[0];
 
-    // Zigzag-encode signed longs to non-negative values before packing.
-    // Validate that each zigzag-encoded value fits in 60 bits; values outside
-    // [-(2^59), (2^59)-1] cannot be represented and would silently truncate.
+    // Zigzag-encode signed longs to non-negative values before packing. A value whose zigzag form needs more than
+    // 60 bits cannot be packed: the whole block falls back to the raw layout
     final long[] zigzagged = new long[values.length];
     for (int i = 0; i < values.length; i++) {
       final long encoded = zigzagEncode(values[i]);
       if (Long.compareUnsigned(encoded, MAX_ZIGZAG_VALUE) > 0)
-        throw new IllegalArgumentException(
-            "Value " + values[i] + " at index " + i + " is outside the Simple-8b supported range [-(2^59), (2^59)-1]");
+        return encodeRaw(values);
       zigzagged[i] = encoded;
     }
 
@@ -134,6 +134,14 @@ public final class Simple8bCodec {
     return result;
   }
 
+  private static byte[] encodeRaw(final long[] values) {
+    final ByteBuffer buf = ByteBuffer.allocate(4 + values.length * 8);
+    buf.putInt(-values.length);
+    for (final long value : values)
+      buf.putLong(value);
+    return buf.array();
+  }
+
   public static long[] decode(final byte[] data) throws IOException {
     if (data == null || data.length == 0)
       return new long[0];
@@ -141,8 +149,18 @@ public final class Simple8bCodec {
     try {
       final ByteBuffer buf = ByteBuffer.wrap(data);
       final int totalCount = buf.getInt();
-      if (totalCount < 0)
-        throw new IOException("Simple8bCodec: negative count " + totalCount + " in header");
+      if (totalCount < 0) {
+        // Raw escape layout (issue #9309). Integer.MIN_VALUE has no positive counterpart: malformed
+        if (totalCount == Integer.MIN_VALUE)
+          throw new IOException("Simple8bCodec: invalid count " + totalCount + " in header");
+        // Checked before allocating: a corrupt header must not request an array the buffer cannot fill
+        if ((long) -totalCount * Long.BYTES > buf.remaining())
+          throw new IOException("Simple8bCodec: malformed data (raw count " + -totalCount + " exceeds buffer, size=" + data.length + ")");
+        final long[] raw = new long[-totalCount];
+        for (int i = 0; i < raw.length; i++)
+          raw[i] = buf.getLong();
+        return raw;
+      }
       final long[] result = new long[totalCount];
 
       int pos = 0;

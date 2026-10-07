@@ -2140,8 +2140,16 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           // outer catch mask it as a generic INTERNAL error with the interrupt flag swallowed.
           Thread.currentThread().interrupt();
           terminated = true;
-          responseObserver.onError(
-              Status.CANCELLED.withDescription("Stream query execution was interrupted").asRuntimeException());
+          // The executor is still iterating the result set: stop it at its next batch boundary instead of letting it
+          // write into the call this CANCELLED terminal closes (issue #8752). Not future.cancel(true): an interrupt
+          // aimed at the transaction's thread would hit its file I/O
+          // Flagged BEFORE taking the monitor: monitors are not fair, so a producer sending in a tight loop could
+          // otherwise keep winning it and write the whole rest of the result set before this handler gets in
+          stopInTransactionStream(future, cancelled);
+          synchronized (scso) {
+            responseObserver.onError(
+                Status.CANCELLED.withDescription("Stream query execution was interrupted").asRuntimeException());
+          }
           return;
         } catch (final ExecutionException ee) {
           final Throwable cause = ee.getCause() != null ? ee.getCause() : ee;
@@ -2589,16 +2597,20 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   }
 
   private void safeOnNext(ServerCallStreamObserver<QueryResult> scso, AtomicBoolean cancelled, QueryResult payload) {
-    if (cancelled.get())
-      return;
-    try {
-      scso.onNext(payload);
-    } catch (StatusRuntimeException e) {
-      if (e.getStatus().getCode() == Status.Code.CANCELLED) {
-        cancelled.set(true);
+    // Check and send under the call's monitor, which the interruption terminal also takes: a producer cannot be
+    // inside onNext while the handler closes the call (issue #8752)
+    synchronized (scso) {
+      if (cancelled.get())
         return;
+      try {
+        scso.onNext(payload);
+      } catch (StatusRuntimeException e) {
+        if (e.getStatus().getCode() == Status.Code.CANCELLED) {
+          cancelled.set(true);
+          return;
+        }
+        throw e;
       }
-      throw e;
     }
   }
 
@@ -3531,6 +3543,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // Set before every terminal in the try; `cancelled` is set asynchronously and cannot guard a throwing terminal.
     boolean terminated = false;
 
+    Future<?> streamFuture = null;
+
     ProtocolContext.set("grpc");
     try {
       final String incomingTxId = req.hasTransaction() ? req.getTransaction().getTransactionId() : null;
@@ -3543,10 +3557,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             (DatabaseInternal) getDatabase(req.getDatabase(), req.getCredentials()));
       else
         try {
-          submitToActiveTransaction(txCtx, () -> {
+          streamFuture = submitToActiveTransaction(txCtx, () -> {
             streamTimeSeries(call, cancelled, serverTimedOut, req, (DatabaseInternal) txCtx.db);
             return null;
-          }).get();
+          });
+          streamFuture.get();
         } catch (final ExecutionException e) {
           // Surface the real failure - the resolution status, the RESOURCE_EXHAUSTED ceiling,
           // requireTransactionStillActive's FAILED_PRECONDITION - instead of letting the catch below map every
@@ -3555,10 +3570,17 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         } catch (final InterruptedException e) {
           Thread.currentThread().interrupt();
           terminated = true;
-          if (!cancelled.get())
-            resp.onError(Status.CANCELLED
-                .withDescription("TimeSeriesQuery was interrupted while streaming inside the transaction")
-                .asRuntimeException());
+          // A client cancel already closed the call, so it needs no terminal; either way the executor must stop
+          // streaming into it (issue #8752)
+          final boolean clientCancelled = cancelled.get();
+          // Flagged before taking the monitor, for the same fairness reason as in streamQuery
+          stopInTransactionStream(streamFuture, cancelled);
+          synchronized (call) {
+            if (!clientCancelled)
+              resp.onError(Status.CANCELLED
+                  .withDescription("TimeSeriesQuery was interrupted while streaming inside the transaction")
+                  .asRuntimeException());
+          }
           return;
         }
 
@@ -3582,6 +3604,19 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     } finally {
       ProtocolContext.clear();
     }
+  }
+
+  /**
+   * Stops a stream running on a transaction's executor after the handler waiting for it was interrupted (issue #8752):
+   * the producer checks {@code cancelled} before every row and every batch, so it quits at its next boundary instead of
+   * iterating the rest of the result set into a call the handler is about to close. {@code cancel(false)} only keeps a
+   * not-yet-started task from running; the thread is never interrupted, because that would reach the transaction's
+   * file I/O and close its channels.
+   */
+  private static void stopInTransactionStream(final Future<?> future, final AtomicBoolean cancelled) {
+    cancelled.set(true);
+    if (future != null)
+      future.cancel(false);
   }
 
   /**
@@ -3902,16 +3937,20 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       final AtomicBoolean cancelled, final AtomicBoolean serverTimedOut,
       final TimeSeriesQueryResult.Builder payload) {
     waitUntilReady(call, cancelled, serverTimedOut);
-    if (cancelled.get())
-      return;
-    try {
-      call.onNext(payload.build());
-    } catch (final StatusRuntimeException e) {
-      if (e.getStatus().getCode() == Status.Code.CANCELLED) {
-        cancelled.set(true);
+    final TimeSeriesQueryResult message = payload.build();
+    // Same monitor as the interruption terminal in timeSeriesQuery (issue #8752)
+    synchronized (call) {
+      if (cancelled.get())
         return;
+      try {
+        call.onNext(message);
+      } catch (final StatusRuntimeException e) {
+        if (e.getStatus().getCode() == Status.Code.CANCELLED) {
+          cancelled.set(true);
+          return;
+        }
+        throw e;
       }
-      throw e;
     }
   }
 
