@@ -499,7 +499,8 @@ public final class ContractionHierarchy {
       final boolean undirected) {
     if (previous != null && previous.root == topologyRoot) {
       final CCHMetric old = undirected ? previous.undirected : previous.directed;
-      if (old != null) {
+      // a metric whose update failed half way has inputs that may already match these: only a full customization is exact
+      if (old != null && !old.isBroken()) {
         final int arcs = topologyRoot.topology.arcCount();
         final int limit = partialLimit(arcs);
         int[] changed = new int[16];
@@ -520,7 +521,8 @@ public final class ContractionHierarchy {
           final double[] downs = new double[count];
           for (int i = 0; i < count; i++) {
             ups[i] = input[0][changed[i]];
-            downs[i] = input[1][changed[i]];
+            if (!undirected)
+              downs[i] = input[1][changed[i]];
           }
           partialUpdate(old, changed, ups, downs, count);
           return old;
@@ -556,6 +558,9 @@ public final class ContractionHierarchy {
       return false;
 
     final CCHTopology topology = previous.root.topology;
+    // more changed pairs than a partial customization would take arcs: the full path decides, before allocating for them
+    if (pairs.size > partialLimit(topology.arcCount()))
+      return false;
     final int[] rankOf = topology.rankOf;
     final int[] arcs = new int[pairs.size];
     final double[] directedUp = new double[pairs.size];
@@ -607,9 +612,9 @@ public final class ContractionHierarchy {
         if (previous.undirected != null)
           partialUpdate(previous.undirected, arcs, undirectedCost, undirectedCost, count);
       } catch (final RuntimeException e) {
-        // One metric may be updated and the other not, so neither may answer for the previous snapshot any more: the
-        // preparation is detached from it, and the full path diffs both against the new snapshot's arcs and brings
-        // whichever is behind up to date, partially or fully
+        // The failed metric is marked broken and the other may be updated already, so neither may answer for the
+        // previous snapshot any more: the preparation is detached from it, and the full path customizes the broken one
+        // afresh and brings the other up to date by diffing it
         prepared = previous.detached();
         LogManager.instance().log(this, Level.WARNING, "Incremental update of contraction hierarchy on '%s' failed, "
             + "re-reading the view", e, weightProperty);

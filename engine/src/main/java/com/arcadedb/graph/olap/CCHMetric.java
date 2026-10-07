@@ -62,6 +62,9 @@ final class CCHMetric {
   // Guards the arrays above against {@link #update}, which rewrites them in place: queries read optimistically (see
   // read()), the single writer - the hierarchy's preparation, one at a time - takes the write lock.
   private final StampedLock lock = new StampedLock();
+  // Set when an update failed half way: its input costs may already be the new ones while the arcs above are not, so
+  // a diff of the inputs would see nothing left to do. A broken metric is never updated again, only replaced.
+  private volatile boolean  broken;
 
   private CCHMetric(final CCHTopology topology, final boolean undirected, final double[] inputUp, final double[] inputDown,
       final double[] up, final double[] down, final int[] upMiddle, final int[] downMiddle) {
@@ -282,9 +285,17 @@ final class CCHMetric {
         }
       }
       return recomputed;
+    } catch (final RuntimeException | Error e) {
+      broken = true;
+      throw e;
     } finally {
       lock.unlockWrite(stamp);
     }
+  }
+
+  /** Whether an {@link #update} failed half way, leaving this metric unfit to be updated again: see {@code broken}. */
+  boolean isBroken() {
+    return broken;
   }
 
   /** The arc {@code z -> y} among z's up arcs listed after {@code zx} (whose head ranks below y), or -1. */
