@@ -500,9 +500,12 @@ public interface Schema {
   Schema registerFunctionLibrary(FunctionLibraryDefinition library);
 
   /**
-   * Unregister a function library previously defined.
+   * Unregister a function library previously defined. Removing a library that is stored in the schema (one created by
+   * {@code DEFINE FUNCTION}: js, sql, cypher) is a schema change: it is persisted and, under HA, replicated, so it must
+   * be issued on the leader like any other programmatic DDL. Removing a library backed by native Java code is local to
+   * this instance.
    *
-   * @param name Name of the function to unregister
+   * @param name Name of the function library to unregister
    *
    * @return The current schema instance
    */
