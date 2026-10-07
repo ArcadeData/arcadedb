@@ -384,8 +384,8 @@ class SQLExecutorAdditionalCoverageTest extends TestHelper {
 
     try (final ResultSet rs = database.query("sql", "SELECT sum(x) as s FROM EmptyAggType")) {
       assertThat(rs.hasNext()).isTrue();
-      // Consistent with a group whose rows are all-null: sum() never sees a non-null value and its identity is 0.
-      assertThat(rs.next().<Number>getProperty("s")).isEqualTo(0);
+      // SQL: SUM over an empty or all-null group is NULL, like avg/min/max and the time-series push-down (issue #9351).
+      assertThat(rs.next().<Object>getProperty("s")).isNull();
     }
 
     // Mixed with count(*): both aggregates must land in the same synthesized row.

@@ -153,7 +153,7 @@ class Issue7701RemoteTimeSeriesLogicalRestoreIT extends BaseGraphServerTest {
   @Test
   void anExplicitCodecSurvivesTheRemoteRestore() {
     try (final RemoteDatabase source = remote(getDatabaseName())) {
-      source.command("sql", "CREATE TIMESERIES TYPE " + TYPE_NAME + " TIMESTAMP ts CODEC SIMPLE8B "
+      source.command("sql", "CREATE TIMESERIES TYPE " + TYPE_NAME + " TIMESTAMP ts CODEC DELTA_OF_DELTA "
           + "TAGS (t1 STRING) FIELDS (f1 DOUBLE CODEC DICTIONARY) SHARDS 1");
       source.command("sql", "INSERT INTO " + TYPE_NAME + " SET ts = 1000, t1 = 'west', f1 = 1.5");
       source.command("sql", "EXPORT DATABASE 'file://" + EXPORT_FILE + "' WITH format = 'jsonl', overwrite = true");
@@ -166,7 +166,7 @@ class Issue7701RemoteTimeSeriesLogicalRestoreIT extends BaseGraphServerTest {
           "IMPORT DATABASE 'file://" + new File(EXPORT_DIR, EXPORT_FILE).getAbsolutePath() + "'");
 
       final TimeSeriesType type = (TimeSeriesType) restored.getSchema().getType(TYPE_NAME);
-      assertThat(type.getTsColumn("ts").getCompressionHint().name()).isEqualTo("SIMPLE8B");
+      assertThat(type.getTsColumn("ts").getCompressionHint().name()).isEqualTo("DELTA_OF_DELTA");
       assertThat(type.getTsColumn("f1").getCompressionHint().name()).isEqualTo("DICTIONARY");
     }
   }

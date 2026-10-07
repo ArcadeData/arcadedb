@@ -92,12 +92,12 @@ class Issue7689CreateTimeSeriesTypeCompleteDeclarationTest extends TestHelper {
   @Test
   void aTimestampCodecNamedInTheCreateStatementReachesTheColumn() {
     database.command("sql",
-        "CREATE TIMESERIES TYPE TsCodec TIMESTAMP ts PRECISION MILLISECOND CODEC SIMPLE8B FIELDS (v DOUBLE)");
+        "CREATE TIMESERIES TYPE TsCodec TIMESTAMP ts PRECISION MILLISECOND CODEC DELTA_OF_DELTA FIELDS (v DOUBLE)");
 
     final TimeSeriesType type = typeOf("TsCodec");
     assertThat(type.getTimestampColumn()).isEqualTo("ts");
     assertThat(type.getPrecision()).isEqualTo("MILLISECOND");
-    assertThat(type.getTsColumn("ts").getCompressionHint()).isEqualTo(TimeSeriesCodec.SIMPLE8B);
+    assertThat(type.getTsColumn("ts").getCompressionHint()).isEqualTo(TimeSeriesCodec.DELTA_OF_DELTA);
     assertThat(type.getTsColumn("ts").getRole()).isEqualTo(ColumnDefinition.ColumnRole.TIMESTAMP);
   }
 
@@ -132,7 +132,7 @@ class Issue7689CreateTimeSeriesTypeCompleteDeclarationTest extends TestHelper {
   void everyDeclaredClauseCanAppearInOneStatement() {
     database.command("sql", """
         CREATE TIMESERIES TYPE Everything
-          TIMESTAMP ts PRECISION NANOSECOND CODEC SIMPLE8B
+          TIMESTAMP ts PRECISION NANOSECOND CODEC DELTA_OF_DELTA
           TAGS (host STRING, zone INTEGER CODEC DICTIONARY)
           FIELDS (cpu DOUBLE CODEC DICTIONARY, mem LONG)
           SHARDS 3
@@ -147,7 +147,7 @@ class Issue7689CreateTimeSeriesTypeCompleteDeclarationTest extends TestHelper {
     assertThat(type.getRetentionMs()).isEqualTo(90L * 86_400_000L);
     assertThat(type.getCompactionBucketIntervalMs()).isEqualTo(2L * 3_600_000L);
     assertThat(type.getDownsamplingTiers()).containsExactly(new DownsamplingTier(7L * 86_400_000L, 3_600_000L));
-    assertThat(type.getTsColumn("ts").getCompressionHint()).isEqualTo(TimeSeriesCodec.SIMPLE8B);
+    assertThat(type.getTsColumn("ts").getCompressionHint()).isEqualTo(TimeSeriesCodec.DELTA_OF_DELTA);
     assertThat(type.getTsColumn("zone").getCompressionHint()).isEqualTo(TimeSeriesCodec.DICTIONARY);
     assertThat(type.getTsColumn("cpu").getCompressionHint()).isEqualTo(TimeSeriesCodec.DICTIONARY);
     assertThat(type.getTsColumn("mem").getCompressionHint())
@@ -178,8 +178,8 @@ class Issue7689CreateTimeSeriesTypeCompleteDeclarationTest extends TestHelper {
 
     // And as a column name in a statement that also uses CODEC as the keyword, which is where a grammar that
     // resolved the ambiguity the wrong way would show up.
-    database.command("sql", "CREATE TIMESERIES TYPE CodecNamedColumn TIMESTAMP ts FIELDS (codec DOUBLE CODEC NONE)");
-    assertThat(typeOf("CodecNamedColumn").getTsColumn("codec").getCompressionHint()).isEqualTo(TimeSeriesCodec.NONE);
+    database.command("sql", "CREATE TIMESERIES TYPE CodecNamedColumn TIMESTAMP ts FIELDS (codec DOUBLE CODEC DICTIONARY)");
+    assertThat(typeOf("CodecNamedColumn").getTsColumn("codec").getCompressionHint()).isEqualTo(TimeSeriesCodec.DICTIONARY);
 
     database.command("sql", "CREATE VERTEX TYPE CodecVertex");
     database.command("sql", "CREATE PROPERTY CodecVertex.codec STRING");
@@ -195,7 +195,7 @@ class Issue7689CreateTimeSeriesTypeCompleteDeclarationTest extends TestHelper {
     // This is the whole point of the issue: with the policy in the CREATE there is no second statement, so there is
     // no window in which the type exists without it.
     final List<String> statements = builder("OneStatement")
-        .withColumn(new ColumnDefinition("cpu", Type.DOUBLE, ColumnDefinition.ColumnRole.FIELD, TimeSeriesCodec.NONE))
+        .withColumn(new ColumnDefinition("cpu", Type.DOUBLE, ColumnDefinition.ColumnRole.FIELD, TimeSeriesCodec.DICTIONARY))
         .withField("mem", Type.LONG)
         .withDownsamplingTiers(List.of(new DownsamplingTier(7L * 86_400_000L, 3_600_000L),
             new DownsamplingTier(30L * 86_400_000L, 86_400_000L)))
@@ -204,7 +204,7 @@ class Issue7689CreateTimeSeriesTypeCompleteDeclarationTest extends TestHelper {
     assertThat(statements).hasSize(1);
     assertThat(statements.getFirst())
         .startsWith("CREATE TIMESERIES TYPE `OneStatement`")
-        .contains("`cpu` DOUBLE CODEC NONE")
+        .contains("`cpu` DOUBLE CODEC DICTIONARY")
         .contains("DOWNSAMPLING POLICY AFTER 7 DAYS GRANULARITY 1 HOURS AFTER 30 DAYS GRANULARITY 1 DAYS")
         .doesNotContain("ALTER");
   }
@@ -255,7 +255,7 @@ class Issue7689CreateTimeSeriesTypeCompleteDeclarationTest extends TestHelper {
   private static TimeSeriesTypeBuilder configure(final TimeSeriesTypeBuilder builder) {
     return builder
         .withPrecision("MILLISECOND")
-        .withColumn(new ColumnDefinition("host", Type.STRING, ColumnDefinition.ColumnRole.TAG, TimeSeriesCodec.NONE))
+        .withColumn(new ColumnDefinition("host", Type.STRING, ColumnDefinition.ColumnRole.TAG, TimeSeriesCodec.DICTIONARY))
         .withColumn(new ColumnDefinition("zone", Type.INTEGER, ColumnDefinition.ColumnRole.TAG,
             TimeSeriesCodec.SIMPLE8B))
         .withColumn(new ColumnDefinition("cpu", Type.DOUBLE, ColumnDefinition.ColumnRole.FIELD,
@@ -272,14 +272,14 @@ class Issue7689CreateTimeSeriesTypeCompleteDeclarationTest extends TestHelper {
   void aTimestampColumnCarryingAnExplicitCodecRendersAndReparsesToTheSameCodec() {
     final String sql = database.getSchema().buildTimeSeriesType().withName("TsCodecRender")
         .withColumn(new ColumnDefinition("ts", Type.LONG, ColumnDefinition.ColumnRole.TIMESTAMP,
-            TimeSeriesCodec.SIMPLE8B))
+            TimeSeriesCodec.DELTA_OF_DELTA))
         .withField("v", Type.DOUBLE)
         .toSQL().getFirst();
 
-    assertThat(sql).contains("TIMESTAMP `ts` CODEC SIMPLE8B");
+    assertThat(sql).contains("TIMESTAMP `ts` CODEC DELTA_OF_DELTA");
 
     database.command("sql", sql);
-    assertThat(typeOf("TsCodecRender").getTsColumn("ts").getCompressionHint()).isEqualTo(TimeSeriesCodec.SIMPLE8B);
+    assertThat(typeOf("TsCodecRender").getTsColumn("ts").getCompressionHint()).isEqualTo(TimeSeriesCodec.DELTA_OF_DELTA);
   }
 
   // ---------------------------------------------------------------------------------------------------------------

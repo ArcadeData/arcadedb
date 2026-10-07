@@ -427,6 +427,18 @@ public class TimeSeriesTypeBuilder {
         throw new SchemaException("Column '" + col.getName() + "' of type " + col.getDataType()
             + " cannot be used in a TIMESERIES type. Supported types: " + ColumnDefinition.storableTypeNames());
 
+    // A codec the sealed store has no encoder for used to pass here and fail in every compaction afterwards,
+    // permanently and for the whole type (issue #9310). Only an EXPLICIT codec can be wrong: a derived one comes
+    // from defaultCodecFor, which is the table the encoders were written against.
+    for (final ColumnDefinition col : columns) {
+      if (!col.isExplicitCodec())
+        continue;
+      final String refusal = ColumnDefinition.codecRefusal(col.getName(), col.getDataType(), col.getRole(),
+          col.getCompressionHint());
+      if (refusal != null)
+        throw new SchemaException(refusal);
+    }
+
     // Checked here rather than only on the SQL path (issue #7740): the rule is the type's, not the grammar's.
     // withColumn() is looped over export JSON by JsonlImporterFormat, and a second TIMESTAMP column built a type
     // whose getTimestampColumn() - the last one seen - disagreed with findTimestampColumnIndex() - the first -

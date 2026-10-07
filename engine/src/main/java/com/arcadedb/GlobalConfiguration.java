@@ -250,9 +250,11 @@ public enum GlobalConfiguration {
       Integer.class, 1_000_000),
 
   TIMESERIES_UNDECLARED_KEYS("arcadedb.timeSeriesUndeclaredKeys", SCOPE.DATABASE, """
-      What a time-series write (InfluxDB line protocol over HTTP, and the gRPC TimeSeriesWrite RPCs) does with a \
-      sample carrying a tag or field key its TIMESERIES type does not declare in that role. 'reject' (default) drops \
-      the sample and reports it as a partial write naming the key, because storing it would file the point under a \
+      What a time-series write (InfluxDB line protocol over HTTP, the gRPC TimeSeriesWrite RPCs, SQL INSERT and \
+      Prometheus remote write) does with a sample carrying a tag, field, property or label its TIMESERIES type does not \
+      declare in that role. 'reject' (default) drops the sample and reports it naming the key - a partial write for the \
+      network protocols (the valid samples of the request are stored and the answer is a 400, which Prometheus does not \
+      retry, so the dropped series are not re-sent), a failed statement for SQL INSERT (issues #8646, #9365) - because storing it would file the point under a \
       different series than the client sent - a misspelled tag key leaves the declared tag null (issue #8646). \
       'ignore' stores the sample with the undeclared keys discarded, which is what schema-less producers such as \
       Telegraf, that send extra tags the type was never meant to hold, need.""",

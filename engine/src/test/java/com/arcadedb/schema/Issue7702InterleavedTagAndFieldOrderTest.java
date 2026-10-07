@@ -210,19 +210,19 @@ class Issue7702InterleavedTagAndFieldOrderTest extends TestHelper {
   void theTimestampClauseKeepsItsPrecisionAndCodecOutOfPosition() {
     final String sql = database.getSchema().buildTimeSeriesType().withName("TimestampClauses")
         .withTag("t1", Type.STRING)
-        .withColumn(new ColumnDefinition("ts", Type.LONG, ColumnDefinition.ColumnRole.TIMESTAMP, TimeSeriesCodec.SIMPLE8B))
+        .withColumn(new ColumnDefinition("ts", Type.LONG, ColumnDefinition.ColumnRole.TIMESTAMP, TimeSeriesCodec.DELTA_OF_DELTA))
         .withPrecision("microsecond")
         .withField("f1", Type.DOUBLE)
         .toSQL().getFirst();
 
     assertThat(sql).isEqualTo("CREATE TIMESERIES TYPE `TimestampClauses` TAGS (`t1` STRING) "
-        + "TIMESTAMP `ts` PRECISION MICROSECOND CODEC SIMPLE8B FIELDS (`f1` DOUBLE)");
+        + "TIMESTAMP `ts` PRECISION MICROSECOND CODEC DELTA_OF_DELTA FIELDS (`f1` DOUBLE)");
 
     database.command("sql", sql);
     final TimeSeriesType type = typeOf("TimestampClauses");
     assertThat(columnNames(type)).containsExactly("t1", "ts", "f1");
     assertThat(type.getPrecision()).isEqualTo("MICROSECOND");
-    assertThat(type.getTsColumn("ts").getCompressionHint()).isEqualTo(TimeSeriesCodec.SIMPLE8B);
+    assertThat(type.getTsColumn("ts").getCompressionHint()).isEqualTo(TimeSeriesCodec.DELTA_OF_DELTA);
   }
 
   /**

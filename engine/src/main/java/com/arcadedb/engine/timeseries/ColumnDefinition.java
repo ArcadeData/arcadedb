@@ -332,6 +332,48 @@ public final class ColumnDefinition {
   }
 
   /**
+   * Why this column's codec cannot be honoured by the storage layer, or {@code null} when it can (issue #9310).
+   * <p>
+   * The codec is first consulted when a shard seals, and {@code TimeSeriesSealedStore.compressColumn} only knows
+   * three encoders, so a codec it cannot run - or can run only on a numeric column - used to be accepted at
+   * {@code CREATE} and then fail in every later compaction, permanently and type-wide. The rules mirror that switch:
+   * <ul>
+   * <li>TIMESTAMP: {@code DELTA_OF_DELTA} only. The timestamp column is always encoded with it, so any other name
+   * would be stored, rendered back and ignored.</li>
+   * <li>TAG and FIELD: {@code DICTIONARY} for any type; {@code GORILLA_XOR} only for DOUBLE/FLOAT and
+   * {@code SIMPLE8B} only for the integer-like types (integers, boolean, datetimes), i.e. the codec
+   * {@link #defaultCodecFor} picks, because those are the ones whose values round-trip through the encoder.</li>
+   * <li>{@code NONE} and {@code DELTA_OF_DELTA} on a non-timestamp column have no encoder.</li>
+   * </ul>
+   * Keep this in step with {@code TimeSeriesSealedStore.compressColumn}; {@code Issue9310TimeSeriesCodecValidationTest}
+   * drives every accepted combination through a compaction and checks the values read back, so a drift fails there. A new
+   * data type must be classified in {@link #defaultCodecFor}, which this method defers to for the numeric codecs.
+   */
+  public static String codecRefusal(final String name, final Type dataType, final ColumnRole role, final TimeSeriesCodec codec) {
+    if (role == ColumnRole.TIMESTAMP)
+      return codec == TimeSeriesCodec.DELTA_OF_DELTA ? null
+          : "Column '" + name + "' is the TIMESTAMP column, which is always encoded with DELTA_OF_DELTA, so it cannot declare codec " + codec;
+    return switch (codec) {
+      case DICTIONARY -> null;
+      // Each numeric codec only for the types its encoder AND decoder round-trip: SIMPLE8B stores integers, so a DOUBLE
+      // would read back as raw long bits; GORILLA_XOR stores doubles, so a LONG would lose precision past 2^53 and read
+      // back as a Double. A TAG defaults to DICTIONARY whatever its type, so the type's numeric codec is its FIELD default.
+      case GORILLA_XOR, SIMPLE8B -> {
+        final TimeSeriesCodec numeric = defaultCodecFor(dataType, ColumnRole.FIELD);
+        yield numeric == codec ? null
+            : "Column '" + name + "' of type " + dataType + " cannot use codec " + codec
+                + ", which would not read the values back unchanged. Use DICTIONARY" + (isNumericCodec(numeric) ? " or " + numeric : "");
+      }
+      default -> "Column '" + name + "' cannot use codec " + codec + ", which has no encoder for a " + role
+          + " column. Supported codecs: GORILLA_XOR, SIMPLE8B, DICTIONARY";
+    };
+  }
+
+  private static boolean isNumericCodec(final TimeSeriesCodec codec) {
+    return codec == TimeSeriesCodec.GORILLA_XOR || codec == TimeSeriesCodec.SIMPLE8B;
+  }
+
+  /**
    * The codec table as it was before issue #5475, used for TimeSeries types whose schema predates the
    * change.
    * <p>

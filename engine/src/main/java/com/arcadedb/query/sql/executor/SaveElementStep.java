@@ -18,12 +18,14 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
+import com.arcadedb.engine.timeseries.TimeSeriesGateway;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.IndexCursor;
@@ -92,6 +94,9 @@ public class SaveElementStep extends AbstractExecutionStep {
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     final ResultSet upstream = getPrev().syncPull(context, nRecords);
     return new ResultSet() {
+      // the undeclared-key policy, read once per execution instead of once per inserted row (issue #9365)
+      private final boolean   rejectUndeclared = TimeSeriesGateway.rejectsUndeclaredKeys(context.getDatabase());
+
       // Every record pulled through one INSERT statement targets the same type, so the unique-index list is
       // resolved once per distinct type name seen rather than on every single row of a CONTENT [...] batch.
       private String          cachedTypeName;
@@ -119,7 +124,7 @@ public class SaveElementStep extends AbstractExecutionStep {
             // own cannot serve correctly either (issue #6356).
             // Gated accessor: appending a sample is a record creation on a type that owns no bucket, so the
             // per-type check is the only thing that can enforce a "createRecord" denial on it.
-            saveToTimeSeries(tsType, tsType.requireEngine(SecurityDatabaseUser.ACCESS.CREATE_RECORD), doc, context);
+            saveToTimeSeries(tsType, tsType.requireEngine(SecurityDatabaseUser.ACCESS.CREATE_RECORD), doc, context, rejectUndeclared);
             scheduleContinuousAggregateRefresh(context, tsType);
             return result;
           }
@@ -223,9 +228,19 @@ public class SaveElementStep extends AbstractExecutionStep {
    * point.
    */
   private void saveToTimeSeries(final LocalTimeSeriesType tsType, final TimeSeriesEngine engine, final Document doc,
-      final CommandContext context) {
+      final CommandContext context, final boolean rejectUndeclared) {
     final List<ColumnDefinition> columns = tsType.getTsColumns();
     final ZoneId zoneId = context.getDatabase().getSchema().getZoneId();
+
+    // The row is built from the DECLARED columns, so a property the type does not declare (typically a misspelled tag)
+    // would be dropped and the sample filed under a different series than the one sent, with the statement answering
+    // success (issue #9365). Same policy as the line protocol and gRPC writes, issue #8646.
+    if (rejectUndeclared)
+      for (final String property : doc.getPropertyNames())
+        if (!tsType.isDeclaredColumn(property))
+          throw new CommandExecutionException("Cannot insert into the TIMESERIES type '" + tsType.getName() + "': property '"
+              + property + "' is not a declared column. Declare it on the type, fix the name, or set "
+              + GlobalConfiguration.TIMESERIES_UNDECLARED_KEYS.getKey() + "=ignore to discard such properties");
 
     final long[] timestamps = new long[1];
     int nonTsCount = 0;

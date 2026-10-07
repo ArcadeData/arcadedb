@@ -491,7 +491,8 @@ public class PromQLEvaluator {
           case "count_over_time" -> PromQLFunctions.countOverTime(series);
           default -> throw new IllegalArgumentException("Unknown range function: " + fn.name());
         };
-        samples.add(new VectorSample(series.labels(), value, evalTimeMs));
+        samples.add(new VectorSample(functionKeepsMetricName(name) ? series.labels() : withoutMetricName(series.labels()), value,
+            evalTimeMs));
       }
       return new InstantVector(samples);
     }
@@ -514,8 +515,10 @@ public class PromQLEvaluator {
 
     if (argResult instanceof InstantVector iv) {
       final List<VectorSample> samples = new ArrayList<>();
+      final boolean keepName = functionKeepsMetricName(name);
       for (final VectorSample sample : iv.samples())
-        samples.add(new VectorSample(sample.labels(), applyScalarFn(name, sample.value(), param), sample.timestampMs()));
+        samples.add(new VectorSample(keepName ? sample.labels() : withoutMetricName(sample.labels()),
+            applyScalarFn(name, sample.value(), param), sample.timestampMs()));
       return new InstantVector(samples);
     }
 
@@ -575,7 +578,7 @@ public class PromQLEvaluator {
       if (result instanceof InstantVector iv) {
         final List<VectorSample> samples = new ArrayList<>();
         for (final VectorSample s : iv.samples())
-          samples.add(new VectorSample(s.labels(), -s.value(), s.timestampMs()));
+          samples.add(new VectorSample(withoutMetricName(s.labels()), -s.value(), s.timestampMs()));
         return new InstantVector(samples);
       }
     }
@@ -609,7 +612,9 @@ public class PromQLEvaluator {
   private TagFilter buildTagFilter(final List<LabelMatcher> matchers, final List<ColumnDefinition> columns) {
     TagFilter filter = null;
     for (final LabelMatcher m : matchers) {
-      if (m.op() != MatchOp.EQ || "__name__".equals(m.name()))
+      // {label=""} selects the series that do NOT carry the label, which a tag equality filter cannot express (a missing
+      // tag is null, an old row may hold ""): matchesPostFilters() decides it (issue #9363)
+      if (m.op() != MatchOp.EQ || isEmptyEquality(m) || "__name__".equals(m.name()))
         continue;
       final int idx = findNonTsColumnIndex(m.name(), columns);
       if (idx < 0)
@@ -669,10 +674,20 @@ public class PromQLEvaluator {
     };
   }
 
+  /**
+   * Whether {@code m} is {@code label=""}: it selects the series that do not carry the label, so it cannot go through the
+   * tag equality filter and is decided by {@link #matchesPostFilters} instead (issue #9363). Kept in one place so the two
+   * sides of that split cannot disagree.
+   */
+  private static boolean isEmptyEquality(final LabelMatcher m) {
+    return m.op() == MatchOp.EQ && m.value().isEmpty();
+  }
+
   private boolean matchesPostFilters(final Object[] row, final List<LabelMatcher> matchers,
       final List<ColumnDefinition> columns, final long regexDeadline) {
     for (final LabelMatcher m : matchers) {
-      if (m.op() == MatchOp.EQ || "__name__".equals(m.name()))
+      // a non-empty EQ was already applied by the tag filter; an empty one is decided here
+      if ((m.op() == MatchOp.EQ && !isEmptyEquality(m)) || "__name__".equals(m.name()))
         continue;
       final int rowIdx = findNonTsRowIndex(m.name(), columns);
       if (rowIdx < 0)
@@ -683,6 +698,10 @@ public class PromQLEvaluator {
       final Object val = rowIdx < row.length ? row[rowIdx] : null;
       final String strVal = val != null ? val.toString() : "";
       switch (m.op()) {
+        case EQ:
+          if (!strVal.isEmpty())
+            return false;
+          break;
         case NEQ:
           if (strVal.equals(m.value()))
             return false;
@@ -717,8 +736,13 @@ public class PromQLEvaluator {
         continue;
       final int rowPos = 1 + nonTsIdx;
       nonTsIdx++;
-      if (col.getRole() == ColumnDefinition.ColumnRole.TAG && rowPos < row.length && row[rowPos] != null)
-        labels.put(col.getName(), row[rowPos].toString());
+      // An empty label value is an absent label in the Prometheus data model, so it is not reported (issue #9363). It
+      // also covers rows an older build stored with "".
+      if (col.getRole() == ColumnDefinition.ColumnRole.TAG && rowPos < row.length && row[rowPos] != null) {
+        final String value = row[rowPos].toString();
+        if (!value.isEmpty())
+          labels.put(col.getName(), value);
+      }
     }
     return labels;
   }
@@ -851,11 +875,31 @@ public class PromQLEvaluator {
 
   /** The result labels of an arithmetic operator: Prometheus drops the metric name. */
   private Map<String, String> resultLabels(final Map<String, String> labels, final BinaryOp op) {
-    if (isComparisonOp(op) || !labels.containsKey(METRIC_NAME_LABEL))
+    return isComparisonOp(op) ? labels : withoutMetricName(labels);
+  }
+
+  /**
+   * The labels of a series derived from another one, with the metric name deleted: Prometheus' {@code DropMetricName()},
+   * applied by every operator and function that transforms the value (issue #9330). Returns {@code labels} itself when
+   * it carries no name, so the common case allocates nothing.
+   */
+  private static Map<String, String> withoutMetricName(final Map<String, String> labels) {
+    if (!labels.containsKey(METRIC_NAME_LABEL))
       return labels;
     final Map<String, String> withoutName = new LinkedHashMap<>(labels);
     withoutName.remove(METRIC_NAME_LABEL);
     return withoutName;
+  }
+
+  /**
+   * The functions that keep the metric name, as in Prometheus: they reorder or relabel a series instead of deriving a
+   * new value from it. Every other function drops it. Mirrors {@code DropMetricName()} in Prometheus' promql/functions.go.
+   */
+  private static boolean functionKeepsMetricName(final String name) {
+    return switch (name) {
+      case "sort", "sort_desc", "label_replace", "label_join", "last_over_time" -> true;
+      default -> false;
+    };
   }
 
   private InstantVector applyVectorScalar(final InstantVector iv, final double scalar, final BinaryOp op,
