@@ -133,12 +133,13 @@ class FullTextBM25SharedMetadataTest extends TestHelper {
     m.setCounters(100L, 300L);
     final long docsAtStart = m.getTotalDocs();
     final long lenAtStart = m.getSumDocLength();
+    final long mutationsAtStart = m.getMutations();
 
     m.addDocument(3L); // committed by another thread after the scan passed its bucket
     m.addDocument(3L);
     m.removeDocument(3L);
 
-    final boolean exact = m.publishScannedCounters(100L, 300L, docsAtStart, lenAtStart);
+    final boolean exact = m.publishScannedCounters(100L, 300L, docsAtStart, lenAtStart, mutationsAtStart);
 
     assertThat(exact).isFalse();
     assertThat(m.getTotalDocs()).isEqualTo(101L);
@@ -147,10 +148,25 @@ class FullTextBM25SharedMetadataTest extends TestHelper {
     assertThat(m.claimStaleCheck()).isTrue();
   }
 
+  /** A remove and an add that cancel out leave the net counters equal, yet the scan may have read the old document. */
+  @Test
+  void scannedCountersAreNotExactWhenWritesCancelOut() {
+    final FullTextIndexMetadata m = new FullTextIndexMetadata("Doc", new String[] { "content" }, 0);
+    m.setCounters(10L, 30L);
+    final long mutationsAtStart = m.getMutations();
+
+    m.removeDocument(3L);
+    m.addDocument(3L);
+
+    assertThat(m.publishScannedCounters(10L, 30L, 10L, 30L, mutationsAtStart)).isFalse();
+    assertThat(m.consumeRescanRequired()).isTrue();
+    assertThat(m.consumeRescanRequired()).isFalse();
+  }
+
   @Test
   void scannedCountersWithoutConcurrentWritesAreExactAndConsumeTheStaleCheck() {
     final FullTextIndexMetadata m = new FullTextIndexMetadata("Doc", new String[] { "content" }, 0);
-    final boolean exact = m.publishScannedCounters(50L, 150L, m.getTotalDocs(), m.getSumDocLength());
+    final boolean exact = m.publishScannedCounters(50L, 150L, m.getTotalDocs(), m.getSumDocLength(), m.getMutations());
 
     assertThat(exact).isTrue();
     assertThat(m.isCountersValid()).isTrue();

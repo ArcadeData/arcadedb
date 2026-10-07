@@ -864,7 +864,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
         // global IDF as well as avgdl; a direct bucket-level lookup uses resolveTotalDocs() instead.
         final long liveCount = underlyingIndex.getMutableIndex().getDatabase().countType(typeName, false);
         final long persisted = ftMetadata.getTotalDocs();
-        if (liveCount != persisted) {
+        final boolean rescan = ftMetadata.consumeRescanRequired();
+        if (liveCount != persisted || rescan) {
           // Surface the drift so operators can notice it (e.g. counters inflated by rolled-back inserts) without reading EXPLAIN.
           // Escalate to WARNING when the divergence is large (> 10% of the live count): small drift self-heals quietly here, but a
           // big gap usually signals a heavy-rollback workload worth a scheduled REBUILD INDEX ... WITH statsOnly = true.
@@ -922,6 +923,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     // Writers keep bumping the shared counters while the scan runs: remember where they stood so the result is published as a delta
     final long docsAtStart = ftMetadata.getTotalDocs();
     final long lenAtStart = ftMetadata.getSumDocLength();
+    final long mutationsAtStart = ftMetadata.getMutations();
     final Iterator<Record> it = db.iterateType(typeName, true);
     while (it.hasNext()) {
       final Record record = it.next();
@@ -937,7 +939,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
       sumLen += len;
     }
 
-    ftMetadata.publishScannedCounters(docs, sumLen, docsAtStart, lenAtStart);
+    ftMetadata.publishScannedCounters(docs, sumLen, docsAtStart, lenAtStart, mutationsAtStart);
     // Report the result so operators can correlate the cold-start latency above with the corpus size that drove it.
     LogManager.instance().log(this, Level.INFO,
         "Recomputed BM25 corpus statistics for type '%s': %d documents, %d total tokens (avgdl=%.2f)", null, typeName, docs,

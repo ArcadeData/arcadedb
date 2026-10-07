@@ -114,6 +114,10 @@ public class FullTextIndexMetadata extends IndexMetadata {
   // updates.
   private final AtomicLong totalDocs     = new AtomicLong(0L);
   private final AtomicLong sumDocLength  = new AtomicLong(0L);
+  // Bumped by every addDocument()/removeDocument(): lets a scan tell "no writer touched the counters" from "writers cancelled out"
+  private final AtomicLong mutations     = new AtomicLong(0L);
+  // Set when a scan result could not be proven exact: the next drift check must rescan even if the document counts agree
+  private volatile boolean rescanRequired = false;
   private volatile boolean countersValid = false;
   // Not persisted (no toJSON/fromJSON): whether the persisted counters have already been checked for staleness against the live
   // data this session. Persisted counters can lag the on-disk data if documents were indexed after the last schema save, so the
@@ -641,6 +645,21 @@ public class FullTextIndexMetadata extends IndexMetadata {
    * Atomically claims the one-per-session staleness check: returns true to exactly one caller (which must then run the
    * live-count validation), false to everyone else. Prevents concurrent first-queries from all rescanning the type.
    */
+  public long getMutations() {
+    return mutations.get();
+  }
+
+  /**
+   * Returns true once after an inexact scan publication: the next drift check must rescan even when the document counts agree,
+   * because a concurrent writer may have changed the document lengths the scan had already read.
+   */
+  public boolean consumeRescanRequired() {
+    if (!rescanRequired)
+      return false;
+    rescanRequired = false;
+    return true;
+  }
+
   public boolean claimStaleCheck() {
     return staleChecked.compareAndSet(false, true);
   }
@@ -689,17 +708,21 @@ public class FullTextIndexMetadata extends IndexMetadata {
    * @param sumDocLength sum of document lengths found by the scan
    * @param docsAtStart  value of {@link #getTotalDocs()} captured immediately before the scan
    * @param lenAtStart   value of {@link #getSumDocLength()} captured immediately before the scan
+   * @param mutationsAtStart value of {@link #getMutations()} captured immediately before the scan
    *
    * @return true when the published counters equal the scan result, which is what happens when nothing moved them during the scan
    */
-  public boolean publishScannedCounters(final long totalDocs, final long sumDocLength, final long docsAtStart, final long lenAtStart) {
+  public boolean publishScannedCounters(final long totalDocs, final long sumDocLength, final long docsAtStart, final long lenAtStart,
+      final long mutationsAtStart) {
     // sumDocLength first, then totalDocs: same ordering rationale as addDocument()
     final long lenDelta = sumDocLength - lenAtStart;
     final long docsDelta = totalDocs - docsAtStart;
     final long newLen = this.sumDocLength.updateAndGet(v -> Math.max(0L, v + lenDelta));
     final long newDocs = this.totalDocs.updateAndGet(v -> Math.max(0L, v + docsDelta));
     this.countersValid = true;
-    final boolean exact = newDocs == totalDocs && newLen == sumDocLength;
+    // Exact only when no writer touched the counters at all: equal net values can hide an add and a remove that cancelled out
+    final boolean exact = mutations.get() == mutationsAtStart && newDocs == totalDocs && newLen == sumDocLength;
+    this.rescanRequired = !exact;
     this.staleChecked.set(exact);
     return exact;
   }
@@ -720,6 +743,7 @@ public class FullTextIndexMetadata extends IndexMetadata {
     // observes the new totalDocs is then guaranteed to observe the new sumDocLength too, so a concurrent reader never sees a
     // half-applied (totalDocs bumped, sumDocLength not) state that would momentarily DEFLATE avgdl and over-penalize. The only
     // possible torn read is sumDocLength-new / totalDocs-old, which inflates avgdl slightly (under-penalizes) - the safe side.
+    mutations.incrementAndGet();
     sumDocLength.addAndGet(docLength);
     totalDocs.incrementAndGet();
   }
@@ -733,6 +757,7 @@ public class FullTextIndexMetadata extends IndexMetadata {
     // Decrement totalDocs before sumDocLength so a concurrent reader's worst torn read is totalDocs-decremented /
     // sumDocLength-not-yet, which inflates avgdl slightly (under-penalizes) rather than deflating it - the safe side, matching
     // addDocument's bias.
+    mutations.incrementAndGet();
     totalDocs.updateAndGet(v -> v > 0 ? v - 1 : v);
     sumDocLength.updateAndGet(v -> Math.max(0L, v - docLength));
   }

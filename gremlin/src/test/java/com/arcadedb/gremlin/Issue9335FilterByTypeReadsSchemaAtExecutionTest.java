@@ -69,6 +69,15 @@ class Issue9335FilterByTypeReadsSchemaAtExecutionTest {
   }
 
   @Test
+  void bucketLabelThatDoesNotExistYetMatchesNothingInsteadOfFailing() {
+    graph.getDatabase().transaction(() -> {
+      try (final ResultSet rs = graph.gremlin("g.V().hasLabel('bucket:NoSuchBucket_0').id()").execute()) {
+        assertThat(rs.hasNext()).isFalse();
+      }
+    });
+  }
+
+  @Test
   void hasLabelOnAnAbsentTypeStillMatchesNothing() {
     assertThat(count("g.V().hasLabel('Missing').count()")).isZero();
   }
