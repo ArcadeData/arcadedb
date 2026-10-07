@@ -77,12 +77,45 @@ class Issue9467LinkSubSelectionTest extends AbstractGraphQLTest {
   }
 
   @Test
-  void linkSelectedWithoutDeclaredSelectionExpandsBySchemaType() {
+  void linkWithoutExplicitSubSelectionExpandsBySchemaType() {
     executeLinkTest(database -> {
       try (final ResultSet resultSet = database.query("graphql", "{ docs { owner { __typename city } } }")) {
         final Result owner = resultSet.next().getProperty("owner");
         assertThat(owner.<String>getProperty("__typename")).isEqualTo("AddressView");
         assertThat(owner.<String>getProperty("city")).isEqualTo("Rome");
+      }
+    });
+  }
+
+  @Test
+  void danglingLinkResolvesToNothingAndIsDroppedFromAList() {
+    executeLinkTest(database -> {
+      database.command("sql", "DELETE FROM LinkedAddress WHERE city = 'Milan'");
+      try (final ResultSet resultSet = database.query("graphql", "{ docs { owner { city } links { city } } }")) {
+        final Result doc = resultSet.next();
+        assertThat(doc.<Result>getProperty("owner").<String>getProperty("city")).isEqualTo("Rome");
+        final List<Result> links = doc.getProperty("links");
+        assertThat(links).hasSize(1);
+        assertThat(links.getFirst().<String>getProperty("city")).isEqualTo("Rome");
+      }
+      database.command("sql", "DELETE FROM LinkedAddress");
+      try (final ResultSet resultSet = database.query("graphql", "{ docs { id owner { city } links { city } } }")) {
+        final Result doc = resultSet.next();
+        assertThat(doc.<String>getProperty("id")).isEqualTo("d1");
+        assertThat(doc.<List<Result>>getProperty("links")).isEmpty();
+      }
+    });
+  }
+
+  @Test
+  void linkToLinkIsResolvedTwoLevelsDeep() {
+    executeLinkTest(database -> {
+      database.getSchema().getType("LinkedAddress").createProperty("next", Type.LINK, "LinkedAddress");
+      database.command("sql", "UPDATE LinkedAddress SET next = (SELECT FROM LinkedAddress WHERE city = 'Milan') WHERE city = 'Rome'");
+      database.command("graphql", "type AddressView { city: String next: AddressView }");
+      try (final ResultSet resultSet = database.query("graphql", "{ docs { owner { city next { city } } } }")) {
+        final Result owner = resultSet.next().getProperty("owner");
+        assertThat(owner.<Result>getProperty("next").<String>getProperty("city")).isEqualTo("Milan");
       }
     });
   }
