@@ -3497,7 +3497,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           try {
             performRecovery();
           } catch (final RuntimeException | Error e) {
-            // The open fails: the engines it deferred are not built over a replay that did not finish
+            // The open fails: the engines it deferred are not built over a replay that did not finish. The schema is left loaded
+            // with those TimeSeries types registered and engine-less, and is closed by the failed-open cleanup below
             schema.discardDeferredTimeSeriesEngines();
             throw e;
           }

@@ -415,7 +415,7 @@ public class SelectExecutor {
         // An IllegalArgumentException is the index's only when the index it was reading is gone ("File with id n was not found"
         // once its file is deleted under the lookup): any other one (a key that does not convert, a bad parameter) is the
         // caller's and must not turn into a silent scan
-        if (indexBeingRead == null || indexBeingRead.isValid() || !isFileNotFound(e))
+        if (indexBeingRead == null || indexBeingRead.isValid() || !TypeIndex.isFileNotFound(e))
           throw e;
         fallBackToScan(cursors, e);
       } catch (final IndexException e) {
@@ -429,12 +429,6 @@ public class SelectExecutor {
    * #9331: AN INDEX DROPPED OR REBUILT BY A CONCURRENT DDL WHILE THE CURSORS WERE BEING BUILT. THE SCAN ANSWERS THE SAME ROWS
    * WITHOUT IT, SINCE evaluateWhere() RUNS THE WHOLE WHERE-TREE ON EVERY RECORD EITHER WAY
    */
-  /** The page manager's answer for the file of an index deleted under a lookup: "File with id n was not found". */
-  static boolean isFileNotFound(final IllegalArgumentException e) {
-    final String message = e.getMessage();
-    return message != null && message.startsWith("File with id");
-  }
-
   private void fallBackToScan(final List<IndexCursor> cursors, final RuntimeException cause) {
     LogManager.instance().log(this, Level.FINE, "Index dropped or rebuilt while the query was starting, scanning instead: %s",
         null, cause.getMessage());

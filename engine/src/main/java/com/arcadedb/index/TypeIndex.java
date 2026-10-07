@@ -760,6 +760,16 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   }
 
   /**
+   * Whether {@code e} is the page manager's answer for the file of an index deleted under a lookup or an open cursor ("File with
+   * id n was not found", see {@code FileManager#getFile}). The one place that knows the wording, for the readers that turn it
+   * into a stale-index signal when the index is no longer valid (issue #9331).
+   */
+  public static boolean isFileNotFound(final IllegalArgumentException e) {
+    final String message = e.getMessage();
+    return message != null && message.startsWith("File with id");
+  }
+
+  /**
    * Snapshot of the indexes of {@code indexes} that a query can use, see {@link #isReadyForQueries()}. The collection a type
    * hands out can be a live view of its schema map, so it is copied once rather than walked while a concurrent DDL changes it.
    * Best effort: the caller still reads an index's metadata under a try/catch of {@link IndexException}.
