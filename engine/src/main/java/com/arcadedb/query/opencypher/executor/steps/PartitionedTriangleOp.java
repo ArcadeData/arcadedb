@@ -277,7 +277,9 @@ public final class PartitionedTriangleOp implements CountOp {
   /**
    * Exact count for a partition chain that is not a function (a person with two cities, a city in two countries): every path
    * of the chain from a node to a country is a match of its own, so a node carries a weight per country, the number of paths
-   * that reach it, and a triangle counts the product of the three weights of each country they share (issue #9350).
+   * that reach it, and a triangle counts the product of the three weights of each country they share (issue #9350). This is
+   * the slow path, taken only for an ambiguous chain: it boxes per node and hop, and the products are exact, so an overflow
+   * raises an {@link ArithmeticException} instead of returning a wrong count.
    */
   private long executeWeighted(final GraphTraversalProvider provider, final int nodeIdUpperBound, final WorkGuard guard) {
     final int[][] countries = new int[nodeIdUpperBound][];
@@ -329,8 +331,8 @@ public final class PartitionedTriangleOp implements CountOp {
             final int w = uNeighbors[iu];
             final int ue = runEnd(uNeighbors, iu, uNeighbors.length), ve = runEnd(vNeighbors, iv, vNeighbors.length);
             if (countries[w] != null)
-              total += (long) (ue - iu) * (ve - iv) * sharedWeight(countries[u], weights[u], countries[v], weights[v], countries[w],
-                  weights[w]);
+              total = Math.addExact(total, Math.multiplyExact((long) (ue - iu) * (ve - iv),
+                  sharedWeight(countries[u], weights[u], countries[v], weights[v], countries[w], weights[w])));
             iu = ue;
             iv = ve;
           }
@@ -347,7 +349,7 @@ public final class PartitionedTriangleOp implements CountOp {
     while (ia < ca.length && ib < cb.length && ic < cc.length) {
       final int a = ca[ia], b = cb[ib], c = cc[ic];
       if (a == b && b == c) {
-        sum += wa[ia] * wb[ib] * wc[ic];
+        sum = Math.addExact(sum, Math.multiplyExact(Math.multiplyExact(wa[ia], wb[ib]), wc[ic]));
         ia++;
         ib++;
         ic++;
@@ -456,9 +458,9 @@ public final class PartitionedTriangleOp implements CountOp {
           for (final Map.Entry<RID, Long> c : uCountries.entrySet()) {
             final Long wv = vCountries.get(c.getKey()), ww = wCountries.get(c.getKey());
             if (wv != null && ww != null)
-              shared += c.getValue() * wv * ww;
+              shared = Math.addExact(shared, Math.multiplyExact(Math.multiplyExact(c.getValue(), wv), ww));
           }
-          total += multiplicity * shared;
+          total = Math.addExact(total, Math.multiplyExact((long) multiplicity, shared));
         }
       }
     }
