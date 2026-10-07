@@ -185,6 +185,23 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
     final boolean stuckAtStaleTerm = raftHAServer.isFollowerStuckAtStaleTermConfirmed();
     response.put("localStuckAtStaleTerm", stuckAtStaleTerm);
 
+    // Whether this node's Raft layer was restarted in place and the leader's appends have not yet been seen reaching
+    // the new division: no replicated entry since, and no newer term with a known leader (issue #9013). It is what
+    // holds the stale-term reformat back (issue #8901), so it is what tells "held, restart this node by hand" from
+    // "will self-heal" when localStuckAtStaleTerm is true. On its own it is not an incident: an idle cluster sends a
+    // restarted follower no entry either.
+    final boolean replicationPathUnproven = raftHAServer.isReplicationPathUnprovenSinceRestart();
+    response.put("localReplicationPathUnproven", replicationPathUnproven);
+
+    // The incident form of the same condition (issue #8953): unproven since the in-place restart while no leader has
+    // made itself known, or while the leader reports entries this node does not hold, for longer than a healthy path
+    // takes to deliver them. raftState reads RUNNING throughout - the new division is running - and
+    // leaderContactElapsedMs cannot show it either, because a follower nobody reaches resets it on every rejected
+    // pre-vote. Masked on the leader for the reason the stall above is.
+    final LeaderReachSinceRestartTracker.Unreachable leaderUnreachable =
+        isLeader ? null : raftHAServer.getLeaderUnreachableSinceRestart();
+    response.put("localLeaderUnreachableSinceRestart", leaderUnreachable != null);
+
     // This follower stalled behind its leader at the current term (issue #8342): its log stopped receiving entries
     // with no term change, so localReplicationLag above can read 0 and localStuckAtStaleTerm false, and only the
     // leader's answer used to carry the stall. Measured against the commit index the leader reports over the
@@ -380,7 +397,8 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
 
     response.put("alerts",
         ClusterAlerts.scan(httpServer.getServer(), stateMachine, followerSamples, authorizedDatabases, membership,
-            localPeerId.toString(), localResync, nodeStatus, stuckAtStaleTerm, stalledBehindLeader));
+            localPeerId.toString(), localResync, nodeStatus, stuckAtStaleTerm, stalledBehindLeader,
+            replicationPathUnproven, leaderUnreachable));
 
     return new ExecutionResponse(200, response.toString());
   }

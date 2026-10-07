@@ -218,14 +218,30 @@ public class ClusterAlerts {
 
   /**
    * Scan overload that also takes this follower's own stall behind its leader (issue #8342), or {@code null} when
-   * it is not stalled: see {@link RaftHAServer#trackFollowerStall()}. This is the production entry point;
-   * {@link GetClusterHandler} calls it directly, with the same sample it renders into the status document.
+   * it is not stalled: see {@link RaftHAServer#trackFollowerStall()}.
    */
   public static JSONArray scan(final ArcadeDBServer server, final ArcadeStateMachine stateMachine,
       final List<FollowerSample> followerSamples, final Set<String> visibleDatabases,
       final ClusterMembership membership, final String localPeerId,
       final LocalResyncState localResyncState, final NodeStatus nodeStatus, final boolean stuckAtStaleTerm,
       final FollowerStallTracker.Stall stalledBehindLeader) {
+    return scan(server, stateMachine, followerSamples, visibleDatabases, membership, localPeerId, localResyncState,
+        nodeStatus, stuckAtStaleTerm, stalledBehindLeader, false, null);
+  }
+
+  /**
+   * Scan overload that also takes this node's replication-path state since an in-place Ratis restart: whether the
+   * path is still unproven ({@link RaftHAServer#isReplicationPathUnprovenSinceRestart()}, issue #9013), and a leader
+   * failing to reach it, {@code null} when none is ({@link RaftHAServer#trackLeaderReachSinceRestart()}, issue #8953).
+   * This is the production entry point; {@link GetClusterHandler} calls it directly, with the same samples it renders
+   * into the status document.
+   */
+  public static JSONArray scan(final ArcadeDBServer server, final ArcadeStateMachine stateMachine,
+      final List<FollowerSample> followerSamples, final Set<String> visibleDatabases,
+      final ClusterMembership membership, final String localPeerId,
+      final LocalResyncState localResyncState, final NodeStatus nodeStatus, final boolean stuckAtStaleTerm,
+      final FollowerStallTracker.Stall stalledBehindLeader, final boolean replicationPathUnproven,
+      final LeaderReachSinceRestartTracker.Unreachable leaderUnreachable) {
     final JSONArray alerts = new JSONArray();
     checkSingleBucketTypes(server, alerts, visibleDatabases);
     if (stateMachine != null) {
@@ -264,8 +280,12 @@ public class ClusterAlerts {
     // RaftHAServer.isReadyForTraffic), so unlike local-resync-in-progress this alert does not imply
     // /api/v1/ready is 503 - it is the one condition on this endpoint that degrades the cluster's fault
     // tolerance while every other signal here, readiness included, still looks healthy (issue #8289).
-    addStuckAtStaleTermAlert(stuckAtStaleTerm, alerts);
-    addStalledBehindLeaderAlert(stalledBehindLeader, stuckAtStaleTerm, alerts);
+    addStuckAtStaleTermAlert(stuckAtStaleTerm, replicationPathUnproven, alerts);
+    // Most specific cause first, one alert per condition: a node stuck at a stale term is not reached by its leader's
+    // current-term entries and is stalled too, and a node its leader does not reach since an in-place restart is
+    // stalled too. Each of the later two stands down for the ones before it.
+    addLeaderUnreachableSinceRestartAlert(leaderUnreachable, stuckAtStaleTerm, alerts);
+    addStalledBehindLeaderAlert(stalledBehindLeader, stuckAtStaleTerm || leaderUnreachable != null, alerts);
     addCrashLoopEscalatedAlert(nodeStatus.crashLoopEscalated(), alerts);
     addLaggingFollowerAlert(followerSamples, alerts);
     if (membership != null) {
@@ -283,10 +303,30 @@ public class ClusterAlerts {
    * while stuck and does not count toward quorum, so the cluster runs one more lost node away from a total
    * write outage - silently, because every other field on this endpoint (raftState, the peer list, this node's
    * own {@code localReplicationLag}) still reads healthy.
+   * <p>
+   * {@code replicationPathUnproven} (issue #9013) tells the two cases this alert covers apart: with it the node was
+   * restarted in place and has taken no entry since, so the health monitor holds the reformat back (issue #8901) and
+   * the node needs a restart by hand; without it the reformat heals the node on its own. Both are written to
+   * {@code details} and the recommendation names the one that applies, so a dashboard or a runbook can branch on a
+   * field instead of on prose.
    */
-  static void addStuckAtStaleTermAlert(final boolean stuckAtStaleTerm, final JSONArray alerts) {
+  static void addStuckAtStaleTermAlert(final boolean stuckAtStaleTerm, final boolean replicationPathUnproven,
+      final JSONArray alerts) {
     if (!stuckAtStaleTerm)
       return;
+
+    final String recommendation = replicationPathUnproven ?
+        "Restart this node by hand. Its Raft layer was restarted in place and has taken no replicated entry since, "
+            + "under the same term (details.replicationPathUnproven): the leader's appends are not reaching it, which "
+            + "a reformat of its Raft storage cannot fix, so arcadedb.ha.divergedFollowerRecovery holds the reformat "
+            + "back for as long as this lasts and logs a WARNING every 5 minutes (issue #8901). A reformat that did not "
+            + "help is held the same way." :
+        "If arcadedb.ha.divergedFollowerRecovery is enabled (the default), this self-heals: once the condition has "
+            + "persisted for arcadedb.ha.divergedFollowerRecoveryDurationMs (default 20s, with no applied-index "
+            + "progress) the node reformats its local Raft storage and rejoins via a fresh snapshot install. It gives "
+            + "up after arcadedb.ha.divergedFollowerMaxReformats attempts (logged at SEVERE); if that happened, if "
+            + "recovery is disabled, or if this recurs, restart this node by hand. If details.replicationPathUnproven "
+            + "turns true, the reformat is held instead and the node needs a restart by hand (issue #8901).";
 
     alerts.put(new JSONObject()
         .put("id", "follower-stuck-at-stale-term")
@@ -300,17 +340,53 @@ public class ClusterAlerts {
             + "follower that finished a snapshot install but never resumed appending the leader's post-install "
             + "entries, was fixed in 26.10.1; if this alert appears on a later version, keep this node's log for a "
             + "bug report.")
-        .put("recommendation", "If arcadedb.ha.divergedFollowerRecovery is enabled (the default), this "
-            + "self-heals: once the condition has persisted for arcadedb.ha.divergedFollowerRecoveryDurationMs "
-            + "(default 20s, with no applied-index progress) the node reformats its local Raft storage and rejoins "
-            + "via a fresh snapshot install. "
-            + "It does not reformat a node whose Raft layer was restarted in place and has taken no entry since, "
-            + "under the same term: the leader's appends are then not reaching it, which a reformat cannot fix, and "
-            + "its log says so at WARNING every 5 minutes (issue #8901); restart that node by hand. A reformat that "
-            + "did not help is held the same way, so such a node never reaches the SEVERE give-up below. "
-            + "It gives up after arcadedb.ha.divergedFollowerMaxReformats attempts (logged at SEVERE); if that "
-            + "happened, if recovery is disabled, or if this recurs, restart this node by hand.")
-        .put("details", new JSONObject().put("stuckAtStaleTerm", true)));
+        .put("recommendation", recommendation)
+        .put("details", new JSONObject().put("stuckAtStaleTerm", true)
+            .put("replicationPathUnproven", replicationPathUnproven)));
+  }
+
+  /**
+   * Pure alert builder (package-private for unit testing): appends the leader-unreachable-since-restart alert iff a
+   * leader has been failing to reach this follower since its Raft layer was restarted in place, for longer than a
+   * healthy path takes to reach it (issue #8953), or nothing when {@code unreachable} is {@code null}.
+   * <p>
+   * {@code critical} when a leader is known and reports entries this node does not hold: that is direct evidence its
+   * appends are not arriving, so this node does not count toward the Raft quorum while {@code raftState} reads RUNNING.
+   * Only {@code warning} when no leader has made itself known, because that is also what every node of a cluster
+   * without a quorum sees: there the alert may be a symptom of the cluster rather than of this node's path, and a
+   * critical alert raised on every node of every quorum loss would be noise (review on PR #9451).
+   * {@code details.leaderKnown} carries the distinction for a consumer that branches on fields.
+   * <p>
+   * Suppressed while {@code stuckAtStaleTerm} holds, whose alert already names the in-place restart and the remedy
+   * through its own {@code details.replicationPathUnproven}.
+   */
+  static void addLeaderUnreachableSinceRestartAlert(final LeaderReachSinceRestartTracker.Unreachable unreachable,
+      final boolean stuckAtStaleTerm, final JSONArray alerts) {
+    if (unreachable == null || stuckAtStaleTerm)
+      return;
+
+    final boolean leaderKnown = unreachable.leaderKnown();
+    alerts.put(new JSONObject()
+        .put("id", "follower-leader-unreachable-since-restart")
+        .put("severity", leaderKnown ? SEVERITY_CRITICAL : SEVERITY_WARNING)
+        .put("title", "No leader is reaching this node since its Raft layer was restarted in place")
+        .put("message", "This node's Raft layer was restarted in place " + unreachable.unreachableForMs() / 1000
+            + "s or more ago and has taken no replicated entry since, while "
+            + (leaderKnown ? "the leader reports entries this node does not hold" :
+            "no leader has made itself known to it")
+            + ". raftState reads RUNNING, because the new instance is running, but the leader's appends are not "
+            + "reaching it - typically they are still bound to the instance the restart replaced. While this lasts the "
+            + "node does not count toward the Raft quorum, and if the cluster loses one more node, writes stop.")
+        .put("recommendation", (leaderKnown ? "" :
+            "First check whether any node of the cluster has a leader: if none has, this alert is a symptom of the "
+                + "lost quorum, which is the thing to restore. ")
+            + "The leader resets its replication channel to a follower it cannot reach once that follower has stayed "
+            + "unreachable for arcadedb.ha.peerChannelResetDuration, retries a few times, and with "
+            + "arcadedb.ha.peerChannelResetEscalation enabled then hands leadership to a healthy peer so a fresh "
+            + "appender is built. If this alert outlasts that, restart this node by hand.")
+        .put("details", new JSONObject().put("leaderUnreachableSinceRestart", true)
+            .put("leaderKnown", leaderKnown)
+            .put("unreachableForMs", unreachable.unreachableForMs())));
   }
 
   /**
@@ -324,12 +400,13 @@ public class ClusterAlerts {
    * {@code localReplicationLag} of 0, because Ratis clamps a follower's commit index to the entries it holds (that lag
    * is measured against the leader's commit index too since issue #8321).
    * <p>
-   * Suppressed while {@code stuckAtStaleTerm} holds: a node stuck at a stale term is stalled too, and that alert
-   * already names the cause and the recovery. Two critical alerts for one condition would read as two incidents.
+   * Suppressed while {@code causeReported} holds: a node stuck at a stale term is stalled too, and so is a node its
+   * leader does not reach since an in-place restart (issue #8953), and those alerts already name the cause and the
+   * recovery. Two critical alerts for one condition would read as two incidents.
    */
-  static void addStalledBehindLeaderAlert(final FollowerStallTracker.Stall stall, final boolean stuckAtStaleTerm,
+  static void addStalledBehindLeaderAlert(final FollowerStallTracker.Stall stall, final boolean causeReported,
       final JSONArray alerts) {
-    if (stall == null || stuckAtStaleTerm)
+    if (stall == null || causeReported)
       return;
 
     alerts.put(new JSONObject()

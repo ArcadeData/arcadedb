@@ -191,6 +191,21 @@ class Issue7577ClusterStatusSchemaMatchesTheHandlerTest {
   }
 
   /**
+   * The replication path since an in-place restart (issues #9013 and #8953): whether it is still unproven, and whether
+   * a leader has been failing to reach this node for longer than a healthy path takes. Both written unconditionally,
+   * because {@code raftState} reads RUNNING throughout.
+   */
+  @Test
+  void theReplicationPathSignalsAreDeclaredAndRequired() {
+    final Schema<?> status = clusterStatus();
+
+    for (final String member : new String[] { "localReplicationPathUnproven", "localLeaderUnreachableSinceRestart" }) {
+      assertThat(status.getProperties()).as(member).containsKey(member);
+      assertThat(status.getRequired()).as(member + " is written on every answer").contains(member);
+    }
+  }
+
+  /**
    * And the conditional member stays conditional: {@code databasePresence} is written only by a leader answering
    * {@code ?presence=true}, so requiring it would make the contract lie in the other direction.
    */

@@ -131,11 +131,15 @@ class PluginApiSpecTest {
     // 'bootstrapInstalls' joined with issue #8044: the #7519 bootstrap install window pins '/api/v1/ready' at 503
     // and points the reader here, and nothing here reflected it. 'leaderContactElapsedMs' joined with issue #8900:
     // 'raftState' reads RUNNING while the leader's appends never reach this division, and only this figure shows it.
+    // 'localReplicationPathUnproven' and 'localLeaderUnreachableSinceRestart' joined with issues #9013 and #8953: the
+    // state of the replication path since an in-place restart, which that figure cannot show once a follower nobody
+    // reaches resets it on every rejected pre-vote.
     assertThat(schema.getProperties().keySet()).containsExactlyInAnyOrder(
         "implementation", "clusterName", "localPeerId", "capabilities", "raftState", "leaderContactElapsedMs",
         "isLeader", "leaderReady",
         "leaderId", "leaderHttpAddress", "electionCount", "lastElectionTime", "uptime",
         "localAppliedIndex", "localCommitIndex", "localReplicationLag", "localStuckAtStaleTerm",
+        "localReplicationPathUnproven", "localLeaderUnreachableSinceRestart",
         "leaderCommitIndex", "localStalledBehindLeader",
         "peers", "databases", "databasePresence", "alerts", "localResync",
         "criticalHalt", "raftLogFailure", "crashLoopEscalated", "bootstrapInstalls",
