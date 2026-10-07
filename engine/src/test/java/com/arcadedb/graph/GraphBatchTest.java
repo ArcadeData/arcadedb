@@ -50,7 +50,8 @@ class GraphBatchTest extends TestHelper {
   protected void beginTest() {
     database.transaction(() -> {
       database.getSchema().createVertexType("BatchPerson");
-      database.getSchema().createEdgeType("BATCH_KNOWS");
+      database.command("sql", "CREATE EDGE TYPE BATCH_KNOWS LIGHTWEIGHT");
+      database.getSchema().createEdgeType("BATCH_WEIGHTED");
     });
   }
 
@@ -130,7 +131,7 @@ class GraphBatchTest extends TestHelper {
         .build()) {
 
       for (int i = 0; i < edges; i++)
-        importer.newEdge(vertexRIDs[i % vertices], "BATCH_KNOWS", vertexRIDs[(i + 1) % vertices],
+        importer.newEdge(vertexRIDs[i % vertices], "BATCH_WEIGHTED", vertexRIDs[(i + 1) % vertices],
             "weight", 0.5 + i, "label", "edge_" + i);
     }
 
@@ -139,7 +140,7 @@ class GraphBatchTest extends TestHelper {
       long count = 0;
       for (int i = 0; i < vertices; i++) {
         final Vertex v = vertexRIDs[i].asVertex();
-        for (final Edge e : v.getEdges(Vertex.DIRECTION.OUT, "BATCH_KNOWS")) {
+        for (final Edge e : v.getEdges(Vertex.DIRECTION.OUT, "BATCH_WEIGHTED")) {
           assertThat(e.get("weight")).isNotNull();
           assertThat(e.get("label")).isNotNull();
           count++;
@@ -395,7 +396,7 @@ class GraphBatchTest extends TestHelper {
       final Database stdDb = new DatabaseFactory(stdPath).create();
       stdDb.transaction(() -> {
         stdDb.getSchema().createVertexType("BatchPerson");
-        stdDb.getSchema().createEdgeType("BATCH_KNOWS");
+        stdDb.command("sql", "CREATE EDGE TYPE BATCH_KNOWS LIGHTWEIGHT");
       });
 
       final RID[] vRIDs = new RID[VERTEX_COUNT];
@@ -449,7 +450,7 @@ class GraphBatchTest extends TestHelper {
       final Database batchDb = new DatabaseFactory(batchPath).create();
       batchDb.transaction(() -> {
         batchDb.getSchema().createVertexType("BatchPerson");
-        batchDb.getSchema().createEdgeType("BATCH_KNOWS");
+        batchDb.command("sql", "CREATE EDGE TYPE BATCH_KNOWS LIGHTWEIGHT");
       });
 
       final RID[] vRIDs = new RID[VERTEX_COUNT];
@@ -505,7 +506,7 @@ class GraphBatchTest extends TestHelper {
       final Database paDb = new DatabaseFactory(preAllocPath).create();
       paDb.transaction(() -> {
         paDb.getSchema().createVertexType("BatchPerson");
-        paDb.getSchema().createEdgeType("BATCH_KNOWS");
+        paDb.command("sql", "CREATE EDGE TYPE BATCH_KNOWS LIGHTWEIGHT");
       });
 
       final long start = System.nanoTime();
@@ -551,7 +552,7 @@ class GraphBatchTest extends TestHelper {
       final Database parDb = new DatabaseFactory(parallelPath).create();
       parDb.transaction(() -> {
         parDb.getSchema().createVertexType("BatchPerson");
-        parDb.getSchema().createEdgeType("BATCH_KNOWS");
+        parDb.command("sql", "CREATE EDGE TYPE BATCH_KNOWS LIGHTWEIGHT");
       });
 
       final long start = System.nanoTime();

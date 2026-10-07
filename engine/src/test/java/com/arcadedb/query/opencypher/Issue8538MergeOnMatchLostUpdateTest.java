@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher;
 import com.arcadedb.database.BaseRecord;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
+import com.arcadedb.index.ConsistentKeyLookup;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.event.AfterRecordReadListener;
 import com.arcadedb.exception.ConcurrentModificationException;
@@ -489,22 +490,35 @@ class Issue8538MergeOnMatchLostUpdateTest {
     final AtomicBoolean armed = new AtomicBoolean(true);
     final AtomicInteger reads = new AtomicInteger();
     final AtomicReference<Throwable> concurrentFailure = new AtomicReference<>();
-    final AfterRecordReadListener interleave = record -> {
-      if (Thread.currentThread() == bodyThread && reads.incrementAndGet() >= readNumber && armed.compareAndSet(true,
-          false)) {
-        final Thread concurrent = new Thread(() -> {
-          try {
-            database.transaction(() -> database.command("cypher", concurrentCommand));
-          } catch (final Throwable t) {
-            concurrentFailure.set(t);
-          }
-        });
-        concurrent.start();
+    // the commit is made on its own thread, and waited for
+    final Runnable concurrentCommit = () -> {
+      final Thread concurrent = new Thread(() -> {
         try {
-          concurrent.join();
-        } catch (final InterruptedException e) {
-          Thread.currentThread().interrupt();
+          database.transaction(() -> database.command("cypher", concurrentCommand));
+        } catch (final Throwable t) {
+          concurrentFailure.set(t);
         }
+      });
+      concurrent.start();
+      try {
+        concurrent.join();
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+    };
+    // a read made by an index lookup is part of its consistency window (#9397): a commit there is seen by the lookup's
+    // retry and is no stale read. The commit of such a read is made once the lookup has returned its records instead
+    final AtomicBoolean afterLookup = new AtomicBoolean();
+    ConsistentKeyLookup.setAfterLookupObserver(() -> {
+      if (Thread.currentThread() == bodyThread && afterLookup.get() && armed.compareAndSet(true, false))
+        concurrentCommit.run();
+    });
+    final AfterRecordReadListener interleave = record -> {
+      if (Thread.currentThread() == bodyThread && reads.incrementAndGet() >= readNumber && armed.get()) {
+        if (StackWalker.getInstance().walk(frames -> frames.anyMatch(f -> f.getClassName().equals(ConsistentKeyLookup.class.getName()))))
+          afterLookup.set(true);
+        else if (armed.compareAndSet(true, false))
+          concurrentCommit.run();
       }
       return record;
     };
@@ -528,6 +542,7 @@ class Issue8538MergeOnMatchLostUpdateTest {
       if (database.isTransactionActive())
         database.rollback();
       database.getSchema().getType(typeName).getEvents().unregisterListener(interleave);
+      ConsistentKeyLookup.setAfterLookupObserver(null);
     }
 
     assertThat(armed.get()).as("the concurrent increment must have been interleaved").isFalse();
