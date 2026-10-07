@@ -111,7 +111,22 @@ class CypherLabelExpressionVarLengthIssue9117Test {
   void undirectedAndReversedExpansionCheckEveryHop() {
     // 4-T-2 qualifies, 2-R-1 does not, so the walk from 4 stops at 2.
     assertThat(column("MATCH (a {id: 4})-[:!R*1..3]-(b) RETURN b.id AS id", "id")).containsExactly(2);
+    // Walking incoming edges from 5: 5<-R-3 qualifies, 3<-S-1 does not, so the walk stops at 3.
     assertThat(column("MATCH (a {id: 5})<-[:!S*1..3]-(b) RETURN b.id AS id", "id")).containsExactly(3);
+  }
+
+  @Test
+  void unboundedExpansionOverACycleStillTerminatesOnRelationshipUniqueness() {
+    // Closes the cycle 1-R->2-T->4-S->1.
+    database.transaction(() -> database.command("opencypher", "MATCH (a {id: 4}), (b {id: 1}) CREATE (a)-[:S]->(b)"));
+
+    // From 2 without R: 2-T->4-S->1-S->3, and 3-R->5 is cut. Back at 1 the R hop to 2 is refused by the expression.
+    assertThat(column("MATCH (a {id: 2})-[:!R*]->(b) RETURN b.id AS id ORDER BY id", "id")).containsExactly(1, 3, 4);
+    // From 1 without S: 1-R->2-T->4, and 4-S->1 is cut.
+    assertThat(column("MATCH (a {id: 1})-[:!S*]->(b) RETURN b.id AS id ORDER BY id", "id")).containsExactly(2, 4);
+    // The wildcard admits every hop, so only relationship uniqueness ends the walk around the cycle:
+    // 1-2, 1-2-4, 1-2-4-1, 1-2-4-1-3, 1-2-4-1-3-5, 1-3, 1-3-5.
+    assertThat(column("MATCH (a {id: 1})-[:%*]->(b) RETURN count(*) AS c", "c")).containsExactly(7L);
   }
 
   @Test
@@ -169,10 +184,14 @@ class CypherLabelExpressionVarLengthIssue9117Test {
     database.transaction(() -> database.command("opencypher",
         "MATCH (a)-[r]->(b) WHERE type(r) = 'S' OR (type(r) = 'R' AND a.id = 3) SET r.w = 1"));
 
-    // Both the expression and the property map are checked on every hop.
+    // Both the expression and the property map are checked on every hop. w = 1 is on 1-S->3 and 3-R->5 only.
+    // !T: 1-S->3-R->5 carries w on both hops; 1-R->2 has no w.
     assertThat(column("MATCH (a {id: 1})-[:!T*1..3 {w: 1}]->(b) RETURN b.id AS id ORDER BY id", "id")).containsExactly(3, 5);
+    // !S: the only hop out of 1 the expression admits is 1-R->2, which has no w.
     assertThat(column("MATCH (a {id: 1})-[:!S*1..3 {w: 1}]->(b) RETURN b.id AS id", "id")).isEmpty();
+    // !S from 3: 3-R->5 passes both checks.
     assertThat(column("MATCH (a {id: 3})-[:!S*1..3 {w: 1}]->(b) RETURN b.id AS id", "id")).containsExactly(5);
+    // The same map with a parameter value.
     final List<Object> viaParameter = new ArrayList<>();
     try (final ResultSet rs = database.query("opencypher", "MATCH (a {id: 1})-[:!T*1..3 {w: $w}]->(b) RETURN b.id AS id ORDER BY id",
         Map.of("w", 1))) {
