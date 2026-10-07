@@ -178,6 +178,36 @@ class BucketIteratorPrefetchBytesIssue9404Test extends TestHelper {
   }
 
   @Test
+  void aFullBudgetDoesNotShortenABatchOfRecordsThatCopyNothing() {
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_BATCH_MAX_BYTES, 1024L * 1024);
+    final long previousBudget = GlobalConfiguration.QUERY_MAX_HEAP_RAM.getValueAsLong();
+    GlobalConfiguration.QUERY_MAX_HEAP_RAM.setValue(1024L);
+    final QueryHeapTracker otherQuery = new QueryHeapTracker();
+    try {
+      // THE BUDGET IS TAKEN TO ITS LAST KILOBYTES: THE SHARE OF AN ITERATOR IS FAR BELOW ONE LARGE RECORD
+      otherQuery.charge(QueryHeapBudget.getAvailableBytes() - 1024L, "test");
+      assertThat(QueryHeapBudget.getAvailableBytes() / 64).isLessThan(64L * 1024);
+
+      // RECORDS ON THEIR OWN PAGE COPY NOTHING: THE BATCH IS STILL THE COUNT'S, AND THE BUDGET REDUCED NOTHING
+      final long shrunkBefore = QueryHeapBudget.getScanBatchesShrunk();
+      final BucketIterator small = openIterator("Small");
+      assertThat(lastBatch).isEqualTo(1_024);
+      drain(small);
+      assertThat(small.getBudgetShrunkBatches()).isZero();
+      assertThat(QueryHeapBudget.getScanBatchesShrunk()).isEqualTo(shrunkBefore);
+
+      // LARGE RECORDS ARE COPIED: ONE PER BATCH, AND EACH BATCH IS A REDUCED ONE
+      final BucketIterator large = openIterator("Large");
+      assertThat(lastBatch).isEqualTo(1);
+      drain(large);
+      assertThat(large.getBudgetShrunkBatches()).isGreaterThanOrEqualTo(LARGE_RECORDS);
+    } finally {
+      otherQuery.close();
+      GlobalConfiguration.QUERY_MAX_HEAP_RAM.setValue(previousBudget);
+    }
+  }
+
+  @Test
   void aDisabledBudgetLeavesTheConfiguredBound() {
     database.getConfiguration().setValue(GlobalConfiguration.QUERY_BATCH_MAX_BYTES, 1024L * 1024);
     final long previousBudget = GlobalConfiguration.QUERY_MAX_HEAP_RAM.getValueAsLong();
