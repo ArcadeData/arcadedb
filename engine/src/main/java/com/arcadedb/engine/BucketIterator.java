@@ -18,6 +18,7 @@
  */
 package com.arcadedb.engine;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.ImmutableDocument;
@@ -28,6 +29,7 @@ import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SerializationException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.QueryHeapBudget;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.security.SecurityDatabaseUser;
 
@@ -60,6 +62,13 @@ public class BucketIterator implements Iterator<Record> {
   private int  writeIndex     = 0;
   // RECORDS RESOLVED BY THE CURRENT fetchNext(), REPORTED TO THE readRecord STATISTIC ONCE PER BATCH
   private long recordsRead    = 0;
+  // #9404: THE BYTES THE CURRENT BATCH COPIED OUT OF THE PAGES (A MULTI-PAGE OR PLACEHOLDER RECORD IS ASSEMBLED INTO A BUFFER OF
+  // ITS OWN; A RECORD ON ITS OWN PAGE IS A VIEW OF THE CACHED PAGE AND COSTS NOTHING MORE), AND WHAT A BATCH MAY HOLD
+  private long batchBytes     = 0;
+  private final long maxBatchBytes;
+  // #9404: AN ITERATOR MAY READ AHEAD AT MOST THIS FRACTION OF WHAT IS LEFT OF THE QUERY HEAP BUDGET, SO A BUDGET CLOSE TO FULL
+  // SHRINKS THE BATCH DOWN TO ONE RECORD INSTEAD OF HOLDING MEMORY NO QUERY ACCOUNTS FOR
+  private static final int BUDGET_SHARE = 64;
   private long skippedRecords = 0;
   // POSITIONS MODE (#8333): THE SORTED POSITIONS [positionIndex, positionsEnd) TO READ, INSTEAD OF EVERY SLOT OF THE PAGES
   private final long[] positions;
@@ -118,6 +127,7 @@ public class BucketIterator implements Iterator<Record> {
     }
 
     limit = database.getResultSetLimit();
+    maxBatchBytes = database.getConfiguration().getValueAsLong(GlobalConfiguration.QUERY_BATCH_MAX_BYTES);
 
     if (forwardDirection) {
       currentRecordInPage = 0;
@@ -317,8 +327,11 @@ public class BucketIterator implements Iterator<Record> {
       }
 
       final Record record = newRecord(rid, content, pageVersion);
-      if (record != null)
+      if (record != null) {
         nextBatch[writeIndex++] = record;
+        if (!inPage)
+          batchBytes += content.size();
+      }
     } catch (final RecordNotFoundException e) {
       // BENIGN RACE: the record existed a moment ago when its slot was read from currentPage above, but
       // was concurrently deleted before getRecordInternal() executed. Skip it silently, the
@@ -362,6 +375,17 @@ public class BucketIterator implements Iterator<Record> {
     return true;
   }
 
+  /**
+   * The bytes copied out of the pages a batch may reach before it ends: {@link GlobalConfiguration#QUERY_BATCH_MAX_BYTES}, or less
+   * when the queries running have taken most of the query heap budget. A batch always holds at least one record, so the floor is a
+   * scan that reads one record at a time.
+   */
+  private long batchByteLimit() {
+    if (maxBatchBytes <= 0)
+      return Long.MAX_VALUE;
+    return Math.min(maxBatchBytes, QueryHeapBudget.getAvailableBytes() / BUDGET_SHARE);
+  }
+
   private void fetchNext() {
     if (prefetchIndex < writeIndex)
       return;
@@ -370,12 +394,15 @@ public class BucketIterator implements Iterator<Record> {
     readInTransaction = database.getTransaction().getBeginSequence();
 
     recordsRead = 0;
+    batchBytes = 0L;
+    final long batchByteLimit = batchByteLimit();
     try {
       database.executeInReadLock(() -> {
         prefetchIndex = 0;
         nextBatch[prefetchIndex] = null;
 
-        for (writeIndex = 0; writeIndex < nextBatch.length; ) {
+        // A BATCH OF LARGE RECORDS ENDS BY BYTES, NOT BY COUNT: 1,024 RECORDS OF 100KB WOULD BE 100MB PER BUCKET, PER SCAN (#9404)
+        for (writeIndex = 0; writeIndex < nextBatch.length && (writeIndex == 0 || batchBytes < batchByteLimit); ) {
           if (positions != null) {
             if (!readNextPosition())
               return null;
