@@ -152,6 +152,16 @@ class Issue9387TriangleLabelsAndDirectionTest extends TestHelper {
   }
 
   @Test
+  void labelOnSomeCycleVariablesOnlyIsEnforced() throws InterruptedException {
+    final RID[] p = graph("Company");
+    knows(p[0], p[1]);
+    knows(p[1], p[2]);
+    knows(p[2], p[0]);
+    // person1 has no label: the Company can only be person1, in the two orders the other two persons take
+    assertAllAgree(UNDIRECTED.replace("(person1:Person)-[:IS_LOCATED_IN]", "(person1)-[:IS_LOCATED_IN]"), 2L);
+  }
+
+  @Test
   void conflictingLabelsOnOneVariableDeclineThePushDown() throws InterruptedException {
     final RID[] p = graph("Person");
     knows(p[0], p[1]);
