@@ -319,6 +319,7 @@ class DeltaOverlay {
       newAbsorbedAdditions.put(entry.getKey(), new HashMap<>(entry.getValue()));
     // Copied on the first base-edge value this delta records, so a delta with none keeps sharing the previous maps
     Map<String, Map<Long, Object[]>> newBaseEdgeValues = updatedBaseEdgeValues;
+    boolean baseEdgeValuesCopied = false;
     final Map<Integer, Map<String, Object>> newPropOverrides = new HashMap<>(propertyOverrides.size());
     for (final var propEntry : propertyOverrides.entrySet())
       newPropOverrides.put(propEntry.getKey(), new HashMap<>(propEntry.getValue()));
@@ -449,7 +450,8 @@ class DeltaOverlay {
       } else if (isSoleBaseEdge(ed, baseMapping, baseForUpdates, newOverflowIds, newDeleted)) {
         final int srcId = baseMapping.getGlobalId(ed.source);
         final int tgtId = baseMapping.getGlobalId(ed.target);
-        if (newBaseEdgeValues == updatedBaseEdgeValues) {
+        if (!baseEdgeValuesCopied) {
+          baseEdgeValuesCopied = true;
           newBaseEdgeValues = new HashMap<>();
           for (final var entry : updatedBaseEdgeValues.entrySet())
             newBaseEdgeValues.put(entry.getKey(), new HashMap<>(entry.getValue()));
@@ -642,8 +644,6 @@ class DeltaOverlay {
     for (final String type : types) {
       final Map<RID, AddedEdge> was = before.addedEdgesPerType.getOrDefault(type, Collections.emptyMap());
       final Map<RID, AddedEdge> is = after.addedEdgesPerType.getOrDefault(type, Collections.emptyMap());
-      if (was == is)
-        continue;
       for (final var entry : is.entrySet()) {
         final AddedEdge edge = entry.getValue();
         final AddedEdge previous = was.get(entry.getKey());
@@ -663,8 +663,6 @@ class DeltaOverlay {
     for (final String type : valueTypes) {
       final Map<Long, Object[]> was = before.updatedBaseEdgeValues.getOrDefault(type, Collections.emptyMap());
       final Map<Long, Object[]> is = after.updatedBaseEdgeValues.getOrDefault(type, Collections.emptyMap());
-      if (was == is)
-        continue;
       for (final var entry : is.entrySet())
         if (!Arrays.equals(was.get(entry.getKey()), entry.getValue()))
           pairs.accept(entry.getKey());
@@ -682,8 +680,6 @@ class DeltaOverlay {
     for (final String type : types) {
       final Map<Long, Integer> was = before.getOrDefault(type, Collections.emptyMap());
       final Map<Long, Integer> is = after.getOrDefault(type, Collections.emptyMap());
-      if (was == is)
-        continue;
       for (final var entry : is.entrySet())
         if (!entry.getValue().equals(was.get(entry.getKey())))
           pairs.accept(entry.getKey());
