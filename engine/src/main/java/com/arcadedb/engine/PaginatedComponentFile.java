@@ -221,6 +221,7 @@ public class PaginatedComponentFile extends ComponentFile {
         logReopen(operation);
         wasInterrupted |= Thread.interrupted();
         try {
+          // RELEASES THE CALLER'S READ LOCK, REOPENS UNDER THE WRITE LOCK, AND REACQUIRES THE READ LOCK BEFORE RETURNING
           reopenChannelUnderWriteLock();
           channelOperation.run();
           return;
@@ -465,7 +466,7 @@ public class PaginatedComponentFile extends ComponentFile {
         try {
           complete = readFully(buffer, pos);
         } catch (final ClosedChannelException e) {
-          complete = readAfterReopen(buffer, pos);
+          complete = readAfterReopen(buffer, 0, pos);
         }
         if (!complete)
           throw new IOException("Unexpected EOF calculating checksum at page " + i + " of file '" + getFileName() + "'");
@@ -571,7 +572,7 @@ public class PaginatedComponentFile extends ComponentFile {
       try {
         read = readFully(buffer, pos);
       } catch (final ClosedChannelException e) {
-        read = readAfterReopen(buffer, pos);
+        read = readAfterReopen(buffer, 0, pos);
       }
       if (!read)
         throw new IOException("Unexpected EOF reading page " + pageNumber + " from file '" + getFileName() + "'");
@@ -581,16 +582,18 @@ public class PaginatedComponentFile extends ComponentFile {
   }
 
   /**
-   * Re-reads {@code buf} from its start after its channel was found closed (#8944), through {@link #reopenAndRetry}.
-   * The buffer must have been cleared by the caller: its position is reset to 0 before every attempt. Must be called
-   * with the channel read lock held.
+   * Re-reads {@code buf} after its channel was found closed (#8944, #9306), through {@link #reopenAndRetry}. Every
+   * attempt restarts at {@code start}, the buffer position the caller's read began at: 0 for a cleared page buffer, the
+   * caller's own offset for {@link #readPages}, which does not clear. The limit is left as the caller set it. Must be
+   * called with the channel read lock held.
    *
    * @return false on EOF
    */
-  private boolean readAfterReopen(final ByteBuffer buf, final long pos) throws IOException {
+  private boolean readAfterReopen(final ByteBuffer buf, final int start, final long pos) throws IOException {
+    // A ONE-ELEMENT HOLDER, ALLOCATED ON THE RECOVERY PATH ONLY: THE FAST PATH NEVER GETS HERE
     final boolean[] read = new boolean[1];
     reopenAndRetry("read", () -> {
-      buf.clear();
+      buf.position(start);
       read[0] = readFully(buf, pos);
     });
     return read[0];
@@ -631,12 +634,7 @@ public class PaginatedComponentFile extends ComponentFile {
         // #9306: THE POINT-IN-TIME SNAPSHOT'S PRE-IMAGE CAPTURE AND ITS INPUT STREAM BOTH READ THROUGH HERE, AND NEITHER
         // CAN RETRY FOR ITSELF - A CLOSED CHANNEL USED TO INVALIDATE EVERY OPEN WINDOW, OR KILL THE TRANSFER MID-ARCHIVE.
         // THE RETRY RESTARTS AT THE CALLER'S POSITION: THE BUFFER IS NOT CLEARED HERE (SEE THE JAVADOC)
-        final boolean[] reread = new boolean[1];
-        reopenAndRetry("read", () -> {
-          buf.position(start);
-          reread[0] = readFully(buf, pos);
-        });
-        read = reread[0];
+        read = readAfterReopen(buf, start, pos);
       }
       if (!read)
         throw new IOException(
@@ -659,7 +657,7 @@ public class PaginatedComponentFile extends ComponentFile {
       try {
         read = readFully(buf, pos);
       } catch (final ClosedChannelException e) {
-        read = readAfterReopen(buf, pos);
+        read = readAfterReopen(buf, 0, pos);
       }
       if (!read)
         throw new IOException("Unexpected EOF reading page " + pageNum + " from file '" + getFileName() + "'");
