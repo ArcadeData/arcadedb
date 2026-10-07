@@ -5,6 +5,17 @@ they land during the 26.11.1 development cycle, so the release notes are ready a
 
 ## Breaking Changes (migration notes)
 
+### A plain `=` / `IN` on a `COLLATE ci` index is case sensitive (#9403)
+
+A `COLLATE ci` index folds its keys, and until now the planner returned every case variant for `name = 'JOHN'` while the
+same predicate over a subquery (a scan) returned only the exact-case rows, so the answer depended on whether the planner
+picked the index. The index no longer changes the answer: a plain `=` or `IN` still uses the index but is re-checked on
+the rows it returns, so `name = 'JOHN'` matches `'JOHN'` only, with or without the index.
+
+**Who sees a different answer.** A query that relied on `name = 'john'` finding `'John'` through a `COLLATE ci` index now
+returns fewer rows. Write `name.toLowerCase() = 'john'` (or `name.toLowerCase() IN ['john', 'mary']`) to keep the
+case-insensitive lookup; that spelling is served by the index and needs no re-check when the literal is lower case.
+
 ### Weighted path finders share one edge-weight rule (#9443)
 
 Every weighted shortest-path finder now reads an edge's weight the same way:
