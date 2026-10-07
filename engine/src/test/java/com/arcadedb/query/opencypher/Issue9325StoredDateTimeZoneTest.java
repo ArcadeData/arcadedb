@@ -94,6 +94,15 @@ class Issue9325StoredDateTimeZoneTest extends TestHelper {
     });
   }
 
+  @Test
+  void derivedValueIsAnOrdinaryZonedDateTime() {
+    run(ZonedDateTime.class, () -> {
+      // e.ts + PT0S is a new value: it keeps the materialized UTC zone and is NOT zone-less, so it matches only its own zone spelling
+      assertThat(count("e.ts + duration('PT0S') = " + Z)).isEqualTo(1L);
+      assertThat(count("e.ts + duration('PT0S') = " + PLUS1)).isEqualTo(0L);
+    });
+  }
+
   private void run(final Class<?> implementation, final Runnable body) {
     final var serializer = ((DatabaseInternal) database).getSerializer();
     final Object previous = serializer.getDateTimeImplementation();
