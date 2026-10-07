@@ -1004,6 +1004,51 @@ public class PageManagerFlushThread extends Thread {
   }
 
   /**
+   * Waits for the pages of a database that are in the flush pipeline NOW to reach the disk, bounded by a hard
+   * wall-clock deadline (issue #8843). Unlike {@link #waitAllPagesOfDatabaseAreFlushed}, the wait is not extended by
+   * commits that land after the call: it ends as soon as the pipeline is empty OR as many pages of this database have
+   * been written since the call as were pending at its start - the pipeline is FIFO, so that is the backlog the
+   * caller found. A database under sustained writes therefore costs the caller the time its backlog takes to drain,
+   * never the duration of the writes, and the deadline caps even that (a wedged disk, a suspended flush).
+   * <p>
+   * <b>The watermark is approximate.</b> It counts page WRITES: a page modified again by a later commit can be written
+   * more than once while the backlog drains, so the count can be reached before every page of the original backlog
+   * has landed. That can only happen under concurrent writes, where a reader of the files sees them change anyway. And
+   * when this database has no flushed-pages counter (a close racing the call removed it) the watermark exit is
+   * disabled: the wait degrades to "pipeline empty or deadline".
+   * <p>
+   * On a database with no further commits - the case the bootstrap fingerprint cares about - the first condition is
+   * the one that ends the wait, so it is exact: every committed page is on disk when this returns {@code true}.
+   *
+   * @return {@code true} when the backlog found at the call reached the disk, {@code false} when the deadline expired
+   *     first.
+   */
+  boolean waitPagesPendingNowOfDatabaseAreFlushedUntil(final Database database, final long deadlineMillis)
+      throws InterruptedException {
+    final int pendingAtStart = pageIndex.pendingOf(database);
+    if (pendingAtStart <= 0)
+      return true;
+
+    // A READ, NOT computeIfAbsent: the counter is created when a batch of this database is enqueued, so with pages
+    // pending it exists. A missing one (a close racing this call removed it) must not be re-created by a reader - it
+    // would outlive the database - and the pipeline-empty exit below still ends the wait, or the deadline does.
+    final AtomicLong existing = flushedPagesPerDatabase.get(database);
+    final AtomicLong flushedCounter = existing != null ? existing : new AtomicLong();
+    // The two reads are not atomic: pages flushed between them raise the target above the true backlog. Harmless - the
+    // wait then ends on the pipeline emptying or on the deadline, only the early watermark exit is lost for that call.
+    final long target = flushedCounter.get() + pendingAtStart;
+    while (pageIndex.pendingOf(database) > 0 && flushedCounter.get() < target) {
+      final long remaining = deadlineMillis - System.currentTimeMillis();
+      if (remaining <= 0)
+        return false;
+      // The drain signal only fires when the pipeline empties, which under sustained writes may never happen: the poll
+      // interval is what re-checks the flushed-pages watermark in that case.
+      pageIndex.awaitDrain(database, Math.min(remaining, flushWaitPollMillis));
+    }
+    return true;
+  }
+
+  /**
    * Bounded {@link #setSuspended(Database, boolean)} acquisition for the snapshot t0 barrier (#6125).
    * <p>
    * The unbounded version parks on {@code suspendLock} for as long as another suspender's resume is in flight, and
