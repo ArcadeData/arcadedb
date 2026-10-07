@@ -31,9 +31,11 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.MultiIterator;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.util.Iterator;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 
 /**
  * Issue #9404: a scan prefetched up to 1,024 records per bucket, by count only, and every record that spans several pages is
@@ -88,7 +90,7 @@ class BucketIteratorPrefetchBytesIssue9404Test extends TestHelper {
 
   @Test
   void aBudgetCloseToFullShrinksTheBatchToOneRecord() {
-    database.getConfiguration().setValue(GlobalConfiguration.QUERY_BATCH_MAX_BYTES, 16L * 1024 * 1024);
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_BATCH_MAX_BYTES, 4L * 1024 * 1024);
     final long previousBudget = GlobalConfiguration.QUERY_MAX_HEAP_RAM.getValueAsLong();
     GlobalConfiguration.QUERY_MAX_HEAP_RAM.setValue(1024L);
     final QueryHeapTracker otherQuery = new QueryHeapTracker();
@@ -117,7 +119,7 @@ class BucketIteratorPrefetchBytesIssue9404Test extends TestHelper {
 
   @Test
   void aProfiledScanReportsTheReadAheadTheBudgetReduced() {
-    database.getConfiguration().setValue(GlobalConfiguration.QUERY_BATCH_MAX_BYTES, 16L * 1024 * 1024);
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_BATCH_MAX_BYTES, 4L * 1024 * 1024);
     database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN, false);
     final String sql = "PROFILE SELECT id FROM Large";
     final String cypher = "PROFILE MATCH (n:Large) RETURN n.id AS id";
@@ -137,8 +139,8 @@ class BucketIteratorPrefetchBytesIssue9404Test extends TestHelper {
       final long shrunkBefore = QueryHeapBudget.getScanBatchesShrunk();
 
       // WITH THE BUDGET NEARLY FULL THE SLOW SCAN NAMES ITS CAUSE, IN SQL AND IN OPENCYPHER
-      assertThat(profile("sql", sql)).contains("read-ahead reduced in").contains("by the query heap budget");
-      assertThat(profile("opencypher", cypher)).contains("read-ahead reduced in").contains("by the query heap budget");
+      assertThat(profile("sql", sql)).contains("read-ahead reduced in").contains("by memory pressure");
+      assertThat(profile("opencypher", cypher)).contains("read-ahead reduced in").contains("by memory pressure");
       assertThat(profile("opencypher", legacyCypher)).contains("MATCH NODE").contains("read-ahead reduced in");
 
       // AND THE SERVER PROFILER COUNTS THEM
@@ -152,7 +154,7 @@ class BucketIteratorPrefetchBytesIssue9404Test extends TestHelper {
 
   @Test
   void theIteratorsCountTheBatchesTheBudgetReduced() {
-    database.getConfiguration().setValue(GlobalConfiguration.QUERY_BATCH_MAX_BYTES, 16L * 1024 * 1024);
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_BATCH_MAX_BYTES, 4L * 1024 * 1024);
     final long previousBudget = GlobalConfiguration.QUERY_MAX_HEAP_RAM.getValueAsLong();
     GlobalConfiguration.QUERY_MAX_HEAP_RAM.setValue(1024L);
     final QueryHeapTracker otherQuery = new QueryHeapTracker();
@@ -360,6 +362,102 @@ class BucketIteratorPrefetchBytesIssue9404Test extends TestHelper {
   }
 
   @Test
+  void theScansShareAJvmWidePoolAndGiveItBack() {
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_BATCH_MAX_BYTES, 1024L * 1024);
+    final long baseline = ScanReadAheadBudget.getReservedBytes();
+
+    // A BATCH READ AHEAD IS HELD IN THE POOL UNTIL IT IS HANDED OVER; TWO SCANS HOLD MORE THAN ONE
+    final BucketIterator first = openIterator("Large");
+    final long heldByOne = ScanReadAheadBudget.getReservedBytes() - baseline;
+    assertThat(heldByOne).isGreaterThan(0).isLessThanOrEqualTo(2L * 1024 * 1024);
+    final BucketIterator second = openIterator("Large");
+    assertThat(ScanReadAheadBudget.getReservedBytes() - baseline).isGreaterThan(heldByOne);
+
+    // ONCE BOTH ARE READ TO THE END THEY HOLD NOTHING
+    drain(first);
+    drain(second);
+    assertThat(ScanReadAheadBudget.getReservedBytes()).isLessThanOrEqualTo(baseline);
+  }
+
+  @Test
+  void aScanTheCallerAbandonedGivesItsBytesBackToThePool() {
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_BATCH_MAX_BYTES, 1024L * 1024);
+    final long baseline = ScanReadAheadBudget.getReservedBytes();
+
+    // READ ONE BATCH AND DROP THE ITERATOR WITHOUT READING THE REST
+    openIterator("Large");
+    assertThat(ScanReadAheadBudget.getReservedBytes()).isGreaterThan(baseline);
+
+    await().atMost(Duration.ofSeconds(20)).until(() -> {
+      System.gc();
+      return ScanReadAheadBudget.getReservedBytes() <= baseline;
+    });
+  }
+
+  @Test
+  void aPoolTakenByOthersStillReadsOneRecordAtATime() {
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_BATCH_MAX_BYTES, 1024L * 1024);
+    final long previousPool = GlobalConfiguration.QUERY_SCAN_READ_AHEAD_MAX_RAM.getValueAsLong();
+    GlobalConfiguration.QUERY_SCAN_READ_AHEAD_MAX_RAM.setValue(1L);
+    final Object owner = new Object();
+    final ScanReadAheadBudget.Reservation others = ScanReadAheadBudget.newReservation(owner);
+    try {
+      // THE POOL IS TAKEN, AND MORE: NOTHING IS LEFT
+      others.reserve(512L * 1024 * 1024);
+      assertThat(ScanReadAheadBudget.getAvailableBytes()).isZero();
+
+      // WORST CASE: A BATCH OF ONE RECORD, AND EVERY RECORD STILL COMES BACK, IN ORDER
+      final BucketIterator scan = openIterator("Large");
+      assertThat(lastBatch).isEqualTo(1);
+      int expected = 0;
+      while (scan.hasNext()) {
+        assertThat(((Document) scan.next()).getInteger("id")).isEqualTo(expected);
+        ++expected;
+      }
+      assertThat(expected).isEqualTo(LARGE_RECORDS);
+      assertThat(scan.getBudgetShrunkBatches()).isGreaterThanOrEqualTo(LARGE_RECORDS);
+    } finally {
+      others.release();
+      GlobalConfiguration.QUERY_SCAN_READ_AHEAD_MAX_RAM.setValue(previousPool);
+    }
+  }
+
+  @Test
+  void aTinyOrNonPositiveLimitNeverStopsAScan() {
+    final long previousPool = GlobalConfiguration.QUERY_SCAN_READ_AHEAD_MAX_RAM.getValueAsLong();
+    try {
+      // ONE BYTE: EVERY BATCH IS ONE RECORD, AND NOTHING IS LOST
+      database.getConfiguration().setValue(GlobalConfiguration.QUERY_BATCH_MAX_BYTES, 1L);
+      assertThat(batchOf("Large")).isEqualTo(1);
+      assertThat(countAll("Large")).isEqualTo(LARGE_RECORDS);
+
+      // ZERO AND NEGATIVE VALUES ARE VALUES, NOT ERRORS: THEY SWITCH THE BOUND OFF, AND THE SCAN READS BY COUNT
+      for (final long bound : new long[] { 0L, -1L, Long.MIN_VALUE }) {
+        database.getConfiguration().setValue(GlobalConfiguration.QUERY_BATCH_MAX_BYTES, bound);
+        assertThat(batchOf("Large")).isEqualTo(LARGE_RECORDS);
+        assertThat(countAll("Large")).isEqualTo(LARGE_RECORDS);
+      }
+
+      // THE SAME FOR THE POOL: OFF, AND THE BOUND OF EACH SCAN STILL HOLDS
+      database.getConfiguration().setValue(GlobalConfiguration.QUERY_BATCH_MAX_BYTES, 1024L * 1024);
+      for (final long pool : new long[] { 0L, -1L, Long.MIN_VALUE }) {
+        GlobalConfiguration.QUERY_SCAN_READ_AHEAD_MAX_RAM.setValue(pool);
+        assertThat(ScanReadAheadBudget.isEnabled()).isFalse();
+        assertThat(ScanReadAheadBudget.getAvailableBytes()).isEqualTo(Long.MAX_VALUE);
+        assertThat(batchOf("Large")).isGreaterThan(1).isLessThanOrEqualTo(1024L * 1024 / LARGE_PAYLOAD + 1);
+        assertThat(countAll("Large")).isEqualTo(LARGE_RECORDS);
+      }
+
+      // A HUGE POOL IS NOT AN OVERFLOW
+      GlobalConfiguration.QUERY_SCAN_READ_AHEAD_MAX_RAM.setValue(Long.MAX_VALUE);
+      assertThat(ScanReadAheadBudget.getLimitBytes()).isEqualTo(Long.MAX_VALUE);
+      assertThat(countAll("Large")).isEqualTo(LARGE_RECORDS);
+    } finally {
+      GlobalConfiguration.QUERY_SCAN_READ_AHEAD_MAX_RAM.setValue(previousPool);
+    }
+  }
+
+  @Test
   void aNonPositiveBoundKeepsTheCountOnlyBatch() {
     database.getConfiguration().setValue(GlobalConfiguration.QUERY_BATCH_MAX_BYTES, 0L);
 
@@ -405,6 +503,16 @@ class BucketIteratorPrefetchBytesIssue9404Test extends TestHelper {
         rs.next();
       return rs.getExecutionPlan().get().prettyPrint(0, 2);
     }
+  }
+
+  private int countAll(final String typeName) {
+    int count = 0;
+    final Iterator<Record> scan = database.iterateType(typeName, true);
+    while (scan.hasNext()) {
+      scan.next();
+      ++count;
+    }
+    return count;
   }
 
   private static void drain(final Iterator<?> iterator) {
