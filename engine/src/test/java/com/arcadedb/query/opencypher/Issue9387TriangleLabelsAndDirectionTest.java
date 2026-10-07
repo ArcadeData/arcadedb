@@ -125,6 +125,32 @@ class Issue9387TriangleLabelsAndDirectionTest extends TestHelper {
     assertAllAgree(UNDIRECTED.replace("(country:Country)", "(country:Company)"), 0L);
   }
 
+  @Test
+  void subTypeOfTheLabelIsAccepted() throws InterruptedException {
+    database.command("sql", "CREATE VERTEX TYPE Employee EXTENDS Person");
+    final RID[] p = graph("Employee");
+    knows(p[0], p[1]);
+    knows(p[1], p[2]);
+    knows(p[2], p[0]);
+    assertAllAgree(UNDIRECTED, 6L);
+  }
+
+  @Test
+  void ambiguousChainWithLabelsIsCountedExactly() throws InterruptedException {
+    // a second city in the same country for one person: two paths to the country, one of them through a rejected label
+    final RID[] p = graph("Person");
+    database.transaction(() -> {
+      final RID country = database.newVertex("Country").save().getIdentity();
+      final RID other = database.newVertex("Company").save().getIdentity();
+      other.asVertex().newEdge("IS_PART_OF", country);
+      p[0].asVertex().newEdge("IS_LOCATED_IN", other);
+    });
+    knows(p[0], p[1]);
+    knows(p[1], p[2]);
+    knows(p[2], p[0]);
+    assertAllAgree(UNDIRECTED, 6L);
+  }
+
   private void assertAllAgree(final String match, final long expected) throws InterruptedException {
     assertThat(count(match + " WITH " + VARS + " RETURN count(*) AS n")).as("row pipeline").isEqualTo(expected);
     final String written = match + " RETURN count(*) AS n";
