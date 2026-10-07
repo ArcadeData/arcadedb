@@ -204,7 +204,8 @@ class GraphBatchLoadStream {
       if (stream != null)
         stream.cancel("graph batch load timed out on the client", null);
       throw new TimeoutException("Graph batch load timed out after " + timeoutMs + "ms waiting for the server to "
-          + "complete. Raise the timeout with withTimeout() if the load legitimately takes longer");
+          + "complete: the records already sent may be partially committed, because the load commits as it goes. Raise "
+          + "the timeout with withTimeout() if the load legitimately takes longer");
     }
 
     failIfTerminated();
@@ -237,7 +238,8 @@ class GraphBatchLoadStream {
     // exactly as for any other operation. The counters do not go in the message: they belong to the batch, which
     // reports them through getResult() whether the load succeeded or died half-way.
     partialResultRef.set(readPartialResult(error));
-    throw GrpcClientErrorMapper.toException(error);
+    // The load commits as it goes, so a lost answer leaves an unknown part of it durable: never retryable (#8822)
+    throw GrpcClientErrorMapper.toStreamingWriteException(error, "GraphBatchLoad");
   }
 
   /**
