@@ -28,6 +28,7 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.net.HttpURLConnection;
+import java.net.URI;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
@@ -118,7 +119,7 @@ class Issue8901ReplicationPathAfterInPlaceRestartIT extends BaseRaftHATest {
   }
 
   private JSONObject queryClusterEndpoint(final int serverIndex) throws Exception {
-    final URL url = new URL("http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/cluster");
+    final URL url = URI.create("http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/cluster").toURL();
     final HttpURLConnection conn = (HttpURLConnection) url.openConnection();
     conn.setRequestMethod("GET");
     conn.setRequestProperty("Authorization",
