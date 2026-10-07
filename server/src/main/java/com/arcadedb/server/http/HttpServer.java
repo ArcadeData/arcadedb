@@ -297,7 +297,8 @@ public class HttpServer implements ServerPlugin {
         // A stranger took a port between the probe and the bind, and the exception does not say which. Move past the
         // HTTP port (an earlier listener of the failed attempt may still hold it) and past the HTTPS one too when it is
         // the taken one, so neither attempt is retried on a port that cannot be bound. The HTTPS re-probe is a heuristic:
-        // if both ports were taken in that window, both move on, which costs at most one port of each range.
+        // if both ports were taken in that window, both move on, which costs at most one port of each range. This window
+        // still leaks the listener the failed attempt already bound; closing it needs an owned XNIO worker (issue #9479).
         ++httpPortListening;
         if (probeHttps && portConflict(listenHosts, httpsPortListening) != null)
           httpsPortListening = advanceHttpsPortOrFail(httpsPortListening, httpsPortRange);
