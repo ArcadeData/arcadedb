@@ -110,8 +110,9 @@ class DeltaOverlay {
   private final int deltaEdgeCount;
 
   // The edge types whose property columns a committed transaction has left out of date. Such a change has no
-  // overlay representation - an edge already in the base CSR is addressed by its column slot, and nothing maps
-  // that slot back from the edge's RID - so those columns are stale until the rebuild
+  // overlay representation when the edge's column slot cannot be identified - an edge already in the base CSR is
+  // addressed by its column slot, and nothing maps that slot back from the edge's RID; the sole edge of a pair is the
+  // exception, see updatedBaseEdgeValues - so those columns are stale until the rebuild
   // GraphAnalyticalView.applyDelta() forces for them lands. Until then the view answers "no edge properties"
   // for those types rather than a stale weight: the added edges below carry their own values and could be
   // served exactly, but a base edge whose weight was just updated could not, and there is no honest way to

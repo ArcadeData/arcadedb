@@ -2297,9 +2297,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * captured for it at commit time.
    * <p>
    * What the answer still turns on is {@link DeltaOverlay#isEdgePropertiesDirty(String)}: a committed change to
-   * a base edge's own properties leaves that type's columns holding a value the database no longer has, and
-   * unlike an addition or a deletion it has nothing in the overlay to correct it with - an edge already in the
-   * base CSR is addressed by a column slot, and nothing maps that slot back from its RID. The rebuild
+   * a base edge's own properties can leave that type's columns holding a value the database no longer has, when the
+   * overlay cannot tell which column slot it belongs to - an edge already in the base CSR is addressed by a column
+   * slot, and nothing maps that slot back from its RID. An edge that is the only one of its type between its two
+   * vertices is the exception: its pair names its slot, so its new values are kept in the overlay and served by
+   * {@link #edgeWeightsForSlice} (issue #9437). For any other base-edge update, the rebuild
    * {@link #applyDelta} forces for it is what repairs the columns; until it lands the honest answer is no, the
    * same reading {@link #getMeanEdgesPerConnectedPair} gives when it cannot answer exactly. This method asks
    * the coarse form of that question - is ANY type out of date - because it is itself the coarse question;
