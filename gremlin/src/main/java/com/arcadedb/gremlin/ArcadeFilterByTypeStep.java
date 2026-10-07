@@ -212,7 +212,7 @@ public class ArcadeFilterByTypeStep<S, E extends Element> extends AbstractStep<S
     if (!super.equals(o))
       return false;
     final ArcadeFilterByTypeStep<?, ?> that = (ArcadeFilterByTypeStep<?, ?>) o;
-    return returnClass.equals(that.returnClass) && typeName.equals(that.typeName);
+    return returnClass.equals(that.returnClass) && Objects.equals(typeName, that.typeName) && Objects.equals(bucketName, that.bucketName);
   }
 
   /**
