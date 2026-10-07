@@ -3180,6 +3180,18 @@ public enum GlobalConfiguration {
       previous behavior: an async rebuild triggered on open. Set to false to disable persisting the CSR file \
       (e.g. to avoid its disk footprint or the extra write at close)""",
       Boolean.class, true),
+
+  GAV_CCH_MAX_ARCS_PER_EDGE("arcadedb.gavCchMaxArcsPerEdge", SCOPE.DATABASE,
+      """
+      Upper bound on the size of a Customizable Contraction Hierarchy (CCH) attached to a Graph Analytical View, as \
+      supergraph arcs (edges plus shortcuts) per edge of the routed graph. Road, logistics and utility networks need a \
+      small multiple of their edge count; graphs without small separators (social graphs, graphs with supernodes) need \
+      far more, and building them would exhaust the heap. A hierarchy that would exceed the bound is not built: the \
+      view reports it as UNSUITABLE and shortest-path queries keep answering through bidirectional Dijkstra. Graphs \
+      small enough to need fewer than 100,000 arcs are always accepted. Each arc costs about 52 bytes of heap \
+      (topology plus the directed metric) and 20 more once undirected (BOTH) queries are served too, so the worst \
+      case at the default is about 830 bytes, or 1.2 KB, per routed edge""",
+      Integer.class, 16),
   ;
 
   /**

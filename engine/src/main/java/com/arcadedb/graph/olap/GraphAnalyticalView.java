@@ -18,6 +18,7 @@
  */
 package com.arcadedb.graph.olap;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
@@ -53,6 +54,7 @@ import java.util.Set;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BooleanSupplier;
 import java.util.function.IntConsumer;
 import java.util.logging.Level;
 
@@ -124,7 +126,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   /** Shared executor for all GAV async builds and compactions. Uses virtual threads for lightweight scheduling. */
   private static volatile ExecutorService EXECUTOR;
 
-  private static ExecutorService getExecutor() {
+  static ExecutorService getExecutor() {
     ExecutorService exec = EXECUTOR;
     if (exec == null || exec.isShutdown()) {
       synchronized (GraphAnalyticalView.class) {
@@ -336,6 +338,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   // Raised by shutdown(): a build() that learns the outcome of the build that superseded it must not report success
   // when that one was cut short by the shutdown and published nothing (issue #8403)
   private volatile boolean       shutDown;
+  // The contraction hierarchies kept on this view (issue #9437), copy-on-write: read on every published snapshot
+  private volatile ContractionHierarchy[] contractionHierarchies = new ContractionHierarchy[0];
 
   // Tracks scheduled-but-not-yet-completed async builds and compactions for this view.
   // shutdown()/drop() block on this so a closing database does not race the worker virtual thread,
@@ -394,6 +398,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * @param edgeTypes   edge type names to include (null = all)
    */
   public void build(final String[] vertexTypes, final String[] edgeTypes) {
+    for (final ContractionHierarchy hierarchy : contractionHierarchies)
+      hierarchy.onRebuildRequested();
     // Unlike buildAsync()/onRelevantCommit()/applyDelta()'s rebuild - each of which calls database.begin() on a
     // fresh worker thread AFTER sampling asOfTransactionId, so the scan's transaction cannot have cached
     // anything before that point - this method runs the scan on whatever transaction is already active on the
@@ -639,6 +645,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
     this.snapshot = fresh;
     this.status = newStatus;
+    notifyContractionHierarchies();
     if (deltaCollector == null)
       registerChangeListeners();
 
@@ -673,6 +680,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   public synchronized void buildAsync() {
     if (!buildQueued.compareAndSet(false, true))
       return; // a build is already queued or running
+    for (final ContractionHierarchy hierarchy : contractionHierarchies)
+      hierarchy.onRebuildRequested();
     // See build(vertexTypes, edgeTypes)'s identical guard: supersedes any not-yet-resolved deferred
     // restore-from-disk (see #6632). Also reached, harmlessly, from dispatchDeferredRestore()'s own
     // fallback call - pendingDiskRestore is already false there by the time it calls this.
@@ -844,6 +853,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     if (name != null) {
       GraphAnalyticalViewPersistence.remove(database, name);
       GraphAnalyticalViewCSRPersistence.delete(database, name);
+      for (final ContractionHierarchy hierarchy : contractionHierarchies)
+        CCHOrderPersistence.delete(hierarchy.orderFile());
     }
   }
 
@@ -861,6 +872,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   private void shutdown(final boolean persistCsr) {
+    // a hierarchy being prepared stops at its next check instead of holding the wait below
+    for (final ContractionHierarchy hierarchy : contractionHierarchies)
+      hierarchy.close();
     awaitInFlightTasks(shutdownAwaitMs);
     synchronized (this) {
       // A build or compaction still scanning past the wait above must not publish, and re-arm the listeners, on a
@@ -872,8 +886,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       // Runs the persist-to-disk write (when eligible) while holding this instance's monitor: any concurrent
       // awaitReady()/getStatus() caller blocks for the duration of the write - accepted
       // because it only happens once per close and is gated by GAV_PERSIST_CSR.
-      if (persistCsr)
+      if (persistCsr) {
         persistCsrIfPossible();
+        persistContractionOrdersIfPossible();
+      }
       unregisterChangeListeners();
       GraphTraversalProviderRegistry.unregister(database, this);
       if (name != null)
@@ -1682,6 +1698,306 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     return checkBuilt();
   }
 
+  /** The snapshot being served, or null before the first build; unlike {@link #captureSnapshot()} it never waits. */
+  Snapshot currentSnapshot() {
+    return snapshot;
+  }
+
+  /** {@link #getNodeId(RID)} asked of a captured snapshot. */
+  int nodeIdOf(final Snapshot snap, final RID rid) {
+    final DeltaOverlay ov = snap.overlay;
+    return ov != null ? ov.resolveNodeId(rid, snap.nodeMapping) : snap.nodeMapping.getGlobalId(rid);
+  }
+
+  /** {@link #getRID(int)} asked of a captured snapshot; null for an id it does not hold. */
+  RID ridOf(final Snapshot snap, final int nodeId) {
+    if (nodeId < 0)
+      return null;
+    if (nodeId >= snap.nodeMapping.size()) {
+      final DeltaOverlay ov = snap.overlay;
+      return ov != null && nodeId < ov.getNodeIdUpperBound() ? ov.getOverflowRID(nodeId) : null;
+    }
+    return snap.nodeMapping.getRID(database, nodeId);
+  }
+
+  /**
+   * {@link #edgeWeightsOf(int, Vertex.DIRECTION, String, double, String...)} asked of a captured snapshot: every slice
+   * of {@code edgeTypes} (null: every type the snapshot holds), both directions for BOTH, concatenated. Null when a
+   * slice cannot be answered exactly, the same contract as the live form.
+   */
+  NodeEdgeWeights edgeWeightsOf(final Snapshot snap, final int nodeId, final Vertex.DIRECTION direction,
+      final String propertyName, final double defaultWeight, final String[] edgeTypes) {
+    final String[] slices = edgeTypes == null || edgeTypes.length == 0 ?
+        allEdgeTypes(snap).toArray(new String[0]) :
+        resolveEdgeTypes(edgeTypes);
+    final boolean out = direction != Vertex.DIRECTION.IN;
+    final boolean in = direction != Vertex.DIRECTION.OUT;
+    NodeEdgeWeights single = null;
+    NodeEdgeWeights[] parts = null;
+    int count = 0;
+    int degree = 0;
+    for (final String slice : slices)
+      for (int d = 0; d < 2; d++) {
+        if ((d == 0 && !out) || (d == 1 && !in))
+          continue;
+        final NodeEdgeWeights part;
+        if (snap.edgeColumnStores != null && snap.edgeColumnStores.get(slice) == null && !sliceHasEdges(snap, nodeId, slice,
+            d == 0))
+          part = EMPTY_EDGE_WEIGHTS; // a type with no edges at build time and none since has nothing to price
+        else
+          part = edgeWeightsForSlice(snap, nodeId, d == 0, slice, propertyName, defaultWeight, null);
+        if (part == null)
+          return null;
+        if (part.neighbors().length == 0)
+          continue;
+        if (count == 0)
+          single = part;
+        else {
+          if (parts == null) {
+            parts = new NodeEdgeWeights[slices.length * 2];
+            parts[0] = single;
+          }
+          parts[count] = part;
+        }
+        count++;
+        degree += part.neighbors().length;
+      }
+    if (count == 0)
+      return EMPTY_EDGE_WEIGHTS;
+    if (count == 1)
+      return single;
+    final int[] neighbors = new int[degree];
+    final double[] weights = new double[degree];
+    int pos = 0;
+    for (int i = 0; i < count; i++) {
+      final int length = parts[i].neighbors().length;
+      System.arraycopy(parts[i].neighbors(), 0, neighbors, pos, length);
+      System.arraycopy(parts[i].weights(), 0, weights, pos, length);
+      pos += length;
+    }
+    return new NodeEdgeWeights(neighbors, weights);
+  }
+
+  /** Whether {@code nodeId} has edges of {@code slice} in the given direction, in the base CSR or the overlay. */
+  private static boolean sliceHasEdges(final Snapshot snap, final int nodeId, final String slice, final boolean outgoing) {
+    final CSRAdjacencyIndex csr = snap.csrPerType.get(slice);
+    if (csr != null && nodeId < snap.nodeMapping.size()) {
+      final int start = outgoing ? csr.outOffset(nodeId) : csr.inOffset(nodeId);
+      final int end = outgoing ? csr.outOffsetEnd(nodeId) : csr.inOffsetEnd(nodeId);
+      if (end > start)
+        return true;
+    }
+    final DeltaOverlay ov = snap.overlay;
+    if (ov == null)
+      return false;
+    final DeltaOverlay.AddedNeighbors added = ov.getAdded(nodeId, slice, outgoing);
+    return added != null && added.nodeIds().length > 0;
+  }
+
+  /** {@link #isNodeLive(int)} asked of a captured snapshot. */
+  boolean isNodeLive(final Snapshot snap, final int nodeId) {
+    if (nodeId < 0)
+      return false;
+    final DeltaOverlay ov = snap.overlay;
+    if (ov == null)
+      return nodeId < snap.nodeMapping.size();
+    return nodeId < ov.getNodeIdUpperBound() && !ov.isDeleted(nodeId);
+  }
+
+  /**
+   * True while {@code snap} is known to be on its way out: its edge columns are out of date and the rebuild that repairs
+   * them is due, or a build is running.
+   */
+  boolean isSnapshotBeingReplaced(final Snapshot snap) {
+    return hasStaleEdgeColumns(snap) || status == Status.BUILDING || compacting.get();
+  }
+
+  ContextConfiguration getDatabaseConfiguration() {
+    return database.getConfiguration();
+  }
+
+  // --- Contraction hierarchies (issue #9437) ---
+
+  /**
+   * Keeps a Customizable Contraction Hierarchy on this view for point-to-point shortest paths weighted by
+   * {@code weightProperty} over {@code edgeTypes} (none: every edge type of the view). The weight must be one of the edge
+   * properties the view materializes. Returns the existing hierarchy when one with the same weight and types is there.
+   * The hierarchy is prepared in the background as soon as the view has a snapshot, and again after every change.
+   */
+  public ContractionHierarchy addContractionHierarchy(final String weightProperty, final String... edgeTypes) {
+    if (edgePropertyFilter == null || !Arrays.asList(edgePropertyFilter).contains(weightProperty))
+      throw new IllegalArgumentException("Cannot keep a contraction hierarchy on '" + weightProperty + "': view '" + name
+          + "' does not materialize it as an edge property");
+    final String[] types = edgeTypes == null || edgeTypes.length == 0 ? null : edgeTypes;
+    final ContractionHierarchy hierarchy;
+    synchronized (this) {
+      for (final ContractionHierarchy existing : contractionHierarchies)
+        if (existing.getWeightProperty().equals(weightProperty) && sameTypeSet(existing.getEdgeTypes(), types))
+          return existing;
+      hierarchy = new ContractionHierarchy(this, weightProperty, types);
+      final ContractionHierarchy[] current = contractionHierarchies;
+      final ContractionHierarchy[] updated = Arrays.copyOf(current, current.length + 1);
+      updated[current.length] = hierarchy;
+      contractionHierarchies = updated;
+    }
+    if (snapshot != null)
+      hierarchy.onSnapshotPublished();
+    return hierarchy;
+  }
+
+  private static boolean sameTypeSet(final String[] a, final String[] b) {
+    if (a == null || b == null)
+      return a == b;
+    return Set.of(a).equals(Set.of(b));
+  }
+
+  /** The hierarchy that answers for {@code weightProperty} over exactly {@code edgeTypes} (none: every type), or null. */
+  public ContractionHierarchy getContractionHierarchy(final String weightProperty, final String... edgeTypes) {
+    for (final ContractionHierarchy hierarchy : contractionHierarchies)
+      if (hierarchy.matches(weightProperty, edgeTypes))
+        return hierarchy;
+    return null;
+  }
+
+  public List<ContractionHierarchy> getContractionHierarchies() {
+    return List.of(contractionHierarchies);
+  }
+
+  boolean hasContractionHierarchies() {
+    return contractionHierarchies.length > 0;
+  }
+
+  private void notifyContractionHierarchies() {
+    for (final ContractionHierarchy hierarchy : contractionHierarchies)
+      hierarchy.onSnapshotPublished();
+  }
+
+  /**
+   * Runs {@code task} on this view's build executor under a build permit, counted as in flight so that
+   * {@link #shutdown()} waits for it.
+   *
+   * @return false when the view is shut down or the executor refused the task
+   */
+  boolean dispatchBackgroundTask(final Runnable task) {
+    if (shutDown)
+      return false;
+    inFlightTasks.incrementAndGet();
+    try {
+      getExecutor().execute(() -> {
+        BUILD_PERMITS.acquireUninterruptibly();
+        try {
+          task.run();
+        } finally {
+          BUILD_PERMITS.release();
+          DatabaseContext.INSTANCE.removeCurrentThreadContexts();
+          taskCompleted();
+        }
+      });
+      return true;
+    } catch (final RejectedExecutionException e) {
+      taskCompleted();
+      return false;
+    }
+  }
+
+  /**
+   * Every arc of {@code edgeTypes} (null: every type the snapshot holds) with its {@code weightProperty} value, read out
+   * of {@code snap} with its overlay applied. An edge without a value weighs 1.
+   *
+   * @return the arcs in the snapshot's dense id space, or null when the snapshot cannot price them exactly (its edge
+   * columns are being rebuilt, a slice has no column for the property, or a parallel-edge deletion is ambiguous) or the
+   * work was cancelled
+   */
+  ContractionHierarchy.Input extractWeightedArcs(final Snapshot snap, final String[] edgeTypes, final String weightProperty,
+      final BooleanSupplier cancelled) {
+    if (snap.edgeColumnStores == null)
+      return null;
+    final String[] slices = edgeTypes == null ? allEdgeTypes(snap).toArray(new String[0]) : resolveEdgeTypes(edgeTypes);
+    final DeltaOverlay ov = snap.overlay;
+    final int n = ov != null ? ov.getNodeIdUpperBound() : snap.nodeMapping.size();
+
+    long capacity = 16;
+    for (final String slice : slices) {
+      final CSRAdjacencyIndex csr = snap.csrPerType.get(slice);
+      if (csr != null)
+        capacity += csr.getEdgeCount();
+    }
+    if (ov != null)
+      capacity += Math.max(0, ov.getDeltaEdgeCount());
+    if (capacity > Integer.MAX_VALUE - 16)
+      return null;
+    final ArcBuffer arcs = new ArcBuffer((int) capacity);
+
+    for (final String slice : slices) {
+      if (hasStaleEdgeColumns(snap, slice))
+        return null;
+      final CSRAdjacencyIndex csr = snap.csrPerType.get(slice);
+      if (ov == null) {
+        if (csr == null || csr.getEdgeCount() == 0)
+          continue;
+        final ColumnStore store = snap.edgeColumnStores.get(slice);
+        final Column column = store != null ? store.getColumn(weightProperty) : null;
+        if (column == null)
+          return null;
+        final int[] offsets = csr.getForwardOffsets();
+        final int[] neighbors = csr.getForwardNeighbors();
+        final int baseNodes = Math.min(n, offsets.length - 1);
+        for (int u = 0; u < baseNodes; u++) {
+          if ((u & 0xFFFF) == 0 && cancelled != null && cancelled.getAsBoolean())
+            return null;
+          for (int j = offsets[u], end = offsets[u + 1]; j < end; j++)
+            arcs.add(u, neighbors[j], columnWeight(column, j, 1.0));
+        }
+      } else {
+        for (int u = 0; u < n; u++) {
+          if ((u & 0xFFFF) == 0 && cancelled != null && cancelled.getAsBoolean())
+            return null;
+          if (ov.isDeleted(u))
+            continue;
+          final NodeEdgeWeights edges = edgeWeightsForSlice(snap, u, true, slice, weightProperty, 1.0, null);
+          if (edges == null) {
+            // a node with nothing in this slice, base or overlay, is not a reason to refuse the whole graph
+            if (!sliceHasEdges(snap, u, slice, true))
+              continue;
+            return null;
+          }
+          final int[] neighbors = edges.neighbors();
+          final double[] values = edges.weights();
+          for (int j = 0; j < neighbors.length; j++)
+            arcs.add(u, neighbors[j], values[j]);
+        }
+      }
+    }
+    return new ContractionHierarchy.Input(n, arcs.tails, arcs.heads, arcs.weights, arcs.count);
+  }
+
+  /** Growable parallel arrays of weighted arcs. */
+  private static final class ArcBuffer {
+    int[]    tails;
+    int[]    heads;
+    double[] weights;
+    int      count;
+
+    ArcBuffer(final int capacity) {
+      tails = new int[capacity];
+      heads = new int[capacity];
+      weights = new double[capacity];
+    }
+
+    void add(final int tail, final int head, final double weight) {
+      if (count == tails.length) {
+        final int grown = count * 2;
+        tails = Arrays.copyOf(tails, grown);
+        heads = Arrays.copyOf(heads, grown);
+        weights = Arrays.copyOf(weights, grown);
+      }
+      tails[count] = tail;
+      heads[count] = head;
+      weights[count++] = weight;
+    }
+  }
+
+
   /**
    * The same question asked of a snapshot a caller has already captured, which is how every method that goes
    * on to read that snapshot must ask it: re-reading the field would let a commit land between the check and
@@ -2045,10 +2361,21 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       return null;
 
     final Snapshot snap = checkBuilt();
-    if (snap.edgeColumnStores == null || hasStaleEdgeColumns(snap, edgeType))
-      return null;
     // Per slice, like hasEdgeProperty(): a type with sub-types cannot be served as one, the caller reads the records
     if (expandEdgeType(edgeType).length > 1)
+      return null;
+    return edgeWeightsForSlice(snap, nodeId, direction == Vertex.DIRECTION.OUT, edgeType, propertyName, defaultWeight,
+        edgeCheckpoint);
+  }
+
+  /**
+   * {@link #edgeWeightsForSlice(int, Vertex.DIRECTION, String, String, double, IntConsumer)} asked of a snapshot the
+   * caller has already captured, for one concrete slice: {@code edgeType} names the slice itself, never a type whose
+   * sub-types it should take in.
+   */
+  NodeEdgeWeights edgeWeightsForSlice(final Snapshot snap, final int nodeId, final boolean outgoing, final String edgeType,
+      final String propertyName, final double defaultWeight, final IntConsumer edgeCheckpoint) {
+    if (snap.edgeColumnStores == null || hasStaleEdgeColumns(snap, edgeType))
       return null;
     final ColumnStore edgeColStore = snap.edgeColumnStores.get(edgeType);
     if (edgeColStore == null)
@@ -2057,7 +2384,6 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     if (column == null)
       return null;
 
-    final boolean outgoing = direction == Vertex.DIRECTION.OUT;
     final DeltaOverlay ov = snap.overlay;
     final CSRAdjacencyIndex csr = snap.csrPerType.get(edgeType);
 
@@ -2285,6 +2611,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     if (snap.bwdToFwd != null)
       for (final int[] mapping : snap.bwdToFwd.values())
         total += (long) mapping.length * Integer.BYTES;
+    for (final ContractionHierarchy hierarchy : contractionHierarchies)
+      total += hierarchy.getMemoryUsageBytes();
     return total;
   }
 
@@ -2382,6 +2710,14 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     final Throwable err = buildError;
     if (err != null)
       stats.put("buildError", err.getMessage());
+
+    final ContractionHierarchy[] hierarchies = contractionHierarchies;
+    if (hierarchies.length > 0) {
+      final List<Map<String, Object>> hierarchyStats = new ArrayList<>(hierarchies.length);
+      for (final ContractionHierarchy hierarchy : hierarchies)
+        hierarchyStats.add(hierarchy.getStats());
+      stats.put("contractionHierarchies", hierarchyStats);
+    }
     return stats;
   }
 
@@ -2466,6 +2802,36 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       // iteration order (unregisterChangeListeners()/GraphTraversalProviderRegistry.unregister() never run for
       // them) - directly contradicting this method's own "failures are logged and otherwise ignored" contract.
       LogManager.instance().log(this, Level.WARNING, "GraphAnalyticalView '%s': failed to persist CSR to disk", e, name);
+    }
+  }
+
+  /**
+   * Writes the vertex order of every contraction hierarchy prepared on exactly the CSR that {@link #persistCsrIfPossible}
+   * persists (or restored), under the same conditions and with the same certificate, so a reopen with nothing committed
+   * in between contracts in that order instead of computing a new one (issue #9437). Failures are logged and ignored:
+   * the next open just computes the order again.
+   */
+  private void persistContractionOrdersIfPossible() {
+    if (name == null || status != Status.READY || contractionHierarchies.length == 0)
+      return;
+    final DatabaseInternal dbInternal = (DatabaseInternal) database;
+    if (dbInternal.isReplicated() && !dbInternal.isLeader())
+      return;
+    final Snapshot snap = this.snapshot;
+    if (snap == null || snap.asOfTransactionId < 0 || (snap.overlay != null && snap.overlay.hasChanges()))
+      return;
+    if (!database.getConfiguration().getValueAsBoolean(GlobalConfiguration.GAV_PERSIST_CSR))
+      return;
+    for (final ContractionHierarchy hierarchy : contractionHierarchies) {
+      final int[] order = hierarchy.orderFor(snap);
+      if (order == null)
+        continue;
+      try {
+        CCHOrderPersistence.save(database, hierarchy.orderFile(), snap.asOfTransactionId, order);
+      } catch (final OutOfMemoryError | Exception e) {
+        LogManager.instance().log(this, Level.WARNING, "GraphAnalyticalView '%s': failed to persist the order of the "
+            + "contraction hierarchy on '%s'", e, name, hierarchy.getWeightProperty());
+      }
     }
   }
 
@@ -2729,6 +3095,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     this.snapshot = restored;
     baseWatch = null;
     this.status = Status.READY;
+    notifyContractionHierarchies();
     this.notifyAll();
     latch.countDown();
     invalidateGraphStatisticsCache();
@@ -2829,6 +3196,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
                   this.snapshot = snapshotFromResult(result, durationMs, asOfTransactionId, vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter);
                   this.status = Status.READY;
                   baseWatch = null;
+                  notifyContractionHierarchies();
                 } else
                   LogManager.instance().log(this, Level.INFO,
                       "GraphAnalyticalView '%s': async rebuild result discarded (update mode changed to %s during rebuild, or superseded by a newer build/restore)", name, updateMode);
@@ -2932,6 +3300,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     final BuildWatch watch = baseWatch;
     final DeltaOverlay merged = mergeAgainstBase(base, delta, current.nodeMapping, watch);
     this.snapshot = current.withOverlay(merged);
+    notifyContractionHierarchies();
 
     // Buffer raw delta during compaction for re-application against the new mapping.
     // TxDelta uses RIDs (not dense IDs), so it can be cleanly re-applied against any mapping.
@@ -3050,6 +3419,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
                   this.snapshot = fresh;
                   baseWatch = null;
+                  notifyContractionHierarchies();
                 }
               }
 

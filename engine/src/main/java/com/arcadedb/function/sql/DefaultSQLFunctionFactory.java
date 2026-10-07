@@ -57,6 +57,7 @@ import com.arcadedb.function.sql.graph.SQLFunctionBellmanFord;
 import com.arcadedb.function.sql.graph.SQLFunctionBoth;
 import com.arcadedb.function.sql.graph.SQLFunctionBothE;
 import com.arcadedb.function.sql.graph.SQLFunctionBothV;
+import com.arcadedb.function.sql.graph.SQLFunctionCCHShortestPath;
 import com.arcadedb.function.sql.graph.SQLFunctionDijkstra;
 import com.arcadedb.function.sql.graph.SQLFunctionDuanSSSP;
 import com.arcadedb.function.sql.graph.SQLFunctionIn;
@@ -233,6 +234,7 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
     register(SQLFunctionBoth.NAME, SQLFunctionBoth.class);
     register(SQLFunctionBothE.NAME, SQLFunctionBothE.class);
     register(SQLFunctionBothV.NAME, SQLFunctionBothV.class);
+    register(SQLFunctionCCHShortestPath.NAME, SQLFunctionCCHShortestPath.class);
     register(SQLFunctionDijkstra.NAME, SQLFunctionDijkstra.class);
     register(SQLFunctionDuanSSSP.NAME, SQLFunctionDuanSSSP.class);
     register(SQLFunctionIn.NAME, SQLFunctionIn.class);

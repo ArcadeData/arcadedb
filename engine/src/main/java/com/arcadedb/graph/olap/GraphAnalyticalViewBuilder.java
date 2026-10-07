@@ -20,6 +20,12 @@ package com.arcadedb.graph.olap;
 
 import com.arcadedb.database.Database;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Set;
+
 /**
  * Fluent builder for {@link GraphAnalyticalView}.
  * <p>
@@ -59,6 +65,7 @@ public class GraphAnalyticalViewBuilder {
   private       int                             propertySampleSize  = -1;
   private       Boolean                         useWhenStale;
   private       boolean                         skipPersistence;
+  private final List<String[]>                  contractionHierarchies = new ArrayList<>();
 
   GraphAnalyticalViewBuilder(final Database database) {
     this.database = database;
@@ -157,6 +164,22 @@ public class GraphAnalyticalViewBuilder {
   }
 
   /**
+   * Keeps a Customizable Contraction Hierarchy on the view for fast point-to-point shortest paths weighted by
+   * {@code weightProperty}, over {@code edgeTypes} or, when none are given, every edge type of the view. The weight is
+   * added to the materialized edge properties when it is not there already. See {@link ContractionHierarchy}.
+   */
+  public GraphAnalyticalViewBuilder withContractionHierarchy(final String weightProperty, final String... edgeTypes) {
+    if (weightProperty == null || weightProperty.isEmpty())
+      throw new IllegalArgumentException("A contraction hierarchy needs a weight property");
+    final String[] spec = new String[1 + (edgeTypes == null ? 0 : edgeTypes.length)];
+    spec[0] = weightProperty;
+    if (edgeTypes != null)
+      System.arraycopy(edgeTypes, 0, spec, 1, edgeTypes.length);
+    contractionHierarchies.add(spec);
+    return this;
+  }
+
+  /**
    * Builds the analytical view synchronously with the configured settings.
    * This triggers the initial full build (CSR + columnar storage) and blocks until complete.
    * Status will be READY when this method returns.
@@ -218,7 +241,10 @@ public class GraphAnalyticalViewBuilder {
   }
 
   private GraphAnalyticalView createView() {
-    final GraphAnalyticalView view = new GraphAnalyticalView(database, name, vertexTypes, edgeTypes, properties, edgeProperties, updateMode);
+    final GraphAnalyticalView view = new GraphAnalyticalView(database, name, vertexTypes, edgeTypes, properties,
+        withHierarchyWeights(edgeProperties), updateMode);
+    for (final String[] spec : contractionHierarchies)
+      view.addContractionHierarchy(spec[0], Arrays.copyOfRange(spec, 1, spec.length));
     if (compactionThreshold >= 0)
       view.setCompactionThreshold(compactionThreshold);
     if (propertySampleSize >= 0)
@@ -232,5 +258,17 @@ public class GraphAnalyticalViewBuilder {
     }
     view.registerAsTraversalProvider();
     return view;
+  }
+
+  /** The edge properties to materialize, with every hierarchy's weight among them. */
+  private String[] withHierarchyWeights(final String[] configured) {
+    if (contractionHierarchies.isEmpty())
+      return configured;
+    final Set<String> all = new LinkedHashSet<>();
+    if (configured != null)
+      all.addAll(Arrays.asList(configured));
+    for (final String[] spec : contractionHierarchies)
+      all.add(spec[0]);
+    return all.toArray(new String[0]);
   }
 }
