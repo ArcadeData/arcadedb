@@ -142,7 +142,6 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
     // The kernel's "nothing moved" break only fires if the labelling settles - a graph that oscillates between two
     // labellings never converges - so maxIterations is what ends the run, and the guard is what can abort it.
     final int[] labels = GraphAlgorithms.labelPropagation(gav, maxIterations, rank, guard::check);
-    context.setVariable(CommandContext.RESULT_COUNT_HINT_VAR, (long) n);
 
     return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal result = new ResultInternal();
