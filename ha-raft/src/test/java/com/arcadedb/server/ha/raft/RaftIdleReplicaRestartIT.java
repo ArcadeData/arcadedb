@@ -105,7 +105,7 @@ class RaftIdleReplicaRestartIT extends BaseRaftHATest {
     CodeUtils.sleep(30_000);
 
     LogManager.instance().log(this, Level.INFO, "TEST: restarting replica server %d", replicaIndex);
-    getServer(replicaIndex).start();
+    startServer(replicaIndex);
 
     // Attach a log handler that counts the exact warning mdre is seeing every 5-6 s. mdre's
     // signature is "received INCONSISTENCY reply with nextIndex 0, errorCount=N,

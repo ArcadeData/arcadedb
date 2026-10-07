@@ -185,16 +185,17 @@ class Issue7401ConnectClusterJoinsPeerIT extends BaseRaftHATest {
     Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(500, TimeUnit.MILLISECONDS)
         .untilAsserted(() -> assertThat(leaderRaft.getLivePeers()).hasSize(getServerCount() - 1));
 
-    getServer(rejoining).start();
+    // Issue #8330: removePeer dropped this node's HTTP address from the leader's map, and the leader's security seed
+    // probes it there; without it the seed's group and API-token entries are refused by the #7511 gate. startServer
+    // puts the bound ports back into every node's map; the #8689 case keeps the leader's map as removePeer left it.
+    if (repairHttpAddresses)
+      startServer(rejoining);
+    else
+      startServerKeepingDeclaredPeerHttpAddresses(rejoining);
     assertThat(getServerHttpPort(rejoining)).as("the restarted node's HTTP port").isEqualTo(boundHttpPort);
     Awaitility.await().atMost(60, TimeUnit.SECONDS).pollInterval(500, TimeUnit.MILLISECONDS)
         .untilAsserted(() -> assertThat(getRaftPlugin(rejoining)).isNotNull());
     assertThat(peerIds(leader)).doesNotContain(peerIdForIndex(rejoining));
-
-    // Issue #8330: removePeer dropped this node's HTTP address from the leader's map, and the leader's security seed
-    // probes it there; without it the seed's group and API-token entries are refused by the #7511 gate.
-    if (repairHttpAddresses)
-      patchPeerHttpAddressesWithBoundPorts();
   }
 
   /**

@@ -172,7 +172,7 @@ class RaftLeaderCrashWithExternalPropertyIT extends BaseRaftHATest {
     // machine follower path, applying both halves in lock-step.
     Thread.sleep(2_000);
     LogManager.instance().log(this, Level.INFO, "TEST: restarting old leader %d", leaderIndex);
-    getServer(leaderIndex).start();
+    startServer(leaderIndex);
 
     waitForReplicationIsCompleted(leaderIndex);
 

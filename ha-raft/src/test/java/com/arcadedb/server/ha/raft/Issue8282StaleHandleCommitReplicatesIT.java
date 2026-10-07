@@ -83,7 +83,7 @@ class Issue8282StaleHandleCommitReplicatesIT extends BaseRaftHATest {
         staleHandle.set(starting.getDatabase(getDatabaseName()));
     };
     try {
-      server.start();
+      startServer(restarted);
     } finally {
       RaftHAPlugin.TEST_BEFORE_START_HOOK = null;
     }

@@ -123,7 +123,7 @@ class RaftHARandomCrashIT extends BaseRaftHATest {
 
             for (int attempt = 0; attempt < 3; attempt++) {
               try {
-                getServer(serverId).start();
+                startServer(serverId);
                 break;
               } catch (final Throwable e) {
                 LogManager.instance().log(this, Level.INFO, "TEST: Restart attempt %d/3 failed", attempt + 1, e);

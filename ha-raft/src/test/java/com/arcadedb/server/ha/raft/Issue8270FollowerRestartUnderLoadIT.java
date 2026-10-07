@@ -134,7 +134,7 @@ class Issue8270FollowerRestartUnderLoadIT extends BaseRaftHATest {
     };
     try {
       LogManager.instance().log(this, Level.INFO, "TEST: restarting node %d under write load", restarted);
-      server.start();
+      startServer(restarted);
       CodeUtils.sleep(2_000);
     } finally {
       RaftHAPlugin.TEST_BEFORE_START_HOOK = null;

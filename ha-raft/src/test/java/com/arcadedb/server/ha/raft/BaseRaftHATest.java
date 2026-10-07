@@ -389,6 +389,35 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
     }
   }
 
+  /**
+   * Starts a stopped server again and then patches every node's HTTP-address map with the ports the servers bound.
+   * Every restart in a subclass goes through here, never through a bare {@code getServer(i).start()}:
+   * {@code HardcodedTestServerPortsTest} flags one.
+   * <p>
+   * The restarted node builds a fresh {@link RaftHAServer} from the {@code 2480 + i} hints of
+   * {@link #getServerAddresses()}, so the patch {@link #startServers()} applied is gone on that node. With 2480 held by
+   * another process (a local ArcadeDB, an IDE's server, another worktree's build) every hint names the neighbouring
+   * node, and the restarted node's peer HTTP calls reach the wrong peer: a leader-initiated snapshot install asks a
+   * neighbour for the leader's state, is refused as answered by the wrong peer, and never completes (issues #8643,
+   * #9243). The patch runs once {@code start()} returns, so a peer call fired while it was still running can hit a stale
+   * hint once; the callers that matter retry.
+   */
+  @Override
+  protected void startServer(final int serverIndex) {
+    super.startServer(serverIndex);
+    patchPeerHttpAddressesWithBoundPorts();
+  }
+
+  /**
+   * Starts a stopped server again WITHOUT patching any node's HTTP-address map, so every node keeps what it has and the
+   * restarted node keeps what its {@code HA_SERVER_LIST} declared. Only for a test whose subject is that map, such as
+   * one asserting how a node copes with a peer address that a membership change removed (issue #8689). Everything else
+   * uses {@link #startServer(int)}.
+   */
+  protected void startServerKeepingDeclaredPeerHttpAddresses(final int serverIndex) {
+    super.startServer(serverIndex);
+  }
+
   @Override
   protected int getServerCount() {
     return 2;
@@ -831,13 +860,7 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
     }
 
     LogManager.instance().log(this, Level.INFO, "TEST: Starting server %d again", serverIndex);
-    getServer(serverIndex).start();
-    // The restarted node builds a fresh RaftHAServer from the 2480 + i hints of getServerAddresses(), and with 2480 held
-    // by another process every hint names the wrong node: a leader-initiated snapshot install then asks a neighbour for
-    // the leader's state, is refused as answered by the wrong peer, and never completes (issue #8643). Patched once
-    // start() returns, so a query fired while it was still running can hit a stale hint once; the install retries it.
-    // Bare getServer(i).start() calls elsewhere still lack this: issue #9243
-    patchPeerHttpAddressesWithBoundPorts();
+    startServer(serverIndex);
 
     // Wait for the restarted peer to catch up to the current leader's last applied index. The line says which
     // happened: "caught up" after a wait that gave up was the same lie issue #7518 removed from the wait itself.

@@ -145,7 +145,7 @@ class RaftBootstrapLateNewerJoinerIT extends BaseRaftHATest {
     LogManager.instance().log(this, Level.INFO,
         "TEST: restarting server %d with pre-staged last-tx-id.bin=%d", LATE_JOINER_INDEX,
         LATE_JOINER_PRE_STAGED_LAST_TX_ID);
-    getServer(LATE_JOINER_INDEX).start();
+    startServer(LATE_JOINER_INDEX);
 
     // Phase 4: wait for server 2 to re-apply the BOOTSTRAP_FINGERPRINT_ENTRY. The baseline is
     // set inside applyBootstrapFingerprintEntry BEFORE the SEVERE-refusal check, so getBootstrapBaseline

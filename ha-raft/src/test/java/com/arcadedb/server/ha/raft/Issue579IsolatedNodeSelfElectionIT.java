@@ -101,7 +101,7 @@ class Issue579IsolatedNodeSelfElectionIT extends BaseRaftHATest {
 
     LogManager.instance().log(this, Level.INFO,
         "TEST: Starting server 0 alone (simulating 'start arcadesplit-0 in isolation')");
-    getServer(0).start();
+    startServer(0);
 
     // Give node 0 well beyond ArcadeDB's default election timeout (5s) to self-elect if it ever
     // will - several election rounds' worth of time.

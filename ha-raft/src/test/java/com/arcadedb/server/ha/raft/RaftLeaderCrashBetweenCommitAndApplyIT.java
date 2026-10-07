@@ -165,7 +165,7 @@ class RaftLeaderCrashBetweenCommitAndApplyIT extends BaseRaftHATest {
     // Brief pause to allow the OS to release the gRPC port.
     Thread.sleep(2_000);
     LogManager.instance().log(this, Level.INFO, "TEST: restarting old leader %d", leaderIndex);
-    getServer(leaderIndex).start();
+    startServer(leaderIndex);
 
     waitForReplicationIsCompleted(leaderIndex);
 

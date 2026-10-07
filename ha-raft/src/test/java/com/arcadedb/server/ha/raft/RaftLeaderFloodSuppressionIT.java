@@ -112,7 +112,7 @@ class RaftLeaderFloodSuppressionIT extends BaseRaftHATest {
         Thread.sleep(500);
       }
 
-      getServer(replicaIndex).start();
+      startServer(replicaIndex);
       waitForReplicationIsCompleted(replicaIndex);
       // Allow one additional lag-monitor tick (5 s cadence) so the reconnected narrative fires
       // after the first successful RPC to the restarted replica is observed.
