@@ -419,6 +419,8 @@ public class SelectExecutor {
           throw e;
         fallBackToScan(cursors, e);
       } catch (final IndexException e) {
+        // Not narrowed by isValid(): TypeIndex#drop() drops the sub-indexes first and only then clears the flag, so an index
+        // that is going away still reads valid while it raises this. The scan answers the same rows
         fallBackToScan(cursors, e);
       }
     }
