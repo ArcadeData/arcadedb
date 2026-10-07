@@ -83,6 +83,32 @@ class Issue8404FunctionDdlReplicationIT extends BaseRaftHATest {
     awaitFunctionOnEveryServer("sql8404", "plusOne", true);
   }
 
+  /**
+   * Issue #8879: {@code Schema.unregisterFunctionLibrary} removed the library from the leader's memory only, so the
+   * followers kept it until some later DDL happened to ship a schema file without it.
+   */
+  @Test
+  @Timeout(180)
+  void unregisterFunctionLibraryReachesEveryNode() {
+    final int leader = findLeaderIndex();
+    assertThat(leader).as("a Raft leader must be elected").isGreaterThanOrEqualTo(0);
+    final Database onLeader = getServer(leader).getDatabase(getDatabaseName());
+
+    onLeader.command("sql", "DEFINE FUNCTION lib8879.f \"SELECT 1 AS r\" LANGUAGE sql");
+    onLeader.command("sql", "DEFINE FUNCTION keep8879.f \"SELECT 2 AS r\" LANGUAGE sql");
+    awaitFunctionOnEveryServer("lib8879", "f", true);
+    awaitFunctionOnEveryServer("keep8879", "f", true);
+
+    onLeader.getSchema().unregisterFunctionLibrary("lib8879");
+
+    await().atMost(30, TimeUnit.SECONDS).pollInterval(100, TimeUnit.MILLISECONDS).untilAsserted(() -> {
+      for (int i = 0; i < getServerCount(); i++)
+        assertThat(getServer(i).getDatabase(getDatabaseName()).getSchema().hasFunctionLibrary("lib8879"))
+            .as("library lib8879 on server %d", i).isFalse();
+    });
+    awaitFunctionOnEveryServer("keep8879", "f", true);
+  }
+
   private void awaitFunctionOnEveryServer(final String library, final String function, final boolean present) {
     await().atMost(30, TimeUnit.SECONDS).pollInterval(100, TimeUnit.MILLISECONDS).untilAsserted(() -> {
       for (int i = 0; i < getServerCount(); i++) {

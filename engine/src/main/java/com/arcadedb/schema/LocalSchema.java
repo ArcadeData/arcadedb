@@ -4200,10 +4200,30 @@ public class LocalSchema implements Schema {
     return this;
   }
 
+  /**
+   * Removes a function library. A library written to the schema file ({@code DEFINE FUNCTION}: js, sql, cypher) is
+   * removed inside a schema recording session for the reason {@link #defineFunction} is (issue #8879): a bare map
+   * removal was neither saved, so the library came back on reopen, nor replicated, so under HA the followers kept it.
+   * A library backed by native Java code is never in the schema file, so its removal stays in memory only and costs no
+   * schema save.
+   */
   @Override
   public Schema unregisterFunctionLibrary(final String name) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
-    functionLibraries.remove(name);
+    final FunctionLibraryDefinition library = functionLibraries.get(name);
+    if (library == null)
+      return this;
+
+    if (library.getLanguage() == null) {
+      functionLibraries.remove(name, library);
+      return this;
+    }
+
+    // remove(name, library): only the library whose language was checked above, never one swapped in since
+    recordFileChanges(() -> {
+      functionLibraries.remove(name, library);
+      return null;
+    });
     return this;
   }
 
