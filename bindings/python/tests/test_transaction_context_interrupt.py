@@ -49,6 +49,17 @@ def test_failed_begin_without_open_transaction_does_not_roll_back():
     assert db.rollbacks == 0
 
 
+def test_failed_begin_leaves_a_preexisting_transaction_alone():
+    db = _FakeDatabase()
+    db.active = True
+    db.begin = lambda: (_ for _ in ()).throw(RuntimeError("already active"))
+    with pytest.raises(RuntimeError):
+        with TransactionContext(db):
+            pass
+    assert db.active is True
+    assert db.rollbacks == 0
+
+
 def test_normal_flow_commits():
     db = _FakeDatabase()
     db.begin = lambda: setattr(db, "active", True)
