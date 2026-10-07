@@ -1720,6 +1720,80 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     return snap.nodeMapping.getRID(database, nodeId);
   }
 
+  /**
+   * {@link #edgeWeightsOf(int, Vertex.DIRECTION, String, double, String...)} asked of a captured snapshot: every slice
+   * of {@code edgeTypes} (null: every type the snapshot holds), both directions for BOTH, concatenated. Null when a
+   * slice cannot be answered exactly, the same contract as the live form.
+   */
+  NodeEdgeWeights edgeWeightsOf(final Snapshot snap, final int nodeId, final Vertex.DIRECTION direction,
+      final String propertyName, final double defaultWeight, final String[] edgeTypes) {
+    final String[] slices = edgeTypes == null || edgeTypes.length == 0 ?
+        allEdgeTypes(snap).toArray(new String[0]) :
+        resolveEdgeTypes(edgeTypes);
+    final boolean out = direction != Vertex.DIRECTION.IN;
+    final boolean in = direction != Vertex.DIRECTION.OUT;
+    NodeEdgeWeights single = null;
+    NodeEdgeWeights[] parts = null;
+    int count = 0;
+    int degree = 0;
+    for (final String slice : slices)
+      for (int d = 0; d < 2; d++) {
+        if ((d == 0 && !out) || (d == 1 && !in))
+          continue;
+        final NodeEdgeWeights part;
+        if (snap.edgeColumnStores != null && snap.edgeColumnStores.get(slice) == null && !sliceHasEdges(snap, nodeId, slice,
+            d == 0))
+          part = EMPTY_EDGE_WEIGHTS; // a type with no edges at build time and none since has nothing to price
+        else
+          part = edgeWeightsForSlice(snap, nodeId, d == 0, slice, propertyName, defaultWeight, null);
+        if (part == null)
+          return null;
+        if (part.neighbors().length == 0)
+          continue;
+        if (count == 0)
+          single = part;
+        else {
+          if (parts == null) {
+            parts = new NodeEdgeWeights[slices.length * 2];
+            parts[0] = single;
+          }
+          parts[count] = part;
+        }
+        count++;
+        degree += part.neighbors().length;
+      }
+    if (count == 0)
+      return EMPTY_EDGE_WEIGHTS;
+    if (count == 1)
+      return single;
+    final int[] neighbors = new int[degree];
+    final double[] weights = new double[degree];
+    int pos = 0;
+    for (int i = 0; i < count; i++) {
+      final int length = parts[i].neighbors().length;
+      System.arraycopy(parts[i].neighbors(), 0, neighbors, pos, length);
+      System.arraycopy(parts[i].weights(), 0, weights, pos, length);
+      pos += length;
+    }
+    return new NodeEdgeWeights(neighbors, weights);
+  }
+
+  /** Whether {@code nodeId} has edges of {@code slice} in the given direction, in the base CSR or the overlay. */
+  private static boolean sliceHasEdges(final Snapshot snap, final int nodeId, final String slice, final boolean outgoing) {
+    final CSRAdjacencyIndex csr = snap.csrPerType.get(slice);
+    if (csr != null && nodeId < snap.nodeMapping.size()) {
+      final int start = outgoing ? csr.outOffset(nodeId) : csr.inOffset(nodeId);
+      final int end = outgoing ? csr.outOffsetEnd(nodeId) : csr.inOffsetEnd(nodeId);
+      if (end > start)
+        return true;
+    }
+    final DeltaOverlay ov = snap.overlay;
+    if (ov == null)
+      return false;
+    final DeltaOverlay.AddedNeighbors added = ov.getAdded(nodeId, slice, outgoing);
+    return added != null && added.nodeIds().length > 0;
+  }
+
   /** {@link #isNodeLive(int)} asked of a captured snapshot. */
   boolean isNodeLive(final Snapshot snap, final int nodeId) {
     if (nodeId < 0)
@@ -1883,7 +1957,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
           final NodeEdgeWeights edges = edgeWeightsForSlice(snap, u, true, slice, weightProperty, 1.0, null);
           if (edges == null) {
             // a node with nothing in this slice, base or overlay, is not a reason to refuse the whole graph
-            if (!hasSliceEdges(snap, csr, u, slice))
+            if (!sliceHasEdges(snap, u, slice, true))
               continue;
             return null;
           }
@@ -1923,16 +1997,6 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     }
   }
 
-  /** Whether {@code nodeId} has outgoing edges in {@code slice}, in the base CSR or among the overlay's additions. */
-  private static boolean hasSliceEdges(final Snapshot snap, final CSRAdjacencyIndex csr, final int nodeId, final String slice) {
-    if (csr != null && nodeId < snap.nodeMapping.size() && csr.outOffsetEnd(nodeId) > csr.outOffset(nodeId))
-      return true;
-    final DeltaOverlay ov = snap.overlay;
-    if (ov == null)
-      return false;
-    final DeltaOverlay.AddedNeighbors added = ov.getAdded(nodeId, slice, true);
-    return added != null && added.nodeIds().length > 0;
-  }
 
   /**
    * The same question asked of a snapshot a caller has already captured, which is how every method that goes

@@ -106,7 +106,7 @@ final class CCHMetric {
       final int arc = ru < rv ? topology.findArc(ru, rv) : topology.findArc(rv, ru);
       if (arc < 0)
         return null;
-      if (!(w >= 0))
+      if (w < 0 || Double.isNaN(w))
         continue;
       if (undirected || ru < rv) {
         if (w < up[arc])

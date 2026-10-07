@@ -1224,7 +1224,7 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
             continue;
           final Object w = weightProperty != null ? edge.get(weightProperty) : null;
           final double edgeWeight = w instanceof Number num ? num.doubleValue() : missingWeight;
-          if (skipUnusable && !(edgeWeight >= 0))
+          if (skipUnusable && (edgeWeight < 0 || Double.isNaN(edgeWeight)))
             continue;
           if (bestEdge == null || edgeWeight < bestWeight) {
             bestWeight = edgeWeight;

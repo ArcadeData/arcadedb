@@ -4989,6 +4989,7 @@ function createGraphAnalyticalView() {
     $("#inputGavVertexTypes, #inputGavEdgeTypes").on("change", gavUpdateRamEstimate);
     $("#inputGavProperties, #inputGavEdgeProperties").on("input", gavUpdateRamEstimate);
     $("#inputGavUpdateMode").on("change", gavUpdateRamEstimate);
+    $("#inputGavCch").on("input", gavUpdateRamEstimate);
 
     // Initial estimate
     gavUpdateRamEstimate();
@@ -5074,7 +5075,10 @@ function gavUpdateRamEstimate() {
   if (updateMode === "SYNCHRONOUS")
     overlayBytes = Math.ceil((csrBytes + mappingBytes) * 0.1); // ~10% for overlay structures
 
-  let totalBytes = csrBytes + mappingBytes + vertexPropBytes + edgePropBytes + overlayBytes;
+  let cchWeights = parseGavCchWeights($("#inputGavCch").val());
+  let cchBytes = gavCchEstimateBytes(totalEdges, cchWeights.length);
+
+  let totalBytes = csrBytes + mappingBytes + vertexPropBytes + edgePropBytes + overlayBytes + cchBytes;
 
   // Update the UI
   let barEl = $("#gavRamBar");
@@ -5107,6 +5111,8 @@ function gavUpdateRamEstimate() {
     bd += "<div class='gav-ram-row'><span>Edge properties (" + numEdgeProps + " col" + (numEdgeProps > 1 ? "s" : "") + ")</span><span>" + formatBytes(edgePropBytes) + "</span></div>";
   if (overlayBytes > 0)
     bd += "<div class='gav-ram-row'><span>Sync overlay buffer</span><span>~" + formatBytes(overlayBytes) + "</span></div>";
+  if (cchBytes > 0)
+    bd += "<div class='gav-ram-row'><span>Shortest-path hierarchies (" + cchWeights.length + ", road-like graph)</span><span>~" + formatBytes(cchBytes) + "</span></div>";
   bd += "<div class='gav-ram-row gav-ram-total'><span>Total (" + totalNodes.toLocaleString() + " nodes, " + totalEdges.toLocaleString() + " edges)</span><span>" + formatBytes(totalBytes) + "</span></div>";
   breakdownEl.html(bd);
 }
@@ -5189,12 +5195,25 @@ function rebuildGav(gavName) {
  * string when the list is empty. Each name is quoted like every other name the dialog writes.
  */
 function buildGavCchClause(weights) {
-  if (!weights)
-    return "";
-  let names = String(weights).split(",").map(function (w) { return w.trim(); }).filter(function (w) { return w !== ""; });
+  let names = parseGavCchWeights(weights);
   if (names.length === 0)
     return "";
   return " CCH (" + names.map(function (w) { return quoteSqlName(w); }).join(", ") + ")";
+}
+
+/** The weight property names of a comma-separated CCH input, trimmed, empty entries dropped. */
+function parseGavCchWeights(weights) {
+  if (!weights)
+    return [];
+  return String(weights).split(",").map(function (w) { return w.trim(); }).filter(function (w) { return w !== ""; });
+}
+
+/**
+ * Estimated heap of the contraction hierarchies a view keeps: the supergraph is only known once built, so it assumes
+ * the ~4 arcs per edge of a road-like graph, at ~52 bytes per arc (topology plus the directed metric).
+ */
+function gavCchEstimateBytes(edges, hierarchies) {
+  return hierarchies > 0 ? edges * 4 * 52 * hierarchies : 0;
 }
 
 function formatBytes(bytes) {

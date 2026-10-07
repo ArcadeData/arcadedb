@@ -354,6 +354,37 @@ class GraphAnalyticalViewCCHTest {
     assertRandomPairs(random, 30, Vertex.DIRECTION.OUT, ShortestPathFinder.Engine.VIEW);
   }
 
+  /**
+   * The bidirectional Dijkstra that answers on the view's columns when no hierarchy can reads one captured snapshot for
+   * the whole search, overlay included: added vertices and edges, deleted edges.
+   */
+  @Test
+  void viewDijkstraReadsOneSnapshotWithItsOverlay() {
+    grid(12, new Random(23));
+    final GraphAnalyticalView view = GraphAnalyticalView.builder(database).withName("plain").withEdgeTypes("ROAD")
+        .withEdgeProperties("distance").withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS).build();
+    final Random random = new Random(31);
+    assertRandomPairs(random, 60, Vertex.DIRECTION.OUT, ShortestPathFinder.Engine.VIEW);
+
+    database.transaction(() -> {
+      final List<RID> all = new ArrayList<>(roads.keySet());
+      for (int i = 0; i < 15; i++) {
+        final RID edge = all.get(random.nextInt(all.size()));
+        if (roads.remove(edge) != null)
+          edge.asEdge().delete();
+      }
+      final MutableVertex v = database.newVertex("Junction").set("i", junctions.length).save();
+      junctions = Arrays.copyOf(junctions, junctions.length + 1);
+      junctions[junctions.length - 1] = v.getIdentity();
+      index.put(v.getIdentity(), junctions.length - 1);
+      road(junctions.length - 1, 3, 0.5);
+      road(100, junctions.length - 1, 0.5);
+    });
+    assertThat(view.hasPendingChanges()).isTrue();
+    for (final Vertex.DIRECTION direction : Vertex.DIRECTION.values())
+      assertRandomPairs(random, 60, direction, ShortestPathFinder.Engine.VIEW);
+  }
+
   @Test
   void otherEdgeTypesAndUnmatchedRequestsFallBack() {
     grid(8, new Random(1));
