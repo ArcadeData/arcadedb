@@ -83,6 +83,10 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   /** How often a cluster that cannot use the #7509 compare-and-set may say so. */
   private static final long SECURITY_PRECONDITION_WITHHELD_LOG_THROTTLE_MS = 5 * 60_000L;
 
+  // Not MembershipSecuritySeeder.EMPTY_POOL_STATS: that one reports a one-slot queue, which these pools do not have.
+  /** What an HA executor row reads while its owner is not running: no worker, nothing queued, no capacity reported. */
+  private static final PoolStats IDLE_POOL_STATS = new PoolStats(0, 0, 0, 0, 0L, 0L, 0L);
+
   // When the "security changes are replicating without the concurrency check" line was last logged.
   private volatile long lastSecurityPreconditionWithheldLog;
 
@@ -102,8 +106,6 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   // state machine's and RaftHAServer's other per-instance pools (issue #8856). Same lifecycle as the handlers above:
   // filled by startService(), closed and emptied by the first of stopService()'s two calls.
   private final List<Closeable> haPoolMetrics = new ArrayList<>(8);
-  /** What an HA executor row reads while its owner is not running: no worker, nothing queued, no capacity reported. */
-  private static final PoolStats IDLE_POOL_STATS = new PoolStats(0, 0, 0, 0, 0L, 0L, 0L);
 
   /**
    * Test-only: runs at the start of {@link #startService()} on the server being started, before this plugin has
