@@ -47,7 +47,7 @@ public record ChaosConfig(long seed, int nodes, Duration duration, int maxSteps,
   private static final Pattern SERVER_OPTION       = Pattern.compile("-(D[\\w.\\-]+=[^\\s'\"]*|XX:[^\\s'\"]+)");
 
   public static final List<String> ALL_FAULTS = List.of("kill", "stop", "rolling", "pause", "isolate", "split", "latency",
-      "loss");
+      "loss", "longpause");
 
   public ChaosConfig {
     if (nodes != 3 && nodes != 5)
