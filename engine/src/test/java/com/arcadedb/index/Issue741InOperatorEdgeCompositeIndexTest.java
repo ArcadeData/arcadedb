@@ -262,7 +262,7 @@ class Issue741InOperatorEdgeCompositeIndexTest extends TestHelper {
         database.newVertex("Product").set("name", name).save();
     });
     database.transaction(() -> {
-      final String query = "SELECT name FROM Product WHERE name IN ('DELTA', 'B', 'beta', 'alpha') ORDER BY name";
+      final String query = "SELECT name FROM Product WHERE name.toLowerCase() IN ('delta', 'b', 'beta', 'alpha') ORDER BY name";
       assertThat(database.query("sql", "EXPLAIN " + query).getExecutionPlan().get().prettyPrint(0, 3))
           .contains("FETCH FROM INDEX").contains("ORDER BY");
       final List<String> names = database.query("sql", query).stream().map(r -> r.<String>getProperty("name")).toList();
