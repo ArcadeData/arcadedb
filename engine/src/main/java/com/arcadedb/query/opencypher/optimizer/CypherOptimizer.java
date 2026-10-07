@@ -34,6 +34,7 @@ import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.IsNullExpression;
 import com.arcadedb.query.opencypher.ast.LogicalExpression;
 import com.arcadedb.query.opencypher.ast.MatchClause;
+import com.arcadedb.query.opencypher.ast.PathPattern;
 import com.arcadedb.query.opencypher.ast.MergeClause;
 import com.arcadedb.query.opencypher.ast.OrderByClause;
 import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
@@ -1702,6 +1703,18 @@ public class CypherOptimizer {
     if (topFilter instanceof FilterOperator filter)
       usedVariables.addAll(WhereClause.collectVariables(filter.getPredicate()));
 
+    // The fused chain emits only its own variables: the source and the hop targets. A variable a hop below it bound (the
+    // chain's source rows come from there) and something downstream reads would be absent from every row it emits, so a
+    // predicate over it - a pattern predicate such as NOT (c)<-[:HAS_TAG]-(t1) - saw an unbound variable (#9390). The
+    // chain is left unfused then, and the hops run one by one with every variable in the row.
+    final Set<String> chainVariables = new HashSet<>();
+    chainVariables.add(sourceVar);
+    for (final String targetVar : hopTargetVars)
+      if (targetVar != null)
+        chainVariables.add(targetVar);
+    if (readsPatternVariableOutside(usedVariables, chainVariables))
+      return rootOperator;
+
     final boolean[] materialize = new boolean[chainLen + 1];
     materialize[0] = usedVariables.contains(sourceVar); // source
     for (int i = 0; i < chainLen; i++)
@@ -1748,6 +1761,21 @@ public class CypherOptimizer {
       // No need for a separate FilterOperator on top — the fused chain handles it
     }
     return fused;
+  }
+
+  /** Whether {@code used} names a node variable of the MATCH patterns that is not one of {@code chainVariables}. */
+  private boolean readsPatternVariableOutside(final Set<String> used, final Set<String> chainVariables) {
+    for (final MatchClause mc : statement.getMatchClauses()) {
+      if (!mc.hasPathPatterns())
+        continue;
+      for (final PathPattern pathPattern : mc.getPathPatterns())
+        for (int i = 0; i <= pathPattern.getRelationshipCount(); i++) {
+          final String variable = pathPattern.getNode(i).getVariable();
+          if (variable != null && used.contains(variable) && !chainVariables.contains(variable))
+            return true;
+        }
+    }
+    return false;
   }
 
   /**

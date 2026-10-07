@@ -27,6 +27,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.function.graph.IdFunction;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.IncomingEdgeLookup;
@@ -6738,8 +6739,9 @@ public class CypherExecutionPlan {
    * once by scanning the bucket, under its file lock; that cold start is paid by the first query to ask for the
    * count either way, and every one after it is O(1).
    * <p>
-   * It is only meaningful for a type whose instances <b>are</b> records: a LIGHTWEIGHT edge type keeps no edge
-   * record, so its counter is 0 while its edges exist in the vertices' edge lists, and it answers "not empty" here.
+   * It is only meaningful for a type whose instances <b>are</b> records: an edge type may keep no edge
+   * record (light edges, declared LIGHTWEIGHT or not), so its counter is 0 while its edges exist in the vertices' edge
+   * lists, and every edge type answers "not empty" here.
    * <p>
    * It is asked by name, and a name is not a namespace: a node label matches only vertices, but a document or edge
    * type may carry the same name, and a populated one of those answers "not empty" for a label no vertex has. That
@@ -6753,7 +6755,10 @@ public class CypherExecutionPlan {
       return true;
 
     final DocumentType type = schema.getType(name);
-    if (EdgeType.holdsLightweightEdges(type))
+    // an edge type with no record is not an empty one: light edges keep no record, and they exist in a type that never
+    // declared LIGHTWEIGHT as well (MutableVertex.newLightEdge accepts it, and so did the batch before #9383), so the
+    // flag only says where they are expected (#9389)
+    if (type.getType() == Edge.RECORD_TYPE)
       return false;
 
     return db.countType(name, true) == 0;
@@ -7274,8 +7279,10 @@ public class CypherExecutionPlan {
         String edgeType = null;
         for (int i = 0; i < 3; i++) {
           final RelationshipPattern rel = pp.getRelationship(i);
+          // the operator intersects the undirected adjacency, so only an undirected hop is its pattern: a written
+          // direction is a constraint it cannot check (#9387)
           if (rel.isVariableLength() || (rel.getVariable() != null && !rel.getVariable().isEmpty())
-              || !rel.hasTypes() || rel.getTypes().size() != 1) {
+              || !rel.hasTypes() || rel.getTypes().size() != 1 || rel.hasProperties() || rel.getDirection() != Direction.BOTH) {
             valid = false;
             break;
           }
@@ -7303,8 +7310,21 @@ public class CypherExecutionPlan {
     if (cycleMC == null || cycleVars.size() != 3)
       return null;
 
+    // The operator filters every node it visits by ONE label per position, so a label it cannot stand for (a conjunction,
+    // a disjunction) declines the push-down, and so does one variable carrying two different labels (#9388). The label of
+    // a cycle variable is the one written wherever the variable appears: in the cycle and at the head of its chain.
+    final HashMap<String, String> cycleLabels = new HashMap<>();
+    for (int i = 0; i < 3; i++) {
+      final NodePattern node = cyclePP.getNode(i);
+      if (!hasPushDownRepresentableLabel(node) || node.hasProperties() || node.hasDynamicLabels())
+        return null;
+      if (node.hasLabels() && !mergeVariableLabel(cycleLabels, node.getVariable(), node.getLabels().get(0)))
+        return null;
+    }
+
     // Find the anchor MATCH: single node pattern (e.g., (co:Country))
     String anchorVar = null;
+    String anchorLabel = null;
     for (final MatchClause mc : statement.getMatchClauses()) {
       if (mc == cycleMC)
         continue;
@@ -7312,7 +7332,11 @@ public class CypherExecutionPlan {
         continue;
       final PathPattern pp = mc.getPathPatterns().get(0);
       if (pp.isSingleNode() && pp.getFirstNode().getVariable() != null) {
-        anchorVar = pp.getFirstNode().getVariable();
+        final NodePattern anchor = pp.getFirstNode();
+        if (!hasPushDownRepresentableLabel(anchor))
+          return null;
+        anchorVar = anchor.getVariable();
+        anchorLabel = anchor.hasLabels() ? anchor.getLabels().get(0) : null;
         break;
       }
     }
@@ -7321,6 +7345,9 @@ public class CypherExecutionPlan {
     // e.g., (p1:Person)-[:IS_LOCATED_IN]->(:City)-[:IS_PART_OF]->(co)
     String[] partitionEdgeTypes = null;
     Vertex.DIRECTION[] partitionDirections = null;
+    String[] chainLabels = null;
+    final HashSet<String> chainHeads = new HashSet<>();
+    final HashSet<String> chainInteriorVars = new HashSet<>();
     int chainMatchCount = 0;
     for (final MatchClause mc : statement.getMatchClauses()) {
       if (mc == cycleMC)
@@ -7346,7 +7373,7 @@ public class CypherExecutionPlan {
       boolean valid = true;
       for (int i = 0; i < hops; i++) {
         final RelationshipPattern rel = pp.getRelationship(i);
-        if (rel.isVariableLength() || !rel.hasTypes() || rel.getTypes().size() != 1) {
+        if (rel.isVariableLength() || !rel.hasTypes() || rel.getTypes().size() != 1 || rel.hasProperties()) {
           valid = false;
           break;
         }
@@ -7358,15 +7385,41 @@ public class CypherExecutionPlan {
       if (!valid)
         continue;
 
+      // One label per position of the chain, and the chain's end is the anchor, which carries its own label (#9388). An
+      // interior node variable shared between two chains would be a join the operator does not make, so it declines.
+      final String[] labels = new String[hops + 1];
+      for (int i = 0; i <= hops; i++) {
+        final NodePattern node = pp.getNode(i);
+        if (!hasPushDownRepresentableLabel(node) || node.hasProperties() || node.hasDynamicLabels())
+          return null;
+        labels[i] = node.hasLabels() ? node.getLabels().get(0) : null;
+        if (i > 0 && i < hops && node.getVariable() != null && !chainInteriorVars.add(node.getVariable()))
+          return null;
+      }
+      if (labelsConflict(labels[hops], anchorLabel))
+        return null;
+      if (labels[hops] == null)
+        labels[hops] = anchorLabel;
+      if (!chainHeads.add(firstVar))
+        return null; // two chains for one cycle variable: the third variable has none
+      if (labels[0] != null && !mergeVariableLabel(cycleLabels, firstVar, labels[0]))
+        return null;
+
       // All chain MATCHes must have the same chain structure
       if (partitionEdgeTypes == null) {
         partitionEdgeTypes = chainET;
         partitionDirections = chainDir;
+        chainLabels = labels;
       } else {
         if (chainET.length != partitionEdgeTypes.length)
           return null;
         for (int i = 0; i < chainET.length; i++)
           if (!chainET[i].equals(partitionEdgeTypes[i]) || chainDir[i] != partitionDirections[i])
+            return null;
+        // the interior and end labels must agree too: the operator filters on one set per position. Position 0 is the
+        // person label, settled below from the variables themselves.
+        for (int i = 1; i <= hops; i++)
+          if (!Objects.equals(labels[i], chainLabels[i]))
             return null;
       }
       chainMatchCount++;
@@ -7376,7 +7429,21 @@ public class CypherExecutionPlan {
     if (chainMatchCount != 3 || partitionEdgeTypes == null)
       return null;
 
-    return new PartitionedTriangleOp(partitionEdgeTypes, partitionDirections, cycleEdgeType);
+    // The three cycle variables are interchangeable in the operator, which has one label for all of them, so a label on
+    // one variable and none on another (or two different ones) is a filter it cannot express.
+    String personLabel = null;
+    boolean first = true;
+    for (final String var : cycleVars) {
+      final String label = cycleLabels.get(var);
+      if (first)
+        personLabel = label;
+      else if (!Objects.equals(personLabel, label))
+        return null;
+      first = false;
+    }
+    chainLabels[0] = personLabel;
+
+    return new PartitionedTriangleOp(partitionEdgeTypes, partitionDirections, cycleEdgeType, chainLabels);
   }
 
   /**
@@ -7582,6 +7649,14 @@ public class CypherExecutionPlan {
    */
   private static boolean hasPushDownRepresentableLabel(final NodePattern node) {
     return !node.hasLabels() || (node.getLabels().size() == 1 && !node.isLabelDisjunction());
+  }
+
+  /** Records the label a variable carries; false when it already carries a different one, which no single label can stand for. */
+  private static boolean mergeVariableLabel(final Map<String, String> labels, final String variable, final String label) {
+    if (variable == null)
+      return true;
+    final String previous = labels.putIfAbsent(variable, label);
+    return previous == null || previous.equals(label);
   }
 
   /** Whether two labels written on the same variable name different types, which no single label can stand for. */

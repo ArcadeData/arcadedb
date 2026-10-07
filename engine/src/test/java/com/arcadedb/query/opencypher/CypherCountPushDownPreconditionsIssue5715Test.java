@@ -146,7 +146,7 @@ class CypherCountPushDownPreconditionsIssue5715Test extends TestHelper {
     // The SKIP and LIMIT steps this issue added to the fast path are part of the plan, so they are described with it.
     assertThat(explainOf("MATCH (m:Big) RETURN count(m) AS c SKIP 1 LIMIT 2")).contains("SKIP", "LIMIT");
     // The early-out says why it can answer without reading.
-    assertThat(explainOf("MATCH (a:Lonely)-[:ISOLATED]->(b:Lonely) RETURN count(*) AS c")).contains("CONSTANT COUNT");
+    assertThat(explainOf("MATCH (a:Lonely)-[:NOSUCHTYPE]->(b:Lonely) RETURN count(*) AS c")).contains("CONSTANT COUNT");
 
     // A query no push-down claims is still described by whatever does run it.
     assertThat(explainOf("MATCH (m:Big) WHERE m.k <= 5 RETURN count(*) AS c")).doesNotContain("Count Push-Down");
@@ -264,8 +264,7 @@ class CypherCountPushDownPreconditionsIssue5715Test extends TestHelper {
   void aChainThatCannotMatchIsAnsweredWithoutReadingAnything() {
     for (final String query : List.of(
         "MATCH (a:Lonely)-[:NOSUCHTYPE]->(b:Lonely) RETURN count(*) AS c",
-        "MATCH (a:Lonely)-[:ISOLATED]->(b:Lonely) RETURN count(*) AS c",
-        "MATCH (a:Lonely)-[:ISOLATED]->(b:Lonely)-[:LINKS]->(c:Q) RETURN count(*) AS c",
+        "MATCH (a:Lonely)-[:NOSUCHTYPE]->(b:Lonely)-[:LINKS]->(c:Q) RETURN count(*) AS c",
         "MATCH (a:Q)-[:LINKS]->(b:NoSuchLabel) RETURN count(*) AS c",
         "MATCH (a:NoSuchLabel)-[:LINKS]->(b:Q) RETURN count(*) AS c")) {
       assertThat(countsOf(query)).as(query).containsExactly(0L);
@@ -273,9 +272,19 @@ class CypherCountPushDownPreconditionsIssue5715Test extends TestHelper {
     }
 
     // The same answer through the other door, where the push-down is asked for a row count.
-    final String body = "RETURN COUNT { MATCH (a:Lonely)-[:ISOLATED]->(b:Lonely) } AS c";
+    final String body = "RETURN COUNT { MATCH (a:Lonely)-[:NOSUCHTYPE]->(b:Lonely) } AS c";
     assertThat(scalarOf(body)).isZero();
     assertThat(recordsReadBy(body)).isZero();
+  }
+
+  /**
+   * A declared edge type with no record is not proven empty (light edges keep no record, #9389), so the answer is still 0 but it
+   * is computed by the push-down instead of being known up front.
+   */
+  @Test
+  void anEdgeTypeWithNoRecordIsCountedNotAssumedEmpty() {
+    assertThat(countsOf("MATCH (a:Lonely)-[:ISOLATED]->(b:Lonely) RETURN count(*) AS c")).containsExactly(0L);
+    assertThat(countsOf("MATCH (a:Lonely)-[:ISOLATED]->(b:Lonely)-[:LINKS]->(c:Q) RETURN count(*) AS c")).containsExactly(0L);
   }
 
   /**
