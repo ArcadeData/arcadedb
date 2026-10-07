@@ -26,8 +26,14 @@ package com.arcadedb.utility;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public interface ScanPressureReporter {
-  /** The batches this scan read with its read-ahead reduced by the query heap budget. */
+  /** The batches this scan read with its read-ahead reduced by the query heap budget or the pool of read-ahead. */
   long getBudgetShrunkBatches();
+
+  /**
+   * Gives back to the JVM-wide pool of read-ahead what the scan holds, for a scan its caller stops before the end (a LIMIT, a failure):
+   * the garbage collector would do it, but only when it gets to the scan. The scan can still be read; its next batch reserves again.
+   */
+  void releaseReadAhead();
 
   /** The text a profiled plan shows for a scan that read batches under pressure, or an empty string when none. */
   static String describe(final Object scan) {

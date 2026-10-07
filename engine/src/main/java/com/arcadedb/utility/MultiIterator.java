@@ -144,6 +144,14 @@ public class MultiIterator<T> implements ResettableIterator<T>, IterableGraph<T>
   }
 
   @Override
+  public void releaseReadAhead() {
+    if (sources != null)
+      for (final Object source : sources)
+        if (source instanceof ScanPressureReporter reporter)
+          reporter.releaseReadAhead();
+  }
+
+  @Override
   public long getBudgetShrunkBatches() {
     long total = 0L;
     if (sources != null)

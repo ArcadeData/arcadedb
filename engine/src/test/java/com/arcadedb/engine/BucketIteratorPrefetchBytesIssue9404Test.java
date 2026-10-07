@@ -29,6 +29,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.MultiIterator;
+import org.awaitility.core.ConditionTimeoutException;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -364,7 +365,7 @@ class BucketIteratorPrefetchBytesIssue9404Test extends TestHelper {
   @Test
   void theScansShareAJvmWidePoolAndGiveItBack() {
     database.getConfiguration().setValue(GlobalConfiguration.QUERY_BATCH_MAX_BYTES, 1024L * 1024);
-    final long baseline = ScanReadAheadBudget.getReservedBytes();
+    final long baseline = settledPool();
 
     // A BATCH READ AHEAD IS HELD IN THE POOL UNTIL IT IS HANDED OVER; TWO SCANS HOLD MORE THAN ONE
     final BucketIterator first = openIterator("Large");
@@ -380,9 +381,32 @@ class BucketIteratorPrefetchBytesIssue9404Test extends TestHelper {
   }
 
   @Test
+  void aScanStoppedBeforeItsEndGivesItsBytesBackWhenTheStepCloses() {
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_BATCH_MAX_BYTES, 1024L * 1024);
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN, false);
+    final long baseline = settledPool();
+
+    // A LIMIT STOPS THE SCAN AFTER ITS FIRST BATCH; CLOSING THE RESULT SET GIVES THE BYTES BACK AT ONCE, WITHOUT WAITING FOR THE GC
+    final long[] heldWhileOpen = new long[1];
+    try (final ResultSet rs = database.query("sql", "SELECT id FROM Large LIMIT 1")) {
+      assertThat(rs.hasNext()).isTrue();
+      heldWhileOpen[0] = ScanReadAheadBudget.getReservedBytes() - baseline;
+      rs.next();
+    }
+    assertThat(heldWhileOpen[0]).isGreaterThan(0);
+    assertThat(ScanReadAheadBudget.getReservedBytes()).isLessThanOrEqualTo(baseline);
+
+    try (final ResultSet rs = database.query("opencypher", "UNWIND [1] AS x MATCH (n:Large) RETURN n.id AS id LIMIT 1")) {
+      assertThat(rs.hasNext()).isTrue();
+      rs.next();
+    }
+    assertThat(ScanReadAheadBudget.getReservedBytes()).isLessThanOrEqualTo(baseline);
+  }
+
+  @Test
   void aScanTheCallerAbandonedGivesItsBytesBackToThePool() {
     database.getConfiguration().setValue(GlobalConfiguration.QUERY_BATCH_MAX_BYTES, 1024L * 1024);
-    final long baseline = ScanReadAheadBudget.getReservedBytes();
+    final long baseline = settledPool();
 
     // READ ONE BATCH AND DROP THE ITERATOR WITHOUT READING THE REST
     openIterator("Large");
@@ -503,6 +527,22 @@ class BucketIteratorPrefetchBytesIssue9404Test extends TestHelper {
         rs.next();
       return rs.getExecutionPlan().get().prettyPrint(0, 2);
     }
+  }
+
+  /**
+   * What the pool holds once the scans earlier tests left behind are collected: the cleaner gives their bytes back when the garbage
+   * collector gets to them, which would otherwise move the pool under a test that measures a difference.
+   */
+  private static long settledPool() {
+    try {
+      await().atMost(Duration.ofSeconds(10)).until(() -> {
+        System.gc();
+        return ScanReadAheadBudget.getReservedBytes() == 0L;
+      });
+    } catch (final ConditionTimeoutException e) {
+      // SOMETHING ELSE IN THE JVM HOLDS READ-AHEAD: MEASURE FROM WHAT IT HOLDS
+    }
+    return ScanReadAheadBudget.getReservedBytes();
   }
 
   private int countAll(final String typeName) {

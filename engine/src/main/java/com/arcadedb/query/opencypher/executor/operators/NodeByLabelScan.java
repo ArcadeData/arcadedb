@@ -240,6 +240,9 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
           parallelRows = null;
         }
         captureScanPressure();
+        // A SCAN STOPPED BEFORE ITS END GIVES ITS READ-AHEAD BACK TO THE POOL NOW
+        if (iterator instanceof ScanPressureReporter reporter)
+          reporter.releaseReadAhead();
         // Nothing is read after a close: the scan must not plan itself again
         finished = true;
       }
