@@ -170,6 +170,7 @@ final class DuplexHttpExchange implements HttpResponse<InputStream>, AutoCloseab
 
     final Socket raw = new Socket();
     Socket socket = raw;
+    DuplexHttpExchange exchange = null;
     try {
       final long connectMs = client.connectTimeout().map(Duration::toMillis).orElse(0L);
       try {
@@ -185,13 +186,18 @@ final class DuplexHttpExchange implements HttpResponse<InputStream>, AutoCloseab
       if (https)
         socket = startTls(client, raw, host, port, deadline);
 
-      final DuplexHttpExchange exchange = new DuplexHttpExchange(request, body, contentLength, deadline, raw, socket);
+      exchange = new DuplexHttpExchange(request, body, contentLength, deadline, raw, socket);
       exchange.writeHead();
       exchange.uploader.start();
       exchange.awaitResponse(deadline, progress);
       return exchange;
     } catch (final IOException | InterruptedException | RuntimeException e) {
-      closeQuietly(raw);
+      if (exchange != null)
+        // The upload may be parked in a read of the client's body, which the server drains once the caller has
+        // answered: it is stopped here, as close() stops it on success, so no two threads ever read that body at once.
+        exchange.close();
+      else
+        closeQuietly(raw);
       throw e;
     }
   }
@@ -329,8 +335,11 @@ final class DuplexHttpExchange implements HttpResponse<InputStream>, AutoCloseab
         }
         if (read < 0)
           break;
-        if (read == 0)
-          continue;
+        if (read == 0) {
+          // A blocking stream asked for at least one byte must not answer none: retrying it would spin.
+          failBody(new IOException("The request body returned no bytes from a blocking read"));
+          return;
+        }
         if (contentLength < 0) {
           out.write(Integer.toHexString(read).getBytes(StandardCharsets.US_ASCII));
           out.write(CRLF);
@@ -470,8 +479,12 @@ final class DuplexHttpExchange implements HttpResponse<InputStream>, AutoCloseab
       throw new IOException("The response from " + request.uri() + " carries both Transfer-Encoding and Content-Length");
     if (lengths.size() > 1 && lengths.stream().map(String::trim).distinct().count() > 1)
       throw new IOException("The response from " + request.uri() + " carries conflicting Content-Length values " + lengths);
-    if (transferEncoding.toLowerCase(Locale.ROOT).contains("chunked"))
+    if (!transferEncoding.isEmpty()) {
+      // Only chunked is decoded; any other coding (gzip, ...) would be relayed as if it were the leader's lines.
+      if (!transferEncoding.trim().toLowerCase(Locale.ROOT).equals("chunked"))
+        throw new IOException("Unsupported Transfer-Encoding '" + transferEncoding + "' in the response from " + request.uri());
       return new ChunkedBody();
+    }
     final Optional<String> length = lengths.isEmpty() ? Optional.empty() : Optional.of(lengths.getFirst());
     if (length.isPresent())
       try {

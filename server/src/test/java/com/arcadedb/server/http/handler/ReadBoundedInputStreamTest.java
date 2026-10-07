@@ -164,6 +164,44 @@ class ReadBoundedInputStreamTest {
     }
   }
 
+  /**
+   * A timer whose cancel did not take - the relay's I/O-thread timer can lose that race (issue #9216) - fires after its
+   * read returned. It must find the read disarmed and leave the stream alone, with or without an activity counter.
+   */
+  @Test
+  void aTimerThatFiresAfterItsReadReturnedDoesNothing() throws Exception {
+    for (final boolean withActivity : new boolean[] { false, true }) {
+      final AtomicInteger fired = new AtomicInteger();
+      final AtomicBoolean closed = new AtomicBoolean();
+      final InputStream leaderBody = new ByteArrayInputStream("line\n".getBytes(StandardCharsets.UTF_8)) {
+        @Override
+        public void close() {
+          closed.set(true);
+        }
+      };
+      final ReadBoundedInputStream.Timer cancelThatNeverTakes = (task, delayMs) -> {
+        scheduler.schedule(() -> {
+          fired.incrementAndGet();
+          task.run();
+        }, delayMs, TimeUnit.MILLISECONDS);
+        return () -> {
+          // lost the race: the task stays scheduled
+        };
+      };
+      final ReadBoundedInputStream in = withActivity ?
+          new ReadBoundedInputStream(leaderBody, BUDGET_MS, cancelThatNeverTakes, () -> 0L) :
+          new ReadBoundedInputStream(leaderBody, BUDGET_MS, cancelThatNeverTakes);
+
+      assertThat(in.read()).isEqualTo('l');
+      Thread.sleep(BUDGET_MS * 3);
+
+      assertThat(fired.get()).as("the stale timer did fire").isPositive();
+      assertThat(in.hasExpired()).isFalse();
+      assertThat(closed.get()).as("and closed nothing").isFalse();
+      assertThat(in.read()).isEqualTo('i');
+    }
+  }
+
   // ---------------------------------------------------------------------------------------------------------
 
   /**

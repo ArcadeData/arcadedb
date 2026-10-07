@@ -30,7 +30,10 @@ import java.io.OutputStream;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -142,6 +145,70 @@ class DuplexHttpExchangeTest {
         assertThatThrownBy(() -> send(leader, PAYLOAD.length).close()).as(head).isInstanceOf(IOException.class)
             .hasMessageContaining("Content-Length");
       }
+  }
+
+  @Test
+  @Timeout(value = 60, unit = TimeUnit.SECONDS)
+  void aTransferEncodingOtherThanChunkedIsRefused() throws Exception {
+    try (final FakeLeader leader = FakeLeader.scripted(out -> write(out, "HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\n\r\n"))) {
+      assertThatThrownBy(() -> send(leader, PAYLOAD.length).close()).isInstanceOf(IOException.class)
+          .hasMessageContaining("Unsupported Transfer-Encoding");
+    }
+  }
+
+  /**
+   * A send that fails stops its upload before it returns, as a successful one does on close: the upload reads the
+   * client's body, which the server drains once the handler has answered, and two threads must never read it at once.
+   */
+  @Test
+  @Timeout(value = 60, unit = TimeUnit.SECONDS)
+  void aFailedSendStopsReadingTheClientsBodyBeforeItReturns() throws Exception {
+    final CountDownLatch inFirstRead = new CountDownLatch(1);
+    final AtomicBoolean inRead = new AtomicBoolean();
+    final AtomicInteger reads = new AtomicInteger();
+    final InputStream clientBody = new InputStream() {
+      @Override
+      public int read() throws IOException {
+        throw new UnsupportedOperationException();
+      }
+
+      @Override
+      public int read(final byte[] b, final int off, final int len) {
+        inRead.set(true);
+        reads.incrementAndGet();
+        try {
+          inFirstRead.countDown();
+          // A client that is slow to send: the read returns after a while, with a byte.
+          Thread.sleep(1_000);
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+        } finally {
+          inRead.set(false);
+        }
+        b[off] = '\n';
+        return 1;
+      }
+    };
+
+    try (final FakeLeader leader = FakeLeader.scripted(out -> {
+      try {
+        inFirstRead.await(DEADLINE_MS, TimeUnit.MILLISECONDS);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+      write(out, "SSH-2.0-not-http\r\n\r\n");
+    })) {
+      final HttpRequest request = PostBatchHandler.buildForwardRequest("http://" + leader.address() + "/api/v1/batch/mydb",
+          "application/x-ndjson", "test-token", "root", -1, clientBody, NdJsonResultStream.CONTENT_TYPE, null, null);
+
+      assertThatThrownBy(() -> DuplexHttpExchange.send(client, request, clientBody, DEADLINE_MS, reads::get))
+          .isInstanceOf(IOException.class).hasMessageContaining("Malformed status line");
+
+      assertThat(inRead.get()).as("no read of the client's body is left running").isFalse();
+      final int readsWhenSendFailed = reads.get();
+      Thread.sleep(1_500);
+      assertThat(reads.get()).as("and none starts afterwards").isEqualTo(readsWhenSendFailed);
+    }
   }
 
   /** The JDK client fails a body shorter than it declared, and so does this: the leader must not read it as ended. */
