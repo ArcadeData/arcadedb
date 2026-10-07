@@ -276,6 +276,9 @@ public class LocalProperty extends AbstractProperty {
    * <p>
    * A schema loaded from disk is not refused: a database written before this rule may carry such a bound, and refusing it
    * would make the database unopenable. The load only warns, and {@code ALTER PROPERTY ... MAX null} is the remedy.
+   * <p>
+   * The refusal is an {@link IllegalArgumentException}, the exception {@code setMin}/{@code setMax} always raised for a
+   * BOOLEAN, LINK or EMBEDDED property; an unknown property TYPE is a {@link SchemaException} from {@code createProperty}.
    */
   private void checkBound(final String bound, final String side) {
     if (bound == null)
@@ -293,7 +296,7 @@ public class LocalProperty extends AbstractProperty {
 
     if (owner.getSchema().getEmbedded().isReadingFromFile()) {
       LogManager.instance().log(this, Level.WARNING,
-          "%s: the bound was declared before issue #9026 was fixed and every write of a value would fail on it. Remove it with ALTER PROPERTY `%s`.`%s` %s null",
+          "%s: the bound in the stored schema is not usable and a write of a value may fail on it. Remove it with ALTER PROPERTY `%s`.`%s` %s null",
           reason, owner.getName(), name, side.equals("Maximum") ? "MAX" : "MIN");
       return;
     }

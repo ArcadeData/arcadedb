@@ -181,6 +181,28 @@ class Issue9172InvalidPropertyDefinitionTest extends TestHelper {
     database.transaction(() -> database.newDocument("T").set("p", "2026-10-03 10:00:00").save());
   }
 
+  /**
+   * The declaration check reads a date bound the way the write path does for every date subtype, so a readable bound is
+   * accepted and enforced, and an unreadable one is refused, whichever subtype declares it.
+   */
+  @Test
+  void dateBoundIsCheckedTheSameWayForEveryDateSubtype() {
+    for (final Type type : List.of(Type.DATE, Type.DATETIME, Type.DATETIME_SECOND, Type.DATETIME_MICROS, Type.DATETIME_NANOS)) {
+      final String typeName = "D_" + type.name();
+      final DocumentType t = database.getSchema().createDocumentType(typeName);
+      final Property p = t.createProperty("d", type);
+
+      assertThatThrownBy(() -> p.setMin("yesterday")).as(type.name()).isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("yesterday");
+      assertThat(p.getMin()).as(type.name()).isNull();
+
+      p.setMin("2020-01-01 00:00:00");
+      database.transaction(() -> database.newDocument(typeName).set("d", "2026-10-03 10:00:00").save());
+      assertThatThrownBy(() -> database.transaction(() -> database.newDocument(typeName).set("d", "2019-06-01 10:00:00").save()))
+          .as(type.name()).isInstanceOf(ValidationException.class).hasMessageContaining("precedes");
+    }
+  }
+
   @Test
   void unreadableBoundIsRefusedThroughTheJavaApi() {
     final DocumentType t = database.getSchema().createDocumentType("T");
@@ -195,6 +217,14 @@ class Issue9172InvalidPropertyDefinitionTest extends TestHelper {
       final Property p = t.createProperty("p_" + type.name(), type);
       assertThatThrownBy(() -> p.setMax("not-a-bound")).as(type.name()).isInstanceOf(IllegalArgumentException.class);
       assertThat(p.getMax()).as(type.name()).isNull();
+    }
+
+    for (final Type type : List.of(Type.FLOAT, Type.DOUBLE)) {
+      final Property p = t.getProperty("p_" + type.name());
+      assertThatThrownBy(() -> p.setMin("NaN")).as(type.name()).isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("NaN");
+      p.setMin("-1.5");
+      assertThat(p.getMin()).isEqualTo("-1.5");
     }
 
     final Property string = t.getProperty("p_STRING");

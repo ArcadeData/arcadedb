@@ -316,8 +316,11 @@ public class DocumentValidator {
       }
       case LONG -> Long.parseLong(bound);
       case INTEGER, SHORT, BYTE -> Integer.parseInt(bound);
-      case FLOAT -> Float.parseFloat(bound);
-      case DOUBLE -> Double.parseDouble(bound);
+      case FLOAT, DOUBLE -> {
+        // NaN compares false against everything, so a NaN bound would never be enforced
+        if (Double.isNaN(type == Type.FLOAT ? Float.parseFloat(bound) : Double.parseDouble(bound)))
+          return "cannot be NaN";
+      }
       case DECIMAL -> new BigDecimal(bound);
       case DATE, DATETIME, DATETIME_SECOND, DATETIME_MICROS, DATETIME_NANOS -> {
         if (Type.convert(database, bound, Date.class) == null)
