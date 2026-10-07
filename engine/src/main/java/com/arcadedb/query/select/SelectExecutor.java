@@ -409,27 +409,35 @@ public class SelectExecutor {
         // NEVER RUNS), SO NO CAP WAS EVER APPLIED EITHER: RESET THE TEST-VISIBLE FIELD RATHER THAN LEAVE IT HOLDING A
         // MISLEADING FINITE VALUE
         indexCandidateLimit = -1;
-      } catch (final IndexException | IllegalArgumentException e) {
-        // An IllegalArgumentException is the index's only when the index it was reading is gone: any other one (a key that does
-        // not convert, a bad parameter) is the caller's and must not turn into a silent scan
-        if (e instanceof IllegalArgumentException && (indexBeingRead == null || indexBeingRead.isValid()))
+      } catch (final IllegalArgumentException e) {
+        // An IllegalArgumentException is the index's only when the index it was reading is gone ("File with id n was not found"
+        // once its file is deleted under the lookup): any other one (a key that does not convert, a bad parameter) is the
+        // caller's and must not turn into a silent scan
+        if (indexBeingRead == null || indexBeingRead.isValid())
           throw e;
-        LogManager.instance().log(this, Level.FINE, "Index dropped or rebuilt while the query was starting, scanning instead: %s",
-            null, e.getMessage());
-        // #9331: AN INDEX DROPPED OR REBUILT BY A CONCURRENT DDL WHILE THE CURSORS WERE BEING BUILT: EITHER ITS OWN
-        // IndexException OR, ONCE ITS FILE IS DELETED UNDER THE LOOKUP, THE FileManager'S "FILE WITH ID n WAS NOT FOUND".
-        // THE SCAN ANSWERS THE SAME ROWS WITHOUT IT, SINCE evaluateWhere() RUNS THE WHOLE WHERE-TREE ON EVERY RECORD EITHER WAY
-        for (final IndexCursor cursor : cursors)
-          try {
-            cursor.close();
-          } catch (final RuntimeException ignore) {
-            // KEEP CLOSING THE OTHERS
-          }
-        usedIndexes = null;
-        indexCandidateLimit = -1;
+        fallBackToScan(cursors, e);
+      } catch (final IndexException e) {
+        fallBackToScan(cursors, e);
       }
     }
     return null;
+  }
+
+  /**
+   * #9331: AN INDEX DROPPED OR REBUILT BY A CONCURRENT DDL WHILE THE CURSORS WERE BEING BUILT. THE SCAN ANSWERS THE SAME ROWS
+   * WITHOUT IT, SINCE evaluateWhere() RUNS THE WHOLE WHERE-TREE ON EVERY RECORD EITHER WAY
+   */
+  private void fallBackToScan(final List<IndexCursor> cursors, final RuntimeException cause) {
+    LogManager.instance().log(this, Level.FINE, "Index dropped or rebuilt while the query was starting, scanning instead: %s",
+        null, cause.getMessage());
+    for (final IndexCursor cursor : cursors)
+      try {
+        cursor.close();
+      } catch (final RuntimeException ignore) {
+        // KEEP CLOSING THE OTHERS
+      }
+    usedIndexes = null;
+    indexCandidateLimit = -1;
   }
 
   /**
