@@ -45,6 +45,7 @@ class Issue9324DateLocalDateTimeTest extends TestHelper {
   @Test
   void dateReadsAsMidnightOfThatDay() {
     assertThat(DateUtils.date(database, DAY.toEpochDay(), LocalDateTime.class)).isEqualTo(DAY.atStartOfDay());
+    assertThat(DateUtils.date(database, -1L, LocalDateTime.class)).isEqualTo(LocalDate.of(1969, 12, 31).atStartOfDay());
     assertThat(DateUtils.date(database, LocalDate.of(1960, 5, 1).toEpochDay(), LocalDateTime.class))
         .isEqualTo(LocalDate.of(1960, 5, 1).atStartOfDay());
   }
