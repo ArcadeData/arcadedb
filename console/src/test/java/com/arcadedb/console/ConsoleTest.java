@@ -190,10 +190,7 @@ class ConsoleTest {
       assertThat(console.parse("load " + script.getAbsolutePath())).isTrue();
       assertThat(buffer.toString()).doesNotContain("ERROR");
 
-      assertThat(console.parse("set language = sql")).isTrue();
-      buffer.setLength(0);
-      assertThat(console.parse("select count(*) as c from Dst")).isTrue();
-      assertThat(buffer.toString()).containsPattern("\\b2\\b").doesNotContain("ERROR");
+      assertThat(console.getDatabase().countType("Dst", true)).isEqualTo(2);
     } finally {
       script.delete();
     }
