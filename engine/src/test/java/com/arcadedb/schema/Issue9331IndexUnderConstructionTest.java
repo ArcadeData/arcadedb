@@ -19,12 +19,14 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.index.TypeIndex;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #9331: the marker of an index being populated is counted, so two builds on the same properties keep the index out of
@@ -50,6 +52,15 @@ class Issue9331IndexUnderConstructionTest extends TestHelper {
     type.endIndexConstruction(properties);
     assertThat(type.isIndexUnderConstruction(properties)).isFalse();
     assertThat(type.isIndexUnderConstruction(List.of("other"))).isFalse();
+  }
+
+  /** Pins the wording the stale-index detection reads: a change in the file manager's message must fail here, not in production. */
+  @Test
+  void theFileManagerMessageIsWhatTheStaleIndexDetectionMatches() {
+    assertThatThrownBy(() -> ((DatabaseInternal) database).getFileManager().getFile(Integer.MAX_VALUE))
+        .isInstanceOfSatisfying(IllegalArgumentException.class, e -> assertThat(TypeIndex.isFileNotFound(e)).isTrue());
+    assertThat(TypeIndex.isFileNotFound(new IllegalArgumentException("bad key"))).isFalse();
+    assertThat(TypeIndex.isFileNotFound(new IllegalArgumentException())).isFalse();
   }
 
   @Test

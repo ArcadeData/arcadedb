@@ -285,7 +285,9 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
           if (nextEntry == null) {
             // The entries of an index dropped or rebuilt while the cursors were open run out early, with no error of their own: an
-            // answer that looks complete and is not (issue #9331). Raised so the statement is planned again, see SelectStatement
+            // answer that looks complete and is not (issue #9331). Raised so the statement is planned again, see SelectStatement.
+            // A drop landing after the last row but before this read raises it for an answer that was complete: the window is a
+            // few instructions wide, and a statement planned again answers the same rows
             if (index instanceof TypeIndex typeIndex && !typeIndex.isValid())
               throw new IndexException("Index '" + indexName + "' was dropped or rebuilt while it was being read");
             updateIndexStats();
