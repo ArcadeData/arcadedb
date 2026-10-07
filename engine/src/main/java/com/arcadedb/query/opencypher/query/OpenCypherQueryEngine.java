@@ -57,10 +57,10 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
-import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.schema.TypeIndexBuilder;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityManager;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.index.Index;
 
@@ -600,7 +600,8 @@ public class OpenCypherQueryEngine implements QueryEngine {
    * Changes the declared type of a property, keeping every other attribute of its declaration (MANDATORY, NOTNULL, READONLY,
    * REGEXP, MIN, MAX, DEFAULT, HIDDEN, custom values) and refusing the change when a stored record violates the new
    * declaration (#9304). The schema has no in-place type change, so the property is recreated from its own JSON; a refusal
-   * puts the previous declaration back before rethrowing.
+   * (or any failure, an Error included) puts the previous declaration back before rethrowing. The check scans the whole type, as
+   * CREATE PROPERTY does.
    */
   private void retypeProperty(final Schema schema, final String typeName, final Property existing, final Type newType) {
     final DocumentType type = schema.getType(typeName);
@@ -613,7 +614,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
     try {
       final Property created = type.createProperty(propName, retyped);
       ExistingRecordsCheck.requireDeclaration(schema.getEmbedded().getDatabase(), type, created);
-    } catch (final RuntimeException e) {
+    } catch (final Throwable e) {
       if (type.existsProperty(propName))
         type.dropProperty(propName);
       type.createProperty(propName, previous);
