@@ -59,7 +59,8 @@ class Issue8784ReplicaCommitCallbacksIT extends BaseRaftHATest {
     final int replicaIndex = leaderIndex == 0 ? 1 : 0;
     final Database replicaDb = getServerDatabase(replicaIndex, getDatabaseName());
 
-    // A write transaction: the replica's commit tail.
+    // A write transaction: the replica's commit tail. A replica commits locally through phase 1 and ships the entry
+    // through Raft (RaftReplicatedDatabase.commit), not by forwarding the statement to the leader.
     final AtomicInteger fired = new AtomicInteger();
     replicaDb.begin();
     final MutableDocument doc = replicaDb.newDocument(TYPE_NAME).set("name", "from-replica");

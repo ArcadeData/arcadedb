@@ -902,7 +902,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
             getName(), committedLogIndex, applied);
     }
     // Issue #8784: committed cluster-wide, so it ends as a commit - records clean, counted, after-commit callbacks fired
-    // on this, the originating node - however the pages reach the page cache. A bare reset() dropped all three.
+    // on this, the originating node - however the pages reach the page cache. A bare reset() dropped all three. Here,
+    // AFTER the wait above, so a callback that reads what was committed (a materialized-view refresh) finds it applied.
+    // Only a timed-out wait, warned about above, lets one run before the local apply.
     payload.tx().concludeCommitWithoutPublishing();
     final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());
     ctx.popIfNotLastTransaction();

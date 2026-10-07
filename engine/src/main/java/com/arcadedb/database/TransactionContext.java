@@ -2264,8 +2264,9 @@ public class TransactionContext implements Transaction {
         // this phase (the deferred UPDATE no longer indexes here since #8983: save() queued its index changes).
         // Every caller of this method concludes the transaction on the null it gets back: commit() through
         // resetAndFireCallbacks(), and the Raft path through concludeCommitWithoutPublishing() on its own read-only
-        // arm. Both reach reset(), which publishes. Publishing is also the right answer rather than a tolerated one: a replay that indexed anything dirtied the record's own page, so "a buffer exists" and "nothing
-        // changed" cannot both be true, and an empty buffer publishes nothing.
+        // arm. Both reach reset(), which publishes. Publishing is also the right answer rather than a tolerated one:
+        // a replay that indexed anything dirtied the record's own page, so "a buffer exists" and "nothing changed"
+        // cannot both be true, and an empty buffer publishes nothing.
         if (lockedFiles != null) {
           database.getTransactionManager().unlockFilesInOrder(lockedFiles, getRequester());
           lockedFiles = null;
