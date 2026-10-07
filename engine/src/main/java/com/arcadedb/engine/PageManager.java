@@ -153,7 +153,9 @@ public class PageManager extends LockContext {
   // database-publication happens-before for cross-thread visibility of the startup() writes.
   private volatile PageManagerFlushThread             flushThread;
   // Written under the page-manager lock only, hence the plain increments: no other writer may be added without making the
-  // increments atomic
+  // increments atomic. A reader's two samples bracket its reads: the volatile write of the first increment is ordered before the
+  // page-cache writes it guards (ConcurrentHashMap puts), and the volatile read of the second sample after the reads' own
+  // volatile cache reads, which is the ordering a seqlock needs without an explicit fence.
   private volatile long                               publicationSequence;
   private volatile int                                freePageRAM;
 
