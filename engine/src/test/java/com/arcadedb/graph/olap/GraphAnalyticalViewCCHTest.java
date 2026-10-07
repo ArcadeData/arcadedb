@@ -186,6 +186,76 @@ class GraphAnalyticalViewCCHTest {
     assertThat(cch.getCustomizationCount()).as("no update customized the whole hierarchy").isEqualTo(fullCustomizations);
   }
 
+  /** New weights held in the overlay count toward compaction: once folded into a rebuilt base, answers stay exact. */
+  @Test
+  void weightUpdatesCrossingTheCompactionThreshold() {
+    grid(15, new Random(61));
+    final GraphAnalyticalView view = GraphAnalyticalView.builder(database).withName("roads").withEdgeTypes("ROAD")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS).withCompactionThreshold(25)
+        .withContractionHierarchy("distance").build();
+    final ContractionHierarchy cch = view.getContractionHierarchy("distance", "ROAD");
+    assertThat(cch.awaitReady(false, 60, TimeUnit.SECONDS)).isTrue();
+    final long buildTimestamp = view.getBuildTimestamp();
+
+    final Random random = new Random(62);
+    final List<RID> all = new ArrayList<>(roads.keySet());
+    for (int commit = 0; commit < 8; commit++) {
+      database.transaction(() -> {
+        for (int i = 0; i < 10; i++)
+          setDistance(all.get(random.nextInt(all.size())), 1 + random.nextInt(80));
+      });
+      assertThat(view.awaitReady(60, TimeUnit.SECONDS)).isTrue();
+      assertThat(cch.awaitReady(false, 60, TimeUnit.SECONDS)).isTrue();
+      // a compaction can publish a newer snapshot at any moment here, answered by Dijkstra until caught up: exact either way
+      assertRandomPairs(random, 30, Vertex.DIRECTION.OUT, null);
+    }
+    final long deadline = System.currentTimeMillis() + 60_000;
+    while (view.getBuildTimestamp() == buildTimestamp && System.currentTimeMillis() < deadline)
+      Thread.yield();
+    assertThat(view.getBuildTimestamp()).as("80 updated edges crossed the threshold of 25: the view compacted").isNotEqualTo(
+        buildTimestamp);
+    assertThat(cch.awaitReady(false, 60, TimeUnit.SECONDS)).isTrue();
+    assertRandomPairs(random, 60, Vertex.DIRECTION.OUT, ShortestPathFinder.Engine.CONTRACTION_HIERARCHY);
+    assertThat(cch.getTopologyBuildCount()).isEqualTo(1);
+  }
+
+  /**
+   * A base edge's new weight is held for its pair while it is the only BASE edge of the pair. A parallel edge added
+   * later lives in the overlay under its own identity, so it neither hides that value nor is mistaken for it.
+   */
+  @Test
+  void aSoleEdgeUpdatedThenGivenAParallelTwin() {
+    grid(10, new Random(71));
+    final GraphAnalyticalView view = syncView("roads");
+    final ContractionHierarchy cch = view.getContractionHierarchy("distance", "ROAD");
+    assertThat(cch.awaitReady(false, 60, TimeUnit.SECONDS)).isTrue();
+    final Random random = new Random(72);
+
+    RID original = null;
+    for (final Map.Entry<RID, double[]> road : roads.entrySet())
+      if ((int) road.getValue()[0] == 0) {
+        original = road.getKey();
+        break;
+      }
+    assertThat(original).isNotNull();
+    final RID edge = original;
+    final int to = (int) roads.get(edge)[1];
+
+    database.transaction(() -> setDistance(edge, 90.0));
+    assertThat(cch.awaitReady(false, 60, TimeUnit.SECONDS)).isTrue();
+    assertRandomPairs(random, 40, Vertex.DIRECTION.OUT, ShortestPathFinder.Engine.CONTRACTION_HIERARCHY);
+
+    database.transaction(() -> road(0, to, 45.0));
+    assertThat(cch.awaitReady(false, 60, TimeUnit.SECONDS)).isTrue();
+    assertThat(find(0, to, Vertex.DIRECTION.OUT).weight()).isLessThanOrEqualTo(45.0);
+    assertRandomPairs(random, 40, Vertex.DIRECTION.OUT, ShortestPathFinder.Engine.CONTRACTION_HIERARCHY);
+
+    database.transaction(() -> setDistance(edge, 2.0));
+    assertThat(cch.awaitReady(false, 60, TimeUnit.SECONDS)).isTrue();
+    assertThat(find(0, to, Vertex.DIRECTION.OUT).weight()).isEqualTo(2.0);
+    assertRandomPairs(random, 40, Vertex.DIRECTION.OUT, ShortestPathFinder.Engine.CONTRACTION_HIERARCHY);
+  }
+
   private void setDistance(final RID edge, final double distance) {
     final double[] road = roads.get(edge);
     if (road != null)
@@ -601,7 +671,7 @@ class GraphAnalyticalViewCCHTest {
         continue;
       }
       assertThat(result).as("%d -> %d %s", s, t, direction).isNotNull();
-      if (s != t)
+      if (s != t && engine != null)
         assertThat(result.engine()).isEqualTo(engine);
       assertThat(result.weight()).as("%d -> %d %s", s, t, direction).isCloseTo(expected, within(EPS));
       assertThat(result.vertices().getFirst()).isEqualTo(junctions[s]);
