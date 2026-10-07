@@ -110,6 +110,10 @@ public enum GlobalConfiguration {
         ASYNC_WORKER_THREADS.setValue(1);
         TX_WAL_FILES.setValue(1);
 
+        // A SCAN OF LARGE RECORDS READS AHEAD LITTLE: ABOUT TWO RECORDS OF 86KB PER BATCH INSTEAD OF A DOZEN (#9404)
+        QUERY_BATCH_MAX_BYTES.setValue(200L * 1024);
+        QUERY_SCAN_READ_AHEAD_MAX_RAM.setValue(16L);
+
         QUERY_PARALLELISM_POOL_THREADS.setValue(2);
         QUERY_PARALLELISM_QUEUE_SIZE.setValue(64);
         SPARSE_VECTOR_SCORING_POOL_THREADS.setValue(1);
@@ -994,6 +998,33 @@ public enum GlobalConfiguration {
       scanned in parallel too. The rows are still returned in the order of a sequential scan. 0 disables the split: \
       each bucket is then scanned by one worker""",
       Integer.class, 32),
+
+  QUERY_BATCH_MAX_BYTES("arcadedb.queryBatchMaxBytes", SCOPE.DATABASE,
+      """
+      Maximum bytes the scan of one bucket reads ahead of the query in one batch (issue #9404): the most one scan may hold, \
+      however idle the JVM is. A scan prefetches up to 1,024 records per bucket, which is cheap for small records but holds 1,024 \
+      whole records when they span several pages (a vertex with a big nested document): that memory is no query's buffer, so no \
+      budget accounts for it, and a few dozen concurrent queries exhaust the heap. The batch ends as soon as the bytes it copied \
+      out of the pages reach this size, whatever the record count (the size is reached or exceeded by at most one record, and a \
+      single record larger than the limit is still assembled whole); records that fit their own page are views of the cached \
+      page and are not counted. The limit applies to each bucket scan on its own, so a type with N buckets can read ahead up to N \
+      times this - but never more than arcadedb.queryScanReadAheadMaxRAM allows all the scans together. A scan starts with this \
+      size and reads less as the JVM-wide pool and the query heap budget (arcadedb.queryMaxHeapRAM) fill: at most a \
+      thirty-second of what is left of the pool, a sixty-fourth of what is left of the budget, down to one record at a time. \
+      Those shares are read once per batch and are not reservations, so scans that start together each take their share of the \
+      same remainder. A batch always holds at least one record. A change applies to the scans opened after it. 0 or a negative \
+      value disables the byte bound, and the shrinking with it (record count only)""",
+      Long.class, 1024L * 1024),
+
+  QUERY_SCAN_READ_AHEAD_MAX_RAM("arcadedb.queryScanReadAheadMaxRAM", SCOPE.JVM,
+      """
+      Maximum memory (in MB) the scans of all the queries running in the JVM may hold read ahead at once, across every bucket of \
+      every database (issue #9404). A scan reads its records in batches of up to arcadedb.queryBatchMaxBytes; this limit bounds \
+      the sum of those batches, so many concurrent scans cannot hold that many times the bound. Each scan starts with its full \
+      batch size and gets a smaller one as the pool fills - a thirty-second of what is left of it - down to one record at a time. \
+      The limit is soft: a batch always holds at least one record. The bytes are given back when a batch is handed over, and \
+      by the garbage collector for a scan the caller abandoned. 0 or a negative value disables the pool""",
+      Long.class, 200L),
 
   QUERY_PARALLEL_SCAN_MAX_BATCH_BYTES("arcadedb.queryParallelScanMaxBatchBytes", SCOPE.DATABASE,
       """

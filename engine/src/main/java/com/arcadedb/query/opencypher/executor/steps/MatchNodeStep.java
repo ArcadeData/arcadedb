@@ -52,6 +52,7 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.utility.ScanPressureReporter;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -61,6 +62,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Execution step for matching node patterns.
@@ -92,6 +94,12 @@ public class MatchNodeStep extends AbstractExecutionStep {
   // branches - if a future change drives parallel sub-plans through the same step, all three fields
   // (including cachedFullScanCandidates below) need to move to a per-execution scope or be guarded.
   private       String              usedIndexName; // Track which index was used (if any)
+  // The full type scan the step reads from, kept only to report in a profile whether the heap budget reduced its read-ahead (#9404)
+  // READ BY THE PROFILE WHILE THE THREAD THAT RUNS THE STEP WRITES THEM
+  private volatile ScanPressureReporter scanIterator;
+  private final    AtomicLong           completedScansShrunkBatches = new AtomicLong();
+  // THE FULL TYPE SCAN IN PROGRESS, KEPT TO GIVE ITS READ-AHEAD BACK WHEN THE STEP CLOSES OR OPENS ANOTHER SCAN
+  private volatile ScanPressureReporter openScan;
   private       String              usedPartitionBucket; // Track partition bucket pruning (if any) - same write-once-per-execution contract as usedIndexName
   // Full snapshot of a row-independent full-type-scan's candidates, populated (via recordingIterator) only
   // once the first getVertexIterator() call of a CHAINED match (prev != null) has been fully drained by the
@@ -247,6 +255,15 @@ public class MatchNodeStep extends AbstractExecutionStep {
   /** The variable this step binds. */
   public String getVariable() {
     return variable;
+  }
+
+  @Override
+  public void close() {
+    if (openScan != null) {
+      openScan.releaseReadAhead();
+      openScan = null;
+    }
+    super.close();
   }
 
   @Override
@@ -667,6 +684,17 @@ public class MatchNodeStep extends AbstractExecutionStep {
         if (type != null) {
           @SuppressWarnings("unchecked") final Iterator<Identifiable> iter =
               (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(label, true);
+          // A CHAINED MATCH OPENS A SCAN PER INPUT ROW: THE ONE BEFORE GIVES ITS READ-AHEAD BACK
+          if (openScan != null)
+            openScan.releaseReadAhead();
+          openScan = iter instanceof ScanPressureReporter reporter ? reporter : null;
+          // ONLY A PROFILED RUN KEEPS THE SCAN FOR THE PROFILE, WHICH HOLDS A BATCH OF RECORDS: THE PROFILE IS THE ONLY READER
+          if (context.isProfiling()) {
+            // A CHAINED MATCH OPENS A SCAN PER INPUT ROW: THE ONES DONE STAY IN THE COUNT
+            if (scanIterator != null)
+              completedScansShrunkBatches.addAndGet(scanIterator.getBudgetShrunkBatches());
+            scanIterator = iter instanceof ScanPressureReporter reporter ? reporter : null;
+          }
           return iter;
         }
         return Collections.emptyIterator();
@@ -1141,6 +1169,9 @@ public class MatchNodeStep extends AbstractExecutionStep {
       if (rowCount > 0)
         builder.append(", ").append(getRowCountFormatted());
       builder.append(")");
+      // #9404: A SCAN THAT READ WITH ITS READ-AHEAD REDUCED BY THE QUERY HEAP BUDGET IS SLOWER FOR IT: SAY SO
+      builder.append(ScanPressureReporter.describe(completedScansShrunkBatches.get()
+          + (scanIterator != null ? scanIterator.getBudgetShrunkBatches() : 0L)));
     }
     return builder.toString();
   }

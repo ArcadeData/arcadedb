@@ -65,6 +65,10 @@ class LowRamProfileTest {
     assertThat(GlobalConfiguration.SPARSE_VECTOR_SCORING_POOL_THREADS.getValueAsInteger()).isEqualTo(1);
     assertThat(GlobalConfiguration.SPARSE_VECTOR_SCORING_QUEUE_SIZE.getValueAsInteger()).isEqualTo(64);
 
+    // SCAN READ-AHEAD (#9404)
+    assertThat(GlobalConfiguration.QUERY_BATCH_MAX_BYTES.getValueAsLong()).isEqualTo(200L * 1024);
+    assertThat(GlobalConfiguration.QUERY_SCAN_READ_AHEAD_MAX_RAM.getValueAsLong()).isEqualTo(16L);
+
     // SERVER HTTP
     assertThat(GlobalConfiguration.SERVER_HTTP_WORKER_THREADS.getValueAsInteger()).isEqualTo(16);
     final int ioThreads = GlobalConfiguration.SERVER_HTTP_IO_THREADS.getValueAsInteger();

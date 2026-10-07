@@ -30,6 +30,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.utility.ScanPressureReporter;
 
 import java.util.ArrayList;
 import java.util.Iterator;
@@ -64,6 +65,12 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
    * worker thread per cached plan, weakly keyed on this operator, so it goes with the plan.
    */
   private final ThreadLocal<Boolean> servedInParallel = new ThreadLocal<>();
+  /**
+   * How many batches the type scan of the calling thread's last profiled execution read with its read-ahead reduced by the heap budget
+   * (#9404), for the PROFILE that follows it. A count, not the scan: the scan holds a batch of records, and this outlives the query.
+   * Same lifetime as {@link #servedInParallel}.
+   */
+  private final ThreadLocal<Long> scanShrunkBatches = new ThreadLocal<>();
 
   public NodeByLabelScan(final String variable, final String label,
                         final double estimatedCost, final long estimatedCardinality) {
@@ -165,6 +172,8 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
                 return filter.evaluate(row, workerContext) ? row : null;
               }) : null;
           servedInParallel.set(parallelScan != null);
+          // THIS EXECUTION'S SCAN, NOT A PREVIOUS ONE'S: THE PARALLEL PATH READS NO ITERATOR OF ITS OWN
+          scanShrunkBatches.remove();
           if (parallelScan != null) {
             // The rows come back already filtered, in the order the sequential scan reads them
             parallelRows = parallelScan.pull(context);
@@ -213,7 +222,14 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
 
         if (!iterator.hasNext()) {
           finished = true;
+          captureScanPressure();
         }
+      }
+
+      // WHAT A PROFILE SAYS OF THE SCAN IS KEPT AS A COUNT, TAKEN WHEN THE SCAN ENDS OR IS CLOSED: THE ITERATOR ITSELF IS NOT KEPT
+      private void captureScanPressure() {
+        if (context.isProfiling() && iterator instanceof ScanPressureReporter reporter)
+          scanShrunkBatches.set(reporter.getBudgetShrunkBatches());
       }
 
       @Override
@@ -223,6 +239,10 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
           parallelRows.close();
           parallelRows = null;
         }
+        captureScanPressure();
+        // A SCAN STOPPED BEFORE ITS END GIVES ITS READ-AHEAD BACK TO THE POOL NOW
+        if (iterator instanceof ScanPressureReporter reporter)
+          reporter.releaseReadAhead();
         // Nothing is read after a close: the scan must not plan itself again
         finished = true;
       }
@@ -262,6 +282,7 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
       return rowFilter == null || rowFilter.evaluate(row, workerContext) ? row : null;
     });
     servedInParallel.set(scan != null);
+    scanShrunkBatches.remove();
     return scan;
   }
 
@@ -283,6 +304,8 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
       sb.append(" [filter: ").append(whereFilter.getText()).append("]");
     if (Boolean.TRUE.equals(servedInParallel.get()))
       sb.append(" [parallel]");
+    final Long shrunkBatches = scanShrunkBatches.get();
+    sb.append(ScanPressureReporter.describe(shrunkBatches == null ? 0L : shrunkBatches));
     sb.append(" [cost=").append(String.format(Locale.US, "%.2f", estimatedCost));
     sb.append(", rows=").append(estimatedCardinality);
     sb.append("]\n");
