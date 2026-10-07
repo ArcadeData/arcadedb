@@ -837,8 +837,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // the registration is withdrawn) or it is gone - a Raft server torn down between dispatch and acknowledgement -
     // and waiting for a claim would hang the caller for good. Withdraw it, then leave the pages to the state machine
     // that will apply the entry (this one, or the replacement of an in-place restart, #8785), or publish on this
-    // thread during a shutdown, the way every leader commit did before issue #6965. A
-    // withdrawal that fails is the normal case (the claim happened) and the outcome is awaited.
+    // thread during a shutdown, the way every leader commit did before issue #6965. A withdrawal that fails is the
+    // normal case (the claim happened) and the outcome is awaited.
     if (local != null && !stateMachine.withdrawLocalCommit(local)) {
       concludeLocalCommit(local, payload);
       return;
@@ -850,7 +850,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // publication here would fold the record delta into the bucket counters twice. While a state machine will apply
       // the entry - this one, or the replacement an in-place Ratis restart builds (#8785) - this thread never publishes,
       // however long the apply takes: it waits like a replica does, then releases.
-      if (stateMachineWillApply(stateMachine)) {
+      if (stateMachineWillApply()) {
         awaitLocalApplyAndRelease(payload, committedLogIndex);
         return;
       }
@@ -940,9 +940,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * by the quorum timeout. Only a requested shutdown, after which no apply runs in this process, leaves the entry to
    * the committing thread.
    */
-  private boolean stateMachineWillApply(final ArcadeStateMachine stateMachine) {
+  private boolean stateMachineWillApply() {
     final RaftHAServer raft = raftHAServer;
-    return stateMachine != null && raft != null && !raft.isShutdownRequested() && raft.getStateMachine() != null;
+    return raft != null && !raft.isShutdownRequested() && raft.getStateMachine() != null;
   }
 
   /** Upper bound on the wait for a refused page to catch up locally: a committed entry is a heartbeat away, not more. */
@@ -1104,7 +1104,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // restart will (#8785) - so this thread only waits and releases; it publishes only during a shutdown.
       if (local != null && !stateMachine.withdrawLocalCommit(local))
         concludeLocalCommit(local, payload);
-      else if (!leader || (local != null && stateMachineWillApply(stateMachine)))
+      else if (!leader || (local != null && stateMachineWillApply()))
         awaitLocalApplyAndRelease(payload, committedLogIndexOrCommitIndex(committedLogIndex));
       else
         commitLocallyWithoutStateMachine(payload);
