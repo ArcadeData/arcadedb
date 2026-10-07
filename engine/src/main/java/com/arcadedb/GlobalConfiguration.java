@@ -1631,8 +1631,9 @@ public enum GlobalConfiguration {
 
   SERVER_METRICS_OTLP_STEP("arcadedb.serverMetrics.otlp.step", SCOPE.SERVER, """
       How often the server metrics are pushed to the OTLP endpoint, in milliseconds. Also the window a step-based \
-      meter (a rate, a max) is measured over. Not positive keeps Micrometer's default of one minute. Read when the \
-      metrics plugin starts""", Long.class, 60_000L),
+      meter (a rate, a max) is measured over. Not positive keeps Micrometer's default of one minute; a positive value \
+      below 1000 is raised to 1000, so a typo cannot push to the collector in a busy loop. Read when the metrics \
+      plugin starts""", Long.class, 60_000L),
 
   SERVER_METRICS_TRACING_ENABLED("arcadedb.serverMetrics.tracing.enabled", SCOPE.SERVER,
       "Enable OpenTelemetry distributed tracing (requires the optional tracing plugin on the classpath). Note: query/command spans include the statement text as the db.statement span attribute, which may contain sensitive data, so secure the OTLP collector endpoint",
