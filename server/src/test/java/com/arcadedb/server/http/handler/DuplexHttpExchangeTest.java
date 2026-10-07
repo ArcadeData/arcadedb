@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.server.StaticBaseServerTest;
 import com.arcadedb.server.http.FakeLeader;
 import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.AfterEach;
@@ -28,6 +29,9 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.InetAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpTimeoutException;
@@ -39,6 +43,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * The HTTP/1.1 framing of {@link DuplexHttpExchange} (issue #9216), the transport of the streamed batch forward: how it
@@ -147,6 +152,51 @@ class DuplexHttpExchangeTest {
         assertThatThrownBy(() -> send(leader, PAYLOAD.length).close()).as(head).isInstanceOf(IOException.class)
             .hasMessageContaining("Content-Length");
       }
+  }
+
+  /** An IPv6 literal leader address: {@code URI.getHost()} keeps its brackets, which must not reach the resolver. */
+  @Test
+  @Timeout(value = 60, unit = TimeUnit.SECONDS)
+  void anIpv6LiteralLeaderIsDialled() throws Exception {
+    final ServerSocket listener;
+    try {
+      listener = new ServerSocket(StaticBaseServerTest.allocateFreePorts(1)[0], 4, InetAddress.getByName("::1"));
+    } catch (final IOException e) {
+      assumeTrue(false, "no IPv6 loopback on this host: " + e.getMessage());
+      return;
+    }
+    try (listener) {
+      final Thread leader = new Thread(() -> {
+        try (final Socket socket = listener.accept()) {
+          final InputStream in = socket.getInputStream();
+          int matched = 0;
+          final byte[] end = "\r\n\r\n".getBytes(StandardCharsets.US_ASCII);
+          while (matched < end.length) {
+            final int b = in.read();
+            if (b < 0)
+              return;
+            matched = b == end[matched] ? matched + 1 : (b == end[0] ? 1 : 0);
+          }
+          in.readNBytes(PAYLOAD.length);
+          write(socket.getOutputStream(), "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+          socket.shutdownOutput();
+          in.readAllBytes();
+        } catch (final IOException ignored) {
+          // the exchange closed the connection
+        }
+      }, "issue9216-ipv6-leader");
+      leader.setDaemon(true);
+      leader.start();
+
+      final HttpRequest request = PostBatchHandler.buildForwardRequest(
+          "http://[::1]:" + listener.getLocalPort() + "/api/v1/batch/mydb", "application/x-ndjson", "test-token", "root",
+          PAYLOAD.length, new ByteArrayInputStream(PAYLOAD), NdJsonResultStream.CONTENT_TYPE, null, null);
+      try (final DuplexHttpExchange response = DuplexHttpExchange.send(client, request, new ByteArrayInputStream(PAYLOAD),
+          DEADLINE_MS, () -> 0L)) {
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(readAll(response.body())).isEqualTo("ok");
+      }
+    }
   }
 
   /** A head dripped a byte at a time keeps the socket busy but is not an answer: the deadline still applies. */

@@ -122,6 +122,9 @@ public class SilenceBoundedInputStream extends FilterInputStream {
   private Runnable arm() {
     final AtomicBoolean armed = new AtomicBoolean(true);
     final AtomicReference<Runnable> cancel = new AtomicReference<>();
+    // Plain arrays, not atomics: after the arming thread hands them over through Timer.schedule, only the timer's task
+    // touches them, one run at a time, each scheduled by the run before it. The timer's own hand-over (a queue, a lock)
+    // orders each run after the schedule that created it, which is all the visibility they need.
     final long[] seen = { activity != null ? activity.getAsLong() : 0L };
     final Runnable[] fire = new Runnable[1];
     fire[0] = () -> {

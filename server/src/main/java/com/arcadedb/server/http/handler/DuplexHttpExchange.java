@@ -114,6 +114,7 @@ final class DuplexHttpExchange implements HttpResponse<InputStream>, AutoCloseab
   private static final byte[] LAST_CHUNK             = "0\r\n\r\n".getBytes(StandardCharsets.US_ASCII);
   /** The JDK client's own switch for hostname verification, honoured so both transports verify alike. */
   private static final String DISABLE_HOSTNAME_VERIFICATION = "jdk.internal.httpclient.disableHostnameVerification";
+  private static final AtomicBoolean HOSTNAME_VERIFICATION_OFF_WARNED = new AtomicBoolean(false);
 
   private final    HttpRequest   request;
   private final    InputStream   uploadBody;
@@ -128,7 +129,10 @@ final class DuplexHttpExchange implements HttpResponse<InputStream>, AutoCloseab
   private final    Thread        uploader;
   /** Why the request body could not be read, or {@code null}: the failure that aborted the exchange. */
   private volatile Throwable     bodyFailure;
-  /** One byte, for the single-byte reads of the response body; only the thread reading the response uses it. */
+  /**
+   * One byte, for the single-byte reads of the response body. Shared by {@code LengthBody} and {@code ChunkedBody}, of
+   * which an exchange has exactly one, read by one thread.
+   */
   private final    byte[]        oneByte      = new byte[1];
   /** The response head is written by send() before it returns, and read only by the thread it returned to. */
   private          int           headBytes;
@@ -166,7 +170,11 @@ final class DuplexHttpExchange implements HttpResponse<InputStream>, AutoCloseab
     final long deadline = Math.max(deadlineMs, LeaderDial.MIN_FORWARD_TIMEOUT_MS);
     final URI uri = request.uri();
     final boolean https = "https".equalsIgnoreCase(uri.getScheme());
-    final String host = uri.getHost();
+    // URI.getHost() keeps the brackets of an IPv6 literal ("[::1]"), which neither resolves nor matches a certificate.
+    final String uriHost = uri.getHost();
+    final String host = uriHost != null && uriHost.startsWith("[") && uriHost.endsWith("]") ?
+        uriHost.substring(1, uriHost.length() - 1) :
+        uriHost;
     final int port = uri.getPort() >= 0 ? uri.getPort() : https ? 443 : 80;
     final long contentLength = request.bodyPublisher().map(HttpRequest.BodyPublisher::contentLength).orElse(-1L);
 
@@ -286,6 +294,10 @@ final class DuplexHttpExchange implements HttpResponse<InputStream>, AutoCloseab
     final SSLParameters parameters = client.sslParameters();
     if (!Boolean.getBoolean(DISABLE_HOSTNAME_VERIFICATION))
       parameters.setEndpointIdentificationAlgorithm("HTTPS");
+    else if (HOSTNAME_VERIFICATION_OFF_WARNED.compareAndSet(false, true))
+      LogManager.instance().log(DuplexHttpExchange.class, Level.WARNING,
+          "'%s' is set, so the leader's TLS certificate is not checked against its host name when a streamed batch is "
+              + "forwarded to it. This notice is logged only once.", DISABLE_HOSTNAME_VERIFICATION);
     ssl.setSSLParameters(parameters);
     ssl.setSoTimeout((int) Math.min(deadlineMs, Integer.MAX_VALUE));
     try {
