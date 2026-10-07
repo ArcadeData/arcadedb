@@ -83,6 +83,21 @@ class Issue9351GenericSumAllAbsentTest extends TestHelper {
     }
   }
 
+  /** Cypher keeps Neo4j's answer: sum() over no value is 0, on an empty match and on all-null values alike. */
+  @Test
+  void cypherSumOverNoValueStaysZero() {
+    database.transaction(() -> {
+      database.getSchema().createVertexType("V9351");
+      database.newVertex("V9351").set("k", 1).save();
+    });
+    try (final ResultSet rs = database.query("opencypher", "MATCH (n:V9351) WHERE n.k > 100 RETURN sum(n.x) AS s")) {
+      assertThat(rs.next().<Number>getProperty("s").intValue()).as("empty match").isZero();
+    }
+    try (final ResultSet rs = database.query("opencypher", "MATCH (n:V9351) RETURN sum(n.x) AS s")) {
+      assertThat(rs.next().<Number>getProperty("s").intValue()).as("all-null values").isZero();
+    }
+  }
+
   @Test
   void mergingAPartialThatSawNoValueKeepsTheOtherSide() {
     final SQLFunctionSum seen = new SQLFunctionSum();

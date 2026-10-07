@@ -66,6 +66,19 @@ class Issue9365SqlInsertUndeclaredKeysTest extends TestHelper {
   }
 
   @Test
+  void insertFromSelectAndContentAreCheckedAndInternalKeysAreNotProperties() {
+    // CONTENT builds the document from a map: no internal @rid / @type key reaches the check
+    database.transaction(() -> database.command("sql",
+        "INSERT INTO weather CONTENT {\"ts\": 1700000000001, \"city\": \"oslo\", \"temp\": 2.5}"));
+    assertThat(count()).isEqualTo(1);
+
+    assertThatThrownBy(() -> database.transaction(() -> database.command("sql",
+        "INSERT INTO weather CONTENT {\"ts\": 1700000000002, \"citty\": \"oslo\", \"temp\": 2.5}")))
+        .isInstanceOf(CommandExecutionException.class).hasMessageContaining("citty");
+    assertThat(count()).isEqualTo(1);
+  }
+
+  @Test
   void ignoreStoresTheRowWithoutTheUndeclaredKey() {
     database.getConfiguration().setValue(GlobalConfiguration.TIMESERIES_UNDECLARED_KEYS, "ignore");
     database.transaction(() -> database.command("sql",

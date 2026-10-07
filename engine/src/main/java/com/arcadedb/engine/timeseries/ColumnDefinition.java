@@ -357,12 +357,13 @@ public final class ColumnDefinition {
       case DICTIONARY -> null;
       // Each numeric codec only for the types its encoder AND decoder round-trip: SIMPLE8B stores integers, so a DOUBLE
       // would read back as raw long bits; GORILLA_XOR stores doubles, so a LONG would lose precision past 2^53 and read
-      // back as a Double
-      // (a TAG defaults to DICTIONARY whatever its type, so the type's numeric codec is its FIELD default)
-      case GORILLA_XOR, SIMPLE8B -> defaultCodecFor(dataType, ColumnRole.FIELD) == codec ? null
-          : "Column '" + name + "' of type " + dataType + " cannot use codec " + codec + ", which would not read the values back "
-              + "unchanged. Use DICTIONARY" + (isNumericCodec(defaultCodecFor(dataType, ColumnRole.FIELD))
-              ? " or " + defaultCodecFor(dataType, ColumnRole.FIELD) : "");
+      // back as a Double. A TAG defaults to DICTIONARY whatever its type, so the type's numeric codec is its FIELD default.
+      case GORILLA_XOR, SIMPLE8B -> {
+        final TimeSeriesCodec numeric = defaultCodecFor(dataType, ColumnRole.FIELD);
+        yield numeric == codec ? null
+            : "Column '" + name + "' of type " + dataType + " cannot use codec " + codec
+                + ", which would not read the values back unchanged. Use DICTIONARY" + (isNumericCodec(numeric) ? " or " + numeric : "");
+      }
       default -> "Column '" + name + "' cannot use codec " + codec + ", which has no encoder for a " + role
           + " column. Supported codecs: GORILLA_XOR, SIMPLE8B, DICTIONARY";
     };
