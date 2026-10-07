@@ -46,8 +46,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   versions on every node. PHASE 3 is now skipped on a replicated database, and the graph is built node-locally on
  *   first use, as every other node of the cluster builds it.</li>
  *   <li>The build's chunk size ({@code arcadedb.index.buildChunkSizeMB}, 50MB by default) was not bounded by the
- *   replicated entry cap ({@code min(arcadedb.ha.appendBufferSize, arcadedb.ha.grpcMessageSizeMax)}, 32MB by
- *   default), and on the ordinary arm one chunk is one replicated entry.</li>
+ *   replicated entry cap ({@code GlobalConfiguration.maxReplicatedRaftEntrySize}, 32MB by default), and on the ordinary arm one chunk is one replicated entry.</li>
  * </ol>
  * The wrapper is a delegating proxy installed the way the HA plugin installs {@code RaftReplicatedDatabase}
  * ({@link LocalDatabase#setWrappedDatabaseInstance}); it counts the {@code commit()} calls it receives and can claim to

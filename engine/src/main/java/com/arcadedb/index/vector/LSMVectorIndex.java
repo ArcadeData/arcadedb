@@ -4484,14 +4484,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
     return chunkSizeMB;
   }
 
+  /**
+   * Whether this index's database replicates its commits: asked of the current wrapper, which is the Raft-replicated
+   * database on an HA node, and never of the inner instance, which is not replicated by itself.
+   */
+  private boolean isReplicated() {
+    return getDatabase().getWrappedDatabaseInstance().isReplicated();
+  }
+
   /** Fraction of the replicated entry cap one replicated bulk-load chunk may take: one half (see {@link #getBulkLoadChunkSizeBytes}). */
   private static final long REPLICATED_CHUNK_SHARE_OF_ENTRY_CAP = 2;
-
-  /**
-   * Uncompressed payload one replicated entry may carry, mirrored from {@code RaftLogEntryCodec.MAX_ENTRY_BYTES} in
-   * {@code ha-raft}, which the engine cannot see. Has to move with it.
-   */
-  private static final long MAX_REPLICATED_UNCOMPRESSED_ENTRY_BYTES = 64L * 1024 * 1024;
 
   /**
    * How many estimated bytes of vectors one transaction of {@link #bulkLoadVectorData} may accumulate before it is
@@ -4519,11 +4521,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   private long getBulkLoadChunkSizeBytes() {
     final long chunkSizeBytes = getTxChunkSize() * 1024 * 1024;
-    if (!getDatabase().getWrappedDatabaseInstance().isReplicated())
+    if (!isReplicated())
       return chunkSizeBytes;
 
     final long entryCap = Math.min(GlobalConfiguration.maxReplicatedRaftEntrySize(getDatabase().getConfiguration()),
-        MAX_REPLICATED_UNCOMPRESSED_ENTRY_BYTES);
+        GlobalConfiguration.MAX_REPLICATED_UNCOMPRESSED_ENTRY_BYTES);
     return Math.min(chunkSizeBytes, entryCap / REPLICATED_CHUNK_SHARE_OF_ENTRY_CAP);
   }
 
@@ -10886,8 +10888,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
             // transaction too, so the bulk-loaded vector pages it still held landed on this node only. Skipped, the
             // graph is built the way every other node of the cluster builds it for this same build: node-locally, on
             // first use. It is also exactly what this build does whenever the graph is already loaded.
-            if (vectorIndex().size() > 0 && graphState == GraphState.LOADING && !db.getWrappedDatabaseInstance()
-                .isReplicated()) {
+            if (vectorIndex().size() > 0 && graphState == GraphState.LOADING && !isReplicated()) {
               buildGraphWithChunking(graphCallback, chunkedCommitAllowed);
             }
 

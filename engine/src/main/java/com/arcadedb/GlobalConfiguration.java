@@ -3515,6 +3515,14 @@ public enum GlobalConfiguration {
   }
 
   /**
+   * Uncompressed payload, in bytes, a producer may pack into one replicated Raft entry (64 MB), whatever the
+   * configured caps say: every node has to materialize the entry in full to apply it, so the LZ4 compression on the
+   * wire is no bound (issue #5933). The ha-raft codec enforces it ({@code RaftLogEntryCodec.MAX_ENTRY_BYTES}), and
+   * engine code that sizes its own replicated commits reads it from here, so the two cannot drift (issue #8905).
+   */
+  public static final int MAX_REPLICATED_UNCOMPRESSED_ENTRY_BYTES = 64 * 1024 * 1024;
+
+  /**
    * Maximum size, in bytes, of a SINGLE replicated Raft log entry: the smaller of
    * {@link #HA_GRPC_MESSAGE_SIZE_MAX} and {@link #HA_APPEND_BUFFER_SIZE}.
    * <p>
