@@ -404,7 +404,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
               nextItem = toResult(finalVal, context);
               if (nextItem == null || overlappedACommit(context, indexStep)) {
                 // The entry names a record that is gone, or the lookup that produced it overlapped a commit (#9369)
-                final Set<RID> served = unique ? null : !track || trackingOverflow ? NOT_TRACKED : servedForKey;
+                final Set<RID> served = servedSet(unique, track && !trackingOverflow, servedForKey);
                 recovered.addAll(reconcile(indexStep, key, rid, served, context));
                 nextItem = recovered.pollFirst();
                 if (track && !trackingOverflow) {
@@ -592,6 +592,13 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
   private static final int      MAX_RECONCILE_ATTEMPTS   = 8;
   private static final int      MAX_POINT_LOOKUP_ENTRIES = 256;
   private static final Set<RID> NOT_TRACKED              = Set.of();
+
+  /** The {@code served} argument of {@link #reconcile}: null for a unique index, the tracked set, or {@link #NOT_TRACKED}. */
+  private static Set<RID> servedSet(final boolean unique, final boolean tracked, final Set<RID> servedForKey) {
+    if (unique)
+      return null;
+    return tracked ? servedForKey : NOT_TRACKED;
+  }
 
   private static boolean sameKey(final Object a, final Object b) {
     if (a instanceof Object[] left && b instanceof Object[] right)
