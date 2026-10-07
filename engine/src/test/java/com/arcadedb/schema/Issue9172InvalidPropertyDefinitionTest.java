@@ -125,6 +125,17 @@ class Issue9172InvalidPropertyDefinitionTest extends TestHelper {
   }
 
   @Test
+  void arrayBoundOverAStoredNonArrayValueIsAValidationError() {
+    database.command("sql", "CREATE DOCUMENT TYPE T");
+    database.transaction(() -> database.newDocument("T").set("p", "abc").save());
+
+    // the stored value is checked against the new bound, and a value that is no array is reported, not a crash
+    assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY T.p ARRAY_OF_FLOATS (max 3)")).isInstanceOf(
+        CommandExecutionException.class).hasMessageContaining("not an array");
+    assertThat(database.getSchema().getType("T").existsProperty("p")).isFalse();
+  }
+
+  @Test
   void minMaxOnEveryArrayTypeIsAccepted() {
     for (final Type type : List.of(Type.ARRAY_OF_SHORTS, Type.ARRAY_OF_INTEGERS, Type.ARRAY_OF_LONGS, Type.ARRAY_OF_FLOATS,
         Type.ARRAY_OF_DOUBLES)) {

@@ -623,7 +623,7 @@ public class DocumentValidator {
     case ARRAY_OF_SHORTS, ARRAY_OF_INTEGERS, ARRAY_OF_LONGS, ARRAY_OF_FLOATS, ARRAY_OF_DOUBLES -> {
       // the number of elements, as for a LIST (issue #9026)
       final int maxAsInteger = Integer.parseInt(max);
-      if (sizeOf(fieldValue) > maxAsInteger)
+      if (sizeOf(document, p, fieldValue) > maxAsInteger)
         throwValidationException(document.getType(), p, "contains more items than " + max + " requested");
     }
     default -> throwValidationException(document.getType(), p, "value " + fieldValue + " is greater than " + max);
@@ -713,7 +713,7 @@ public class DocumentValidator {
       case ARRAY_OF_SHORTS, ARRAY_OF_INTEGERS, ARRAY_OF_LONGS, ARRAY_OF_FLOATS, ARRAY_OF_DOUBLES -> {
         // the number of elements, as for a LIST (issue #9026)
         final int minAsInteger = Integer.parseInt(min);
-        if (sizeOf(fieldValue) < minAsInteger)
+        if (sizeOf(document, p, fieldValue) < minAsInteger)
           yield new ValidationResult(true, "contains fewer items than " + min + " requested");
         yield new ValidationResult(false, null);
       }
@@ -728,9 +728,11 @@ public class DocumentValidator {
   }
 
   /** The number of elements of an ARRAY_OF_* value: a primitive or boxed array, or a collection not converted yet. */
-  private static int sizeOf(final Object value) {
+  private static int sizeOf(final Document document, final Property p, final Object value) {
     if (value instanceof Collection<?> collection)
       return collection.size();
+    if (!value.getClass().isArray())
+      throwValidationException(document.getType(), p, "has been declared as " + p.getType() + " but the value is not an array: " + value);
     return Array.getLength(value);
   }
 
