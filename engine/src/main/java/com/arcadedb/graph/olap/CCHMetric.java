@@ -527,7 +527,8 @@ final class CCHMetric {
   private int[] unpack(final QueryState state, final int rs, final int rt, final int meet) {
     final int[] arcTails = topology.arcTails;
     final int[] depth = topology.depth;
-    // the source half, collected from the meeting rank back down and then walked forward
+    // the source half, collected from the meeting rank back down and then walked forward. It ends even on a torn read:
+    // every arc's tail ranks strictly below its head, and the search only set arcs out of the source's own chain
     int forwardCount = 0;
     for (int y = meet; y != rs; y = arcTails[state.forwardArc[depth[y]]])
       forwardCount++;
