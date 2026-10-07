@@ -256,6 +256,18 @@ class PaginatedComponentFileReadRetryTest {
   }
 
   @Test
+  void sizeAndChecksumOnAClosedFileFailLikeTheReads() throws Exception {
+    writeFilledPage(0, (byte) 0x55);
+    pcf.close();
+
+    assertThatThrownBy(() -> pcf.getSize()).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("is closed");
+    assertThatThrownBy(() -> pcf.getTotalPagesFromChannel()).isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("is closed");
+    assertThatThrownBy(() -> pcf.calculateChecksum()).isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("is closed");
+  }
+
+  @Test
   void writeRetriesWhenTheReopenedChannelIsClosedAgain() throws Exception {
     writeFilledPage(0, (byte) 0x01);
 

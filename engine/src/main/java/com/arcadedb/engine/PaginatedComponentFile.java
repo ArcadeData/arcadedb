@@ -257,6 +257,9 @@ public class PaginatedComponentFile extends ComponentFile {
 
   /** {@code channel.size()} with the same reopen as every other channel operation. Read lock held. */
   private long channelSize() throws IOException {
+    if (channel == null)
+      throw new IllegalArgumentException("Cannot read the size of file '" + getFileName() + "' because it is closed");
+
     try {
       return channel.size();
     } catch (final ClosedChannelException e) {
