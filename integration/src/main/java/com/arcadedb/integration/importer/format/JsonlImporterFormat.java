@@ -599,16 +599,7 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
         final ColumnDefinition.ColumnRole role = ColumnDefinition.ColumnRole.valueOf(column.getString("role"));
         final String compression = column.getString("compression", null);
         final TimeSeriesCodec codec = compression != null ? TimeSeriesCodec.valueOf(compression) : null;
-        // An export of a type created before issue #9310 can carry another codec on its TIMESTAMP column. Nothing ever
-        // honoured it (the timestamp is always delta-of-delta encoded), and the builder now refuses it, so it is dropped
-        // rather than failing a restore of data that reads back correctly.
-        final boolean inertTimestampCodec = role == ColumnDefinition.ColumnRole.TIMESTAMP
-            && codec != TimeSeriesCodec.DELTA_OF_DELTA;
-        final ColumnDefinition definition;
-        if (codec != null && !inertTimestampCodec)
-          definition = new ColumnDefinition(columnName, dataType, role, codec);
-        else
-          definition = new ColumnDefinition(columnName, dataType, role);
+        final ColumnDefinition definition = restoredColumn(typeName, columnName, dataType, role, codec);
         builder.withColumn(definition);
       } catch (final IllegalArgumentException | NullPointerException e) {
         throw new ImportException(
@@ -661,6 +652,26 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
           + "stores them");
 
     return created;
+  }
+
+  /**
+   * The column a restore builds from an exported one. An export written before issue #9310 can name a codec the storage
+   * layer never honoured or could not run (NONE, a numeric codec on a text column, anything but delta-of-delta on the
+   * TIMESTAMP): {@link TimeSeriesTypeBuilder} now refuses those, and the samples are positional values that do not depend
+   * on the codec, so the column falls back to the default codec for its type and role instead of failing a restore of
+   * data that reads back correctly.
+   */
+  static ColumnDefinition restoredColumn(final String typeName, final String columnName, final Type dataType,
+      final ColumnDefinition.ColumnRole role, final TimeSeriesCodec codec) {
+    if (codec == null)
+      return new ColumnDefinition(columnName, dataType, role);
+    final String refusal = ColumnDefinition.codecRefusal(columnName, dataType, role, codec);
+    if (refusal == null)
+      return new ColumnDefinition(columnName, dataType, role, codec);
+    if (role != ColumnDefinition.ColumnRole.TIMESTAMP)
+      LogManager.instance().log(JsonlImporterFormat.class, Level.WARNING,
+          "Restoring TIMESERIES type '%s' with the default codec for column '%s': %s", typeName, columnName, refusal);
+    return new ColumnDefinition(columnName, dataType, role);
   }
 
   /**
