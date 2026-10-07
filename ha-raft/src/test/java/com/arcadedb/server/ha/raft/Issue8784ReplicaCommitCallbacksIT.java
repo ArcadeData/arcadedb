@@ -80,6 +80,13 @@ class Issue8784ReplicaCommitCallbacksIT extends BaseRaftHATest {
     replicaDb.commit();
     assertThat(firedReadOnly.get()).as("the after-commit callback of a read-only replica commit fires").isEqualTo(1);
 
+    // The same read-only arm on the leader.
+    final AtomicInteger firedOnLeader = new AtomicInteger();
+    leaderDb.begin();
+    ((DatabaseInternal) leaderDb).getTransaction().addAfterCommitCallback(firedOnLeader::incrementAndGet);
+    leaderDb.commit();
+    assertThat(firedOnLeader.get()).as("the after-commit callback of a read-only leader commit fires").isEqualTo(1);
+
     waitForAllServers();
     for (int i = 0; i < getServerCount(); i++)
       assertThat(getServerDatabase(i, getDatabaseName()).countType(TYPE_NAME, true)).as("count of node %d", i).isEqualTo(1L);

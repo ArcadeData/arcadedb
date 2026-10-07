@@ -40,6 +40,8 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -186,6 +188,34 @@ class Issue8784ReplicatedCommitFiresAfterCommitCallbacksTest {
     schemaCommitThread.remove();
 
     begun.assertEndedAsACommit();
+  }
+
+  /**
+   * A callback runs while the concluded context is still on the thread's stack, as it does after {@code commit()}: one that
+   * opens and commits a transaction of its own - what a materialized-view refresh does - must work, and leave nothing
+   * open behind.
+   */
+  @Test
+  void aCallbackThatCommitsItsOwnTransactionOnAReplicaLeavesNothingOpen() {
+    asReplica();
+    acknowledgeAt(7L);
+
+    final AtomicInteger innerCommitted = new AtomicInteger();
+    final Begun begun = beginUpdate();
+    begun.tx.addAfterCommitCallback(() -> {
+      database.begin();
+      proxied.newDocument(TYPE).set("name", "from-callback").save();
+      database.commit();
+      innerCommitted.incrementAndGet();
+    });
+    database.commit();
+
+    assertThat(fired.get()).isEqualTo(1);
+    assertThat(innerCommitted.get()).as("the callback's own transaction committed").isEqualTo(1);
+    // The callback's begin() reuses the concluded context, as it does after commit() off HA, so both commits count on it.
+    assertThat(begun.tx.getCommitCount()).isEqualTo(begun.commitCountBefore + 2);
+    verify(broker, times(2)).replicateTransaction(anyString(), any(), any());
+    assertThat(proxied.isTransactionActive()).as("nothing is left open on the thread").isFalse();
   }
 
   /** The other side of the contract: a commit the cluster refused is rolled back, and neither fires nor counts. */
