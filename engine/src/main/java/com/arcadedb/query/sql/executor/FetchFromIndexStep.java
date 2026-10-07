@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.Index;
@@ -72,6 +73,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
    * exists to release.
    */
   final           List<IndexCursor>                              customCursors = new ArrayList<>();
+  private         long                                           entriesSequence;
   protected       RangeIndex                                     index;
   protected       BooleanExpression                              condition;
   private       BinaryCondition additionalRangeCondition;
@@ -180,6 +182,55 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     return value;
   }
 
+  /**
+   * Looks the key of an entry this step returned up again, for {@link GetValueFromIndexEntryStep} to reconcile an entry
+   * whose record it could not load (#9369). Null when the key cannot be looked up as it is, in which case the caller keeps
+   * the entry dropped.
+   */
+  List<RID> lookupKeyAgain(final Object key) {
+    if (index == null)
+      return null;
+    final Object[] keys = key instanceof Object[] array ? array : new Object[] { key };
+    try {
+      final List<RID> rids = new ArrayList<>();
+      final IndexCursor again = index.get(keys);
+      try {
+        while (again.hasNext())
+          rids.add(again.next().getIdentity());
+      } finally {
+        again.close();
+      }
+      return rids;
+    } catch (final RuntimeException e) {
+      return null;
+    }
+  }
+
+  /**
+   * True when every entry comes from a lookup of a key made when the step starts - an equality or an {@code IN} - rather than
+   * from a scan that reads the index as it goes.
+   */
+  boolean isPointLookup() {
+    if (condition instanceof InCondition)
+      return true;
+    if (!(condition instanceof AndBlock and) || and.getSubBlocks().isEmpty())
+      return false;
+    for (final BooleanExpression exp : and.getSubBlocks())
+      if (!(exp instanceof InCondition) && !(exp instanceof BinaryCondition binary && binary.getOperator() instanceof EqualsCompareOperator))
+        return false;
+    return additionalRangeCondition == null;
+  }
+
+  List<Integer> indexFileIds() {
+    // `index` is null between a reset() and the next init()
+    final Index current = index != null ? index : context.getDatabase().getSchema().getIndexByName(indexName);
+    return current instanceof IndexInternal internal ? internal.getFileIds() : List.of();
+  }
+
+  boolean isIndexUnique() {
+    return index != null && index.isUnique();
+  }
+
   private void fetchNextEntry() {
     nextEntry = null;
     // Defensive loop guard: each iteration either returns, drops one element from
@@ -285,7 +336,17 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       return;
     }
     inited = true;
+    // Sampled before the first entry is read, so no commit that published after it can have been seen (#9369)
+    entriesSequence = ((DatabaseInternal) db).getPageManager().getPublicationSequence();
     init(condition, db);
+  }
+
+  /**
+   * The page manager's publication sequence before this step read its first index entry: a commit that published after it
+   * may have changed the records the entries name. See {@code PageManager.getPublicationSequence()}.
+   */
+  long entriesSequence() {
+    return entriesSequence;
   }
 
   private void init(final BooleanExpression condition, final Database db) {
@@ -390,7 +451,24 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     final PCollection toKey = indexKeyTo((AndBlock) condition, additionalRangeCondition);
     final boolean fromKeyIncluded = indexKeyFromIncluded((AndBlock) condition, additionalRangeCondition);
     final boolean toKeyIncluded = indexKeyToIncluded((AndBlock) condition, additionalRangeCondition);
-    init(fromKey, fromKeyIncluded, toKey, toKeyIncluded);
+    final boolean[] fromScalarSlots = scalarKeySlots((AndBlock) condition, additionalRangeCondition, true);
+    final boolean[] toScalarSlots = scalarKeySlots((AndBlock) condition, additionalRangeCondition, false);
+    init(fromKey, fromKeyIncluded, toKey, toKeyIncluded, fromScalarSlots, toScalarSlots);
+  }
+
+  /**
+   * Marks the key slots filled by a comparison ({@code =}, {@code <}, {@code >}, ...). Only the multi-value operators
+   * ({@code IN}, {@code CONTAINSANY}, ...) expand a list into one lookup per element; a comparison against a list
+   * matches nothing on a scan, so the index must not answer it with the rows of every element (#9370).
+   */
+  private static boolean[] scalarKeySlots(final AndBlock keyCondition, final BinaryCondition additional, final boolean from) {
+    final List<BooleanExpression> subBlocks = keyCondition.getSubBlocks();
+    final boolean[] slots = new boolean[subBlocks.size()];
+    int count = 0;
+    for (final BooleanExpression exp : subBlocks)
+      if ((from ? exp.resolveKeyFrom(additional) : exp.resolveKeyTo(additional)) != null)
+        slots[count++] = exp instanceof BinaryCondition;
+    return slots;
   }
 
   /**
@@ -513,9 +591,9 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   }
 
   private void init(final PCollection fromKey, final boolean fromKeyIncluded, final PCollection toKey,
-      final boolean toKeyIncluded) {
-    final List<PCollection> secondValueCombinations = cartesianProduct(fromKey);
-    final List<PCollection> thirdValueCombinations = cartesianProduct(toKey);
+      final boolean toKeyIncluded, final boolean[] fromScalarSlots, final boolean[] toScalarSlots) {
+    final List<PCollection> secondValueCombinations = cartesianProduct(fromKey, fromScalarSlots);
+    final List<PCollection> thirdValueCombinations = cartesianProduct(toKey, toScalarSlots);
 
     final boolean[] fromNullRejectingSlots = nullRejectingSlotMask(true);
     final boolean[] toNullRejectingSlots = nullRejectingSlotMask(false);
@@ -871,11 +949,11 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     return result;
   }
 
-  private List<PCollection> cartesianProduct(final PCollection key) {
-    return cartesianProduct(new PCollection(), key);//TODO
+  private List<PCollection> cartesianProduct(final PCollection key, final boolean[] scalarSlots) {
+    return cartesianProduct(new PCollection(), key, scalarSlots);
   }
 
-  private List<PCollection> cartesianProduct(final PCollection head, final PCollection key) {
+  private List<PCollection> cartesianProduct(final PCollection head, final PCollection key, final boolean[] scalarSlots) {
     if (key.getExpressions().isEmpty())
       return List.of(head);
 
@@ -884,7 +962,9 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     // A multi-value key expands into one index lookup per element. MultiValue covers every shape a
     // parameter can take, including primitive arrays (long[]/int[]/double[]) that are not Iterable,
     // consistent with the multi-value handling in processInCondition().
-    if (!(value instanceof Identifiable) && MultiValue.isMultiValue(value)) {
+    final int slot = head.getExpressions().size();
+    final boolean scalar = slot < scalarSlots.length && scalarSlots[slot];
+    if (!scalar && !(value instanceof Identifiable) && MultiValue.isMultiValue(value)) {
       final List<PCollection> result = new ArrayList<>();
       // `tail` does not depend on `elemInKey`: it is `key` with its (already-consumed) first expression
       // dropped, the same for every element `value` expands into. Computing it once here instead of once
@@ -899,7 +979,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
           newHead.add(exp.copy());
 
         newHead.add(toExpression(unwrapSubQueryResult(elemInKey)));
-        result.addAll(cartesianProduct(newHead, tail));
+        result.addAll(cartesianProduct(newHead, tail, scalarSlots));
       }
       return result;
     } else {
@@ -910,7 +990,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       newHead.add(nextElementInKey);
       final PCollection tail = key.copy();
       tail.getExpressions().removeFirst();
-      return cartesianProduct(newHead, tail);
+      return cartesianProduct(newHead, tail, scalarSlots);
     }
 
   }

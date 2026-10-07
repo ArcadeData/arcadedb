@@ -2940,6 +2940,18 @@ public class TransactionContext implements Transaction {
     return map;
   }
 
+  /**
+   * Drops the pages and records {@code REPEATABLE_READ} pinned for these files, so the next read of them is served from
+   * the committed state again. The pages this transaction modified are kept. Pages are pinned the first time they are
+   * read, so a transaction that read an index page before a commit and the record page after it holds two states that
+   * never coexisted (#9369); a caller that has caught that - an index entry whose record is gone - uses this to read both
+   * again against one state.
+   */
+  public void unpinFiles(final Collection<Integer> fileIds) {
+    immutablePages.values().removeIf(page -> fileIds.contains(page.getPageId().getFileId()));
+    immutableRecordsCache.values().removeIf(r -> fileIds.contains(r.getIdentity().getBucketId()));
+  }
+
   public void removeFile(final int fileId) {
     if (newPages != null)
       newPages.values().removeIf(mutablePage -> fileId == mutablePage.getPageId().getFileId());

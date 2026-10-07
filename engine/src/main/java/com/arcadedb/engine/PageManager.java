@@ -152,6 +152,8 @@ public class PageManager extends LockContext {
   // ConcurrentHashMap barriers already on these paths, and it removes the reliance on the external
   // database-publication happens-before for cross-thread visibility of the startup() writes.
   private volatile PageManagerFlushThread             flushThread;
+  // Written under the page-manager lock only, hence the plain increments
+  private volatile long                               publicationSequence;
   private volatile int                                freePageRAM;
 
   /**
@@ -1752,16 +1754,23 @@ public class PageManager extends LockContext {
       // pre-existing empty page (sparse-file semantics), allowing two records' chunk chains
       // to land on the same physical slot.
       handedOver = true;
-      writePagesNoBackpressure(pagesToWrite, asyncFlush, flushSlotReserved);
+      // ODD WHILE THE PAGES OF ONE TRANSACTION ARE BEING PUBLISHED (#9369): they reach the read cache one by one, so a reader
+      // can see the index page of the commit and the record page of the previous one. See getPublicationSequence().
+      ++publicationSequence;
+      try {
+        writePagesNoBackpressure(pagesToWrite, asyncFlush, flushSlotReserved);
 
-      if (newPages != null)
-        for (final MutablePage p : newPages.values()) {
-          final PageId pid = p.getPageId();
-          final PaginatedComponent component = (PaginatedComponent) ((DatabaseInternal) pid.getDatabase()).getSchema()
-                  .getFileByIdIfExists(pid.getFileId());
-          if (component != null)
-            component.updatePageCount(pid.getPageNumber() + 1);
-        }
+        if (newPages != null)
+          for (final MutablePage p : newPages.values()) {
+            final PageId pid = p.getPageId();
+            final PaginatedComponent component = (PaginatedComponent) ((DatabaseInternal) pid.getDatabase()).getSchema()
+                .getFileByIdIfExists(pid.getFileId());
+            if (component != null)
+              component.updatePageCount(pid.getPageNumber() + 1);
+          }
+      } finally {
+        ++publicationSequence;
+      }
 
     } finally {
       unlock();
@@ -2051,6 +2060,17 @@ public class PageManager extends LockContext {
     evictOldestPages(Math.min(bytesToFree, before), before);
 
     return Math.max(0L, before - totalReadCacheRAM.get());
+  }
+
+  /**
+   * A counter that moves twice for every transaction published by {@link #publishPages}: it is odd while the pages of one are
+   * being put in the read cache and even otherwise. A transaction's pages become visible one at a time, so a reader that
+   * touches two of them - an index page and the record page it points to - can see them at different commits. Sampling this
+   * before the first read and again after the last tells whether a commit overlapped: the two samples must be equal and even
+   * for the reads to have seen one state (#9369). Reading it costs a volatile load and takes no lock.
+   */
+  public long getPublicationSequence() {
+    return publicationSequence;
   }
 
   public void writePages(final List<MutablePage> updatedPages, final boolean asyncFlush) throws IOException, InterruptedException {

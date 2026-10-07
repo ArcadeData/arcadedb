@@ -352,11 +352,12 @@ class Issue8333IndexRangeSelectivityTest extends TestHelper {
 
   @Test
   void aCollectionKeyValueKeepsTheIndex() {
-    // The index seeks every element of the list; the scan would compare the value with the whole list
+    // The index seeks every element of the list; the scan would compare the value with the whole list. Equality with a list
+    // matches nothing either way (#9370), so the multi-value operator is IN
     final List<String> days = new ArrayList<>();
     for (int i = 0; i < ROWS; i++)
       days.add(BASE.plusDays(i).toString());
-    final Execution execution = run("SELECT FROM LineItem WHERE l_shipdate = :days ORDER BY l_seq", Map.of("days", days));
+    final Execution execution = run("SELECT FROM LineItem WHERE l_shipdate IN :days ORDER BY l_seq", Map.of("days", days));
     assertThat(execution.strategy()).isEqualTo(GetValueFromIndexEntryStep.Strategy.INDEX_ORDER);
     assertThat(execution.rids()).hasSize(ROWS);
   }
