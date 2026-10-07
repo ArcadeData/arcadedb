@@ -3460,12 +3460,16 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       if (!orphan.isFile())
         continue;
       final long size = orphan.length();
-      if (orphan.delete())
+      try {
+        // Files.delete AND NOT File.delete: A FAILURE (PERMISSIONS, A FILE HELD OPEN ON WINDOWS) THEN CARRIES ITS
+        // REASON INTO THE WARNING. IT NEVER FAILS THE OPEN - A LEFTOVER TEMPORARY COSTS DISK, NOT CORRECTNESS
+        Files.delete(orphan.toPath());
         LogManager.instance().log(this, Level.INFO, "Deleted orphan index-compaction temporary file '%s' (%d bytes) from database '%s'",
             null, orphan.getName(), size, name);
-      else
+      } catch (final IOException e) {
         LogManager.instance().log(this, Level.WARNING, "Cannot delete orphan index-compaction temporary file '%s' (%d bytes) from database '%s'",
-            null, orphan.getName(), size, name);
+            e, orphan.getName(), size, name);
+      }
     }
   }
 
