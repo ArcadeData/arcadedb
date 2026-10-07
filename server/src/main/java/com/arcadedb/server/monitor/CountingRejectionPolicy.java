@@ -46,7 +46,10 @@ public final class CountingRejectionPolicy implements RejectedExecutionHandler {
     return new CountingRejectionPolicy(false);
   }
 
-  /** Runs the task on the submitter, as {@link ThreadPoolExecutor.CallerRunsPolicy} does. */
+  /**
+   * Runs the task on the submitter, as {@link ThreadPoolExecutor.CallerRunsPolicy} does - including discarding it,
+   * silently and uncounted, once the executor is shut down: the submitter gets no signal that its task was dropped.
+   */
   public static CountingRejectionPolicy callerRuns() {
     return new CountingRejectionPolicy(true);
   }

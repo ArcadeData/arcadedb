@@ -159,7 +159,7 @@ public final class PoolMetrics implements MeterBinder {
       final Supplier<PoolStats> stats) {
     final Tags tags = Tags.of(Tag.of("pool", poolTag));
     final List<Meter> meters = new ArrayList<>(8);
-    meters.add(Gauge.builder("arcadedb.executor.pool.size", () -> stats.get().poolSize())
+    meters.add(Gauge.builder(POOL_SIZE_GAUGE, () -> stats.get().poolSize())
         .description(description + ": currently allocated worker threads").tags(tags).register(registry));
     meters.add(Gauge.builder("arcadedb.executor.pool.active", () -> stats.get().activeThreads())
         .description(description + ": worker threads currently running a task").tags(tags).register(registry));
@@ -182,6 +182,9 @@ public final class PoolMetrics implements MeterBinder {
         .tags(tags).register(registry));
     return meters;
   }
+
+  /** The one gauge every row has, which is what tells {@link #bindInstancePool} a row is already published. */
+  private static final String POOL_SIZE_GAUGE = "arcadedb.executor.pool.size";
 
   /** An instance-pool gauge: work a pool did not take because a task already queued or running covers it. */
   public static final String COALESCED_GAUGE = "arcadedb.executor.tasks.coalesced";
@@ -255,7 +258,7 @@ public final class PoolMetrics implements MeterBinder {
     synchronized (INSTANCE_POOL_LOCK) {
       // Keyed on a gauge every row has, not on an optional one: a pool publishing neither extra would otherwise
       // always look unpublished, and a second binding would take the first one's meters as its own.
-      if (registry.find("arcadedb.executor.pool.size").tags(tags).gauge() != null) {
+      if (registry.find(POOL_SIZE_GAUGE).tags(tags).gauge() != null) {
         LogManager.instance().log(PoolMetrics.class, Level.FINE,
             "Executor pool row '%s' is already published by another binding in this JVM; not registering it twice",
             poolTag);
@@ -311,6 +314,8 @@ public final class PoolMetrics implements MeterBinder {
     final int remaining = executor.getQueue().remainingCapacity();
     // An unbounded queue's remaining capacity is Integer.MAX_VALUE minus what it holds, not MAX_VALUE itself: compare
     // the total, or a queue holding one task would report two billion free slots.
+    // The two reads are not atomic, so under churn a bounded queue's total can be off by a few - never anywhere near
+    // MAX_VALUE, so it cannot be misread as unbounded.
     final boolean unbounded = (long) depth + remaining >= Integer.MAX_VALUE;
     return new PoolStats(executor.getPoolSize(), executor.getActiveCount(), depth, unbounded ? -1 : remaining,
         executor.getCompletedTaskCount(), callerRunFallbacks, 0L);
