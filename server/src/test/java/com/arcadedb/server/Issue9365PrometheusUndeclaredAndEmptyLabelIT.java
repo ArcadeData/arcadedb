@@ -82,6 +82,17 @@ class Issue9365PrometheusUndeclaredAndEmptyLabelIT extends BaseGraphServerTest {
   }
 
   @Test
+  void aLabelIsMatchedToItsTagAfterNameSanitization() throws Exception {
+    final Database db = getServerDatabase(0, getDatabaseName());
+    db.getConfiguration().setValue(GlobalConfiguration.TIMESERIES_UNDECLARED_KEYS, "reject");
+
+    assertThat(post(new WriteRequest(List.of(series("m9365c", 1.0, label("a_b", "x")))))).isEqualTo(204);
+    // `a.b` is stored as the `a_b` tag, so it is declared
+    assertThat(post(new WriteRequest(List.of(series("m9365c", 2.0, label("a.b", "y")))))).isEqualTo(204);
+    assertThat(count(db, "m9365c")).isEqualTo(2);
+  }
+
+  @Test
   void anEmptyLabelValueIsStoredAsAbsent() throws Exception {
     final Database db = getServerDatabase(0, getDatabaseName());
     db.getConfiguration().setValue(GlobalConfiguration.TIMESERIES_UNDECLARED_KEYS, "reject");

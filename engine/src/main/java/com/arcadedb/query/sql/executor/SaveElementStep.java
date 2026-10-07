@@ -94,10 +94,11 @@ public class SaveElementStep extends AbstractExecutionStep {
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     final ResultSet upstream = getPrev().syncPull(context, nRecords);
     return new ResultSet() {
-      // Every record pulled through one INSERT statement targets the same type, so the unique-index list is
-      // resolved once per distinct type name seen rather than on every single row of a CONTENT [...] batch.
       // the undeclared-key policy, read once per execution instead of once per inserted row (issue #9365)
       private final boolean   rejectUndeclared = TimeSeriesGateway.rejectsUndeclaredKeys(context.getDatabase());
+
+      // Every record pulled through one INSERT statement targets the same type, so the unique-index list is
+      // resolved once per distinct type name seen rather than on every single row of a CONTENT [...] batch.
       private String          cachedTypeName;
       private List<TypeIndex> cachedUniqueIndexes;
 
