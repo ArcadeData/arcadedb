@@ -99,6 +99,8 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
   private ArrayDeque<Result>          consistentRows;
   private boolean                     consistentTried;
   private final ArrayDeque<Result>    pendingEntries = new ArrayDeque<>();
+  // The buckets the records of a point lookup were read from, so a restart releases their pinned pages whatever the bucket filter
+  private final Set<Integer>          readBucketIds  = new HashSet<>();
   private Strategy                    strategy;
   private PhysicalOrderRidFetcher     fetcher;
   private FetchFromTypeWithFilterStep scanStep;
@@ -679,6 +681,8 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
       final Object value = entry.getProperty("rid");
       if (!passesBucketFilter(value))
         continue;
+      if (value instanceof RID rid)
+        readBucketIds.add(rid.getBucketId());
       guard.checkPeriodically(rows.size());
       final Result row = toResult(value, context);
       if (row != null)
@@ -706,6 +710,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
     final List<Integer> files = new ArrayList<>(indexStep.indexFileIds());
     if (filterBucketIds != null)
       files.addAll(filterBucketIds);
+    files.addAll(readBucketIds);
     database.getTransaction().unpinFiles(files);
   }
 
@@ -803,6 +808,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
     consistentRows = null;
     consistentTried = false;
     pendingEntries.clear();
+    readBucketIds.clear();
     strategy = null;
     matchedEntries = 0;
     parallelDecided = false;
