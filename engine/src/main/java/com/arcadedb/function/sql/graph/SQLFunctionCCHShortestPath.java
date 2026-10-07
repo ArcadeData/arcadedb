@@ -117,7 +117,11 @@ public class SQLFunctionCCHShortestPath extends SQLFunctionMathAbstract {
   private static Vertex.DIRECTION toDirection(final Object value) {
     if (value instanceof Vertex.DIRECTION direction)
       return direction;
-    return Vertex.DIRECTION.valueOf(value.toString().toUpperCase(Locale.ENGLISH));
+    try {
+      return Vertex.DIRECTION.valueOf(value.toString().trim().toUpperCase(Locale.ENGLISH));
+    } catch (final IllegalArgumentException e) {
+      throw new IllegalArgumentException("Invalid direction '" + value + "' for " + NAME + "(): use OUT, IN or BOTH");
+    }
   }
 
   private static String[] toStringArray(final Object value) {
@@ -128,11 +132,11 @@ public class SQLFunctionCCHShortestPath extends SQLFunctionMathAbstract {
     if (value instanceof String[] array)
       return array;
     if (value instanceof Collection<?> collection) {
-      final String[] result = new String[collection.size()];
-      int i = 0;
+      final List<String> result = new ArrayList<>(collection.size());
       for (final Object item : collection)
-        result[i++] = item.toString();
-      return result;
+        if (item != null)
+          result.add(item.toString());
+      return result.toArray(new String[0]);
     }
     return new String[] { value.toString() };
   }
