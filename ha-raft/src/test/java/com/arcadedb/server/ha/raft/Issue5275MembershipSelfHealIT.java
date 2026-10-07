@@ -82,7 +82,7 @@ class Issue5275MembershipSelfHealIT extends BaseRaftHATest {
     }
 
     // And the node resumes as a member on restart, no re-add needed.
-    getServer(followerIndex).start();
+    startServer(followerIndex);
     Awaitility.await().atMost(60, TimeUnit.SECONDS).pollInterval(500, TimeUnit.MILLISECONDS)
         .untilAsserted(() -> {
           final RaftHAPlugin plugin = getRaftPlugin(followerIndex);
@@ -111,7 +111,7 @@ class Issue5275MembershipSelfHealIT extends BaseRaftHATest {
         .untilAsserted(() -> assertThat(leaderRaft.getLivePeers()).hasSize(2));
 
     // The node restarts with persisted Raft storage still claiming membership of the 3-node group.
-    getServer(followerIndex).start();
+    startServer(followerIndex);
     final RaftHAServer followerRaft = getRaftPlugin(followerIndex).getRaftHAServer();
     assertThat(followerRaft).isNotNull();
 

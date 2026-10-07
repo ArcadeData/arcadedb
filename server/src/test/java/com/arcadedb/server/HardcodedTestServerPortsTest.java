@@ -27,8 +27,11 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -100,6 +103,19 @@ class HardcodedTestServerPortsTest {
   private static final Pattern STARTS_SERVER = Pattern.compile(
       "\\bextends\\s+\\w*(?:ServerTest|RaftHA\\w*Test|MiniRaftTest|GremlinServerIT)\\b|new\\s+ArcadeDBServer\\(");
 
+  /** The Raft cluster fixture whose subclasses must restart a server through {@code startServer(int)} (issue #9243). */
+  private static final String RAFT_FIXTURE = "BaseRaftHATest";
+
+  /** {@code class Foo extends Bar}: captures the class and its superclass, to find every subclass of the Raft fixture. */
+  private static final Pattern CLASS_EXTENDS = Pattern.compile("\\bclass\\s+(\\w+)(?:<[^>{]*>)?\\s+extends\\s+(\\w+)");
+
+  /** {@code getServer(i).start()} or {@code servers[i].start()}: a server started again without the fixture's helper. */
+  private static final Pattern BARE_FIXTURE_START = Pattern.compile(
+      "\\b(?:getServer\\((?:[^()]|\\([^()]*\\))*\\)|servers\\[[^\\]]*\\])\\s*\\.start\\(\\s*\\)");
+
+  /** {@code ArcadeDBServer server = getServer(i)}: captures the local alias, whose {@code .start()} is just as bare. */
+  private static final Pattern FIXTURE_SERVER_ALIAS = Pattern.compile("\\bArcadeDBServer\\s+(\\w+)\\s*=\\s*getServer\\(");
+
   /** Every module's test tree holds far more than this; below it the walk has silently lost its root. */
   private static final int EXPECTED_MINIMUM_SOURCES = 1000;
 
@@ -138,6 +154,17 @@ class HardcodedTestServerPortsTest {
           void setUp() { new ArcadeDBServer(c); c.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT, BASE_HTTP_PORT + i); } }""");
     sources.put("a/GremlinDriverPort.java", """
         class GremlinDriverPort { @Test void t() { Cluster.build().addContactPoint("localhost").port(8182).create(); } }""");
+    sources.put("a/BareRaftRestart.java", """
+        class BareRaftRestart extends BaseRaftHATest { @Test void t() { getServer(1).stop(); getServer(1).start(); } }""");
+    sources.put("a/BareRaftRestartOfLeader.java", """
+        class BareRaftRestartOfLeader extends BaseRaftHATest { @Test void t() { getServer(findLeaderIndex()).start(); } }""");
+    sources.put("a/AliasedRaftRestart.java", """
+        class AliasedRaftRestart extends BaseRaftHATest {
+          @Test void t() { final ArcadeDBServer server = getServer(restarted); server.stop(); server.start(); } }""");
+    sources.put("a/IndirectRaftRestart.java", """
+        class IndirectRaftRestart extends SomeRaftFixture { @Test void t() { servers[i].start(); } }""");
+    sources.put("a/SomeRaftFixture.java", """
+        abstract class SomeRaftFixture extends BaseRaftHATest { }""");
     sources.put("a/RatisPort.java", """
         class RatisPort {
           private static final int BASE_PORT = 19860;
@@ -161,6 +188,11 @@ class HardcodedTestServerPortsTest {
             try (ServerSocket leader = new ServerSocket(0, 16, InetAddress.getByName("127.0.0.1"))) {
               forward("http://127.0.0.1:" + leader.getLocalPort() + "/api/v1/batch/db");
             } } }""");
+    // The fixture's own helper, and a bare start() outside a Raft fixture, where nothing was patched to lose.
+    sources.put("b/RaftRestart.java", """
+        class RaftRestart extends BaseRaftHATest { @Test void t() { getServer(1).stop(); startServer(1); } }""");
+    sources.put("b/GraphRestart.java", """
+        class GraphRestart extends BaseGraphServerTest { @Test void t() { getServer(1).stop(); getServer(1).start(); } }""");
     sources.put("b/Launcher.java", """
         class Launcher { public static void main(String[] a) { new ArcadeDBServer(c); System.out.println("http://localhost:2480"); } }""");
     sources.put("b/UnitTest.java", """
@@ -168,7 +200,7 @@ class HardcodedTestServerPortsTest {
 
     final List<String> offenders = offenders(sources);
     for (final String name : List.of("IndexUrl", "HttpsIndexUrl", "LiteralUrl", "LiteralSetting", "ConstantSetting", "BasePlusIndex",
-        "GremlinDriverPort", "RatisPort"))
+        "GremlinDriverPort", "RatisPort", "BareRaftRestart", "BareRaftRestartOfLeader", "AliasedRaftRestart", "IndirectRaftRestart"))
       assertThat(offenders).as("the scan must flag %s", name).anyMatch(o -> o.startsWith("a/" + name + ".java"));
     assertThat(offenders).as("the scan must not flag a shape that is fine").noneMatch(o -> o.startsWith("b/"));
   }
@@ -197,6 +229,7 @@ class HardcodedTestServerPortsTest {
   /** One line per violation, {@code <file>:<line>: <what>}. */
   static List<String> offenders(final Map<String, String> sources) {
     final List<String> offenders = new ArrayList<>();
+    final Set<String> raftFixtureSubclasses = raftFixtureSubclasses(sources);
     for (final Map.Entry<String, String> entry : sources.entrySet()) {
       final String name = entry.getKey();
       final String source = entry.getValue();
@@ -219,8 +252,62 @@ class HardcodedTestServerPortsTest {
         if (isHandPicked(assignment.group(1).trim(), source))
           offenders.add(location(name, source, assignment.start()) + ": binds the hand-picked port '" + assignment.group(1).trim()
               + "' instead of one drawn by allocateFreePorts");
+
+      if (declaresAnyOf(source, raftFixtureSubclasses))
+        reportBareFixtureStarts(offenders, name, source);
     }
     return offenders;
+  }
+
+  /**
+   * A server of a {@code BaseRaftHATest} cluster started again by a bare {@code start()} rebuilds its peer HTTP
+   * addresses from the {@code 2480 + i} hints of {@code getServerAddresses()} and loses the bound ports the fixture
+   * patched in. With 2480 held by another process every hint names the neighbouring node, and the restarted node's
+   * snapshot install, forwarded writes and bootstrap-state queries reach the wrong peer (issue #9243).
+   * {@code startServer(int)} re-applies the patch.
+   */
+  private static void reportBareFixtureStarts(final List<String> offenders, final String name, final String source) {
+    final String what = "restarts a BaseRaftHATest server with a bare start(), which loses the bound-port patch of its "
+        + "peer HTTP addresses, instead of startServer(int)";
+    report(offenders, name, source, BARE_FIXTURE_START.matcher(source), what);
+
+    final Set<String> aliases = new HashSet<>();
+    final Matcher alias = FIXTURE_SERVER_ALIAS.matcher(source);
+    while (alias.find())
+      aliases.add(alias.group(1));
+    for (final String aliasName : aliases)
+      report(offenders, name, source, Pattern.compile("\\b" + Pattern.quote(aliasName) + "\\s*\\.start\\(\\s*\\)").matcher(source), what);
+  }
+
+  /** Every class that extends {@link #RAFT_FIXTURE}, directly or through another class of the scanned sources. */
+  private static Set<String> raftFixtureSubclasses(final Map<String, String> sources) {
+    final Map<String, String> superclassOf = new HashMap<>();
+    for (final String source : sources.values()) {
+      final Matcher declaration = CLASS_EXTENDS.matcher(source);
+      while (declaration.find())
+        superclassOf.put(declaration.group(1), declaration.group(2));
+    }
+    final Set<String> subclasses = new HashSet<>();
+    for (final String className : superclassOf.keySet()) {
+      String ancestor = superclassOf.get(className);
+      // Bounded by the number of classes, so a cycle in malformed sources cannot loop forever
+      for (int depth = 0; ancestor != null && depth <= superclassOf.size(); depth++) {
+        if (ancestor.equals(RAFT_FIXTURE)) {
+          subclasses.add(className);
+          break;
+        }
+        ancestor = superclassOf.get(ancestor);
+      }
+    }
+    return subclasses;
+  }
+
+  private static boolean declaresAnyOf(final String source, final Set<String> classNames) {
+    final Matcher declaration = CLASS_EXTENDS.matcher(source);
+    while (declaration.find())
+      if (classNames.contains(declaration.group(1)))
+        return true;
+    return false;
   }
 
   /**
