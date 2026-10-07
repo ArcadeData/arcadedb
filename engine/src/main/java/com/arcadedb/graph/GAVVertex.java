@@ -227,11 +227,16 @@ public final class GAVVertex implements Vertex {
 
   /**
    * Whether the view holds every edge type asked for: a view answers only for the edge types it lists, and an unlisted
-   * one has no edges in it, so the record is the one to ask (issue #9377). An empty list means every type.
+   * one has no edges in it, so the record is the one to ask (issue #9377). An empty list means every edge type of the
+   * schema, which the view covers only when it lists them all.
    */
   private boolean providerCovers(final String[] edgeTypes) {
-    if (edgeTypes == null || edgeTypes.length == 0)
-      return false;
+    if (edgeTypes == null || edgeTypes.length == 0) {
+      for (final DocumentType type : getDatabase().getSchema().getTypes())
+        if (type.getType() == Edge.RECORD_TYPE && !provider.coversEdgeType(type.getName()))
+          return false;
+      return true;
+    }
     for (final String edgeType : edgeTypes)
       if (!provider.coversEdgeType(edgeType))
         return false;
