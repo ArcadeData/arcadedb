@@ -37,13 +37,8 @@ import java.util.Set;
  * per RID, and returns the top-K. Sources are passed oldest-to-newest; tombstones in any source
  * mask the RID across older sources.
  * <p>
- * <b>Tombstone semantics.</b> A tombstone in any one of the query-dim cursors masks the RID
- * across <i>all</i> query dims, matching the BMW pivot rule. This is the whole-document-delete
- * contract documented on
- * {@link PaginatedSparseVectorEngine#put(int, com.arcadedb.database.RID, float)} /
- * {@link PaginatedSparseVectorEngine#remove(int, com.arcadedb.database.RID)}: the engine treats a
- * tombstone as "this RID is gone", not "this one dim of this RID is gone". Partial-dim updates
- * are not supported; rewrite the document's full posting set in the same write batch instead.
+ * <b>Tombstone semantics.</b> A tombstone masks one (dim, RID) posting only (issue #9343), matching
+ * {@link BmwScorer}: a document is scored on the dims that still hold a live posting for it.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -59,10 +54,9 @@ public final class BruteForceScorer {
       return List.of();
 
     // For each query dim, find the newest-segment value at every RID. If the newest entry is a
-    // tombstone the RID is masked across all query dims (matches BMW's "any aligned cursor at the
-    // pivot is a tombstone -> drop the doc" rule). If absent from every segment, dim contributes 0.
+    // tombstone the posting of that dim is gone and contributes nothing. If absent from every segment,
+    // the dim contributes 0.
     final Map<RID, Float> scores = new HashMap<>();
-    final Set<RID> masked = new HashSet<>();
 
     for (int qi = 0; qi < queryDims.length; qi++) {
       final int dim = queryDims[qi];
@@ -84,9 +78,7 @@ public final class BruteForceScorer {
           while (!c.isExhausted()) {
             final RID r = c.currentRid();
             if (dimNewestSeen.add(r)) {
-              if (c.isTombstone())
-                masked.add(r);
-              else
+              if (!c.isTombstone())
                 dimNewestWeight.put(r, c.currentWeight());
             }
             if (!c.advance())
@@ -98,9 +90,6 @@ public final class BruteForceScorer {
       for (final var e : dimNewestWeight.entrySet())
         scores.merge(e.getKey(), qw * e.getValue(), Float::sum);
     }
-
-    for (final RID r : masked)
-      scores.remove(r);
 
     final PriorityQueue<RidScore> heap = new PriorityQueue<>(k, Comparator.comparing(RidScore::score));
     for (final var e : scores.entrySet()) {

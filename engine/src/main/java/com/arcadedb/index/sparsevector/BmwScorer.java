@@ -83,16 +83,12 @@ import java.util.function.Function;
  *       traversal.</li>
  * </ol>
  * <p>
- * <b>Tombstone semantics.</b> A tombstone observed on any one of the cursors visited at the
- * candidate RID skips the whole document - the loop drops the candidate from this query without
- * scoring even the dims that have live postings under the same RID. This is the
- * whole-document-delete contract documented on
- * {@link PaginatedSparseVectorEngine#put(int, com.arcadedb.database.RID, float)} and
- * {@link PaginatedSparseVectorEngine#remove(int, com.arcadedb.database.RID)}: the engine treats
- * a tombstone as "this RID is gone", not "this one dim of this RID is gone". Partial-dim updates
- * are not supported; rewrite the document's full posting set instead. A tombstone that sits on a
- * term the traversal abandoned early is immaterial: the abandon already proved the document cannot
- * enter the result set.
+ * <b>Tombstone semantics.</b> A tombstone on a cursor means that one dim of that RID is gone, never the
+ * whole document (issue #9343): it adds nothing to the score and does not by itself make the RID a candidate,
+ * while the live postings the same RID holds under other dims are still scored. A whole-document delete
+ * ({@code remove(keys, rid)}) tombstones every dim of the document, so none of them scores; an UPDATE that
+ * replaces the dims of a document ({@code remove(oldKeys)} then {@code put(newKeys)} for the same RID) leaves
+ * the old dims tombstoned and the new ones live, and the document answers on the new ones only.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -491,8 +487,7 @@ public final class BmwScorer {
    * traversal on corpora where the essential set stays large, is gone. Each document that received a score then probes
    * the non-essential terms from the highest ceiling down and is abandoned as soon as it cannot beat the threshold.
    * <p>
-   * A tombstone poisons its document's slot with NaN, which stays NaN under every later addition and is skipped when
-   * the window is drained. Documents are drained in ascending RID order, so the collector sees the same sequence as in
+   * A tombstone adds nothing to its document's slot and does not mark it as touched (issue #9343). Documents are drained in ascending RID order, so the collector sees the same sequence as in
    * the document-at-a-time traversal. The threshold is re-read per document and the split per window, never walked back.
    * Falls to {@link #scanWide} on a RID the packed order cannot hold, like the other traversal.
    */
@@ -583,13 +578,15 @@ public final class BmwScorer {
           final int offset = (int) (key - windowStart);
           final int word = offset >>> 6;
           final long bit = 1L << offset;
-          if (c.isTombstone())
-            scores[offset] = Float.NaN;  // stays NaN under every later addition
-          else if ((touched[word] & bit) == 0L)
-            scores[offset] = w * c.currentWeight();
-          else
-            scores[offset] += w * c.currentWeight();
-          touched[word] |= bit;
+          // A tombstone says only that THIS dim of this document is gone: it adds nothing and does not make the
+          // document a candidate, so a document whose other dims are live is still scored on them (issue #9343).
+          if (!c.isTombstone()) {
+            if ((touched[word] & bit) == 0L)
+              scores[offset] = w * c.currentWeight();
+            else
+              scores[offset] += w * c.currentWeight();
+            touched[word] |= bit;
+          }
           c.advance();
           mirror.sync(terms, i);
           key = keys[i];
@@ -615,8 +612,6 @@ public final class BmwScorer {
           bits &= bits - 1;
           final float essentialScore = scores[offset];
           scores[offset] = 0.0f;
-          if (essentialScore != essentialScore)
-            continue;  // a tombstone
           scoreWindowDocument(terms, mirror, split, prefix, nonEssentialCeiling, windowStart + offset, essentialScore,
               collector);
         }
@@ -711,7 +706,7 @@ public final class BmwScorer {
         continue;
       final DimCursor c = terms[i].cursor;
       if (c.isTombstone())
-        return;
+        continue;  // this dim of the document is gone, its other dims still count (issue #9343)
       score += terms[i].queryWeight * c.currentWeight();
     }
     collector.collect(candidate, score);
@@ -830,14 +825,15 @@ public final class BmwScorer {
       final int alignedCount, final int split, final float[] prefix, final long candidateKey, final float threshold,
       final Collector collector) throws IOException {
     final long[] keys = mirror.keys;
-    boolean alive = true;
+    // A tombstone removes one dim of one document, not the document (issue #9343): it adds nothing to the score, and
+    // a candidate with no live essential posting is dropped, since its non-essential terms alone cannot beat the threshold.
+    boolean alive = false;
     float score = 0.0f;
     for (int j = 0; j < alignedCount; j++) {
       final DimEntry t = terms[aligned[j]];
-      if (t.cursor.isTombstone()) {
-        alive = false;
-        break;
-      }
+      if (t.cursor.isTombstone())
+        continue;
+      alive = true;
       score += t.queryWeight * t.cursor.currentWeight();
     }
 
@@ -876,10 +872,8 @@ public final class BmwScorer {
         if (key != candidateKey)
           continue;  // this term holds no posting for this document (or just ran out).
         final DimCursor c = terms[i].cursor;
-        if (c.isTombstone()) {
-          alive = false;
-          break;
-        }
+        if (c.isTombstone())
+          continue;  // this dim of the document is gone, its other dims still count (issue #9343)
         score += terms[i].queryWeight * c.currentWeight();
       }
       if (alive)
@@ -1115,15 +1109,14 @@ public final class BmwScorer {
       if (endExclusive != null && SparseSegmentBuilder.compareRid(minBucketId, minPosition, endExclusive) >= 0)
         return;
 
-      boolean alive = true;
+      boolean alive = false;
       float score = 0.0f;
       for (int i = split; i < n; i++) {
         final DimCursor c = terms[i].cursor;
         if (!c.isExhausted() && c.currentBucketId() == minBucketId && c.currentPosition() == minPosition) {
-          if (c.isTombstone()) {
-            alive = false;
-            break;
-          }
+          if (c.isTombstone())
+            continue;  // one dim of the document is gone, not the document (issue #9343)
+          alive = true;
           score += terms[i].queryWeight * c.currentWeight();
         }
       }
@@ -1145,10 +1138,8 @@ public final class BmwScorer {
             c.seekTo(minBucketId, minPosition);
           if (c.isExhausted() || c.currentBucketId() != minBucketId || c.currentPosition() != minPosition)
             continue;
-          if (c.isTombstone()) {
-            alive = false;
-            break;
-          }
+          if (c.isTombstone())
+            continue;
           score += terms[i].queryWeight * c.currentWeight();
         }
         if (alive)

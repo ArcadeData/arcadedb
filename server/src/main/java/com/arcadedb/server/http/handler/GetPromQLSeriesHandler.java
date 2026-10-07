@@ -113,6 +113,8 @@ public class GetPromQLSeriesHandler extends AbstractObservabilityHandler {
     // silently reordered the response - so the ordering the old sort produced is now stated rather than
     // inherited, and it costs one long per distinct series instead of a sort of the whole range (issue #7354).
     final Map<String, ObservedSeries> seriesByKey = new LinkedHashMap<>();
+    // One evaluator for the whole request, so its regex deadline is shared by every match[] and every row (issue #9386).
+    final PromQLEvaluator matcherEvaluator = new PromQLEvaluator(database);
 
     for (final String matchStr : matchParams) {
       try {
@@ -142,6 +144,12 @@ public class GetPromQLSeriesHandler extends AbstractObservabilityHandler {
         // entry; the fold below is unchanged, because those rows have the layout the scan produces.
         final TimeSeriesEngine engine = tsType.getEngine();
         final List<ColumnDefinition> columns = tsType.getTsColumns();
+
+        // The label matchers of the selector narrow the answer to the series they select, exactly as /query does
+        // (issue #9386). A matcher on a label the type does not declare is settled for the whole type, before the scan.
+        final List<PromQLExpr.LabelMatcher> matchers = vs.matchers();
+        if (matcherEvaluator.selectsNoSeries(matchers, columns))
+          continue;
 
         // PROJECTION, not the whole row (issue #7371). The answer is made of the TAG columns, so those are the
         // only ones the scan decodes: a sealed block stores each column in its own byte range and
@@ -186,6 +194,8 @@ public class GetPromQLSeriesHandler extends AbstractObservabilityHandler {
         final AggregationMetrics readMetrics = TimeSeriesReadMetrics.start();
         try {
           engine.forEachTagCombination(startMs, endMs, columnIndices, readMetrics, row -> {
+            if (!matchers.isEmpty() && !matcherEvaluator.matchesTagRow(matchers, tagNames, row))
+              return true;
             key.setLength(0);
             // The metric name is length-prefixed for the same reason its tags are: two match[] patterns naming
             // different metrics share this map.
