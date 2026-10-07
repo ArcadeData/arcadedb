@@ -151,15 +151,17 @@ fi
 # native-image.yml had to move its macOS leg onto a paid larger runner for the same reason,
 # because the free ~7 GB one OOM-thrashed for 40+ minutes.
 #
-# 12 GiB is the floor enforced here and 16 GiB is what CI's Linux runners have; 8 GiB is known
-# to fail. Raise it in Docker Desktop under Settings -> Resources -> Memory.
+# 16 GiB is the target (it is what CI's Linux runners have) and 15 GiB the floor enforced here, because
+# MemTotal reports a little under what Docker Desktop allots (an 8 GiB VM reports 7.65 GiB). With Raft HA,
+# metrics and tracing in the image (#9407) a 9 GB builder heap (80% of 12 GiB) ran out of memory, 12 GB
+# did not, and 8 GiB failed before. Raise it in Docker Desktop under Settings -> Resources -> Memory.
 # ---------------------------------------------------------------------------
 DOCKER_MEM_BYTES="$(docker info --format '{{.MemTotal}}' 2>/dev/null || echo 0)"
 case "$DOCKER_MEM_BYTES" in
   ''|*[!0-9]*) DOCKER_MEM_BYTES=0 ;;
 esac
 if [ "$DOCKER_MEM_BYTES" -gt 0 ] && [ "$SKIP_BINARY" = "0" ]; then
-  # Tenths of a GiB, so a 7.6 GiB VM does not print as a flat "7" next to a "needs 12" and read
+  # Tenths of a GiB, so a 7.6 GiB VM does not print as a flat "7" next to a "needs 15" and read
   # like a bigger shortfall than it is.
   DOCKER_MEM_MIB=$(( DOCKER_MEM_BYTES / 1024 / 1024 ))
   DOCKER_MEM="$(( DOCKER_MEM_MIB / 1024 )).$(( (DOCKER_MEM_MIB % 1024) * 10 / 1024 ))"
@@ -168,7 +170,7 @@ if [ "$DOCKER_MEM_BYTES" -gt 0 ] && [ "$SKIP_BINARY" = "0" ]; then
   if [ "$HOST_MEM_BYTES" -gt "$DOCKER_MEM_BYTES" ]; then
     HOST_MEM_NOTE=" (this machine has $(( HOST_MEM_BYTES / 1024 / 1024 / 1024 )) GiB, but Docker only gets what you allot it)"
   fi
-  if [ "$DOCKER_MEM_MIB" -lt $(( 12 * 1024 )) ]; then
+  if [ "$DOCKER_MEM_MIB" -lt $(( 15 * 1024 )) ]; then
     if [ "$ALLOW_LOW_MEMORY" = "1" ]; then
       log "WARN: Docker has only ${DOCKER_MEM} GiB; proceeding anyway (--allow-low-memory)."
     else
@@ -176,7 +178,7 @@ if [ "$DOCKER_MEM_BYTES" -gt 0 ] && [ "$SKIP_BINARY" = "0" ]; then
   native-image sizes its build heap at ~80% of the memory it can see, and inside a container that
   is the Docker VM's allocation. At ${DOCKER_MEM} GiB it dies with a Java heap OutOfMemoryError
   about 21 minutes in, once the whole Maven reactor has already built. CI's Linux runners have
-  16 GiB; 12 is the floor checked here.
+  16 GiB; the floor checked here is 15 GiB, since a 16 GiB VM reports slightly less.
   Raise it in Docker Desktop: Settings -> Resources -> Memory, then restart Docker.
   Or pass --allow-low-memory to try regardless, --builder-memory <size> to cap the builder heap
   explicitly, or --skip-binary-build if you only need to rebuild the image around an existing

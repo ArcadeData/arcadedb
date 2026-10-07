@@ -344,10 +344,29 @@ jobs:
             PLUGINS="$PLUGINS,MongoDB:com.arcadedb.mongo.MongoDBProtocolPlugin"
             PLUGINS="$PLUGINS,Bolt:com.arcadedb.bolt.BoltProtocolPlugin"
             PLUGINS="$PLUGINS,Grpc:com.arcadedb.server.grpc.GrpcServerPlugin"
-            WIRE_STRICT=1 native/src/test/scripts/smoke.sh "$BIN" -Dorg.jline.terminal.dumb=true "-Darcadedb.server.plugins=$PLUGINS"
+            # Prometheus is the only observability plugin that must be named; the OTLP metrics and
+            # tracing plugins activate from their enable flag alone (#7281). The OTLP endpoints keep
+            # their defaults: nothing listens there, which is fine, exercise.sh asserts the plugins
+            # came up, not that a collector received anything.
+            PLUGINS="$PLUGINS,Prometheus:com.arcadedb.metrics.prometheus.PrometheusMetricsPlugin"
+            WIRE_STRICT=1 native/src/test/scripts/smoke.sh "$BIN" -Dorg.jline.terminal.dumb=true "-Darcadedb.server.plugins=$PLUGINS" \
+              -Darcadedb.serverMetrics.otlp.enabled=true \
+              -Darcadedb.serverMetrics.tracing.enabled=true -Darcadedb.serverMetrics.tracing.samplingRate=1.0
           else
             native/src/test/scripts/smoke.sh "$BIN" -Dorg.jline.terminal.dumb=true
           fi
+
+      # Three native nodes forming a Raft cluster on loopback, a write through the leader and a read
+      # of it from every node (#9407). Proves arcadedb-ha-raft works inside the image: Ratis builds
+      # its gRPC transport and state machine reflectively, so a binary that boots as a single node can
+      # still fail as soon as two peers talk. The two required Linux legs only, like the strict wire
+      # checks above: macOS/Windows are best-effort and have no musl/glibc static story to protect.
+      - name: HA smoke test
+        if: ${{ matrix.os_name == 'linux' }}
+        shell: bash
+        run: |
+          BIN="native/target/${{ steps.locate.outputs.bin_name }}"
+          native/src/test/scripts/ha-smoke.sh "$BIN" -Dorg.jline.terminal.dumb=true
 
       # Publishes the archive it created as a step output, because "Attach to release" below cannot
       # discover it with a glob: `gh release upload` expands each asset argument itself and treats a
