@@ -468,20 +468,27 @@ class GraphAnalyticalViewCCHTest {
           failure.compareAndSet(null, e);
         }
       });
+      readers[r].setDaemon(true);
       readers[r].start();
     }
 
     final Random random = new Random(77);
     final List<RID> all = new ArrayList<>(roads.keySet());
-    while (System.currentTimeMillis() < deadline)
-      database.transaction(() -> {
-        final RID edge = all.get(random.nextInt(all.size()));
-        final double weight = 1 + random.nextInt(50);
-        roads.get(edge)[2] = weight;
-        edge.asEdge().modify().set("distance", weight).save();
-      });
-    for (final Thread reader : readers)
-      reader.join();
+    try {
+      while (System.currentTimeMillis() < deadline && failure.get() == null)
+        database.transaction(() -> {
+          final RID edge = all.get(random.nextInt(all.size()));
+          final double weight = 1 + random.nextInt(50);
+          roads.get(edge)[2] = weight;
+          edge.asEdge().modify().set("distance", weight).save();
+        });
+    } catch (final RuntimeException e) {
+      failure.compareAndSet(null, e);
+    } finally {
+      // a failed writer has set the shared failure flag, which ends the readers' loop as well
+      for (final Thread reader : readers)
+        reader.join(60_000);
+    }
     assertThat(failure.get()).isNull();
 
     assertThat(cch.awaitReady(false, 60, TimeUnit.SECONDS)).isTrue();
