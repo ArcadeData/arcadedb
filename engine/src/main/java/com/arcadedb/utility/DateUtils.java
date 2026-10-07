@@ -974,6 +974,14 @@ public class DateUtils {
     return CACHED_FORMATTERS.size();
   }
 
+  /**
+   * The UTC wall clock of an epoch-millis timestamp. floorDiv/floorMod keep the nanosecond part non-negative for a
+   * pre-epoch value, which {@link LocalDateTime#ofEpochSecond} would otherwise reject.
+   */
+  public static LocalDateTime localDateTimeFromEpochMillis(final long millis) {
+    return LocalDateTime.ofEpochSecond(Math.floorDiv(millis, 1_000L), (int) (Math.floorMod(millis, 1_000L) * 1_000_000L), ZoneOffset.UTC);
+  }
+
   public static Object getDate(final Object date, final Class dateImplementation) {
     if (date == null)
       return null;
@@ -1000,8 +1008,7 @@ public class DateUtils {
       // LocalDateTime.ofEpochSecond validates and rejects - asDateTime() did not merely misreport such an
       // instant, it threw DateTimeException. floorMod pairs with floorDiv so second and nanosecond stay
       // consistent: the seconds floor down and the remainder is the non-negative distance above that second.
-      return LocalDateTime.ofEpochSecond(Math.floorDiv(timestamp, 1_000L),
-          (int) (Math.floorMod(timestamp, 1_000L) * 1_000_000L), ZoneOffset.UTC);
+      return localDateTimeFromEpochMillis(timestamp);
     else
       return date;
   }

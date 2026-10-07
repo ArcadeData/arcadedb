@@ -937,9 +937,7 @@ public enum Type {
             return truncateToPropertyPrecision(time, property);
         } else if (value instanceof Number number) {
           // epoch MILLIS of a DATETIME, not the day count DateUtils.date() reads (issue #9324)
-          final long millis = DateUtils.numberToEpochUnits(number);
-          return LocalDateTime.ofEpochSecond(Math.floorDiv(millis, 1_000L), (int) (Math.floorMod(millis, 1_000L) * 1_000_000L),
-              ZoneOffset.UTC);
+          return DateUtils.localDateTimeFromEpochMillis(DateUtils.numberToEpochUnits(number));
         } else if (value instanceof LocalDate date) {
           return truncateToPropertyPrecision(date.atStartOfDay(), property);
         } else if (value instanceof Instant instant) {
