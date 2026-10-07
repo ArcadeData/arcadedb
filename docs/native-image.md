@@ -408,7 +408,8 @@ java.lang.OutOfMemoryError: Java heap space"), a 12 GB heap built it with a peak
 quarter of the time spent in GC), and a 24 GB heap peaked at 11.6 GB. The default can pick far too little
 when other processes hold memory (one run chose 8.16 GB from "available memory" and failed). Pin it
 with `NATIVE_IMAGE_OPTIONS="-J-Xmx24g"` when building locally. The Docker build script now requires a
-16 GiB Docker VM.
+Docker VM of about 16 GiB (the check enforces 15 GiB, because Docker reports slightly less than it
+allots).
 
 ### What CI verifies
 
