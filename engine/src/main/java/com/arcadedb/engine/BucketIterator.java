@@ -72,6 +72,8 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
   // ITS OWN; A RECORD ON ITS OWN PAGE IS A VIEW OF THE CACHED PAGE AND COSTS NOTHING MORE), AND WHAT A BATCH MAY HOLD
   private long batchBytes     = 0;
   // #9404: THE BATCHES READ WITH THE READ-AHEAD REDUCED BY THE QUERY HEAP BUDGET, WHICH A PROFILED QUERY REPORTS
+  // WHETHER THE LIMIT OF THE CURRENT BATCH IS THE SHARE OF THE BUDGET AND NOT THE SETTING
+  private boolean limitedByBudget = false;
   // WRITTEN BY THE THREAD THAT SCANS, READ BY A PROFILE ONCE THE SCAN IS OVER: NO SYNCHRONIZATION IS NEEDED FOR A COUNT REPORTED THEN
   private long shrunkBatches  = 0;
   private long skippedRecords = 0;
@@ -384,8 +386,8 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
 
   /**
    * The bytes copied out of the pages a batch may reach before it ends: {@link GlobalConfiguration#QUERY_BATCH_MAX_BYTES}, or less
-   * when the queries running have taken most of the query heap budget. A batch always holds at least one record, so the floor is a
-   * scan that reads one record at a time. The budget share is sampled once per batch and is a heuristic, not a reservation: every
+   * when the queries running have taken most of the query heap budget. A batch always holds at least one record, and keeps taking records
+   * that copy nothing (a record on its own page) until one is copied, so the floor is a scan that copies one record at a time. The budget share is sampled once per batch and is a heuristic, not a reservation: every
    * scan running takes its share of what is left, so the read-ahead of many scans together is bounded by the budget only roughly.
    */
   private long batchByteLimit() {
@@ -394,8 +396,7 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
     final long budgetShare = QueryHeapBudget.getAvailableBytes() / BUDGET_SHARE;
     if (budgetShare >= maxBatchBytes)
       return maxBatchBytes;
-    ++shrunkBatches;
-    QueryHeapBudget.scanBatchShrunk();
+    limitedByBudget = true;
     return budgetShare;
   }
 
@@ -413,6 +414,7 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
 
     recordsRead = 0;
     batchBytes = 0L;
+    limitedByBudget = false;
     final long batchByteLimit = batchByteLimit();
     try {
       database.executeInReadLock(() -> {
@@ -420,7 +422,7 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
         nextBatch[prefetchIndex] = null;
 
         // A BATCH OF LARGE RECORDS ENDS BY BYTES, NOT BY COUNT: 1,024 RECORDS OF 100KB WOULD BE 100MB PER BUCKET, PER SCAN (#9404)
-        for (writeIndex = 0; writeIndex < nextBatch.length && (writeIndex == 0 || batchBytes < batchByteLimit); ) {
+        for (writeIndex = 0; writeIndex < nextBatch.length && (batchBytes == 0 || batchBytes < batchByteLimit); ) {
           if (positions != null) {
             if (!readNextPosition())
               return null;
@@ -479,6 +481,12 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
     } finally {
       if (recordsRead > 0)
         database.countRecordsRead(recordsRead);
+      // A BATCH IS REDUCED WHEN THE BUDGET, NOT THE SETTING, ENDED IT: IT COPIED BYTES AND THEY REACHED THE SHARE (AN EMPTY BUCKET, OR
+      // RECORDS ON THEIR OWN PAGE, COPY NOTHING AND ARE NOT SLOWED BY IT)
+      if (limitedByBudget && batchBytes > 0 && batchBytes >= batchByteLimit) {
+        ++shrunkBatches;
+        QueryHeapBudget.scanBatchShrunk();
+      }
     }
   }
 }

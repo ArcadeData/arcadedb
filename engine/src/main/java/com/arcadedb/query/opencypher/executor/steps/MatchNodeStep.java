@@ -95,6 +95,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
   private       String              usedIndexName; // Track which index was used (if any)
   // The full type scan the step reads from, kept only to report in a profile whether the heap budget reduced its read-ahead (#9404)
   private volatile Object              scanIterator;
+  private long                         completedScansShrunkBatches;
   private       String              usedPartitionBucket; // Track partition bucket pruning (if any) - same write-once-per-execution contract as usedIndexName
   // Full snapshot of a row-independent full-type-scan's candidates, populated (via recordingIterator) only
   // once the first getVertexIterator() call of a CHAINED match (prev != null) has been fully drained by the
@@ -671,8 +672,12 @@ public class MatchNodeStep extends AbstractExecutionStep {
           @SuppressWarnings("unchecked") final Iterator<Identifiable> iter =
               (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(label, true);
           // ONLY A PROFILED RUN KEEPS THE SCAN, WHICH HOLDS A BATCH OF RECORDS: THE PROFILE IS THE ONLY READER
-          if (context.isProfiling())
+          if (context.isProfiling()) {
+            // A CHAINED MATCH OPENS A SCAN PER INPUT ROW: THE ONES DONE STAY IN THE COUNT
+            if (scanIterator instanceof ScanPressureReporter previous)
+              completedScansShrunkBatches += previous.getBudgetShrunkBatches();
             scanIterator = iter;
+          }
           return iter;
         }
         return Collections.emptyIterator();
@@ -1148,7 +1153,8 @@ public class MatchNodeStep extends AbstractExecutionStep {
         builder.append(", ").append(getRowCountFormatted());
       builder.append(")");
       // #9404: A SCAN THAT READ WITH ITS READ-AHEAD REDUCED BY THE QUERY HEAP BUDGET IS SLOWER FOR IT: SAY SO
-      builder.append(ScanPressureReporter.describe(scanIterator));
+      builder.append(ScanPressureReporter.describe(completedScansShrunkBatches
+          + (scanIterator instanceof ScanPressureReporter current ? current.getBudgetShrunkBatches() : 0L)));
     }
     return builder.toString();
   }

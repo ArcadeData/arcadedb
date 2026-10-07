@@ -31,11 +31,13 @@ public interface ScanPressureReporter {
 
   /** The text a profiled plan shows for a scan that read batches under pressure, or an empty string when none. */
   static String describe(final Object scan) {
-    if (scan instanceof ScanPressureReporter reporter) {
-      final long shrunk = reporter.getBudgetShrunkBatches();
-      if (shrunk > 0)
-        return " [read-ahead reduced in " + shrunk + (shrunk == 1 ? " batch" : " batches") + ": query heap budget nearly full]";
-    }
+    return scan instanceof ScanPressureReporter reporter ? describe(reporter.getBudgetShrunkBatches()) : "";
+  }
+
+  /** The same for a count a caller added up over several scans. */
+  static String describe(final long shrunk) {
+    if (shrunk > 0)
+      return " [read-ahead reduced in " + shrunk + (shrunk == 1 ? " batch" : " batches") + ": query heap budget nearly full]";
     return "";
   }
 }

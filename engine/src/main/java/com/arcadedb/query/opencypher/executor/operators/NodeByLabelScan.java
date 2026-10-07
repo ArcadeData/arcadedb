@@ -168,6 +168,8 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
                 return filter.evaluate(row, workerContext) ? row : null;
               }) : null;
           servedInParallel.set(parallelScan != null);
+          // THIS EXECUTION'S SCAN, NOT A PREVIOUS ONE'S: THE PARALLEL PATH READS NO ITERATOR OF ITS OWN
+          scanIterator.remove();
           if (parallelScan != null) {
             // The rows come back already filtered, in the order the sequential scan reads them
             parallelRows = parallelScan.pull(context);
@@ -270,6 +272,7 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
       return rowFilter == null || rowFilter.evaluate(row, workerContext) ? row : null;
     });
     servedInParallel.set(scan != null);
+    scanIterator.remove();
     return scan;
   }
 
