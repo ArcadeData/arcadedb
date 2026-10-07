@@ -32,6 +32,7 @@ import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.offset;
 
 /**
  * Regression tests for the wrong answers of the openCypher count push-downs and of the Graph Analytical View fast paths:
@@ -86,7 +87,7 @@ class CountPushDownBatch9345Test extends TestHelper {
         assertThat(count(queries[i])).as(queries[i]).isEqualTo(expected[i]);
       assertThat(count("CALL algo.wcc() YIELD node, componentId RETURN max(componentId) AS n")).isGreaterThanOrEqualTo(1);
       try (final ResultSet rs = database.query("opencypher", "CALL algo.pagerank() YIELD node, score RETURN sum(score) AS n")) {
-        assertThat(rs.next().<Number>getProperty("n").doubleValue()).isCloseTo(1.0, org.assertj.core.data.Offset.offset(1e-6));
+        assertThat(rs.next().<Number>getProperty("n").doubleValue()).isCloseTo(1.0, offset(1e-6));
       }
     } finally {
       database.command("sql", "DROP GRAPH ANALYTICAL VIEW g9341");
@@ -272,9 +273,9 @@ class CountPushDownBatch9345Test extends TestHelper {
     assertThat(count("MATCH (a:V)-[:L]->(b:V) RETURN count(*) AS n")).isEqualTo(2);
     assertThat(count("MATCH (a:V)-[:E]->(b:V) RETURN count(*) AS n")).isEqualTo(0);
 
-    try (final GraphBatch batch = database.batch().withLightEdges(false).build()) {
+    try (final GraphBatch batch = database.batch().withLightEdges(true).build()) {
       final RID[] v = batch.createVertices("V", 2);
-      batch.newEdge(v[0], "E", v[1]);
+      batch.newEdge(v[0], "E", v[1], "w", 1); // an edge with properties is a regular edge, the flag does not apply
     }
     assertThat(count("MATCH (a:V)-[:E]->(b:V) RETURN count(*) AS n")).isEqualTo(1);
   }
