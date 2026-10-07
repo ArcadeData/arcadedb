@@ -121,7 +121,7 @@ class Issue9308SoleVoterApplyErrorTest {
    */
   @Test
   void aSoleVoterIsNotHaltedByRepeatedApplyErrors() {
-    for (int i = 0; i < 150; i++) {
+    for (int i = 0; i <= ArcadeStateMachine.MAX_DIVERGED_SWALLOWED_ERRORS + 1; i++) {
       final long index = 100L + i;
       assertThatThrownBy(() -> sm.applyWithRetry(index, DB_NAME, () -> {
         throw new IllegalStateException("apply failed at " + index);

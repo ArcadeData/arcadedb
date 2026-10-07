@@ -900,7 +900,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // loudly" backstop, so a shared budget across all diverged databases is the intended behaviour -
   // one very noisy diverged database crossing the threshold should still halt the node.
   private final        AtomicInteger divergedSwallowedErrors      = new AtomicInteger(0);
-  private static final int           MAX_DIVERGED_SWALLOWED_ERRORS = 100;
+  static final         int           MAX_DIVERGED_SWALLOWED_ERRORS = 100; // package-private for tests
 
   // Log-flood throttle for a diverged database's "snapshot resync in progress" notice. Once a WAL
   // version gap has quarantined a database, EVERY subsequent committed entry for it hits the same gap
@@ -1978,7 +1978,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * unexpected error on a healthy database now quarantines it rather than halting the node.
    * <p>
    * A sole voter does not quarantine (issue #9308): nothing could ever lift the quarantine there, so the error is
-   * raised as a {@link ReplicationException} with a SEVERE alert and the node keeps serving.
+   * raised as a {@link ReplicationException} with a SEVERE alert and the node keeps serving. The failed entry stays in
+   * the Raft log, so a restart that replays the log from the last snapshot marker applies it again, after the entries
+   * that succeeded in between were already applied before it: a deterministic failure fails the same way again, while
+   * a transient one (an I/O error, a lock timeout) now succeeds out of its original order. Either way the database may
+   * no longer match the log, which is what the alert tells the operator to check.
    * <p>
    * Entries with no single target database ({@code databaseName} null or empty, e.g. a
    * {@code SECURITY_USERS_ENTRY}) are NOT isolable to one database's state, so their failure still
