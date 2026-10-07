@@ -23,6 +23,7 @@ import com.arcadedb.engine.PageSnapshot;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.timeseries.TimeSeriesSealedStore;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.schema.SortedIndexBuildRecoveryMarker;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
@@ -337,6 +338,7 @@ public final class SnapshotManager {
         || name.equals(ArcadeDBServer.SNAPSHOT_PENDING_FILE)
         || name.equals(ArcadeDBServer.UNVERIFIED_CLOSED_COPY_FILE)
         || name.equals(SnapshotInstaller.SNAPSHOT_SWAP_STATE_FILE)
+        || name.startsWith(SortedIndexBuildRecoveryMarker.FILE_PREFIX)
         || PaginatedComponent.isTemporaryFileName(name);
   }
 }

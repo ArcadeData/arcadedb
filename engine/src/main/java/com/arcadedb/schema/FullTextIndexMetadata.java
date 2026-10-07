@@ -675,6 +675,34 @@ public class FullTextIndexMetadata extends IndexMetadata {
   }
 
   /**
+   * Publishes the result of a full-type scan that started when the counters read {@code docsAtStart} / {@code lenAtStart}.
+   * <p>
+   * Unlike {@link #setCounters}, this does NOT overwrite the counters: indexing transactions bump them lock-free for the whole
+   * duration of the scan, and an absolute write would discard every increment (or decrement) applied since the scan began. The
+   * scan result is applied as a delta against the values captured at the start ({@code addAndGet} is atomic, so a concurrent
+   * writer is never lost). When the counters did not move during the scan the result is exact and the once-per-session stale
+   * check is consumed, as {@link #setCounters} does. When they moved, a record may be counted twice (bumped by the writer and
+   * already visible to the scan) or the scan may not have seen it, so the result is only approximate: the stale check is
+   * re-armed, so the next query validates against the live count and repairs it.
+   *
+   * @param totalDocs    document count found by the scan
+   * @param sumDocLength sum of document lengths found by the scan
+   * @param docsAtStart  value of {@link #getTotalDocs()} captured immediately before the scan
+   * @param lenAtStart   value of {@link #getSumDocLength()} captured immediately before the scan
+   *
+   * @return true when the counters did not move during the scan (the result is exact)
+   */
+  public boolean publishScannedCounters(final long totalDocs, final long sumDocLength, final long docsAtStart, final long lenAtStart) {
+    // sumDocLength first, then totalDocs: same ordering rationale as addDocument()
+    final long newLen = Math.max(0L, this.sumDocLength.addAndGet(sumDocLength - lenAtStart));
+    final long newDocs = Math.max(0L, this.totalDocs.addAndGet(totalDocs - docsAtStart));
+    this.countersValid = true;
+    final boolean exact = newDocs == totalDocs && newLen == sumDocLength;
+    this.staleChecked.set(exact);
+    return exact;
+  }
+
+  /**
    * Records a newly indexed document in the corpus counters. Thread-safe: concurrent indexing transactions may call this on the
    * shared metadata.
    * <p>

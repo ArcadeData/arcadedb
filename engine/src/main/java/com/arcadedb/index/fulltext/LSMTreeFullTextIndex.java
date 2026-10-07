@@ -919,6 +919,9 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     final List<String> props = getPropertyNames();
     long docs = 0L;
     long sumLen = 0L;
+    // Writers keep bumping the shared counters while the scan runs: remember where they stood so the result is published as a delta
+    final long docsAtStart = ftMetadata.getTotalDocs();
+    final long lenAtStart = ftMetadata.getSumDocLength();
     final Iterator<Record> it = db.iterateType(typeName, true);
     while (it.hasNext()) {
       final Record record = it.next();
@@ -934,7 +937,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
       sumLen += len;
     }
 
-    ftMetadata.setCounters(docs, sumLen);
+    ftMetadata.publishScannedCounters(docs, sumLen, docsAtStart, lenAtStart);
     // Report the result so operators can correlate the cold-start latency above with the corpus size that drove it.
     LogManager.instance().log(this, Level.INFO,
         "Recomputed BM25 corpus statistics for type '%s': %d documents, %d total tokens (avgdl=%.2f)", null, typeName, docs,
