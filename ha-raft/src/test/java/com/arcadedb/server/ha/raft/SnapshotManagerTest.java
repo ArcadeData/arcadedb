@@ -220,12 +220,15 @@ class SnapshotManagerTest {
   @Test
   void everySnapshotInstallerFileIsKnownToTheChecksumSkip() throws Exception {
     final List<String> names = new ArrayList<>();
-    for (final Field field : SnapshotInstaller.class.getDeclaredFields())
-      if (Modifier.isStatic(field.getModifiers()) && field.getType() == String.class && field.getName().startsWith("SNAPSHOT_")
-          && field.getName().endsWith("_FILE")) {
-        field.setAccessible(true);
-        names.add((String) field.get(null));
-      }
+    for (final Field field : SnapshotInstaller.class.getDeclaredFields()) {
+      if (!Modifier.isStatic(field.getModifiers()) || field.getType() != String.class || field.getName().endsWith("_DIR"))
+        continue;
+      field.setAccessible(true);
+      final String value = (String) field.get(null);
+      // By naming convention, or by value: a marker declared under another constant name is caught all the same.
+      if ((field.getName().startsWith("SNAPSHOT_") && field.getName().endsWith("_FILE")) || (value != null && value.startsWith(".snapshot")))
+        names.add(value);
+    }
 
     assertThat(names).contains(SnapshotInstaller.SNAPSHOT_VALIDATION_FAILED_FILE, SnapshotInstaller.SNAPSHOT_SWAP_STATE_FILE,
         SnapshotInstaller.SNAPSHOT_PENDING_FILE);
