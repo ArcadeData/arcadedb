@@ -90,7 +90,10 @@ final class PageShadow implements AutoCloseable {
   private long        spillBytes = 0L;
 
   private boolean closed = false;
-  /** Reopens of the spill channel so far: the first is logged at WARNING, the rest at FINE (an interrupt storm). */
+  /**
+   * Reopens of the spill channel so far: the first is logged at WARNING, the rest at FINE (an interrupt storm). Read and
+   * written only under this instance's monitor, in {@link #reopenSpillChannel}.
+   */
   private int     reopens = 0;
 
   PageShadow(final File spillFile, final long maxRAMBytes, final long maxTotalBytes) {
@@ -273,7 +276,9 @@ final class PageShadow implements AutoCloseable {
           return true;
         } catch (final ClosedChannelException e) {
           if (attempt >= REOPEN_ATTEMPTS)
-            throw e;
+            // NAMED AS SUCH, SO AN INTERRUPT STORM READS DIFFERENTLY IN THE LOG FROM A FAILING DISK
+            throw new IOException(
+                "The snapshot shadow file '" + spillFile.getName() + "' was closed again after " + attempt + " reopen attempts", e);
           lastClosed = channel;
         }
       }
