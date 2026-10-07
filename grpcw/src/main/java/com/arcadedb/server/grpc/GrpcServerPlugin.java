@@ -361,6 +361,8 @@ public class GrpcServerPlugin implements ServerPlugin {
     NettyServerBuilder builder = null;
     for (final String listenHost : hosts) {
       final InetSocketAddress address = new InetSocketAddress(listenHost, port);
+      if (address.isUnresolved())
+        throw new ConfigurationException("gRPC host '" + host + "' could not be resolved");
       if (builder == null)
         builder = NettyServerBuilder.forAddress(address);
       else
