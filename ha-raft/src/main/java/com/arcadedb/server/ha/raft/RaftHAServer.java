@@ -387,6 +387,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private final    AtomicBoolean             replacingHandOffQueued = new AtomicBoolean();
   // Health ticks that found a #8491 hand-off already queued or running and did not queue another: the
   // channel_recovery row's tasks.coalesced (issue #8856). Climbing on every tick means that hand-off is not draining.
+  // On this RaftHAServer, like the channel-recovery executor it describes, so it survives an in-place Ratis restart -
+  // unlike the state machine pools' counters, which restart with the state machine that owns them.
   private final    AtomicLong                replacingHandOffsCoalesced = new AtomicLong();
   // Wall-clock of the last admitted quarantine handoff, for the cooldown above; 0 = none yet.
   private final    AtomicLong                lastQuarantineHandoffAtMs = new AtomicLong();
@@ -1243,8 +1245,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * Single-worker pool for replication-channel recovery (issue #5346). Unlike the resync executor it must
    * never run a task on the caller, which is the lag-monitor thread that classifies every replica: a
    * blocking DNS lookup or a 10 s leadership transfer there would defeat the point of moving the work
-   * off-thread. It therefore keeps an abort policy (one that counts, for the executor row of issue #8856) and each
-   * submitter decides what a rejection means for it - see {@link #resetPeerReplicationChannel} (free to drop, retried next interval) and
+   * off-thread. It therefore keeps an abort policy (one that counts, for the executor row of issue #8856)
+   * and each submitter decides what a rejection means for it - see {@link #resetPeerReplicationChannel}
+   * (free to drop, retried next interval) and
    * {@link #escalateWedgedPeerChannel} (a one-shot, so a drop must be surfaced to the operator).
    */
   private static ThreadPoolExecutor createChannelRecoveryExecutor() {
@@ -1288,7 +1291,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * escalation is the one that is not retried.
    */
   long getChannelRecoveryRejections() {
-    return ((CountingRejectionPolicy) channelRecoveryExecutor.getRejectedExecutionHandler()).getSaturations();
+    // A metrics scrape must never throw: read the count only from the policy this class installs.
+    return channelRecoveryExecutor.getRejectedExecutionHandler() instanceof CountingRejectionPolicy policy ?
+        policy.getSaturations() :
+        0L;
   }
 
   /** #8491 hand-offs not queued because one was already queued or running; see {@link #replacingHandOffsCoalesced}. */

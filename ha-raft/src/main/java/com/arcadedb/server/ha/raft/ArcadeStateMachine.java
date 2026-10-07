@@ -357,7 +357,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     return PoolMetrics.statsOf(lifecycleExecutor);
   }
 
-  /** The {@code pool=snapshot_install} executor row (issue #8856); its rejections are {@link #getSnapshotInstallRejections}. */
+  /** The {@code pool=snapshot_install} executor row (issue #8856); see {@link #getSnapshotInstallRejections}. */
   PoolStats getSnapshotInstallPoolStats() {
     return PoolMetrics.statsOf(snapshotInstallExecutor);
   }
@@ -367,7 +367,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * failed future Ratis retries, so a rejection is not lost for good, but the node stays behind until the retry.
    */
   long getSnapshotInstallRejections() {
-    return ((CountingRejectionPolicy) snapshotInstallExecutor.getRejectedExecutionHandler()).getSaturations();
+    // A metrics scrape must never throw: read the count only from the policy this class installs.
+    return snapshotInstallExecutor.getRejectedExecutionHandler() instanceof CountingRejectionPolicy policy ?
+        policy.getSaturations() :
+        0L;
   }
 
   /** The {@code pool=database_deleter} executor row (issue #8856), read through whichever deleter is installed. */

@@ -68,6 +68,12 @@ class DeferredDatabaseDeleter implements AutoCloseable {
    */
   private static final int MAX_PENDING_DELETIONS = 1024;
 
+  // What getPoolStats() reports of an executor supplied by a test, whose threads and queue are not ours to read.
+  private static final int  NO_THREADS        = 0;
+  private static final int  NOTHING_QUEUED    = 0;
+  private static final long NOTHING_COMPLETED = 0L;
+  private static final long NOTHING_RECLAIMED = 0L;
+
   /** Candidate staging names tried before giving up and deleting inline. */
   private static final int STAGING_NAME_ATTEMPTS = 16;
 
@@ -178,7 +184,8 @@ class DeferredDatabaseDeleter implements AutoCloseable {
   PoolStats getPoolStats() {
     return executor instanceof ThreadPoolExecutor pool ?
         PoolMetrics.statsOf(pool, callerRunFallbacks.get()) :
-        new PoolStats(0, 0, 0, MAX_PENDING_DELETIONS, 0L, callerRunFallbacks.get(), 0L);
+        new PoolStats(NO_THREADS, NO_THREADS, NOTHING_QUEUED, MAX_PENDING_DELETIONS, NOTHING_COMPLETED,
+            callerRunFallbacks.get(), NOTHING_RECLAIMED);
   }
 
   private static List<Path> listStagingDirectories(final Path databasesDirectory) {

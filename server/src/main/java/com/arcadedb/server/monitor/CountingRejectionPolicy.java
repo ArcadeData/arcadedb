@@ -55,7 +55,7 @@ public final class CountingRejectionPolicy implements RejectedExecutionHandler {
     return callerRuns;
   }
 
-  /** Cumulative tasks a running executor could not queue: rejected under abort, run on the submitter under caller-runs. */
+  /** Cumulative tasks a running executor could not queue: rejected (abort) or run on the submitter (caller-runs). */
   public long getSaturations() {
     return saturations.get();
   }
