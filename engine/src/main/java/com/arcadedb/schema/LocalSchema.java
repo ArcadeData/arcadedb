@@ -4208,8 +4208,9 @@ public class LocalSchema implements Schema {
       return this;
     }
 
+    // remove(name, library): only the library whose language was checked above, never one swapped in since
     recordFileChanges(() -> {
-      functionLibraries.remove(name);
+      functionLibraries.remove(name, library);
       return null;
     });
     return this;
