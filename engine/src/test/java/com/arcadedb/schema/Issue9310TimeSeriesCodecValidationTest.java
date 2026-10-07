@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
@@ -68,14 +69,27 @@ class Issue9310TimeSeriesCodecValidationTest extends TestHelper {
   }
 
   @Test
-  void everyHonouredCombinationIsAcceptedAndCompacts() throws Exception {
+  void aNumericCodecIsOnlyAcceptedForTypesThatRoundTrip() {
+    assertRefused("CREATE TIMESERIES TYPE R1 TIMESTAMP ts FIELDS (v DOUBLE CODEC SIMPLE8B)", "SIMPLE8B");
+    assertRefused("CREATE TIMESERIES TYPE R2 TIMESTAMP ts FIELDS (v FLOAT CODEC SIMPLE8B)", "SIMPLE8B");
+    assertRefused("CREATE TIMESERIES TYPE R3 TIMESTAMP ts FIELDS (v LONG CODEC GORILLA_XOR)", "GORILLA_XOR");
+    assertRefused("CREATE TIMESERIES TYPE R4 TIMESTAMP ts TAGS (z INTEGER CODEC GORILLA_XOR) FIELDS (v DOUBLE)", "GORILLA_XOR");
+  }
+
+  @Test
+  void everyHonouredCombinationIsAcceptedCompactsAndReadsBackUnchanged() throws Exception {
     database.command("sql", "CREATE TIMESERIES TYPE Ok1 TIMESTAMP ts TAGS (h STRING CODEC DICTIONARY, z INTEGER CODEC SIMPLE8B, "
-        + "y LONG CODEC GORILLA_XOR) FIELDS (a DOUBLE CODEC GORILLA_XOR, b LONG CODEC SIMPLE8B, c DOUBLE CODEC DICTIONARY) SHARDS 1");
+        + "y LONG CODEC DICTIONARY) FIELDS (a DOUBLE CODEC GORILLA_XOR, b LONG CODEC SIMPLE8B, c DOUBLE CODEC DICTIONARY) SHARDS 1");
     database.transaction(() -> database.command("sql",
-        "INSERT INTO Ok1 SET ts = 1700000000000, h = 'x', z = 5, y = 5, a = 7.0, b = 7, c = 7.0"));
+        "INSERT INTO Ok1 SET ts = 1700000000000, h = 'x', z = 5, y = 6, a = 7.5, b = 9007199254740993, c = 1.5"));
     ((LocalTimeSeriesType) database.getSchema().getType("Ok1")).getEngine().compactAll();
     try (final ResultSet rs = database.query("sql", "SELECT FROM Ok1")) {
-      assertThat(rs.hasNext()).isTrue();
+      final Result r = rs.next();
+      assertThat(r.<String>getProperty("h")).isEqualTo("x");
+      assertThat(r.<Number>getProperty("z").longValue()).isEqualTo(5L);
+      assertThat(r.<Number>getProperty("a").doubleValue()).isEqualTo(7.5);
+      assertThat(r.<Number>getProperty("b").longValue()).isEqualTo(9007199254740993L);
+      assertThat(r.<Number>getProperty("c").doubleValue()).isEqualTo(1.5);
     }
   }
 
