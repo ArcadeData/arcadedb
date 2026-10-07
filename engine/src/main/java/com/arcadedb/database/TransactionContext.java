@@ -2262,11 +2262,11 @@ public class TransactionContext implements Transaction {
       if (!hasChanges()) {
         // #7934 review: returning without reset() does NOT strand an index replay conclusion registered earlier in
         // this phase (the deferred UPDATE no longer indexes here since #8983: save() queued its index changes).
-        // Every caller of this method concludes the transaction on the null it gets back: commit()
-        // through resetAndFireCallbacks(), and the Raft path through an explicit tx.reset() on its own read-only
-        // arm. Both reach reset(), which publishes. Publishing is also the right answer rather than a tolerated
-        // one: a replay that indexed anything dirtied the record's own page, so "a buffer exists" and "nothing
-        // changed" cannot both be true, and an empty buffer publishes nothing.
+        // Every caller of this method concludes the transaction on the null it gets back: commit() through
+        // resetAndFireCallbacks(), and the Raft path through concludeCommitWithoutPublishing() on its own read-only
+        // arm. Both reach reset(), which publishes. Publishing is also the right answer rather than a tolerated one:
+        // a replay that indexed anything dirtied the record's own page, so "a buffer exists" and "nothing changed"
+        // cannot both be true, and an empty buffer publishes nothing.
         if (lockedFiles != null) {
           database.getTransactionManager().unlockFilesInOrder(lockedFiles, getRequester());
           lockedFiles = null;
@@ -2614,9 +2614,34 @@ public class TransactionContext implements Transaction {
     concludePhase2(false, cause);
   }
 
-  private void finishCommitBookkeeping() {
+  /**
+   * Concludes, as COMMITTED, a transaction whose pages this thread does not publish: either it had nothing to publish
+   * (phase 1 found no changes), or the replication layer publishes them on another thread, from the entry's WAL bytes
+   * (issue #8784). The transaction ends the way {@link #commit()} and {@link #completeCommit()} end one - its records
+   * marked clean, the commit counted, the after-commit callbacks fired - rather than the way a bare {@link #reset()}
+   * ends it, which drops the callbacks and leaves the commit counter where it was, so a retry loop reads a commit that
+   * happened as one that did not.
+   * <p>
+   * The components' {@code onAfterCommit()} hooks are NOT run: they react to pages this context published, and here it
+   * published none.
+   * <p>
+   * For the replication layer only, and exactly once, right after {@link #commit1stPhase(boolean)}, in place of phase 2.
+   * It does not refuse a second call: a transaction that has already ended - concluded here, or by {@link #commit()} /
+   * {@link #completeCommit()} - is {@code INACTIVE} just like one whose phase 1 found nothing to write, so no status check
+   * can tell them apart, and a second call would count the commit twice.
+   */
+  public void concludeCommitWithoutPublishing() {
+    markModifiedRecordsClean();
+    resetAndFireCallbacks();
+  }
+
+  private void markModifiedRecordsClean() {
     for (final Record r : modifiedRecordsCache.values())
       ((RecordInternal) r).unsetDirty();
+  }
+
+  private void finishCommitBookkeeping() {
+    markModifiedRecordsClean();
 
     for (final int fileId : lockedFiles) {
       final PaginatedComponent file = (PaginatedComponent) database.getSchema().getFileByIdIfExists(fileId);
