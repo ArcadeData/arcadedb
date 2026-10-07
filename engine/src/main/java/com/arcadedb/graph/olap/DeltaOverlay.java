@@ -651,6 +651,9 @@ class DeltaOverlay {
         if (previous == null || previous.src() != edge.src() || previous.tgt() != edge.tgt()
             || !Arrays.equals(previous.properties(), edge.properties()))
           pairs.accept(packEdge(edge.src(), edge.tgt()));
+        // a RID reused for an edge between other vertices (#5279): the pair the old edge joined changed too
+        if (previous != null && (previous.src() != edge.src() || previous.tgt() != edge.tgt()))
+          pairs.accept(packEdge(previous.src(), previous.tgt()));
       }
       for (final var entry : was.entrySet())
         if (!is.containsKey(entry.getKey()))
