@@ -975,6 +975,8 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     // parameter can take, including primitive arrays (long[]/int[]/double[]) that are not Iterable,
     // consistent with the multi-value handling in processInCondition().
     final int slot = head.getExpressions().size();
+    // The mask has one entry per key slot the condition produces, so it always covers the slot; a slot past it (a key built some
+    // other way) is treated as a multi-value one, the behaviour before #9370
     final boolean scalar = slot < scalarSlots.length && scalarSlots[slot];
     if (!scalar && !(value instanceof Identifiable) && MultiValue.isMultiValue(value)) {
       final List<PCollection> result = new ArrayList<>();

@@ -625,8 +625,10 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
    * for another key: the residual window of this fix.
    * <p>
    * The last-resort lock cannot deadlock: it is the page-manager lock, which is reentrant and which a committer takes last,
-   * inside the file locks, only to publish pages; this reader holds no file lock, and nothing it runs under the lock waits on
-   * a committer.
+   * inside the file locks, only to publish pages. It also holds for a reader inside a transaction that holds file locks
+   * (explicit {@code LOCK}, or writes): the committer that owns the page-manager lock took every file lock it needs before
+   * taking it and acquires none under it, so it never waits for the locks this reader holds; and nothing the reader runs under the
+   * lock waits on a committer.
    */
   @SuppressWarnings("unchecked")
   private ArrayDeque<Result> loadPointLookup(final CommandContext context, final FetchFromIndexStep indexStep, final int nRecords) {
