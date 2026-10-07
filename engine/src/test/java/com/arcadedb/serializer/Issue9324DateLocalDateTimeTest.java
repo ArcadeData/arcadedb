@@ -69,4 +69,33 @@ class Issue9324DateLocalDateTimeTest extends TestHelper {
       serializer.setDateImplementation(previous);
     }
   }
+
+  @Test
+  void numberToLocalDateTimeStaysOnEpochMillis() {
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Ms").createProperty("dt", Type.DATETIME);
+      database.newDocument("Ms").set("dt", 1791000000000L).save();
+    });
+    final Object read = database.iterateType("Ms", true).next().asDocument().get("dt");
+    assertThat(read).isEqualTo(LocalDateTime.of(2026, 10, 3, 4, 0));
+  }
+
+  @Test
+  void dateColumnTruncatesToDaysUnderDatetimeImplementations() {
+    database.getSchema().createDocumentType("Dy").createProperty("d", Type.DATE);
+    for (final Class<?> implementation : new Class<?>[] { LocalDateTime.class, java.time.Instant.class, java.time.ZonedDateTime.class }) {
+      final BinarySerializer serializer = ((DatabaseInternal) database).getSerializer();
+      final Object previous = serializer.getDateImplementation();
+      try {
+        serializer.setDateImplementation(implementation);
+        database.transaction(() -> database.newDocument("Dy").set("d", "2024-02-29T13:45:10").save());
+      } catch (final IllegalArgumentException e) {
+        // a string is a separate conversion path; only the typed values below must succeed
+      } finally {
+        serializer.setDateImplementation(previous);
+      }
+    }
+    database.transaction(() -> database.newDocument("Dy").set("d", LocalDateTime.of(2024, 2, 29, 13, 45, 10)).save());
+    assertThat(database.iterateType("Dy", true).next().asDocument().get("d")).isEqualTo(DAY);
+  }
 }

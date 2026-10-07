@@ -74,6 +74,16 @@ class Issue9325StoredDateTimeZoneTest extends TestHelper {
     });
   }
 
+  @Test
+  void flagDoesNotLeakIntoTwoStoredValues() {
+    run(ZonedDateTime.class, () -> {
+      database.transaction(() -> database.newVertex("E").set("ts", ZonedDateTime.parse("2026-01-01T11:00:00Z")).save());
+      try (final ResultSet rs = database.query("opencypher", "MATCH (a:E), (b:E) WHERE a.ts = b.ts RETURN count(*) AS c")) {
+        assertThat(((Number) rs.next().getProperty("c")).longValue()).isEqualTo(4L);
+      }
+    });
+  }
+
   private void run(final Class<?> implementation, final Runnable body) {
     final var serializer = ((DatabaseInternal) database).getSerializer();
     final Object previous = serializer.getDateTimeImplementation();

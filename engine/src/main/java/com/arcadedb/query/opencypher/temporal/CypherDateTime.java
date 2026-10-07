@@ -40,7 +40,8 @@ public class CypherDateTime implements CypherTemporalValue {
   private final ZonedDateTime value;
   // True for a value read out of a column that stores no zone: the zone it carries was materialized, not chosen, so in
   // a comparison it adopts the other operand's zone, as a java.util.Date parameter does (issue #9325). Not part of the
-  // value's identity: equals/hashCode ignore it.
+  // value's identity: equals/hashCode ignore it. Set only on a stored read; a value derived from it (truncated, plus a
+  // duration) is a new, ordinary datetime.
   private final boolean       zoneless;
 
   public CypherDateTime(final ZonedDateTime value) {

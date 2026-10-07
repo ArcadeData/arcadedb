@@ -360,7 +360,10 @@ public class GrpcServerPlugin implements ServerPlugin {
       else
         builder.addListenAddress(address);
     }
-    return builder != null ? builder : NettyServerBuilder.forPort(port);
+    // never fall back to forPort(): it binds the wildcard address, the failure this method exists to prevent (issue #9318)
+    if (builder == null)
+      throw new ConfigurationException("gRPC host '" + host + "' resolved to no address to bind");
+    return builder;
   }
 
   private ServerCredentials configureTlsCredentials(ContextConfiguration config) {
