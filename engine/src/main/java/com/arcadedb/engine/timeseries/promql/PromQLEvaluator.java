@@ -619,30 +619,45 @@ public class PromQLEvaluator {
   }
 
   /**
-   * Applies the label matchers of a selector to one row that carries only TAG columns: {@code row[0]} is the
-   * timestamp and {@code row[i + 1]} the value of the tag {@code tagNames[i]}, the layout a tag projection scan
-   * produces. A null or empty value is an absent label. A matcher naming a label that is not in {@code tagNames}
-   * is not decided here: {@link #selectsNoSeries} settles it for the whole type (issue #9386).
+   * Resolves, once per scan, the position in {@code tagNames} of the tag each matcher names, or {@code -1} for a
+   * matcher that {@link #matchesTagRow} does not decide ({@code __name__} or a label the type does not declare, which
+   * {@link #selectsNoSeries} settles for the whole type). Keeps the per-row work free of name lookups (issue #9386).
    */
-  public boolean matchesTagRow(final List<LabelMatcher> matchers, final String[] tagNames, final Object[] row) {
-    for (final LabelMatcher m : matchers) {
-      if (METRIC_NAME_LABEL.equals(m.name()))
+  public int[] resolveTagMatchers(final List<LabelMatcher> matchers, final String[] tagNames) {
+    final int[] resolved = new int[matchers.size()];
+    for (int m = 0; m < resolved.length; m++) {
+      resolved[m] = -1;
+      final String name = matchers.get(m).name();
+      if (METRIC_NAME_LABEL.equals(name))
         continue;
-      int tagIdx = -1;
       for (int i = 0; i < tagNames.length; i++)
-        if (tagNames[i].equals(m.name())) {
-          tagIdx = i;
+        if (tagNames[i].equals(name)) {
+          resolved[m] = i;
           break;
         }
+    }
+    return resolved;
+  }
+
+  /**
+   * Applies the label matchers of a selector to one row that carries only TAG columns: {@code row[0]} is the
+   * timestamp and {@code row[i + 1]} the value of the tag {@code tagNames[i]}, the layout a tag projection scan
+   * produces. A null or empty value is an absent label. {@code tagIndexes} comes from
+   * {@link #resolveTagMatchers} (issue #9386).
+   */
+  public boolean matchesTagRow(final List<LabelMatcher> matchers, final int[] tagIndexes, final Object[] row) {
+    for (int m = 0; m < tagIndexes.length; m++) {
+      final int tagIdx = tagIndexes[m];
       if (tagIdx < 0)
         continue;
+      final LabelMatcher matcher = matchers.get(m);
       final Object val = tagIdx + 1 < row.length ? row[tagIdx + 1] : null;
       final String strVal = val != null ? val.toString() : "";
-      final boolean matches = switch (m.op()) {
-        case EQ -> strVal.equals(m.value());
-        case NEQ -> !strVal.equals(m.value());
-        case RE -> TimeBoundRegex.matchesUntil(compilePattern(m.value()), strVal, regexDeadline());
-        case NRE -> !TimeBoundRegex.matchesUntil(compilePattern(m.value()), strVal, regexDeadline());
+      final boolean matches = switch (matcher.op()) {
+        case EQ -> strVal.equals(matcher.value());
+        case NEQ -> !strVal.equals(matcher.value());
+        case RE -> TimeBoundRegex.matchesUntil(compilePattern(matcher.value()), strVal, regexDeadline());
+        case NRE -> !TimeBoundRegex.matchesUntil(compilePattern(matcher.value()), strVal, regexDeadline());
       };
       if (!matches)
         return false;

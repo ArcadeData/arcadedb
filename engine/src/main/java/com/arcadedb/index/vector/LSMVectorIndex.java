@@ -7586,15 +7586,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
     for (int attempt = 0; attempt < BINARY_RERANK_MAX_ATTEMPTS; attempt++) {
       final List<Pair<RID, Float>> candidates = searchNeighbors(queryVector, candidatesToFetch, efSearch, allowedRIDs);
       reranked = rerankOnStoredVectors(queryVector, candidates, k);
-      // Done when k came back, or when the graph had fewer than the budget and none of them was dropped: the index
-      // simply holds fewer than k.
-      if (reranked.size() >= k || candidates.size() < candidatesToFetch && reranked.size() == candidates.size())
+
+      final boolean answeredK = reranked.size() >= k;
+      // The graph had fewer than the budget and none of them was dropped: the index simply holds fewer than k.
+      final boolean indexExhausted = candidates.size() < candidatesToFetch && reranked.size() == candidates.size();
+      // A budget that already covers every vector of the index cannot be widened into more candidates.
+      final boolean budgetCoversIndex = candidatesToFetch >= vectorIndex().size() + deltaVectors.size();
+      if (answeredK || indexExhausted || budgetCoversIndex || candidatesToFetch > Integer.MAX_VALUE / BINARY_RERANK_OVERSAMPLE)
         break;
-      // Short of k because candidates were dropped (record gone): widen the budget and ask again. A commit removes the
-      // records before it removes their index entries, so the stale stretch is as wide as the commit's deletes: the
-      // budget grows geometrically to step over it in a few rounds.
-      if (candidatesToFetch > Integer.MAX_VALUE / BINARY_RERANK_OVERSAMPLE)
-        break;
+      // Short of k because candidates were dropped (record gone). A commit removes the records before their index
+      // entries, so the stale stretch is as wide as the commit's deletes: the budget grows geometrically to step over it.
       candidatesToFetch *= BINARY_RERANK_OVERSAMPLE;
     }
     return reranked;
