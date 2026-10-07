@@ -606,7 +606,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
             if (state != null)
               state.bufferedBytes += wal.length;
           } else
-            tx.reset();
+            // Nothing to write, but still a commit: the same end commit() gives it off HA (issue #8784)
+            tx.concludeCommitWithoutPublishing();
           // THIS ARM RUNS ONLY ON THE THREAD OF AN OPEN recordFileChanges FRAME, WHICH WRITES THE FILE ON ITS WAY OUT (#8635)
           getSchema().getEmbedded().saveConfigurationAtTransactionEnd();
         } catch (final ArcadeDBException e) {
@@ -650,8 +651,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
           return new ReplicationPayload(tx, phase1, walData, bucketDeltas);
         }
 
-        // Read-only transaction: nothing to replicate.
-        tx.reset();
+        // Read-only transaction: nothing to replicate, but still a commit - its after-commit callbacks fire and it is
+        // counted, as commit() does off HA (issue #8784). A RAM-only Redis transaction is exactly this shape.
+        tx.concludeCommitWithoutPublishing();
         // BEFORE THE POP ON PURPOSE: A FAILED SAVE AFTER IT WOULD POP AGAIN IN THE CATCH BELOW, TAKING THE ENCLOSING
         // TRANSACTION WITH IT. THE SAVE TELLS A NESTED TRANSACTION FROM ITS STACK DEPTH, WHICHEVER SIDE OF THE POP (#8635)
         if (leader)
@@ -871,7 +873,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // #5503: this thread never runs phase 2 - the state machine writes the pages asynchronously, on a replica and on a
     // leader whose entry it applies from the WAL bytes - so the local page cache still holds the pre-commit version of
     // every page this transaction touched.
-    // reset() below releases the commit locks taken in phase 1, and the next transaction to take them
+    // Concluding the transaction below releases the commit locks taken in phase 1, and the next transaction to take them
     // would read that stale version, pass its own version check and ship a delta stamped with the same
     // next version, which the state machine then splices onto this one. Wait for THIS entry's index:
     // the replica's own commit index still trails the leader here, so waiting for it would not cover
@@ -899,7 +901,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
                 + "versions - the condition behind issue #5503. Investigate the state machine apply lag.",
             getName(), committedLogIndex, applied);
     }
-    payload.tx().reset();
+    // Issue #8784: committed cluster-wide, so it ends as a commit - records clean, counted, after-commit callbacks fired
+    // on this, the originating node - however the pages reach the page cache. A bare reset() dropped all three. Here,
+    // AFTER the wait above, so a callback that reads what was committed (a materialized-view refresh) finds it applied.
+    // Only a timed-out wait, warned about above, lets one run before the local apply.
+    payload.tx().concludeCommitWithoutPublishing();
     final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());
     ctx.popIfNotLastTransaction();
   }
