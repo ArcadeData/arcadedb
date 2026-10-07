@@ -21,12 +21,19 @@ package com.arcadedb.serializer;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.utility.DateUtils;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.time.Instant;
+import java.time.LocalTime;
+import java.time.OffsetDateTime;
+import java.time.OffsetTime;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
 import java.time.chrono.ChronoLocalDate;
 import java.time.chrono.ChronoLocalDateTime;
 import java.time.temporal.ChronoUnit;
@@ -208,6 +215,37 @@ public class BinaryComparator {
       return Long.compare(v1, v2);
     }
 
+    case BinaryTypes.TYPE_OFFSET_TIME:
+      if (type2 == BinaryTypes.TYPE_OFFSET_TIME)
+        // By the instant of the day, which is what the index key canonicalizes to (issue #8572)
+        return Long.compare(utcNanoOfDay((OffsetTime) value1), utcNanoOfDay((OffsetTime) value2));
+      throw unsupportedPair(type1, type2);
+
+    case BinaryTypes.TYPE_LOCAL_TIME:
+      if (type2 == BinaryTypes.TYPE_LOCAL_TIME)
+        return Long.compare(((LocalTime) value1).toNanoOfDay(), ((LocalTime) value2).toNanoOfDay());
+      throw unsupportedPair(type1, type2);
+
+    case BinaryTypes.TYPE_ZONED_DATETIME:
+      if (type2 == BinaryTypes.TYPE_ZONED_DATETIME)
+        return instantOf(value1).compareTo(instantOf(value2));
+      throw unsupportedPair(type1, type2);
+
+    case BinaryTypes.TYPE_DURATION:
+      if (type2 == BinaryTypes.TYPE_DURATION) {
+        final CypherDuration d1 = (CypherDuration) value1;
+        final CypherDuration d2 = (CypherDuration) value2;
+        int result = Long.compare(d1.getMonths(), d2.getMonths());
+        if (result == 0)
+          result = Long.compare(d1.getDays(), d2.getDays());
+        if (result == 0)
+          result = Long.compare(d1.getSeconds(), d2.getSeconds());
+        if (result == 0)
+          result = Integer.compare(d1.getNanosAdjustment(), d2.getNanosAdjustment());
+        return result;
+      }
+      throw unsupportedPair(type1, type2);
+
     case BinaryTypes.TYPE_BINARY: {
       switch (type2) {
       case BinaryTypes.TYPE_BINARY: {
@@ -295,6 +333,14 @@ public class BinaryComparator {
     }
 
     throw unsupportedPair(type1, type2);
+  }
+
+  private static long utcNanoOfDay(final OffsetTime time) {
+    return time.toLocalTime().toNanoOfDay() - time.getOffset().getTotalSeconds() * 1_000_000_000L;
+  }
+
+  private static Instant instantOf(final Object value) {
+    return value instanceof OffsetDateTime offset ? offset.toInstant() : ((ZonedDateTime) value).toInstant();
   }
 
   private static IllegalArgumentException unsupportedPair(final byte type1, final byte type2) {
@@ -924,6 +970,13 @@ public class BinaryComparator {
     } else if (value instanceof Float f) {
       if (f == 0.0f && Float.floatToRawIntBits(f) != 0)
         return 0.0f;
+    } else if (value instanceof ZonedDateTime zoned) {
+      // Two zones for one instant are one key to the comparator, so one set of bytes (issue #8572)
+      if (!ZoneOffset.UTC.equals(zoned.getZone()))
+        return zoned.withZoneSameInstant(ZoneOffset.UTC);
+    } else if (value instanceof OffsetTime time) {
+      if (!ZoneOffset.UTC.equals(time.getOffset()))
+        return time.withOffsetSameInstant(ZoneOffset.UTC);
     }
     return null;
   }

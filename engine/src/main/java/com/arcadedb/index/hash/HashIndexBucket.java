@@ -1071,6 +1071,10 @@ public class HashIndexBucket extends PaginatedComponent {
     case BinaryTypes.TYPE_RID:
     case BinaryTypes.TYPE_DECIMAL:
     case BinaryTypes.TYPE_UUID:
+    case BinaryTypes.TYPE_OFFSET_TIME:
+    case BinaryTypes.TYPE_LOCAL_TIME:
+    case BinaryTypes.TYPE_ZONED_DATETIME:
+    case BinaryTypes.TYPE_DURATION:
       return true;
     default:
       return false;
@@ -2113,6 +2117,20 @@ public class HashIndexBucket extends PaginatedComponent {
     }
     case BinaryTypes.TYPE_UUID:
       return 16; // Two longs
+    case BinaryTypes.TYPE_LOCAL_TIME:
+      return getVarNumberSize(page, offset);
+    case BinaryTypes.TYPE_OFFSET_TIME:
+      return getVarNumbersSize(page, offset, 2);
+    case BinaryTypes.TYPE_DURATION:
+      return getVarNumbersSize(page, offset, 4);
+    case BinaryTypes.TYPE_ZONED_DATETIME: {
+      // epochSecond, nano, then a flag: 0 = offset seconds (varnumber), 1 = zone id (length-prefixed)
+      final int head = getVarNumbersSize(page, offset, 2);
+      if (page.readByte(offset + head) == 0)
+        return head + 1 + getVarNumberSize(page, offset + head + 1);
+      final int[] lenAndSize = readVarIntAndSize(page, offset + head + 1);
+      return head + 1 + lenAndSize[1] + lenAndSize[0];
+    }
     default:
       throw unsupportedKeyType(declaredKeyTypes[column], column, offset);
     }
@@ -2149,6 +2167,19 @@ public class HashIndexBucket extends PaginatedComponent {
     }
     case BinaryTypes.TYPE_UUID:
       return 16;
+    case BinaryTypes.TYPE_LOCAL_TIME:
+      return getVarNumberSizeFromBytes(data, offset);
+    case BinaryTypes.TYPE_OFFSET_TIME:
+      return getVarNumbersSizeFromBytes(data, offset, 2);
+    case BinaryTypes.TYPE_DURATION:
+      return getVarNumbersSizeFromBytes(data, offset, 4);
+    case BinaryTypes.TYPE_ZONED_DATETIME: {
+      final int head = getVarNumbersSizeFromBytes(data, offset, 2);
+      if (data[offset + head] == 0)
+        return head + 1 + getVarNumberSizeFromBytes(data, offset + head + 1);
+      final int[] lenAndSize = readVarIntAndSizeFromBytes(data, offset + head + 1);
+      return head + 1 + lenAndSize[1] + lenAndSize[0];
+    }
     default:
       throw unsupportedKeyType(declaredKeyTypes[column], column, offset);
     }
@@ -2291,6 +2322,23 @@ public class HashIndexBucket extends PaginatedComponent {
     final Binary view = varIntView(page, offset);
     final int startPos = view.position();
     view.getNumber();
+    return view.position() - startPos;
+  }
+
+  private int getVarNumbersSize(final BasePage page, final int offset, final int count) {
+    final Binary view = varIntView(page, offset);
+    final int startPos = view.position();
+    for (int i = 0; i < count; i++)
+      view.getNumber();
+    return view.position() - startPos;
+  }
+
+  private int getVarNumbersSizeFromBytes(final byte[] data, final int offset, final int count) {
+    final Binary view = new Binary(data);
+    view.position(offset);
+    final int startPos = view.position();
+    for (int i = 0; i < count; i++)
+      view.getNumber();
     return view.position() - startPos;
   }
 

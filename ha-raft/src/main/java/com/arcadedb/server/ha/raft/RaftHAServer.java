@@ -343,6 +343,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private final    FollowerStallTracker      followerStallTracker   = new FollowerStallTracker();
   private          RaftPeerId                followerStallLeader;
   private volatile LongSupplier              followerStallClock     = System::currentTimeMillis;
+  // Issue #8953: whether a leader has been failing to reach this follower since its in-place restart. Written by the
+  // health-monitor thread (trackLeaderReachSinceRestart), read by GET /api/v1/cluster. Measured on followerStallClock,
+  // which is shared on purpose: it is the health tick's test seam for every follower-side spell, not the stall's own.
+  private final    LeaderReachSinceRestartTracker leaderReachTracker = new LeaderReachSinceRestartTracker();
   /**
    * The HTTPS client that requests forwarded to the leader are sent on (issue #7508). A second cache rather than
    * a share of {@link #capabilityHttpsClients}, so the forwards keep their own connection pool. This one is asked
@@ -1050,6 +1054,25 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
+   * The SEVERE line for a leader that holds a quarantine or a read floor and has no peer to hand the leadership to
+   * (issue #8483). On a one-voter configuration no peer can ever become eligible, so promising a retry would be false:
+   * the state is terminal until an operator acts, and the line names what it costs while it lasts (issue #9308).
+   */
+  // @VisibleForTesting
+  static String noHandoffPeerReport(final String reason, final boolean soleVoter) {
+    if (soleVoter)
+      return "This leader holds " + reason + ", which it cannot resync from itself, and it is the only voter of the Raft "
+          + "configuration, so no peer can ever take over leadership or serve the resync: this state is terminal until an "
+          + "operator acts (issue #9308). While it lasts the node reports not-ready (GET /api/v1/ready fails) and the Raft "
+          + "log is not checkpointed, so it grows until the volume fills. Restore the database from a backup, drop it, or "
+          + "add a peer so that leadership can move and this node can resync from it.";
+    return "This leader holds " + reason + ", which it cannot resync from itself, and no peer is eligible to take over "
+        + "leadership (none other is configured, or every other one is lagging, unreachable or a priority-0 replica) "
+        + "(issue #8483). The handoff is retried as soon as a peer is eligible. With no other peer, restore the database "
+        + "from a backup or add a peer so that leadership can move and this node can resync from it.";
+  }
+
+  /**
    * Hands leadership to a healthy peer because this leader holds a database it knows is behind the committed Raft log
    * (issue #8483): a quarantine, or a read floor an incomplete snapshot install left.
    * <p>
@@ -1084,11 +1107,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         switch (decideQuarantineHandoff(leader, leader && hasHandoffTarget(getLivePeers(), localPeerId, clusterMonitor,
             handoffReachablePeers()),
             lastQuarantineHandoffAtMs, lastQuarantineNoPeerLogAtMs, now)) {
-        case NO_PEER_REPORT -> LogManager.instance().log(this, Level.SEVERE,
-            "This leader holds %s, which it cannot resync from itself, and no peer is eligible to take over leadership "
-                + "(none other is configured, or every other one is lagging, unreachable or a priority-0 replica) (issue #8483). The "
-                + "handoff is retried as soon as a peer is eligible. With no other peer, restore the database from a "
-                + "backup or add a peer so that leadership can move and this node can resync from it.", reason);
+        case NO_PEER_REPORT -> LogManager.instance().log(this, Level.SEVERE, "%s", noHandoffPeerReport(reason, isSoleVoter()));
         case TRANSFER -> transferLeadershipToResync(reason);
         default -> {
           // NOT_LEADER, NO_PEER (reported within the window already) or COOLDOWN: nothing to do
@@ -3951,8 +3970,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * none to install a database from (issue #8940). Non-voting listeners are not counted, so a single voter with
    * listeners is a sole voter. When the live configuration cannot be read this falls back to the declared server list,
    * which may name non-voting peers: a declared multi-node list answers false, the safe side. During a membership
-   * change that leaves this node as the only committed voter it answers true, which only affects the one replay
-   * of a missing-database install entry at startup.
+   * change that leaves this node as the only committed voter it answers true. Its callers are the two leader-side
+   * quarantine producers, the forceSnapshot replay guard (#8940) and the unexpected-apply-error handler (#9308), both
+   * of which alert instead of raising a quarantine that could never lift.
    */
   public boolean isSoleVoter() {
     return isSoleVoter(getLivePeers(), localPeerId);
@@ -4583,6 +4603,76 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   /** Test seam for {@link #trackFollowerStall()}: the clock its spell is measured with. */
   void setFollowerStallClock(final LongSupplier clock) {
     this.followerStallClock = clock;
+  }
+
+  /**
+   * Health-monitor hook (issue #8953): tracks whether a leader has been failing to reach this follower since its Raft
+   * layer was restarted in place. See {@link LeaderReachSinceRestartTracker} for the rule. {@code raftState} cannot
+   * show it - the new division is RUNNING - and neither can the time since the last leader contact, which a follower
+   * nobody reaches resets on every rejected pre-vote.
+   * <p>
+   * Held to a grace of twice the effective election timeout maximum: a healthy path delivers the leader's heartbeat,
+   * and any entry it is missing, well within one. A resync in flight is left to its own alert (a snapshot install
+   * applies nothing for its whole length), and a division that is not RUNNING is reported by {@code raftState}.
+   * Logged at WARNING when the condition starts being reported and at INFO when it clears.
+   */
+  @Override
+  public void trackLeaderReachSinceRestart() {
+    final RaftServer server = raftServer;
+    if (server == null || shutdownRequested) {
+      leaderReachTracker.reset();
+      return;
+    }
+    final boolean leaderKnown;
+    final boolean holds;
+    try {
+      final var division = server.getDivision(raftGroup.getGroupId());
+      final var info = division.getInfo();
+      final ArcadeStateMachine sm = stateMachine;
+      if (info.getLifeCycleState() != LifeCycle.State.RUNNING || (sm != null && sm.isResyncInProgress())) {
+        leaderReachTracker.reset();
+        return;
+      }
+      final TermIndex last = division.getRaftLog().getLastEntryTermIndex();
+      final long heldIndex = Math.max(last != null ? last.getIndex() : -1L, info.getLastAppliedIndex());
+      leaderKnown = info.getLeaderId() != null;
+      holds = LeaderReachSinceRestartTracker.leaderNotReaching(isReplicationPathUnprovenSinceRestart(), info.isLeader(),
+          leaderKnown, leaderReportedCommitIndex, heldIndex);
+    } catch (final Exception e) {
+      // Same Ratis IllegalStateException window as isReadyForTraffic() (issue #5271): no judgement this tick.
+      LogManager.instance().log(this, Level.FINE, "Cannot read the Raft state to track the leader's reach", e);
+      leaderReachTracker.reset();
+      return;
+    }
+    final boolean wasReported = leaderReachTracker.current() != null;
+    leaderReachTracker.observe(followerStallClock.getAsLong(), holds, leaderKnown, leaderUnreachableGraceMs());
+    final LeaderReachSinceRestartTracker.Unreachable unreachable = leaderReachTracker.current();
+    if (!wasReported && unreachable != null)
+      LogManager.instance().log(this, Level.WARNING,
+          "No leader has reached this follower for %dms since its in-place Ratis restart: its division reports RUNNING, "
+              + "but no replicated entry arrived while %s. The leader's appends may still be bound to the replaced "
+              + "instance; the leader resets its channel after arcadedb.ha.peerChannelResetDuration, restart this node "
+              + "if it persists (issue #8953)", unreachable.unreachableForMs(),
+          leaderKnown ? "the leader reports entries this node does not hold"
+              : "no leader made itself known (also the case on every node of a cluster without a quorum)");
+    else if (wasReported && unreachable == null)
+      LogManager.instance().log(this, Level.INFO, "A leader reaches this follower again after its in-place Ratis restart");
+  }
+
+  /**
+   * A leader failing to reach this follower since its in-place restart, or {@code null} when that is not being reported
+   * (issue #8953). See {@link #trackLeaderReachSinceRestart()}. Always {@code null} while the health monitor is not
+   * running.
+   */
+  LeaderReachSinceRestartTracker.Unreachable getLeaderUnreachableSinceRestart() {
+    return leaderReachTracker.current();
+  }
+
+  /** Twice the effective election timeout maximum: see {@link #trackLeaderReachSinceRestart()}. */
+  private long leaderUnreachableGraceMs() {
+    return 2L * RaftPropertiesBuilder.electionTimeoutMaxFor(
+        configuration.getValueAsInteger(GlobalConfiguration.HA_ELECTION_TIMEOUT_MIN),
+        configuration.getValueAsInteger(GlobalConfiguration.HA_ELECTION_TIMEOUT_MAX));
   }
 
   /** Upper bound of the probe's failure backoff, in health ticks (issue #7619, review of PR #8322). */
