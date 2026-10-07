@@ -33,6 +33,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -122,6 +123,88 @@ class FullTextBM25SharedMetadataTest extends TestHelper {
       assertThat(m.isCountersValid()).isTrue();
       assertThat(m.getTotalDocs()).isEqualTo(database.countType("Doc", false));
       assertThat(m.getSumDocLength()).isEqualTo(2L * DOCS * 3);
+    }
+  }
+
+  /** Issue #9337: a writer bumped the counters while the scan ran: the bump must survive the publication of the scan result. */
+  @Test
+  void scannedCountersKeepIncrementsAppliedDuringTheScan() {
+    final FullTextIndexMetadata m = new FullTextIndexMetadata("Doc", new String[] { "content" }, 0);
+    m.setCounters(100L, 300L);
+    final long docsAtStart = m.getTotalDocs();
+    final long lenAtStart = m.getSumDocLength();
+    final long mutationsAtStart = m.getMutations();
+
+    m.addDocument(3L); // committed by another thread after the scan passed its bucket
+    m.addDocument(3L);
+    m.removeDocument(3L);
+
+    final boolean exact = m.publishScannedCounters(100L, 300L, docsAtStart, lenAtStart, mutationsAtStart);
+
+    assertThat(exact).isFalse();
+    assertThat(m.getTotalDocs()).isEqualTo(101L);
+    assertThat(m.getSumDocLength()).isEqualTo(303L);
+    // the result is only approximate, so the session's drift check must still be armed
+    assertThat(m.claimStaleCheck()).isTrue();
+  }
+
+  /** A remove and an add that cancel out leave the net counters equal, yet the scan may have read the old document. */
+  @Test
+  void scannedCountersAreNotExactWhenWritesCancelOut() {
+    final FullTextIndexMetadata m = new FullTextIndexMetadata("Doc", new String[] { "content" }, 0);
+    m.setCounters(10L, 30L);
+    final long mutationsAtStart = m.getMutations();
+
+    m.removeDocument(3L);
+    m.addDocument(3L);
+
+    assertThat(m.publishScannedCounters(10L, 30L, 10L, 30L, mutationsAtStart)).isFalse();
+    assertThat(m.consumeRescanRequired()).isTrue();
+    assertThat(m.consumeRescanRequired()).isFalse();
+  }
+
+  @Test
+  void scannedCountersWithoutConcurrentWritesAreExactAndConsumeTheStaleCheck() {
+    final FullTextIndexMetadata m = new FullTextIndexMetadata("Doc", new String[] { "content" }, 0);
+    final boolean exact = m.publishScannedCounters(50L, 150L, m.getTotalDocs(), m.getSumDocLength(), m.getMutations());
+
+    assertThat(exact).isTrue();
+    assertThat(m.isCountersValid()).isTrue();
+    assertThat(m.getTotalDocs()).isEqualTo(50L);
+    assertThat(m.getSumDocLength()).isEqualTo(150L);
+    assertThat(m.claimStaleCheck()).isFalse();
+  }
+
+  @Test
+  void statsRecomputeRacingOrdinaryInsertsEndsConsistentWithTheLiveData() throws Exception {
+    createAndFill();
+    saveSchema();
+    insert(2000);
+
+    final int writes = 300;
+    final AtomicReference<Throwable> failure = new AtomicReference<>();
+    final Thread writer = new Thread(() -> {
+      try {
+        for (int i = 0; i < writes; i++)
+          database.transaction(() -> database.command("sql", "INSERT INTO Doc SET content = 'alpha beta gamma'"));
+      } catch (final Throwable t) {
+        failure.set(t);
+      }
+    });
+    writer.start();
+    for (int i = 0; i < 5 && writer.isAlive(); i++)
+      database.command("sql", "REBUILD INDEX `Doc[content]` WITH statsOnly = true");
+    writer.join();
+    assertThat(failure.get()).isNull();
+
+    // A search runs the (possibly re-armed) drift check, which must leave the counters exact
+    database.query("sql", "SELECT FROM Doc WHERE SEARCH_INDEX('Doc[content]', 'alpha') = true LIMIT 1").close();
+
+    final long live = database.countType("Doc", false);
+    assertThat(live).isEqualTo(DOCS + 2000L + writes);
+    for (final FullTextIndexMetadata m : bucketMetadata()) {
+      assertThat(m.getTotalDocs()).isEqualTo(live);
+      assertThat(m.getSumDocLength()).isEqualTo(live * 3);
     }
   }
 

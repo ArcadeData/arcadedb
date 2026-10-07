@@ -40,19 +40,19 @@ import org.apache.tinkerpop.gremlin.util.iterator.EmptyIterator;
 import java.util.Iterator;
 import java.util.Locale;
 import java.util.Objects;
-import java.util.function.Supplier;
 
 public class ArcadeFilterByTypeStep<S, E extends Element> extends AbstractStep<S, E> implements AutoCloseable, Configuring {
   /** A {@code hasLabel()} value with this prefix names one bucket rather than a type. */
   public static final String                BUCKET_PREFIX = "bucket:";
   protected final     String                typeName;
+  private final       String                bucketName;
+  private final       ArcadeGraph           graph;
   protected           Parameters            parameters = new Parameters();
   protected final     Class<E>              returnClass;
   protected           boolean               isStart;
   protected           boolean               done       = false;
   private             Traverser.Admin<S>    head       = null;
   private             Iterator<E>           iterator   = EmptyIterator.instance();
-  protected transient Supplier<Iterator<E>> iteratorSupplier;
 
   public ArcadeFilterByTypeStep(final Traversal.Admin traversal, final Class returnClass, final boolean isStart,
       final String typeName) {
@@ -63,81 +63,94 @@ public class ArcadeFilterByTypeStep<S, E extends Element> extends AbstractStep<S
     if (typeName == null)
       throw new IllegalArgumentException("Type is null");
 
-    final ArcadeGraph graph = (ArcadeGraph) traversal.getGraph().get();
+    this.graph = (ArcadeGraph) traversal.getGraph().get();
 
-    final String bucketName;
     if (typeName.startsWith(BUCKET_PREFIX)) {
-      bucketName = typeName.substring(BUCKET_PREFIX.length());
-      final DocumentType type = graph.getDatabase().getSchema().getTypeByBucketName(bucketName);
-      if (type == null)
-        this.typeName = null;
-      else
-        this.typeName = type.getName();
+      this.bucketName = typeName.substring(BUCKET_PREFIX.length());
+      this.typeName = typeNameOfBucket(graph.getDatabase(), bucketName);
     } else {
-      bucketName = null;
+      this.bucketName = null;
       this.typeName = typeName;
     }
 
-    if (!graph.getDatabase().getSchema().existsType(this.typeName))
-      return;
+    if (!Vertex.class.isAssignableFrom(this.returnClass) && !Edge.class.isAssignableFrom(this.returnClass))
+      throw new IllegalArgumentException("Unsupported returning class '" + returnClass + "'");
 
-    final DocumentType type = graph.getDatabase().getSchema().getType(this.typeName);
+    // THE SCHEMA IS RESOLVED WHEN THE ITERATOR IS OPENED, NOT HERE: THIS CONSTRUCTOR RUNS WHEN THE TRAVERSAL IS COMPILED, AND AN
+    // EARLIER STEP OF THE SAME TRAVERSAL (addV()) MAY CREATE THE TYPE BEFORE THIS STEP EXECUTES (ISSUE #9335).
+  }
 
+  /** The type owning the bucket, or null when the bucket does not exist (yet): an earlier step may still create it. */
+  private static String typeNameOfBucket(final BasicDatabase database, final String bucketName) {
+    if (!database.getSchema().existsBucket(bucketName))
+      return null;
+    final DocumentType type = database.getSchema().getTypeByBucketName(bucketName);
+    return type == null ? null : type.getName();
+  }
+
+  @SuppressWarnings("unchecked")
+  private Iterator<E> openIterator() {
     final BasicDatabase database = graph.getDatabase();
+
+    // A bucket may have been added to a type (or the type created) after compilation: resolve the name again
+    final String resolvedTypeName;
+    if (bucketName != null) {
+      resolvedTypeName = typeNameOfBucket(database, bucketName);
+    } else
+      resolvedTypeName = typeName;
+
+    if (resolvedTypeName == null || !database.getSchema().existsType(resolvedTypeName))
+      return EmptyIterator.instance();
+
+    final DocumentType type = database.getSchema().getType(resolvedTypeName);
 
     if (Vertex.class.isAssignableFrom(this.returnClass)) {
       // hasLabel() FILTERS INSIDE THE CURRENT KIND: A VERTEX TRAVERSAL FILTERED BY AN EDGE TYPE MATCHES NOTHING (ISSUE #5223).
       if (!(type instanceof VertexType))
-        return;
+        return EmptyIterator.instance();
 
-      iteratorSupplier = () -> {
-        final Iterator<Record> rawIterator = bucketName == null ?
-            database.iterateType(this.typeName, true) :
-            database.iterateBucket(bucketName);
-        return new Iterator<>() {
-          @Override
-          public boolean hasNext() {
-            return rawIterator.hasNext();
-          }
+      final Iterator<Record> rawIterator = bucketName == null ?
+          database.iterateType(resolvedTypeName, true) :
+          database.iterateBucket(bucketName);
+      return new Iterator<>() {
+        @Override
+        public boolean hasNext() {
+          return rawIterator.hasNext();
+        }
 
-          @Override
-          public E next() {
-            return (E) new ArcadeVertex(graph, rawIterator.next().asVertex());
-          }
-        };
+        @Override
+        public E next() {
+          return (E) new ArcadeVertex(graph, rawIterator.next().asVertex());
+        }
       };
+    }
 
-    } else if (Edge.class.isAssignableFrom(this.returnClass)) {
-      // hasLabel() FILTERS INSIDE THE CURRENT KIND: AN EDGE TRAVERSAL FILTERED BY A VERTEX TYPE MATCHES NOTHING (ISSUE #5223).
-      if (!(type instanceof EdgeType))
-        return;
+    // hasLabel() FILTERS INSIDE THE CURRENT KIND: AN EDGE TRAVERSAL FILTERED BY A VERTEX TYPE MATCHES NOTHING (ISSUE #5223).
+    if (!(type instanceof EdgeType))
+      return EmptyIterator.instance();
 
-      // A LIGHTWEIGHT EDGE HAS NO RECORD, SO THE BUCKET SCAN OF ITS TYPE IS EMPTY BY CONSTRUCTION (#9142)
-      final boolean lightweight = bucketName == null && LightweightEdges.isHeldBy(type);
+    // A LIGHTWEIGHT EDGE HAS NO RECORD, SO THE BUCKET SCAN OF ITS TYPE IS EMPTY BY CONSTRUCTION (#9142)
+    final boolean lightweight = bucketName == null && LightweightEdges.isHeldBy(type);
 
-      iteratorSupplier = () -> {
-        final Iterator<? extends Record> rawIterator = lightweight ?
-            LightweightEdges.ofType(database, this.typeName) :
-            bucketName == null ? database.iterateType(this.typeName, true) : database.iterateBucket(bucketName);
-        return new CloseableIterator<E>() {
-          @Override
-          public void close() {
-            CloseableIterator.closeIterator(rawIterator);
-          }
+    final Iterator<? extends Record> rawIterator = lightweight ?
+        LightweightEdges.ofType(database, resolvedTypeName) :
+        bucketName == null ? database.iterateType(resolvedTypeName, true) : database.iterateBucket(bucketName);
+    return new CloseableIterator<E>() {
+      @Override
+      public void close() {
+        CloseableIterator.closeIterator(rawIterator);
+      }
 
-          @Override
-          public boolean hasNext() {
-            return rawIterator.hasNext();
-          }
+      @Override
+      public boolean hasNext() {
+        return rawIterator.hasNext();
+      }
 
-          @Override
-          public E next() {
-            return (E) new ArcadeEdge(graph, rawIterator.next().asEdge());
-          }
-        };
-      };
-    } else
-      throw new IllegalArgumentException("Unsupported returning class '" + returnClass + "'");
+      @Override
+      public E next() {
+        return (E) new ArcadeEdge(graph, rawIterator.next().asEdge());
+      }
+    };
   }
 
   public String toString() {
@@ -167,11 +180,11 @@ public class ArcadeFilterByTypeStep<S, E extends Element> extends AbstractStep<S
             throw FastNoSuchElementException.instance();
           else {
             this.done = true;
-            this.iterator = null == this.iteratorSupplier ? EmptyIterator.instance() : this.iteratorSupplier.get();
+            this.iterator = openIterator();
           }
         } else {
           this.head = this.starts.next();
-          this.iterator = null == this.iteratorSupplier ? EmptyIterator.instance() : this.iteratorSupplier.get();
+          this.iterator = openIterator();
         }
       }
     }
@@ -199,7 +212,7 @@ public class ArcadeFilterByTypeStep<S, E extends Element> extends AbstractStep<S
     if (!super.equals(o))
       return false;
     final ArcadeFilterByTypeStep<?, ?> that = (ArcadeFilterByTypeStep<?, ?>) o;
-    return returnClass.equals(that.returnClass) && typeName.equals(that.typeName);
+    return returnClass.equals(that.returnClass) && Objects.equals(typeName, that.typeName) && Objects.equals(bucketName, that.bucketName);
   }
 
   /**
