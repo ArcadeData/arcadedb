@@ -86,6 +86,7 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
 
   /** Bounds the labels named in an error response, which come from the client. */
   private static final int MAX_REPORTED_UNDECLARED_LABELS = 100;
+  private static final int MAX_REPORTED_LABEL_LENGTH      = 100;
 
   public PostPrometheusWriteHandler(final HttpServer httpServer) {
     super(httpServer);
@@ -296,7 +297,8 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
       if (!tagNames.contains(column)) {
         found = true;
         if (undeclared.size() < MAX_REPORTED_UNDECLARED_LABELS)
-          undeclared.add(typeName + "." + column);
+          // label names come from the client: bound each one as well as the count
+          undeclared.add(typeName + "." + (column.length() > MAX_REPORTED_LABEL_LENGTH ? column.substring(0, MAX_REPORTED_LABEL_LENGTH) + "..." : column));
       }
     }
     return found;

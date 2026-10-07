@@ -20,6 +20,7 @@ package com.arcadedb.function.cypher;
 
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.sql.SQLAggregatedFunction;
+import com.arcadedb.function.sql.math.SQLFunctionSum;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.SQLFunction;
 
@@ -89,7 +90,12 @@ public class SQLFunctionBridge implements StatelessFunction {
 
   @Override
   public Object getAggregatedResult() {
-    return sqlFunction.getResult();
+    final Object result = sqlFunction.getResult();
+    // Cypher's sum() over no value is 0 (Neo4j), while the SQL function answers NULL since issue #9351. An explicit
+    // sql.sum() keeps the SQL answer.
+    if (result == null && sqlFunction instanceof SQLFunctionSum && !cypherFunctionName.regionMatches(true, 0, "sql.", 0, 4))
+      return 0;
+    return result;
   }
 
   @Override
