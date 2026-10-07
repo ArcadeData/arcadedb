@@ -110,6 +110,21 @@ class BucketIteratorPrefetchBytesIssue9404Test extends TestHelper {
   }
 
   @Test
+  void aDisabledBudgetLeavesTheConfiguredBound() {
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_BATCH_MAX_BYTES, 1024L * 1024);
+    final long previousBudget = GlobalConfiguration.QUERY_MAX_HEAP_RAM.getValueAsLong();
+    GlobalConfiguration.QUERY_MAX_HEAP_RAM.setValue(0L);
+    try {
+      assertThat(QueryHeapBudget.getAvailableBytes()).isEqualTo(Long.MAX_VALUE);
+      // THE BOUND IS THE SETTING, NOT A SHARE OF A BUDGET THAT IS NOT THERE
+      final int prefetched = prefetched(openIterator("Large"));
+      assertThat(prefetched).isGreaterThan(1).isLessThanOrEqualTo(1024 * 1024 / LARGE_PAYLOAD + 1);
+    } finally {
+      GlobalConfiguration.QUERY_MAX_HEAP_RAM.setValue(previousBudget);
+    }
+  }
+
+  @Test
   void aNonPositiveBoundKeepsTheCountOnlyBatch() {
     database.getConfiguration().setValue(GlobalConfiguration.QUERY_BATCH_MAX_BYTES, 0L);
 
