@@ -48,11 +48,11 @@ import static org.mockito.Mockito.when;
 class Issue9308SoleVoterApplyErrorTest {
   private static final String DB_NAME = "db9308";
 
-  private final AtomicBoolean soleVoter = new AtomicBoolean(true);
-  private       RaftHAServer  raft;
+  private final AtomicBoolean      soleVoter = new AtomicBoolean(true);
+  private       RaftHAServer       raft;
   private       ArcadeStateMachine sm;
-  private       int           prevRetries;
-  private       int           prevDelay;
+  private       int                prevRetries;
+  private       int                prevDelay;
 
   @BeforeEach
   void setUp() {

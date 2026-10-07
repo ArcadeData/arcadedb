@@ -1994,16 +1994,20 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // apply did not happen; only the quarantine, the hand-off and the swallow budget (which exists for a node waiting
       // on a resync, and there is none here) are skipped. A database that is ALREADY quarantined - restored from disk,
       // or raised while the node still had peers - keeps its quarantine and the routing below.
+      // isSoleVoter() cannot throw here and mask t: the membership read it relies on (getCommittedPeersOrNull) degrades
+      // to the declared server list on any exception, and a declared multi-node list answers false, the old routing.
       final RaftHAServer raftHA = this.raftHAServer;
       if (raftHA != null && !isDatabaseDiverged(databaseName) && raftHA.isSoleVoter()) {
         LogManager.instance().log(this, Level.SEVERE,
             "Unexpected error applying Raft entry for database '%s' at index %d, and this node is the only voter, so "
                 + "there is no peer to resync it from. It is NOT quarantined (that could never be lifted here and would "
-                + "keep the node out of service); the entry is reported as failed and later entries keep applying. "
-                + "Check the database (CHECK DATABASE) and restore it from a backup if it is damaged: %s",
+                + "keep the node out of service); the entry is reported as failed and later entries keep applying on top "
+                + "of a state that is MISSING it, so from here on the database may be inconsistent with the Raft log and "
+                + "a later entry that depends on this one can fail or produce a different state. Check the database "
+                + "(CHECK DATABASE) and restore it from a backup if it is damaged: %s",
             databaseName, index, t.getMessage());
         throw new ReplicationException("Apply error on database '" + databaseName + "' at index " + index
-            + "; this node is the only voter, so the database is not quarantined (issue #9308)", t);
+            + "; this node is the only voter, so the database is not quarantined", t);
       }
 
       // Mark the database diverged on the first error so subsequent errors for it route here too.
