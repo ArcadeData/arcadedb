@@ -149,28 +149,28 @@ class Issue8217SetIsSessionScopedIT extends PostgresWireProtocolTestBase {
       authenticate(out2, in2, "root", DEFAULT_PASSWORD_FOR_TESTS);
 
       assertTimeoutPreemptively(Duration.ofSeconds(30), () -> {
-        sendSimpleQuery(out1, "SET search_path TO x");
+        sendSimpleQuery(out1, "SET work_mem TO x");
         assertThat(messageTypesOf(readUntilReadyForQuery(in1))).doesNotContain('E');
         sendSimpleQuery(out1, "SET datestyle = 'DMY'");
         assertThat(messageTypesOf(readUntilReadyForQuery(in1))).doesNotContain('E');
 
-        assertThat(show(out1, in1, "search_path")).as("SHOW reads back what SET stored").isEqualTo("x");
-        assertThat(show(out1, in1, "SEARCH_PATH")).as("parameter names are case-insensitive").isEqualTo("x");
+        assertThat(show(out1, in1, "work_mem")).as("SHOW reads back what SET stored").isEqualTo("x");
+        assertThat(show(out1, in1, "WORK_MEM")).as("parameter names are case-insensitive").isEqualTo("x");
         assertThat(show(out1, in1, "datestyle")).isEqualTo("ISO, DMY");
 
         // SHOW over the extended protocol reads the same settings.
-        sendParse(out1, "", "SHOW search_path");
+        sendParse(out1, "", "SHOW work_mem");
         sendBind(out1, "", "");
         sendExecute(out1, "");
         sendSync(out1);
         assertThat(firstDataRowValue(readUntilReadyForQuery(in1))).as("extended-protocol SHOW").isEqualTo("x");
 
-        assertThat(show(out2, in2, "search_path")).as("another session keeps its own value").isEmpty();
+        assertThat(show(out2, in2, "work_mem")).as("another session keeps its own value").isEmpty();
         assertThat(show(out2, in2, "datestyle")).as("another session keeps its own value").isEqualTo("ISO, MDY");
 
-        sendSimpleQuery(out1, "SET search_path TO DEFAULT");
+        sendSimpleQuery(out1, "SET work_mem TO DEFAULT");
         assertThat(messageTypesOf(readUntilReadyForQuery(in1))).doesNotContain('E');
-        assertThat(show(out1, in1, "search_path")).as("SET ... TO DEFAULT restores the default").isEmpty();
+        assertThat(show(out1, in1, "work_mem")).as("SET ... TO DEFAULT restores the default").isEmpty();
       });
     }
   }

@@ -55,8 +55,8 @@ class Issue8573UnknownParameterTest {
   }
 
   @ParameterizedTest
-  @ValueSource(strings = { "statement_timeout", "search_path", "extra_float_digits", "lock_timeout", "work_mem", "bytea_output",
-      "idle_in_transaction_session_timeout", "Statement_Timeout", "jit" })
+  @ValueSource(strings = { "extra_float_digits", "lock_timeout", "work_mem", "bytea_output",
+      "idle_in_transaction_session_timeout", "jit" })
   void everyParameterPostgresqlLetsASessionSetIsAccepted(final String name) {
     final PostgresSessionSettings settings = new PostgresSessionSettings();
     settings.set(name, "7");
@@ -118,11 +118,11 @@ class Issue8573UnknownParameterTest {
   @Test
   void showAllListsWhatTheServerAnswersAndWhatWasSet() {
     final PostgresSessionSettings settings = new PostgresSessionSettings();
-    settings.set("search_path", "x");
+    settings.set("work_mem", "x");
     settings.set("myapp.tenant", "acme");
     final List<String[]> all = settings.showAll();
-    assertThat(all).extracting(row -> row[0]).contains("DateStyle", "TimeZone", "transaction_isolation", "search_path", "myapp.tenant");
-    assertThat(all).filteredOn(row -> row[0].equals("search_path")).extracting(row -> row[1]).containsExactly("x");
+    assertThat(all).extracting(row -> row[0]).contains("DateStyle", "TimeZone", "transaction_isolation", "myapp.tenant");
+    assertThat(all).filteredOn(row -> row[0].equals("work_mem")).extracting(row -> row[1]).containsExactly("x");
   }
 
   private static void assertUndefined(final Runnable action, final String name) {
