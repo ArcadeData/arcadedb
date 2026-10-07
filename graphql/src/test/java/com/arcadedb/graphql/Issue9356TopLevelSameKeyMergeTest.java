@@ -82,6 +82,18 @@ class Issue9356TopLevelSameKeyMergeTest extends AbstractGraphQLTest {
   }
 
   @Test
+  void overlappingSubFieldsOfDuplicatedTopLevelSelectionsAreReturnedOnce() {
+    executeTest(database -> {
+      defineTypes(database);
+      final Result record = single(database, "{ bookById(id: \"book-1\") { id name } bookById(id: \"book-1\") { name pageCount } }");
+      assertThat(record.getPropertyNames().stream().filter("name"::equals).count()).isEqualTo(1);
+      assertThat(record.<String>getProperty("id")).isEqualTo("book-1");
+      assertThat(record.<Integer>getProperty("pageCount")).isEqualTo(223);
+      return null;
+    });
+  }
+
+  @Test
   void sameKeyWithDifferentArgumentsStaysRejected() {
     executeTest(database -> {
       defineTypes(database);

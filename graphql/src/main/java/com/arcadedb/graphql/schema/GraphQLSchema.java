@@ -520,7 +520,6 @@ public class GraphQLSchema {
     // The selection set comes through Selection.getSelectionSet() so an aliased selection (`s: __schema { ... }`,
     // `t: types { ... }`) is served exactly as the plain one, and the result is keyed by the alias the client wrote,
     // as the GraphQL spec requires for response keys (issue #7036)
-
     if (selectionSet != null) {
       for (final Selection sub : fragments.expand(selectionSet.getSelections(), "__Schema"::equals)) {
         final String fieldName = sub.getFieldName();

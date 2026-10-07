@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
@@ -52,7 +53,7 @@ class Issue9304TypedConstraintKeepsDeclarationTest extends TestHelper {
     assertThat(p.isReadonly()).isTrue();
     assertThat(p.getRegexp()).isEqualTo("[0-9]+");
     assertThat(p.getMax()).isEqualTo("4");
-    assertThat(p.getDefaultValueDefinition()).isNotNull();
+    assertThat(p.getDefaultValueDefinition()).isEqualTo("111");
   }
 
   @Test
@@ -84,5 +85,30 @@ class Issue9304TypedConstraintKeepsDeclarationTest extends TestHelper {
     try (final ResultSet rs = database.query("sql", "SELECT x FROM A")) {
       assertThat(rs.next().<String>getProperty("x")).isEqualTo("hello");
     }
+  }
+
+  @Test
+  void retypingAnIndexedPropertyIsRefusedAndLeavesTheDeclarationAndIndexUntouched() {
+    database.command("sql", "CREATE VERTEX TYPE D");
+    database.command("sql", "CREATE PROPERTY D.k STRING");
+    database.command("sql", "CREATE INDEX ON D (k) UNIQUE");
+    database.getSchema().getType("D").getProperty("k").setMandatory(true);
+    database.transaction(() -> database.command("sql", "CREATE VERTEX D SET k = 'abc'").close());
+
+    assertThatThrownBy(() -> database.command("opencypher", "CREATE CONSTRAINT FOR (n:D) REQUIRE n.k IS :: INTEGER"))
+        .isInstanceOf(CommandExecutionException.class);
+    Property p = database.getSchema().getType("D").getProperty("k");
+    assertThat(p.getType()).isEqualTo(Type.STRING);
+    assertThat(p.isMandatory()).isTrue();
+    assertThat(database.getSchema().getType("D").getPolymorphicIndexByProperties("k")).isNotNull();
+
+    // an indexed property cannot be retyped: the refusal is clear and leaves the declaration and the index as they were
+    database.transaction(() -> database.command("sql", "DELETE FROM D").close());
+    assertThatThrownBy(() -> database.command("opencypher", "CREATE CONSTRAINT FOR (n:D) REQUIRE n.k IS :: INTEGER"))
+        .hasRootCauseInstanceOf(SchemaException.class);
+    p = database.getSchema().getType("D").getProperty("k");
+    assertThat(p.getType()).isEqualTo(Type.STRING);
+    assertThat(p.isMandatory()).isTrue();
+    assertThat(database.getSchema().getType("D").getPolymorphicIndexByProperties("k")).isNotNull();
   }
 }
