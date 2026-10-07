@@ -37,7 +37,7 @@ public interface ScanPressureReporter {
   /** The same for a count a caller added up over several scans. */
   static String describe(final long shrunk) {
     if (shrunk > 0)
-      return " [read-ahead reduced in " + shrunk + (shrunk == 1 ? " batch" : " batches") + ": query heap budget nearly full]";
+      return " [read-ahead reduced in " + shrunk + (shrunk == 1 ? " batch" : " batches") + " by the query heap budget]";
     return "";
   }
 }

@@ -65,8 +65,12 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
    * worker thread per cached plan, weakly keyed on this operator, so it goes with the plan.
    */
   private final ThreadLocal<Boolean> servedInParallel = new ThreadLocal<>();
-  /** The type scan the calling thread's last execution read from, for the PROFILE to say whether the heap budget reduced its read-ahead (#9404). Same lifetime as {@link #servedInParallel}. */
-  private final ThreadLocal<Object> scanIterator = new ThreadLocal<>();
+  /**
+   * How many batches the type scan of the calling thread's last profiled execution read with its read-ahead reduced by the heap budget
+   * (#9404), for the PROFILE that follows it. A count, not the scan: the scan holds a batch of records, and this outlives the query.
+   * Same lifetime as {@link #servedInParallel}.
+   */
+  private final ThreadLocal<Long> scanShrunkBatches = new ThreadLocal<>();
 
   public NodeByLabelScan(final String variable, final String label,
                         final double estimatedCost, final long estimatedCardinality) {
@@ -169,7 +173,7 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
               }) : null;
           servedInParallel.set(parallelScan != null);
           // THIS EXECUTION'S SCAN, NOT A PREVIOUS ONE'S: THE PARALLEL PATH READS NO ITERATOR OF ITS OWN
-          scanIterator.remove();
+          scanShrunkBatches.remove();
           if (parallelScan != null) {
             // The rows come back already filtered, in the order the sequential scan reads them
             parallelRows = parallelScan.pull(context);
@@ -184,11 +188,6 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
             final Iterator<Identifiable> iter = (Iterator<Identifiable>) (Object)
                 context.getDatabase().iterateType(label, true);
             iterator = iter;
-            // ONLY A PROFILED RUN KEEPS THE SCAN: THE THREAD-LOCAL OUTLIVES THE QUERY, AND THE ITERATOR HOLDS A BATCH OF RECORDS
-            if (context.isProfiling())
-              scanIterator.set(iter);
-            else
-              scanIterator.remove();
           }
         }
 
@@ -223,7 +222,14 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
 
         if (!iterator.hasNext()) {
           finished = true;
+          captureScanPressure();
         }
+      }
+
+      // WHAT A PROFILE SAYS OF THE SCAN IS KEPT AS A COUNT, TAKEN WHEN THE SCAN ENDS OR IS CLOSED: THE ITERATOR ITSELF IS NOT KEPT
+      private void captureScanPressure() {
+        if (context.isProfiling() && iterator instanceof ScanPressureReporter reporter)
+          scanShrunkBatches.set(reporter.getBudgetShrunkBatches());
       }
 
       @Override
@@ -233,6 +239,7 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
           parallelRows.close();
           parallelRows = null;
         }
+        captureScanPressure();
         // Nothing is read after a close: the scan must not plan itself again
         finished = true;
       }
@@ -272,7 +279,7 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
       return rowFilter == null || rowFilter.evaluate(row, workerContext) ? row : null;
     });
     servedInParallel.set(scan != null);
-    scanIterator.remove();
+    scanShrunkBatches.remove();
     return scan;
   }
 
@@ -294,7 +301,7 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
       sb.append(" [filter: ").append(whereFilter.getText()).append("]");
     if (Boolean.TRUE.equals(servedInParallel.get()))
       sb.append(" [parallel]");
-    sb.append(ScanPressureReporter.describe(scanIterator.get()));
+    sb.append(ScanPressureReporter.describe(scanShrunkBatches.get() == null ? 0L : scanShrunkBatches.get()));
     sb.append(" [cost=").append(String.format(Locale.US, "%.2f", estimatedCost));
     sb.append(", rows=").append(estimatedCardinality);
     sb.append("]\n");
