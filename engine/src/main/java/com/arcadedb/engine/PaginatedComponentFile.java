@@ -77,8 +77,17 @@ public class PaginatedComponentFile extends ComponentFile {
    */
   private volatile int totalPages;
 
-  /** Reopen-and-retry rounds of a read whose channel was closed under it (an interrupt landing again during the retry). */
-  private static final int READ_REOPEN_ATTEMPTS = 5;
+  /**
+   * Reopen-and-retry rounds of a channel operation whose channel was closed under it (an interrupt landing again during
+   * the retry). Shared by every read, write, force and size call of this class (#8944, #9306).
+   */
+  private static final int REOPEN_ATTEMPTS = 5;
+
+  /** One channel operation {@link #reopenAndRetry} can repeat from its start. */
+  @FunctionalInterface
+  private interface ChannelOperation {
+    void run() throws IOException;
+  }
 
   /**
    * Updates {@link #totalPages} atomically WITHOUT an {@code AtomicInteger}: {@link #open} runs from the superclass
@@ -191,6 +200,77 @@ public class PaginatedComponentFile extends ComponentFile {
   }
 
   /**
+   * The single recovery policy for a channel found closed under a channel operation (#9306). Another thread's interrupt
+   * closes the channel for every thread using it (ClosedByInterruptException), and this thread's OWN interrupt can land
+   * during the retry itself, closing the freshly reopened channel again. So the channel is reopened and
+   * {@code channelOperation} repeated from its start, a bounded number of times, instead of surfacing a transient closed
+   * channel that the caller would take for a failing disk (#8944). Only a reopen that is REFUSED - the file was closed
+   * on purpose, or no longer exists - is a real failure, reported as the {@link FileNotFoundException}
+   * {@link #reopenChannelUnderWriteLock()} throws.
+   * <p>
+   * Called only from the {@code catch (ClosedChannelException)} of the fast path, so the lambda the caller passes is
+   * allocated on the recovery path alone. Must be called with the channel read lock held.
+   */
+  private void reopenAndRetry(final String operation, final ChannelOperation channelOperation) throws IOException {
+    assert channelLock.getReadHoldCount() > 0 : "reopenAndRetry must be called with the channel read lock held";
+    // ClosedByInterruptException leaves the interrupted flag set; clear it so the reopened channel
+    // is not immediately closed again, then restore it so callers are notified.
+    boolean wasInterrupted = false;
+    try {
+      for (int attempt = 1; ; attempt++) {
+        logReopen(operation);
+        wasInterrupted |= Thread.interrupted();
+        try {
+          // RELEASES THE CALLER'S READ LOCK, REOPENS UNDER THE WRITE LOCK, AND REACQUIRES THE READ LOCK BEFORE RETURNING
+          reopenChannelUnderWriteLock();
+          channelOperation.run();
+          return;
+        } catch (final ClosedChannelException e) {
+          if (attempt >= REOPEN_ATTEMPTS)
+            throw e;
+        }
+      }
+    } finally {
+      if (wasInterrupted)
+        Thread.currentThread().interrupt();
+    }
+  }
+
+  /**
+   * Reads from {@code pos} until {@code buf} has no bytes remaining.
+   *
+   * @return false on EOF, so each caller reports it with its own message
+   */
+  private boolean readFully(final ByteBuffer buf, long pos) throws IOException {
+    while (buf.hasRemaining()) {
+      final int r = channel.read(buf, pos);
+      if (r < 0)
+        return false;
+      pos += r;
+    }
+    return true;
+  }
+
+  private void writeFully(final ByteBuffer buf, long pos) throws IOException {
+    while (buf.hasRemaining())
+      pos += channel.write(buf, pos);
+  }
+
+  /** {@code channel.size()} with the same reopen as every other channel operation. Read lock held. */
+  private long channelSize() throws IOException {
+    if (channel == null)
+      throw new IllegalArgumentException("Cannot read the size of file '" + getFileName() + "' because it is closed");
+
+    try {
+      return channel.size();
+    } catch (final ClosedChannelException e) {
+      final long[] size = new long[1];
+      reopenAndRetry("size", () -> size[0] = channel.size());
+      return size[0];
+    }
+  }
+
+  /**
    * Forces the file to disk unconditionally, with its metadata when {@code metaData} is true or when the file still
    * owes a metadata sync (see {@link #syncState}). The parent directory is NOT forced: a created or renamed file's
    * directory entry is made durable by {@link FileManager#syncFiles()}, which forces the directories as well.
@@ -257,17 +337,7 @@ public class PaginatedComponentFile extends ComponentFile {
       try {
         channel.force(withMetaData);
       } catch (final ClosedChannelException e) {
-        logReopen("force");
-        // ClosedByInterruptException leaves the interrupted flag set; clear it so the reopened channel
-        // is not immediately closed again, then restore it so callers are notified.
-        final boolean wasInterrupted = Thread.interrupted();
-        try {
-          reopenChannelUnderWriteLock();
-          channel.force(withMetaData);
-        } finally {
-          if (wasInterrupted)
-            Thread.currentThread().interrupt();
-        }
+        reopenAndRetry("force", () -> channel.force(withMetaData));
       }
       forced = true;
       return true;
@@ -353,7 +423,7 @@ public class PaginatedComponentFile extends ComponentFile {
   public long getSize() throws IOException {
     channelLock.readLock().lock();
     try {
-      return channel.size();
+      return channelSize();
     } finally {
       channelLock.readLock().unlock();
     }
@@ -375,7 +445,7 @@ public class PaginatedComponentFile extends ComponentFile {
   public long getTotalPagesFromChannel() throws IOException {
     channelLock.readLock().lock();
     try {
-      return channel.size() / pageSize;
+      return channelSize() / pageSize;
     } finally {
       channelLock.readLock().unlock();
     }
@@ -388,16 +458,18 @@ public class PaginatedComponentFile extends ComponentFile {
 
       final ByteBuffer buffer = ByteBuffer.allocate(getPageSize());
 
-      final long totalPages = channel.size() / pageSize;
+      final long totalPages = channelSize() / pageSize;
       for (int i = 0; i < totalPages; i++) {
+        final long pos = pageSize * (long) i;
+        boolean complete;
         buffer.clear();
-        long pos = pageSize * (long) i;
-        while (buffer.hasRemaining()) {
-          final int r = channel.read(buffer, pos);
-          if (r < 0)
-            throw new IOException("Unexpected EOF calculating checksum at page " + i + " of file '" + getFileName() + "'");
-          pos += r;
+        try {
+          complete = readFully(buffer, pos);
+        } catch (final ClosedChannelException e) {
+          complete = readAfterReopen(buffer, 0, pos);
         }
+        if (!complete)
+          throw new IOException("Unexpected EOF calculating checksum at page " + i + " of file '" + getFileName() + "'");
 
         buffer.rewind();
         for (int j = 0; j < pageSize; j++) {
@@ -431,25 +503,14 @@ public class PaginatedComponentFile extends ComponentFile {
 
       // NO NEED TO SYNCHRONIZE THE BUFFER BECAUSE MUTABLE PAGES ARE NOT SHARED
       buffer.clear();
+      final long pos = page.getPhysicalSize() * (long) pageNumber;
       try {
-        long pos = page.getPhysicalSize() * (long) pageNumber;
-        while (buffer.hasRemaining())
-          pos += channel.write(buffer, pos);
+        writeFully(buffer, pos);
       } catch (final ClosedChannelException e) {
-        logReopen("write");
-        // ClosedByInterruptException leaves the interrupted flag set; clear it so the reopened channel
-        // is not immediately closed again, then restore it so callers are notified.
-        final boolean wasInterrupted = Thread.interrupted();
-        try {
-          reopenChannelUnderWriteLock();
+        reopenAndRetry("write", () -> {
           buffer.clear();
-          long pos = page.getPhysicalSize() * (long) pageNumber;
-          while (buffer.hasRemaining())
-            pos += channel.write(buffer, pos);
-        } finally {
-          if (wasInterrupted)
-            Thread.currentThread().interrupt();
-        }
+          writeFully(buffer, pos);
+        });
       }
 
       // AFTER THE WRITE RETURNED, NOT BEFORE: the counter then never claims a page the file does not hold yet, which
@@ -506,58 +567,36 @@ public class PaginatedComponentFile extends ComponentFile {
       final ByteBuffer buffer = page.getByteBuffer();
       buffer.clear();
 
+      final long pos = page.getPhysicalSize() * (long) pageNumber;
+      boolean read;
       try {
-        long pos = page.getPhysicalSize() * (long) pageNumber;
-        while (buffer.hasRemaining()) {
-          final int r = channel.read(buffer, pos);
-          if (r < 0)
-            throw new IOException("Unexpected EOF reading page " + pageNumber + " from file '" + getFileName() + "'");
-          pos += r;
-        }
+        read = readFully(buffer, pos);
       } catch (final ClosedChannelException e) {
-        readAfterReopen(page, pageNumber);
+        read = readAfterReopen(buffer, 0, pos);
       }
+      if (!read)
+        throw new IOException("Unexpected EOF reading page " + pageNumber + " from file '" + getFileName() + "'");
     } finally {
       channelLock.readLock().unlock();
     }
   }
 
   /**
-   * Re-reads a page after its channel was found closed. Another thread's interrupt closes the channel for every reader
-   * (ClosedByInterruptException), and this thread's OWN interrupt (a cancelled parallel scan) can land during the retry
-   * itself, closing the freshly reopened channel again. So the retry repeats, a bounded number of times, instead of
-   * trying once and surfacing a closed channel that the caller would take for a failing disk (#8944).
-   * Must be called with the channel read lock held.
+   * Re-reads {@code buf} after its channel was found closed (#8944, #9306), through {@link #reopenAndRetry}. Every
+   * attempt restarts at {@code start}, the buffer position the caller's read began at: 0 for a cleared page buffer, the
+   * caller's own offset for {@link #readPages}, which does not clear. The limit is left as the caller set it. Must be
+   * called with the channel read lock held.
+   *
+   * @return false on EOF
    */
-  private void readAfterReopen(final CachedPage page, final int pageNumber) throws IOException {
-    // ClosedByInterruptException leaves the interrupted flag set; clear it so the reopened channel
-    // is not immediately closed again, then restore it so callers are notified.
-    boolean wasInterrupted = false;
-    try {
-      for (int attempt = 1; ; attempt++) {
-        logReopen("read");
-        wasInterrupted |= Thread.interrupted();
-        try {
-          reopenChannelUnderWriteLock();
-          final ByteBuffer buffer = page.getByteBuffer();
-          buffer.clear();
-          long pos = page.getPhysicalSize() * (long) pageNumber;
-          while (buffer.hasRemaining()) {
-            final int r = channel.read(buffer, pos);
-            if (r < 0)
-              throw new IOException("Unexpected EOF reading page " + pageNumber + " from file '" + getFileName() + "'");
-            pos += r;
-          }
-          return;
-        } catch (final ClosedChannelException e) {
-          if (attempt >= READ_REOPEN_ATTEMPTS)
-            throw e;
-        }
-      }
-    } finally {
-      if (wasInterrupted)
-        Thread.currentThread().interrupt();
-    }
+  private boolean readAfterReopen(final ByteBuffer buf, final int start, final long pos) throws IOException {
+    // A ONE-ELEMENT HOLDER, ALLOCATED ON THE RECOVERY PATH ONLY: THE FAST PATH NEVER GETS HERE
+    final boolean[] read = new boolean[1];
+    reopenAndRetry("read", () -> {
+      buf.position(start);
+      read[0] = readFully(buf, pos);
+    });
+    return read[0];
   }
 
   /**
@@ -586,14 +625,20 @@ public class PaginatedComponentFile extends ComponentFile {
         throw new IllegalArgumentException(
             "Cannot read pages from " + fromPageNumber + " because the file '" + getFileName() + "' is closed");
 
-      long pos = pageSize * (long) fromPageNumber;
-      while (buf.hasRemaining()) {
-        final int r = channel.read(buf, pos);
-        if (r < 0)
-          throw new IOException(
-              "Unexpected EOF reading " + pages + " pages from page " + fromPageNumber + " of file '" + getFileName() + "'");
-        pos += r;
+      final long pos = pageSize * (long) fromPageNumber;
+      final int start = buf.position();
+      boolean read;
+      try {
+        read = readFully(buf, pos);
+      } catch (final ClosedChannelException e) {
+        // #9306: THE POINT-IN-TIME SNAPSHOT'S PRE-IMAGE CAPTURE AND ITS INPUT STREAM BOTH READ THROUGH HERE, AND NEITHER
+        // CAN RETRY FOR ITSELF - A CLOSED CHANNEL USED TO INVALIDATE EVERY OPEN WINDOW, OR KILL THE TRANSFER MID-ARCHIVE.
+        // THE RETRY RESTARTS AT THE CALLER'S POSITION: THE BUFFER IS NOT CLEARED HERE (SEE THE JAVADOC)
+        read = readAfterReopen(buf, start, pos);
       }
+      if (!read)
+        throw new IOException(
+            "Unexpected EOF reading " + pages + " pages from page " + fromPageNumber + " of file '" + getFileName() + "'");
     } finally {
       channelLock.readLock().unlock();
       buf.limit(limit);
@@ -603,14 +648,19 @@ public class PaginatedComponentFile extends ComponentFile {
   public void readPage(final int pageNum, final ByteBuffer buf) throws IOException {
     channelLock.readLock().lock();
     try {
+      if (channel == null)
+        throw new IllegalArgumentException("Cannot read page " + pageNum + " because the file '" + getFileName() + "' is closed");
+
       buf.clear();
-      long pos = pageSize * (long) pageNum;
-      while (buf.hasRemaining()) {
-        final int r = channel.read(buf, pos);
-        if (r < 0)
-          throw new IOException("Unexpected EOF reading page " + pageNum + " from file '" + getFileName() + "'");
-        pos += r;
+      final long pos = pageSize * (long) pageNum;
+      boolean read;
+      try {
+        read = readFully(buf, pos);
+      } catch (final ClosedChannelException e) {
+        read = readAfterReopen(buf, 0, pos);
       }
+      if (!read)
+        throw new IOException("Unexpected EOF reading page " + pageNum + " from file '" + getFileName() + "'");
     } finally {
       channelLock.readLock().unlock();
     }
