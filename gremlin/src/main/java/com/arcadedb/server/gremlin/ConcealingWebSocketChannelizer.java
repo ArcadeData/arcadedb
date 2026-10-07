@@ -59,6 +59,10 @@ public class ConcealingWebSocketChannelizer extends WebSocketChannelizer {
     if (settings.authorization != null && settings.authorization.config != null
         && settings.authorization.config.get("server") instanceof ArcadeDBServer arcadeDBServer)
       server = arcadeDBServer;
+    else
+      // Without the server the production mode cannot be read, so nothing would be concealed: say so instead of leaking silently
+      LogManager.instance().log(this, Level.WARNING,
+          "Gremlin Server error concealment is inactive: the ArcadeDB server was not found in the authorization configuration");
   }
 
   @Override
@@ -98,8 +102,14 @@ public class ConcealingWebSocketChannelizer extends WebSocketChannelizer {
   static ResponseMessage conceal(final ArcadeDBServer server, final ResponseMessage response) {
     if (server == null || !isServerFailure(response.getStatus().getCode()) || !server.isProductionMode())
       return response;
-    // The client no longer sees the text, so the server log is the only copy the operator has
-    LogManager.instance().log(ConcealingWebSocketChannelizer.class, Level.INFO, "Gremlin: %s", null, response.getStatus().getMessage());
+    // The client no longer sees the text, so the server log is the only copy the operator has. A failure of the query
+    // (evaluation, temporary) is routine; the rest is a server fault and keeps its severity and the stack trace TinkerPop attached
+    final ResponseStatusCode code = response.getStatus().getCode();
+    if (code == ResponseStatusCode.SERVER_ERROR_EVALUATION || code == ResponseStatusCode.SERVER_ERROR_TEMPORARY)
+      LogManager.instance().log(ConcealingWebSocketChannelizer.class, Level.INFO, "Gremlin: %s", null, response.getStatus().getMessage());
+    else
+      LogManager.instance().log(ConcealingWebSocketChannelizer.class, Level.WARNING, "Gremlin: %s %s", null,
+          response.getStatus().getMessage(), response.getStatus().getAttributes().getOrDefault("stackTrace", ""));
     return ResponseMessage.build(response.getRequestId()).code(response.getStatus().getCode())
         .statusMessage(ArcadeDBServer.CONCEALED_ERROR_MESSAGE).create();
   }
