@@ -617,12 +617,19 @@ public class CallStep extends AbstractExecutionStep {
    * The row an OPTIONAL CALL answers for an input row the procedure yielded no row for - none at all, or none that
    * passed YIELD WHERE - the way OPTIONAL MATCH answers a pattern with no match: every yielded name bound to null.
    * It deliberately skips YIELD WHERE, which a row of nulls can never pass; the caller merges it with the input row.
+   * {@code YIELD *} (and no YIELD) names no field, so the null row binds every field the procedure declares.
    */
   private ResultInternal nullYieldRow() {
     final ResultInternal row = new ResultInternal();
-    if (callClause.hasYield())
+    if (callClause.hasYield() && !callClause.isYieldAll()) {
       for (final CallClause.YieldItem yieldItem : callClause.getYieldItems())
         row.setProperty(yieldItem.getOutputName(), null);
+    } else {
+      final CypherProcedure procedure = CypherProcedureRegistry.get(callClause.getProcedureName());
+      if (procedure != null && procedure.getYieldFields() != null)
+        for (final String field : procedure.getYieldFields())
+          row.setProperty(field, null);
+    }
     return row;
   }
 
