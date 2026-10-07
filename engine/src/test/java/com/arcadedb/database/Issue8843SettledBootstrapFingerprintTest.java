@@ -33,6 +33,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 /**
  * Regression tests for issue #8843: the HA bootstrap fingerprint was computed over an OPEN database without waiting for
@@ -156,5 +157,7 @@ class Issue8843SettledBootstrapFingerprintTest {
         return;
       Thread.sleep(5);
     }
+    if (!future.isDone())
+      fail("the sampler neither parked on the flush drain nor answered within 60 s");
   }
 }

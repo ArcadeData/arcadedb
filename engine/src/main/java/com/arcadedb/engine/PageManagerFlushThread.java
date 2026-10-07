@@ -1023,7 +1023,13 @@ public class PageManagerFlushThread extends Thread {
     if (pendingAtStart <= 0)
       return true;
 
-    final AtomicLong flushedCounter = flushedPagesPerDatabase.computeIfAbsent(database, k -> new AtomicLong());
+    // A READ, NOT computeIfAbsent: the counter is created when a batch of this database is enqueued, so with pages
+    // pending it exists. A missing one (a close racing this call removed it) must not be re-created by a reader - it
+    // would outlive the database - and the pipeline-empty exit below still ends the wait, or the deadline does.
+    final AtomicLong existing = flushedPagesPerDatabase.get(database);
+    final AtomicLong flushedCounter = existing != null ? existing : new AtomicLong();
+    // THE TWO READS ARE NOT ATOMIC: PAGES FLUSHED BETWEEN THEM RAISE THE TARGET ABOVE THE TRUE BACKLOG. HARMLESS - THE
+    // WAIT THEN ENDS ON THE PIPELINE EMPTYING OR ON THE DEADLINE, ONLY THE EARLY WATERMARK EXIT IS LOST FOR THAT CALL
     final long target = flushedCounter.get() + pendingAtStart;
     while (pageIndex.pendingOf(database) > 0 && flushedCounter.get() < target) {
       final long remaining = deadlineMillis - System.currentTimeMillis();

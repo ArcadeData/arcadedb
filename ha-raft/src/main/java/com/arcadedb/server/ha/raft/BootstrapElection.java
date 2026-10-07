@@ -19,6 +19,7 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.BootstrapFingerprint;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -981,11 +982,13 @@ class BootstrapElection {
 
   Map<String, PeerState> computeLocalStates(final RaftPeerId localId, final Set<String> dbFilter) {
     final Map<String, PeerState> result = new HashMap<>();
+    final long settleDeadline = System.currentTimeMillis() + BootstrapFingerprint.SETTLE_MAX_WAIT_MILLIS;
     for (final String dbName : server.getDatabaseNames()) {
       if (!dbFilter.contains(dbName))
         continue;
       try {
-        final ArcadeStateMachine.BootstrapBaseline local = ArcadeStateMachine.localBootstrapState(server.getDatabase(dbName));
+        final ArcadeStateMachine.BootstrapBaseline local = ArcadeStateMachine.localBootstrapState(server.getDatabase(dbName),
+            ArcadeStateMachine.settleBudget(settleDeadline));
         if (local == null)
           continue;
         result.put(dbName, new PeerState(localId, dbName, local.fingerprint(), local.lastTxId()));

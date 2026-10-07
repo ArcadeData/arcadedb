@@ -19,6 +19,7 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.BootstrapFingerprint;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -179,6 +180,7 @@ public class PostBootstrapStateHandler extends AbstractServerHttpHandler {
    */
   static JSONArray localDatabaseStates(final ArcadeDBServer server) {
     final JSONArray dbs = new JSONArray();
+    final long settleDeadline = System.currentTimeMillis() + BootstrapFingerprint.SETTLE_MAX_WAIT_MILLIS;
 
     for (final String dbName : server.getDatabaseNames()) {
       // Reserved internal databases (e.g. ".raft") are not part of the operator-visible state and
@@ -189,7 +191,8 @@ public class PostBootstrapStateHandler extends AbstractServerHttpHandler {
       try {
         // Unwraps to the LocalDatabase under the HA wrapper (same pattern as #4144) and fingerprints the SETTLED copy
         // (issue #8843): the same reading the state machine and the election take of their own state.
-        final ArcadeStateMachine.BootstrapBaseline local = ArcadeStateMachine.localBootstrapState(server.getDatabase(dbName));
+        final ArcadeStateMachine.BootstrapBaseline local = ArcadeStateMachine.localBootstrapState(server.getDatabase(dbName),
+            ArcadeStateMachine.settleBudget(settleDeadline));
         if (local == null)
           continue;
 

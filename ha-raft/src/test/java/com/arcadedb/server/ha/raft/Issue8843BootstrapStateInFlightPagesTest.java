@@ -45,6 +45,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -146,6 +147,28 @@ class Issue8843BootstrapStateInFlightPagesTest {
     assertThat(sample.rawWhileInFlight).isNotEqualTo(sample.settled);
   }
 
+  /** A sweep over several databases shares one settle deadline: what is left of it, never negative once spent. */
+  @Test
+  void aSweepSharesOneSettleDeadline() {
+    assertThat(ArcadeStateMachine.settleBudget(System.currentTimeMillis() - 1_000L)).isZero();
+    assertThat(ArcadeStateMachine.settleBudget(System.currentTimeMillis() + 60_000L)).isBetween(1L, 60_000L);
+  }
+
+  /**
+   * A spent sweep budget does not wait at all: with the last commit held in the pipeline the reader answers at once,
+   * from the files as they stand, instead of charging the next database another full bound.
+   */
+  @Test
+  void aSpentSweepBudgetHashesWithoutWaiting() throws Exception {
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+    sm.setServer(stubbedServer());
+
+    final Sample sample = sampleWhileTheLastCommitIsInFlight(
+        () -> sm.readLocalBootstrapState(DB_NAME, ArcadeStateMachine.settleBudget(0L)).fingerprint());
+
+    assertThat(sample.whileInFlight).isEqualTo(sample.rawWhileInFlight);
+  }
+
   private record Sample(String whileInFlight, String rawWhileInFlight, String settled) {
   }
 
@@ -180,12 +203,15 @@ class Issue8843BootstrapStateInFlightPagesTest {
       });
 
       final long deadline = System.currentTimeMillis() + 60_000L;
-      while (!answered.isDone() && System.currentTimeMillis() < deadline) {
+      boolean parked = false;
+      while (!parked && !answered.isDone() && System.currentTimeMillis() < deadline) {
         final Thread t = readerThread.get();
-        if (t != null && (t.getState() == Thread.State.TIMED_WAITING || t.getState() == Thread.State.WAITING))
-          break;
-        Thread.sleep(5);
+        parked = t != null && (t.getState() == Thread.State.TIMED_WAITING || t.getState() == Thread.State.WAITING);
+        if (!parked)
+          Thread.sleep(5);
       }
+      if (!parked && !answered.isDone())
+        fail("the reader neither parked on the flush drain nor answered within 60 s");
       release.countDown();
       hold.get(60, TimeUnit.SECONDS);
 
