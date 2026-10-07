@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.graph.EdgeWeight;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -236,8 +237,8 @@ public class AlgoSteinerTree extends AbstractAlgoProcedure {
         steinerNodes[p] = true;
         steinerNodes[cur] = true;
         // Mark edge (p, cur) in steiner edges
-        markEdge(adj, steinerEdges, p, cur);
-        markEdge(adj, steinerEdges, cur, p);
+        markEdge(adj, adjW, steinerEdges, p, cur);
+        markEdge(adj, adjW, steinerEdges, cur, p);
         cur = p;
       }
       steinerNodes[termIdx[srcTerm]] = true;
@@ -331,6 +332,9 @@ public class AlgoSteinerTree extends AbstractAlgoProcedure {
       if (d > dist[u])
         continue;
       for (int j = 0; j < adj[u].length; j++) {
+        // an edge whose weight is negative, NaN or infinite is not walked, as by every weighted path finder (issue #9443)
+        if (!EdgeWeight.isWalkable(adjW[u][j]))
+          continue;
         final int v = adj[u][j];
         final double nd = dist[u] + adjW[u][j];
         if (nd < dist[v]) {
@@ -370,13 +374,18 @@ public class AlgoSteinerTree extends AbstractAlgoProcedure {
     return false;
   }
 
-  private static void markEdge(final int[][] adj, final boolean[][] steinerEdges,
+  /**
+   * Marks the edge from {@code from} to {@code to} the shortest path walked: the cheapest walkable one among parallel
+   * edges, not the first one adjacency lists, which on a multigraph priced the tree by edge creation order (and could
+   * pick an edge Dijkstra never walked).
+   */
+  private static void markEdge(final int[][] adj, final double[][] adjW, final boolean[][] steinerEdges,
       final int from, final int to) {
-    for (int j = 0; j < adj[from].length; j++) {
-      if (adj[from][j] == to) {
-        steinerEdges[from][j] = true;
-        return;
-      }
-    }
+    int best = -1;
+    for (int j = 0; j < adj[from].length; j++)
+      if (adj[from][j] == to && EdgeWeight.isWalkable(adjW[from][j]) && (best < 0 || adjW[from][j] < adjW[from][best]))
+        best = j;
+    if (best >= 0)
+      steinerEdges[from][best] = true;
   }
 }

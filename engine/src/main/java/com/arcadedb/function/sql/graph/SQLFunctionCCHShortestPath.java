@@ -23,6 +23,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.function.sql.FunctionOptions;
 import com.arcadedb.function.sql.math.SQLFunctionMathAbstract;
+import com.arcadedb.graph.EdgeWeight;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.olap.ShortestPathFinder;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -43,8 +44,8 @@ import java.util.Set;
  * keeps one for the weight and edge types asked for, and by bidirectional Dijkstra otherwise (issue #9437). Returns the
  * vertices of the path, like {@code dijkstra()}.
  * <p>
- * The weight is the edge property's numeric value; an edge without one weighs 1, and an edge whose value is negative is
- * not walked.
+ * The weight follows {@link EdgeWeight}: the edge property's numeric value, 1 for an edge without one, and an edge whose
+ * value is negative, NaN or infinite is not walked.
  * <pre>
  *   SELECT cchShortestPath($a, $b, 'distance')
  *   SELECT cchShortestPath($a, $b, 'distance', 'BOTH')
@@ -59,7 +60,16 @@ public class SQLFunctionCCHShortestPath extends SQLFunctionMathAbstract {
   private static final Set<String> OPTIONS = Set.of("direction", "edgeTypeNames");
 
   public SQLFunctionCCHShortestPath() {
-    super(NAME);
+    this(NAME);
+  }
+
+  /**
+   * For the functions that answer through the same engine under another name, {@code duanSSSP()} (issue #9443): they
+   * extend this class rather than copying it, so the weight rule, the options and the fallback chain cannot drift apart.
+   * Every message names {@link #getName()}, not {@link #NAME}, for that reason.
+   */
+  protected SQLFunctionCCHShortestPath(final String name) {
+    super(name);
   }
 
   @Override
@@ -78,23 +88,23 @@ public class SQLFunctionCCHShortestPath extends SQLFunctionMathAbstract {
     final Document record = currentRecord != null ? (Document) currentRecord.getRecord() : null;
     final RID source = vertexOf(params[0], record, "sourceVertex");
     final RID destination = vertexOf(params[1], record, "destinationVertex");
-    final String weightProperty = FileUtils.getStringContent(params[2]);
+    final String weightProperty = params.length > 2 && params[2] != null ? FileUtils.getStringContent(params[2]) : "weight";
 
     Vertex.DIRECTION direction = Vertex.DIRECTION.OUT;
     String[] edgeTypes = null;
     if (params.length > 3 && params[3] != null) {
       if (params[3] instanceof Map<?, ?> rawMap) {
-        final FunctionOptions options = new FunctionOptions(NAME, rawMap, OPTIONS);
+        final FunctionOptions options = new FunctionOptions(getName(), rawMap, OPTIONS);
         if (options.containsKey("direction"))
-          direction = toDirection(options.get("direction"));
+          direction = toDirection(options.get("direction"), getName());
         if (options.containsKey("edgeTypeNames"))
           edgeTypes = toStringArray(options.get("edgeTypeNames"));
       } else
-        direction = toDirection(params[3]);
+        direction = toDirection(params[3], getName());
     }
 
     final ShortestPathFinder.Result result = ShortestPathFinder.find(context.getDatabase(), source, destination,
-        weightProperty, direction, edgeTypes, WorkGuard.forCommand(context, NAME + "()"));
+        weightProperty, direction, edgeTypes, WorkGuard.forCommand(context, getName() + "()"));
     return result == null ? new ArrayList<>() : new ArrayList<>(result.vertices());
   }
 
@@ -114,13 +124,13 @@ public class SQLFunctionCCHShortestPath extends SQLFunctionMathAbstract {
     throw new IllegalArgumentException("The " + name + " must be a vertex record");
   }
 
-  private static Vertex.DIRECTION toDirection(final Object value) {
+  private static Vertex.DIRECTION toDirection(final Object value, final String functionName) {
     if (value instanceof Vertex.DIRECTION direction)
       return direction;
     try {
       return Vertex.DIRECTION.valueOf(value.toString().trim().toUpperCase(Locale.ENGLISH));
     } catch (final IllegalArgumentException e) {
-      throw new IllegalArgumentException("Invalid direction '" + value + "' for " + NAME + "(): use OUT, IN or BOTH");
+      throw new IllegalArgumentException("Invalid direction '" + value + "' for " + functionName + "(): use OUT, IN or BOTH");
     }
   }
 
