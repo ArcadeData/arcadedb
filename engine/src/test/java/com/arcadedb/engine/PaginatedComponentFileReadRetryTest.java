@@ -31,6 +31,7 @@ import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.FileChannel;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -194,6 +195,18 @@ class PaginatedComponentFileReadRetryTest {
     pcf.close();
 
     assertThatThrownBy(() -> pcf.readPages(0, 1, ByteBuffer.allocate(PAGE_SIZE))).isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  void readPagesSurfacesARefusedReopenAsAFailure() throws Exception {
+    writeFilledPage(0, (byte) 0x11);
+
+    // THE CHANNEL WAS CLOSED BY AN INTERRUPT, BUT THE FILE IS GONE FROM DISK: REOPENING WOULD RE-CREATE IT (#4930)
+    pcf.closeChannel();
+    Files.delete(tempDir.resolve("page." + FILE_ID + "." + PAGE_SIZE + ".v0.arc"));
+
+    assertThatThrownBy(() -> pcf.readPages(0, 1, ByteBuffer.allocate(PAGE_SIZE))).isInstanceOf(FileNotFoundException.class)
+        .hasMessageContaining("no longer exists");
   }
 
   @Test

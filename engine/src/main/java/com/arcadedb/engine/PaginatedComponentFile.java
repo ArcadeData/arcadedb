@@ -212,6 +212,7 @@ public class PaginatedComponentFile extends ComponentFile {
    * allocated on the recovery path alone. Must be called with the channel read lock held.
    */
   private void reopenAndRetry(final String operation, final ChannelOperation channelOperation) throws IOException {
+    assert channelLock.getReadHoldCount() > 0 : "reopenAndRetry must be called with the channel read lock held";
     // ClosedByInterruptException leaves the interrupted flag set; clear it so the reopened channel
     // is not immediately closed again, then restore it so callers are notified.
     boolean wasInterrupted = false;
