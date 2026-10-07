@@ -27,6 +27,9 @@ import org.junit.jupiter.api.Test;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -83,19 +86,12 @@ class Issue9324DateLocalDateTimeTest extends TestHelper {
   @Test
   void dateColumnTruncatesToDaysUnderDatetimeImplementations() {
     database.getSchema().createDocumentType("Dy").createProperty("d", Type.DATE);
-    for (final Class<?> implementation : new Class<?>[] { LocalDateTime.class, java.time.Instant.class, java.time.ZonedDateTime.class }) {
-      final BinarySerializer serializer = ((DatabaseInternal) database).getSerializer();
-      final Object previous = serializer.getDateImplementation();
-      try {
-        serializer.setDateImplementation(implementation);
-        database.transaction(() -> database.newDocument("Dy").set("d", "2024-02-29T13:45:10").save());
-      } catch (final IllegalArgumentException e) {
-        // a string is a separate conversion path; only the typed values below must succeed
-      } finally {
-        serializer.setDateImplementation(previous);
-      }
+    final LocalDateTime withTime = LocalDateTime.of(2024, 2, 29, 13, 45, 10);
+    for (final Object value : new Object[] { withTime, withTime.toInstant(ZoneOffset.UTC), withTime.atZone(ZoneOffset.UTC) }) {
+      database.transaction(() -> database.newDocument("Dy").set("d", value).save());
     }
-    database.transaction(() -> database.newDocument("Dy").set("d", LocalDateTime.of(2024, 2, 29, 13, 45, 10)).save());
-    assertThat(database.iterateType("Dy", true).next().asDocument().get("d")).isEqualTo(DAY);
+    final List<Object> read = new ArrayList<>();
+    database.iterateType("Dy", true).forEachRemaining(r -> read.add(r.asDocument().get("d")));
+    assertThat(read).hasSize(3).allMatch(DAY::equals);
   }
 }

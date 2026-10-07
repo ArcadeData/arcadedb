@@ -84,6 +84,16 @@ class Issue9325StoredDateTimeZoneTest extends TestHelper {
     });
   }
 
+  @Test
+  void storedValuesStillGroupAndDistinctAsOne() {
+    run(ZonedDateTime.class, () -> {
+      database.transaction(() -> database.newVertex("E").set("ts", ZonedDateTime.parse("2026-01-01T11:00:00Z")).save());
+      try (final ResultSet rs = database.query("opencypher", "MATCH (e:E) RETURN count(DISTINCT e.ts) AS c")) {
+        assertThat(((Number) rs.next().getProperty("c")).longValue()).isEqualTo(1L);
+      }
+    });
+  }
+
   private void run(final Class<?> implementation, final Runnable body) {
     final var serializer = ((DatabaseInternal) database).getSerializer();
     final Object previous = serializer.getDateTimeImplementation();
