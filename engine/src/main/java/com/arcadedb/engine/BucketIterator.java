@@ -72,6 +72,10 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
   // ITS OWN; A RECORD ON ITS OWN PAGE IS A VIEW OF THE CACHED PAGE AND COSTS NOTHING MORE), AND WHAT A BATCH MAY HOLD
   private long batchBytes     = 0;
   // #9404: THE BATCHES READ WITH THE READ-AHEAD REDUCED BY THE QUERY HEAP BUDGET, WHICH A PROFILED QUERY REPORTS
+  // #9404: THE FIRST BATCH IS READ WHEN THE ITERATOR IS FIRST READ, NOT WHEN IT IS CREATED. A SCAN OF A TYPE CREATES ONE ITERATOR PER
+  // BUCKET UP FRONT BUT READS THEM ONE AFTER THE OTHER, SO READING EAGERLY HELD A BATCH FOR EVERY BUCKET AT ONCE. WHAT THE ITERATOR SEES
+  // (THE PAGES IT COVERS) IS FIXED WHEN IT IS CREATED, AS IT WAS, AND THE LATER BATCHES WERE ALREADY READ LATER
+  private boolean started = false;
   // WHETHER THE LIMIT OF THE CURRENT BATCH IS THE SHARE OF THE BUDGET AND NOT THE SETTING
   private boolean limitedByBudget = false;
   // WRITTEN BY THE THREAD THAT SCANS, READ BY A PROFILE ONCE THE SCAN IS OVER: NO SYNCHRONIZATION IS NEEDED FOR A COUNT REPORTED THEN
@@ -143,11 +147,10 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
       nextPageNumber = this.totalPages - 1;
       currentRecordInPage = Integer.MAX_VALUE;
     }
-
-    fetchNext();
   }
 
   public void setPosition(final RID position) throws IOException {
+    started = true;
     prefetchIndex = 0;
     nextBatch[prefetchIndex] = position.getRecord();
     nextPageNumber = (int) (position.getPosition() / bucket.getMaxRecordsInPage());
@@ -211,11 +214,20 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
   public boolean hasNext() {
     if (limit > -1 && browsed >= limit)
       return false;
+    start();
     return prefetchIndex < writeIndex && nextBatch[prefetchIndex] != null;
+  }
+
+  private void start() {
+    if (!started) {
+      started = true;
+      fetchNext();
+    }
   }
 
   @Override
   public Record next() {
+    start();
     if (prefetchIndex >= writeIndex || nextBatch[prefetchIndex] == null)
       throw new IllegalStateException();
 
@@ -386,9 +398,10 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
 
   /**
    * The bytes copied out of the pages a batch may reach before it ends: {@link GlobalConfiguration#QUERY_BATCH_MAX_BYTES}, or less
-   * when the queries running have taken most of the query heap budget. A batch always holds at least one record, and keeps taking records
-   * that copy nothing (a record on its own page) until one is copied, so the floor is a scan that copies one record at a time. The budget share is sampled once per batch and is a heuristic, not a reservation: every
-   * scan running takes its share of what is left, so the read-ahead of many scans together is bounded by the budget only roughly.
+   * when the queries running have taken most of the query heap budget. A batch always holds at least one record, and keeps taking
+   * records that copy nothing (a record on its own page) until one is copied, so the floor is a scan that copies one record at a
+   * time. The budget share is sampled once per batch and is a heuristic, not a reservation: every scan running takes its share of
+   * what is left, so the read-ahead of many scans together is bounded by the budget only roughly.
    */
   private long batchByteLimit() {
     if (maxBatchBytes <= 0)
@@ -422,6 +435,7 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
         nextBatch[prefetchIndex] = null;
 
         // A BATCH OF LARGE RECORDS ENDS BY BYTES, NOT BY COUNT: 1,024 RECORDS OF 100KB WOULD BE 100MB PER BUCKET, PER SCAN (#9404)
+        // batchBytes == 0 KEEPS A BATCH OF RECORDS THAT COPY NOTHING (ON THEIR OWN PAGE) GOING UNTIL ONE IS COPIED, EVEN WHEN THE LIMIT IS 0
         for (writeIndex = 0; writeIndex < nextBatch.length && (batchBytes == 0 || batchBytes < batchByteLimit); ) {
           if (positions != null) {
             if (!readNextPosition())

@@ -231,6 +231,7 @@ class BucketIteratorPrefetchBytesIssue9404Test extends TestHelper {
     // BACKWARD: THE LAST RECORD FIRST, EVERY RECORD ONCE
     long before = recordsRead();
     final Iterator<Record> backward = bucket.inverseIterator();
+    backward.hasNext();
     assertThat(recordsRead() - before).isGreaterThan(0).isLessThanOrEqualTo(bound);
     int expected = LARGE_RECORDS - 1;
     while (backward.hasNext()) {
@@ -246,6 +247,7 @@ class BucketIteratorPrefetchBytesIssue9404Test extends TestHelper {
       positions[i] = all.next().getIdentity().getPosition();
     before = recordsRead();
     final BucketIterator byPosition = bucket.iterator(positions, 0, positions.length);
+    byPosition.hasNext();
     assertThat(recordsRead() - before).isGreaterThan(0).isLessThanOrEqualTo(bound);
     int count = 0;
     while (byPosition.hasNext()) {
@@ -253,6 +255,33 @@ class BucketIteratorPrefetchBytesIssue9404Test extends TestHelper {
       ++count;
     }
     assertThat(count).isEqualTo(LARGE_RECORDS);
+  }
+
+  @Test
+  void aScanOfATypeReadsOneBucketBatchAtATime() {
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_BATCH_MAX_BYTES, 1024L * 1024);
+    database.getSchema().createDocumentType("Spread", 4);
+    database.transaction(() -> {
+      for (int i = 0; i < 40; i++)
+        database.newDocument("Spread").set("id", i, "payload", "x".repeat(LARGE_PAYLOAD)).save();
+    });
+
+    // AN ITERATOR PER BUCKET IS CREATED UP FRONT: NONE OF THEM READS A RECORD UNTIL THE SCAN GETS TO IT
+    final long before = recordsRead();
+    final Iterator<Record> scan = database.iterateType("Spread", true);
+    assertThat(recordsRead() - before).isZero();
+
+    // THE FIRST READ FILLS THE BATCH OF THE FIRST BUCKET ONLY
+    assertThat(scan.hasNext()).isTrue();
+    assertThat(recordsRead() - before).isGreaterThan(0).isLessThanOrEqualTo(1024L * 1024 / LARGE_PAYLOAD + 1);
+
+    int count = 1;
+    scan.next();
+    while (scan.hasNext()) {
+      scan.next();
+      ++count;
+    }
+    assertThat(count).isEqualTo(40);
   }
 
   @Test
@@ -312,6 +341,8 @@ class BucketIteratorPrefetchBytesIssue9404Test extends TestHelper {
     final DocumentType type = database.getSchema().getType(typeName);
     final long before = recordsRead();
     final BucketIterator iterator = (BucketIterator) ((LocalBucket) type.getBuckets(false).getFirst()).iterator();
+    // THE FIRST BATCH IS READ WHEN THE ITERATOR IS FIRST READ
+    iterator.hasNext();
     lastBatch = recordsRead() - before;
     return iterator;
   }
