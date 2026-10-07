@@ -187,6 +187,38 @@ class Issue9453AlgoAggregatesUnderViewTest extends TestHelper {
   }
 
   /**
+   * The boundary of the count-only path: a RETURN that also reads a yielded column (a grouping key) must see the real
+   * rows, and a write procedure must run its writes whatever the RETURN reads.
+   */
+  @Test
+  void countOnlyPathBoundary() throws Exception {
+    createView();
+    try {
+      final String q = "CALL algo.wcc() YIELD node, componentId RETURN componentId, count(*) AS c ORDER BY c DESC, componentId";
+      try (final ResultSet rs = database.query("opencypher", q)) {
+        final StringBuilder counts = new StringBuilder();
+        while (rs.hasNext()) {
+          final Result row = rs.next();
+          assertThat(row.<Object>getProperty("componentId")).as(q).isNotNull();
+          counts.append(row.<Number>getProperty("c").longValue()).append(' ');
+        }
+        assertThat(counts.toString().trim()).as(q).isEqualTo("3 1 1");
+      }
+      assertThat(count("CALL algo.wcc() YIELD node, componentId RETURN count(*) AS n, collect(node.id)[0] IS NOT NULL AS x")).isEqualTo(5);
+    } finally {
+      dropView();
+    }
+
+    database.transaction(() -> {
+      try (final ResultSet rs = database.command("opencypher",
+          "UNWIND [1, 2, 3] AS k CALL merge.node(['Tmp9453'], {k: k}, {}) YIELD node RETURN count(*) AS n")) {
+        assertThat(rs.next().<Number>getProperty("n").longValue()).isEqualTo(3);
+      }
+    });
+    assertThat(count("MATCH (t:Tmp9453) RETURN count(t) AS n")).isEqualTo(3);
+  }
+
+  /**
    * The count-only fast path relies on each procedure's stream knowing its exact size. Nothing functional fails when a
    * stream loses it (a {@code filter()} added to one of them, say) - the count just goes back to building a row per
    * node - so this pins it, on both the OLTP and the view-backed path.
@@ -260,6 +292,15 @@ class Issue9453AlgoAggregatesUnderViewTest extends TestHelper {
     final Result row = single("MATCH (s:Node {id: 1}) OPTIONAL CALL algo.bfs(s) YIELD node WHERE node.id > 100 RETURN s.id AS id, node");
     assertThat(row.<Integer>getProperty("id")).isEqualTo(1);
     assertThat(row.<Object>getProperty("node")).isNull();
+
+    // YIELD * names no field: the null row binds every field the procedure declares
+    try (final ResultSet rs = database.query("opencypher", "MATCH (s:Node {id: 4}) OPTIONAL CALL algo.bfs(s) YIELD * RETURN *")) {
+      final Result star = rs.next();
+      assertThat(star.getPropertyNames()).contains("s", "node", "depth");
+      assertThat(star.<Object>getProperty("node")).isNull();
+      assertThat(star.<Object>getProperty("depth")).isNull();
+      assertThat(rs.hasNext()).isFalse();
+    }
 
     // a plain CALL still drops the input row
     try (final ResultSet rs = database.query("opencypher", "MATCH (s:Node {id: 4}) CALL algo.bfs(s) YIELD node RETURN s.id AS id, node")) {
