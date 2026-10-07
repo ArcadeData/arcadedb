@@ -25,6 +25,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.DenseNodeIdProvider;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.EdgeWeight;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.GraphTraversalProvider;
@@ -1187,23 +1188,37 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
   }
 
   /**
-   * Path finders that return vertex RIDs only (A*, Bellman-Ford) lose the edges that were walked. This rebuilds them: for
-   * every pair of consecutive vertices the lightest edge in the given direction (optionally restricted to one edge type)
-   * is picked (an edge without the weight property counts {@code missingWeight}), so the returned weight is the sum of the path's edge weights and the path exposes its relationships.
+   * Path finders that return vertex RIDs only (A*, Dijkstra, the shortest path finder) lose the edges that were walked.
+   * This rebuilds them: for every pair of consecutive vertices the lightest edge in the given direction (optionally
+   * restricted to one edge type) is picked, weighed by the rule the finders walked it by ({@link EdgeWeight}), so the
+   * returned weight is the sum of the path's edge weights and the path exposes its relationships. An edge the finders
+   * do not walk (negative, NaN or infinite weight) is never picked: it would report a weight the path never had.
    */
   protected WeightedPath attachEdges(final List<RID> pathRids, final String relType, final Vertex.DIRECTION dir,
-      final String weightProperty, final double missingWeight) {
+      final String weightProperty) {
     return attachEdges(pathRids, relType != null && !relType.isEmpty() ? new String[] { relType } : null, dir,
-        weightProperty, missingWeight, false);
+        weightProperty, true);
+  }
+
+  /** Same as {@link #attachEdges(List, String, Vertex.DIRECTION, String)} over several edge types. */
+  protected WeightedPath attachEdges(final List<RID> pathRids, final String[] edgeTypeFilter, final Vertex.DIRECTION dir,
+      final String weightProperty) {
+    return attachEdges(pathRids, edgeTypeFilter, dir, weightProperty, true);
   }
 
   /**
-   * Same as {@link #attachEdges(List, String, Vertex.DIRECTION, String, double)} over several edge types. With
-   * {@code skipUnusable}, an edge whose weight is negative or NaN is never picked: for a path finder that does not walk
-   * such edges, picking one would report a weight its path never had.
+   * Same as {@link #attachEdges(List, String, Vertex.DIRECTION, String)} for Bellman-Ford, the one path finder that walks
+   * negative weights: the raw value is read, and only an edge without a numeric weight is priced
+   * {@link EdgeWeight#MISSING}.
    */
-  protected WeightedPath attachEdges(final List<RID> pathRids, final String[] edgeTypeFilter, final Vertex.DIRECTION dir,
-      final String weightProperty, final double missingWeight, final boolean skipUnusable) {
+  protected WeightedPath attachEdgesWithNegativeWeights(final List<RID> pathRids, final String relType,
+      final Vertex.DIRECTION dir, final String weightProperty) {
+    return attachEdges(pathRids, relType != null && !relType.isEmpty() ? new String[] { relType } : null, dir,
+        weightProperty, false);
+  }
+
+  private WeightedPath attachEdges(final List<RID> pathRids, final String[] edgeTypeFilter, final Vertex.DIRECTION dir,
+      final String weightProperty, final boolean walkableOnly) {
     // callers hand a LinkedList: index it once as an array-backed list
     final List<RID> vertexRids = new ArrayList<>(pathRids);
 
@@ -1223,8 +1238,9 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
           if (!toRid.equals(otherRid))
             continue;
           final Object w = weightProperty != null ? edge.get(weightProperty) : null;
-          final double edgeWeight = w instanceof Number num ? num.doubleValue() : missingWeight;
-          if (skipUnusable && (edgeWeight < 0 || Double.isNaN(edgeWeight)))
+          final double edgeWeight = walkableOnly ? EdgeWeight.of(w) :
+              w instanceof Number num ? num.doubleValue() : EdgeWeight.MISSING;
+          if (walkableOnly && !EdgeWeight.isWalkable(edgeWeight))
             continue;
           if (bestEdge == null || edgeWeight < bestWeight) {
             bestWeight = edgeWeight;

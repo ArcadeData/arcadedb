@@ -26,6 +26,7 @@ import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.EdgeWeight;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
@@ -53,7 +54,8 @@ import java.util.Set;
  * The first parameter is source record. The second parameter is destination record. The third parameter is a name of property that
  * represents 'weight' and fourth parameter represents the map of options.
  * <p>
- * If property is not defined in edge or is null, distance between vertexes are 0 .
+ * The weight follows {@link EdgeWeight}: an edge without a numeric weight weighs 1, and an edge whose weight is negative,
+ * NaN or infinite is not walked (issue #9443).
  *
  * @author Saeed Tabrizi (saeed a_t  nowcando.com)
  */
@@ -270,13 +272,17 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
       // is the only thing that pairs a CSR edge with its own weight correctly. Assembling the neighbourhood here
       // got it wrong twice over (issue #6301): the neighbour list is merged and sorted across types while the
       // values are served per type, and a BOTH lookup has no adjacency slice at all, so it found no value for
-      // any edge and quietly priced the whole neighbourhood at MIN - free.
+      // any edge and quietly priced the whole neighbourhood at the old 0 default - free.
       final NodeEdgeWeights edges = nodeId >= 0 ?
-          provider.edgeWeightsOf(nodeId, paramDirection, paramWeightFieldName, MIN, paramEdgeTypeNames) : null;
+          provider.edgeWeightsOf(nodeId, paramDirection, paramWeightFieldName, EdgeWeight.MISSING, paramEdgeTypeNames) :
+          null;
       if (edges != null) {
         final int[] neighborIds = edges.neighbors();
         final double[] weights = edges.weights();
         for (int i = 0; i < neighborIds.length; i++) {
+          // A negative weight breaks the invariant A* settles vertices by, so the edge is not walked (issue #9443)
+          if (!EdgeWeight.isWalkable(weights[i]))
+            continue;
           final RID neighborRid = provider.getRID(neighborIds[i]);
           if (neighborRid == null)
             continue;
@@ -299,10 +305,13 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
     // OLTP fallback
     for (final Edge edge : node.getEdges(paramDirection, paramEdgeTypeNames)) {
       try {
+        final double weight = getDistance(edge);
+        if (!EdgeWeight.isWalkable(weight))
+          continue;
         final Vertex neighbor = getNeighbor(node, edge, ctx.getDatabase());
         if (neighbor != null)
           // Same multigraph reduction as the CSR arm above (issue #8031).
-          result.merge(neighbor, getDistance(edge), Math::min);
+          result.merge(neighbor, weight, Math::min);
       } catch (final RecordNotFoundException e) {
         GhostEdgeReporter.reportSkipped(e);
       }
@@ -399,9 +408,9 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
       try {
         if (next.getOut().equals(target.getIdentity()) || next.getIn().equals(target.getIdentity())) {
           // getDistance(Edge), the same extraction the neighbourhood assembly uses, so an edge with no weight
-          // property costs MIN here too rather than being priced by a second, drifting copy of the rule.
+          // property costs the same here rather than being priced by a second, drifting copy of the rule.
           final double weight = getDistance(next);
-          if (weight < cheapest)
+          if (EdgeWeight.isWalkable(weight) && weight < cheapest)
             cheapest = weight;
         }
       } catch (final RecordNotFoundException rnf) {
@@ -409,20 +418,12 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
       }
     }
 
-    return cheapest == Double.POSITIVE_INFINITY ? MIN : cheapest;
+    return cheapest == Double.POSITIVE_INFINITY ? EdgeWeight.MISSING : cheapest;
   }
 
+  /** The weight of {@code edge} by the rule every weighted path finder shares, {@link EdgeWeight#of(Object)}. */
   protected double getDistance(final Edge edge) {
-    if (edge != null) {
-      final Object fieldValue = edge.get(paramWeightFieldName);
-      if (fieldValue != null)
-        if (fieldValue instanceof Float)
-          return (Float) fieldValue;
-        else if (fieldValue instanceof Number)
-          return ((Number) fieldValue).doubleValue();
-    }
-
-    return MIN;
+    return edge != null ? EdgeWeight.of(edge.get(paramWeightFieldName)) : EdgeWeight.MISSING;
   }
 
   @Override

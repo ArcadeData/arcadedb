@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.EdgeWeight;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
@@ -45,8 +46,9 @@ import java.util.Map;
  *   <li>otherwise bidirectional Dijkstra on the vertex and edge records, which is also what a transaction holding
  *       uncommitted changes always gets, since no view can see them.</li>
  * </ol>
- * All three share one definition of the weight: the edge property's numeric value, 1 when the edge has none, and an edge
- * whose value is negative or NaN is not walked. Among parallel edges only the cheapest counts.
+ * All three share the definition of the weight every weighted path finder uses, {@link EdgeWeight}: the edge property's
+ * numeric value, 1 when the edge has none, and an edge whose value is negative, NaN or infinite is not walked. Among
+ * parallel edges only the cheapest counts.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -59,8 +61,6 @@ public final class ShortestPathFinder {
   /** A shortest path: its vertices in walking order, its total weight, and what computed it. */
   public record Result(List<RID> vertices, double weight, Engine engine) {
   }
-
-  private static final double MISSING_WEIGHT = 1.0;
 
   private ShortestPathFinder() {
   }
@@ -137,14 +137,6 @@ public final class ShortestPathFinder {
     return new Result(vertices, search.best, Engine.RECORDS);
   }
 
-  /** The weight an edge contributes, or a negative value when it must not be walked. */
-  static double weightOf(final Object value) {
-    if (!(value instanceof Number number))
-      return MISSING_WEIGHT;
-    final double weight = number.doubleValue();
-    return weight >= 0 ? weight : -1; // NaN fails the comparison as well
-  }
-
   // ---------------------------------------------------------------------------------------------------------------
 
   /** A graph seen through int ids: the arcs leaving a node forward, or entering it backward. */
@@ -190,14 +182,14 @@ public final class ShortestPathFinder {
     @Override
     public boolean expand(final int node, final boolean isForward, final ArcSink sink) {
       final NodeEdgeWeights edges = view.edgeWeightsOf(snapshot, node, isForward ? forward : backward, weightProperty,
-          MISSING_WEIGHT, edgeTypes);
+          EdgeWeight.MISSING, edgeTypes);
       if (edges == null)
         return false;
       final int[] neighbors = edges.neighbors();
       final double[] weights = edges.weights();
       for (int i = 0; i < neighbors.length; i++) {
         final double w = weights[i];
-        if (w >= 0 && neighbors[i] != node)
+        if (EdgeWeight.isWalkable(w) && neighbors[i] != node)
           sink.accept(neighbors[i], w);
       }
       return true;
@@ -246,8 +238,8 @@ public final class ShortestPathFinder {
           final RID other = out.equals(rid) ? edge.getIn() : out;
           if (other.equals(rid))
             continue;
-          final double w = weightOf(edge.get(weightProperty));
-          if (w >= 0)
+          final double w = EdgeWeight.of(edge.get(weightProperty));
+          if (EdgeWeight.isWalkable(w))
             sink.accept(intern(other), w);
         } catch (final RecordNotFoundException e) {
           GhostEdgeReporter.reportSkipped(e);

@@ -30,6 +30,7 @@ import com.arcadedb.event.AfterRecordUpdateListener;
 import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.graph.EdgeWeight;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.NeighborView;
@@ -1902,7 +1903,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
   /**
    * Every arc of {@code edgeTypes} (null: every type the snapshot holds) with its {@code weightProperty} value, read out
-   * of {@code snap} with its overlay applied. An edge without a value weighs 1.
+   * of {@code snap} with its overlay applied. An edge without a value weighs {@link EdgeWeight#MISSING}.
    *
    * @return the arcs in the snapshot's dense id space, or null when the snapshot cannot price them exactly (its edge
    * columns are being rebuilt, a slice has no column for the property, or a parallel-edge deletion is ambiguous) or the
@@ -1946,7 +1947,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
           if ((u & 0xFFFF) == 0 && cancelled != null && cancelled.getAsBoolean())
             return null;
           for (int j = offsets[u], end = offsets[u + 1]; j < end; j++)
-            arcs.add(u, neighbors[j], columnWeight(column, j, 1.0));
+            arcs.add(u, neighbors[j], columnWeight(column, j, EdgeWeight.MISSING));
         }
       } else {
         for (int u = 0; u < n; u++) {
@@ -1954,7 +1955,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
             return null;
           if (ov.isDeleted(u))
             continue;
-          final NodeEdgeWeights edges = edgeWeightsForSlice(snap, u, true, slice, weightProperty, 1.0, null);
+          final NodeEdgeWeights edges = edgeWeightsForSlice(snap, u, true, slice, weightProperty, EdgeWeight.MISSING, null);
           if (edges == null) {
             // a node with nothing in this slice, base or overlay, is not a reason to refuse the whole graph
             if (!sliceHasEdges(snap, u, slice, true))
