@@ -367,14 +367,14 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
       } catch (final RuntimeException e) {
         LogManager.instance().log(this, Level.WARNING, "Error while streaming the result of a query on database '%s'",
             e, database != null ? database.getName() : null);
-        writeClassifiedError(stream, e);
+        writeClassifiedError(exchange, stream, e);
         return new SerializationOutcome(returned, false);
       }
 
       if (ceilingLowered && truncated) {
         // What the buffered path answers 413 for. A 200 is already on the wire, so the refusal goes in band and
         // the stats trailer is withheld - which is exactly how a consumer tells this from a complete stream.
-        writeClassifiedError(stream, resultSetTooLarge(maxResultRows));
+        writeClassifiedError(exchange, stream, resultSetTooLarge(maxResultRows));
         return new SerializationOutcome(returned, true);
       }
 
@@ -388,18 +388,26 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
   }
 
   /**
-   * Writes the in-band {@code error} line of a stream whose 200 is already on the wire, carrying the status, the
-   * reported exception class and the {@code exceptionArgs} the buffered encoding would have answered the same failure
-   * with (issue #8235). Decided by {@link #classifyError}, the one classifier every handler answers with, so the two
-   * encodings cannot disagree about what a failure is. {@code message} is kept as it always was - the failure's own
-   * message, or its simple class name when it has none - so a consumer that reads only that member sees no change.
+   * Writes the in-band {@code error} line of a stream whose 200 is already on the wire: the body the buffered encoding
+   * would have answered the same failure with - status, classified label in {@code error}, reported exception class,
+   * {@code exceptionArgs} (issue #8235), and the {@code Retry-After} back-off as {@code retryAfter} (issue #8899) -
+   * built by {@link #buildStreamedErrorLine} from {@link #classifyError}, the one classifier every handler answers
+   * with, so the two encodings cannot disagree about what a failure is and the batch stream's line has the same members.
+   * <p>
+   * {@code message}, which the Java driver ({@code RemoteStreamingResultSet}) and older consumers read, follows the
+   * buffered encoding's concealment rule (issue #8899, was #8875): outside production mode it is the failure's own
+   * message (or its simple class name when it has none), exactly as it always was, and the cause chain travels in
+   * {@code detail}; in production mode it is the classified label, since the raw text can carry file paths and
+   * engine internals that the buffered body conceals for the same failure.
    */
-  private void writeClassifiedError(final NdJsonResultStream stream, final Throwable failure) throws IOException {
+  private void writeClassifiedError(final HttpServerExchange exchange, final NdJsonResultStream stream,
+      final Throwable failure) throws IOException {
     final ErrorClassification classification = classifyError(failure);
-    final Throwable reported = classification.reported();
-    stream.writeError(failure.getMessage() != null ? failure.getMessage() : failure.getClass().getSimpleName(),
-        classification.status(), reported != null ? reported.getClass().getName() : null,
-        classification.exceptionArgs());
+    final JSONObject error = buildStreamedErrorLine(exchange, classification);
+    error.put("message", isProductionMode() ?
+        classification.message() :
+        failure.getMessage() != null ? failure.getMessage() : failure.getClass().getSimpleName());
+    stream.writeError(error);
   }
 
   /**
