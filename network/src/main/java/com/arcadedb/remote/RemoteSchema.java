@@ -200,11 +200,19 @@ public class RemoteSchema implements Schema {
     remoteDatabase.command("sql", "DROP MATERIALIZED VIEW " + Identifier.quote(viewName));
   }
 
+  /**
+   * Renders the call as {@code ALTER MATERIALIZED VIEW} (issue #8726). Every argument the statement has no expression
+   * for - a null mode, a negative interval, an interval on a mode other than PERIODIC, a PERIODIC interval that is not a
+   * whole number of seconds - is refused here, before anything reaches the server. The first three are refused by the
+   * embedded schema too; sub-second precision is the one thing only the embedded call can carry.
+   */
   @Override
   public void alterMaterializedView(final String viewName, final MaterializedViewRefreshMode newMode,
       final long newIntervalMs) {
-    throw new UnsupportedOperationException(
-        "alterMaterializedView() is not supported in remote database. Use SQL ALTER MATERIALIZED VIEW instead.");
+    if (viewName == null || viewName.isEmpty())
+      throw new IllegalArgumentException("Materialized view name is required");
+    final String refreshClause = MaterializedViewBuilder.renderRefreshClause(newMode, newIntervalMs);
+    remoteDatabase.command("sql", "ALTER MATERIALIZED VIEW " + Identifier.quote(viewName) + " " + refreshClause);
   }
 
   /**
