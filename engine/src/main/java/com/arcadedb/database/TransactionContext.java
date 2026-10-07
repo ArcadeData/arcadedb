@@ -2940,6 +2940,23 @@ public class TransactionContext implements Transaction {
     return map;
   }
 
+  /**
+   * Drops the pages and records {@code REPEATABLE_READ} pinned for these files, so the next read of them is served from
+   * the committed state again. The pages this transaction modified are kept. Pages are pinned the first time they are
+   * read, so a transaction that read an index page before a commit and the record page after it holds two states that
+   * never coexisted (#9369); a caller that has caught that - an index entry whose record is gone - uses this to read both
+   * again against one state. This deliberately weakens the snapshot of those files for the rest of the transaction, and only
+   * a caller that detected a torn read may use it. {@code immutableRecordsCache} only holds records read through this
+   * transaction's pinned pages, never one it modified: those live in its modified-record bookkeeping, which this does not touch.
+   */
+  public void unpinFiles(final Collection<Integer> fileIds) {
+    LogManager.instance().log(this, Level.FINE, "Releasing the pinned pages of files %s: a commit overlapped a read of this transaction", null, fileIds);
+    // A bucket is a file, so its id is the file id the pinned pages are keyed by
+    final Set<Integer> files = new HashSet<>(fileIds);
+    immutablePages.values().removeIf(page -> files.contains(page.getPageId().getFileId()));
+    immutableRecordsCache.values().removeIf(r -> files.contains(r.getIdentity().getBucketId()));
+  }
+
   public void removeFile(final int fileId) {
     if (newPages != null)
       newPages.values().removeIf(mutablePage -> fileId == mutablePage.getPageId().getFileId());

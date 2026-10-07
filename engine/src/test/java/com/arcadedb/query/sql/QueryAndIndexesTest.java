@@ -92,7 +92,9 @@ class QueryAndIndexesTest extends TestHelper {
   void partialMatchingFiltering() {
 
     database.transaction(() -> {
-      final var params = Map.of(":name", "Jay", ":surname", "Miner123");
+      // Named parameters: a Map<String, String> would pick the varargs overload and bind the whole map as one positional value, which the
+      // index used to expand into one lookup per entry (#9370)
+      final Map<String, Object> params = Map.of("name", "Jay", "surname", "Miner123");
       final ResultSet rs = database.command("SQL", "SELECT FROM V WHERE name = :name", params);
 
       final AtomicInteger total = new AtomicInteger();

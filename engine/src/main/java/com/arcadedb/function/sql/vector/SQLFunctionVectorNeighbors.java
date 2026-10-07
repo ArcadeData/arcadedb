@@ -233,6 +233,27 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
     // Get the query vector
     final float[] queryVector = extractQueryVector(key, vectorIndexes.getFirst(), context);
 
+    // A record deleted by a commit that overlaps the search can still be in the index's answer for a short while. The
+    // non-grouped path asks for exactly `limit` candidates, so each such record would cost the caller a row (#9368).
+    // When a stale candidate was skipped, the answer is short, and the index could have given more (a search that
+    // returned fewer candidates than asked has nothing left), ask again with a wider fetch so a stale entry costs a
+    // candidate and not an answer row. Bounded by MAX_FETCH_CANDIDATES.
+    int fetchK = limit;
+    while (true) {
+      final boolean[] staleSkipped = new boolean[1];
+      final boolean[] saturated = new boolean[1];
+      final ArrayList<Object> result = searchAndEmit(vectorIndexes, queryVector, limit, fetchK, efSearch, allowedRIDs,
+          groupBy, groupSize, maxDistance, context, staleSkipped, saturated);
+      if (groupBy != null || result.size() >= limit || !staleSkipped[0] || !saturated[0] || fetchK >= MAX_FETCH_CANDIDATES)
+        return result;
+      fetchK = (int) Math.min((long) fetchK * 2L, MAX_FETCH_CANDIDATES);
+    }
+  }
+
+  private ArrayList<Object> searchAndEmit(final List<LSMVectorIndex> vectorIndexes, final float[] queryVector, final int limit,
+      final int fetchK, final int efSearch, final Set<RID> allowedRIDs, final String groupBy, final int groupSize,
+      final float maxDistance, final CommandContext context, final boolean[] staleSkipped, final boolean[] saturated) {
+
     // Memory-budget guard for the grouped path (issue #4071): the per-group accounting is O(limit * groupSize)
     // per bucket, but we still reject pathological combinations (e.g. limit=10000, groupSize=10000 = 100M
     // candidates) so the search loop does not allocate arrays in the GiB range. Same shape (and exception text)
@@ -268,11 +289,13 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
     for (final LSMVectorIndex lsmIndex : vectorIndexes) {
       final List<Pair<RID, Float>> neighbors;
       if (groupBy == null)
-        neighbors = lsmIndex.findNeighborsFromVector(queryVector, limit, efSearch, allowedRIDs);
+        neighbors = lsmIndex.findNeighborsFromVector(queryVector, fetchK, efSearch, allowedRIDs);
       else
         neighbors = lsmIndex.findNeighborsFromVectorGrouped(queryVector, limit, groupSize, efSearch, allowedRIDs,
             groupKeyResolver);
       allNeighbors.addAll(neighbors);
+      if (groupBy == null && neighbors.size() >= fetchK)
+        saturated[0] = true;
       if (planner != null) {
         final List<RID> rids = new ArrayList<>(neighbors.size());
         final float[] values = new float[neighbors.size()];
@@ -343,6 +366,7 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
         // Skip records that no longer exist in the bucket (issue #3717).
         // This can happen when the vector index has stale entries pointing to deleted records,
         // e.g., after crash recovery, backup restore, or index/storage inconsistencies.
+        staleSkipped[0] = true;
         continue;
       }
 
