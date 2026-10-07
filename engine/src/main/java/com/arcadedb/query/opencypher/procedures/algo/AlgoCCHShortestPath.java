@@ -94,7 +94,7 @@ public class AlgoCCHShortestPath extends AbstractAlgoProcedure {
     if (found.engine() == ShortestPathFinder.Engine.CONTRACTION_HIERARCHY)
       context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
 
-    final WeightedPath weighted = attachEdges(found.vertices(), relTypes, direction, weightProperty, 1.0, true);
+    final WeightedPath weighted = attachEdges(found.vertices(), relTypes, direction, weightProperty);
     final ResultInternal result = new ResultInternal();
     result.setProperty("path", buildPath(weighted.ridsWithEdges(), context.getDatabase()));
     result.setProperty("weight", found.weight());

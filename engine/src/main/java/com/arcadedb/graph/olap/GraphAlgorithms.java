@@ -19,6 +19,7 @@
 package com.arcadedb.graph.olap;
 
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.graph.EdgeWeight;
 import com.arcadedb.graph.NodeEdgeWeights;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.Vertex.DIRECTION;
@@ -1363,7 +1364,7 @@ public final class GraphAlgorithms {
           for (int j = start; j < end; j++) {
             final double w = getWeight(j, weightDoubleArrays[t], weightIntArrays[t],
                 weightLongArrays[t], weightNullBitsets[t]);
-            if (w < 0)
+            if (!EdgeWeight.isWalkable(w))
               continue;
             final double newDist = d + w;
             final int v = fwdNeighbors[j];
@@ -1383,7 +1384,7 @@ public final class GraphAlgorithms {
             final int fwdIdx = bwdToFwds[t] != null ? bwdToFwds[t][j] : j;
             final double w = getWeight(fwdIdx, weightDoubleArrays[t], weightIntArrays[t],
                 weightLongArrays[t], weightNullBitsets[t]);
-            if (w < 0)
+            if (!EdgeWeight.isWalkable(w))
               continue;
             final double newDist = d + w;
             final int v = bwdNeighbors[j];
@@ -1423,7 +1424,7 @@ public final class GraphAlgorithms {
       if (d > dist[u])
         continue;
 
-      final NodeEdgeWeights edges = view.edgeWeightsOf(u, direction, weightProperty, 1.0, edgeTypes);
+      final NodeEdgeWeights edges = view.edgeWeightsOf(u, direction, weightProperty, EdgeWeight.MISSING, edgeTypes);
       if (edges == null)
         return null; // one node the overlay cannot resolve exactly makes the whole answer refuse, not guess
 
@@ -1434,7 +1435,7 @@ public final class GraphAlgorithms {
         if (v >= dist.length)
           return null; // a concurrent commit widened the id space past this search's pinned bound; refuse rather than overrun it
         final double w = weights[j];
-        if (w < 0)
+        if (!EdgeWeight.isWalkable(w))
           continue;
         final double newDist = d + w;
         if (newDist < dist[v]) {
@@ -1447,18 +1448,21 @@ public final class GraphAlgorithms {
     return dist;
   }
 
-  /** Extracts edge weight from the appropriate typed array. Returns 1.0 if no weight column. */
+  /**
+   * Extracts edge weight from the appropriate typed array: {@link EdgeWeight#MISSING} for an edge without a value or a
+   * view without a numeric weight column, the same rule every weighted path finder reads the records by (issue #9443).
+   */
   private static double getWeight(final int fwdIdx, final double[] doubleData, final int[] intData,
       final long[] longData, final long[] nullBitset) {
     if (nullBitset != null && (nullBitset[fwdIdx >>> 6] & (1L << (fwdIdx & 63))) != 0)
-      return 1.0;
+      return EdgeWeight.MISSING;
     if (doubleData != null)
       return doubleData[fwdIdx];
     if (intData != null)
       return intData[fwdIdx];
     if (longData != null)
       return longData[fwdIdx];
-    return 1.0;
+    return EdgeWeight.MISSING;
   }
 
   // --- Label Propagation (Synchronous, Parallel) ---

@@ -111,7 +111,7 @@ public class AlgoAStar extends AbstractAlgoProcedure {
     }
 
     // The A* function returns vertex RIDs only: rebuild the edges between them for the weight and the relationships
-    final WeightedPath weighted = attachEdges(pathRids, relType, Vertex.DIRECTION.BOTH, weightProperty, 0.0);
+    final WeightedPath weighted = attachEdges(pathRids, relType, Vertex.DIRECTION.BOTH, weightProperty);
     final Map<String, Object> path = buildPath(weighted.ridsWithEdges(), context.getDatabase());
     final double totalWeight = weighted.weight();
 

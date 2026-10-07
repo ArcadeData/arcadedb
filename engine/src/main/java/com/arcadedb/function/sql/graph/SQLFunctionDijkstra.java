@@ -21,6 +21,7 @@ package com.arcadedb.function.sql.graph;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.function.sql.FunctionOptions;
+import com.arcadedb.graph.EdgeWeight;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 
@@ -35,7 +36,8 @@ import java.util.Set;
  * The first parameter is source record. The second parameter is destination record. The third parameter is a name of property that
  * represents 'weight'.
  * <p>
- * If property is not defined in edge or is null, distance between vertexes are 0.
+ * The weight follows {@link EdgeWeight}: an edge without a numeric weight weighs 1, and an edge whose
+ * weight is negative, NaN or infinite is not walked (issue #9443). Use {@code bellmanFord()} for negative weights.
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */

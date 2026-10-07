@@ -18,6 +18,8 @@
  */
 package com.arcadedb.graph.olap;
 
+import com.arcadedb.graph.EdgeWeight;
+
 import java.util.Arrays;
 import java.util.function.BooleanSupplier;
 
@@ -77,7 +79,8 @@ final class CCHMetric {
 
   /**
    * The cost each supergraph arc starts customization from: the cheapest input arc joining its endpoints, per direction.
-   * A negative or NaN weight makes its arc unusable, the same as a missing one: a shortest path is not defined over it.
+   * A negative, NaN or infinite weight makes its arc unusable ({@link EdgeWeight#isWalkable}), the same as an absent arc:
+   * a shortest path is not defined over it.
    *
    * @return {up, down} (the same array twice when undirected), or null when an input arc joins two vertices the
    * supergraph has no arc between, or names a vertex outside it: the topology does not describe this graph
@@ -106,7 +109,7 @@ final class CCHMetric {
       final int arc = ru < rv ? topology.findArc(ru, rv) : topology.findArc(rv, ru);
       if (arc < 0)
         return null;
-      if (w < 0 || Double.isNaN(w))
+      if (!EdgeWeight.isWalkable(w))
         continue;
       if (undirected || ru < rv) {
         if (w < up[arc])

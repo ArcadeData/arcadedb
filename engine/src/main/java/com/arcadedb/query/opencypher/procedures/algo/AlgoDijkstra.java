@@ -103,7 +103,7 @@ public class AlgoDijkstra extends AbstractAlgoProcedure {
 
     // The A* implementation returns vertices only. Traverse the edges between consecutive
     // vertices to reconstruct the path's total weight and to expose the relationships.
-    final WeightedPath weighted = attachEdges(pathRids, relType, parseDirection(direction), weightProperty, 0.0);
+    final WeightedPath weighted = attachEdges(pathRids, relType, parseDirection(direction), weightProperty);
 
     // Build path representation including edges
     final Map<String, Object> path = buildPath(weighted.ridsWithEdges(), context.getDatabase());
