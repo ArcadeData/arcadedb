@@ -20,7 +20,9 @@ package com.arcadedb.graphql.schema;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.database.EmbeddedDocument;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graphql.parser.AbstractField;
@@ -489,6 +491,7 @@ public class GraphQLResultSet implements ResultSet {
   private GraphQLResult mapProjections(final Result current, final List<Projection> projections,
       final ObjectTypeDefinition parentType) {
     final Map<String, Object> map = new HashMap<>();
+    Map<String, String> aliases = null;
 
     if (current.getElement().isPresent()) {
       final Document element = current.getElement().get();
@@ -502,6 +505,12 @@ public class GraphQLResultSet implements ResultSet {
     for (final Projection entry : projections) {
       final String projName = entry.name();
       final String realName = entry.fieldName();
+
+      if (!projName.equals(realName)) {
+        if (aliases == null)
+          aliases = new HashMap<>(4);
+        aliases.put(projName, realName);
+      }
 
       if (entry.typeName()) {
         map.put(projName, typeNameOf(current, parentType));
@@ -543,10 +552,15 @@ public class GraphQLResultSet implements ResultSet {
       final boolean cacheable = entry.cacheable();
       final ObjectTypeDefinition projectionType = entry.type();
 
+      if (selectionSet != null || projectionType != null)
+        // A LINK IS READ AS A BARE RID: LOAD THE RECORD IT POINTS TO, OTHERWISE NO ARM BELOW COULD RESOLVE IT (ISSUE #9467)
+        projectionValue = loadLinks(projectionValue);
+
       if (selectionSet != null) {
         switch (projectionValue) {
         case Map m -> projectionValue = mapBySelections(new ResultInternal(m), selectionSet, projectionType, cacheable);
         case EmbeddedDocument emb -> projectionValue = mapBySelections(new ResultInternal(emb), selectionSet, projectionType, cacheable);
+        case Document document -> projectionValue = mapBySelections(new ResultInternal(document), selectionSet, projectionType, cacheable);
         case Result result -> projectionValue = mapBySelections(result, selectionSet, projectionType, cacheable);
         case Iterable iterable -> {
           final List<Result> subResults = new ArrayList<>();
@@ -573,6 +587,7 @@ public class GraphQLResultSet implements ResultSet {
         // MIRRORS THE Map/Result ARMS: THIS BRANCH IS THE ONE WHERE selectionSet IS NULL BY CONSTRUCTION, SO
         // DELEGATING TO mapBySelections() WITH IT WAS A GUARANTEED NPE. SEE ISSUE #6835
         case EmbeddedDocument emb -> projectionValue = mapByReturnType(new ResultInternal(emb), projectionType);
+        case Document document -> projectionValue = mapByReturnType(new ResultInternal(document), projectionType);
         case Result result -> projectionValue = mapByReturnType(result, projectionType);
         case Iterable iterable -> {
           final List<Result> subResults = new ArrayList<>();
@@ -598,6 +613,38 @@ public class GraphQLResultSet implements ResultSet {
       map.put(projName, projectionValue);
     }
 
-    return new GraphQLResult(map);
+    return new GraphQLResult(map, current, aliases);
+  }
+
+  /**
+   * Replaces a link with the record it points to, and the links of a collection with their records, so a sub-selection
+   * can be resolved against them. A link to a record that no longer exists resolves to null (dropped from a
+   * collection). Any other value is returned as is.
+   */
+  private static Object loadLinks(final Object value) {
+    if (value instanceof Identifiable identifiable && !(value instanceof Document))
+      return loadLink(identifiable);
+
+    if (value instanceof Iterable<?> iterable) {
+      final List<Object> loaded = new ArrayList<>();
+      for (final Object o : iterable) {
+        if (o instanceof Identifiable identifiable && !(o instanceof Document)) {
+          final Object record = loadLink(identifiable);
+          if (record != null)
+            loaded.add(record);
+        } else
+          loaded.add(o);
+      }
+      return loaded;
+    }
+    return value;
+  }
+
+  private static Object loadLink(final Identifiable link) {
+    try {
+      return link.getRecord();
+    } catch (final RecordNotFoundException e) {
+      return null;
+    }
   }
 }
