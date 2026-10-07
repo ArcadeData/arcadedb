@@ -46,6 +46,9 @@ set -euo pipefail
 #   WIRE_STRICT - "1" to hard-fail instead of WARN-skip on wire-protocol checks, see above
 #   SRV_PID    - if set and the process dies while waiting for HTTP readiness, fail fast
 #   SERVER_LOG - if set, tailed on failure
+#   OTLP_SINK_DIR    - the directory otlp_sink.py records into (see otlp-sink.sh); if set, the OTLP
+#                      metrics and tracing checks also assert an export reached it
+#   OTLP_EXPORT_WAIT - seconds to wait for each of those exports, default 60
 
 HOST="${HOST:-127.0.0.1}"
 HTTP="${HTTP:-2480}"
@@ -277,21 +280,59 @@ case "$PROM_CODE" in
     ;;
 esac
 
-# The OTLP metrics registry and the tracing plugin expose no endpoint to probe: their only
-# observable is the line they log once their SDK has been built, which is exactly the step that
-# fails inside a native image when reflection or resource metadata is missing.
+# The OTLP metrics registry and the tracing plugin expose no endpoint to probe. Two observables:
+# the line each logs once its SDK has been built (the step that fails inside a native image when
+# reflection or resource metadata is missing at startup), and - when the caller started the
+# stand-in collector otlp_sink.py and pointed the exporters at it (OTLP_SINK_DIR, see otlp-sink.sh)
+# - an export that actually reached it: the span batch flush over OTLP/gRPC and the metrics push
+# over OTLP/HTTP protobuf, which is where the metadata the exporters need at RUN time is proven.
+#
+# Returns non-zero (after its WARN) when the plugin is not running, so the caller skips the export
+# check of a plugin that was never enabled instead of waiting for an export that cannot come.
 plugin_log_check() {
   local label="$1" needle="$2"
   echo "[exercise] $label"
   if [ -z "${SERVER_LOG:-}" ] || [ ! -r "$SERVER_LOG" ]; then
     wire_fail "$label: SERVER_LOG not available, cannot assert"
+    return 1
   elif grep -q "$needle" "$SERVER_LOG"; then
     echo "[exercise] $label -> '$needle'"
   else
     wire_fail "$label: '$needle' not found in the server log (plugin not enabled or missing from the image?)"
+    return 1
   fi
 }
-plugin_log_check "OTLP metrics export" "OTLP metrics export enabled"
-plugin_log_check "OpenTelemetry tracing" "OpenTelemetry tracing enabled"
+
+# otlp_export_check <label> <kind> <what-started-it>: waits for the sink to record an export of
+# <kind> (metrics|traces) whose payload carries the "service.name" resource attribute key, which
+# every OTLP export of either kind holds as a plain protobuf string. Bounded by OTLP_EXPORT_WAIT
+# seconds (default 60): the metrics push runs every 2 s and the span batch every 5 s, so a healthy
+# exporter delivers in seconds and the bound only decides how long a broken one takes to fail.
+otlp_export_check() {
+  local label="$1" kind="$2" cause="$3"
+  echo "[exercise] $label"
+  if [ -z "${OTLP_SINK_DIR:-}" ]; then
+    wire_fail "$label: no OTLP sink running (OTLP_SINK_DIR unset or python3 missing), cannot assert the export"
+    return 0
+  fi
+  local requests="$OTLP_SINK_DIR/$kind.requests" body="$OTLP_SINK_DIR/$kind.body"
+  for _ in $(seq 1 "${OTLP_EXPORT_WAIT:-60}"); do
+    if [ -s "$requests" ] && grep -aq 'service.name' "$body" 2>/dev/null; then
+      echo "[exercise] $label -> $(wc -l <"$requests" | tr -d ' ') export(s) received, first: $(head -1 "$requests")"
+      return 0
+    fi
+    sleep 1
+  done
+  wire_fail "$label: the OTLP sink received no $kind export carrying service.name in ${OTLP_EXPORT_WAIT:-60}s ($cause)$( [ -n "${SERVER_LOG:-}" ] && grep -iE 'otlp|opentelemetry|exporter' "$SERVER_LOG" | tail -5 | sed 's/^/ | /')"
+}
+
+if plugin_log_check "OTLP metrics export" "OTLP metrics export enabled"; then
+  otlp_export_check "OTLP metrics push" metrics "the registry pushes every arcadedb.serverMetrics.otlp.step"
+fi
+if plugin_log_check "OpenTelemetry tracing" "OpenTelemetry tracing enabled"; then
+  # The SQL/Cypher round-trips above are traced as long as samplingRate is above 0, as every CI leg that enables
+  # tracing sets it; with the default of 0 no span is ever recorded, so there is nothing to export
+  otlp_export_check "OpenTelemetry span export" traces "spans are only recorded with arcadedb.serverMetrics.tracing.samplingRate above 0"
+fi
 
 echo "[exercise] PASS"

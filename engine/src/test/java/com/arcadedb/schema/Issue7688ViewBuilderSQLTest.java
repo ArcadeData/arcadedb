@@ -188,6 +188,32 @@ class Issue7688ViewBuilderSQLTest extends TestHelper {
         .isInstanceOf(SchemaException.class).hasMessageContaining("only REFRESH EVERY");
   }
 
+  /**
+   * Issue #9380: an embedded {@code create()} stored an interval on a MANUAL or INCREMENTAL view - an interval nothing
+   * schedules - while the remote builder refused the same state through {@code toSQL()}. Both paths now refuse it, and
+   * the embedded refusal leaves neither the view nor its backing type behind.
+   */
+  @Test
+  void anIntervalOnANonPeriodicViewIsRefusedOnBothPaths() {
+    for (final MaterializedViewRefreshMode mode : new MaterializedViewRefreshMode[] { MaterializedViewRefreshMode.MANUAL,
+        MaterializedViewRefreshMode.INCREMENTAL }) {
+      final String name = "NonPeriodic" + mode;
+      final MaterializedViewBuilder builder = database.getSchema().buildMaterializedView().withName(name)
+          .withQuery("SELECT FROM Account").withRefreshMode(mode).withRefreshInterval(5_000L);
+
+      assertThatThrownBy(builder::toSQL).isInstanceOf(SchemaException.class).hasMessageContaining("only REFRESH EVERY");
+      assertThatThrownBy(builder::create).isInstanceOf(SchemaException.class).hasMessageContaining("only REFRESH EVERY");
+
+      assertThat(database.getSchema().existsMaterializedView(name)).isFalse();
+      assertThat(database.getSchema().existsType(name)).isFalse();
+
+      // The same mode with no interval is still accepted embedded, so the refusal is about the interval alone
+      final MaterializedView view = builder.withRefreshInterval(0L).create();
+      assertThat(view.getRefreshMode()).isEqualTo(mode);
+      assertThat(view.getRefreshInterval()).isZero();
+    }
+  }
+
   @Test
   void aNegativeIntervalAndANullModeAreRefusedOnBothPaths() {
     final Function<String, MaterializedViewBuilder> negative = n -> database.getSchema().buildMaterializedView().withName(n)

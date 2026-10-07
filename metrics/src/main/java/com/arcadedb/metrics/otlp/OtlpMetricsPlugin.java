@@ -29,6 +29,7 @@ import io.micrometer.core.instrument.Metrics;
 import io.micrometer.registry.otlp.OtlpConfig;
 import io.micrometer.registry.otlp.OtlpMeterRegistry;
 
+import java.time.Duration;
 import java.util.Map;
 import java.util.logging.Level;
 import java.util.regex.Matcher;
@@ -85,9 +86,9 @@ public class OtlpMetricsPlugin implements ServerPlugin {
   }
 
   /**
-   * The OTLP registry's configuration: the endpoint from the ArcadeDB setting, and the resource attributes resolved by
-   * {@link OtelResourceAttributes}, the same resolution the tracing plugin uses, so metrics and spans report the same
-   * {@code service.name} (issue #7295). Micrometer's own default read the OpenTelemetry variables too, but let a
+   * The OTLP registry's configuration: the endpoint and the push interval from the ArcadeDB settings, and the resource
+   * attributes resolved by {@link OtelResourceAttributes}, the same resolution the tracing plugin uses, so metrics and
+   * spans report the same {@code service.name} (issue #7295). Micrometer's own default read the OpenTelemetry variables too, but let a
    * {@code service.name} in {@code OTEL_RESOURCE_ATTRIBUTES} win over {@code OTEL_SERVICE_NAME} and otherwise reported
    * {@code unknown_service}.
    */
@@ -99,10 +100,17 @@ public class OtlpMetricsPlugin implements ServerPlugin {
           GlobalConfiguration.SERVER_METRICS_OTLP_ENDPOINT.getKey());
     final String endpoint = normalizeEndpoint(configured);
     final Map<String, String> resourceAttributes = OtelResourceAttributes.resolve(configuration, environment);
+    final long stepMs = configuration.getValueAsLong(GlobalConfiguration.SERVER_METRICS_OTLP_STEP);
     return new OtlpConfig() {
       @Override
       public String get(final String key) {
         return "otlp.url".equals(key) ? endpoint : null;
+      }
+
+      /** The push interval of {@code arcadedb.serverMetrics.otlp.step}, or Micrometer's one minute when not positive. */
+      @Override
+      public Duration step() {
+        return stepMs > 0 ? Duration.ofMillis(stepMs) : OtlpConfig.super.step();
       }
 
       @Override

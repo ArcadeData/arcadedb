@@ -41,15 +41,20 @@
     </properties>
 
     <dependencies>
+        <!-- Provided, like arcadedb-server below and every other plugin module: the server distribution already ships
+             both jars, and in compile scope the shaded jar re-bundled every engine and network class, so lib/ carried
+             two copies and whichever jar came first on the classpath won -->
         <dependency>
             <groupId>com.arcadedb</groupId>
             <artifactId>arcadedb-engine</artifactId>
             <version>${project.parent.version}</version>
+            <scope>provided</scope>
         </dependency>
         <dependency>
             <groupId>com.arcadedb</groupId>
             <artifactId>arcadedb-network</artifactId>
             <version>${project.parent.version}</version>
+            <scope>provided</scope>
         </dependency>
         <dependency>
             <groupId>com.arcadedb</groupId>

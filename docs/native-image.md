@@ -415,8 +415,12 @@ allots).
 
 The single-node smoke (including Prometheus, OTLP metrics and tracing) and the three-node HA smoke
 run on the two required Linux legs; macOS and Windows run the base smoke only. The tracing and OTLP
-metrics checks assert that the plugin started (its SDK was built), not that a span or metric batch
-reached a collector, so the export path itself is not covered.
+metrics checks assert both that the plugin started (its SDK was built) and that an export reached a
+collector: `smoke.sh` starts `otlp_sink.py`, a stdlib-only stand-in collector (OTLP/HTTP protobuf for
+metrics, a minimal cleartext HTTP/2 gRPC endpoint for traces), points both exporters at it with a 2 s
+metrics push interval (`arcadedb.serverMetrics.otlp.step`), and `exercise.sh` waits for a metrics push
+and a span batch carrying the `service.name` resource attribute. `trace.sh` runs the same sink in its
+first phase, so the exporters' run-time metadata is recorded too.
 
 ### JVector and SIMD
 
