@@ -328,9 +328,10 @@ class DeltaOverlay {
     final Map<String, Map<Long, Integer>> newAbsorbedAdditions = new HashMap<>();
     for (final var entry : absorbedAddedEdgesPerType.entrySet())
       newAbsorbedAdditions.put(entry.getKey(), new HashMap<>(entry.getValue()));
-    // Copied on the first base-edge value this delta records, so a delta with none keeps sharing the previous maps
+    // Copied on the first base-edge value this delta records, and then only the map of each type it touches: a delta
+    // with none keeps sharing the previous maps, and one with a single update copies one type's values
     Map<String, LongObjectHashMap<Object[]>> newBaseEdgeValues = updatedBaseEdgeValues;
-    boolean baseEdgeValuesCopied = false;
+    Set<String> baseEdgeTypesCopied = null;
     final Map<Integer, Map<String, Object>> newPropOverrides = new HashMap<>(propertyOverrides.size());
     for (final var propEntry : propertyOverrides.entrySet())
       newPropOverrides.put(propEntry.getKey(), new HashMap<>(propEntry.getValue()));
@@ -461,15 +462,16 @@ class DeltaOverlay {
       } else if (isSoleBaseEdge(ed, baseMapping, baseForUpdates, newOverflowIds, newDeleted)) {
         final int srcId = baseMapping.getGlobalId(ed.source);
         final int tgtId = baseMapping.getGlobalId(ed.target);
-        if (!baseEdgeValuesCopied) {
-          baseEdgeValuesCopied = true;
-          newBaseEdgeValues = new HashMap<>();
-          for (final var entry : updatedBaseEdgeValues.entrySet())
-            newBaseEdgeValues.put(entry.getKey(), copy(entry.getValue()));
+        if (baseEdgeTypesCopied == null) {
+          baseEdgeTypesCopied = new HashSet<>();
+          newBaseEdgeValues = new HashMap<>(updatedBaseEdgeValues);
+        }
+        if (baseEdgeTypesCopied.add(ed.edgeType)) {
+          final LongObjectHashMap<Object[]> previousValues = newBaseEdgeValues.get(ed.edgeType);
+          newBaseEdgeValues.put(ed.edgeType, previousValues != null ? copy(previousValues) : new LongObjectHashMap<>());
         }
         // no values at all: every materialised property was removed, so each reads as missing, as a rebuilt column would
-        newBaseEdgeValues.computeIfAbsent(ed.edgeType, k -> new LongObjectHashMap<>())
-            .put(packEdge(srcId, tgtId), ed.properties != null ? ed.properties : NO_VALUES);
+        newBaseEdgeValues.get(ed.edgeType).put(packEdge(srcId, tgtId), ed.properties != null ? ed.properties : NO_VALUES);
       } else if (!newDirtyTypes.contains(ed.edgeType)) {
         if (!dirtyTypesCopied) {
           newDirtyTypes = new HashSet<>(dirtyEdgeTypes);
