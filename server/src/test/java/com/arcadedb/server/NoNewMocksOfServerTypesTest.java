@@ -53,6 +53,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class NoNewMocksOfServerTypesTest {
 
+  /** The reactor root, seen from the {@code server} module that surefire runs this class in (not the IDE's repo root). */
   private static final Path   REACTOR_ROOT             = Path.of("..");
   private static final String ALLOWLIST                = "mocks-of-server-types-allowlist.txt";
   private static final int    EXPECTED_MINIMUM_SOURCES = 1000;
@@ -75,8 +76,8 @@ class NoNewMocksOfServerTypesTest {
   /** {@code spy(new X(...))}. Group 1 is the simple type name. */
   private static final Pattern SPY_NEW = Pattern.compile("\\bspy\\(\\s*new\\s+" + GUARDED_TYPE + "\\s*\\(");
 
-  /** {@code @Mock X x;}. Group 1 is the simple type name. */
-  private static final Pattern ANNOTATED = Pattern.compile("@(?:Mock|Spy)\\b[^;=]*?\\b(" + GUARDED_TYPES + ")\\s+\\w+\\s*[;=]");
+  /** {@code @Mock X x;} or {@code @Mock(name = "x") X x;}. Group 1 is the simple type name. */
+  private static final Pattern ANNOTATED = Pattern.compile("@(?:Mock|Spy)\\b(?:\\([^)]*\\))?[^;=]*?\\b(" + GUARDED_TYPES + ")\\s+\\w+\\s*[;=]");
 
   /** Read once: every test of this class scans the same tree. */
   private static Map<String, String> sources;
@@ -99,7 +100,8 @@ class NoNewMocksOfServerTypesTest {
 
     assertThat(added)
         .as("these files mock a concrete server/HA type. Use a real server/database or a hand-written fake instead "
-            + "(issue #9464); do not add them to " + ALLOWLIST)
+            + "(issue #9464); do not add them to " + ALLOWLIST + ". The match is by simple name: a same-named class of "
+            + "another package is a false positive, so rename the import or extend the scan rather than the allow-list")
         .isEmpty();
   }
 
@@ -114,7 +116,7 @@ class NoNewMocksOfServerTypesTest {
 
     assertThat(stale)
         .as("these files no longer mock the listed server/HA type (or were deleted): remove the type, or the line, from "
-            + ALLOWLIST + " so the migration stays locked in")
+            + ALLOWLIST + " so the migration stays locked in. A file that was renamed or moved needs its path updated")
         .isEmpty();
   }
 
@@ -130,6 +132,7 @@ class NoNewMocksOfServerTypesTest {
     samples.put("a/Two.java", "class Two { void t() { mock(ServerSecurityUser.class); Mockito.spy(ServerDatabase.class); } }");
     samples.put("a/Static.java", "class Static { void t() { try (var m = mockStatic(HttpAuthSessionManager.class)) { } } }");
     samples.put("a/Construction.java", "class Construction { void t() { try (var m = Mockito.mockConstruction(ArcadeStateMachine.class)) { } } }");
+    samples.put("a/Named.java", "class Named { @Mock(name = \"srv\") private HttpServer server; }");
     samples.put("b/Unguarded.java", "class Unguarded { void t() { Object s = mock(HttpServerFactory.class); Object d = mock(Database.class); } }");
     samples.put("b/Real.java", "class Real { void t() { ArcadeDBServer s = new ArcadeDBServer(config); } }");
 
@@ -139,6 +142,7 @@ class NoNewMocksOfServerTypesTest {
         "a/Construction.java", Set.of("ArcadeStateMachine"),
         "a/Static.java", Set.of("HttpAuthSessionManager"),
         "a/FullyQualified.java", Set.of("ServerSecurity"),
+        "a/Named.java", Set.of("HttpServer"),
         "a/Qualified.java", Set.of("RaftHAServer"),
         "a/SpyNew.java", Set.of("ClusterMonitor"),
         "a/Subclass.java", Set.of("HttpServer"),
@@ -193,9 +197,9 @@ class NoNewMocksOfServerTypesTest {
         if (!Files.isDirectory(testSources))
           continue;
         try (final Stream<Path> files = Files.walk(testSources)) {
-          final List<Path> javaFiles = new ArrayList<>(files.filter(p -> p.toString().endsWith(".java"))
-              .filter(p -> !p.getFileName().toString().equals(NoNewMocksOfServerTypesTest.class.getSimpleName() + ".java")).toList());
-          for (final Path file : javaFiles)
+          // Not this class: its own self-test spells out every shape it flags.
+          for (final Path file : files.filter(p -> p.toString().endsWith(".java"))
+              .filter(p -> !p.getFileName().toString().equals(NoNewMocksOfServerTypesTest.class.getSimpleName() + ".java")).toList())
             sources.put(REACTOR_ROOT.relativize(file).toString().replace('\\', '/'), Files.readString(file, StandardCharsets.UTF_8));
         }
       }
