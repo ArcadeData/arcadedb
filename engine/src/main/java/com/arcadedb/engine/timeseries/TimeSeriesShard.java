@@ -439,8 +439,8 @@ public class TimeSeriesShard implements AutoCloseable {
         metrics);
 
     // Chain sealed then mutable, with inline tag filtering.
-    // The sealed iterator is fully materialised; the mutable iterator is lazy but its
-    // MVCC snapshot was already established under the read lock above.
+    // The sealed iterator reads one block at a time from the snapshot taken above; the mutable rows were
+    // materialised in the same window, so neither half depends on a lock held while the caller iterates.
     return new Iterator<>() {
       private Iterator<Object[]> current           = sealedIter;
       private boolean            switchedToMutable = false;

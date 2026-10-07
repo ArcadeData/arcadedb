@@ -29,6 +29,7 @@ import java.util.Iterator;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #9420: {@code iterateQuery} returned an {@code Iterator}, but every matching sealed row of every shard was
@@ -160,6 +161,29 @@ class Issue9420LazyIterateQueryTest extends TestHelper {
     assertThat(rest.size() + 1).as("the answer is short by the rows retention removed").isLessThan(TAGS * PER_TAG + 1);
     assertThat(rest.getLast()[1]).isEqualTo("host_only_in_the_mutable_bucket");
     assertThat(firstTs).isEqualTo(BASE_TS);
+  }
+
+  /**
+   * The other half of {@code forEachRow}'s contract the lazy read now shares (issue #8166): a downsample that
+   * replaces blocks the iterator has not reached yet leaves no answer at one resolution, so the read is refused
+   * from {@code hasNext()} - mid-stream, after rows were already handed out - rather than finishing silently
+   * short or mixing fine rows with coarse ones. Every wire protocol already maps the exception to "retry the read"
+   * (HTTP 503, {@code ErrorCategory.RETRY}), and a gRPC stream ends on {@code onError}, never {@code onCompleted}.
+   */
+  @Test
+  void aDownsampleMidIterationRaisesInsteadOfMixingResolutions() throws Exception {
+    final TimeSeriesShard shard = engine.getShard(0);
+    final Iterator<Object[]> it = shard.iterateRange(Long.MIN_VALUE, Long.MAX_VALUE, null, null);
+    assertThat(it.hasNext()).isTrue();
+    it.next();
+
+    // Every sealed block of the shard, folded into one-hour buckets per host: the TAG is column 1 and the FIELD
+    // column 2 in schema order, the timestamp being column 0.
+    shard.getSealedStore().downsampleBlocks(Long.MAX_VALUE, 3_600_000L, 0, List.of(1), List.of(2));
+
+    assertThatThrownBy(() -> drain(it))
+        .isInstanceOf(TimeSeriesWalkCoarsenedException.class)
+        .hasMessageContaining("downsample");
   }
 
   private int totalSealedBlocks() {

@@ -20,6 +20,7 @@ package com.arcadedb.engine.timeseries;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.simd.TimeSeriesVectorOpsProvider;
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.schema.LocalSchema;
 
 import java.io.IOException;
@@ -397,6 +398,13 @@ public class TimeSeriesEngine implements AutoCloseable {
    * {@code SELECT FROM <type>} need heap for the whole range. The read holds no lock between two blocks, so it
    * shares {@link #forEachRow}'s consistency rules: a block a retention pass removed mid-read is skipped and
    * counted in {@code vanishedBlocks}, one a downsample replaced raises {@link TimeSeriesWalkCoarsenedException}.
+   * <p>
+   * Because the rows are produced as the iterator advances, failures can surface mid-stream, after rows were
+   * already returned: an I/O error reading a later block - or the first one, read while the merge is being primed -
+   * as a {@link DatabaseOperationException} rather than the {@code IOException} this method
+   * declares, and a downsample as {@link TimeSeriesWalkCoarsenedException}, which every wire protocol already maps
+   * to "retry the read" (issue #8166). A streaming caller must therefore end its stream with an error, never with a
+   * completion, when either escapes.
    * <p>
    * A reader that folds the rows into an answer - a set of label values, a set of label combinations, an
    * aggregate - still wants {@link #forEachRow}: it needs no merge, so it holds one block in total rather than one
