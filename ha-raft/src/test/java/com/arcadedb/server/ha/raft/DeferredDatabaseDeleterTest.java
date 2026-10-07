@@ -186,6 +186,9 @@ class DeferredDatabaseDeleterTest {
       bounded.deleteInBackground(staged);
 
       assertThat(staged).as("the rejected deletion must have run before the call returned").doesNotExist();
+      // Issue #8856: the database_deleter row counts the delete the submitter ran itself as a caller-runs fallback.
+      assertThat(bounded.getPoolStats().callerRunFallbacks()).isEqualTo(1);
+      assertThat(bounded.getPoolStats().queueCapacityRemaining()).isZero();
       gate.countDown();
     }
   }

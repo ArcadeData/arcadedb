@@ -183,8 +183,11 @@ public final class PoolMetrics implements MeterBinder {
     return meters;
   }
 
-  /** The gauge only {@link #bindInstancePool} publishes: work a pool did not take because it was already covered. */
+  /** An instance-pool gauge: work a pool did not take because a task already queued or running covers it. */
   public static final String COALESCED_GAUGE = "arcadedb.executor.tasks.coalesced";
+
+  /** An instance-pool gauge: work an abort-policy pool refused while running, which nothing then ran (issue #8856). */
+  public static final String REJECTED_GAUGE = "arcadedb.executor.tasks.rejected";
 
   /** What {@link #bindInstancePool} hands back when another binding already publishes the row: owns nothing. */
   private static final Closeable NOTHING_OWNED = () -> {
@@ -199,21 +202,50 @@ public final class PoolMetrics implements MeterBinder {
    * makes a refusal coalescing rather than loss, which is why the count is published as {@code coalesced} and
    * not as {@code caller_run_fallbacks} - those pools never run anything on the submitter - but it is still the
    * number an operator wants during a burst: one climbing on a quiet node is a worker that is not draining.
+   *
+   * @see #bindInstancePool(MeterRegistry, String, String, Supplier, LongSupplier, LongSupplier)
+   */
+  public static Closeable bindInstancePool(final MeterRegistry registry, final String poolTag, final String description,
+      final Supplier<PoolStats> stats, final LongSupplier coalesced) {
+    return bindInstancePool(registry, poolTag, description, stats, coalesced, null);
+  }
+
+  /**
+   * Publishes an instance pool with the per-pool gauges that fit its saturation semantics (issue #8856). Each pool
+   * decides what its refusals mean, so each of the two extra gauges is published only where it applies, and a pool
+   * that does not publish one shows "-" in Studio rather than a zero that would read as "never happened":
+   * <ul>
+   * <li>{@code coalesced} - a task not run because one already queued or running covers it: the design working,
+   * not loss (the one-slot security workers, the HA channel-recovery database hand-off);</li>
+   * <li>{@code rejected} - a task an abort-policy pool refused while running, which nothing ran in its place: loss,
+   * whatever the submitter then does about it (a retry, a failed future, an operator-facing log line).</li>
+   * </ul>
+   * A caller-runs pool needs neither: its saturations are the shared row's {@code caller_run_fallbacks}.
    * <p>
-   * <b>Both suppliers are read on every scrape</b>, so they should resolve the pool through the owner rather than
-   * capture an executor that the owner may replace. Neither may throw or block.
+   * <b>Every supplier is read on every scrape</b>, so it should resolve the pool through the owner rather than
+   * capture an executor that the owner may replace. None may throw or block.
    * <p>
    * <b>A second binding of a tag already published owns nothing.</b> Two servers in one JVM (every in-process HA
    * test) register identical meter ids, and Micrometer answers the second registration with the first one's
    * meter. Owning it would let the second server's shutdown delete the row the first one is still publishing, so
    * the row stays the first binder's, exactly as every other {@code arcadedb.*} meter on the shared registry does.
+   * The flip side, kept deliberately: when the first binder stops, the row goes with it even if a sibling still runs.
+   * Handing it over would make one row silently switch to another instance's pool, whose cumulative counters restart
+   * from that instance's own, and a {@code server} tag is not available - it would give the {@code arcadedb.executor.*}
+   * name a tag key the singleton rows lack, which Prometheus refuses for one meter name. One server per JVM, the
+   * production shape, is unaffected.
+   *
+   * @param coalesced the {@code tasks.coalesced} reading, or {@code null} when the pool never coalesces
+   * @param rejected  the {@code tasks.rejected} reading, or {@code null} when the pool never refuses running work
    *
    * @return a handle whose {@link Closeable#close()} removes the meters this call registered; idempotent
    */
   public static Closeable bindInstancePool(final MeterRegistry registry, final String poolTag, final String description,
-      final Supplier<PoolStats> stats, final LongSupplier coalesced) {
+      final Supplier<PoolStats> stats, final LongSupplier coalesced, final LongSupplier rejected) {
     final Tags tags = Tags.of(Tag.of("pool", poolTag));
-    if (registry.find(COALESCED_GAUGE).tags(tags).gauge() != null) {
+    // Keyed on a gauge every row has, not on an optional one: a pool publishing neither extra would otherwise always
+    // look unpublished, and a second binding would take the first one's meters as its own.
+    if (registry.find("arcadedb.executor.pool.size").tags(tags).gauge() != null) {
       LogManager.instance().log(PoolMetrics.class, Level.FINE,
           "Executor pool row '%s' is already published by another binding in this JVM; not registering it twice",
           poolTag);
@@ -221,12 +253,19 @@ public final class PoolMetrics implements MeterBinder {
     }
 
     final List<Meter> meters = bindPool(registry, poolTag, description, stats);
-    meters.add(Gauge.builder(COALESCED_GAUGE, coalesced::getAsLong)
-        .description(description + ": cumulative tasks the pool did not run because one already queued or running "
-            + "covers them, plus any refused while the owner was stopping. Harmless by itself - the covering task reads "
-            + "its inputs when it runs - but a count climbing while tasks.completed does not is a worker that is not "
-            + "draining.")
-        .tags(tags).register(registry));
+    if (coalesced != null)
+      meters.add(Gauge.builder(COALESCED_GAUGE, coalesced::getAsLong)
+          .description(description + ": cumulative tasks the pool did not run because one already queued or running "
+              + "covers them, plus any refused while the owner was stopping. Harmless by itself - the covering task "
+              + "reads its inputs when it runs - but a count climbing while tasks.completed does not is a worker that "
+              + "is not draining.")
+          .tags(tags).register(registry));
+    if (rejected != null)
+      meters.add(Gauge.builder(REJECTED_GAUGE, rejected::getAsLong)
+          .description(description + ": cumulative tasks the pool refused because its queue was full, which nothing ran "
+              + "in their place. Rejections while the owner was stopping are not counted. Any growth means work was "
+              + "dropped; what that costs depends on the submitter, which logs each one.")
+          .tags(tags).register(registry));
 
     final AtomicBoolean closed = new AtomicBoolean();
     return () -> {
@@ -238,14 +277,29 @@ public final class PoolMetrics implements MeterBinder {
 
   /**
    * A {@link PoolStats} reading of a plain {@link ThreadPoolExecutor}, for the instance pools that are not
-   * {@code DedicatedThreadPool}s. They never run a task on the submitter and never reclaim one, so those two
-   * counters are {@code 0} - the true reading rather than "not applicable", which {@link #bindInstancePool}'s
-   * {@code tasks.coalesced} gauge covers instead. An unbounded queue reports {@code -1} slots remaining, as the
-   * singleton pools do.
+   * {@code DedicatedThreadPool}s. They never reclaim a task, so that counter is {@code 0}. Neither do they run one
+   * on the submitter, unless their rejection policy is a caller-runs {@link CountingRejectionPolicy}, whose count is
+   * then {@code callerRunFallbacks} (issue #8856); an abort policy's count is {@link #bindInstancePool}'s
+   * {@code tasks.rejected} instead. An unbounded queue reports {@code -1} slots remaining, as the singleton pools do.
    */
   public static PoolStats statsOf(final ThreadPoolExecutor executor) {
+    return statsOf(executor,
+        executor.getRejectedExecutionHandler() instanceof CountingRejectionPolicy policy && policy.isCallerRuns() ?
+            policy.getSaturations() :
+            0L);
+  }
+
+  /**
+   * As {@link #statsOf(ThreadPoolExecutor)}, for a pool that falls back to running a task on the submitter outside its
+   * rejection policy and counts that itself.
+   */
+  public static PoolStats statsOf(final ThreadPoolExecutor executor, final long callerRunFallbacks) {
+    final int depth = executor.getQueue().size();
     final int remaining = executor.getQueue().remainingCapacity();
-    return new PoolStats(executor.getPoolSize(), executor.getActiveCount(), executor.getQueue().size(),
-        remaining == Integer.MAX_VALUE ? -1 : remaining, executor.getCompletedTaskCount(), 0L, 0L);
+    // An unbounded queue's remaining capacity is Integer.MAX_VALUE minus what it holds, not MAX_VALUE itself: compare
+    // the total, or a queue holding one task would report two billion free slots.
+    final boolean unbounded = (long) depth + remaining >= Integer.MAX_VALUE;
+    return new PoolStats(executor.getPoolSize(), executor.getActiveCount(), depth, unbounded ? -1 : remaining,
+        executor.getCompletedTaskCount(), callerRunFallbacks, 0L);
   }
 }

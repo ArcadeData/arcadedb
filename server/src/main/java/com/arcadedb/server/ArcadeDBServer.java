@@ -1105,12 +1105,23 @@ public class ArcadeDBServer {
    */
   public Closeable registerExecutorPoolMetrics(final String poolTag, final String description,
       final Supplier<PoolStats> stats, final LongSupplier coalesced) {
+    return registerExecutorPoolMetrics(poolTag, description, stats, coalesced, null);
+  }
+
+  /**
+   * As {@link #registerExecutorPoolMetrics(String, String, Supplier, LongSupplier)}, for a pool whose extra gauges
+   * depend on how it handles saturation (issue #8856): {@code coalesced} and {@code rejected} may each be
+   * {@code null}, and the gauge is then not published. See
+   * {@link PoolMetrics#bindInstancePool(MeterRegistry, String, String, Supplier, LongSupplier, LongSupplier)}.
+   */
+  public Closeable registerExecutorPoolMetrics(final String poolTag, final String description,
+      final Supplier<PoolStats> stats, final LongSupplier coalesced, final LongSupplier rejected) {
     synchronized (instancePoolMetrics) {
       if (!metricsInstalled)
         return () -> {
         };
       final Closeable handle = PoolMetrics.bindInstancePool(Metrics.globalRegistry, poolTag, description, stats,
-          coalesced);
+          coalesced, rejected);
       instancePoolMetrics.add(handle);
       return handle;
     }

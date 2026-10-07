@@ -29,10 +29,13 @@ import java.io.Closeable;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.handler.GetServerHandler;
@@ -40,6 +43,7 @@ import com.arcadedb.server.http.handler.GetServerHandler;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Verifies the {@link PoolMetrics} {@code MeterBinder} registers the expected Micrometer gauges
@@ -278,6 +282,158 @@ class PoolMetricsTest {
       assertThat(busy.queueDepth()).isEqualTo(1);
       assertThat(busy.queueCapacityRemaining()).isZero();
       assertThat(busy.callerRunFallbacks()).as("a dropping pool never runs on the caller").isZero();
+    } finally {
+      release.countDown();
+      executor.shutdown();
+      executor.awaitTermination(10, TimeUnit.SECONDS);
+    }
+  }
+
+  /**
+   * Issue #8856: each instance pool publishes only the extra gauges its saturation semantics give a meaning to, so a
+   * pool that never coalesces shows no {@code tasks.coalesced} and one that never refuses no {@code tasks.rejected}.
+   */
+  @Test
+  void instancePoolPublishesOnlyTheExtraGaugesItIsGiven() throws Exception {
+    final SimpleMeterRegistry registry = new SimpleMeterRegistry();
+    final AtomicLong rejected = new AtomicLong();
+    final Supplier<PoolStats> idle = () -> new PoolStats(0, 0, 0, 1, 0, 0, 0);
+
+    try (final Closeable abortPool = PoolMetrics.bindInstancePool(registry, "abort_pool", "Abort pool", idle, null,
+        rejected::get);
+        final Closeable plainPool = PoolMetrics.bindInstancePool(registry, "plain_pool", "Plain pool", idle, null, null);
+        final Closeable bothPool = PoolMetrics.bindInstancePool(registry, "both_pool", "Both pool", idle, () -> 4L,
+            () -> 5L)) {
+      assertThat(registry.find(PoolMetrics.REJECTED_GAUGE).tag("pool", "abort_pool").gauge()).isNotNull();
+      assertThat(registry.find(PoolMetrics.COALESCED_GAUGE).tag("pool", "abort_pool").gauge()).isNull();
+      assertThat(registry.find(PoolMetrics.REJECTED_GAUGE).tag("pool", "plain_pool").gauge()).isNull();
+      assertThat(registry.find(PoolMetrics.COALESCED_GAUGE).tag("pool", "plain_pool").gauge()).isNull();
+      for (final String gaugeName : EXPECTED_GAUGE_NAMES)
+        assertThat(registry.find(gaugeName).tag("pool", "plain_pool").gauge()).as("the shared row: '%s'", gaugeName)
+            .isNotNull();
+
+      rejected.set(2);
+      final JSONObject executors = GetServerHandler.buildExecutorsJSON(registry);
+      assertThat(executors.getJSONObject("abort_pool").getDouble("tasks.rejected")).isEqualTo(2.0);
+      assertThat(executors.getJSONObject("abort_pool").has("tasks.coalesced")).isFalse();
+      assertThat(executors.getJSONObject("plain_pool").has("tasks.rejected")).isFalse();
+      assertThat(executors.getJSONObject("both_pool").getDouble("tasks.coalesced")).isEqualTo(4.0);
+      assertThat(executors.getJSONObject("both_pool").getDouble("tasks.rejected")).isEqualTo(5.0);
+    }
+    assertThat(registry.find(PoolMetrics.REJECTED_GAUGE).gauge()).as("closing removes the rejected gauge too").isNull();
+  }
+
+  /**
+   * The "already published" check used to look for {@code tasks.coalesced}, which a pool without one never has: a
+   * second binding of such a tag would have taken the first one's meters as its own, and its close deleted them.
+   */
+  @Test
+  void aSecondBindingOfATagWithoutExtrasOwnsNothing() throws Exception {
+    final SimpleMeterRegistry registry = new SimpleMeterRegistry();
+
+    try (final Closeable first = PoolMetrics.bindInstancePool(registry, "plain_pool", "first",
+        () -> new PoolStats(0, 0, 0, 1, 11, 0, 0), null, null)) {
+      PoolMetrics.bindInstancePool(registry, "plain_pool", "second", () -> new PoolStats(0, 0, 0, 1, 22, 0, 0), null,
+          null).close();
+
+      assertThat(registry.find("arcadedb.executor.tasks.completed").tag("pool", "plain_pool").gauge())
+          .as("the first binding's row must survive the second one closing").isNotNull();
+      assertThat(registry.find("arcadedb.executor.tasks.completed").tag("pool", "plain_pool").gauge().value())
+          .isEqualTo(11.0);
+    }
+  }
+
+  /** A caller-runs {@link CountingRejectionPolicy}'s count is the {@code caller_run_fallbacks} statsOf reads. */
+  @Test
+  void statsOfReadsACountingCallerRunsPolicy() throws Exception {
+    final ThreadPoolExecutor executor = new ThreadPoolExecutor(0, 1, 30L, TimeUnit.SECONDS, new ArrayBlockingQueue<>(1),
+        CountingRejectionPolicy.callerRuns());
+    final CountDownLatch release = new CountDownLatch(1);
+    final CountDownLatch started = new CountDownLatch(1);
+    try {
+      executor.execute(() -> {
+        started.countDown();
+        try {
+          release.await();
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+      });
+      assertThat(started.await(10, TimeUnit.SECONDS)).isTrue();
+      executor.execute(() -> {
+      });
+      executor.execute(() -> {
+      });
+
+      assertThat(PoolMetrics.statsOf(executor).callerRunFallbacks()).isEqualTo(1);
+      assertThat(PoolMetrics.statsOf(executor, 7).callerRunFallbacks()).as("an owner-counted fallback").isEqualTo(7);
+    } finally {
+      release.countDown();
+      executor.shutdown();
+      executor.awaitTermination(10, TimeUnit.SECONDS);
+    }
+  }
+
+  /** An abort {@link CountingRejectionPolicy}'s count is not a caller-runs fallback: it belongs to tasks.rejected. */
+  @Test
+  void statsOfDoesNotReadAnAbortPolicyAsFallbacks() throws Exception {
+    final CountingRejectionPolicy policy = CountingRejectionPolicy.abort();
+    final ThreadPoolExecutor executor = new ThreadPoolExecutor(0, 1, 30L, TimeUnit.SECONDS, new ArrayBlockingQueue<>(1),
+        policy);
+    final CountDownLatch release = new CountDownLatch(1);
+    final CountDownLatch started = new CountDownLatch(1);
+    try {
+      executor.execute(() -> {
+        started.countDown();
+        try {
+          release.await();
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+      });
+      assertThat(started.await(10, TimeUnit.SECONDS)).isTrue();
+      executor.execute(() -> {
+      });
+      assertThatThrownBy(() -> executor.execute(() -> {
+      })).isInstanceOf(RejectedExecutionException.class);
+
+      assertThat(policy.getSaturations()).isEqualTo(1);
+      assertThat(PoolMetrics.statsOf(executor).callerRunFallbacks()).isZero();
+    } finally {
+      release.countDown();
+      executor.shutdown();
+      executor.awaitTermination(10, TimeUnit.SECONDS);
+    }
+  }
+
+  /**
+   * An unbounded queue's remaining capacity is {@code Integer.MAX_VALUE} minus what it holds, so a check against
+   * {@code MAX_VALUE} alone reports an occupied unbounded queue as having two billion free slots (issue #8856, found
+   * on the HA lifecycle worker, the first unbounded instance pool).
+   */
+  @Test
+  void statsOfReportsAnOccupiedUnboundedQueueAsUnbounded() throws Exception {
+    final ThreadPoolExecutor executor = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
+        new LinkedBlockingQueue<>());
+    final CountDownLatch release = new CountDownLatch(1);
+    final CountDownLatch started = new CountDownLatch(1);
+    try {
+      assertThat(PoolMetrics.statsOf(executor).queueCapacityRemaining()).isEqualTo(-1);
+      executor.execute(() -> {
+        started.countDown();
+        try {
+          release.await();
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+      });
+      assertThat(started.await(10, TimeUnit.SECONDS)).isTrue();
+      executor.execute(() -> {
+      });
+
+      final PoolStats busy = PoolMetrics.statsOf(executor);
+      assertThat(busy.queueDepth()).isEqualTo(1);
+      assertThat(busy.queueCapacityRemaining()).isEqualTo(-1);
     } finally {
       release.countDown();
       executor.shutdown();
