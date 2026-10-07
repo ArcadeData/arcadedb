@@ -33,6 +33,7 @@ import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.PageManager;
+import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.PageVersionReservations;
 import com.arcadedb.engine.PageSnapshot;
 import com.arcadedb.engine.TransactionManager;
@@ -3439,6 +3440,34 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     transactionManager.checkIntegrity();
   }
 
+  /**
+   * Removes any index-compaction temporary ({@code *.temp_<ext>}, see {@link PaginatedComponent#isTemporaryFileName})
+   * left in the database directory (#8849). The compaction that owned it is gone - a crash or kill mid-compaction, a
+   * snapshot shipped by a leader that predates #8019, a backup taken during a compaction and restored - and the
+   * component scan never registers it, because its extension is not in {@link #SUPPORTED_FILE_EXT}. Without this sweep
+   * it would occupy disk for the life of the node.
+   * <p>
+   * Safe because a temporary is never referenced across an open: both producers rename it to its final extension
+   * ({@link PaginatedComponent#removeTempSuffix()}) BEFORE the schema is pointed at it, so neither the schema nor a
+   * registered component can name a {@code temp_} file. Index files live only in the primary directory, never under
+   * the external-property bucket path, so that is the only directory swept.
+   */
+  private void deleteOrphanCompactionTemporaries() {
+    final File[] orphans = new File(databasePath).listFiles((dir, name) -> PaginatedComponent.isTemporaryFileName(name));
+    if (orphans == null)
+      return;
+    for (final File orphan : orphans) {
+      if (!orphan.isFile())
+        continue;
+      final long size = orphan.length();
+      if (orphan.delete())
+        LogManager.instance().log(this, Level.INFO, "Deleted orphan index-compaction temporary file '%s' (%d bytes) from database '%s'",
+            null, orphan.getName(), size, name);
+      else
+        LogManager.instance().log(this, Level.WARNING, "Cannot delete the orphan index-compaction temporary file '%s'", null, orphan);
+    }
+  }
+
   /** Removes any {@code .pshadow} scratch file left behind by a snapshot window that a crash interrupted (#6075). */
   private void deleteOrphanSnapshotShadows() {
     final File[] orphans = new File(databasePath).listFiles(
@@ -3473,6 +3502,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
         // OWN THE DATABASE BEFORE READING IT: LOADING THE SCHEMA OF A CRASHED DATABASE WRITES TO IT.
         final boolean recoveryPending = prepareRecovery();
+
+        // #8849: AN INDEX-COMPACTION TEMPORARY NEVER OUTLIVES THE PROCESS THAT BUILT IT, SO ONE FOUND AT OPEN IS AN
+        // ORPHAN. ONLY A READ_WRITE OPEN DELETES IT: THAT IS THE ONE THAT NOW HOLDS THE EXCLUSIVE LOCK ON database.lck
+        if (mode == ComponentFile.MODE.READ_WRITE)
+          deleteOrphanCompactionTemporaries();
 
         if (fileManager.getFiles().isEmpty())
           schema.create(mode);
