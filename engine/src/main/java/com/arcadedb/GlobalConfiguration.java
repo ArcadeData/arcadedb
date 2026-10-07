@@ -195,7 +195,7 @@ public enum GlobalConfiguration {
       Integer.class, 65535),
 
   DATE_IMPLEMENTATION("arcadedb.dateImplementation", SCOPE.DATABASE,
-      "Default date implementation to use on deserialization. By default java.time.LocalDate is used, but the following are supported: java.util.Date, java.util.Calendar, java.time.LocalDate",
+      "Default date implementation to use on deserialization. By default java.time.LocalDate is used, but the following are supported: java.util.Date, java.util.Calendar, java.time.LocalDate, java.time.LocalDateTime",
       Class.class, LocalDate.class),
 
   DATE_FORMAT("arcadedb.dateFormat", SCOPE.DATABASE, "Default date format using Java SimpleDateFormat syntax", String.class,
@@ -3036,7 +3036,7 @@ public enum GlobalConfiguration {
       "Whether the gRPC plugin starts. Default is true", Boolean.class, true),
 
   GRPC_HOST("arcadedb.grpc.host", SCOPE.SERVER,
-      "Host name or address the gRPC plugin binds to. Default is '0.0.0.0'", String.class, "0.0.0.0"),
+      "Host name or address the gRPC plugin binds to. Default is '0.0.0.0'. Applies to the standard server only: the xDS server (mode 'xds' or 'both') has no host setting and listens on every interface", String.class, "0.0.0.0"),
 
   GRPC_MODE("arcadedb.grpc.mode", SCOPE.SERVER,
       "gRPC server mode: 'standard', 'xds' or 'both'. Default is 'standard'", String.class, "standard"),
