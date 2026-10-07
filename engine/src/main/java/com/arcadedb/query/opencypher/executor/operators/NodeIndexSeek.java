@@ -267,7 +267,8 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
             }
             if (wholeKey && seekIndex == 0) {
               // every key of the seek is read with its records against ONE committed state, so a commit that deletes and
-              // re-creates a key cannot make it vanish or appear twice, nor serve a slot it freed for two keys (#9397)
+              // re-creates a key cannot make it vanish or appear twice, nor serve a slot it freed for two keys (#9397). The records of
+              // up to ConsistentKeyLookup.MAX_ENTRIES entries are loaded up front, which a LIMIT may not need: the price of one state
               cursor = ConsistentKeyLookup.lookupCursor(context.getDatabase(), index, seekKeys);
               if (cursor != null) {
                 seekIndex = seekKeys.size();
