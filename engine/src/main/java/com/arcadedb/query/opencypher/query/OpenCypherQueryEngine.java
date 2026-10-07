@@ -615,9 +615,14 @@ public class OpenCypherQueryEngine implements QueryEngine {
       final Property created = type.createProperty(propName, retyped);
       ExistingRecordsCheck.requireDeclaration(schema.getEmbedded().getDatabase(), type, created);
     } catch (final Throwable e) {
-      if (type.existsProperty(propName))
-        type.dropProperty(propName);
-      type.createProperty(propName, previous);
+      // the schema is not transactional: until the declaration is back, a concurrent write is not validated against it
+      try {
+        if (type.existsProperty(propName))
+          type.dropProperty(propName);
+        type.createProperty(propName, previous);
+      } catch (final Throwable restoreFailure) {
+        e.addSuppressed(restoreFailure);
+      }
       throw e;
     }
   }
