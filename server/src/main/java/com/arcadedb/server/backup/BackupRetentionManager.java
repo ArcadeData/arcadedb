@@ -297,7 +297,8 @@ public class BackupRetentionManager {
    * The real instant a local archive timestamp stands for. The name carries no offset, so during the hour a DST fall-back
    * repeats, two archives one real hour apart carry the same local time: the file's modification time (set when the
    * archive was written) picks the offset that was in force then. Outside that overlap the local time is unambiguous and
-   * the preference is ignored.
+   * the preference is ignored. An archive whose modification time was reset (restored or copied) may resolve to the wrong
+   * offset, but only inside that one overlap hour.
    */
   static Instant resolveInstant(final LocalDateTime timestamp, final long lastModifiedMillis, final ZoneId zone) {
     final ZoneOffset preferred = zone.getRules().getOffset(Instant.ofEpochMilli(lastModifiedMillis));

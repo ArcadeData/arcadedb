@@ -690,12 +690,14 @@ public class FullTextIndexMetadata extends IndexMetadata {
    * @param docsAtStart  value of {@link #getTotalDocs()} captured immediately before the scan
    * @param lenAtStart   value of {@link #getSumDocLength()} captured immediately before the scan
    *
-   * @return true when the counters did not move during the scan (the result is exact)
+   * @return true when the published counters equal the scan result, which is what happens when nothing moved them during the scan
    */
   public boolean publishScannedCounters(final long totalDocs, final long sumDocLength, final long docsAtStart, final long lenAtStart) {
     // sumDocLength first, then totalDocs: same ordering rationale as addDocument()
-    final long newLen = Math.max(0L, this.sumDocLength.addAndGet(sumDocLength - lenAtStart));
-    final long newDocs = Math.max(0L, this.totalDocs.addAndGet(totalDocs - docsAtStart));
+    final long lenDelta = sumDocLength - lenAtStart;
+    final long docsDelta = totalDocs - docsAtStart;
+    final long newLen = this.sumDocLength.updateAndGet(v -> Math.max(0L, v + lenDelta));
+    final long newDocs = this.totalDocs.updateAndGet(v -> Math.max(0L, v + docsDelta));
     this.countersValid = true;
     final boolean exact = newDocs == totalDocs && newLen == sumDocLength;
     this.staleChecked.set(exact);
