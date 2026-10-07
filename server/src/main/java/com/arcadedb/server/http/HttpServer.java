@@ -268,7 +268,7 @@ public class HttpServer implements ServerPlugin {
           if (httpsConflict != null) {
             LogManager.instance().log(this, Level.WARNING, "- HTTPS Port %s skipped, '%s' cannot listen on every address: %s",
                 httpsPortListening, host, httpsConflict);
-            httpsPortListening = nextHttpsPort(httpsPortListening, httpsPortRange);
+            httpsPortListening = advanceHttpsPortOrFail(httpsPortListening, httpsPortRange);
             continue;
           }
         }
@@ -296,10 +296,11 @@ public class HttpServer implements ServerPlugin {
         handleServerStartException(e);
         // A stranger took a port between the probe and the bind, and the exception does not say which. Move past the
         // HTTP port (an earlier listener of the failed attempt may still hold it) and past the HTTPS one too when it is
-        // the taken one, so neither attempt is retried on a port that cannot be bound.
+        // the taken one, so neither attempt is retried on a port that cannot be bound. The HTTPS re-probe is a heuristic:
+        // if both ports were taken in that window, both move on, which costs at most one port of each range.
         ++httpPortListening;
         if (probeHttps && portConflict(listenHosts, httpsPortListening) != null)
-          httpsPortListening = nextHttpsPort(httpsPortListening, httpsPortRange);
+          httpsPortListening = advanceHttpsPortOrFail(httpsPortListening, httpsPortRange);
       }
     }
 
@@ -619,9 +620,11 @@ public class HttpServer implements ServerPlugin {
 
   /**
    * The HTTPS port after {@code current}, or a {@link ServerException} once {@code arcadedb.server.httpsIncomingPort}'s
-   * range is exhausted: the HTTPS port moves through its own range, independently of the HTTP one (issue #9225).
+   * range is exhausted: the HTTPS port moves through its own range, independently of the HTTP one (issue #9225). On
+   * exhaustion it fails the whole start exactly as {@link #handleServerStartFailure(int[])} does for the HTTP range,
+   * resetting {@code httpPortListening} to {@code -1} so {@link #getPort()} does not report a port nothing listens on.
    */
-  private int nextHttpsPort(final int current, final int[] httpsPortRange) {
+  private int advanceHttpsPortOrFail(final int current, final int[] httpsPortRange) {
     final int next = current + 1;
     if (next > httpsPortRange[1]) {
       httpPortListening = -1;

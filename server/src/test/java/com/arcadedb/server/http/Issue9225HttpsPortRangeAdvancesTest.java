@@ -122,6 +122,11 @@ class Issue9225HttpsPortRangeAdvancesTest {
       assertThat(isBindable(port)).as("no stray HTTP listener is left on %d", port).isTrue();
   }
 
+  /**
+   * A bare {@code ArcadeDBServer} rather than a fixture base, as in {@code Issue8692LocalhostBindsEveryAddressTest}: the
+   * stranger must hold its HTTPS port before the server starts, the HTTP and HTTPS ranges are both explicit and start at
+   * ports drawn by {@code allocateFreePorts} (never hand-picked), and the second test needs the start itself to fail.
+   */
   private static ContextConfiguration sslConfiguration(final int httpFirst, final int httpsFirst, final int httpsLast) {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.SERVER_NAME, "ArcadeDB_issue9225");
