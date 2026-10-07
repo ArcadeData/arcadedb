@@ -63,6 +63,11 @@ public class SQLFunctionCCHShortestPath extends SQLFunctionMathAbstract {
     this(NAME);
   }
 
+  /**
+   * For the functions that answer through the same engine under another name, {@code duanSSSP()} (issue #9443): they
+   * extend this class rather than copying it, so the weight rule, the options and the fallback chain cannot drift apart.
+   * Every message names {@link #getName()}, not {@link #NAME}, for that reason.
+   */
   protected SQLFunctionCCHShortestPath(final String name) {
     super(name);
   }
