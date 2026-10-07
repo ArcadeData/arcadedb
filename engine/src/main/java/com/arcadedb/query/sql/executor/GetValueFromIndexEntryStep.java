@@ -634,6 +634,8 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
           return rows;
         restartLookup(database, indexStep);
       }
+      LogManager.instance().log(this, Level.FINE, "Point lookup on index '%s' overlapped a commit %d times, reading it under the publication lock",
+          null, indexStep.indexName, MAX_RECONCILE_ATTEMPTS);
       final ArrayDeque<Result> rows = (ArrayDeque<Result>) pageManager.executeInLock(() -> {
         restartLookup(database, indexStep);
         return readAndLoad(context, indexStep, nRecords);
@@ -744,12 +746,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
 
   private List<Result> loadKeyAgain(final DatabaseInternal database, final FetchFromIndexStep indexStep, final Object key,
       final RID missing, final Set<RID> served, final CommandContext context) {
-    if (database.isTransactionActive() && database.getTransactionIsolationLevel() == Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ) {
-      // the pages this transaction pinned may be the very two states that disagree
-      final List<Integer> files = new ArrayList<>(indexStep.indexFileIds());
-      files.add(missing.getBucketId());
-      database.getTransaction().unpinFiles(files);
-    }
+    unpinRepeatableReadPages(database, indexStep);
     final List<Result> found = new ArrayList<>(2);
     final List<RID> fresh = served == NOT_TRACKED ? null : indexStep.lookupKeyAgain(key);
     final List<RID> candidates = fresh != null ? fresh : List.of(missing);
