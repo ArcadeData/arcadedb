@@ -77,7 +77,11 @@ class InlineMocksOfJitWarmTypesTest {
       + "|ArcadeDBServer|ServerDatabase|HttpServer|ServerSecurity|ServerSecurityUser|HttpAuthSession|HttpAuthSessionManager"
       + "|RaftHAServer|RaftHAPlugin|RaftTransactionBroker|ArcadeStateMachine|ClusterMonitor";
 
-  /** A guarded type by its simple or fully qualified name ({@code com.arcadedb.database.LocalDatabase}). */
+  /**
+   * A guarded type by its simple or fully qualified name ({@code com.arcadedb.database.LocalDatabase}). The simple name
+   * is matched whatever package it resolves to, so a test-local type that reuses one ({@code HttpServer}, say) is flagged
+   * too: rename it, or mock it through {@code SubclassMocks} as well.
+   */
   private static final String GUARDED_TYPE = "(?:[a-z_]\\w*\\.)*(?:" + GUARDED_TYPES + ")";
 
   /**
@@ -109,6 +113,16 @@ class InlineMocksOfJitWarmTypesTest {
   /** Every module's test tree holds far more than this; below it the walk has silently lost its root. */
   private static final int EXPECTED_MINIMUM_SOURCES = 1000;
 
+  /**
+   * A non-static final method declaration: {@code public final void close() {}}, any visibility. A subclass mock cannot
+   * override it, so a {@code when(...)} on it silently runs the real method instead of stubbing it. Fields, locals and
+   * wrapped parameter lines never reach a {@code (} without passing an {@code =} or a {@code )}, which the type part
+   * excludes. A final method of a nested class in the same file is flagged too: conservative, not wrong.
+   */
+  private static final Pattern FINAL_METHOD = Pattern.compile(
+      "^[ \\t]*(?:@\\w+[ \\t]+)*(?:(?:public|protected|private|synchronized|abstract)[ \\t]+)*final[ \\t]+(?:synchronized[ \\t]+)?"
+          + "(?!class\\b|record\\b|static\\b)[\\w<>\\[\\],.? \\t]*?\\b\\w+[ \\t]*\\(", Pattern.MULTILINE);
+
   @Test
   void noTestHandsAnInlineMockOfAJitWarmEngineTypeToProductionCode() throws IOException {
     assertThat(REACTOR_ROOT.resolve("server").resolve("pom.xml"))
@@ -122,6 +136,53 @@ class InlineMocksOfJitWarmTypesTest {
             + "delegate to through com.arcadedb.utility.SubclassMocks: an inline mock reads stale fields through JIT-warm "
             + "code on the Graal JIT (issues #8021, #8851, #8867)")
         .isEmpty();
+  }
+
+  /**
+   * The precondition of {@link #GUARDED_TYPES}, held rather than audited once: a final method added later to a guarded
+   * type would turn every existing {@code when(...)} on it into a silent no-op, with no compile error and no failing
+   * test. The parents the types extend are outside this scan; the {@code GUARDED_TYPES} Javadoc records them.
+   */
+  @Test
+  void noGuardedTypeDeclaresAFinalMethod() throws IOException {
+    final Map<String, String> sources = readGuardedTypeSources();
+    assertThat(sources.keySet().stream().map(f -> f.substring(f.lastIndexOf('/') + 1, f.length() - ".java".length())).toList())
+        .as("every guarded type must have exactly one source in the reactor, or this scan checks the wrong class")
+        .containsExactlyInAnyOrder(GUARDED_TYPES.split("\\|"));
+
+    final List<String> finalMethods = new ArrayList<>();
+    for (final Map.Entry<String, String> entry : sources.entrySet())
+      report(finalMethods, entry.getKey(), entry.getValue(), FINAL_METHOD.matcher(entry.getValue()), "final method of a guarded type");
+    assertThat(finalMethods)
+        .as("a subclass mock runs the REAL final method, so a when(...) on it stubs nothing: drop the final modifier, or drop "
+            + "the type from GUARDED_TYPES and its mocks back to the inline maker")
+        .isEmpty();
+  }
+
+  @Test
+  void theFinalMethodScanTellsMethodsFromFieldsAndParameters() {
+    final String flagged = """
+        public final void a() {
+          final int notAMethod = compute(1);
+        }
+        protected final synchronized List<String> b(final int x) {
+        final Map<String, List<Long>> c() {
+        @Override public final boolean d() {
+        """;
+    final String fine = """
+        public static final Pattern P = Pattern.compile("x");
+        private static final int f(final int x) {
+          final var y = call(x);
+              final String userAgent, final LongSupplier clock) {
+          for (final RaftPeer peer : group.getPeers()) {
+        public final class Inner {
+        """;
+    final List<String> found = new ArrayList<>();
+    report(found, "flagged", flagged, FINAL_METHOD.matcher(flagged), "final");
+    assertThat(found).as("each final method declaration, and only those").hasSize(4);
+    found.clear();
+    report(found, "fine", fine, FINAL_METHOD.matcher(fine), "final");
+    assertThat(found).as("static methods, fields, locals, parameters and classes are not final methods").isEmpty();
   }
 
   @Test
@@ -212,6 +273,30 @@ class InlineMocksOfJitWarmTypesTest {
         "Session", "Monitor"))
       assertThat(offenders).as("the scan must flag %s", name).anyMatch(o -> o.startsWith("a/" + name + ".java"));
     assertThat(offenders).as("the scan must not flag a shape that is fine").noneMatch(o -> o.startsWith("b/"));
+  }
+
+  /** The main source of each guarded type, keyed by its simple name. */
+  private static Map<String, String> readGuardedTypeSources() throws IOException {
+    final List<String> names = List.of(GUARDED_TYPES.split("\\|"));
+    final Map<String, String> sources = new TreeMap<>();
+    try (final Stream<Path> modules = Files.list(REACTOR_ROOT)) {
+      for (final Path module : modules.filter(Files::isDirectory).toList()) {
+        final String moduleName = module.getFileName().toString();
+        if (SKIPPED_TOP_LEVEL.stream().anyMatch(moduleName::startsWith))
+          continue;
+        final Path mainSources = module.resolve("src").resolve("main").resolve("java");
+        if (!Files.isDirectory(mainSources))
+          continue;
+        try (final Stream<Path> files = Files.walk(mainSources)) {
+          for (final Path file : files.filter(p -> {
+            final String fileName = p.getFileName().toString();
+            return fileName.endsWith(".java") && names.contains(fileName.substring(0, fileName.length() - ".java".length()));
+          }).toList())
+            sources.put(REACTOR_ROOT.relativize(file).toString().replace('\\', '/'), Files.readString(file, StandardCharsets.UTF_8));
+        }
+      }
+    }
+    return sources;
   }
 
   private static Map<String, String> readTestSources() throws IOException {

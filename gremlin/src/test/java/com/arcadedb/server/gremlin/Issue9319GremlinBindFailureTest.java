@@ -50,6 +50,7 @@ class Issue9319GremlinBindFailureTest {
   Path configDirectory;
 
   private GremlinServerPlugin newPlugin(final int port) {
+    // Subclass maker, spelled out: this module has no engine test-jar for SubclassMocks (InlineMocksOfJitWarmTypesTest, #8867).
     final ArcadeDBServer server = mock(ArcadeDBServer.class, withSettings().mockMaker(MockMakers.SUBCLASS));
     when(server.getConfigPath()).thenReturn(configDirectory.toString());
     final ContextConfiguration configuration = new ContextConfiguration();

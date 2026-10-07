@@ -43,6 +43,7 @@ class Issue8363GremlinWorkerTaggedAsClientTest {
   void aTraversalRunsTaggedAsGremlinAndThePooledThreadIsHandedBackUntagged() throws Exception {
     final ExecutorService pool = Executors.newSingleThreadExecutor();
     try {
+      // Subclass maker, spelled out: this module has no engine test-jar for SubclassMocks (InlineMocksOfJitWarmTypesTest, #8867).
       final GremlinPrincipalPropagatingExecutorService executor =
           new GremlinPrincipalPropagatingExecutorService(pool, mock(ArcadeDBServer.class, withSettings().mockMaker(MockMakers.SUBCLASS)));
 
