@@ -46,6 +46,8 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
   // #9404: AN ITERATOR MAY READ AHEAD AT MOST THIS FRACTION OF WHAT IS LEFT OF THE QUERY HEAP BUDGET, SO A BUDGET CLOSE TO FULL
   // SHRINKS THE BATCH DOWN TO ONE RECORD INSTEAD OF HOLDING MEMORY NO QUERY ACCOUNTS FOR
   private final static int              BUDGET_SHARE  = 64;
+  // #9404: THE SAME FOR THE JVM-WIDE POOL OF READ-AHEAD BYTES (ScanReadAheadBudget): THE BATCHES SHRINK AS THE POOL FILLS
+  private final static int              POOL_SHARE    = 32;
   private final        DatabaseInternal database;
   // THE INSTANCE A RECORD LOOKED UP BY RID BELONGS TO (e.g. THE SERVER/HA WRAPPER), SO A SCANNED RECORD MODIFIES AND
   // SAVES THROUGH THE SAME ONE
@@ -77,7 +79,10 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
   // BUCKET UP FRONT BUT READS THEM ONE AFTER THE OTHER, SO READING EAGERLY HELD A BATCH FOR EVERY BUCKET AT ONCE. WHAT THE ITERATOR SEES
   // (THE PAGES IT COVERS) IS FIXED WHEN IT IS CREATED, AS IT WAS, AND THE LATER BATCHES WERE ALREADY READ LATER
   private boolean started = false;
-  // WHETHER THE LIMIT OF THE CURRENT BATCH IS THE SHARE OF THE BUDGET AND NOT THE SETTING
+  // #9404: WHAT THE BATCH READ AHEAD HOLDS OF THE JVM-WIDE POOL, CREATED WHEN IT FIRST HOLDS ANYTHING; GIVEN BACK WHEN THE BATCH HAS
+  // BEEN HANDED OVER, AND BY THE GARBAGE COLLECTOR IF THE ITERATOR IS ABANDONED
+  private ScanReadAheadBudget.Reservation readAhead;
+  // WHETHER THE LIMIT OF THE CURRENT BATCH IS A SHARE OF THE BUDGET OR THE POOL AND NOT THE SETTING
   private boolean limitedByBudget = false;
   // WRITTEN BY THE THREAD THAT SCANS, READ BY A PROFILE ONCE THE SCAN IS OVER: NO SYNCHRONIZATION IS NEEDED FOR A COUNT REPORTED THEN
   private long shrunkBatches  = 0;
@@ -152,6 +157,7 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
 
   public void setPosition(final RID position) throws IOException {
     started = true;
+    releaseReadAhead();
     // WHATEVER BATCH WAS READ BEFORE IS DROPPED: THE POSITIONED RECORD IS A BATCH OF ONE, AND THE SCAN GOES ON FROM THE SLOT AFTER IT
     // WHEN IT IS CONSUMED
     Arrays.fill(nextBatch, 0, Math.max(writeIndex, 1), null);
@@ -411,7 +417,8 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
   private long batchByteLimit() {
     if (maxBatchBytes <= 0)
       return Long.MAX_VALUE;
-    final long budgetShare = QueryHeapBudget.getAvailableBytes() / BUDGET_SHARE;
+    final long budgetShare = Math.min(QueryHeapBudget.getAvailableBytes() / BUDGET_SHARE,
+        ScanReadAheadBudget.getAvailableBytes() / POOL_SHARE);
     if (budgetShare >= maxBatchBytes)
       return maxBatchBytes;
     limitedByBudget = true;
@@ -423,9 +430,24 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
     return shrunkBatches;
   }
 
+  /** Gives back to the JVM-wide pool what the batch just handed over held. */
+  private void releaseReadAhead() {
+    if (readAhead != null)
+      readAhead.release();
+  }
+
+  private void holdReadAhead(final long bytes) {
+    if (readAhead == null)
+      readAhead = ScanReadAheadBudget.newReservation(this);
+    readAhead.reserve(bytes);
+  }
+
   private void fetchNext() {
     if (prefetchIndex < writeIndex)
       return;
+
+    // THE BATCH BEFORE IS HANDED OVER: ITS BYTES GO BACK TO THE POOL, SO THAT THIS BATCH SEES WHAT IS REALLY LEFT
+    releaseReadAhead();
 
     // One lookup per batch: every record of the batch is read now, in this transaction
     readInTransaction = database.getTransaction().getBeginSequence();
@@ -503,6 +525,9 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
         database.countRecordsRead(recordsRead);
       // A BATCH IS REDUCED WHEN THE BUDGET, NOT THE SETTING, ENDED IT: IT COPIED BYTES AND THEY REACHED THE SHARE (AN EMPTY BUCKET, OR
       // RECORDS ON THEIR OWN PAGE, COPY NOTHING AND ARE NOT SLOWED BY IT)
+      // WHAT THE BATCH COPIED IS HELD IN THE POOL UNTIL THE BATCH IS HANDED OVER
+      if (batchBytes > 0 && ScanReadAheadBudget.isEnabled())
+        holdReadAhead(batchBytes);
       if (limitedByBudget && batchBytes > 0 && batchBytes >= batchLimit) {
         ++shrunkBatches;
         QueryHeapBudget.scanBatchShrunk();

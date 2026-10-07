@@ -67,6 +67,7 @@ class LowRamProfileTest {
 
     // SCAN READ-AHEAD (#9404)
     assertThat(GlobalConfiguration.QUERY_BATCH_MAX_BYTES.getValueAsLong()).isEqualTo(200L * 1024);
+    assertThat(GlobalConfiguration.QUERY_SCAN_READ_AHEAD_MAX_RAM.getValueAsLong()).isEqualTo(16L);
 
     // SERVER HTTP
     assertThat(GlobalConfiguration.SERVER_HTTP_WORKER_THREADS.getValueAsInteger()).isEqualTo(16);
