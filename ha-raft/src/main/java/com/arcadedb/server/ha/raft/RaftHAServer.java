@@ -1050,6 +1050,25 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
+   * The SEVERE line for a leader that holds a quarantine or a read floor and has no peer to hand the leadership to
+   * (issue #8483). On a one-voter configuration no peer can ever become eligible, so promising a retry would be false:
+   * the state is terminal until an operator acts, and the line names what it costs while it lasts (issue #9308).
+   */
+  // @VisibleForTesting
+  static String noHandoffPeerReport(final String reason, final boolean soleVoter) {
+    if (soleVoter)
+      return "This leader holds " + reason + ", which it cannot resync from itself, and it is the only voter of the Raft "
+          + "configuration, so no peer can ever take over leadership or serve the resync: this state is terminal until an "
+          + "operator acts (issue #9308). While it lasts the node reports not-ready (GET /api/v1/ready fails) and the Raft "
+          + "log is not checkpointed, so it grows until the volume fills. Restore the database from a backup, drop it, or "
+          + "add a peer so that leadership can move and this node can resync from it.";
+    return "This leader holds " + reason + ", which it cannot resync from itself, and no peer is eligible to take over "
+        + "leadership (none other is configured, or every other one is lagging, unreachable or a priority-0 replica) "
+        + "(issue #8483). The handoff is retried as soon as a peer is eligible. With no other peer, restore the database "
+        + "from a backup or add a peer so that leadership can move and this node can resync from it.";
+  }
+
+  /**
    * Hands leadership to a healthy peer because this leader holds a database it knows is behind the committed Raft log
    * (issue #8483): a quarantine, or a read floor an incomplete snapshot install left.
    * <p>
@@ -1084,11 +1103,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         switch (decideQuarantineHandoff(leader, leader && hasHandoffTarget(getLivePeers(), localPeerId, clusterMonitor,
             handoffReachablePeers()),
             lastQuarantineHandoffAtMs, lastQuarantineNoPeerLogAtMs, now)) {
-        case NO_PEER_REPORT -> LogManager.instance().log(this, Level.SEVERE,
-            "This leader holds %s, which it cannot resync from itself, and no peer is eligible to take over leadership "
-                + "(none other is configured, or every other one is lagging, unreachable or a priority-0 replica) (issue #8483). The "
-                + "handoff is retried as soon as a peer is eligible. With no other peer, restore the database from a "
-                + "backup or add a peer so that leadership can move and this node can resync from it.", reason);
+        case NO_PEER_REPORT -> LogManager.instance().log(this, Level.SEVERE, "%s", noHandoffPeerReport(reason, isSoleVoter()));
         case TRANSFER -> transferLeadershipToResync(reason);
         default -> {
           // NOT_LEADER, NO_PEER (reported within the window already) or COOLDOWN: nothing to do
@@ -3951,8 +3966,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * none to install a database from (issue #8940). Non-voting listeners are not counted, so a single voter with
    * listeners is a sole voter. When the live configuration cannot be read this falls back to the declared server list,
    * which may name non-voting peers: a declared multi-node list answers false, the safe side. During a membership
-   * change that leaves this node as the only committed voter it answers true, which only affects the one replay
-   * of a missing-database install entry at startup.
+   * change that leaves this node as the only committed voter it answers true. Its callers are the two leader-side
+   * quarantine producers, the forceSnapshot replay guard (#8940) and the unexpected-apply-error handler (#9308), both
+   * of which alert instead of raising a quarantine that could never lift.
    */
   public boolean isSoleVoter() {
     return isSoleVoter(getLivePeers(), localPeerId);
