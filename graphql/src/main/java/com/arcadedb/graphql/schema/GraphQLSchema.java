@@ -76,6 +76,9 @@ public class GraphQLSchema {
    * property is described with it, so it is declared here for {@code __type} and {@code __schema} to resolve (#7876).
    * {@code JSON} (a MAP, or an EMBEDDED property with no declared type) and {@code BigDecimal} (a DECIMAL) are declared
    * for the same reason (#8756).
+   * <p>
+   * These custom scalars are descriptive: they tell a client what the result serializes, and this module applies no
+   * coercion of its own for them, neither to a result value nor to an argument.
    */
   private static final String[]    BUILT_IN_SCALARS    = { "String", "Int", "Float", "Boolean", "ID", "Long", "JSON", "BigDecimal" };
   private static final Set<String> BUILT_IN_SCALAR_SET = Set.of(BUILT_IN_SCALARS);

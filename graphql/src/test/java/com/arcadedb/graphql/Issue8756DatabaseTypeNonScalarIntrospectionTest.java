@@ -19,6 +19,7 @@
 package com.arcadedb.graphql;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
@@ -28,6 +29,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression tests for #8756, the follow-up of #7876: introspection of a database type with no {@code .gql} declaration
@@ -266,13 +268,41 @@ class Issue8756DatabaseTypeNonScalarIntrospectionTest extends AbstractGraphQLTes
 
   @Test
   void selfEmbeddingTypeStopsAtTheFieldsDepthCap() {
-    // An EMBEDDED property naming its own type is a cycle: the nested OBJECT is described lazily and the fields cap still applies
+    // An EMBEDDED property naming its own type is a cycle: the nested OBJECT is described lazily, only as deep as the client
+    // selects, and the fields cap refuses a selection nested past it instead of recursing
     executeTest(database -> {
       final DocumentType node = database.getSchema().createDocumentType("Node");
       node.createProperty("child", Type.EMBEDDED, "Node");
+
+      // Within the cap: the nested OBJECT lists its own fields, which name Node again
       try (final ResultSet resultSet = database.query("graphql",
-          "{ __type(name: \"Node\") { fields { name type { kind name } } } }")) {
-        assertNamed(fieldType(resultSet.next(), "child"), "OBJECT", "Node");
+          "{ __type(name: \"Node\") { fields { name type { kind name fields { name type { kind name } } } } } }")) {
+        final Result child = fieldType(resultSet.next(), "child");
+        assertNamed(child, "OBJECT", "Node");
+        assertNamed(fieldType(child, "child"), "OBJECT", "Node");
+      }
+
+      // One level past the cap: refused, not walked
+      assertThatThrownBy(() -> database.query("graphql",
+          "{ __type(name: \"Node\") { fields { type { fields { type { fields { name } } } } } } }").next())
+          .isInstanceOf(CommandParsingException.class).hasMessageContaining("nests 'fields' more than");
+      return null;
+    });
+  }
+
+  @Test
+  void embeddedOfADroppedTypeFallsBackToTheJsonScalar() {
+    // The schema refuses an EMBEDDED ofType naming no type, but the type can be dropped afterwards: the descriptor must not
+    // name an OBJECT __type can no longer resolve
+    executeTest(database -> {
+      database.getSchema().createDocumentType("Gone");
+      database.getSchema().createDocumentType("Holder").createProperty("ghost", Type.EMBEDDED, "Gone");
+      database.getSchema().dropType("Gone");
+      assertThat(database.getSchema().getType("Holder").getProperty("ghost").getOfType()).isEqualTo("Gone");
+
+      try (final ResultSet resultSet = database.query("graphql",
+          "{ __type(name: \"Holder\") { fields { name type { kind name } } } }")) {
+        assertNamed(fieldType(resultSet.next(), "ghost"), "SCALAR", "JSON");
       }
       return null;
     });
