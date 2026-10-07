@@ -53,6 +53,11 @@ final class CCHTopology {
   final int[] parent;      // rank -> elimination-tree parent rank, -1 for a root
   final int[] downOffsets; // rank -> first entry of downArcs, nodeCount + 1 entries
   final int[] downArcs;    // the arcs whose higher endpoint is the rank, ordered by lower endpoint
+  // Rank -> its distance from the root of its elimination tree. A query only ever touches the ranks on two chains up the
+  // tree, and on one chain every rank has a different depth: the query scratch is indexed by depth, so it is sized to the
+  // deepest chain instead of to the graph (see CCHMetric.QueryState).
+  final int[] depth;
+  final int   maxDepth;
 
   // Query scratch, sized to the node count and handed out one per concurrent query; see CCHMetric.
   private final ConcurrentLinkedQueue<CCHMetric.QueryState> statePool = new ConcurrentLinkedQueue<>();
@@ -79,6 +84,16 @@ final class CCHTopology {
     // arcs are numbered by lower endpoint, so walking them in order lists each rank's down arcs by lower endpoint
     for (int a = 0; a < arcs; a++)
       downArcs[fill[upHeads[a]]++] = a;
+
+    // a parent always ranks above its child, so walking the ranks top down meets every parent first
+    this.depth = new int[nodeCount];
+    int deepest = 0;
+    for (int r = nodeCount - 1; r >= 0; r--) {
+      depth[r] = parent[r] < 0 ? 0 : depth[parent[r]] + 1;
+      if (depth[r] > deepest)
+        deepest = depth[r];
+    }
+    this.maxDepth = deepest;
   }
 
   /** Same as {@link #build(int, int[], int[], int, long, BooleanSupplier)}, never cancelled. */
@@ -254,25 +269,18 @@ final class CCHTopology {
 
   /** The longest elimination-tree chain, which bounds the vertices any one direction of a query visits. */
   int maxSearchSpace() {
-    final int[] chain = new int[nodeCount];
-    int max = 0;
-    for (int r = nodeCount - 1; r >= 0; r--) {
-      chain[r] = parent[r] < 0 ? 1 : chain[parent[r]] + 1;
-      if (chain[r] > max)
-        max = chain[r];
-    }
-    return max;
+    return nodeCount == 0 ? 0 : maxDepth + 1;
   }
 
   /** Heap held by the arrays of this topology, excluding the pooled query scratch. */
   long getMemoryUsageBytes() {
     return 4L * (rankOf.length + nodeAt.length + upOffsets.length + upHeads.length + arcTails.length + parent.length
-        + downOffsets.length + downArcs.length);
+        + downOffsets.length + downArcs.length + depth.length);
   }
 
   CCHMetric.QueryState borrowState() {
     final CCHMetric.QueryState state = statePool.poll();
-    return state != null ? state : new CCHMetric.QueryState(nodeCount);
+    return state != null ? state : new CCHMetric.QueryState(maxSearchSpace());
   }
 
   void returnState(final CCHMetric.QueryState state) {

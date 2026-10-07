@@ -19,8 +19,10 @@
 package com.arcadedb.graph.olap;
 
 import com.arcadedb.graph.EdgeWeight;
+import com.arcadedb.utility.IntIntHashMap;
 
 import java.util.Arrays;
+import java.util.concurrent.locks.StampedLock;
 import java.util.function.BooleanSupplier;
 
 /**
@@ -57,6 +59,9 @@ final class CCHMetric {
   final double[]    down;
   final int[]       upMiddle;   // the vertex the customized up cost goes through, -1 for an input arc
   final int[]       downMiddle;
+  // Guards the arrays above against {@link #update}, which rewrites them in place: queries read optimistically (see
+  // read()), the single writer - the hierarchy's preparation, one at a time - takes the write lock.
+  private final StampedLock lock = new StampedLock();
 
   private CCHMetric(final CCHTopology topology, final boolean undirected, final double[] inputUp, final double[] inputDown,
       final double[] up, final double[] down, final int[] upMiddle, final int[] downMiddle) {
@@ -187,6 +192,155 @@ final class CCHMetric {
     return new CCHMetric(topology, undirected, inputUp, undirected ? inputUp : inputDown, up, down, upMiddle, downMiddle);
   }
 
+  /**
+   * Partial customization: sets the input cost of {@code count} arcs and recomputes, in place, exactly the arcs whose
+   * customized cost can depend on them - the changed arcs themselves and, transitively, every arc they close a lower
+   * triangle of. An arc {@code x -> y} is the lower arc of the triangles {@code x < y, w} for the other up-neighbours
+   * {@code w} of {@code x}, so a change to it can only reach the arc joining {@code y} and {@code w}, whose lower endpoint
+   * ranks above {@code x}. Processing arcs in order of lower endpoint therefore finds each one's lower triangles already
+   * final, exactly as a full customization would, and a single changed weight on a road network touches a few hundred
+   * arcs instead of all of them.
+   * <p>
+   * An arc is recomputed from its input cost and all its lower triangles, not merely relaxed, because a cost can go UP
+   * (heavier traffic, a closed road) as well as down.
+   *
+   * @param arcs      the arcs whose input cost changes
+   * @param inputUps  their new lower -> higher cost
+   * @param inputDowns their new higher -> lower cost (ignored when undirected)
+   *
+   * @return how many arcs were recomputed
+   */
+  int update(final int[] arcs, final double[] inputUps, final double[] inputDowns, final int count) {
+    final long stamp = lock.writeLock();
+    try {
+      final IntIntHashMap queued = new IntIntHashMap(Math.max(16, count * 4));
+      final ArcQueue queue = new ArcQueue(Math.max(16, count * 2));
+      for (int i = 0; i < count; i++) {
+        final int arc = arcs[i];
+        inputUp[arc] = inputUps[i];
+        if (!undirected)
+          inputDown[arc] = inputDowns[i];
+        if (queued.put(arc, 1) == Integer.MIN_VALUE)
+          queue.push(topology.arcTails[arc], arc);
+      }
+
+      final int[] upOffsets = topology.upOffsets;
+      final int[] upHeads = topology.upHeads;
+      final int[] arcTails = topology.arcTails;
+      final int[] downOffsets = topology.downOffsets;
+      final int[] downArcs = topology.downArcs;
+      int recomputed = 0;
+      while (!queue.isEmpty()) {
+        final int arc = queue.pop();
+        recomputed++;
+        final int x = arcTails[arc];
+        final int y = upHeads[arc];
+
+        double newUp = inputUp[arc];
+        int newUpMiddle = -1;
+        double newDown = undirected ? newUp : inputDown[arc];
+        int newDownMiddle = -1;
+        for (int d = downOffsets[x], dEnd = downOffsets[x + 1]; d < dEnd; d++) {
+          final int zx = downArcs[d];
+          final int z = arcTails[zx];
+          final int zy = findArcAfter(z, zx, y);
+          if (zy < 0)
+            continue;
+          final double viaUp = down[zx] + up[zy];   // x -> z -> y
+          if (viaUp < newUp) {
+            newUp = viaUp;
+            newUpMiddle = z;
+          }
+          if (!undirected) {
+            final double viaDown = down[zy] + up[zx]; // y -> z -> x
+            if (viaDown < newDown) {
+              newDown = viaDown;
+              newDownMiddle = z;
+            }
+          }
+        }
+
+        upMiddle[arc] = newUpMiddle;
+        if (!undirected)
+          downMiddle[arc] = newDownMiddle;
+        final boolean changed = newUp != up[arc] || (!undirected && newDown != down[arc]);
+        if (!changed)
+          continue;
+        up[arc] = newUp;
+        if (!undirected)
+          down[arc] = newDown;
+
+        // the triangles x < y, w this arc is the lower arc of: their third arc joins y and w
+        for (int xw = upOffsets[x], end = upOffsets[x + 1]; xw < end; xw++) {
+          final int w = upHeads[xw];
+          if (w == y)
+            continue;
+          final int dependent = w < y ? topology.findArc(w, y) : topology.findArc(y, w);
+          if (dependent >= 0 && queued.put(dependent, 1) == Integer.MIN_VALUE)
+            queue.push(arcTails[dependent], dependent);
+        }
+      }
+      return recomputed;
+    } finally {
+      lock.unlockWrite(stamp);
+    }
+  }
+
+  /** The arc {@code z -> y} among z's up arcs listed after {@code zx} (whose head ranks below y), or -1. */
+  private int findArcAfter(final int z, final int zx, final int y) {
+    final int found = Arrays.binarySearch(topology.upHeads, zx + 1, topology.upOffsets[z + 1], y);
+    return found >= 0 ? found : -1;
+  }
+
+  /** A binary min-heap of arcs keyed by their lower endpoint. */
+  private static final class ArcQueue {
+    private long[] items;
+    private int    size;
+
+    ArcQueue(final int capacity) {
+      items = new long[capacity];
+    }
+
+    boolean isEmpty() {
+      return size == 0;
+    }
+
+    void push(final int tail, final int arc) {
+      if (size == items.length)
+        items = Arrays.copyOf(items, size * 2);
+      final long item = (long) tail << 32 | (arc & 0xFFFFFFFFL);
+      int i = size++;
+      while (i > 0) {
+        final int parent = (i - 1) >>> 1;
+        if (items[parent] <= item)
+          break;
+        items[i] = items[parent];
+        i = parent;
+      }
+      items[i] = item;
+    }
+
+    int pop() {
+      final long top = items[0];
+      final long last = items[--size];
+      int i = 0;
+      while (true) {
+        int child = 2 * i + 1;
+        if (child >= size)
+          break;
+        if (child + 1 < size && items[child + 1] < items[child])
+          child++;
+        if (items[child] >= last)
+          break;
+        items[i] = items[child];
+        i = child;
+      }
+      if (size > 0)
+        items[i] = last;
+      return (int) top;
+    }
+  }
+
   /** True when this metric was customized from exactly these input costs, so customizing them again would rebuild it. */
   boolean hasInput(final double[] otherUp, final double[] otherDown, final boolean otherUndirected) {
     return undirected == otherUndirected && Arrays.equals(inputUp, otherUp) && (undirected || Arrays.equals(inputDown,
@@ -196,7 +350,11 @@ final class CCHMetric {
   // ---------------------------------------------------------------------------------------------------------------
   // Query
 
-  /** Scratch for one query: per-rank distances and the arc each was reached by, reset after use along the two chains. */
+  /**
+   * Scratch for one query: the distance of each rank on the two chains and the arc that reached it, reset after use.
+   * Indexed by the rank's DEPTH, not by the rank: a chain holds one rank per depth, so the arrays need the depth of the
+   * deepest chain (a few thousand entries on a large road network) rather than one entry per node of the graph.
+   */
   static final class QueryState {
     final double[] forward;
     final double[] backward;
@@ -217,15 +375,8 @@ final class CCHMetric {
   double distance(final int source, final int target) {
     if (source == target)
       return 0;
-    final QueryState state = topology.borrowState();
-    try {
-      final int meet = search(state, topology.rankOf[source], topology.rankOf[target]);
-      final double result = meet < 0 ? INFINITY : state.forward[meet] + state.backward[meet];
-      reset(state, topology.rankOf[source], topology.rankOf[target]);
-      return result;
-    } finally {
-      topology.returnState(state);
-    }
+    final PathResult result = read(topology.rankOf[source], topology.rankOf[target], false);
+    return result == null ? INFINITY : result.distance();
   }
 
   /** The nodes of a shortest path from {@code source} to {@code target}, both included; null when there is no path. */
@@ -240,18 +391,49 @@ final class CCHMetric {
   PathResult shortestPathWithDistance(final int source, final int target) {
     if (source == target)
       return new PathResult(new int[] { source }, 0);
-    final int rs = topology.rankOf[source];
-    final int rt = topology.rankOf[target];
+    return read(topology.rankOf[source], topology.rankOf[target], true);
+  }
+
+  /**
+   * One query, read consistently against {@link #update}: optimistically first, which costs readers nothing and never
+   * blocks them, then - only when an update overlapped it - again under the read lock. An overlapped optimistic attempt
+   * may have read half-updated costs, so its answer, or the exception those costs led to, is discarded rather than
+   * trusted; the scratch is reset either way.
+   */
+  private PathResult read(final int rs, final int rt, final boolean withPath) {
     final QueryState state = topology.borrowState();
     try {
-      final int meet = search(state, rs, rt);
-      final PathResult result = meet < 0 ? null :
-          new PathResult(unpack(state, rs, rt, meet), state.forward[meet] + state.backward[meet]);
-      reset(state, rs, rt);
-      return result;
+      final long stamp = lock.tryOptimisticRead();
+      if (stamp != 0) {
+        try {
+          final PathResult result = query(state, rs, rt, withPath);
+          if (lock.validate(stamp))
+            return result;
+        } catch (final RuntimeException e) {
+          if (lock.validate(stamp))
+            throw e;
+        } finally {
+          reset(state, rs, rt);
+        }
+      }
+      final long readStamp = lock.readLock();
+      try {
+        return query(state, rs, rt, withPath);
+      } finally {
+        reset(state, rs, rt);
+        lock.unlockRead(readStamp);
+      }
     } finally {
       topology.returnState(state);
     }
+  }
+
+  private PathResult query(final QueryState state, final int rs, final int rt, final boolean withPath) {
+    final int meet = search(state, rs, rt);
+    if (meet < 0)
+      return null;
+    final double distance = state.forward[topology.depth[meet]] + state.backward[topology.depth[meet]];
+    return new PathResult(withPath ? unpack(state, rs, rt, meet) : null, distance);
   }
 
   /**
@@ -263,36 +445,41 @@ final class CCHMetric {
    */
   private int search(final QueryState state, final int rs, final int rt) {
     final int[] parent = topology.parent;
+    final int[] depth = topology.depth;
     final double[] forward = state.forward;
     final double[] backward = state.backward;
 
-    forward[rs] = 0;
-    backward[rt] = 0;
+    forward[depth[rs]] = 0;
+    backward[depth[rt]] = 0;
     int meet = -1;
     double best = INFINITY;
     int fx = rs;
     int bx = rt;
     while (fx >= 0 || bx >= 0) {
       if (fx >= 0 && (bx < 0 || fx < bx)) {
-        if (forward[fx] < best)
-          relax(fx, forward[fx], up, forward, state.forwardArc);
+        final double dx = forward[depth[fx]];
+        if (dx < best)
+          relax(fx, dx, up, forward, state.forwardArc);
         fx = parent[fx];
       } else if (bx >= 0 && (fx < 0 || bx < fx)) {
-        if (backward[bx] < best)
-          relax(bx, backward[bx], down, backward, state.backwardArc);
+        final double dx = backward[depth[bx]];
+        if (dx < best)
+          relax(bx, dx, down, backward, state.backwardArc);
         bx = parent[bx];
       } else {
         // a rank on both chains: both of its distances are final here
         final int x = fx;
-        final double total = forward[x] + backward[x];
+        final double fd = forward[depth[x]];
+        final double bd = backward[depth[x]];
+        final double total = fd + bd;
         if (total < best) {
           best = total;
           meet = x;
         }
-        if (forward[x] < best)
-          relax(x, forward[x], up, forward, state.forwardArc);
-        if (backward[x] < best)
-          relax(x, backward[x], down, backward, state.backwardArc);
+        if (fd < best)
+          relax(x, fd, up, forward, state.forwardArc);
+        if (bd < best)
+          relax(x, bd, down, backward, state.backwardArc);
         fx = parent[x];
         bx = fx;
       }
@@ -300,36 +487,37 @@ final class CCHMetric {
     return meet;
   }
 
+  /** Relaxes the up arcs of {@code x}; every head is an ancestor on the same chain, addressed by its depth. */
   private void relax(final int x, final double dx, final double[] cost, final double[] dist, final int[] reachedBy) {
     final int[] upHeads = topology.upHeads;
+    final int[] depth = topology.depth;
     for (int a = topology.upOffsets[x], end = topology.upOffsets[x + 1]; a < end; a++) {
       final double candidate = dx + cost[a];
-      final int y = upHeads[a];
-      if (candidate < dist[y]) {
-        dist[y] = candidate;
-        reachedBy[y] = a;
+      final int at = depth[upHeads[a]];
+      if (candidate < dist[at]) {
+        dist[at] = candidate;
+        reachedBy[at] = a;
       }
     }
   }
 
   private void reset(final QueryState state, final int rs, final int rt) {
-    final int[] parent = topology.parent;
-    for (int x = rs; x >= 0; x = parent[x])
-      state.forward[x] = INFINITY;
-    for (int x = rt; x >= 0; x = parent[x])
-      state.backward[x] = INFINITY;
+    // a chain spans every depth from its start up to 0
+    Arrays.fill(state.forward, 0, topology.depth[rs] + 1, INFINITY);
+    Arrays.fill(state.backward, 0, topology.depth[rt] + 1, INFINITY);
   }
 
   /** Expands the search's two half paths through the meeting rank into the original nodes, shortcuts unpacked. */
   private int[] unpack(final QueryState state, final int rs, final int rt, final int meet) {
     final int[] arcTails = topology.arcTails;
+    final int[] depth = topology.depth;
     // the source half, collected from the meeting rank back down and then walked forward
     int forwardCount = 0;
-    for (int y = meet; y != rs; y = arcTails[state.forwardArc[y]])
+    for (int y = meet; y != rs; y = arcTails[state.forwardArc[depth[y]]])
       forwardCount++;
     final int[] forwardArcs = new int[forwardCount];
-    for (int y = meet, i = forwardCount - 1; y != rs; y = arcTails[state.forwardArc[y]])
-      forwardArcs[i--] = state.forwardArc[y];
+    for (int y = meet, i = forwardCount - 1; y != rs; y = arcTails[state.forwardArc[depth[y]]])
+      forwardArcs[i--] = state.forwardArc[depth[y]];
 
     final IntList path = new IntList(16);
     path.add(rs);
@@ -337,7 +525,7 @@ final class CCHMetric {
     for (final int arc : forwardArcs)
       expand(arc, true, path, stack);
     for (int y = meet; y != rt; ) {
-      final int arc = state.backwardArc[y];
+      final int arc = state.backwardArc[depth[y]];
       expand(arc, false, path, stack);
       y = arcTails[arc];
     }
@@ -358,6 +546,9 @@ final class CCHMetric {
     stack.size = 0;
     stack.add(arc << 1 | (upward ? 1 : 0));
     while (stack.size > 0) {
+      // a shortest path visits every node at most once: only middles read while an update rewrote them can go past that
+      if (path.size > topology.nodeCount)
+        throw new IllegalStateException("Shortcut unpacking did not converge");
       final int entry = stack.items[--stack.size];
       final int a = entry >>> 1;
       final boolean goingUp = (entry & 1) == 1;
