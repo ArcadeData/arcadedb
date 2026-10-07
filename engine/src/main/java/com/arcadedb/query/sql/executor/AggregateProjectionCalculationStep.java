@@ -531,6 +531,7 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
           if (!heapReleased)
             heapLimit.chargeElement(key.values, groupOverhead);
         }
+        // CHECKED WHEN A GROUP IS CREATED ONLY: THE CHARGE GROWS ONLY THEN
         flush = workerFlushBytes > 0 && heapLimit.getChargedBytes() >= workerFlushBytes;
       }
       // NO OPERATION FOR THE AGGREGATES: ONLY THE ONES THAT MERGE PARTIALS RUN IN THE WORKERS (count, sum, avg, min, max),
@@ -604,14 +605,18 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
           }
         }
 
+      final boolean transferred;
       synchronized (this) {
         if (heapReleased)
           // CANCELLED: THE GROUPS ARE DISCARDED WITH THE QUERY, AND THE CHARGE IS GIVEN BACK BY THE CALLER
           return;
         synchronized (target.heapLimit) {
-          if (!target.heapLimit.transferFrom(heapLimit))
-            heapLimit.release();
+          transferred = target.heapLimit.transferFrom(heapLimit);
         }
+        // NOT TRANSFERRED ONLY WHEN THE BUDGET WAS SWITCHED ON OR OFF BETWEEN THE CREATIONS OF THE TWO: THE WORKER CHARGED
+        // NOTHING THE SHARED SIDE COULD TAKE OVER, SO IT HAS NOTHING TO GIVE BACK FOR THE DUPLICATES EITHER
+        if (!transferred)
+          heapLimit.release();
       }
 
       final long[] duplicateBytes = new long[1];
@@ -624,9 +629,13 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
         partitions[p] = new HashMap<>();
       }
       groupCount = 0;
-      synchronized (target.heapLimit) {
-        target.heapLimit.release(duplicateBytes[0]);
-      }
+      if (transferred)
+        synchronized (target.heapLimit) {
+          target.heapLimit.release(duplicateBytes[0]);
+        }
+      // THE SAME CONVENTION AS THE FINAL CHECK: checkGroupCount(n) ASKS FOR n + 1, SO PASSING THE COUNT MINUS ONE CHECKS THE
+      // COUNT. A FAILURE HERE LEAVES THE STEP TO RELEASE EVERY CHARGE: THE TARGET IS IN workerPartials, AND THE WORKER'S
+      // GROUPS ARE DISCARDED WITH THE QUERY
       checkGroupCount(sharedGroupCount.addAndGet(adopted) - 1);
     }
   }
