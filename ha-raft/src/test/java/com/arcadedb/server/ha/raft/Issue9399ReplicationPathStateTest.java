@@ -131,6 +131,25 @@ class Issue9399ReplicationPathStateTest {
   }
 
   @Test
+  void aLeaderMakingItselfKnownWithNothingNewToSendClearsTheLeaderlessReport() throws Exception {
+    // The quorum-loss shape: leaderless after the restart, then a leader appears whose commit index this node holds.
+    final Fixture f = new Fixture();
+    f.leaderCommit.set(100L);
+    when(f.info.getLeaderId()).thenReturn(null);
+    f.restartInPlace();
+    f.tick(0L);
+    f.tick(f.grace);
+    assertThat(unreachableMs(f.raft)).as("precondition: reported").isEqualTo(f.grace);
+
+    when(f.info.getLeaderId()).thenReturn(RaftPeerId.valueOf("leader"));
+    f.tick(f.grace + 3_000L); // the leader is known; its commit index is learned after this hook
+    f.tick(f.grace + 6_000L);
+
+    assertThat(f.raft.isReplicationPathUnprovenSinceRestart()).as("no entry yet, same term").isTrue();
+    assertThat(unreachableMs(f.raft)).as("but a known leader with nothing new to send is no evidence").isEqualTo(-1L);
+  }
+
+  @Test
   void anIdleClusterDoesNotReadAsAnUnreachableLeader() throws Exception {
     // The case that rules out reporting "unproven" on its own: a healthy leader with nothing to send.
     final Fixture f = new Fixture();
