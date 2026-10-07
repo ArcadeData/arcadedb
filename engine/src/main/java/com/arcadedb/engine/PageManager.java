@@ -152,7 +152,8 @@ public class PageManager extends LockContext {
   // ConcurrentHashMap barriers already on these paths, and it removes the reliance on the external
   // database-publication happens-before for cross-thread visibility of the startup() writes.
   private volatile PageManagerFlushThread             flushThread;
-  // Written under the page-manager lock only, hence the plain increments
+  // Written under the page-manager lock only, hence the plain increments: no other writer may be added without making the
+  // increments atomic
   private volatile long                               publicationSequence;
   private volatile int                                freePageRAM;
 
