@@ -598,8 +598,12 @@ public class LocalSchema implements Schema {
 
       updateSecurity();
     } finally {
-      if (!published && previousDictionary != null)
-        dictionary = previousDictionary;
+      if (!published) {
+        if (previousDictionary != null)
+          dictionary = previousDictionary;
+        // Engines left waiting by a load that did not publish must not leak into the next one
+        timeSeriesEnginesAwaitingReplay = null;
+      }
       endStagedPublication();
     }
   }
@@ -2458,6 +2462,8 @@ public class LocalSchema implements Schema {
   }
 
   public void close() {
+    // An open that failed before the replay finished leaves the engines it deferred behind
+    timeSeriesEnginesAwaitingReplay = null;
     // Save dirty configuration before clearing everything
     if (dirtyGeneration.get() > savedGeneration) {
       try {
