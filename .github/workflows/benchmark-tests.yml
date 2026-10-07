@@ -8,6 +8,9 @@ on:
 jobs:
   setup:
     runs-on: ubuntu-latest
+    # A full lane takes about 2h15m. Fail well before GitHub's 6h default, so a hung or runaway benchmark ends with a
+    # clear timeout instead of a run that looks stuck for the whole afternoon.
+    timeout-minutes: 240
     permissions:
       contents: write
       packages: write
