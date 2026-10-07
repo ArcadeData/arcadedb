@@ -26,7 +26,6 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.query.sql.executor.CommandTimeoutOverride;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.database.QueryMetricsRecorder;
@@ -44,6 +43,7 @@ import com.arcadedb.network.binary.ChannelBinaryServer;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.CommandTimeoutOverride;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -3673,6 +3673,7 @@ public class PostgresNetworkExecutor extends Thread {
         throw new PostgresSessionSettings.SettingException("cursor \"" + command.name() + "\" does not exist", "34000");
     }
     case DISCARD_PLANS, DISCARD_SEQUENCES, DISCARD_TEMP -> {
+      // Nothing to discard on this server
     }
     }
   }
