@@ -36,7 +36,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.PriorityQueue;
 import java.util.Set;
-import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 /**
@@ -154,14 +153,13 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
       return null; // a popped node could not be answered exactly; the caller reads the edges instead
     // The reached ids up front rather than a filter() on the stream: a filtered stream no longer knows its size, and
     // the exact size is what lets a count-only CALL answer without building a row per node (issue #9453)
+    final int[] reached = new int[n];
     int reachable = 0;
     for (int i = 0; i < n; i++)
-      if (i != src && dist[i] < Double.POSITIVE_INFINITY) reachable++;
-    final int[] reached = new int[reachable];
-    for (int i = 0, r = 0; i < n; i++)
-      if (i != src && dist[i] < Double.POSITIVE_INFINITY) reached[r++] = i;
+      if (i != src && dist[i] < Double.POSITIVE_INFINITY)
+        reached[reachable++] = i;
 
-    return IntStream.of(reached).mapToObj(i -> {
+    return Arrays.stream(reached, 0, reachable).mapToObj(i -> {
       final ResultInternal r = new ResultInternal();
       r.setProperty("node", gav.getRID(i));
       r.setProperty("cost", dist[i]);
@@ -242,7 +240,14 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
       }
     }
 
-    return IntStream.range(0, n).filter(i -> i != src && dist[i] < Double.POSITIVE_INFINITY).mapToObj(i -> {
+    // Sized, like the CSR path: see the comment there (issue #9453)
+    final int[] reached = new int[n];
+    int reachable = 0;
+    for (int i = 0; i < n; i++)
+      if (i != src && dist[i] < Double.POSITIVE_INFINITY)
+        reached[reachable++] = i;
+
+    return Arrays.stream(reached, 0, reachable).mapToObj(i -> {
       final ResultInternal r = new ResultInternal();
       r.setProperty("node", vertices.get(i).getIdentity());
       r.setProperty("cost", dist[i]);

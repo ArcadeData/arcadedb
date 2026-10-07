@@ -106,6 +106,15 @@ public interface Procedure {
    * {@code Stream.of(result)} after the mutation completes).
    * </p>
    *
+   * <p>
+   * A read procedure whose stream knows its exact size ({@link java.util.Spliterator#SIZED}, as
+   * {@code IntStream.range(0, n).mapToObj(...)} or {@code list.stream()} do) may never be traversed: when the query
+   * only counts the rows ({@code CALL ... YIELD ... RETURN count(*)}), the {@code CALL} step takes the size and
+   * drops the stream (issue #9453). So a SIZED stream must hold exactly the rows the procedure means to yield, and
+   * must not rely on traversal for validation or side effects. Keep the size where the row count is cheap to know -
+   * build the stream from a precomputed array of ids rather than a {@code filter()}, which loses it.
+   * </p>
+   *
    * @param args     the procedure arguments (already evaluated)
    * @param inputRow the current input row (may be null for standalone CALL)
    * @param context  the command execution context
