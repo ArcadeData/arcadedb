@@ -2000,6 +2000,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // or raised while the node still had peers - keeps its quarantine and the routing below.
       // isSoleVoter() cannot throw here and mask t: the membership read it relies on (getCommittedPeersOrNull) degrades
       // to the declared server list on any exception, and a declared multi-node list answers false, the old routing.
+      // It is also true while a cluster that will grow is still one committed voter (a single-seed bootstrap, or a
+      // membership change down to one voter): a peer that joins later installs its copy FROM this node, so it inherits
+      // the same state rather than diverging from it. The diverged check and the voter check are two reads, not one
+      // atomic decision; a quarantine raised in between only sends this error down the old routing below.
       final RaftHAServer raftHA = this.raftHAServer;
       if (raftHA != null && !isDatabaseDiverged(databaseName) && raftHA.isSoleVoter()) {
         LogManager.instance().log(this, Level.SEVERE,
