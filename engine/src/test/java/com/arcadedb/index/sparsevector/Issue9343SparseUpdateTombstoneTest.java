@@ -31,8 +31,10 @@ import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -122,6 +124,80 @@ class Issue9343SparseUpdateTombstoneTest {
     }
   }
 
+  /**
+   * Many documents whose dims are rewritten at random, against a model kept by the test: every document must answer
+   * exactly on the dims it holds now, whatever mix of live and tombstoned dims a query names, in the memtable and
+   * once sealed into segments.
+   */
+  @Test
+  void randomUpdatesAnswerLikeTheModel() {
+    final Random random = new Random(9343);
+    final int docs = 300;
+    final int dims = 40;
+    try (final Database db = new DatabaseFactory(DB_PATH).create()) {
+      db.command("sql", "CREATE DOCUMENT TYPE Doc");
+      db.command("sql", "CREATE PROPERTY Doc.id LONG");
+      db.command("sql", "CREATE PROPERTY Doc.tokens ARRAY_OF_INTEGERS");
+      db.command("sql", "CREATE PROPERTY Doc.weights ARRAY_OF_FLOATS");
+      db.command("sql", "CREATE INDEX ON Doc (tokens, weights) LSM_SPARSE_VECTOR METADATA {\"dimensions\": " + dims + "}");
+      final Map<Long, Map<Integer, Float>> model = new HashMap<>();
+      db.transaction(() -> {
+        for (long id = 0; id < docs; id++) {
+          final Map<Integer, Float> vector = randomVector(random, dims);
+          model.put(id, vector);
+          db.newDocument("Doc").set("id", id).set("tokens", dimsOf(vector)).set("weights", weightsOf(vector)).save();
+        }
+      });
+      for (int round = 0; round < 3; round++) {
+        db.transaction(() -> {
+          for (int u = 0; u < 100; u++) {
+            final long id = random.nextInt(docs);
+            final Map<Integer, Float> vector = randomVector(random, dims);
+            model.put(id, vector);
+            db.command("sql", "UPDATE Doc SET tokens = :t, weights = :w WHERE id = :id",
+                Map.of("t", dimsOf(vector), "w", weightsOf(vector), "id", id)).close();
+          }
+        });
+        if (round == 1)
+          flushSparseIndexes(db);
+
+        for (int q = 0; q < 25; q++) {
+          final Map<Integer, Float> query = randomVector(random, dims);
+          final Map<Long, Float> expected = new HashMap<>();
+          for (final var doc : model.entrySet()) {
+            float score = 0f;
+            for (final var term : query.entrySet())
+              score += term.getValue() * doc.getValue().getOrDefault(term.getKey(), 0f);
+            if (score > 0f)
+              expected.put(doc.getKey(), score);
+          }
+          final List<Long> got = ask(db, dimsOf(query), weightsOf(query), docs);
+          assertThat(got).as("round " + round + " query " + query).containsExactlyInAnyOrderElementsOf(expected.keySet());
+        }
+      }
+    }
+  }
+
+  private static Map<Integer, Float> randomVector(final Random random, final int dims) {
+    final Map<Integer, Float> vector = new HashMap<>();
+    final int size = 1 + random.nextInt(6);
+    while (vector.size() < size)
+      vector.put(random.nextInt(dims), 1f + random.nextInt(4));
+    return vector;
+  }
+
+  private static int[] dimsOf(final Map<Integer, Float> vector) {
+    return vector.keySet().stream().mapToInt(Integer::intValue).toArray();
+  }
+
+  private static float[] weightsOf(final Map<Integer, Float> vector) {
+    final float[] weights = new float[vector.size()];
+    int i = 0;
+    for (final Integer dim : vector.keySet())
+      weights[i++] = vector.get(dim);
+    return weights;
+  }
+
   private static void flushSparseIndexes(final Database db) {
     final TypeIndex typeIndex = (TypeIndex) db.getSchema().getIndexByName("Doc[tokens,weights]");
     for (final IndexInternal idx : typeIndex.getIndexesOnBuckets())
@@ -129,9 +205,13 @@ class Issue9343SparseUpdateTombstoneTest {
   }
 
   private static List<Long> ask(final Database db, final int[] tokens, final float[] weights) {
+    return ask(db, tokens, weights, 10);
+  }
+
+  private static List<Long> ask(final Database db, final int[] tokens, final float[] weights, final int k) {
     final List<Long> ids = new ArrayList<>();
     try (final ResultSet rs = db.query("sql", "SELECT id, score FROM (SELECT expand(`vector.sparseNeighbors`(?, ?, ?, ?)))",
-        "Doc[tokens,weights]", tokens, weights, 10)) {
+        "Doc[tokens,weights]", tokens, weights, k)) {
       while (rs.hasNext()) {
         final Result r = rs.next();
         ids.add(r.getProperty("id"));

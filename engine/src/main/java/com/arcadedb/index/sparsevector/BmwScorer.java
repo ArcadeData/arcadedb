@@ -487,9 +487,9 @@ public final class BmwScorer {
    * traversal on corpora where the essential set stays large, is gone. Each document that received a score then probes
    * the non-essential terms from the highest ceiling down and is abandoned as soon as it cannot beat the threshold.
    * <p>
-   * A tombstone adds nothing to its document's slot and does not mark it as touched (issue #9343). Documents are drained in ascending RID order, so the collector sees the same sequence as in
-   * the document-at-a-time traversal. The threshold is re-read per document and the split per window, never walked back.
-   * Falls to {@link #scanWide} on a RID the packed order cannot hold, like the other traversal.
+   * A tombstone adds nothing to its document's slot and does not mark it as touched (issue #9343). Documents are
+   * drained in ascending RID order, so the collector sees the same sequence as in the document-at-a-time traversal. The threshold is re-read per document and the split per window, never walked
+   * back. Falls to {@link #scanWide} on a RID the packed order cannot hold, like the other traversal.
    */
   private static void scanWindowed(final DimEntry[] terms, final Collector collector, final RID endExclusive,
       final int windowSize) throws IOException {
