@@ -1005,7 +1005,7 @@ public enum GlobalConfiguration {
       size, whatever the record count (the size is reached or exceeded by at most one record); records that fit their own \
       page are views of the cached page and are not counted. The limit also shrinks as the queries running take the heap \
       budget (see arcadedb.queryMaxHeapRAM): a scan reads ahead at most a sixty-fourth of what is left of it, down to one \
-      record at a time. That share is read once per batch and is not a reservation, so scans that start together each take \
+      record at a time (a single record larger than the limit is still assembled whole). That share is read once per batch and is not a reservation, so scans that start together each take \
       their share of the same remainder. A batch always holds at least one record. 0 or a negative value disables the byte bound, and the \
       shrinking with it (record count only)""",
       Long.class, 1024L * 1024),

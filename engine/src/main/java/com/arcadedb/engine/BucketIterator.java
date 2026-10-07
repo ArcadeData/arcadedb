@@ -428,7 +428,8 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
     recordsRead = 0;
     batchBytes = 0L;
     limitedByBudget = false;
-    final long batchByteLimit = batchByteLimit();
+    // READ ONCE FOR THE WHOLE BATCH, BEFORE ANY RECORD IS: THE METHOD OF THE SAME NAME ONLY COMPUTES IT
+    final long batchLimit = batchByteLimit();
     try {
       database.executeInReadLock(() -> {
         prefetchIndex = 0;
@@ -436,7 +437,7 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
 
         // A BATCH OF LARGE RECORDS ENDS BY BYTES, NOT BY COUNT: 1,024 RECORDS OF 100KB WOULD BE 100MB PER BUCKET, PER SCAN (#9404)
         // batchBytes == 0 KEEPS A BATCH OF RECORDS THAT COPY NOTHING (ON THEIR OWN PAGE) GOING UNTIL ONE IS COPIED, EVEN WHEN THE LIMIT IS 0
-        for (writeIndex = 0; writeIndex < nextBatch.length && (batchBytes == 0 || batchBytes < batchByteLimit); ) {
+        for (writeIndex = 0; writeIndex < nextBatch.length && (batchBytes == 0 || batchBytes < batchLimit); ) {
           if (positions != null) {
             if (!readNextPosition())
               return null;
@@ -497,7 +498,7 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
         database.countRecordsRead(recordsRead);
       // A BATCH IS REDUCED WHEN THE BUDGET, NOT THE SETTING, ENDED IT: IT COPIED BYTES AND THEY REACHED THE SHARE (AN EMPTY BUCKET, OR
       // RECORDS ON THEIR OWN PAGE, COPY NOTHING AND ARE NOT SLOWED BY IT)
-      if (limitedByBudget && batchBytes > 0 && batchBytes >= batchByteLimit) {
+      if (limitedByBudget && batchBytes > 0 && batchBytes >= batchLimit) {
         ++shrunkBatches;
         QueryHeapBudget.scanBatchShrunk();
       }
