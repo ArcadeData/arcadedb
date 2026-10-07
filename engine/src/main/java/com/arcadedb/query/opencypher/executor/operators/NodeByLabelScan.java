@@ -182,7 +182,11 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
             final Iterator<Identifiable> iter = (Iterator<Identifiable>) (Object)
                 context.getDatabase().iterateType(label, true);
             iterator = iter;
-            scanIterator.set(iter);
+            // ONLY A PROFILED RUN KEEPS THE SCAN: THE THREAD-LOCAL OUTLIVES THE QUERY, AND THE ITERATOR HOLDS A BATCH OF RECORDS
+            if (context.isProfiling())
+              scanIterator.set(iter);
+            else
+              scanIterator.remove();
           }
         }
 

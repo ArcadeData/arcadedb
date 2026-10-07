@@ -52,6 +52,8 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
   // RESOLVED ONCE PER ITERATOR, NOT PER RECORD: A BUCKET MOVED TO ANOTHER TYPE (OR ITS TYPE DROPPED) WHILE A SCAN IS OPEN
   // IS SEEN BY THE NEXT ITERATOR ONLY. THIS ONE KEEPS THE TYPE IT STARTED WITH FOR EVERY BATCH, HOWEVER LONG IT STAYS OPEN
   private final        DocumentType     type;
+  // #9404: THE BYTES A BATCH MAY COPY OUT OF THE PAGES, FROM arcadedb.queryBatchMaxBytes, READ ONCE PER ITERATOR
+  private final        long             maxBatchBytes;
   private final        LocalBucket      bucket;
   final                Record[]         nextBatch     = new Record[PREFETCH_SIZE];
   private              int              prefetchIndex = 0;
@@ -70,8 +72,8 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
   // ITS OWN; A RECORD ON ITS OWN PAGE IS A VIEW OF THE CACHED PAGE AND COSTS NOTHING MORE), AND WHAT A BATCH MAY HOLD
   private long batchBytes     = 0;
   // #9404: THE BATCHES READ WITH THE READ-AHEAD REDUCED BY THE QUERY HEAP BUDGET, WHICH A PROFILED QUERY REPORTS
+  // WRITTEN BY THE THREAD THAT SCANS, READ BY A PROFILE ONCE THE SCAN IS OVER: NO SYNCHRONIZATION IS NEEDED FOR A COUNT REPORTED THEN
   private long shrunkBatches  = 0;
-  private final long maxBatchBytes;
   private long skippedRecords = 0;
   // POSITIONS MODE (#8333): THE SORTED POSITIONS [positionIndex, positionsEnd) TO READ, INSTEAD OF EVERY SLOT OF THE PAGES
   private final long[] positions;
@@ -383,7 +385,8 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
   /**
    * The bytes copied out of the pages a batch may reach before it ends: {@link GlobalConfiguration#QUERY_BATCH_MAX_BYTES}, or less
    * when the queries running have taken most of the query heap budget. A batch always holds at least one record, so the floor is a
-   * scan that reads one record at a time.
+   * scan that reads one record at a time. The budget share is sampled once per batch and is a heuristic, not a reservation: every
+   * scan running takes its share of what is left, so the read-ahead of many scans together is bounded by the budget only roughly.
    */
   private long batchByteLimit() {
     if (maxBatchBytes <= 0)

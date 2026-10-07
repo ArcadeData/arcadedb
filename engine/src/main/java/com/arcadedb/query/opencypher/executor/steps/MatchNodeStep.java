@@ -670,7 +670,9 @@ public class MatchNodeStep extends AbstractExecutionStep {
         if (type != null) {
           @SuppressWarnings("unchecked") final Iterator<Identifiable> iter =
               (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(label, true);
-          scanIterator = iter;
+          // ONLY A PROFILED RUN KEEPS THE SCAN, WHICH HOLDS A BATCH OF RECORDS: THE PROFILE IS THE ONLY READER
+          if (context.isProfiling())
+            scanIterator = iter;
           return iter;
         }
         return Collections.emptyIterator();
