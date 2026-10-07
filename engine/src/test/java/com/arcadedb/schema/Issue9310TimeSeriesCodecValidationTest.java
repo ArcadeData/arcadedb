@@ -20,11 +20,14 @@ package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
-import com.arcadedb.exception.SchemaException;
 import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -79,9 +82,10 @@ class Issue9310TimeSeriesCodecValidationTest extends TestHelper {
   @Test
   void everyHonouredCombinationIsAcceptedCompactsAndReadsBackUnchanged() throws Exception {
     database.command("sql", "CREATE TIMESERIES TYPE Ok1 TIMESTAMP ts TAGS (h STRING CODEC DICTIONARY, z INTEGER CODEC SIMPLE8B, "
-        + "y LONG CODEC DICTIONARY) FIELDS (a DOUBLE CODEC GORILLA_XOR, b LONG CODEC SIMPLE8B, c DOUBLE CODEC DICTIONARY) SHARDS 1");
+        + "y LONG CODEC DICTIONARY) FIELDS (a DOUBLE CODEC GORILLA_XOR, b LONG CODEC SIMPLE8B, c DOUBLE CODEC DICTIONARY, "
+        + "f BOOLEAN CODEC SIMPLE8B) SHARDS 1");
     database.transaction(() -> database.command("sql",
-        "INSERT INTO Ok1 SET ts = 1700000000000, h = 'x', z = 5, y = 6, a = 7.5, b = 9007199254740993, c = 1.5"));
+        "INSERT INTO Ok1 SET ts = 1700000000000, h = 'x', z = 5, y = 6, a = 7.5, b = 9007199254740993, c = 1.5, f = true"));
     ((LocalTimeSeriesType) database.getSchema().getType("Ok1")).getEngine().compactAll();
     try (final ResultSet rs = database.query("sql", "SELECT FROM Ok1")) {
       final Result r = rs.next();
@@ -90,7 +94,27 @@ class Issue9310TimeSeriesCodecValidationTest extends TestHelper {
       assertThat(r.<Number>getProperty("a").doubleValue()).isEqualTo(7.5);
       assertThat(r.<Number>getProperty("b").longValue()).isEqualTo(9007199254740993L);
       assertThat(r.<Number>getProperty("c").doubleValue()).isEqualTo(1.5);
+      assertThat(r.<Boolean>getProperty("f")).isTrue();
     }
+  }
+
+  /**
+   * The check guards creation only: a database written before it, whose schema names a codec the encoders cannot run,
+   * must still open (refusing to open would be worse than the failing compaction it already has).
+   */
+  @Test
+  void aPersistedSchemaWithARefusedCodecStillOpens() throws Exception {
+    database.command("sql", "CREATE TIMESERIES TYPE Legacy TIMESTAMP ts FIELDS (v DOUBLE CODEC DICTIONARY)");
+    database.close();
+
+    final Path schemaFile = Path.of(database.getDatabasePath(), "schema.json");
+    final String schema = Files.readString(schemaFile);
+    assertThat(schema).containsPattern("\"compression\"\\s*:\\s*\"DICTIONARY\"");
+    Files.writeString(schemaFile, schema.replaceAll("(\"compression\"\\s*:\\s*)\"DICTIONARY\"", "$1\"NONE\""));
+
+    reopenDatabase();
+    assertThat(((LocalTimeSeriesType) database.getSchema().getType("Legacy")).getTsColumn("v").getCompressionHint())
+        .isEqualTo(TimeSeriesCodec.NONE);
   }
 
   private void assertRefused(final String sql, final String mention) {

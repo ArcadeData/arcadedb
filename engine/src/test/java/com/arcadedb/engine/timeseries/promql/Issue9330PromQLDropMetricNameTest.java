@@ -25,6 +25,8 @@ import com.arcadedb.engine.timeseries.promql.PromQLResult.VectorSample;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -72,6 +74,17 @@ class Issue9330PromQLDropMetricNameTest extends TestHelper {
     for (final String fn : new String[] { "rate", "irate", "increase", "sum_over_time", "avg_over_time", "min_over_time",
         "max_over_time", "count_over_time" })
       assertThat(only(fn + "(m9330[10s])").labels()).as(fn).doesNotContainKey("__name__").containsEntry("host", "h1");
+  }
+
+  @Test
+  void aRangeQueryDropsTheNameToo() {
+    final PromQLResult result = new PromQLEvaluator(getDatabaseInternal()).evaluateRange(new PromQLParser("-m9330").parse(), 1000L, 5000L,
+        2000L);
+    assertThat(result).isInstanceOf(PromQLResult.MatrixResult.class);
+    final List<PromQLResult.MatrixSeries> series = ((PromQLResult.MatrixResult) result).series();
+    assertThat(series).isNotEmpty();
+    for (final PromQLResult.MatrixSeries s : series)
+      assertThat(s.labels()).doesNotContainKey("__name__").containsEntry("host", "h1");
   }
 
   @Test
