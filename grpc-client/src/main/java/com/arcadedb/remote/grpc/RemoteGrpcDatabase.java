@@ -2839,7 +2839,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
   }
 
   // For async "server-streaming" calls that take (request, responseObserver) and
-  // return void
+  // return void. Read-only by construction (appliesWrites=false): a writing server-streaming RPC must thread the flag
+  // through as callAsyncDuplex does, or a lost answer on it would be reported as retryable (issue #8822).
   private <Req, Resp> void callAsyncServerStreaming(String opName, long timeoutMs, Req request,
                                                     BiConsumer<ArcadeDbServiceGrpc.ArcadeDbServiceStub,
                                                         StreamObserver<Resp>> invoker,

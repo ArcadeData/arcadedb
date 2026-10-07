@@ -18,6 +18,7 @@
  */
 package com.arcadedb.remote.grpc;
 
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.HostUtil;
 import com.arcadedb.remote.RemoteException;
@@ -478,6 +479,8 @@ public class RemoteGrpcServer implements AutoCloseable {
               .setIfNotExists(ifNotExists).build())
           .getCreated();
     } catch (StatusException e) {
+      // Only the unknown outcome goes through the mapper; every other failure keeps the RuntimeException this method
+      // has always thrown, so a caller matching on it (e.g. an ALREADY_EXISTS refusal) sees no change (issue #8822)
       if (GrpcClientErrorMapper.outcomeUnknown(e))
         throw GrpcClientErrorMapper.toAutoCommitWriteException(e, "create database");
       throw new RuntimeException("Failed to create database: " + e.getMessage(), e);
@@ -509,6 +512,7 @@ public class RemoteGrpcServer implements AutoCloseable {
               .setIfExists(ifExists).build())
           .getDropped();
     } catch (StatusException e) {
+      // Same split as createDatabase: only the unknown outcome changes type
       if (GrpcClientErrorMapper.outcomeUnknown(e))
         throw GrpcClientErrorMapper.toAutoCommitWriteException(e, "drop database");
       throw new RuntimeException("Failed to drop database: " + e.getMessage(), e);
@@ -769,7 +773,8 @@ public class RemoteGrpcServer implements AutoCloseable {
   /**
    * Stops the server that answers this call, or - when {@code serverName} is not empty - the named
    * HA peer. The local shutdown is scheduled a second out server-side, so this call returns before
-   * the process exits.
+   * the process exits: a lost answer is therefore not the normal outcome, and is reported as an unknown one, like any
+   * other admin write (see {@link #callWrite}).
    */
   public void shutdown(final String serverName) {
     callWrite("shutdown", stub -> stub.shutdown(
@@ -797,7 +802,7 @@ public class RemoteGrpcServer implements AutoCloseable {
    * every transport, and surfaces a refusal through {@code GrpcClientErrorMapper}.
    * <p>
    * <b>A join that succeeded but left a security document unseeded raises
-   * {@link com.arcadedb.exception.NeedRetryException}</b> (issue #7532, from the server's
+   * {@link NeedRetryException}</b> (issue #7532, from the server's
    * {@code UNAVAILABLE}, mapped here the way HTTP's 503 is on the other transport). It does <em>not</em> mean
    * the server failed to join - it is a committed cluster member by then - but that it is enforcing its own
    * copy of the named documents until the seed is reissued. Re-running this call does exactly that, and is
@@ -999,7 +1004,7 @@ public class RemoteGrpcServer implements AutoCloseable {
    * string would throw the address away, which is the one thing the caller needs (issue #7304).
    *
    * <p>
-   * For a read only: a lost answer stays a retryable {@link com.arcadedb.exception.NeedRetryException}, because asking
+   * For a read only: a lost answer stays a retryable {@link NeedRetryException}, because asking
    * again changes nothing. An RPC that changes server state goes through {@link #callWrite} instead.
    *
    * @param operation the operation name, used only when the failure carries no description of its own
@@ -1011,7 +1016,7 @@ public class RemoteGrpcServer implements AutoCloseable {
   /**
    * {@link #call} for an RPC that changes server state. A status-only {@code UNAVAILABLE} that is not a failure to
    * connect, or a client deadline that expired unanswered, may follow a request the server already applied, so it is an
-   * unknown outcome rather than a {@link com.arcadedb.exception.NeedRetryException} (issue #8822). That holds for an
+   * unknown outcome rather than a {@link NeedRetryException} (issue #8822). That holds for an
    * idempotent write too, the line the HTTP client draws for every server command (issue #8136): only the caller knows
    * whether asking again is harmless. An error the server classified (a class-name trailer, such as the
    * {@code NeedRetryException} {@link #connectCluster} documents) keeps its type.
