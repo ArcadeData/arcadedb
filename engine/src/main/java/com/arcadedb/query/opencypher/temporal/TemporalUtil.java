@@ -584,10 +584,17 @@ public final class TemporalUtil {
     // temporals (incl. java.util.Date, the default DATETIME storage type, and ZonedDateTime) are wrapped
     // into Cypher temporal values so a stored native datetime reads back as a comparable temporal.
     if (value instanceof Temporal || value instanceof Date) {
+      // A stored datetime keeps no zone: mark it so a comparison lets it adopt the other operand's zone (issue #9325).
+      // Built directly, not through fromCoreJavaType(), so a scan allocates one wrapper per value
+      if (value instanceof ZonedDateTime zdt)
+        return CypherDateTime.ofStored(zdt);
+      if (value instanceof OffsetDateTime odt)
+        return CypherDateTime.ofStored(odt.toZonedDateTime());
+      if (value instanceof Instant instant)
+        return CypherDateTime.ofStored(instant.atZone(ZoneOffset.UTC));
+      if (value instanceof Date date)
+        return CypherDateTime.ofStored(date.toInstant().atZone(ZoneOffset.UTC));
       final Object coerced = fromCoreJavaType(value);
-      // A stored datetime keeps no zone: mark it so a comparison lets it adopt the other operand's zone (issue #9325)
-      if (coerced instanceof CypherDateTime dateTime)
-        return CypherDateTime.ofStored(dateTime.getValue());
       if (coerced instanceof CypherTemporalValue)
         return coerced;
     }

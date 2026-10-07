@@ -438,7 +438,9 @@ public class ComparisonExpression implements BooleanExpression {
 
   private CypherDateTime adoptZone(final Object raw, final CypherDateTime coerced, final ZoneId zone) {
     final Object[] memo = zoneAdoptionMemo;
-    if (memo != null && memo[0] == raw && (long) memo[3] == dateMillis(raw) && memo[1].equals(zone))
+    // a stored datetime is wrapped afresh per row: equal immutable wrappers share one adoption
+    if (memo != null && (memo[0] == raw || raw instanceof CypherDateTime && raw.equals(memo[0])) && (long) memo[3] == dateMillis(raw)
+        && memo[1].equals(zone))
       return (CypherDateTime) memo[2];
     final CypherDateTime adjusted = new CypherDateTime(coerced.getValue().withZoneSameInstant(zone));
     zoneAdoptionMemo = new Object[] { raw, zone, adjusted, dateMillis(raw) };
