@@ -127,7 +127,7 @@ record PostgresSessionCommand(Kind kind, String name) {
     default -> {
     }
     }
-    throw new PostgresSessionSettings.SettingException("syntax error in \"" + query + "\"", PostgresCopyStatement.SQLSTATE_SYNTAX_ERROR);
+    throw new PostgresSessionSettings.SettingException("syntax error in \"" + (query.length() > 80 ? query.substring(0, 80) + "..." : query) + "\"", PostgresCopyStatement.SQLSTATE_SYNTAX_ERROR);
   }
 
   /**

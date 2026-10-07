@@ -282,8 +282,8 @@ final class PostgresSessionSettings {
     final String value = current(STATEMENT_TIMEOUT);
     if (value == null)
       return 0L;
-    // Stored values are the same String instance until the next SET, so the last parse is reused without a regex per statement
-    if (value != timeoutText) {
+    // The last parse is reused while the value is unchanged, so a statement costs no regex
+    if (!value.equals(timeoutText)) {
       timeoutMillis = parseDurationMillis(STATEMENT_TIMEOUT, value);
       timeoutText = value;
     }
