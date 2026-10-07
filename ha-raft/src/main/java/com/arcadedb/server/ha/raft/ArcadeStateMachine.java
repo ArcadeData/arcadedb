@@ -6178,13 +6178,52 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * @throws Exception when the database cannot be opened or its directory cannot be read; callers
    *                   decide what an unreadable local copy means for them.
    */
-  private BootstrapBaseline readLocalBootstrapState(final String dbName) throws Exception {
-    final ServerDatabase serverDb = server.getDatabase(dbName);
+  // @VisibleForTesting (package-private, issue #8843)
+  BootstrapBaseline readLocalBootstrapState(final String dbName) throws Exception {
+    return readLocalBootstrapState(dbName, BootstrapFingerprint.SETTLE_MAX_WAIT_MILLIS);
+  }
+
+  /** {@link #readLocalBootstrapState(String)} with an explicit flush-settle bound - see {@link #settleBudget}. */
+  BootstrapBaseline readLocalBootstrapState(final String dbName, final long maxSettleMillis) throws Exception {
+    return localBootstrapState(server.getDatabase(dbName), maxSettleMillis);
+  }
+
+  /**
+   * The {@code (fingerprint, lastTxId)} pair of one open database, or {@code null} when it is not backed by a
+   * {@link LocalDatabase}. The ONE place every bootstrap participant reads its own state from - the state machine's
+   * verification and re-verification, the election's local sample, and the {@code bootstrap-state} answer to a peer -
+   * so the pair means the same thing wherever two of them are compared.
+   * <p>
+   * The fingerprint is taken with {@link BootstrapFingerprint#computeSettled}, never over the raw files (issue #8843):
+   * the database is open, its last commits may still be queued in the asynchronous page flush, and two samples of one
+   * unchanged copy either side of that flush would otherwise read a matching peer as a mismatched one. The wait is
+   * bounded by the backlog found at the call and by {@link BootstrapFingerprint#SETTLE_MAX_WAIT_MILLIS}, so the Raft
+   * apply thread and a leader under sustained writes are never held for the duration of the writes. A caller that
+   * reads several databases in one sweep passes {@link #settleBudget} of ONE deadline shared by the sweep instead, so a
+   * wedged disk or a suspended flush costs the sweep that bound once, not once per database.
+   * <p>
+   * {@code lastTxId} is read after the fingerprint, not atomically with it: a commit landing in between is counted by
+   * the id and missing from the digest. Only a database under concurrent writes can see that, and its fingerprint
+   * drifts with every commit anyway - the pair is meaningful at the cold-start boundary, where nothing is writing.
+   */
+  static BootstrapBaseline localBootstrapState(final ServerDatabase serverDb) {
+    return localBootstrapState(serverDb, BootstrapFingerprint.SETTLE_MAX_WAIT_MILLIS);
+  }
+
+  static BootstrapBaseline localBootstrapState(final ServerDatabase serverDb, final long maxSettleMillis) {
     final DatabaseInternal embedded = serverDb.getWrappedDatabaseInstance().getEmbedded();
     if (!(embedded instanceof LocalDatabase localDb))
       return null;
-    return new BootstrapBaseline(BootstrapFingerprint.compute(new File(localDb.getDatabasePath())),
+    return new BootstrapBaseline(BootstrapFingerprint.computeSettled(localDb, maxSettleMillis),
         localDb.getLastTransactionId());
+  }
+
+  /**
+   * What is left of a flush-settle deadline shared by a sweep over several databases (issue #8843), never negative:
+   * once it is spent, the remaining databases are hashed without waiting.
+   */
+  static long settleBudget(final long sweepDeadlineMillis) {
+    return Math.max(0L, sweepDeadlineMillis - System.currentTimeMillis());
   }
 
   /**
@@ -6392,6 +6431,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   // @VisibleForTesting
   void reconcileBootstrapDivergence(final Map<String, BootstrapBaseline> leaderStates) {
+    final long settleDeadline = System.currentTimeMillis() + BootstrapFingerprint.SETTLE_MAX_WAIT_MILLIS;
     for (final String dbName : getBootstrapUnreconciledDatabases()) {
       final BootstrapBaseline leaderState = leaderStates.get(dbName);
       if (leaderState == null) {
@@ -6422,7 +6462,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       }
       final BootstrapBaseline local;
       try {
-        local = readLocalBootstrapState(dbName);
+        local = readLocalBootstrapState(dbName, settleBudget(settleDeadline));
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.WARNING,
             "Could not read local state of '%s' to verify bootstrap divergence: %s", dbName, e.getMessage());
