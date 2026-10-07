@@ -113,8 +113,8 @@ class HardcodedTestServerPortsTest {
   private static final Pattern BARE_FIXTURE_START = Pattern.compile(
       "\\b(?:getServer\\((?:[^()]|\\([^()]*\\))*\\)|servers\\[[^\\]]*\\])\\s*\\.start\\(\\s*\\)");
 
-  /** {@code ArcadeDBServer server = getServer(i)}: captures the local alias, whose {@code .start()} is just as bare. */
-  private static final Pattern FIXTURE_SERVER_ALIAS = Pattern.compile("\\bArcadeDBServer\\s+(\\w+)\\s*=\\s*getServer\\(");
+  /** {@code ArcadeDBServer server = getServer(i)} or {@code var}: captures the alias, whose {@code .start()} is just as bare. */
+  private static final Pattern FIXTURE_SERVER_ALIAS = Pattern.compile("\\b(?:ArcadeDBServer|var)\\s+(\\w+)\\s*=\\s*getServer\\(");
 
   /** Every module's test tree holds far more than this; below it the walk has silently lost its root. */
   private static final int EXPECTED_MINIMUM_SOURCES = 1000;
@@ -161,6 +161,8 @@ class HardcodedTestServerPortsTest {
     sources.put("a/AliasedRaftRestart.java", """
         class AliasedRaftRestart extends BaseRaftHATest {
           @Test void t() { final ArcadeDBServer server = getServer(restarted); server.stop(); server.start(); } }""");
+    sources.put("a/VarAliasedRaftRestart.java", """
+        class VarAliasedRaftRestart extends BaseRaftHATest { @Test void t() { var node = getServer(2); node.start(); } }""");
     sources.put("a/IndirectRaftRestart.java", """
         class IndirectRaftRestart extends SomeRaftFixture { @Test void t() { servers[i].start(); } }""");
     sources.put("a/SomeRaftFixture.java", """
@@ -200,7 +202,8 @@ class HardcodedTestServerPortsTest {
 
     final List<String> offenders = offenders(sources);
     for (final String name : List.of("IndexUrl", "HttpsIndexUrl", "LiteralUrl", "LiteralSetting", "ConstantSetting", "BasePlusIndex",
-        "GremlinDriverPort", "RatisPort", "BareRaftRestart", "BareRaftRestartOfLeader", "AliasedRaftRestart", "IndirectRaftRestart"))
+        "GremlinDriverPort", "RatisPort", "BareRaftRestart", "BareRaftRestartOfLeader", "AliasedRaftRestart", "VarAliasedRaftRestart",
+        "IndirectRaftRestart"))
       assertThat(offenders).as("the scan must flag %s", name).anyMatch(o -> o.startsWith("a/" + name + ".java"));
     assertThat(offenders).as("the scan must not flag a shape that is fine").noneMatch(o -> o.startsWith("b/"));
   }
@@ -265,6 +268,12 @@ class HardcodedTestServerPortsTest {
    * patched in. With 2480 held by another process every hint names the neighbouring node, and the restarted node's
    * snapshot install, forwarded writes and bootstrap-state queries reach the wrong peer (issue #9243).
    * {@code startServer(int)} re-applies the patch.
+   * <p>
+   * A tripwire, not a parser. It reads {@code getServer(...)} with one level of nested parentheses, follows an alias
+   * only when it is declared as {@code ArcadeDBServer x = getServer(...)} or {@code var x = getServer(...)} (not a
+   * field set elsewhere), resolves the fixture hierarchy by simple class name, and matches an alias across the whole
+   * file, so a second, unrelated variable with the same name is flagged too. That last one errs toward a false positive:
+   * rename the variable or route it through {@code startServer(int)}.
    */
   private static void reportBareFixtureStarts(final List<String> offenders, final String name, final String source) {
     final String what = "restarts a BaseRaftHATest server with a bare start(), which loses the bound-port patch of its "
