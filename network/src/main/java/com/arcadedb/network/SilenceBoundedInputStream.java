@@ -134,7 +134,12 @@ public class SilenceBoundedInputStream extends FilterInputStream {
           // Not silent: the exchange moved while this read waited. Waits another budget from here; a read that returns
           // meanwhile finds the newer task through the reference and cancels that one instead.
           seen[0] = now;
-          cancel.set(timer.schedule(fire[0], timeoutMs));
+          final Runnable rearmed = timer.schedule(fire[0], timeoutMs);
+          cancel.set(rearmed);
+          // The read may have returned between the check above and the set: its disarm cancelled the task that had
+          // just fired, not this one, which would otherwise stay queued for a whole budget.
+          if (!armed.get())
+            rearmed.run();
           return;
         }
       }

@@ -318,7 +318,11 @@ final class DuplexHttpExchange implements HttpResponse<InputStream>, AutoCloseab
     head.append(request.method()).append(' ').append(path);
     if (uri.getRawQuery() != null)
       head.append('?').append(uri.getRawQuery());
-    head.append(" HTTP/1.1\r\nHost: ").append(uri.getRawAuthority()).append("\r\n");
+    // Host and port only: an authority may carry userinfo, which must never go out in a header.
+    head.append(" HTTP/1.1\r\nHost: ").append(uri.getHost());
+    if (uri.getPort() >= 0)
+      head.append(':').append(uri.getPort());
+    head.append("\r\n");
     // HttpRequest.Builder has already refused any name or value carrying a line break.
     for (final Map.Entry<String, List<String>> header : request.headers().map().entrySet())
       for (final String value : header.getValue())
@@ -504,6 +508,10 @@ final class DuplexHttpExchange implements HttpResponse<InputStream>, AutoCloseab
     final List<String> lengths = headers.allValues("Content-Length");
     // Ambiguous framing is refused rather than guessed at (RFC 9112 6.3): the relay must never pass off a body cut at
     // the wrong place as the leader's whole answer.
+    // A 304 may announce the length of the representation it stands for, and a 204 has no content: neither has a body
+    // whatever its headers say (RFC 9112 6.3), so a declared length must not have the reader wait for one.
+    if (statusCode == 204 || statusCode == 304)
+      return InputStream.nullInputStream();
     if (!transferEncoding.isEmpty() && !lengths.isEmpty())
       throw new IOException("The response from " + request.uri() + " carries both Transfer-Encoding and Content-Length");
     if (lengths.size() > 1 && lengths.stream().map(String::trim).distinct().count() > 1)
@@ -514,15 +522,17 @@ final class DuplexHttpExchange implements HttpResponse<InputStream>, AutoCloseab
         throw new IOException("Unsupported Transfer-Encoding '" + transferEncoding + "' in the response from " + request.uri());
       return new ChunkedBody();
     }
-    final Optional<String> length = lengths.isEmpty() ? Optional.empty() : Optional.of(lengths.getFirst());
-    if (length.isPresent())
-      try {
-        return new LengthBody(Long.parseLong(length.get().trim()));
-      } catch (final NumberFormatException e) {
-        throw new IOException("Malformed Content-Length from " + request.uri() + ": " + length.get());
-      }
-    if (statusCode == 204 || statusCode == 304)
-      return InputStream.nullInputStream();
+    if (!lengths.isEmpty()) {
+      final String length = lengths.getFirst().trim();
+      // Decimal digits only, which Long.parseLong alone does not enforce: "-1" would pass off an empty body as the
+      // leader's whole answer.
+      boolean valid = !length.isEmpty() && length.length() <= 18;
+      for (int i = 0; valid && i < length.length(); i++)
+        valid = length.charAt(i) >= '0' && length.charAt(i) <= '9';
+      if (!valid)
+        throw new IOException("Malformed Content-Length from " + request.uri() + ": " + lengths.getFirst());
+      return new LengthBody(Long.parseLong(length));
+    }
     // Neither: the body runs until the leader closes the connection, which Connection: close allows.
     return in;
   }

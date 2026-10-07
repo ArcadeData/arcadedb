@@ -40,6 +40,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -166,27 +167,7 @@ class DuplexHttpExchangeTest {
       return;
     }
     try (listener) {
-      final Thread leader = new Thread(() -> {
-        try (final Socket socket = listener.accept()) {
-          final InputStream in = socket.getInputStream();
-          int matched = 0;
-          final byte[] end = "\r\n\r\n".getBytes(StandardCharsets.US_ASCII);
-          while (matched < end.length) {
-            final int b = in.read();
-            if (b < 0)
-              return;
-            matched = b == end[matched] ? matched + 1 : (b == end[0] ? 1 : 0);
-          }
-          in.readNBytes(PAYLOAD.length);
-          write(socket.getOutputStream(), "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
-          socket.shutdownOutput();
-          in.readAllBytes();
-        } catch (final IOException ignored) {
-          // the exchange closed the connection
-        }
-      }, "issue9216-ipv6-leader");
-      leader.setDaemon(true);
-      leader.start();
+      startOneShotLeader(listener, new AtomicReference<>());
 
       final HttpRequest request = PostBatchHandler.buildForwardRequest(
           "http://[::1]:" + listener.getLocalPort() + "/api/v1/batch/mydb", "application/x-ndjson", "test-token", "root",
@@ -248,6 +229,53 @@ class DuplexHttpExchangeTest {
     try (final FakeLeader leader = FakeLeader.scripted(out -> write(out, head.toString()))) {
       assertThatThrownBy(() -> send(leader, PAYLOAD.length).close()).isInstanceOf(IOException.class)
           .hasMessageContaining("response head");
+    }
+  }
+
+  /** The Host header names the host and port only: userinfo in the leader's URI must never go out in clear. */
+  @Test
+  @Timeout(value = 60, unit = TimeUnit.SECONDS)
+  void theHostHeaderCarriesNoUserinfo() throws Exception {
+    try (final ServerSocket listener = new ServerSocket(StaticBaseServerTest.allocateFreePorts(1)[0], 4,
+        InetAddress.getLoopbackAddress())) {
+      final AtomicReference<String> head = new AtomicReference<>();
+      startOneShotLeader(listener, head);
+
+      final HttpRequest request = PostBatchHandler.buildForwardRequest(
+          "http://user:secret@127.0.0.1:" + listener.getLocalPort() + "/api/v1/batch/mydb", "application/x-ndjson",
+          "test-token", "root", PAYLOAD.length, new ByteArrayInputStream(PAYLOAD), NdJsonResultStream.CONTENT_TYPE, null,
+          null);
+      try (final DuplexHttpExchange response = DuplexHttpExchange.send(client, request, new ByteArrayInputStream(PAYLOAD),
+          DEADLINE_MS, () -> 0L)) {
+        assertThat(readAll(response.body())).isEqualTo("ok");
+      }
+      assertThat(head.get()).contains("\r\nHost: 127.0.0.1:" + listener.getLocalPort() + "\r\n").doesNotContain("secret");
+    }
+  }
+
+  /** A signed Content-Length is not a length: "-1" must not pass off an empty body as the leader's whole answer. */
+  @Test
+  @Timeout(value = 60, unit = TimeUnit.SECONDS)
+  void aSignedContentLengthIsRefused() throws Exception {
+    for (final String length : new String[] { "-1", "+2", "0x2", "" })
+      try (final FakeLeader leader = FakeLeader.scripted(out -> write(out,
+          "HTTP/1.1 200 OK\r\nContent-Length: " + length + "\r\n\r\nok"))) {
+        assertThatThrownBy(() -> send(leader, PAYLOAD.length).close()).as(length).isInstanceOf(IOException.class)
+            .hasMessageContaining("Content-Length");
+      }
+  }
+
+  /** A 304 may announce the length of the representation it stands for, but never carries a body (RFC 9110 15.4.5). */
+  @Test
+  // A separate thread: before the fix the read waits on the socket for the 1000 bytes, which an interrupt does not end.
+  @Timeout(value = 60, unit = TimeUnit.SECONDS, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+  void a304WithAContentLengthHasNoBody() throws Exception {
+    try (final FakeLeader leader = FakeLeader.scripted(out -> write(out,
+        "HTTP/1.1 304 Not Modified\r\nContent-Length: 1000\r\n\r\n"))) {
+      try (final DuplexHttpExchange response = send(leader, PAYLOAD.length)) {
+        assertThat(response.statusCode()).isEqualTo(304);
+        assertThat(readAll(response.body())).isEmpty();
+      }
     }
   }
 
@@ -366,6 +394,34 @@ class DuplexHttpExchangeTest {
         "application/x-ndjson", "test-token", "root", 0, InputStream.nullInputStream(), NdJsonResultStream.CONTENT_TYPE,
         null, null);
     return DuplexHttpExchange.send(client, request, InputStream.nullInputStream(), DEADLINE_MS, () -> 0L);
+  }
+
+  /**
+   * Answers one exchange on {@code listener} with a 2-byte body, after reading its head - kept in {@code head} - and
+   * its body.
+   */
+  private static void startOneShotLeader(final ServerSocket listener, final AtomicReference<String> head) {
+    final Thread leader = new Thread(() -> {
+      try (final Socket socket = listener.accept()) {
+        final InputStream in = socket.getInputStream();
+        final StringBuilder received = new StringBuilder();
+        while (!received.toString().endsWith("\r\n\r\n")) {
+          final int b = in.read();
+          if (b < 0)
+            return;
+          received.append((char) b);
+        }
+        head.set(received.toString());
+        in.readNBytes(PAYLOAD.length);
+        write(socket.getOutputStream(), "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+        socket.shutdownOutput();
+        in.readAllBytes();
+      } catch (final IOException ignored) {
+        // the exchange closed the connection
+      }
+    }, "issue9216-one-shot-leader");
+    leader.setDaemon(true);
+    leader.start();
   }
 
   private static String readAll(final InputStream in) throws IOException {
