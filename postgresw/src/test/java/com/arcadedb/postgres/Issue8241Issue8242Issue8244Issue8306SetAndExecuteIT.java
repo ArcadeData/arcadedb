@@ -135,7 +135,7 @@ class Issue8241Issue8242Issue8244Issue8306SetAndExecuteIT extends PostgresWirePr
         // A value that does not change is not reported, and neither is a parameter PostgreSQL does not report.
         sendSimpleQuery(out, "SET client_encoding = 'LATIN1'");
         assertThat(parameterStatusesOf(readUntilReadyForQuery(in))).as("client_encoding still answers UTF8").isEmpty();
-        sendSimpleQuery(out, "SET search_path TO x");
+        sendSimpleQuery(out, "SET work_mem TO x");
         assertThat(parameterStatusesOf(readUntilReadyForQuery(in))).isEmpty();
         sendSimpleQuery(out, "SET application_name = 'issue8241'");
         assertThat(parameterStatusesOf(readUntilReadyForQuery(in))).as("unchanged").isEmpty();
@@ -152,17 +152,17 @@ class Issue8241Issue8242Issue8244Issue8306SetAndExecuteIT extends PostgresWirePr
       authenticate(out, in);
 
       assertTimeoutPreemptively(Duration.ofSeconds(30), () -> {
-        sendSimpleQuery(out, "SET search_path TO x");
+        sendSimpleQuery(out, "SET work_mem TO x");
         List<WireMessage> response = readUntilReadyForQuery(in);
         assertThat(messageTypesOf(response)).containsExactly('C', 'Z');
         assertThat(commandTagOf(response)).isEqualTo("SET");
 
-        sendSimpleQuery(out, "SET LOCAL search_path TO y");
+        sendSimpleQuery(out, "SET LOCAL work_mem TO y");
         response = readUntilReadyForQuery(in);
         assertThat(messageTypesOf(response)).containsExactly('C', 'Z');
         assertThat(commandTagOf(response)).isEqualTo("SET");
 
-        sendSimpleQuery(out, "RESET search_path");
+        sendSimpleQuery(out, "RESET work_mem");
         response = readUntilReadyForQuery(in);
         assertThat(messageTypesOf(response)).containsExactly('C', 'Z');
         assertThat(commandTagOf(response)).isEqualTo("RESET");
@@ -179,28 +179,28 @@ class Issue8241Issue8242Issue8244Issue8306SetAndExecuteIT extends PostgresWirePr
       authenticate(out, in);
 
       assertTimeoutPreemptively(Duration.ofSeconds(30), () -> {
-        simple(out, in, "SET search_path TO before");
+        simple(out, in, "SET work_mem TO before");
         simple(out, in, "BEGIN");
-        simple(out, in, "SET search_path TO x");
+        simple(out, in, "SET work_mem TO x");
         assertThat(parameterStatusesOf(simple(out, in, "SET application_name = 'inside'"))).containsEntry("application_name", "inside");
-        assertThat(show(out, in, "search_path")).as("visible inside the block").isEqualTo("x");
+        assertThat(show(out, in, "work_mem")).as("visible inside the block").isEqualTo("x");
         final List<WireMessage> rollback = simple(out, in, "ROLLBACK");
         assertThat(parameterStatusesOf(rollback)).as("the rollback restored a reported parameter")
             .containsExactly(Map.entry("application_name", ""));
-        assertThat(show(out, in, "search_path")).isEqualTo("before");
+        assertThat(show(out, in, "work_mem")).isEqualTo("before");
 
         // A committed block keeps its SET.
         simple(out, in, "BEGIN");
-        simple(out, in, "SET search_path TO committed");
+        simple(out, in, "SET work_mem TO committed");
         simple(out, in, "COMMIT");
-        assertThat(show(out, in, "search_path")).isEqualTo("committed");
+        assertThat(show(out, in, "work_mem")).isEqualTo("committed");
 
         // An aborted block: its SETs go with the ROLLBACK that ends it.
         simple(out, in, "BEGIN");
-        simple(out, in, "SET search_path TO aborted");
+        simple(out, in, "SET work_mem TO aborted");
         assertThat(messageTypesOf(simple(out, in, "SELECT FROM NoSuchTypeIssue8242"))).contains('E');
         simple(out, in, "ROLLBACK");
-        assertThat(show(out, in, "search_path")).isEqualTo("committed");
+        assertThat(show(out, in, "work_mem")).isEqualTo("committed");
       });
     }
   }
@@ -215,29 +215,29 @@ class Issue8241Issue8242Issue8244Issue8306SetAndExecuteIT extends PostgresWirePr
 
       assertTimeoutPreemptively(Duration.ofSeconds(30), () -> {
         simple(out, in, "BEGIN");
-        simple(out, in, "SET LOCAL search_path TO y");
-        assertThat(show(out, in, "search_path")).isEqualTo("y");
+        simple(out, in, "SET LOCAL work_mem TO y");
+        assertThat(show(out, in, "work_mem")).isEqualTo("y");
         simple(out, in, "COMMIT");
-        assertThat(show(out, in, "search_path")).as("SET LOCAL outlived its transaction").isEmpty();
+        assertThat(show(out, in, "work_mem")).as("SET LOCAL outlived its transaction").isEmpty();
 
         // Outside a block the statement is its own transaction, so a SET LOCAL has no lasting effect.
-        simple(out, in, "SET LOCAL search_path TO z");
-        assertThat(show(out, in, "search_path")).isEmpty();
+        simple(out, in, "SET LOCAL work_mem TO z");
+        assertThat(show(out, in, "work_mem")).isEmpty();
 
         // A SET after a SET LOCAL of the same parameter supersedes it and survives the commit...
         simple(out, in, "BEGIN");
-        simple(out, in, "SET LOCAL search_path TO local");
-        simple(out, in, "SET search_path TO session");
+        simple(out, in, "SET LOCAL work_mem TO local");
+        simple(out, in, "SET work_mem TO session");
         simple(out, in, "COMMIT");
-        assertThat(show(out, in, "search_path")).isEqualTo("session");
+        assertThat(show(out, in, "work_mem")).isEqualTo("session");
 
         // ...while a SET LOCAL after a SET masks it only until the end of the transaction.
         simple(out, in, "BEGIN");
-        simple(out, in, "SET search_path TO second");
-        simple(out, in, "SET LOCAL search_path TO local");
-        assertThat(show(out, in, "search_path")).isEqualTo("local");
+        simple(out, in, "SET work_mem TO second");
+        simple(out, in, "SET LOCAL work_mem TO local");
+        assertThat(show(out, in, "work_mem")).isEqualTo("local");
         simple(out, in, "COMMIT");
-        assertThat(show(out, in, "search_path")).isEqualTo("second");
+        assertThat(show(out, in, "work_mem")).isEqualTo("second");
 
         // A reported parameter set LOCAL is reported when set and again when it ends.
         simple(out, in, "BEGIN");
@@ -256,28 +256,28 @@ class Issue8241Issue8242Issue8244Issue8306SetAndExecuteIT extends PostgresWirePr
       authenticate(out, in);
 
       assertTimeoutPreemptively(Duration.ofSeconds(30), () -> {
-        simple(out, in, "SET search_path TO x");
-        assertThat(messageTypesOf(simple(out, in, "RESET search_path"))).doesNotContain('E');
-        assertThat(show(out, in, "search_path")).isEmpty();
+        simple(out, in, "SET work_mem TO x");
+        assertThat(messageTypesOf(simple(out, in, "RESET work_mem"))).doesNotContain('E');
+        assertThat(show(out, in, "work_mem")).isEmpty();
 
-        simple(out, in, "SET search_path TO x");
+        simple(out, in, "SET work_mem TO x");
         simple(out, in, "SET TIME ZONE 'Europe/Rome'");
         assertThat(show(out, in, "timezone")).isEqualTo("Europe/Rome");
         final List<WireMessage> resetAll = simple(out, in, "RESET ALL");
         assertThat(messageTypesOf(resetAll)).doesNotContain('E');
         assertThat(parameterStatusesOf(resetAll)).containsExactly(Map.entry("TimeZone", "UTC"));
-        assertThat(show(out, in, "search_path")).isEmpty();
+        assertThat(show(out, in, "work_mem")).isEmpty();
         assertThat(show(out, in, "timezone")).isEqualTo("UTC");
 
-        simple(out, in, "SET search_path TO x");
-        sendParse(out, "", "RESET search_path");
+        simple(out, in, "SET work_mem TO x");
+        sendParse(out, "", "RESET work_mem");
         sendBind(out, "", "");
         sendExecute(out, "");
         sendSync(out);
         final List<WireMessage> response = readUntilReadyForQuery(in);
         assertThat(messageTypesOf(response)).containsExactly('1', '2', 'C', 'Z');
         assertThat(commandTagOf(response)).isEqualTo("RESET");
-        assertThat(show(out, in, "search_path")).isEmpty();
+        assertThat(show(out, in, "work_mem")).isEmpty();
       });
     }
   }
@@ -291,7 +291,7 @@ class Issue8241Issue8242Issue8244Issue8306SetAndExecuteIT extends PostgresWirePr
       authenticate(out, in);
 
       assertTimeoutPreemptively(Duration.ofSeconds(30), () -> {
-        sendParse(out, "", "SET search_path TO pipelined");
+        sendParse(out, "", "SET work_mem TO pipelined");
         sendBind(out, "", "");
         sendExecute(out, "");
         sendParse(out, "", "SELECT FROM NoSuchTypeIssue8242");
@@ -299,14 +299,14 @@ class Issue8241Issue8242Issue8244Issue8306SetAndExecuteIT extends PostgresWirePr
         sendExecute(out, "");
         sendSync(out);
         assertThat(messageTypesOf(readUntilReadyForQuery(in))).contains('E');
-        assertThat(show(out, in, "search_path")).isEmpty();
+        assertThat(show(out, in, "work_mem")).isEmpty();
 
-        sendParse(out, "", "SET search_path TO pipelined");
+        sendParse(out, "", "SET work_mem TO pipelined");
         sendBind(out, "", "");
         sendExecute(out, "");
         sendSync(out);
         assertThat(messageTypesOf(readUntilReadyForQuery(in))).doesNotContain('E');
-        assertThat(show(out, in, "search_path")).isEqualTo("pipelined");
+        assertThat(show(out, in, "work_mem")).isEqualTo("pipelined");
       });
     }
   }

@@ -26,6 +26,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.query.sql.executor.CommandTimeoutOverride;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.database.QueryMetricsRecorder;
@@ -597,6 +598,8 @@ public class PostgresNetworkExecutor extends Thread {
         } catch (final Exception e) {
           setExtendedProtocolError();
           writeError(ERROR_SEVERITY.ERROR, clientMessage("Error on executing query: " + e.getMessage(), e), sqlStateFor(e));
+        } finally {
+          CommandTimeoutOverride.clear();
         }
       } else if (portal.isExpectingResult && portal.columns != null) {
         // Already materialized: a synthetic answer fixed at PARSE (SHOW/system/catalog), or a portal a
@@ -699,6 +702,7 @@ public class PostgresNetworkExecutor extends Thread {
    * in another language had no columns to announce and was answered with nothing at all.
    */
   private ResultSet runPortalQuery(final PostgresPortal portal) {
+    publishStatementTimeout();
     if (portal.catalogQuery) {
       // Deferred from parseCommand because the query's filters are bound parameters (issue #6412).
       final CatalogAnswer catalogAnswer = handleCatalogQuery(portal.query, getParams(portal));
@@ -829,6 +833,10 @@ public class PostgresNetworkExecutor extends Thread {
         beginImplicitTransactionBlock(portal);
       // A SET is applied here and not at Parse (issue #8135), for the same reason as the transaction control above.
       applyPendingSetting(sessionSettings, portal);
+      if (portal.sessionCommand != null) {
+        applySessionCommand(portal.sessionCommand);
+        portal.sessionCommand = null;
+      }
 
       if (portal.ignoreExecution)
         // SAVEPOINT/RELEASE/SET and BEGIN/COMMIT/ROLLBACK never produce rows: Execute must answer
@@ -973,6 +981,7 @@ public class PostgresNetworkExecutor extends Thread {
       setExtendedProtocolError();
       writeError(ERROR_SEVERITY.ERROR, clientMessage("Error on executing query: " + e.getMessage(), e), sqlStateFor(e));
     } finally {
+      CommandTimeoutOverride.clear();
       if (portal != null)
         recordPostgresProfile(profile, portal.language, portal.query);
       QueryProfile.popCurrent();
@@ -1098,6 +1107,7 @@ public class PostgresNetworkExecutor extends Thread {
       profile.addDeserializationNanos(System.nanoTime() - deserStart);
       if (DEBUG)
         LogManager.instance().log(this, Level.INFO, "PSQL: query -> %s ", query);
+      publishStatementTimeout();
 
       // COPY ... TO STDOUT is answered by the protocol itself (issue #7188): its rows travel as CopyData rather than
       // DataRow, so it shares nothing below but the query inside it. Recognised ahead of everything else because
@@ -1148,6 +1158,14 @@ public class PostgresNetworkExecutor extends Thread {
         // Throws for a SET this server cannot parse or cannot honour, which the catch arms below answer with an
         // ErrorResponse: a CommandComplete SET is only ever sent for a SET that did what it asked (issue #8392)
         applySettingCommand(query.query);
+        answersNoRows = true;
+        resultSet = new IteratorResultSet(Collections.emptyIterator());
+      } else if (PostgresSessionCommand.isSessionCommand(upperCaseText)) {
+        // DISCARD ALL is what a connection pooler runs between two client sessions (issue #9328); none of these is a
+        // production of the SQL grammar, so the engine would refuse them with a parse error
+        final PostgresSessionCommand sessionCommand = PostgresSessionCommand.parse(query.query);
+        applySessionCommand(sessionCommand);
+        commandTag = sessionCommand.tag();
         answersNoRows = true;
         resultSet = new IteratorResultSet(Collections.emptyIterator());
       } else if (upperCaseText.startsWith("SAVEPOINT ") ||
@@ -1227,6 +1245,7 @@ public class PostgresNetworkExecutor extends Thread {
     } catch (final Exception e) {
       failSimpleQuery(clientMessage("Error on executing query: " + e.getMessage(), e), sqlStateFor(e));
     } finally {
+      CommandTimeoutOverride.clear();
       if (!explicitTransactionStarted)
         // A simple Query outside an explicit block is a transaction of its own, and the portals bound before it
         // end with it exactly as they do at a Sync (issue #8212)
@@ -3228,6 +3247,12 @@ public class PostgresNetworkExecutor extends Thread {
         // nothing (issue #8392). The catch arms below answer the ErrorResponse and register no statement.
         portal.setting = resolveSetCommand(portal.query);
         portal.ignoreExecution = true;
+      } else if (PostgresSessionCommand.isSessionCommand(upperCaseText)) {
+        // Parsed here, applied at Execute like a SET (issue #9328). The text becomes the command tag, which is what
+        // getTag() reads at Execute, and a statement this server cannot parse is refused here, at Parse
+        portal.sessionCommand = PostgresSessionCommand.parse(portal.query);
+        portal.query = portal.sessionCommand.tag();
+        portal.ignoreExecution = true;
       } else if (systemQuery != null) {
         createResultSet(portal, systemQuery.columnName, systemQueryValue(systemQuery.function));
 
@@ -3618,6 +3643,54 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   /**
+   * Applies a {@code DISCARD}/{@code DEALLOCATE}/{@code CLOSE} (issue #9328) with PostgreSQL's own refusals. {@code
+   * DISCARD ALL} is what a pooler runs between two client sessions: every setting goes back to its reset value and
+   * every prepared statement and portal is dropped. {@code PLANS}, {@code SEQUENCES} and {@code TEMP} have nothing to
+   * discard on this server (no plan cache a client can see, no session sequence cache, no temporary table) and are
+   * accepted as the no-ops they are.
+   *
+   * @throws PostgresSessionSettings.SettingException {@code 25001} for {@code DISCARD ALL} inside a transaction block,
+   *                                                   {@code 26000}/{@code 34000} for a name that does not exist
+   */
+  private void applySessionCommand(final PostgresSessionCommand command) {
+    switch (command.kind()) {
+    case DISCARD_ALL -> {
+      if (explicitTransactionStarted)
+        throw new PostgresSessionSettings.SettingException("DISCARD ALL cannot run inside a transaction block", "25001");
+      sessionSettings.resetAll();
+      preparedStatements.clear();
+      portals.clear();
+    }
+    case DEALLOCATE_ALL -> preparedStatements.clear();
+    case DEALLOCATE -> {
+      if (preparedStatements.remove(command.name()) == null)
+        throw new PostgresSessionSettings.SettingException("prepared statement \"" + command.name() + "\" does not exist", "26000");
+    }
+    case CLOSE_ALL -> portals.clear();
+    case CLOSE -> {
+      if (portals.remove(command.name()) == null)
+        throw new PostgresSessionSettings.SettingException("cursor \"" + command.name() + "\" does not exist", "34000");
+    }
+    case DISCARD_PLANS, DISCARD_SEQUENCES, DISCARD_TEMP -> {
+    }
+    }
+  }
+
+  /**
+   * Publishes the {@code statement_timeout} of this connection as the deadline of the commands the current statement
+   * runs (issue #9329), or leaves them under the database's own {@code arcadedb.command.timeout}. The earlier of the two
+   * wins, so a session can ask for less time than the database allows but not for more. Cleared by
+   * {@link CommandTimeoutOverride#clear()} when the statement ends.
+   */
+  private void publishStatementTimeout() {
+    final long statementTimeout = sessionSettings.statementTimeoutMillis();
+    if (statementTimeout <= 0)
+      return;
+    final long databaseTimeout = database.getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_TIMEOUT);
+    CommandTimeoutOverride.set(databaseTimeout > 0 ? Math.min(databaseTimeout, statementTimeout) : statementTimeout);
+  }
+
+  /**
    * The value of an emulated system-information function (issue #5290). {@code current_schema} answers the
    * database name rather than PostgreSQL's {@code public}, and {@code current_database} answers the same
    * name: ArcadeDB has one namespace per database, so the distinction PostgreSQL draws between a catalog
@@ -3740,6 +3813,7 @@ public class PostgresNetworkExecutor extends Thread {
       DatabaseContext.INSTANCE.init((DatabaseInternal) database).setCurrentUser(dbUser.getDatabaseUser(database));
       sessionSettings.setSuperuser(ServerSecurityUser.ROOT_USER.equals(dbUser.getName()));
       sessionSettings.setSessionUser(dbUser.getName());
+      sessionSettings.setCurrentSchema(database.getName());
       sessionSettings.setIsolationLevels(this::currentIsolationLevel, database::getTransactionIsolationLevel);
 
       database.setAutoTransaction(true);
@@ -3963,7 +4037,9 @@ public class PostgresNetworkExecutor extends Thread {
    * ({@link PostgresProtocolException}) are bounded text and do not go through here.
    */
   private String clientMessage(final String message, final Throwable cause) {
-    if (!server.isProductionMode())
+    // A refused SET/DISCARD is text the protocol layer wrote, with no user data in it, and the explanation is what the
+    // client is owed; it is also a client mistake, never a server fault (issue #9327)
+    if (!server.isProductionMode() || cause instanceof PostgresSessionSettings.SettingException)
       return message;
     // The client no longer sees the text, so the server log is the only copy the operator has. A routine, client-driven
     // failure (syntax error, duplicated key, ...) is not an incident: the message alone, no stack trace. Anything the
@@ -4164,6 +4240,12 @@ public class PostgresNetworkExecutor extends Thread {
       return "SET";
     } else if (upperCaseText.startsWith("RESET ")) {
       return "RESET";
+    } else if (upperCaseText.startsWith("SHOW ")) {
+      // PostgreSQL tags SHOW ALL the same way (issue #9326)
+      return "SHOW";
+    } else if (PostgresSessionCommand.isTag(upperCaseText)) {
+      // A DISCARD/DEALLOCATE/CLOSE leaves its canonical tag as the text of the statement (issue #9328)
+      return upperCaseText;
     } else {
       return "";
     }
