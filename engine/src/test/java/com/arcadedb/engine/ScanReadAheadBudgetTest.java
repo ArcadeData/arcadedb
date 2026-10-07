@@ -23,6 +23,12 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -59,6 +65,34 @@ class ScanReadAheadBudgetTest {
     reservation.release();
     reservation.release();
     assertThat(reservation.getHeldBytes()).isZero();
+    assertThat(ScanReadAheadBudget.getReservedBytes()).isEqualTo(baseline);
+  }
+
+  @Test
+  void manyThreadsReservingAndReleasingLeaveThePoolWhereItWas() throws Exception {
+    GlobalConfiguration.QUERY_SCAN_READ_AHEAD_MAX_RAM.setValue(1024L);
+    final long baseline = ScanReadAheadBudget.getReservedBytes();
+    final int threads = 16;
+    final ExecutorService pool = Executors.newFixedThreadPool(threads);
+    final CountDownLatch start = new CountDownLatch(1);
+    final List<Future<?>> futures = new ArrayList<>();
+    for (int t = 0; t < threads; t++)
+      futures.add(pool.submit(() -> {
+        start.await();
+        final ScanReadAheadBudget.Reservation reservation = ScanReadAheadBudget.newReservation(new Object());
+        for (int i = 0; i < 5_000; i++) {
+          reservation.reserve(1_000L + i % 7);
+          if (i % 3 == 0)
+            reservation.release();
+        }
+        reservation.release();
+        return null;
+      }));
+    start.countDown();
+    for (final Future<?> future : futures)
+      future.get();
+    pool.shutdown();
+
     assertThat(ScanReadAheadBudget.getReservedBytes()).isEqualTo(baseline);
   }
 
