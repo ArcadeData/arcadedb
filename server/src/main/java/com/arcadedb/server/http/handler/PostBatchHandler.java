@@ -2253,7 +2253,11 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     };
 
     HttpRequest.BodyPublisher publisher = HttpRequest.BodyPublishers.ofInputStream(oneShotBody);
-    if (contentLength >= 0)
+    // fromPublisher refuses a length of zero with an IllegalArgumentException, which an upload declaring
+    // "Content-Length: 0" used to raise outside every catch arm of the forward: an empty body is sent as one.
+    if (contentLength == 0)
+      publisher = HttpRequest.BodyPublishers.noBody();
+    else if (contentLength > 0)
       publisher = HttpRequest.BodyPublishers.fromPublisher(publisher, contentLength);
 
     final HttpRequest.Builder forward = HttpRequest.newBuilder()

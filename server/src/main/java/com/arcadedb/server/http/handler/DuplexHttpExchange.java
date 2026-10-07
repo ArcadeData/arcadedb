@@ -29,6 +29,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.ConnectException;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
@@ -75,7 +76,7 @@ import java.util.logging.Level;
  * their meaning:
  * <ul>
  *   <li>a connect that times out throws {@link HttpConnectTimeoutException}, one that is refused a plain
- *   {@link java.net.ConnectException};</li>
+ *   {@link ConnectException};</li>
  *   <li>no response headers within {@code deadlineMs} of the last byte of the upload sent throws
  *   {@link HttpTimeoutException} and closes the connection (issue #8719's bound, unchanged);</li>
  *   <li>a request body that fails - including this node's own body cap (issue #8161) - aborts the connection, so the
@@ -87,6 +88,18 @@ import java.util.logging.Level;
  * </ul>
  * The body of the response is not bounded here: the caller bounds each read of it, as it did with the JDK client's
  * {@code ofInputStream()} body (issue #7738).
+ * <p>
+ * Two choices that differ from the JDK client on purpose:
+ * <ul>
+ *   <li><b>no proxy.</b> The dial's clients ({@code LeaderDial.newConnectTimeoutBoundedClient} and the HA plugin's
+ *   HTTPS client) are built without {@code HttpClient.Builder.proxy}, and the JDK client then connects directly too -
+ *   it does not fall back to {@code ProxySelector.getDefault()}. Peer-to-peer cluster traffic dials the peer itself, so
+ *   this socket does the same;</li>
+ *   <li><b>one platform thread per exchange for the upload,</b> not a pool. It lives exactly as long as the forward
+ *   whose Undertow worker is blocked waiting on it, so the count is already bounded by the worker pool, and it blocks
+ *   on two sockets, which is the work a pooled compute thread must not be given. The JDK client did the same work on
+ *   threads of its own executor.</li>
+ * </ul>
  */
 final class DuplexHttpExchange implements HttpResponse<InputStream>, AutoCloseable {
 
@@ -114,6 +127,9 @@ final class DuplexHttpExchange implements HttpResponse<InputStream>, AutoCloseab
   private final    Thread        uploader;
   /** Why the request body could not be read, or {@code null}: the failure that aborted the exchange. */
   private volatile Throwable     bodyFailure;
+  /** One byte, for the single-byte reads of the response body; only the thread reading the response uses it. */
+  private final    byte[]        oneByte      = new byte[1];
+  /** The response head is written by send() before it returns, and read only by the thread it returned to. */
   private          int           statusCode;
   private          HttpHeaders   headers;
   private          InputStream   body;
@@ -225,6 +241,10 @@ final class DuplexHttpExchange implements HttpResponse<InputStream>, AutoCloseab
    * Closes the connection and waits, at most the deadline, for the upload thread to stop. The upload reads the
    * client's request body, which the server goes on to drain once the handler returns, so it must not be left reading
    * it: with the connection closed it stops at its next write, or after its current read of the client returns.
+   * <p>
+   * Called by the handler thread that relayed the answer, never by an I/O thread: the silence timer closes the
+   * {@linkplain #body() body} instead, which does not wait. A client that stopped sending holds that handler thread
+   * here no longer than the deadline, and its own connection read timeout ends that read sooner.
    */
   @Override
   public void close() {
@@ -374,6 +394,9 @@ final class DuplexHttpExchange implements HttpResponse<InputStream>, AutoCloseab
               .add(field.substring(colon + 1).trim());
         }
         headers = HttpHeaders.of(fields, (name, value) -> true);
+        // 101 would hand the connection over to another protocol, which this exchange never asked for.
+        if (statusCode == 101)
+          throw new IOException("Unexpected 101 Switching Protocols from " + request.uri());
       } while (statusCode >= 100 && statusCode < 200);
       // From here on the caller bounds each read of the body itself.
       socket.setSoTimeout(0);
@@ -440,9 +463,16 @@ final class DuplexHttpExchange implements HttpResponse<InputStream>, AutoCloseab
 
   private InputStream responseBodyFraming() throws IOException {
     final String transferEncoding = headers.firstValue("Transfer-Encoding").orElse("");
+    final List<String> lengths = headers.allValues("Content-Length");
+    // Ambiguous framing is refused rather than guessed at (RFC 9112 6.3): the relay must never pass off a body cut at
+    // the wrong place as the leader's whole answer.
+    if (!transferEncoding.isEmpty() && !lengths.isEmpty())
+      throw new IOException("The response from " + request.uri() + " carries both Transfer-Encoding and Content-Length");
+    if (lengths.size() > 1 && lengths.stream().map(String::trim).distinct().count() > 1)
+      throw new IOException("The response from " + request.uri() + " carries conflicting Content-Length values " + lengths);
     if (transferEncoding.toLowerCase(Locale.ROOT).contains("chunked"))
       return new ChunkedBody();
-    final Optional<String> length = headers.firstValue("Content-Length");
+    final Optional<String> length = lengths.isEmpty() ? Optional.empty() : Optional.of(lengths.getFirst());
     if (length.isPresent())
       try {
         return new LengthBody(Long.parseLong(length.get().trim()));
@@ -522,8 +552,7 @@ final class DuplexHttpExchange implements HttpResponse<InputStream>, AutoCloseab
 
     @Override
     public int read() throws IOException {
-      final byte[] one = new byte[1];
-      return read(one, 0, 1) < 0 ? -1 : one[0] & 0xFF;
+      return read(oneByte, 0, 1) < 0 ? -1 : oneByte[0] & 0xFF;
     }
 
     @Override
@@ -545,13 +574,13 @@ final class DuplexHttpExchange implements HttpResponse<InputStream>, AutoCloseab
 
   /** A {@code Transfer-Encoding: chunked} body; a connection that ends mid-chunk is an error, not the end. */
   private final class ChunkedBody extends InputStream {
+    private final StringBuilder chunkLine = new StringBuilder(16);
     private long    chunkLeft;
     private boolean ended;
 
     @Override
     public int read() throws IOException {
-      final byte[] one = new byte[1];
-      return read(one, 0, 1) < 0 ? -1 : one[0] & 0xFF;
+      return read(oneByte, 0, 1) < 0 ? -1 : oneByte[0] & 0xFF;
     }
 
     @Override
@@ -600,7 +629,8 @@ final class DuplexHttpExchange implements HttpResponse<InputStream>, AutoCloseab
     }
 
     private String readBodyLine() throws IOException {
-      final StringBuilder line = new StringBuilder(16);
+      final StringBuilder line = chunkLine;
+      line.setLength(0);
       while (true) {
         final int c = in.read();
         if (c < 0)
