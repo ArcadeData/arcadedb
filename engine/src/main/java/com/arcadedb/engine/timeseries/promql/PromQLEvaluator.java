@@ -614,7 +614,7 @@ public class PromQLEvaluator {
     for (final LabelMatcher m : matchers) {
       // {label=""} selects the series that do NOT carry the label, which a tag equality filter cannot express (a missing
       // tag is null, an old row may hold ""): matchesPostFilters() decides it (issue #9363)
-      if (m.op() != MatchOp.EQ || m.value().isEmpty() || "__name__".equals(m.name()))
+      if (m.op() != MatchOp.EQ || isEmptyEquality(m) || "__name__".equals(m.name()))
         continue;
       final int idx = findNonTsColumnIndex(m.name(), columns);
       if (idx < 0)
@@ -674,11 +674,20 @@ public class PromQLEvaluator {
     };
   }
 
+  /**
+   * Whether {@code m} is {@code label=""}: it selects the series that do not carry the label, so it cannot go through the
+   * tag equality filter and is decided by {@link #matchesPostFilters} instead (issue #9363). Kept in one place so the two
+   * sides of that split cannot disagree.
+   */
+  private static boolean isEmptyEquality(final LabelMatcher m) {
+    return m.op() == MatchOp.EQ && m.value().isEmpty();
+  }
+
   private boolean matchesPostFilters(final Object[] row, final List<LabelMatcher> matchers,
       final List<ColumnDefinition> columns, final long regexDeadline) {
     for (final LabelMatcher m : matchers) {
       // a non-empty EQ was already applied by the tag filter; an empty one is decided here
-      if ((m.op() == MatchOp.EQ && !m.value().isEmpty()) || "__name__".equals(m.name()))
+      if ((m.op() == MatchOp.EQ && !isEmptyEquality(m)) || "__name__".equals(m.name()))
         continue;
       final int rowIdx = findNonTsRowIndex(m.name(), columns);
       if (rowIdx < 0)

@@ -21,6 +21,8 @@ package com.arcadedb.engine.timeseries.promql;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.promql.PromQLResult.InstantVector;
+import com.arcadedb.engine.timeseries.promql.PromQLResult.MatrixResult;
+import com.arcadedb.engine.timeseries.promql.PromQLResult.MatrixSeries;
 import com.arcadedb.engine.timeseries.promql.PromQLResult.VectorSample;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -80,10 +82,10 @@ class Issue9330PromQLDropMetricNameTest extends TestHelper {
   void aRangeQueryDropsTheNameToo() {
     final PromQLResult result = new PromQLEvaluator(getDatabaseInternal()).evaluateRange(new PromQLParser("-m9330").parse(), 1000L, 5000L,
         2000L);
-    assertThat(result).isInstanceOf(PromQLResult.MatrixResult.class);
-    final List<PromQLResult.MatrixSeries> series = ((PromQLResult.MatrixResult) result).series();
+    assertThat(result).isInstanceOf(MatrixResult.class);
+    final List<MatrixSeries> series = ((MatrixResult) result).series();
     assertThat(series).isNotEmpty();
-    for (final PromQLResult.MatrixSeries s : series)
+    for (final MatrixSeries s : series)
       assertThat(s.labels()).doesNotContainKey("__name__").containsEntry("host", "h1");
   }
 
