@@ -110,6 +110,12 @@ public class PostgresPortal {
   public PostgresSessionSettings.Assignment setting;
 
   /**
+   * The parsed {@code DISCARD}/{@code DEALLOCATE}/{@code CLOSE} statement, or null for everything else (issue #9328).
+   * Recorded at Parse and applied at Execute, and cleared once applied, exactly like {@link #setting}.
+   */
+  public PostgresSessionCommand sessionCommand;
+
+  /**
    * The three transaction-control statements this server recognizes ahead of the SQL grammar, in any of their
    * accepted spellings ({@code BEGIN WORK}, {@code COMMIT TRANSACTION}, {@code END}, ...).
    */
@@ -197,6 +203,7 @@ public class PostgresPortal {
     portal.transactionControl = template.transactionControl;
     portal.isolationLevel = template.isolationLevel;
     portal.setting = template.setting;
+    portal.sessionCommand = template.sessionCommand;
     portal.copyStatement = template.copyStatement;
     portal.showName = template.showName;
     portal.executed = template.executed;
