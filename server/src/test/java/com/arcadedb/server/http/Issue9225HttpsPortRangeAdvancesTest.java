@@ -97,6 +97,36 @@ class Issue9225HttpsPortRangeAdvancesTest {
 
   @Test
   @Timeout(value = 120, unit = TimeUnit.SECONDS)
+  void aHeldHttpPortWithSslEnabledMovesOnlyTheHttpPort() throws Exception {
+    final int[] ports = StaticBaseServerTest.allocateFreePorts(2);
+    final int httpFirst = ports[0];
+    final int httpsFirst = ports[1];
+
+    try (final ServerSocket stranger = new ServerSocket()) {
+      stranger.bind(new InetSocketAddress(InetAddress.getByName(LOOPBACK), httpFirst));
+
+      final ArcadeDBServer server = new ArcadeDBServer(sslConfiguration(httpFirst, httpsFirst, httpsFirst + RANGE_WIDTH - 1));
+      try {
+        server.start();
+
+        assertThat(server.getHttpServer().getPort())
+            .as("the held HTTP port %d is skipped for the next one of the range", httpFirst)
+            .isEqualTo(httpFirst + 1);
+        assertThat(server.getHttpServer().getHttpsPort())
+            .as("the HTTPS port was free all along, so it stays on the first one of its range")
+            .isEqualTo(httpsFirst);
+        assertThat(readyStatus(server.getHttpServer().getPort())).isEqualTo(204);
+      } finally {
+        server.stop();
+      }
+    }
+
+    // The skipped attempt must not have bound the HTTPS port: a leaked HTTPS listener would still hold it after stop()
+    assertThat(isBindable(httpsFirst)).as("no stray HTTPS listener is left on %d", httpsFirst).isTrue();
+  }
+
+  @Test
+  @Timeout(value = 120, unit = TimeUnit.SECONDS)
   void anExhaustedHttpsRangeFailsTheStartAndReleasesTheHttpPort() throws Exception {
     final int[] ports = StaticBaseServerTest.allocateFreePorts(2);
     final int httpFirst = ports[0];
@@ -113,6 +143,8 @@ class Issue9225HttpsPortRangeAdvancesTest {
             .as("the start fails on the HTTPS range, not on the HTTP one")
             .hasStackTraceContaining("HTTPS port")
             .hasStackTraceContaining(httpsFirst + " - " + (httpsFirst + 1));
+        assertThat(server.getHttpServer().getPort()).as("a failed start reports no HTTP port").isEqualTo(-1);
+        assertThat(server.getHttpServer().getHttpsPort()).as("a failed start reports no HTTPS port").isEqualTo(-1);
       } finally {
         server.stop();
       }
