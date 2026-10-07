@@ -29,6 +29,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.utility.NumberUtils;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
@@ -117,13 +118,12 @@ public class AlgoBFS extends AbstractAlgoProcedure {
       final int[] depths = GraphAlgorithms.shortestPathAll(gav, startIdx, dir, relTypes);
       // The reached ids up front rather than a filter() on the stream: a filtered stream no longer knows its size,
       // and the exact size is what lets a count-only CALL answer without building a row per node (issue #9453)
+      final int[] reached = new int[n];
       int reachable = 0;
       for (int i = 0; i < n; i++)
-        if (i != startIdx && depths[i] >= 0 && depths[i] <= maxDepth) reachable++;
-      final int[] reached = new int[reachable];
-      for (int i = 0, r = 0; i < n; i++)
-        if (i != startIdx && depths[i] >= 0 && depths[i] <= maxDepth) reached[r++] = i;
-      return IntStream.of(reached).mapToObj(i -> {
+        if (i != startIdx && depths[i] >= 0 && depths[i] <= maxDepth)
+          reached[reachable++] = i;
+      return Arrays.stream(reached, 0, reachable).mapToObj(i -> {
         final ResultInternal r = new ResultInternal();
         r.setProperty("node", gav.getRID(i));
         r.setProperty("depth", depths[i]);

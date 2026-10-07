@@ -66,28 +66,14 @@ import java.util.stream.Stream;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class CallStep extends AbstractExecutionStep {
-  private boolean countOnlyOptimization = false;
-
-  /**
-   * Enables count-only optimization: when the downstream only needs count(*),
-   * the procedure's result stream can be replaced with a fast-counting ResultSet
-   * that skips per-row Result object creation.
-   * <p>
-   * The count is the exact size the procedure's own {@link Stream} reports ({@link Spliterator#SIZED}), taken per
-   * invocation. It used to be a hint the procedure left in a query-wide context variable, which a chained CALL
-   * overwrote on every input row, so only the rows of the LAST invocation were counted, and which outlived its CALL,
-   * so a later CALL could count the rows of an earlier procedure (issue #9453).
-   */
-  public void setCountOnlyOptimization(final boolean enabled) {
-    this.countOnlyOptimization = enabled;
-  }
-
   /**
    * What a procedure call answers in count-only mode when its stream knows its exact size: the number of rows, with
    * no row materialized.
    */
   private record KnownRowCount(long rows) {
   }
+
+  private boolean countOnlyOptimization = false;
   private final CallClause callClause;
   /**
    * Computed on first use and reused: one CALL names one procedure and one YIELD (issue #7976). Volatile, and always
@@ -105,6 +91,25 @@ public class CallStep extends AbstractExecutionStep {
     this.callClause = callClause;
     this.functionFactory = functionFactory;
     this.evaluator = new ExpressionEvaluator(functionFactory);
+  }
+
+  /**
+   * Enables count-only optimization: when the downstream only needs count(*),
+   * the procedure's result stream can be replaced with a fast-counting ResultSet
+   * that skips per-row Result object creation.
+   * <p>
+   * The count is the exact size the procedure's own {@link Stream} reports ({@link Spliterator#SIZED}), taken per
+   * invocation. It used to be a hint the procedure left in a query-wide context variable, which a chained CALL
+   * overwrote on every input row, so only the rows of the LAST invocation were counted, and which outlived its CALL,
+   * so a later CALL could count the rows of an earlier procedure (issue #9453).
+   * <p>
+   * Contract: enable it only when nothing downstream reads a row's content, its input-row variables or the row
+   * order - only how many rows there are, as {@code CypherExecutionPlan#isFollowedByCountOnlyReturn} establishes (a
+   * RETURN made of plain {@code count(*)} items and no other clause after the CALL). The counted rows are empty
+   * shared placeholders, emitted ahead of the materialized ones.
+   */
+  public void setCountOnlyOptimization(final boolean enabled) {
+    this.countOnlyOptimization = enabled;
   }
 
   @Override
