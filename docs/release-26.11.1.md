@@ -38,3 +38,7 @@ View keeps one, bidirectional Dijkstra otherwise) and honours the command timeou
 
 `algo.steinerTree` also picks the cheapest of several parallel edges for the tree it reports, rather than the first
 one the adjacency listed.
+
+**Embedded API.** The `protected static final float MIN` constant of `SQLFunctionHeuristicPathFinderAbstract` is gone:
+it was the 0 weight of an edge without one. A custom subclass that referenced it reads the shared rule from
+`com.arcadedb.graph.EdgeWeight` instead (`MISSING`, `of(Object)`, `isWalkable(double)`).

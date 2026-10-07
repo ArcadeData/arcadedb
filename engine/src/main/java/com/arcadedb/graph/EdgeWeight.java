@@ -32,6 +32,10 @@ package com.arcadedb.graph;
  * </ul>
  * Before this the finders disagreed on both points, so the same query answered different distances and paths depending
  * on the entry point.
+ * <p>
+ * Always pair {@link #of(Object)} with {@link #isWalkable(double)}: {@link #NOT_WALKABLE} is a negative sentinel, so a
+ * caller that adds the value without the check walks the edge at a negative cost. Weights read from a view's columns
+ * never pass through {@link #of(Object)} and need the same check on the raw value.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

@@ -39,6 +39,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.within;
 
 /**
@@ -53,7 +54,8 @@ import static org.assertj.core.api.Assertions.within;
  * <ul>
  *   <li>{@code M}: A-B and B-C have no weight, A-C weighs 1.5. By the 0 rule A-B-C is free; by the 1 rule it costs 2;</li>
  *   <li>{@code N}: A-B weighs 1, B-C weighs -1, A-C weighs 3. Walking the negative edge makes A-B-C cost 0;</li>
- *   <li>{@code X}: A-B weighs 1, B-C weighs NaN, A-C weighs 3.</li>
+ *   <li>{@code X}: A-B weighs 1, B-C weighs NaN, A-C weighs 3;</li>
+ *   <li>{@code I}: A-B weighs 1, B-C weighs +Infinity, A-C weighs 3.</li>
  * </ul>
  * Every finder is asked twice: on the records, and with a Graph Analytical View materializing the weight, so the
  * columnar arms (A*'s CSR neighbourhood, the {@code algo.dijkstra.singleSource} kernel, the shortest path finder's view
@@ -62,8 +64,8 @@ import static org.assertj.core.api.Assertions.within;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue9443PathWeightRuleTest {
-  private static final String[] FIXTURES = { "M", "N", "X" };
-  private static final double[] EXPECTED = { 1.5, 3.0, 3.0 };
+  private static final String[] FIXTURES = { "M", "N", "X", "I" };
+  private static final double[] EXPECTED = { 1.5, 3.0, 3.0, 3.0 };
 
   private Database database;
 
@@ -81,6 +83,16 @@ class Issue9443PathWeightRuleTest {
       triangle("M", null, null, 1.5);
       triangle("N", 1.0, -1.0, 3.0);
       triangle("X", 1.0, Double.NaN, 3.0);
+      triangle("I", 1.0, Double.POSITIVE_INFINITY, 3.0);
+
+      // algo.steinerTree over parallel edges, created in both orders so "the first one listed" is wrong for one of them
+      // whichever way the adjacency happens to list them
+      for (final String pair : new String[] { "P", "R" }) {
+        final MutableVertex p = vertex(pair + "P");
+        final MutableVertex q = vertex(pair + "Q");
+        for (final double weight : pair.equals("P") ? new double[] { 5.0, 2.0 } : new double[] { 2.0, 5.0 })
+          p.newEdge("road", q, true, new Object[] { "weight", weight }).save();
+      }
 
       // duanSSSP edge type filter: X-M-Y over rail costs 2, the direct X-Y over road costs 5
       final MutableVertex x = vertex("TX");
@@ -155,6 +167,31 @@ class Issue9443PathWeightRuleTest {
     assertThat(sqlPath("duanSSSP", "TY", "TX", ", 'IN'")).as("the positional direction still works")
         .containsExactly("TY", "TM", "TX");
     assertThat(sqlPath("duanSSSP", "TX", "TY", ", {direction: 'IN'}")).as("against the edges").isEmpty();
+  }
+
+  @Test
+  void duanSSSPKeepsItsSameVertexAndDirectionContract() {
+    assertThat(sqlPath("duanSSSP", "TX", "TX", "")).containsExactly("TX");
+    assertThat(namesOf(sqlRids("SELECT duanSSSP(?, ?) AS p", rid("TX"), rid("TY")))).as("the weight property defaults to 'weight'")
+        .containsExactly("TX", "TM", "TY");
+    assertThatThrownBy(() -> sqlPath("duanSSSP", "TX", "TY", ", 'SIDEWAYS'")).hasMessageContaining("Invalid direction 'SIDEWAYS'")
+        .hasMessageContaining("duanSSSP()");
+    assertThatThrownBy(() -> sqlPath("duanSSSP", "TX", "TY", ", {maxDepth: 3}")).as("an option it does not support is refused")
+        .hasMessageContaining("maxDepth");
+  }
+
+  @Test
+  void steinerTreeReportsTheCheapestOfParallelEdges() {
+    for (final String pair : new String[] { "P", "R" })
+      try (final ResultSet rs = database.query("opencypher", """
+          MATCH (p:node {name: $p}), (q:node {name: $q}) CALL algo.steinerTree([p, q], 'road', 'weight')
+          YIELD weight, totalWeight RETURN weight, totalWeight""", Map.of("p", pair + "P", "q", pair + "Q"))) {
+        assertThat(rs.hasNext()).isTrue();
+        final Result row = rs.next();
+        assertThat(((Number) row.getProperty("weight")).doubleValue()).as("pair %s", pair).isEqualTo(2.0);
+        assertThat(((Number) row.getProperty("totalWeight")).doubleValue()).as("pair %s", pair).isEqualTo(2.0);
+        assertThat(rs.hasNext()).isFalse();
+      }
   }
 
   @Test

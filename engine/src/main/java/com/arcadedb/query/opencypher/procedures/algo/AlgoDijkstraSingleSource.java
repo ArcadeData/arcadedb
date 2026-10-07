@@ -20,8 +20,8 @@ package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
-import com.arcadedb.graph.EdgeWeight;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.EdgeWeight;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.olap.GraphAlgorithms;
