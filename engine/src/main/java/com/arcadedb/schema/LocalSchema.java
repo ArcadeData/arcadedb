@@ -3230,7 +3230,8 @@ public class LocalSchema implements Schema {
           orderedIndexes.sort(Comparator.naturalOrder());
 
           for (final String indexName : orderedIndexes)
-            if (lookupIndex(indexName) instanceof LSMTreeFullTextIndex ftIndex && ftIndex.getFullTextMetadata() != null)
+            if (lookupIndexEntry(indexName, typeIndexesJSON.getJSONObject(indexName)) instanceof LSMTreeFullTextIndex ftIndex
+                && ftIndex.getFullTextMetadata() != null)
               liveFullTextMetadata.putIfAbsent(
                   fullTextMetadataKey(typeName, typeIndexesJSON.getJSONObject(indexName).getJSONArray("properties")),
                   ftIndex.getFullTextMetadata());
@@ -3243,7 +3244,15 @@ public class LocalSchema implements Schema {
             for (int i = 0; i < properties.length; ++i)
               properties[i] = schemaIndexProperties.getString(i);
 
-            IndexInternal index = lookupIndex(indexName);
+            // The entry is keyed by the index's CURRENT file, which a compaction renames; an LSM index whose name no
+            // longer matches its file carries the name it answers to as well (issue #9213). A component this load
+            // built is still registered under its file name and gets that name back here; one an incremental load
+            // left untouched is already registered under it.
+            IndexInternal index = lookupIndexEntry(indexName, indexJSON);
+            if (index != null)
+              restoreLogicalIndexName(indexName, indexJSON.getString(LOGICAL_INDEX_NAME, null), index);
+            final String registeredName = index != null ? index.getName() : indexName;
+
             if (index != null) {
               index.setMetadata(indexJSON);
               // Apply the user-supplied TypeIndex name (issue #4139) here so it works for every
@@ -3274,20 +3283,20 @@ public class LocalSchema implements Schema {
                     index = new LSMTreeFullTextIndex((LSMTreeIndex) index,
                         shareFullTextMetadata(fullTextMetadataKey(typeName, schemaIndexProperties), loadedMeta,
                             liveFullTextMetadata, loadedFullTextMetadata));
-                    publishIndexDuringLoad(indexName, index);
+                    publishIndexDuringLoad(registeredName, index);
                   } else if (configuredIndexType.equalsIgnoreCase(Schema.INDEX_TYPE.GEOSPATIAL.toString())) {
                     final int precision = indexJSON.getInt("precision", GeoIndexMetadata.DEFAULT_PRECISION);
                     // A definition with no tokenization field predates the FRONTIER layout (#5478), so its entries are
                     // the full ancestor chain: reading it as anything else would make put/remove miss them.
                     index = new LSMTreeGeoIndex((LSMTreeIndex) index, precision, GeoIndexMetadata.readTokenization(indexJSON));
-                    publishIndexDuringLoad(indexName, index);
+                    publishIndexDuringLoad(registeredName, index);
                   } else if (configuredIndexType.equalsIgnoreCase(Schema.INDEX_TYPE.LSM_SPARSE_VECTOR.toString())) {
                     final LSMSparseVectorIndexMetadata sparseMeta = new LSMSparseVectorIndexMetadata(typeName, properties, -1);
                     sparseMeta.fromJSON(indexJSON);
                     // Same reason as the full-text branch above (issue #5742).
                     sparseMeta.inheritCommonSettingsFrom(index.getMetadata());
                     index = new LSMSparseVectorIndex((LSMTreeIndex) index, sparseMeta);
-                    publishIndexDuringLoad(indexName, index);
+                    publishIndexDuringLoad(registeredName, index);
                   } else {
                     orphanIndexes.put(indexName, indexJSON);
                     indexJSON.put("type", typeName);
@@ -4291,6 +4300,64 @@ public class LocalSchema implements Schema {
 
   public Integer getMigratedFileId(final int oldFileId) {
     return migratedFileIds.get(oldFileId);
+  }
+
+  /**
+   * Key of the bucket-level index entry in {@code schema.json} carrying the name an LSM index answers to, written only
+   * when that name differs from the file the entry is keyed by (issue #9213). See {@link LSMTreeIndex#restoreLogicalName}.
+   */
+  static final String LOGICAL_INDEX_NAME = "logicalName";
+
+  /**
+   * The {@link LSMTreeIndex} behind a bucket-level index - itself, or the one a full-text, geospatial or sparse vector
+   * index wraps - or {@code null} for any other index type.
+   */
+  static LSMTreeIndex lsmTreeIndexOf(final IndexInternal index) {
+    return index.getComponent() instanceof LSMTreeIndexMutable mutable ? mutable.getMainIndex() : null;
+  }
+
+  /**
+   * Adds {@link #LOGICAL_INDEX_NAME} to a bucket-level index entry when the LSM index answers to a name other than its
+   * current file's, which is the case after any compaction (issue #9213). An index that never compacted gets nothing, so
+   * its entry is unchanged.
+   */
+  static void putLogicalIndexName(final IndexInternal index, final JSONObject indexJSON) {
+    final LSMTreeIndex lsm = lsmTreeIndexOf(index);
+    if (lsm != null && !lsm.getName().equals(lsm.getMostRecentFileName()))
+      indexJSON.put(LOGICAL_INDEX_NAME, lsm.getName());
+  }
+
+  /**
+   * The index a bucket-level {@code schema.json} entry resolves to: by the file it is keyed by, or - for an LSM index an
+   * earlier load or the live schema already registered under its logical name - by {@link #LOGICAL_INDEX_NAME}.
+   */
+  private IndexInternal lookupIndexEntry(final String fileName, final JSONObject indexJSON) {
+    final IndexInternal byFile = lookupIndex(fileName);
+    if (byFile != null)
+      return byFile;
+    return lookupIndex(indexJSON.getString(LOGICAL_INDEX_NAME, null));
+  }
+
+  /**
+   * Gives an LSM index this load has just built from its file the name it answered to when the schema was saved, and
+   * re-keys it under that name (issue #9213). Without this a restart, and the full {@code load()} an HA follower takes
+   * for a compaction entry, named the index after its post-compaction file while the live instance kept its name.
+   * <p>
+   * Only an instance still named after its file is touched: that is one this load built, not yet published, so no
+   * transaction can have queued entries under the file name. One an incremental load kept is found by its logical name
+   * by the caller and never reaches here with a different name.
+   */
+  private void restoreLogicalIndexName(final String fileName, final String logicalName, final IndexInternal index) {
+    if (logicalName == null || logicalName.equals(index.getName()))
+      return;
+
+    final LSMTreeIndex lsm = lsmTreeIndexOf(index);
+    if (lsm == null || !fileName.equals(lsm.getName()))
+      return;
+
+    lsm.restoreLogicalName(logicalName);
+    publishIndexDuringLoad(logicalName, index);
+    removeIndexDuringLoad(fileName);
   }
 
   /**
