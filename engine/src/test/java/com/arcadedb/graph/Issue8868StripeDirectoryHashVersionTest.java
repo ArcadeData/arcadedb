@@ -130,6 +130,16 @@ class Issue8868StripeDirectoryHashVersionTest extends TestHelper {
     });
   }
 
+  /**
+   * Pins the user-visible outcome of appending to a hub whose directory carries an unknown version: the transaction
+   * fails closed and nothing is written over the directory.
+   * <p>
+   * What it does NOT isolate (#9266): the database is reopened, so the append resolves the hub's head through the
+   * {@code RecordFactory} content path ({@code lookupByRID}), whose directory constructor already throws on the FIRST
+   * append - the loop never reaches a second iteration, and its 2,000 bound is not what the test relies on.
+   * {@code StripedEdgeList.loadDirectoryForWrite}, the reload a long-lived edge list performs when a stripe head fills,
+   * is covered on its own by {@link #writePathReloadOfAnAlreadyLoadedEdgeListRejectsUnknownHashVersion}.
+   */
   @Test
   void appendsToAFutureVersionDirectoryFailLoudly() {
     final RID created = createPromotedHub();
