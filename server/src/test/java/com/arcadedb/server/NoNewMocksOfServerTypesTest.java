@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server;
 
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -67,9 +68,9 @@ class NoNewMocksOfServerTypesTest {
 
   /**
    * {@code mock(X.class...)}, {@code Mockito.mock(X.class...)}, {@code SubclassMocks.mock(X.class...)} (the {@code \\b}
-   * before {@code mock} matches right after the dot), same for spy. Group 1 is the simple type name.
+   * before {@code mock} matches right after the dot), same for spy, mockStatic and mockConstruction. Group 1 is the simple type name.
    */
-  private static final Pattern CALL = Pattern.compile("\\b(?:mock|spy)\\(\\s*" + GUARDED_TYPE + "\\.class\\b");
+  private static final Pattern CALL = Pattern.compile("\\b(?:mock|spy|mockStatic|mockConstruction)\\(\\s*" + GUARDED_TYPE + "\\.class\\b");
 
   /** {@code spy(new X(...))}. Group 1 is the simple type name. */
   private static final Pattern SPY_NEW = Pattern.compile("\\bspy\\(\\s*new\\s+" + GUARDED_TYPE + "\\s*\\(");
@@ -77,9 +78,16 @@ class NoNewMocksOfServerTypesTest {
   /** {@code @Mock X x;}. Group 1 is the simple type name. */
   private static final Pattern ANNOTATED = Pattern.compile("@(?:Mock|Spy)\\b[^;=]*?\\b(" + GUARDED_TYPES + ")\\s+\\w+\\s*[;=]");
 
+  /** Read once: every test of this class scans the same tree. */
+  private static Map<String, String> sources;
+
+  @BeforeAll
+  static void readSources() throws IOException {
+    sources = readTestSources();
+  }
+
   @Test
   void noNewTestMocksAServerType() throws IOException {
-    final Map<String, String> sources = readTestSources();
     assertThat(sources).as("the scan must find the test sources of every module").hasSizeGreaterThan(EXPECTED_MINIMUM_SOURCES);
 
     final Map<String, Set<String>> allowed = readAllowList();
@@ -97,7 +105,7 @@ class NoNewMocksOfServerTypesTest {
 
   @Test
   void theAllowListOnlyShrinks() throws IOException {
-    final Map<String, Set<String>> mocked = mockedTypes(readTestSources());
+    final Map<String, Set<String>> mocked = mockedTypes(sources);
     final List<String> stale = new ArrayList<>();
     for (final Map.Entry<String, Set<String>> entry : readAllowList().entrySet())
       for (final String type : entry.getValue())
@@ -112,20 +120,24 @@ class NoNewMocksOfServerTypesTest {
 
   @Test
   void theScanCatchesEveryShapeItGuards() {
-    final Map<String, String> sources = new TreeMap<>();
-    sources.put("a/Bare.java", "class Bare { void t() { ArcadeDBServer s = mock(ArcadeDBServer.class); } }");
-    sources.put("a/Qualified.java", "class Qualified { void t() { Object s = Mockito.mock(RaftHAServer.class, RETURNS_DEEP_STUBS); } }");
-    sources.put("a/Subclass.java", "class Subclass { void t() { Object s = SubclassMocks.mock(HttpServer.class); } }");
-    sources.put("a/FullyQualified.java", "class FullyQualified { void t() { Object s = mock(com.arcadedb.server.security.ServerSecurity.class); } }");
-    sources.put("a/SpyNew.java", "class SpyNew { void t() { Object s = spy(new ClusterMonitor(1)); } }");
-    sources.put("a/Annotated.java", "class Annotated { @Mock private RaftTransactionBroker broker; }");
-    sources.put("a/Two.java", "class Two { void t() { mock(ServerSecurityUser.class); Mockito.spy(ServerDatabase.class); } }");
-    sources.put("b/Unguarded.java", "class Unguarded { void t() { Object s = mock(HttpServerFactory.class); Object d = mock(Database.class); } }");
-    sources.put("b/Real.java", "class Real { void t() { ArcadeDBServer s = new ArcadeDBServer(config); } }");
+    final Map<String, String> samples = new TreeMap<>();
+    samples.put("a/Bare.java", "class Bare { void t() { ArcadeDBServer s = mock(ArcadeDBServer.class); } }");
+    samples.put("a/Qualified.java", "class Qualified { void t() { Object s = Mockito.mock(RaftHAServer.class, RETURNS_DEEP_STUBS); } }");
+    samples.put("a/Subclass.java", "class Subclass { void t() { Object s = SubclassMocks.mock(HttpServer.class); } }");
+    samples.put("a/FullyQualified.java", "class FullyQualified { void t() { Object s = mock(com.arcadedb.server.security.ServerSecurity.class); } }");
+    samples.put("a/SpyNew.java", "class SpyNew { void t() { Object s = spy(new ClusterMonitor(1)); } }");
+    samples.put("a/Annotated.java", "class Annotated { @Mock private RaftTransactionBroker broker; }");
+    samples.put("a/Two.java", "class Two { void t() { mock(ServerSecurityUser.class); Mockito.spy(ServerDatabase.class); } }");
+    samples.put("a/Static.java", "class Static { void t() { try (var m = mockStatic(HttpAuthSessionManager.class)) { } } }");
+    samples.put("a/Construction.java", "class Construction { void t() { try (var m = Mockito.mockConstruction(ArcadeStateMachine.class)) { } } }");
+    samples.put("b/Unguarded.java", "class Unguarded { void t() { Object s = mock(HttpServerFactory.class); Object d = mock(Database.class); } }");
+    samples.put("b/Real.java", "class Real { void t() { ArcadeDBServer s = new ArcadeDBServer(config); } }");
 
-    assertThat(mockedTypes(sources)).isEqualTo(Map.of(
+    assertThat(mockedTypes(samples)).isEqualTo(Map.of(
         "a/Annotated.java", Set.of("RaftTransactionBroker"),
         "a/Bare.java", Set.of("ArcadeDBServer"),
+        "a/Construction.java", Set.of("ArcadeStateMachine"),
+        "a/Static.java", Set.of("HttpAuthSessionManager"),
         "a/FullyQualified.java", Set.of("ServerSecurity"),
         "a/Qualified.java", Set.of("RaftHAServer"),
         "a/SpyNew.java", Set.of("ClusterMonitor"),
