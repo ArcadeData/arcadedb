@@ -210,7 +210,8 @@ final class CCHMetric {
    * @param arcs       the arcs whose input cost changes
    * @param inputUps   their new lower -> higher cost
    * @param inputDowns their new higher -> lower cost (ignored when undirected)
-   * @param count      how many entries of the three arrays to apply
+   * @param count      how many entries of the three arrays to apply; the arcs must be valid arcs of the topology and
+   *                   the costs come from {@link #inputCosts} (never NaN or negative: an unwalkable edge is infinite)
    *
    * @return how many arcs were recomputed
    */
