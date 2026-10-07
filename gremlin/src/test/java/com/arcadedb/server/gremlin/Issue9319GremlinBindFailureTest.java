@@ -23,8 +23,8 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.StaticBaseServerTest;
 import org.junit.jupiter.api.Test;
-import org.mockito.MockMakers;
 import org.junit.jupiter.api.io.TempDir;
+import org.mockito.MockMakers;
 
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -35,8 +35,8 @@ import java.nio.file.Path;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.withSettings;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.withSettings;
 
 /**
  * Issue #9319: TinkerPop's {@code GremlinServer.start()} reports a failed bind on the future it returns, which the plugin
