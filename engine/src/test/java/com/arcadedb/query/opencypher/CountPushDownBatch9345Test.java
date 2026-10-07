@@ -278,4 +278,48 @@ class CountPushDownBatch9345Test extends TestHelper {
     }
     assertThat(count("MATCH (a:V)-[:E]->(b:V) RETURN count(*) AS n")).isEqualTo(1);
   }
+
+  // #9350: an unambiguous chain takes the fast path, an ambiguous one the weighted path, and both count a triangle the same way
+  @Test
+  void weightedAndFastPartitionPathsAgreeOnAnUnambiguousGraph() throws Exception {
+    final String q3 = "MATCH (country:Country) MATCH (person1:Person)-[:IS_LOCATED_IN]->(city1:City)-[:IS_PART_OF]->(country) MATCH (person2:Person)-[:IS_LOCATED_IN]->(city2:City)-[:IS_PART_OF]->(country) "
+        + "MATCH (person3:Person)-[:IS_LOCATED_IN]->(city3:City)-[:IS_PART_OF]->(country) MATCH (person1)-[:KNOWS]-(person2)-[:KNOWS]-(person3)-[:KNOWS]-(person1) RETURN count(*) AS n";
+    for (final String t : new String[] { "Person", "Country", "City" })
+      database.getSchema().createVertexType(t);
+    for (final String t : new String[] { "KNOWS", "IS_LOCATED_IN", "IS_PART_OF" })
+      database.getSchema().createEdgeType(t);
+    database.transaction(() -> {
+      final MutableVertex x = database.newVertex("Country").set("id", 1).save();
+      final MutableVertex city = database.newVertex("City").set("id", 1).save();
+      city.newEdge("IS_PART_OF", x).save();
+      final MutableVertex[] p = new MutableVertex[3];
+      for (int i = 0; i < 3; i++) {
+        p[i] = database.newVertex("Person").set("id", i).save();
+        p[i].newEdge("IS_LOCATED_IN", city).save();
+      }
+      p[0].newEdge("KNOWS", p[1]).save();
+      p[1].newEdge("KNOWS", p[2]).save();
+      p[2].newEdge("KNOWS", p[0]).save();
+    });
+    assertThat(count(q3)).as("no view").isEqualTo(6);
+    createView("wide9350u", "Person, Country, City", "KNOWS, IS_LOCATED_IN, IS_PART_OF");
+    try {
+      assertThat(count(q3)).as("fast path under a view").isEqualTo(6);
+    } finally {
+      database.command("sql", "DROP GRAPH ANALYTICAL VIEW wide9350u");
+    }
+    // a second city in the same country for one person makes the chain ambiguous: that person has two paths
+    database.transaction(() -> {
+      final MutableVertex city2 = database.newVertex("City").set("id", 2).save();
+      city2.newEdge("IS_PART_OF", database.query("sql", "SELECT FROM Country").next().getVertex().get()).save();
+      database.query("sql", "SELECT FROM Person WHERE id = 0").next().getVertex().get().newEdge("IS_LOCATED_IN", city2).save();
+    });
+    assertThat(count(q3)).as("weighted path, no view").isEqualTo(12);
+    createView("wide9350v", "Person, Country, City", "KNOWS, IS_LOCATED_IN, IS_PART_OF");
+    try {
+      assertThat(count(q3)).as("weighted path under a view").isEqualTo(12);
+    } finally {
+      database.command("sql", "DROP GRAPH ANALYTICAL VIEW wide9350v");
+    }
+  }
 }
