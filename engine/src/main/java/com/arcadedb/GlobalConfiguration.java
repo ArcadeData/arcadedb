@@ -1007,8 +1007,8 @@ public enum GlobalConfiguration {
       counted. The limit also shrinks as the queries running take the heap budget (see arcadedb.queryMaxHeapRAM): a scan \
       reads ahead at most a sixty-fourth of what is left of it, down to one record at a time. That share is read once per \
       batch and is not a reservation, so scans that start together each take their share of the same remainder. A batch \
-      always holds at least one record. 0 or a negative value disables the byte bound, and the shrinking with it (record \
-      count only)""",
+      always holds at least one record. A change applies to the scans opened after it. 0 or a negative value disables the \
+      byte bound, and the shrinking with it (record count only)""",
       Long.class, 1024L * 1024),
 
   QUERY_PARALLEL_SCAN_MAX_BATCH_BYTES("arcadedb.queryParallelScanMaxBatchBytes", SCOPE.DATABASE,
