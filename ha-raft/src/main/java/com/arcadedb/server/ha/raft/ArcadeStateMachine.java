@@ -935,7 +935,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // loudly" backstop, so a shared budget across all diverged databases is the intended behaviour -
   // one very noisy diverged database crossing the threshold should still halt the node.
   private final        AtomicInteger divergedSwallowedErrors      = new AtomicInteger(0);
-  private static final int           MAX_DIVERGED_SWALLOWED_ERRORS = 100;
+  static final         int           MAX_DIVERGED_SWALLOWED_ERRORS = 100; // package-private for tests
 
   // Log-flood throttle for a diverged database's "snapshot resync in progress" notice. Once a WAL
   // version gap has quarantined a database, EVERY subsequent committed entry for it hits the same gap
@@ -2012,12 +2012,47 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * error on an already-diverged database is a resync condition): the only change is that the FIRST
    * unexpected error on a healthy database now quarantines it rather than halting the node.
    * <p>
+   * A sole voter does not quarantine (issue #9308): nothing could ever lift the quarantine there, so the error is
+   * raised as a {@link ReplicationException} with a SEVERE alert and the node keeps serving. The failed entry stays in
+   * the Raft log, so a restart that replays the log from the last snapshot marker applies it again, after the entries
+   * that succeeded in between were already applied before it: a deterministic failure fails the same way again, while
+   * a transient one (an I/O error, a lock timeout) now succeeds out of its original order. Either way the database may
+   * no longer match the log, which is what the alert tells the operator to check.
+   * <p>
    * Entries with no single target database ({@code databaseName} null or empty, e.g. a
    * {@code SECURITY_USERS_ENTRY}) are NOT isolable to one database's state, so their failure still
    * propagates to the node-wide fatal halt.
    */
   private void handleUnexpectedApplyError(final long index, final String databaseName, final RuntimeException t) {
     if (databaseName != null && !databaseName.isEmpty()) {
+      // A quarantine is lifted by the leadership hand-off and the targeted resync from the next leader. A sole voter
+      // has neither, and with one voter there is no other copy for this one to be diverged FROM, so the quarantine
+      // would protect nothing and never lift: it would keep the whole node out of the ready set and stop the Raft log
+      // from being checkpointed until the volume fills (issue #9308, the same reasoning #8940 applied to the
+      // forceSnapshot replay guard). Alert instead and keep serving. The entry still FAILS, so its submitter learns the
+      // apply did not happen; only the quarantine, the hand-off and the swallow budget (which exists for a node waiting
+      // on a resync, and there is none here) are skipped. A database that is ALREADY quarantined - restored from disk,
+      // or raised while the node still had peers - keeps its quarantine and the routing below.
+      // isSoleVoter() cannot throw here and mask t: the membership read it relies on (getCommittedPeersOrNull) degrades
+      // to the declared server list on any exception, and a declared multi-node list answers false, the old routing.
+      // It is also true while a cluster that will grow is still one committed voter (a single-seed bootstrap, or a
+      // membership change down to one voter): a peer that joins later installs its copy FROM this node, so it inherits
+      // the same state rather than diverging from it. The diverged check and the voter check are two reads, not one
+      // atomic decision; a quarantine raised in between only sends this error down the old routing below.
+      final RaftHAServer raftHA = this.raftHAServer;
+      if (raftHA != null && !isDatabaseDiverged(databaseName) && raftHA.isSoleVoter()) {
+        LogManager.instance().log(this, Level.SEVERE,
+            "Unexpected error applying Raft entry for database '%s' at index %d, and this node is the only voter, so "
+                + "there is no peer to resync it from. It is NOT quarantined (that could never be lifted here and would "
+                + "keep the node out of service); the entry is reported as failed and later entries keep applying on top "
+                + "of a state that is MISSING it, so from here on the database may be inconsistent with the Raft log and "
+                + "a later entry that depends on this one can fail or produce a different state. Check the database "
+                + "(CHECK DATABASE) and restore it from a backup if it is damaged: %s",
+            databaseName, index, t.getMessage());
+        throw new ReplicationException("Apply error on database '" + databaseName + "' at index " + index
+            + "; this node is the only voter, so the database is not quarantined", t);
+      }
+
       // Mark the database diverged on the first error so subsequent errors for it route here too.
       // quarantineDatabase() returns true only the first time, which is when we kick off the targeted resync. The cause
       // recorded with it is what the operator-facing alert says (issue #7741): an entry this node cannot decode
