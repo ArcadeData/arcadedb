@@ -43,9 +43,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code TypeIndex.equals} compares, so {@code DatabaseComparator} reported the type as configured differently.
  */
 class Issue9213CompactionKeepsBucketIndexNameTest extends TestHelper {
-  private static final String TYPE_NAME = "Issue9213Item";
-  private static final int    PAGE_SIZE = 8192;
-  private static final int    RECORDS   = 700;
+  private static final String TYPE_NAME  = "Issue9213Item";
+  private static final int    PAGE_SIZE  = 8192;
+  private static final int    RECORDS    = 700;
+  private static final int    GEO_POINTS = 1_000;
 
   @Test
   void bucketIndexKeepsItsNameAcrossCompactionAndRestart() throws Exception {
@@ -150,6 +151,38 @@ class Issue9213CompactionKeepsBucketIndexNameTest extends TestHelper {
     assertThat(reloaded.getIndexesOnBuckets()[0].getName()).isEqualTo(nameBefore);
     assertThat(database.getSchema().getIndexByName(nameBefore).getType()).isEqualTo(Schema.INDEX_TYPE.FULL_TEXT);
     assertThat(reloaded.get(new Object[] { "word42" }).hasNext()).isTrue();
+  }
+
+  /** Same as the full-text case, for the geospatial wrapper. */
+  @Test
+  void geospatialIndexKeepsItsNameAcrossCompactionAndRestart() throws Exception {
+    database.transaction(() -> {
+      final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(1).create();
+      type.createProperty("location", String.class);
+      database.getSchema().buildTypeIndex(TYPE_NAME, new String[] { "location" })
+          .withType(Schema.INDEX_TYPE.GEOSPATIAL).withPageSize(PAGE_SIZE).create();
+    });
+    database.transaction(() -> {
+      for (int i = 0; i < GEO_POINTS; i++)
+        database.newDocument(TYPE_NAME).set("location", "POINT (" + (i % 170) + "." + i + " " + (i % 80) + ".5)").save();
+    });
+
+    final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("location").getFirst();
+    final IndexInternal bucketIndex = typeIndex.getIndexesOnBuckets()[0];
+    final String nameBefore = bucketIndex.getName();
+    final LSMTreeIndex lsm = (LSMTreeIndex) ((LSMTreeIndexMutable) bucketIndex.getComponent()).getMainIndex();
+    database.async().waitCompletion();
+    assertThat(lsm.getMutableIndex().getTotalPages()).as("the compaction needs at least 2 mutable pages to run")
+        .isGreaterThanOrEqualTo(2);
+    lsm.scheduleCompaction();
+    assertThat(lsm.compact()).isTrue();
+    assertThat(lsm.getMostRecentFileName()).isNotEqualTo(nameBefore);
+
+    reopenDatabase();
+
+    final TypeIndex reloaded = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("location").getFirst();
+    assertThat(reloaded.getIndexesOnBuckets()[0].getName()).isEqualTo(nameBefore);
+    assertThat(database.getSchema().getIndexByName(nameBefore).getType()).isEqualTo(Schema.INDEX_TYPE.GEOSPATIAL);
   }
 
   /** An index that never compacted still answers to its file's name, and its schema entry stays exactly as before. */
