@@ -340,14 +340,14 @@ public final class ColumnDefinition {
    * <ul>
    * <li>TIMESTAMP: {@code DELTA_OF_DELTA} only. The timestamp column is always encoded with it, so any other name
    * would be stored, rendered back and ignored.</li>
-   * <li>TAG and FIELD: {@code DICTIONARY} for any type; {@code GORILLA_XOR} and {@code SIMPLE8B} only for a
-   * fixed-width (numeric, boolean, datetime) type, because they read the value as a number.</li>
+   * <li>TAG and FIELD: {@code DICTIONARY} for any type; {@code GORILLA_XOR} only for DOUBLE/FLOAT and
+   * {@code SIMPLE8B} only for the integer-like types (integers, boolean, datetimes), i.e. the codec
+   * {@link #defaultCodecFor} picks, because those are the ones whose values round-trip through the encoder.</li>
    * <li>{@code NONE} and {@code DELTA_OF_DELTA} on a non-timestamp column have no encoder.</li>
    * </ul>
    * Keep this in step with {@code TimeSeriesSealedStore.compressColumn}; {@code Issue9310TimeSeriesCodecValidationTest}
-   * drives every accepted combination through a compaction so a drift fails there. "Numeric" is {@code getFixedSize() > 0},
-   * which is exactly the set of types {@code storedNumericValueOf}/{@code integerValueOf} can read; a new fixed-width type
-   * that is not a number must be excluded here.
+   * drives every accepted combination through a compaction and checks the values read back, so a drift fails there. A new
+   * data type must be classified in {@link #defaultCodecFor}, which this method defers to for the numeric codecs.
    */
   public static String codecRefusal(final String name, final Type dataType, final ColumnRole role, final TimeSeriesCodec codec) {
     if (role == ColumnRole.TIMESTAMP)
@@ -355,12 +355,21 @@ public final class ColumnDefinition {
           : "Column '" + name + "' is the TIMESTAMP column, which is always encoded with DELTA_OF_DELTA, so it cannot declare codec " + codec;
     return switch (codec) {
       case DICTIONARY -> null;
-      case GORILLA_XOR, SIMPLE8B -> fixedSizeOf(dataType) > 0 ? null
-          : "Column '" + name + "' of type " + dataType + " cannot use codec " + codec
-              + ", which encodes numbers. Use DICTIONARY, or a numeric type";
+      // Each numeric codec only for the types its encoder AND decoder round-trip: SIMPLE8B stores integers, so a DOUBLE
+      // would read back as raw long bits; GORILLA_XOR stores doubles, so a LONG would lose precision past 2^53 and read
+      // back as a Double
+      // (a TAG defaults to DICTIONARY whatever its type, so the type's numeric codec is its FIELD default)
+      case GORILLA_XOR, SIMPLE8B -> defaultCodecFor(dataType, ColumnRole.FIELD) == codec ? null
+          : "Column '" + name + "' of type " + dataType + " cannot use codec " + codec + ", which would not read the values back "
+              + "unchanged. Use DICTIONARY" + (isNumericCodec(defaultCodecFor(dataType, ColumnRole.FIELD))
+              ? " or " + defaultCodecFor(dataType, ColumnRole.FIELD) : "");
       default -> "Column '" + name + "' cannot use codec " + codec + ", which has no encoder for a " + role
           + " column. Supported codecs: GORILLA_XOR, SIMPLE8B, DICTIONARY";
     };
+  }
+
+  private static boolean isNumericCodec(final TimeSeriesCodec codec) {
+    return codec == TimeSeriesCodec.GORILLA_XOR || codec == TimeSeriesCodec.SIMPLE8B;
   }
 
   /**
