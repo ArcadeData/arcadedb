@@ -64,6 +64,7 @@ class GAVVertexEdgeTypeCoverageTest extends TestHelper {
       assertThat(x.countEdges(Vertex.DIRECTION.OUT, "F")).isEqualTo(1);
       assertThat(x.countEdges(Vertex.DIRECTION.OUT)).as("untyped over a partial view").isEqualTo(2);
       assertThat(x.getConnectedVertexRIDs(Vertex.DIRECTION.OUT, "F")).containsExactly(v[1]);
+      assertThat(x.getConnectedVertexRIDs(Vertex.DIRECTION.OUT)).as("untyped over a partial view").containsExactlyInAnyOrder(v[1], v[1]);
       assertThat(x.isConnectedTo(database.lookupByRID(v[1], true), Vertex.DIRECTION.OUT, "F")).isTrue();
     } finally {
       database.command("sql", "DROP GRAPH ANALYTICAL VIEW partial9377");
