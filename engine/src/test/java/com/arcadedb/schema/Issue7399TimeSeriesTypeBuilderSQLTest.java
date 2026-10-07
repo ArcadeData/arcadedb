@@ -189,18 +189,18 @@ class Issue7399TimeSeriesTypeBuilderSQLTest extends TestHelper {
     // silently recreated it with the DEFAULT codec (issue #5475's failure, re-entered). CREATE TIMESERIES TYPE
     // carries a CODEC clause since issue #7689, so the codec renders and survives the round trip instead.
     final TimeSeriesTypeBuilder builder = builder("ExplicitCodec")
-        .withColumn(new ColumnDefinition("value", Type.DOUBLE, ColumnDefinition.ColumnRole.FIELD, TimeSeriesCodec.NONE));
+        .withColumn(new ColumnDefinition("value", Type.DOUBLE, ColumnDefinition.ColumnRole.FIELD, TimeSeriesCodec.DICTIONARY));
 
     final String sql = builder.toSQL().getFirst();
-    assertThat(sql).contains("`value` DOUBLE CODEC NONE");
+    assertThat(sql).contains("`value` DOUBLE CODEC DICTIONARY");
     assertParses(sql);
 
     // Both paths agree on the codec, which is the parity the remote builder rides on.
-    assertThat(builder.create().getTsColumn("value").getCompressionHint()).isEqualTo(TimeSeriesCodec.NONE);
+    assertThat(builder.create().getTsColumn("value").getCompressionHint()).isEqualTo(TimeSeriesCodec.DICTIONARY);
 
     database.command("sql", sql.replace("`ExplicitCodec`", "`ExplicitCodecViaSQL`"));
     assertThat(((TimeSeriesType) database.getSchema().getType("ExplicitCodecViaSQL")).getTsColumn("value")
-        .getCompressionHint()).isEqualTo(TimeSeriesCodec.NONE);
+        .getCompressionHint()).isEqualTo(TimeSeriesCodec.DICTIONARY);
   }
 
   @Test

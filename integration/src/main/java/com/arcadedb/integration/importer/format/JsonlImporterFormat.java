@@ -598,8 +598,14 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
         final Type dataType = Type.getTypeByName(column.getString("dataType"));
         final ColumnDefinition.ColumnRole role = ColumnDefinition.ColumnRole.valueOf(column.getString("role"));
         final String compression = column.getString("compression", null);
-        builder.withColumn(compression != null ?
-            new ColumnDefinition(columnName, dataType, role, TimeSeriesCodec.valueOf(compression)) :
+        final TimeSeriesCodec codec = compression != null ? TimeSeriesCodec.valueOf(compression) : null;
+        // An export of a type created before issue #9310 can carry another codec on its TIMESTAMP column. Nothing ever
+        // honoured it (the timestamp is always delta-of-delta encoded), and the builder now refuses it, so it is dropped
+        // rather than failing a restore of data that reads back correctly.
+        final boolean inertTimestampCodec = role == ColumnDefinition.ColumnRole.TIMESTAMP
+            && codec != TimeSeriesCodec.DELTA_OF_DELTA;
+        builder.withColumn(codec != null && !inertTimestampCodec ?
+            new ColumnDefinition(columnName, dataType, role, codec) :
             new ColumnDefinition(columnName, dataType, role));
       } catch (final IllegalArgumentException | NullPointerException e) {
         throw new ImportException(

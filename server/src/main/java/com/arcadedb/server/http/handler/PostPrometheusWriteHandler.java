@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
@@ -27,6 +28,7 @@ import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.schema.TimeSeriesTypeBuilder;
 import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.RequestBodyTooLargeException;
@@ -39,7 +41,9 @@ import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HttpString;
 
 import java.util.Arrays;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * HTTP handler for Prometheus remote_write protocol.
@@ -75,6 +79,9 @@ import java.util.List;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
+
+  /** Bounds the labels named in an error response, which come from the client. */
+  private static final int MAX_REPORTED_UNDECLARED_LABELS = 100;
 
   public PostPrometheusWriteHandler(final HttpServer httpServer) {
     super(httpServer);
@@ -169,6 +176,11 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
     // the same flag, because either one applied to a transaction this handler did not open would settle the
     // caller's session transaction behind its back.
     final boolean ownTransaction = !database.isTransactionActive();
+    final boolean rejectUndeclared = !"ignore".equalsIgnoreCase(
+        database.getConfiguration().getValueAsString(GlobalConfiguration.TIMESERIES_UNDECLARED_KEYS));
+    // `metric.label` of every label that made a series be dropped, bounded because the labels come from the client
+    final Set<String> undeclaredLabels = new LinkedHashSet<>();
+    int droppedSeries = 0;
     if (ownTransaction)
       database.begin();
     try {
@@ -188,6 +200,14 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
         // "already exists" from the auto-create branch (issue #6839).
         final TimeSeriesEngine engine = tsType.requireEngine(SecurityDatabaseUser.ACCESS.CREATE_RECORD);
         final List<ColumnDefinition> columns = tsType.getTsColumns();
+
+        // A label the type has no TAG column for would be silently dropped, filing the samples under a different
+        // series than the one sent (issue #9365). Prometheus cannot extend an existing type, so it follows the same
+        // policy as the line protocol (issue #8646): reject drops the series and names the label, ignore discards it.
+        if (rejectUndeclared && hasUndeclaredLabel(ts.getLabels(), columns, typeName, undeclaredLabels)) {
+          ++droppedSeries;
+          continue;
+        }
 
         // Append this series' samples as ONE batch. All samples of a remote-write TimeSeries share the
         // same type and labels, so they can go in a single shard transaction. Appending one at a time
@@ -232,7 +252,46 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
       throw e;
     }
 
+    if (droppedSeries > 0) {
+      // 400, which Prometheus does not retry: the series that were valid are already stored, and re-sending the
+      // batch cannot make an undeclared label declared
+      final JSONObject error = new JSONObject();
+      error.put("error", "partial write: " + droppedSeries + " series dropped for undeclared label(s): "
+          + String.join(", ", undeclaredLabels) + " (declare them on the type, fix the label, or set "
+          + GlobalConfiguration.TIMESERIES_UNDECLARED_KEYS.getKey() + "=ignore to discard them).");
+      error.put("dropped", droppedSeries);
+      error.put("undeclaredLabels", new JSONArray(undeclaredLabels));
+      return new ExecutionResponse(400, error.toString());
+    }
+
     return new ExecutionResponse(204, "");
+  }
+
+  /**
+   * Whether {@code labels} carries a non-empty label the type has no TAG column for, adding each such label to
+   * {@code undeclared} (as {@code type.label}, up to {@link #MAX_REPORTED_UNDECLARED_LABELS}). An empty value is an
+   * absent label in the Prometheus data model, so it never counts (issue #9363).
+   */
+  private static boolean hasUndeclaredLabel(final List<Label> labels, final List<ColumnDefinition> columns,
+      final String typeName, final Set<String> undeclared) {
+    boolean found = false;
+    for (final Label label : labels) {
+      if ("__name__".equals(label.name()) || label.value() == null || label.value().isEmpty())
+        continue;
+      final String column = sanitizeColumnName(label.name());
+      boolean declared = false;
+      for (final ColumnDefinition col : columns)
+        if (col.getRole() == ColumnDefinition.ColumnRole.TAG && col.getName().equals(column)) {
+          declared = true;
+          break;
+        }
+      if (!declared) {
+        found = true;
+        if (undeclared.size() < MAX_REPORTED_UNDECLARED_LABELS)
+          undeclared.add(typeName + "." + column);
+      }
+    }
+    return found;
   }
 
   private LocalTimeSeriesType getOrCreateType(final DatabaseInternal database, final String typeName,
@@ -270,7 +329,9 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
   private static String findLabelValue(final List<Label> labels, final String tagName) {
     for (final Label l : labels) {
       if (sanitizeColumnName(l.name()).equals(tagName))
-        return l.value();
+        // An empty value is an absent label in the Prometheus data model, so it is stored as null, the same series as
+        // one that omits the label (issue #9363)
+        return l.value() == null || l.value().isEmpty() ? null : l.value();
     }
     return null;
   }

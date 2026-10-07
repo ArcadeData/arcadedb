@@ -332,6 +332,34 @@ public final class ColumnDefinition {
   }
 
   /**
+   * Why this column's codec cannot be honoured by the storage layer, or {@code null} when it can (issue #9310).
+   * <p>
+   * The codec is first consulted when a shard seals, and {@code TimeSeriesSealedStore.compressColumn} only knows
+   * three encoders, so a codec it cannot run - or can run only on a numeric column - used to be accepted at
+   * {@code CREATE} and then fail in every later compaction, permanently and type-wide. The rules mirror that switch:
+   * <ul>
+   * <li>TIMESTAMP: {@code DELTA_OF_DELTA} only. The timestamp column is always encoded with it, so any other name
+   * would be stored, rendered back and ignored.</li>
+   * <li>TAG and FIELD: {@code DICTIONARY} for any type; {@code GORILLA_XOR} and {@code SIMPLE8B} only for a
+   * fixed-width (numeric, boolean, datetime) type, because they read the value as a number.</li>
+   * <li>{@code NONE} and {@code DELTA_OF_DELTA} on a non-timestamp column have no encoder.</li>
+   * </ul>
+   */
+  public static String codecRefusal(final String name, final Type dataType, final ColumnRole role, final TimeSeriesCodec codec) {
+    if (role == ColumnRole.TIMESTAMP)
+      return codec == TimeSeriesCodec.DELTA_OF_DELTA ? null
+          : "Column '" + name + "' is the TIMESTAMP column, which is always encoded with DELTA_OF_DELTA, so it cannot declare codec " + codec;
+    return switch (codec) {
+      case DICTIONARY -> null;
+      case GORILLA_XOR, SIMPLE8B -> fixedSizeOf(dataType) > 0 ? null
+          : "Column '" + name + "' of type " + dataType + " cannot use codec " + codec
+              + ", which encodes numbers. Use DICTIONARY, or a numeric type";
+      default -> "Column '" + name + "' cannot use codec " + codec + ", which has no encoder for a " + role
+          + " column. Supported codecs: GORILLA_XOR, SIMPLE8B, DICTIONARY";
+    };
+  }
+
+  /**
    * The codec table as it was before issue #5475, used for TimeSeries types whose schema predates the
    * change.
    * <p>
