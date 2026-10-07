@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
@@ -226,6 +227,17 @@ public class SaveElementStep extends AbstractExecutionStep {
       final CommandContext context) {
     final List<ColumnDefinition> columns = tsType.getTsColumns();
     final ZoneId zoneId = context.getDatabase().getSchema().getZoneId();
+
+    // The row is built from the DECLARED columns, so a property the type does not declare (typically a misspelled tag)
+    // would be dropped and the sample filed under a different series than the one sent, with the statement answering
+    // success (issue #9365). Same policy as the line protocol and gRPC writes, issue #8646.
+    if (!"ignore".equalsIgnoreCase(
+        context.getDatabase().getConfiguration().getValueAsString(GlobalConfiguration.TIMESERIES_UNDECLARED_KEYS)))
+      for (final String property : doc.getPropertyNames())
+        if (!tsType.isDeclaredColumn(property))
+          throw new CommandExecutionException("Cannot insert into the TIMESERIES type '" + tsType.getName() + "': property '"
+              + property + "' is not a declared column. Declare it on the type, fix the name, or set "
+              + GlobalConfiguration.TIMESERIES_UNDECLARED_KEYS.getKey() + "=ignore to discard such properties");
 
     final long[] timestamps = new long[1];
     int nonTsCount = 0;

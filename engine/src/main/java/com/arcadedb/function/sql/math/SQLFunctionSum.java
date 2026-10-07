@@ -107,6 +107,8 @@ public class SQLFunctionSum extends SQLAggregatedFunction {
 
   @Override
   public Object getResult() {
-    return sum == null ? 0 : sum;
+    // SQL: SUM over an empty group or an all-NULL group is NULL, not 0 (issue #9351). Same answer as avg/min/max and
+    // as the time-series push-down.
+    return sum;
   }
 }
