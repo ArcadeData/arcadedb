@@ -47,7 +47,7 @@ OUT = sys.argv[1]
 LOCK = threading.Lock()
 
 H2_PREFACE = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
-DATA, HEADERS, SETTINGS, PING, GOAWAY = 0x0, 0x1, 0x4, 0x6, 0x7
+DATA, HEADERS, SETTINGS, PING, GOAWAY, WINDOW_UPDATE = 0x0, 0x1, 0x4, 0x6, 0x7, 0x8
 END_STREAM, ACK, END_HEADERS, PADDED = 0x1, 0x1, 0x4, 0x8
 
 # HPACK: ":status: 200" is static-table index 8; "content-type" is index 31 used as a literal-without-indexing name
@@ -118,6 +118,11 @@ def serve_h2(conn):
       elif frame_type == GOAWAY:
         return
       elif frame_type == DATA:
+        # Give back the flow-control credit of the whole frame, padding included, on the connection and the stream:
+        # without it the client stops sending once the 64 KB initial window is spent, which a long trace.sh run reaches
+        if length:
+          credit = struct.pack(">I", length)
+          conn.sendall(frame(WINDOW_UPDATE, 0, 0, credit) + frame(WINDOW_UPDATE, 0, stream_id, credit))
         if flags & PADDED:
           payload = payload[1:len(payload) - payload[0]]
         bodies[stream_id] = bodies.get(stream_id, b"") + payload
