@@ -237,6 +237,10 @@ public final class ChaosRunner {
     for (int i = 0; i < after.length; i++) {
       final int recovered = after[i].recovered() - before[i].recovered();
       final int reformats = after[i].reformatted() - before[i].reformatted();
+      if (recovered < 0 || reformats < 0)
+        throw new ChaosFailure(ResultKind.HARNESS,
+            "In-place restart count of node " + i + " went down during step " + step + " (" + before[i] + " -> " + after[i]
+                + "): its log lost lines, so a reformat cannot be ruled out");
       if (recovered > 0 || reformats > 0)
         LOGGER.info("CHAOS step {} fault={}: node {} restarted Ratis in place {} time(s) keeping its storage, {} time(s) reformatting it",
             step, fault.name(), i, recovered, reformats);

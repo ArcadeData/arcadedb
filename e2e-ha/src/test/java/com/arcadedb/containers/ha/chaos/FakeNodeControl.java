@@ -45,6 +45,8 @@ final class FakeNodeControl implements NodeControl {
   /** An unpaused node restarts Ratis in place reformatting (or recovering) its storage. */
   boolean                reformatOnUnpause;
   boolean                recoverOnUnpause;
+  /** An unpaused node's log loses lines: its counts drop to zero. */
+  boolean                shrinkLogsOnUnpause;
 
   private void log(final String call) {
     if (failure != null)
@@ -79,6 +81,10 @@ final class FakeNodeControl implements NodeControl {
       ++reformatted[node];
     if (recoverOnUnpause)
       ++recovered[node];
+    if (shrinkLogsOnUnpause) {
+      recovered[node] = 0;
+      reformatted[node] = 0;
+    }
   }
 
   @Override

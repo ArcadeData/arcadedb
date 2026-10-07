@@ -249,6 +249,19 @@ class ChaosRunnerTest {
   }
 
   @Test
+  void restartCountThatShrinksIsAHarnessFailureNotAPass() throws IOException {
+    final Harness harness = harness(config("chaos.faults", "longpause"));
+    // a log that lost lines (rotation, recreated container) could hide a reformat behind a lower count
+    harness.control().reformatted[0] = 3;
+    harness.control().reformatted[1] = 3;
+    harness.control().reformatted[2] = 3;
+    harness.control().shrinkLogsOnUnpause = true;
+    final ChaosResult result = harness.runner().run();
+    assertThat(result.kind()).isEqualTo(ResultKind.HARNESS);
+    assertThat(result.message()).contains("went down");
+  }
+
+  @Test
   void reformatIsOnlyForbiddenForTheLongPause() throws IOException {
     final Harness harness = harness(config("chaos.faults", "pause"));
     harness.control().reformatOnUnpause = true;
