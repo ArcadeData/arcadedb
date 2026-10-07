@@ -86,6 +86,7 @@ public final class ConsistentKeyLookup {
   private static List<IndexCursorEntry> lookupConsistently(final DatabaseInternal database, final Index index,
       final List<Object[]> keys) {
     final PageManager pageManager = database.getPageManager();
+    boolean unpinnedForDangling = false;
     for (int attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       if ((pageManager.getPublicationSequence() & 1) != 0)
         // a commit is publishing: wait for it to let go of the lock instead of spending an attempt inside its window
@@ -100,8 +101,14 @@ public final class ConsistentKeyLookup {
       final Read read = readAndLoad(database, index, keys);
       if (read == null)
         return null;
-      if (pageManager.getPublicationSequence() == before)
+      final boolean overlapped = pageManager.getPublicationSequence() != before;
+      // an entry without a record, in a REPEATABLE_READ transaction, may be a page this transaction pinned before the
+      // record was created: the pins are released and the lookup read once more on the committed state
+      final boolean stalePins = !overlapped && read.dangling && !unpinnedForDangling && isRepeatableRead(database);
+      if (!overlapped && !stalePins)
         return read.entries;
+      if (stalePins)
+        unpinnedForDangling = true;
       unpinRepeatableRead(database, index, read.bucketIds);
     }
 
@@ -132,7 +139,7 @@ public final class ConsistentKeyLookup {
     return cursor != null ? cursor : index.get(key);
   }
 
-  private record Read(List<IndexCursorEntry> entries, Set<Integer> bucketIds) {
+  private record Read(List<IndexCursorEntry> entries, Set<Integer> bucketIds, boolean dangling) {
   }
 
   private static Read readAndLoad(final DatabaseInternal database, final Index index, final List<Object[]> keys) {
@@ -154,6 +161,7 @@ public final class ConsistentKeyLookup {
 
     final List<IndexCursorEntry> entries = new ArrayList<>(rids.size());
     final Set<Integer> bucketIds = new HashSet<>();
+    boolean dangling = false;
     for (int i = 0; i < rids.size(); i++) {
       final RID rid = rids.get(i);
       bucketIds.add(rid.getBucketId());
@@ -161,9 +169,15 @@ public final class ConsistentKeyLookup {
         entries.add(new IndexCursorEntry(entryKeys.get(i), database.lookupByRID(rid, true), 1));
       } catch (final RecordNotFoundException e) {
         // in a state no commit overlapped, an entry without a record is dangling and dropped, as the scan of an index does
+        dangling = true;
       }
     }
-    return new Read(entries, bucketIds);
+    return new Read(entries, bucketIds, dangling);
+  }
+
+  private static boolean isRepeatableRead(final DatabaseInternal database) {
+    return database.isTransactionActive()
+        && database.getTransactionIsolationLevel() == Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ;
   }
 
   /**
@@ -172,8 +186,7 @@ public final class ConsistentKeyLookup {
    * detected, so a lookup that no commit touched keeps its snapshot.
    */
   private static void unpinRepeatableRead(final DatabaseInternal database, final Index index, final Set<Integer> bucketIds) {
-    if (!database.isTransactionActive()
-        || database.getTransactionIsolationLevel() != Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ)
+    if (!isRepeatableRead(database))
       return;
     final List<Integer> files = new ArrayList<>(bucketIds);
     if (index instanceof IndexInternal internal)
