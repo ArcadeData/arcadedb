@@ -25,6 +25,7 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.index.ConsistentKeyLookup;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.RangeIndex;
@@ -196,6 +197,14 @@ public class MatchEdgeByIndexStep extends AbstractExecutionStep {
         if (seekIndex >= seekKeys.size())
           return false;
 
+        if (wholeKey && seekIndex == 0) {
+          // every key of the seek is read with its records against ONE committed state (#9397)
+          cursor = ConsistentKeyLookup.lookupCursor(context.getDatabase(), index, seekKeys);
+          if (cursor != null) {
+            seekIndex = seekKeys.size();
+            return true;
+          }
+        }
         final Object[] key = seekKeys.get(seekIndex++);
         // A key covering every index column identifies at most one entry per RID; a shorter one matches a
         // contiguous range of the ordered index, which only the range cursor can walk.

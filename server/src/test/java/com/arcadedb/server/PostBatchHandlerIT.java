@@ -349,15 +349,40 @@ class PostBatchHandlerIT extends BaseGraphServerTest {
   @Test
   void lightEdgesParameter() throws Exception {
     testEachServer(serverIndex -> {
+      // since #9378 a batch can store light edges only into a type that declares LIGHTWEIGHT
+      executeCommand(serverIndex, "sql", "CREATE EDGE TYPE ELight IF NOT EXISTS LIGHTWEIGHT");
+
       final String body = """
           {"@type":"vertex","@class":"V1","@id":"le1","id":500}
           {"@type":"vertex","@class":"V1","@id":"le2","id":501}
-          {"@type":"edge","@class":"E1","@from":"le1","@to":"le2"}
+          {"@type":"edge","@class":"ELight","@from":"le1","@to":"le2"}
           """;
 
       final JSONObject result = postBatch(serverIndex, body, "application/x-ndjson", "lightEdges=true");
       assertThat(result.getInt("verticesCreated")).isEqualTo(2);
       assertThat(result.getInt("edgesCreated")).isEqualTo(1);
+    });
+  }
+
+  /**
+   * Regression for issue #9398: lightEdges=true into an edge type that does not declare LIGHTWEIGHT is refused with 400.
+   */
+  @Test
+  void lightEdgesParameterRefusedOnUndeclaredType() throws Exception {
+    testEachServer(serverIndex -> {
+      final String body = """
+          {"@type":"vertex","@class":"V1","@id":"lu1","id":502}
+          {"@type":"vertex","@class":"V1","@id":"lu2","id":503}
+          {"@type":"edge","@class":"E1","@from":"lu1","@to":"lu2"}
+          """;
+
+      final HttpURLConnection conn = openBatchConnection(serverIndex, "application/x-ndjson", "lightEdges=true");
+      writeBody(conn, body);
+      conn.connect();
+
+      assertThat(conn.getResponseCode()).isEqualTo(400);
+      assertThat(readError(conn)).contains("does not declare LIGHTWEIGHT");
+      conn.disconnect();
     });
   }
 

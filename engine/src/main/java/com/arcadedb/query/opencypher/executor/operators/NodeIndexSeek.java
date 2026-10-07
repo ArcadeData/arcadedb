@@ -22,6 +22,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.index.ConsistentKeyLookup;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -263,6 +264,15 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
             if (seekIndex >= seekKeys.size()) {
               finished = true;
               return;
+            }
+            if (wholeKey && seekIndex == 0) {
+              // every key of the seek is read with its records against ONE committed state, so a commit that deletes and
+              // re-creates a key cannot make it vanish or appear twice, nor serve a slot it freed for two keys (#9397)
+              cursor = ConsistentKeyLookup.lookupCursor(context.getDatabase(), index, seekKeys);
+              if (cursor != null) {
+                seekIndex = seekKeys.size();
+                continue;
+              }
             }
             final Object[] key = seekKeys.get(seekIndex++);
             // A key covering every index property identifies at most one entry per RID; a shorter one
