@@ -228,7 +228,8 @@ public final class GAVVertex implements Vertex {
   /**
    * Whether the view holds every edge type asked for: a view answers only for the edge types it lists, and an unlisted
    * one has no edges in it, so the record is the one to ask (issue #9377). An empty list means every edge type of the
-   * schema, which the view covers only when it lists them all.
+   * schema, which the view covers only when it lists them all. That check walks the schema's types, O(types) and only for an
+   * unfiltered call, which the operators do not issue per vertex: the record fallback it can avoid costs far more.
    */
   private boolean providerCovers(final String[] edgeTypes) {
     if (edgeTypes == null || edgeTypes.length == 0) {
