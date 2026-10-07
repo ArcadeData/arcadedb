@@ -96,6 +96,10 @@ class Issue9351GenericSumAllAbsentTest extends TestHelper {
     try (final ResultSet rs = database.query("opencypher", "MATCH (n:V9351) RETURN sum(n.x) AS s")) {
       assertThat(rs.next().<Number>getProperty("s").intValue()).as("all-null values").isZero();
     }
+    // an explicit sql.sum() keeps the SQL answer
+    try (final ResultSet rs = database.query("opencypher", "MATCH (n:V9351) RETURN sql.sum(n.x) AS s")) {
+      assertThat(rs.next().<Object>getProperty("s")).as("sql.sum over all-null values").isNull();
+    }
   }
 
   @Test
