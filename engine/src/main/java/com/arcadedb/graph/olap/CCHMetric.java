@@ -399,7 +399,9 @@ final class CCHMetric {
    * One query, read consistently against {@link #update}: optimistically first, which costs readers nothing and never
    * blocks them, then - only when an update overlapped it - again under the read lock. An overlapped optimistic attempt
    * may have read half-updated costs, so its answer, or the exception those costs led to, is discarded rather than
-   * trusted; the scratch is reset either way.
+   * trusted; the scratch is reset either way. A torn read can only produce wrong numbers, never a hang: the searches
+   * walk elimination-tree chains of the immutable topology, and unpacking follows middles that rank strictly below
+   * their arc's tail, with {@link #expand}'s size guard as a last net.
    */
   private PathResult read(final int rs, final int rt, final boolean withPath) {
     final QueryState state = topology.borrowState();
