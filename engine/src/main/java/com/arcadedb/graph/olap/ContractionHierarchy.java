@@ -441,6 +441,7 @@ public final class ContractionHierarchy {
       final boolean reusesOrder = order != null && order.length == input.nodeCount();
       CCHTopology topology = CCHTopology.build(input.nodeCount(), input.tails(), input.heads(), input.count(), budget,
           reusesOrder ? order : null, this::isClosed);
+      final boolean builtFromOrder = reusesOrder && topology != null;
       // the kept order may have degraded past the budget under the changes it absorbed: a fresh one may not
       if (topology == null && keptOrder != null && !closed)
         topology = CCHTopology.build(input.nodeCount(), input.tails(), input.heads(), input.count(), budget, null,
@@ -457,9 +458,9 @@ public final class ContractionHierarchy {
         return;
       }
       lastTopologyBuildMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - begin);
-      if (keptOrder != null && topology.nodeAt == keptOrder)
+      if (builtFromOrder && keptOrder != null)
         topologyRecontractions.increment();
-      else if (reusesOrder && topology.nodeAt == persistedOrder)
+      else if (builtFromOrder)
         topologyRestores.increment();
       else
         topologyBuilds.increment();
