@@ -92,10 +92,15 @@ public class LSMTreeIndexCursor implements IndexCursor {
   private       Object[]                               lastReturnedKeys;
   /** #6944: the 3 containers below are per-key-group scratch space, hoisted here and {@code clear()}ed at the
    *  start of every group instead of being reallocated - the cursor is single-threaded and each group's
-   *  contents are fully consumed before the next group starts, so nothing outlives a reuse. */
+   *  contents are fully consumed before the next group starts, so nothing outlives a reuse.
+   *  #9461: a HashMap never shrinks its table, and clear(), iteration and toArray() cost O(capacity), so the two hash
+   *  containers are replaced instead of cleared once a group has grown them past SCRATCH_REUSE_MAX_RIDS. Otherwise one
+   *  hot key holding N RIDs makes every later group of the scan cost O(N) too. */
+  private static final int                             SCRATCH_REUSE_MAX_RIDS = 1_024;
   private final List<Integer>                          minorKeyIndexes    = new ArrayList<>();
-  private final HashMap<RID, Boolean>                   ridState           = new HashMap<>();
-  private final HashSet<RID>                            mergedRIDs         = new HashSet<>();
+  private       HashMap<RID, Boolean>                   ridState           = new HashMap<>();
+  private       HashSet<RID>                            mergedRIDs         = new HashSet<>();
+  private       boolean                                scratchOversized   = false;
 
   public LSMTreeIndexCursor(final LSMTreeIndexMutable index, final boolean ascendingOrder) throws IOException {
     this(index, ascendingOrder, null, true, null, true);
@@ -533,7 +538,15 @@ public class LSMTreeIndexCursor implements IndexCursor {
       // [newest, ..., oldest], so iterate it in reverse) and within each page in insertion
       // order. We track per-RID validity and only mark the whole key as deleted when we
       // encounter a REMOVED_ENTRY_RID tombstone; a later insert at the same key resurrects it.
-      ridState.clear();
+      if (scratchOversized) {
+        ridState = new HashMap<>();
+        mergedRIDs = new HashSet<>();
+        scratchOversized = false;
+      } else {
+        ridState.clear();
+        mergedRIDs.clear();
+      }
+      int groupRIDs = 0;
 
       for (int i = minorKeyIndexes.size() - 1; i >= 0; --i) {
         final int minorKeyIndex = minorKeyIndexes.get(i);
@@ -541,6 +554,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
         currentKeys = currentCursor.getKeys();
 
         final RID[] pageValues = currentCursor.getValue();
+        groupRIDs += pageValues.length;
         for (final RID rid : pageValues) {
           if (rid.getBucketId() == -1 && rid.getPosition() == -1) {
             // KEY-WIDE TOMBSTONE: invalidate every RID seen so far for this key. Any insert
@@ -558,7 +572,6 @@ public class LSMTreeIndexCursor implements IndexCursor {
 
       // Collect the surviving RIDs for this key. #5055: disk RIDs and overlay RIDs are UNIONed - a committed
       // record and an uncommitted one sharing the same non-unique key must both appear during in-tx iteration.
-      mergedRIDs.clear();
 
       // ADVANCE EACH PAGE CURSOR PAST THIS KEY and, if any page contributed, add its per-RID-filtered set.
       if (!minorKeyIndexes.isEmpty()) {
@@ -619,6 +632,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
         ++deadEntriesSkipped;
 
       currentValues = mergedRIDs.isEmpty() ? null : mergedRIDs.toArray(new RID[0]);
+      scratchOversized = groupRIDs > SCRATCH_REUSE_MAX_RIDS || mergedRIDs.size() > SCRATCH_REUSE_MAX_RIDS;
 
       // A batch left pending (its key sorts after this round's) must survive to the round that consumes it.
       if (txCursorKeys == null)
