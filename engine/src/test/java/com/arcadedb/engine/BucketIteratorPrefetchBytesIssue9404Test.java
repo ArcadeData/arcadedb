@@ -21,7 +21,6 @@ package com.arcadedb.engine;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
-import com.arcadedb.database.Record;
 import com.arcadedb.query.sql.executor.QueryHeapBudget;
 import com.arcadedb.query.sql.executor.QueryHeapTracker;
 import com.arcadedb.query.sql.executor.Result;
@@ -46,6 +45,8 @@ class BucketIteratorPrefetchBytesIssue9404Test extends TestHelper {
   private static final int LARGE_PAYLOAD = 200 * 1024;
   private static final int SMALL_RECORDS = 3_000;
 
+  private long lastBatch;
+
   @Override
   protected void beginTest() {
     database.getSchema().createVertexType("Large", 1);
@@ -66,8 +67,8 @@ class BucketIteratorPrefetchBytesIssue9404Test extends TestHelper {
     final BucketIterator iterator = openIterator("Large");
 
     // THE BATCH ENDS AS SOON AS IT REACHES THE BOUND: AT MOST ONE RECORD PAST IT
-    final int prefetched = prefetched(iterator);
-    assertThat(prefetched).isGreaterThan(0).isLessThanOrEqualTo((int) (bound / LARGE_PAYLOAD) + 1);
+    final long prefetched = lastBatch;
+    assertThat(prefetched).isGreaterThan(0).isLessThanOrEqualTo(bound / LARGE_PAYLOAD + 1);
 
     // EVERY RECORD IS STILL RETURNED, IN ORDER, WITH ITS CONTENT
     int count = 0;
@@ -88,13 +89,13 @@ class BucketIteratorPrefetchBytesIssue9404Test extends TestHelper {
     final QueryHeapTracker otherQuery = new QueryHeapTracker();
     try {
       // WITH THE BUDGET FREE THE BATCH IS THE ONE THE SETTING ALLOWS
-      assertThat(prefetched(openIterator("Large"))).isGreaterThan(10);
+      assertThat(batchOf("Large")).isGreaterThan(10);
 
       // THE RUNNING QUERIES TAKE ALL BUT A FEW MEGABYTES: AN ITERATOR MAY READ AHEAD A SMALL SHARE OF WHAT IS LEFT, WHICH IS LESS
       // THAN ONE RECORD, AND A BATCH ALWAYS HOLDS ONE
       otherQuery.charge(QueryHeapBudget.getAvailableBytes() - 4L * 1024 * 1024, "test");
       final BucketIterator iterator = openIterator("Large");
-      assertThat(prefetched(iterator)).isEqualTo(1);
+      assertThat(lastBatch).isEqualTo(1);
 
       // STILL EVERY RECORD, IN ORDER
       int count = 0;
@@ -117,8 +118,8 @@ class BucketIteratorPrefetchBytesIssue9404Test extends TestHelper {
     try {
       assertThat(QueryHeapBudget.getAvailableBytes()).isEqualTo(Long.MAX_VALUE);
       // THE BOUND IS THE SETTING, NOT A SHARE OF A BUDGET THAT IS NOT THERE
-      final int prefetched = prefetched(openIterator("Large"));
-      assertThat(prefetched).isGreaterThan(1).isLessThanOrEqualTo(1024 * 1024 / LARGE_PAYLOAD + 1);
+      final long prefetched = batchOf("Large");
+      assertThat(prefetched).isGreaterThan(1).isLessThanOrEqualTo(1024L * 1024 / LARGE_PAYLOAD + 1);
     } finally {
       GlobalConfiguration.QUERY_MAX_HEAP_RAM.setValue(previousBudget);
     }
@@ -128,7 +129,7 @@ class BucketIteratorPrefetchBytesIssue9404Test extends TestHelper {
   void aNonPositiveBoundKeepsTheCountOnlyBatch() {
     database.getConfiguration().setValue(GlobalConfiguration.QUERY_BATCH_MAX_BYTES, 0L);
 
-    assertThat(prefetched(openIterator("Large"))).isEqualTo(LARGE_RECORDS);
+    assertThat(batchOf("Large")).isEqualTo(LARGE_RECORDS);
   }
 
   @Test
@@ -138,7 +139,7 @@ class BucketIteratorPrefetchBytesIssue9404Test extends TestHelper {
 
     final BucketIterator iterator = openIterator("Small");
 
-    assertThat(prefetched(iterator)).isEqualTo(1_024);
+    assertThat(lastBatch).isEqualTo(1_024);
     int count = 0;
     while (iterator.hasNext()) {
       iterator.next();
@@ -163,16 +164,22 @@ class BucketIteratorPrefetchBytesIssue9404Test extends TestHelper {
     }
   }
 
+  /** Opens an iterator on the first bucket of the type and remembers how many records the scan read to fill its first batch. */
   private BucketIterator openIterator(final String typeName) {
     final DocumentType type = database.getSchema().getType(typeName);
-    return (BucketIterator) ((LocalBucket) type.getBuckets(false).getFirst()).iterator();
+    final long before = recordsRead();
+    final BucketIterator iterator = (BucketIterator) ((LocalBucket) type.getBuckets(false).getFirst()).iterator();
+    lastBatch = recordsRead() - before;
+    return iterator;
   }
 
-  private static int prefetched(final BucketIterator iterator) {
-    int count = 0;
-    for (final Record record : iterator.nextBatch)
-      if (record != null)
-        ++count;
-    return count;
+  private long batchOf(final String typeName) {
+    openIterator(typeName);
+    return lastBatch;
+  }
+
+  // THE RECORDS THE SCAN READ, AS THE DATABASE COUNTS THEM: WHAT IT LOADED, NOT HOW THE ITERATOR HOLDS THEM
+  private long recordsRead() {
+    return ((Number) database.getStats().get("readRecord")).longValue();
   }
 }
