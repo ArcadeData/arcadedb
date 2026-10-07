@@ -191,11 +191,17 @@ public final class PartitionedTriangleOp implements CountOp {
     if (filter == null || filter.buckets[hop + 1] == null)
       return neighbors;
     int kept = 0;
-    final int[] result = new int[neighbors.length];
+    for (final int n : neighbors)
+      if (filter.accepts(hop + 1, n))
+        kept++;
+    if (kept == neighbors.length)
+      return neighbors;
+    final int[] result = new int[kept];
+    kept = 0;
     for (final int n : neighbors)
       if (filter.accepts(hop + 1, n))
         result[kept++] = n;
-    return kept == result.length ? result : Arrays.copyOf(result, kept);
+    return result;
   }
 
   private static long countRange(final GraphTraversalProvider provider, final NeighborView knowsView, final int[] nbrs,
@@ -305,6 +311,9 @@ public final class PartitionedTriangleOp implements CountOp {
 
     final NeighborView firstView = views[0];
     final int[] firstNbrs = firstView.neighbors();
+    final int[][] hopNbrs = new int[chainLength][];
+    for (int h = 1; h < chainLength; h++)
+      hopNbrs[h] = views[h].neighbors();
 
     for (int p = 0; p < nodeIdUpperBound; p++) {
       guard.checkPeriodically(p);
@@ -319,7 +328,7 @@ public final class PartitionedTriangleOp implements CountOp {
         return null; // ambiguous chain: the caller takes the weighted path
       boolean valid = true;
       for (int h = 1; h < chainLength; h++) {
-        final int next = singleStep(views[h], views[h].neighbors(), current, h, filter);
+        final int next = singleStep(views[h], hopNbrs[h], current, h, filter);
         if (next == NO_STEP) {
           valid = false;
           break;
