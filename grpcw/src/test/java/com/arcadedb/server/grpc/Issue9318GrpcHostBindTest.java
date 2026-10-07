@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.grpc;
 
+import com.arcadedb.exception.ConfigurationException;
 import io.grpc.Server;
 import org.junit.jupiter.api.Test;
 
@@ -26,6 +27,7 @@ import java.net.SocketAddress;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for issue #9318: {@code arcadedb.grpc.host} was read and logged but never bound, so the listener was
@@ -58,5 +60,12 @@ class Issue9318GrpcHostBindTest {
     } finally {
       server.shutdownNow().awaitTermination(10, TimeUnit.SECONDS);
     }
+  }
+
+  @Test
+  void unresolvableHostIsRefusedByName() {
+    assertThatThrownBy(() -> GrpcServerPlugin.newListeningBuilder("no-such-host.invalid", 0))
+        .isInstanceOf(ConfigurationException.class)
+        .hasMessageContaining("no-such-host.invalid");
   }
 }
