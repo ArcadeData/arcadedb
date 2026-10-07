@@ -404,6 +404,8 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
       final Throwable failure) throws IOException {
     final ErrorClassification classification = classifyError(failure);
     final JSONObject error = buildStreamedErrorLine(exchange, classification);
+    // Set last, on purpose: 'message' is this stream's own member, not one of the buffered body's ('error' carries
+    // the label there), so nothing built above uses the name and this cannot overwrite it.
     error.put("message", isProductionMode() ?
         classification.message() :
         failure.getMessage() != null ? failure.getMessage() : failure.getClass().getSimpleName());

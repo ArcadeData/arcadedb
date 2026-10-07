@@ -2300,7 +2300,14 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
         classification.reported(), classification.exceptionArgs(), getCorrelationId(exchange)))
         .put("status", classification.status());
     if (classification.retryAfter() != null)
-      error.put(STREAMED_RETRY_AFTER_MEMBER, Long.parseLong(classification.retryAfter()));
+      // Defensive: the value doubles as the raw header, which HTTP also allows as a date. Every producer sends
+      // integer seconds today, but a throw here would cut the stream instead of reporting the failure, so a value
+      // that is not a number is left out of the line rather than allowed to lose the line itself.
+      try {
+        error.put(STREAMED_RETRY_AFTER_MEMBER, Long.parseLong(classification.retryAfter().trim()));
+      } catch (final NumberFormatException e) {
+        // Not in seconds: the client gets the line without a back-off hint
+      }
     return error;
   }
 
