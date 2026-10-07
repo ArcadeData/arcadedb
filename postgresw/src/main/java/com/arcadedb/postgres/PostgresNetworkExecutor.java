@@ -1161,7 +1161,7 @@ public class PostgresNetworkExecutor extends Thread {
         applySettingCommand(query.query);
         answersNoRows = true;
         resultSet = new IteratorResultSet(Collections.emptyIterator());
-      } else if (PostgresSessionCommand.isSessionCommand(upperCaseText)) {
+      } else if ("sql".equalsIgnoreCase(query.language) && PostgresSessionCommand.isSessionCommand(upperCaseText)) {
         // DISCARD ALL is what a connection pooler runs between two client sessions (issue #9328); none of these is a
         // production of the SQL grammar, so the engine would refuse them with a parse error
         final PostgresSessionCommand sessionCommand = PostgresSessionCommand.parse(query.query);
@@ -3248,7 +3248,7 @@ public class PostgresNetworkExecutor extends Thread {
         // nothing (issue #8392). The catch arms below answer the ErrorResponse and register no statement.
         portal.setting = resolveSetCommand(portal.query);
         portal.ignoreExecution = true;
-      } else if (PostgresSessionCommand.isSessionCommand(upperCaseText)) {
+      } else if ("sql".equalsIgnoreCase(portal.language) && PostgresSessionCommand.isSessionCommand(upperCaseText)) {
         // Parsed here, applied at Execute like a SET (issue #9328). The text becomes the command tag, which is what
         // getTag() reads at Execute, and a statement this server cannot parse is refused here, at Parse
         portal.sessionCommand = PostgresSessionCommand.parse(portal.query);
