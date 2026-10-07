@@ -19,6 +19,7 @@
 package com.arcadedb.engine.timeseries;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.engine.timeseries.codec.DeltaOfDeltaCodec;
 import com.arcadedb.engine.timeseries.codec.DictionaryCodec;
@@ -49,6 +50,7 @@ import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.locks.Lock;
@@ -644,14 +646,17 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   }
 
   /**
-   * Returns an iterator over sealed blocks overlapping the given time range.
-   * Eagerly collects all matching rows before returning, so the caller iterates a list rather than the file. The
-   * read lock is taken per block and re-resolves the entry against the live directory first, so an atomic file
-   * replacement by a concurrent writer cannot be read through a stale offset (see {@link #walkBlocks}).
+   * Returns an iterator over sealed blocks overlapping the given time range, in timestamp order.
+   * <p>
+   * Lazy, one block at a time (issue #9420): the iterator holds the rows of the block it is in and decodes the next
+   * one when it gets there, so its residency is one block and not the range. Each block is read by the same
+   * {@link #walkBlocks} {@link #forEachRow} uses, with the same per-block read lock and the same re-resolution
+   * against the live directory, so an atomic file replacement by a concurrent writer cannot be read through a
+   * stale offset, a block a retention pass removed mid-iteration is skipped and counted in
+   * {@code vanishedBlocks}, and one a downsample replaced raises {@link TimeSeriesWalkCoarsenedException}.
    * <p>
    * Optimizations:
    * - Binary search on block directory to skip to first matching block
-   * - Early termination when blocks are past the time range (blocks are sorted)
    * - Timestamps decompressed first; value columns only if the block has matches
    * - Binary search within each block's sorted timestamps for the matching range
    *
@@ -659,10 +664,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * @param toTs          end timestamp (inclusive)
    * @param columnIndices which columns to return (null = all)
    *
-   * @return iterator yielding Object[] { timestamp, col1, col2, ... }.
-   *         <b>Note:</b> all matching rows are fully materialised into memory before the iterator
-   *         is returned, because the read lock must be held for all file I/O and released before
-   *         the caller iterates.  For very large time ranges consider using aggregation instead.
+   * @return iterator yielding Object[] { timestamp, col1, col2, ... }. An I/O error reading a later block surfaces
+   *         from {@code hasNext()} as a {@link DatabaseOperationException}
    */
   public Iterator<Object[]> iterateRange(final long fromTs, final long toTs, final int[] columnIndices,
       final TagFilter tagFilter) throws IOException {
@@ -671,13 +674,65 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
   /**
    * {@link #iterateRange(long, long, int[], TagFilter)}, counting what the walk did into {@code metrics}
-   * (issue #7717). {@code null} means "do not count" and is the path every pre-existing caller takes.
+   * (issue #7717). {@code null} means "do not count" and is the path every pre-existing caller takes. The counters
+   * grow as the iterator advances, not when this returns.
    */
   public Iterator<Object[]> iterateRange(final long fromTs, final long toTs, final int[] columnIndices,
       final TagFilter tagFilter, final AggregationMetrics metrics) throws IOException {
-    final List<Object[]> results = new ArrayList<>();
-    forEachRow(fromTs, toTs, columnIndices, tagFilter, metrics, row -> results.add(row));
-    return results.iterator();
+    return iterateRange(snapshotBlockDirectory(fromTs, toTs), fromTs, toTs, columnIndices, tagFilter, metrics);
+  }
+
+  /**
+   * {@link #iterateRange(long, long, int[], TagFilter, AggregationMetrics)} over a directory snapshot the caller
+   * already took, for the reason {@link TimeSeriesShard#forEachRow} takes one: the shard reads its mutable bucket in
+   * the same window, so a compaction cannot seal those rows into blocks this walk would hand over a second time.
+   * <p>
+   * Each step hands {@link #walkBlocks} a one-block slice of the snapshot, keeping the block's position in the
+   * directory and the snapshot's epoch, so a block is resolved and judged exactly as it would be in the middle of a
+   * whole walk. That is what keeps this iterator and {@code forEachRow} one implementation.
+   */
+  Iterator<Object[]> iterateRange(final BlockDirectorySnapshot directorySnapshot, final long fromTs, final long toTs,
+      final int[] columnIndices, final TagFilter tagFilter, final AggregationMetrics metrics) {
+    final List<BlockEntry> blocks = directorySnapshot.blocks();
+    return new Iterator<>() {
+      private final ArrayList<Object[]> blockRows = new ArrayList<>();
+      private       int                 nextBlock = 0;
+      private       int                 position  = 0;
+
+      /** Moves to the next block that has a row in range; {@code false} once every block is spent. */
+      private boolean fill() {
+        while (position >= blockRows.size()) {
+          if (nextBlock >= blocks.size())
+            return false;
+          blockRows.clear();
+          position = 0;
+          final int blockIdx = nextBlock++;
+          final BlockDirectorySnapshot oneBlock = new BlockDirectorySnapshot(List.of(blocks.get(blockIdx)),
+              directorySnapshot.firstIndex() + blockIdx, directorySnapshot.downsampleEpoch());
+          try {
+            walkBlocks(oneBlock, fromTs, toTs, columnIndices, tagFilter, metrics, blockRows::add, false);
+          } catch (final IOException e) {
+            throw new DatabaseOperationException("Error reading sealed TimeSeries block from '" + getSealedFileName() + "'", e);
+          }
+        }
+        return true;
+      }
+
+      @Override
+      public boolean hasNext() {
+        return fill();
+      }
+
+      @Override
+      public Object[] next() {
+        if (!fill())
+          throw new NoSuchElementException();
+        final Object[] row = blockRows.get(position);
+        // Released as it is handed over, so a consumer that keeps no rows holds no more than the rest of the block.
+        blockRows.set(position++, null);
+        return row;
+      }
+    };
   }
 
   /**
