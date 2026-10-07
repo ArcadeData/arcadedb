@@ -90,7 +90,7 @@ class RaftFollowerCatchupLoggingIT extends BaseRaftHATest {
         Thread.sleep(500);
       }
 
-      getServer(replicaIndex).start();
+      startServer(replicaIndex);
       waitForReplicationIsCompleted(replicaIndex);
       CodeUtils.sleep(3_000);
 
