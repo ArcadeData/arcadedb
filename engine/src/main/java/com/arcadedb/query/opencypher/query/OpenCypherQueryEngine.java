@@ -29,6 +29,7 @@ import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParameterMissingException;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.query.OperationType;
@@ -222,7 +223,9 @@ public class OpenCypherQueryEngine implements QueryEngine {
         throw new QueryNotIdempotentException("Query '" + query + "' is not idempotent");
 
       return execute(actualQuery, statement, configuration, effectiveParameters, explain, profile, timeExecution);
-    } catch (final QueryNotIdempotentException | CommandExecutionException | CommandParsingException | SecurityException e) {
+    } catch (final QueryNotIdempotentException | CommandExecutionException | CommandParsingException | SecurityException
+             | NeedRetryException e) {
+      // A NeedRetryException keeps its type: Database.transaction(..., retries) retries on it, and SQL lets it through (#9487)
       throw e;
     } catch (final Exception e) {
       throw new CommandExecutionException("Error executing Cypher query: " + query, e);
@@ -323,7 +326,8 @@ public class OpenCypherQueryEngine implements QueryEngine {
         return executeSession((CypherSessionStatement) statement, session, effectiveParameters);
 
       return execute(actualQuery, statement, configuration, effectiveParameters, explain, profile, timeExecution);
-    } catch (final CommandExecutionException | CommandParsingException | SecurityException e) {
+    } catch (final CommandExecutionException | CommandParsingException | SecurityException | NeedRetryException e) {
+      // See query(): a retryable conflict must reach Database.transaction(..., retries) with its own type (#9487)
       throw e;
     } catch (final Exception e) {
       throw new CommandExecutionException("Error executing Cypher command: " + query, e);

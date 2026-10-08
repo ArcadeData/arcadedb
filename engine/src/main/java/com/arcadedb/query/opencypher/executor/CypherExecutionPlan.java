@@ -5742,6 +5742,27 @@ public class CypherExecutionPlan {
   }
 
   /**
+   * Whether any two hops of one MATCH clause, comma separated parts included, could bind the same physical edge.
+   * <p>
+   * The count push-downs multiply adjacency counts, which counts a relationship once per hop that reaches it. openCypher
+   * requires the relationships of one MATCH clause to be distinct, so the two only agree when no pair of hops can share an
+   * edge: a self loop, or two hops between the same pair of vertices, lets one relationship serve both (issue #9485).
+   * Conservative like {@link #hopsCanMatchTheSameEdge}: the schema has to prove two hops apart, by edge types or by
+   * the labels of their endpoints, for the push-down to go ahead. Separate MATCH clauses share nothing, so each is asked
+   * on its own.
+   */
+  private boolean clauseHopsMayShareAnEdge(final MatchClause matchClause) {
+    if (!matchClause.hasPathPatterns())
+      return false;
+    final List<PathPattern> patterns = matchClause.getPathPatterns();
+    for (int p = 0; p < patterns.size(); p++)
+      for (final boolean needed : computeHopEdgeTrackingNeeds(patterns, p))
+        if (needed)
+          return true;
+    return false;
+  }
+
+  /**
    * Whether two hops of the same MATCH clause could bind the same physical edge, and so have to be compared
    * against each other for relationship uniqueness. Conservative: it answers yes unless the schema proves
    * otherwise, because a wrong no silently returns rows Cypher forbids.
@@ -7161,6 +7182,9 @@ public class CypherExecutionPlan {
       if (!matchClause.hasPathPatterns())
         return null;
       final boolean isOptional = matchClause.isOptional();
+      // The degree product counts every combination of arms, including the one where two arms are the same edge (issue #9485)
+      if (clauseHopsMayShareAnEdge(matchClause))
+        return null;
 
       for (final PathPattern pathPattern : matchClause.getPathPatterns()) {
         if (pathPattern.hasPathVariable())
@@ -7465,6 +7489,9 @@ public class CypherExecutionPlan {
     if (!matchClause.hasPathPatterns() || matchClause.getPathPatterns().size() != 2)
       return null;
     if (statement.getWhereClause() != null)
+      return null;
+    // The join counts adjacency paths, so it cannot stand in for the one-relationship-per-hop rule (issue #9485)
+    if (clauseHopsMayShareAnEdge(matchClause))
       return null;
 
     // Identify probe (single-hop) and build (multi-hop) patterns
