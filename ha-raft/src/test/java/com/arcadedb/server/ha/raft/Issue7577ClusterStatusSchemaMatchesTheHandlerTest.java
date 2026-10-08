@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.handler.openapi.OpenApiContributor;
 import com.arcadedb.server.http.handler.openapi.PluginApiSpec;
+import com.arcadedb.server.monitor.HAReplicationStatsProvider;
 import io.swagger.v3.oas.models.Components;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.Paths;
@@ -203,6 +204,25 @@ class Issue7577ClusterStatusSchemaMatchesTheHandlerTest {
       assertThat(status.getProperties()).as(member).containsKey(member);
       assertThat(status.getRequired()).as(member + " is written on every answer").contains(member);
     }
+  }
+
+  /**
+   * Issue #9429: {@code localInPlaceRestarts} is written on every answer, and the object the handler writes has
+   * exactly the members the contract declares - each of them required, because the handler always writes both.
+   */
+  @Test
+  void theInPlaceRestartCountsAreDeclaredAsTheHandlerWritesThem() {
+    final Schema<?> status = clusterStatus();
+    assertThat(status.getRequired()).contains("localInPlaceRestarts");
+
+    final Schema<?> declared = property(status, "localInPlaceRestarts");
+    final JSONObject emitted = GetClusterHandler.buildInPlaceRestarts(
+        new HAReplicationStatsProvider.InPlaceRestartStats(2, 1));
+
+    assertThat(declared.getProperties().keySet()).containsExactlyInAnyOrderElementsOf(emitted.keySet());
+    assertThat(declared.getRequired()).containsExactlyInAnyOrderElementsOf(emitted.keySet());
+    assertThat(emitted.getInt("recovered")).isEqualTo(2);
+    assertThat(emitted.getInt("reformatted")).isEqualTo(1);
   }
 
   /**

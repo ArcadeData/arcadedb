@@ -113,6 +113,20 @@ public interface HAReplicationStatsProvider {
   }
 
   /**
+   * How many times this node restarted its Raft layer in place since the process started (issue #9429), by storage
+   * outcome. The health monitor restarts a CLOSED or EXCEPTION division keeping its log ({@code recovered}); a node
+   * found diverged from the leader discards its Raft storage and is refilled by snapshot ({@code reformatted}). A
+   * reformat is the expensive and the suspicious one: outside a genuine divergence it means a node threw away a log it
+   * could have kept. Both only grow, and both restart from zero with the process.
+   *
+   * @param recovered   completed in-place restarts that kept the Raft log
+   * @param reformatted completed in-place restarts that reformatted the Raft storage
+   */
+  record InPlaceRestartStats(int recovered, int reformatted) {
+    public static final InPlaceRestartStats NONE = new InPlaceRestartStats(0, 0);
+  }
+
+  /**
    * Returns a live snapshot of replication health. Called on each metrics scrape, so implementations
    * must be cheap and non-blocking.
    */
@@ -124,6 +138,14 @@ public interface HAReplicationStatsProvider {
    */
   default PendingPhase2Stats getPendingPhase2Stats() {
     return new PendingPhase2Stats(0, 0, -1);
+  }
+
+  /**
+   * Returns this node's in-place Raft restart counts (issue #9429). Two atomic reads, so cheap enough for every scrape.
+   * Defaults to none for implementations without a Raft layer to restart.
+   */
+  default InPlaceRestartStats getInPlaceRestartStats() {
+    return InPlaceRestartStats.NONE;
   }
 
   /**

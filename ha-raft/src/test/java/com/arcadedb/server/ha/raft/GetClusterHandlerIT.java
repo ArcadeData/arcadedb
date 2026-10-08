@@ -190,6 +190,12 @@ class GetClusterHandlerIT extends BaseRaftHATest {
           .isTrue();
       assertThat(response.getBoolean("localLeaderUnreachableSinceRestart")).as("never restarted in place").isFalse();
       assertThat(response.getJSONArray("alerts").toString()).doesNotContain("follower-leader-unreachable-since-restart");
+
+      // Issue #9429: written by every node, and zero on a node whose Raft layer was never restarted in place.
+      assertThat(response.has("localInPlaceRestarts")).as("every node must carry its in-place restart counts").isTrue();
+      final JSONObject restarts = response.getJSONObject("localInPlaceRestarts");
+      assertThat(restarts.getInt("recovered", -1)).as("never restarted in place").isZero();
+      assertThat(restarts.getInt("reformatted", -1)).as("never reformatted").isZero();
     }
   }
 

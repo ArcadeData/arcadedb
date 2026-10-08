@@ -202,6 +202,11 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
         isLeader ? null : raftHAServer.getLeaderUnreachableSinceRestart();
     response.put("localLeaderUnreachableSinceRestart", leaderUnreachable != null);
 
+    // How many times this node's Raft layer has been restarted in place since the process started, keeping its log or
+    // reformatting it (issue #9429). Until this the only trace was an INFO log line, which the HA chaos harness had to
+    // scrape - and would have counted as zero, silently, the day it was reworded.
+    response.put("localInPlaceRestarts", buildInPlaceRestarts(raftHAServer.getInPlaceRestartStats()));
+
     // This follower stalled behind its leader at the current term (issue #8342): its log stopped receiving entries
     // with no term change, so localReplicationLag above can read 0 and localStuckAtStaleTerm false, and only the
     // leader's answer used to carry the stall. Measured against the commit index the leader reports over the
@@ -401,6 +406,11 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
             replicationPathUnproven, leaderUnreachable));
 
     return new ExecutionResponse(200, response.toString());
+  }
+
+  /** The {@code localInPlaceRestarts} member (issue #9429): both counts, always written. */
+  static JSONObject buildInPlaceRestarts(final HAReplicationStatsProvider.InPlaceRestartStats restarts) {
+    return new JSONObject().put("recovered", restarts.recovered()).put("reformatted", restarts.reformatted());
   }
 
   /**
