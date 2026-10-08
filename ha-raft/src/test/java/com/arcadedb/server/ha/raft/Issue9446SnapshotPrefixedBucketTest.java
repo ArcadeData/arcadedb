@@ -126,6 +126,37 @@ class Issue9446SnapshotPrefixedBucketTest {
     assertThat(SnapshotInstaller.isSnapshotMachineryEntryName(PREFIXED_BUCKET_FILE)).isFalse();
     assertThat(SnapshotInstaller.isSnapshotMachineryEntryName(".snapshot")).isFalse();
     assertThat(SnapshotInstaller.isSnapshotMachineryEntryName(".snapshot-newer")).isFalse();
+    // A bucket named like a machinery directory still cannot collide: its component files carry the file id suffix.
+    assertThat(SnapshotInstaller.isSnapshotMachineryEntryName(".snapshot-new_0.1.65536.v0.bucket")).isFalse();
+  }
+
+  /**
+   * Legacy recovery, disjoint names: the live prefixed bucket file is a snapshot-only file whose file id collides with a
+   * restored original, so the quarantine (which lists the live entries) must move it to the orphans rather than leave
+   * two files on one id. Treated as installer state, it was neither listed nor moved.
+   */
+  @Test
+  void legacyRollbackQuarantinesACollidingPrefixedBucketFile(@TempDir final Path databasesDir) throws Exception {
+    final Path dbDir = databasesDir.resolve("mydb");
+    final Path newDir = dbDir.resolve(SnapshotInstaller.SNAPSHOT_NEW_DIR);
+    final Path backupDir = dbDir.resolve(SnapshotInstaller.SNAPSHOT_BACKUP_DIR);
+    final String collidingSnapshotFile = ".snapshotItems_7.1.65536.v0.bucket";
+    Files.createDirectories(newDir);
+    Files.createDirectories(backupDir);
+    Files.writeString(dbDir.resolve(SnapshotInstaller.SNAPSHOT_PENDING_FILE), "");
+    Files.writeString(dbDir.resolve(collidingSnapshotFile), "snapshot-bucket");
+    Files.writeString(backupDir.resolve("schema.json"), "old");
+    Files.writeString(backupDir.resolve("Item_7.1.65536.v0.bucket"), "original-bucket");
+    Files.writeString(newDir.resolve("schema.json"), "new");
+    Files.writeString(newDir.resolve(SnapshotInstaller.SNAPSHOT_COMPLETE_FILE), "");
+
+    SnapshotInstaller.recoverPendingSnapshotSwaps(databasesDir);
+
+    assertThat(dbDir.resolve("schema.json")).hasContent("old");
+    assertThat(dbDir.resolve("Item_7.1.65536.v0.bucket")).hasContent("original-bucket");
+    assertThat(dbDir.resolve(collidingSnapshotFile)).doesNotExist();
+    assertThat(dbDir.resolve(SnapshotInstaller.SNAPSHOT_ORPHANS_DIR).resolve(collidingSnapshotFile)).hasContent("snapshot-bucket");
+    assertThat(dbDir.resolve(SnapshotInstaller.SNAPSHOT_PENDING_FILE)).doesNotExist();
   }
 
   /**

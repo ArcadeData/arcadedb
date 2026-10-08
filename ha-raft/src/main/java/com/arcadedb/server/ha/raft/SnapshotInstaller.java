@@ -135,14 +135,18 @@ public final class SnapshotInstaller {
    */
   private static final Set<String> SNAPSHOT_MACHINERY_FILES = Set.of(SNAPSHOT_PENDING_FILE, SNAPSHOT_COMPLETE_FILE,
       SNAPSHOT_QUARANTINE_FILE, SNAPSHOT_SWAP_STATE_FILE, SNAPSHOT_SWAP_STATE_TMP_FILE, SNAPSHOT_VALIDATION_FAILED_FILE);
+  /**
+   * The directories the snapshot install keeps in a database directory: the staging, the retained backup and the
+   * orphans. With {@link #SNAPSHOT_MACHINERY_FILES} this is every entry the swap leaves in place (issue #9446), so a new
+   * {@code SNAPSHOT_*_DIR} must be listed here: an entry missing from both sets is treated as database data, backed up
+   * by the swap and cleared by a rollback. {@code Issue9446SnapshotPrefixedBucketTest} fails when one is not.
+   */
+  private static final Set<String> SNAPSHOT_MACHINERY_DIRS = Set.of(SNAPSHOT_NEW_DIR, SNAPSHOT_BACKUP_DIR, SNAPSHOT_ORPHANS_DIR);
 
   /** Whether {@code name} is one of the files the snapshot install keeps in a database directory, see {@link #SNAPSHOT_MACHINERY_FILES}. */
   static boolean isSnapshotMachineryFileName(final String name) {
     return SNAPSHOT_MACHINERY_FILES.contains(name);
   }
-
-  /** The directories the snapshot install keeps in a database directory: the staging, the retained backup and the orphans. */
-  private static final Set<String> SNAPSHOT_MACHINERY_DIRS = Set.of(SNAPSHOT_NEW_DIR, SNAPSHOT_BACKUP_DIR, SNAPSHOT_ORPHANS_DIR);
 
   /**
    * Whether {@code name} is an entry the snapshot install keeps in a database directory, file or directory, rather than
