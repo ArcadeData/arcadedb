@@ -42,10 +42,11 @@ public class SQLFunctionAverage extends SQLAggregatedFunction {
    */
   private static final int BIG_DECIMAL_SCALE = 10;
 
-  private Number  sum;
-  private int     total        = 0;
+  // THE CROSS-ROW TOTAL, UNBOXED WHILE THE INPUTS ARE Double, Long OR Integer (#9496)
+  private final NumericSum sum          = new NumericSum();
+  private       int        total        = 0;
   // TRUE WHEN AN INPUT WAS A BigDecimal, FALSE WHEN A BigDecimal SUM IS ONLY THE WIDENED RESULT OF A long OVERFLOW (#8974)
-  private boolean decimalInput = false;
+  private       boolean    decimalInput = false;
 
   public SQLFunctionAverage() {
     super(NAME);
@@ -77,12 +78,22 @@ public class SQLFunctionAverage extends SQLAggregatedFunction {
       total++;
       if (value instanceof BigDecimal)
         decimalInput = true;
-      if (sum == null)
-        // FIRST TIME
-        sum = value;
-      else
-        sum = Type.increment(sum, value);
+      sum.add(value);
     }
+  }
+
+  /**
+   * The per-row call of the aggregation: the cross-row form adds the value without computing the running average that
+   * {@link #execute} would return (#9496).
+   */
+  @Override
+  public void aggregate(final Object self, final Object[] params, final CommandContext context) {
+    if (params.length == 1 && params[0] instanceof Number number)
+      sum(number);
+    else if (params.length == 1)
+      accumulateNumeric(params[0], this::sum);
+    else
+      execute(self, null, null, params, context);
   }
 
   public String getSyntax() {
@@ -91,7 +102,12 @@ public class SQLFunctionAverage extends SQLAggregatedFunction {
 
   @Override
   public Object getResult() {
-    return computeAverage(sum, total, decimalInput);
+    if (total == 0)
+      return null;
+    // NOT A BigDecimal: THE MEAN IS THE double TOTAL OVER THE COUNT, WITHOUT BOXING THE TOTAL FIRST
+    if (!sum.isDecimal())
+      return sum.doubleValue() / total;
+    return computeAverage(sum.get(), total, decimalInput);
   }
 
   @Override
@@ -107,9 +123,10 @@ public class SQLFunctionAverage extends SQLAggregatedFunction {
   @Override
   public void mergePartial(final SQLAggregatedFunction other) {
     final SQLFunctionAverage partial = (SQLFunctionAverage) other;
-    if (partial.sum == null)
+    final Number partialSum = partial.sum.get();
+    if (partialSum == null)
       return;
-    sum = sum == null ? partial.sum : Type.increment(sum, partial.sum);
+    sum.add(partialSum);
     total += partial.total;
     decimalInput |= partial.decimalInput;
   }
