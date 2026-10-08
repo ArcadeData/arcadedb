@@ -66,6 +66,11 @@ public class FakeArcadeDBServer extends ArcadeDBServer {
     return create((String) null, new ContextConfiguration());
   }
 
+  /** A fake with the default name, on {@code configuration}, with no disk. */
+  public static FakeArcadeDBServer create(final ContextConfiguration configuration) {
+    return create((String) null, configuration);
+  }
+
   /** A fake named {@code serverName} (unless null), on {@code configuration}, with no disk. */
   public static FakeArcadeDBServer create(final String serverName, final ContextConfiguration configuration) {
     if (serverName != null)

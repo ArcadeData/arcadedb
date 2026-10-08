@@ -6,8 +6,6 @@ grpcw/src/test/java/com/arcadedb/server/grpc/GrpcAuthInterceptorTest.java HttpAu
 grpcw/src/test/java/com/arcadedb/server/grpc/Issue7320GrpcAuthInterceptorDatabaseHeaderTest.java ServerSecurity,ServerSecurityUser
 ha-raft/src/test/java/com/arcadedb/server/ha/raft/ArcadeStateMachineBootstrapMismatchTest.java ArcadeDBServer
 ha-raft/src/test/java/com/arcadedb/server/ha/raft/ArcadeStateMachineReinitializeNotifiesTest.java RaftHAServer
-ha-raft/src/test/java/com/arcadedb/server/ha/raft/BootstrapElectionGateTest.java ArcadeDBServer
-ha-raft/src/test/java/com/arcadedb/server/ha/raft/BootstrapElectionTransferGateTest.java ArcadeDBServer,ArcadeStateMachine,RaftHAServer
 ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue4837DoubleLeaveTest.java RaftHAServer
 ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue6111StaleSnapshotReadFloorTest.java RaftHAServer
 ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue6168UnreferencedFilesGaugeWiringTest.java RaftHAServer
@@ -67,9 +65,7 @@ server/src/test/java/com/arcadedb/server/http/handler/Issue5064CommittedRemotely
 server/src/test/java/com/arcadedb/server/http/handler/Issue5935InvalidJsonPayloadHttpStatusTest.java ArcadeDBServer,HttpServer
 server/src/test/java/com/arcadedb/server/http/handler/Issue6201ErrorStatusParityTest.java ArcadeDBServer,HttpServer
 server/src/test/java/com/arcadedb/server/http/handler/Issue7511ClusterNotReadyHttpStatusTest.java ArcadeDBServer,HttpServer
-server/src/test/java/com/arcadedb/server/http/handler/Issue7734TimeSeriesRouteKeepsSessionTransactionTest.java ServerSecurityUser
 server/src/test/java/com/arcadedb/server/http/handler/Issue7760DuplicatedKeyConcealmentHttpTest.java ArcadeDBServer,HttpServer
-server/src/test/java/com/arcadedb/server/http/handler/Issue8063VectorSearchRoutesKeepSessionTransactionTest.java ServerSecurityUser
 server/src/test/java/com/arcadedb/server/http/handler/Issue8355SnapshotInstallRefusalBodyTest.java ArcadeDBServer,HttpServer
 server/src/test/java/com/arcadedb/server/http/ws/Issue6762WebSocketEventBusTest.java ArcadeDBServer,ServerSecurity,ServerSecurityUser
 server/src/test/java/com/arcadedb/server/Issue7118ReadinessRaftLogFailureTest.java ArcadeDBServer
