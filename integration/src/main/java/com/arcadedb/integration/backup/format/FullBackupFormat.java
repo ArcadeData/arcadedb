@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.PageSnapshot;
+import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.timeseries.ListedSealedStore;
 import com.arcadedb.engine.timeseries.TimeSeriesCompactionPause;
 import com.arcadedb.engine.timeseries.TimeSeriesSealedStore;
@@ -274,7 +275,8 @@ public class FullBackupFormat extends AbstractBackupFormat {
       pause.close();
 
       for (final PageSnapshot.SnapshotFile file : snapshot.getFiles())
-        origSize += compressEntry(archive, file.fileName(), file.lastModified(), snapshot.newInputStream(file.fileId()));
+        if (isArchivedPageFile(file.fileName()))
+          origSize += compressEntry(archive, file.fileName(), file.lastModified(), snapshot.newInputStream(file.fileId()));
 
       // ANY PAGE READ ABOVE COULD HAVE BEEN THE ONE THAT BREACHED THE SHADOW CAP, AND A STREAM THAT ALREADY FAILED
       // WOULD HAVE THROWN - BUT RE-CHECKING HERE ALSO CATCHES A WINDOW INVALIDATED AFTER ITS LAST BYTE WAS READ,
@@ -314,10 +316,22 @@ public class FullBackupFormat extends AbstractBackupFormat {
     final Collection<ComponentFile> files = database.getFileManager().getFiles();
 
     for (final ComponentFile file : new ArrayList<>(files))
-      if (file != null)
+      if (file != null && isArchivedPageFile(file.getFileName()))
         origSize += compressFile(archive, file.getOSFile());
 
     return origSize;
+  }
+
+  /**
+   * Whether a page file belongs in the archive. An index-compaction temporary ({@code *.temp_<ext>}) does not (issue
+   * #8848): while a compaction runs it is a fully registered component, so it is in both the page snapshot window and
+   * {@code FileManager.getFiles()}, but it is half-built output the archived {@code schema.json} never references -
+   * {@code removeTempSuffix()} runs before the schema switches over. Archived, a restore extracted it into the
+   * database directory, where the open-time scan does not register it. Same predicate the HA snapshot ship (#8019)
+   * and the checksum endpoints (#7955) use; it tests the extension, so a type named {@code temp_readings} is kept.
+   */
+  public static boolean isArchivedPageFile(final String fileName) {
+    return !PaginatedComponent.isTemporaryFileName(fileName);
   }
 
   /**
