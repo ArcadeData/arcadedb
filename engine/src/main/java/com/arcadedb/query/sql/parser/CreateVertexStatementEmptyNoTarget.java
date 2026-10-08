@@ -24,5 +24,10 @@ public class CreateVertexStatementEmptyNoTarget extends CreateVertexStatement {
   public CreateVertexStatementEmptyNoTarget() {
   }
 
+  @Override
+  protected CreateVertexStatement newInstance() {
+    return new CreateVertexStatementEmptyNoTarget();
+  }
+
 }
 /* JavaCC - OriginalChecksum=e8507ab0b0c002964e04813d45ee71a0 (do not edit this line) */

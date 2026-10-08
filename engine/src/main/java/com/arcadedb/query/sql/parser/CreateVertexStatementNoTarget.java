@@ -24,5 +24,10 @@ public class CreateVertexStatementNoTarget extends CreateVertexStatement {
   public CreateVertexStatementNoTarget() {
   }
 
+  @Override
+  protected CreateVertexStatement newInstance() {
+    return new CreateVertexStatementNoTarget();
+  }
+
 }
 /* JavaCC - OriginalChecksum=5213b77f14f5f89255590034bdc0ea54 (do not edit this line) */

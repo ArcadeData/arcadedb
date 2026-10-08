@@ -23,5 +23,10 @@ package com.arcadedb.query.sql.parser;
 public class InPathItemOpt extends InPathItem {
   public InPathItemOpt() {
   }
+
+  @Override
+  protected MatchPathItem newInstance() {
+    return new InPathItemOpt();
+  }
 }
 /* JavaCC - OriginalChecksum=ef282589054869578c47f554474b5c3b (do not edit this line) */

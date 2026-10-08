@@ -28,5 +28,10 @@ public class FirstLevelExpression extends MathExpression {
   public boolean isBaseIdentifier() {
     return value instanceof Identifier;
   }
+
+  @Override
+  protected MathExpression newInstance() {
+    return new FirstLevelExpression();
+  }
 }
 /* JavaCC - OriginalChecksum=30dc1016b686d4841bbd57d6e6c0bfbd (do not edit this line) */

@@ -22,7 +22,6 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
-import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.ArithmeticErrorException;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.*;
@@ -1340,13 +1339,17 @@ public class MathExpression extends SimpleNode {
     throw new UnsupportedOperationException("multiple math expressions do not allow plain aggregation");
   }
 
+  /**
+   * Creates the empty instance {@link #copy()} fills in. A subclass that inherits {@code copy()} overrides it to keep the
+   * runtime type of the copy. It replaces a reflective lookup of the no-arg constructor, which fails in the GraalVM native
+   * image, where no parser constructor is registered for reflection (#9495).
+   */
+  protected MathExpression newInstance() {
+    return new MathExpression();
+  }
+
   public MathExpression copy() {
-    MathExpression result = null;
-    try {
-      result = getClass().getConstructor().newInstance();
-    } catch (final Exception e) {
-      throw new ArcadeDBException(e);
-    }
+    final MathExpression result = newInstance();
     result.childExpressions = childExpressions.stream().map(x -> x.copy()).collect(Collectors.toList());
     result.operators.addAll(operators);
     return result;

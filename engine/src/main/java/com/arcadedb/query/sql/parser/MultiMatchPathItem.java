@@ -47,6 +47,11 @@ public class MultiMatchPathItem extends MatchPathItem {
     }
   }
 
+  @Override
+  protected MatchPathItem newInstance() {
+    return new MultiMatchPathItem();
+  }
+
   public boolean isBidirectional() {
     return false;
   }

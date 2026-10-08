@@ -23,5 +23,10 @@ package com.arcadedb.query.sql.parser;
 public class OutPathItemOpt extends OutPathItem {
   public OutPathItemOpt() {
   }
+
+  @Override
+  protected MatchPathItem newInstance() {
+    return new OutPathItemOpt();
+  }
 }
 /* JavaCC - OriginalChecksum=03ffaa23b3d039235588ad2fb032c273 (do not edit this line) */

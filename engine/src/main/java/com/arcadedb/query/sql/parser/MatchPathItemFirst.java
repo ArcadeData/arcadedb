@@ -40,6 +40,11 @@ public class MatchPathItemFirst extends MatchPathItem {
     return false;
   }
 
+  @Override
+  protected MatchPathItem newInstance() {
+    return new MatchPathItemFirst();
+  }
+
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     function.toString(params, builder);
     if (filter != null)

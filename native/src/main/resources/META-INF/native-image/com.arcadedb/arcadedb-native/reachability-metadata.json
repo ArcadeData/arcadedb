@@ -142,6 +142,15 @@
       ]
     },
     {
+      "type": "com.arcadedb.function.sql.graph.SQLFunctionCCHShortestPath",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
       "type": "com.arcadedb.function.sql.graph.SQLFunctionDijkstra",
       "methods": [
         {
@@ -2419,6 +2428,612 @@
       "type": "org.apache.logging.log4j.Logger"
     },
     {
+      "type": "org.apache.lucene.analysis.ar.ArabicAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.bg.BulgarianAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.bn.BengaliAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.br.BrazilianAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.ca.CatalanAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.cjk.CJKAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.ckb.SoraniAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.classic.ClassicAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.core.KeywordAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.core.SimpleAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.core.StopAnalyzer"
+    },
+    {
+      "type": "org.apache.lucene.analysis.core.UnicodeWhitespaceAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.core.WhitespaceAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.custom.CustomAnalyzer"
+    },
+    {
+      "type": "org.apache.lucene.analysis.cz.CzechAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.da.DanishAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.de.GermanAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.el.GreekAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.email.UAX29URLEmailAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.en.EnglishAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.es.SpanishAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.et.EstonianAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.eu.BasqueAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.fa.PersianAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.fi.FinnishAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.fr.FrenchAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.ga.IrishAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.gl.GalicianAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.hi.HindiAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.hu.HungarianAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.hy.ArmenianAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.id.IndonesianAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.it.ItalianAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.lt.LithuanianAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.lv.LatvianAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.miscellaneous.ConcatenateGraphFilter$BytesRefBuilderTermAttributeImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.miscellaneous.LimitTokenCountAnalyzer"
+    },
+    {
+      "type": "org.apache.lucene.analysis.ne.NepaliAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.nl.DutchAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.no.NorwegianAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.pt.PortugueseAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.query.QueryAutoStopWordAnalyzer"
+    },
+    {
+      "type": "org.apache.lucene.analysis.ro.RomanianAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.ru.RussianAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.shingle.ShingleAnalyzerWrapper",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.sr.SerbianAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.standard.StandardAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.sv.SwedishAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.ta.TamilAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.te.TeluguAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.th.ThaiAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.tokenattributes.BytesTermAttributeImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.tokenattributes.CharTermAttributeImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.tokenattributes.FlagsAttributeImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.tokenattributes.KeywordAttributeImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.tokenattributes.OffsetAttributeImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.tokenattributes.PackedTokenAttributeImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.tokenattributes.PayloadAttributeImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.tokenattributes.PositionIncrementAttributeImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.tokenattributes.PositionLengthAttributeImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.tokenattributes.SentenceAttributeImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.tokenattributes.TermFrequencyAttributeImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.tokenattributes.TypeAttributeImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.tr.TurkishAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.index.Term"
+    },
+    {
+      "type": "org.apache.lucene.internal.hppc.IntHashSet"
+    },
+    {
+      "type": "org.apache.lucene.search.BoostAttributeImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.search.MaxNonCompetitiveBoostAttributeImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.store.DataOutput"
+    },
+    {
+      "type": "org.apache.lucene.util.BitSet"
+    },
+    {
+      "type": "org.apache.lucene.util.ByteBlockPool"
+    },
+    {
+      "type": "org.apache.lucene.util.BytesRef"
+    },
+    {
+      "type": "org.apache.lucene.util.BytesRefBlockPool"
+    },
+    {
+      "type": "org.apache.lucene.util.BytesRefHash"
+    },
+    {
+      "type": "org.apache.lucene.util.SparseFixedBitSet"
+    },
+    {
+      "type": "org.apache.lucene.util.fst.FST"
+    },
+    {
+      "type": "org.apache.lucene.util.fst.FSTCompiler$Arc[]"
+    },
+    {
+      "type": "org.apache.lucene.util.fst.GrowableByteArrayDataOutput"
+    },
+    {
       "type": "org.apache.ratis.metrics.impl.MetricRegistriesImpl"
     },
     {
@@ -2830,6 +3445,53 @@
     },
     {
       "type": "org.slf4j.jul.JULServiceProvider"
+    },
+    {
+      "type": "org.tartarus.snowball.ext.FinnishStemmer",
+      "methods": [
+        {
+          "name": "r_LONG",
+          "parameterTypes": []
+        },
+        {
+          "name": "r_VI",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.tartarus.snowball.ext.HindiStemmer",
+      "methods": [
+        {
+          "name": "r_CONSONANT",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.tartarus.snowball.ext.IndonesianStemmer",
+      "methods": [
+        {
+          "name": "r_KER",
+          "parameterTypes": []
+        },
+        {
+          "name": "r_SUFFIX_AN_OK",
+          "parameterTypes": []
+        },
+        {
+          "name": "r_SUFFIX_I_OK",
+          "parameterTypes": []
+        },
+        {
+          "name": "r_SUFFIX_KAN_OK",
+          "parameterTypes": []
+        },
+        {
+          "name": "r_VOWEL",
+          "parameterTypes": []
+        }
+      ]
     },
     {
       "type": "org.xnio.Connection"
