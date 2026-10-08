@@ -268,6 +268,23 @@ public class RemoteServer extends RemoteHttpComponent {
   }
 
   /**
+   * Lifts the quarantine standing on {@code databaseName} of a server that is the sole voter of its cluster, accepting its
+   * copy as it is WITHOUT a resync, through {@code POST /api/v1/cluster/accept-diverged/{database}} (root only, issue
+   * #9449). The entry the quarantine skipped is not replayed. The server refuses with 404 when nothing stands on the
+   * database and with 409 when it is not the sole voter, where a resync from a peer is the way out.
+   *
+   * @return {@code {result, database, localServer, appliedIndex}}, plus {@code divergenceCause} and {@code readFloor}
+   * when they stood
+   */
+  public JSONObject acceptDivergedDatabase(final String databaseName) {
+    if (databaseName == null || databaseName.isBlank())
+      throw new IllegalArgumentException("Database name is required");
+
+    return controlPlaneRequest("POST", "cluster/accept-diverged/" + encodeQueryValue(databaseName), new JSONObject(),
+        "accept diverged database", null);
+  }
+
+  /**
    * Starts "connect this server to the ArcadeDB customer portal" through {@code POST /server/support/connect} (root only): the
    * server asks the portal for a code, a person who administers a workspace approves it in the portal, and the server then
    * receives and stores the workspace key itself. This is the console and curl twin of Studio's button.
