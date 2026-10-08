@@ -94,6 +94,24 @@ class Issue9496GroupByExchangeTest extends TestHelper {
     }
   }
 
+  /**
+   * What a worker holds queued for the exchange is not charged, so it must not grow with the square of the workers (4
+   * partitions per worker, a batch per partition): full 64-row batches up to 8 workers, smaller ones past that, so a worker
+   * queues at most 2,048 rows until the batch reaches its floor of 8 (past 64 workers).
+   */
+  @Test
+  void queuedRowsPerWorkerStayBoundedWhateverTheWorkers() {
+    for (int workers = 1; workers <= 256; workers++) {
+      final int partitions = workers * 4;
+      final int batch = AggregateProjectionCalculationStep.exchangeBatch(partitions);
+      assertThat(batch).as("%d workers", workers).isBetween(8, 64);
+      if (workers <= 8)
+        assertThat(batch).as("%d workers", workers).isEqualTo(64);
+      if (workers <= 64)
+        assertThat((long) batch * partitions).as("%d workers", workers).isLessThanOrEqualTo(2_048);
+    }
+  }
+
   /** The average number of keys in a non-empty bucket of a {@link java.util.HashMap} holding these hashes. */
   private static double averageChain(final List<Integer> hashes) {
     int capacity = 16;
