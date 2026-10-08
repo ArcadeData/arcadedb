@@ -35,13 +35,6 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
 /**
  * Issue #8053: the rollback-only marker of issue #7467 must stop the REPLICATED commit too.
@@ -66,7 +59,7 @@ class Issue8053RollbackOnlyRefusedOnTheReplicatedCommitPathTest {
   Path tempDir;
 
   private LocalDatabase          proxied;
-  private RaftTransactionBroker  broker;
+  private FakeRaftTransactionBroker  broker;
   private RaftReplicatedDatabase database;
 
   @BeforeEach
@@ -84,10 +77,8 @@ class Issue8053RollbackOnlyRefusedOnTheReplicatedCommitPathTest {
     proxied.transaction(() -> warmUp[0] = proxied.newDocument(TYPE).set("name", "warm-up").save());
     proxied.transaction(() -> warmUp[0].delete());
 
-    broker = mock(RaftTransactionBroker.class);
-    final RaftHAServer raftServer = mock(RaftHAServer.class, RETURNS_DEEP_STUBS);
-    when(raftServer.isLeader()).thenReturn(true);
-    when(raftServer.getTransactionBroker()).thenReturn(broker);
+    broker = new FakeRaftTransactionBroker();
+    final RaftHAServer raftServer = FakeRaftHAServer.detached().leader(true).transactionBroker(broker);
 
     // The constructor points the database's wrapped instance at the replicated wrapper, which is what makes
     // this the commit path a write on a replicated database really takes.
@@ -119,7 +110,7 @@ class Issue8053RollbackOnlyRefusedOnTheReplicatedCommitPathTest {
         .hasMessageContaining("could not be taken back")
         .hasMessageContaining("Roll it back");
 
-    verify(broker, never()).replicateTransaction(anyString(), any(), any());
+    assertThat(broker.calls("replicateTransaction")).as("nothing was submitted to Raft").isEmpty();
     assertThat(proxied.isTransactionActive())
         .as("the wrapper's own phase-1 error handling rolled it back")
         .isFalse();

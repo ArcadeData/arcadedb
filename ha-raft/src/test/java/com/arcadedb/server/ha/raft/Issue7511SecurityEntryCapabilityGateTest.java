@@ -25,17 +25,13 @@ import com.arcadedb.server.ClusterCapabilityNotReadyException;
 import com.arcadedb.server.TestServerHelper;
 import org.junit.jupiter.api.Test;
 
+import java.util.Arrays;
 import java.util.List;
+import java.util.Objects;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
 /**
  * Issue #7511: a group or API-token change committed on an already-upgraded node halted every node older than the
@@ -122,12 +118,12 @@ class Issue7511SecurityEntryCapabilityGateTest {
   /** An ungated type never asks the cluster anything, so it cannot be refused - or slowed down - by this gate. */
   @Test
   void anUngatedEntryTypeNeverQueriesThePeers() {
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
 
     SecurityEntryCapabilityGate.requireEveryPeerCanDecode(serverWithGate(true), raft,
         RaftLogEntryType.BOOTSTRAP_FINGERPRINT_ENTRY, "bootstrap fingerprint");
 
-    verify(raft, never()).peersMissingCapabilityNow(anyString());
+    assertThat(raft.calls("peersMissingCapabilityNow")).isEmpty();
   }
 
   // -------------------------------------------------------------------------------------------------------
@@ -136,8 +132,8 @@ class Issue7511SecurityEntryCapabilityGateTest {
 
   @Test
   void aClusterWhereEveryPeerAdvertisesTheCapabilityIsNotRefused() {
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.peersMissingCapabilityNow(PeerCapabilities.SECURITY_GROUPS_ENTRY)).thenReturn(List.of());
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.on("peersMissingCapabilityNow", a -> Objects.equals(a[0], PeerCapabilities.SECURITY_GROUPS_ENTRY) ? List.of() : List.of());
 
     assertThatCode(() -> SecurityEntryCapabilityGate.requireEveryPeerCanDecode(serverWithGate(true), raft,
         RaftLogEntryType.SECURITY_GROUPS_ENTRY, "group document")).doesNotThrowAnyException();
@@ -145,9 +141,9 @@ class Issue7511SecurityEntryCapabilityGateTest {
 
   @Test
   void aPeerThatHasNotAdvertisedTheCapabilityRefusesTheGroupChange() {
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.peersMissingCapabilityNow(PeerCapabilities.SECURITY_GROUPS_ENTRY)).thenReturn(List.of(LAGGING_PEER));
-    when(raft.getPeerCapabilityRegistry()).thenReturn(registryWhereThePeerAnswered404());
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.on("peersMissingCapabilityNow", a -> Objects.equals(a[0], PeerCapabilities.SECURITY_GROUPS_ENTRY) ? List.of(LAGGING_PEER) : List.of());
+    raft.peerCapabilityRegistry(registryWhereThePeerAnswered404());
 
     assertThatThrownBy(() -> SecurityEntryCapabilityGate.requireEveryPeerCanDecode(serverWithGate(true), raft,
         RaftLogEntryType.SECURITY_GROUPS_ENTRY, "group document"))
@@ -158,8 +154,8 @@ class Issue7511SecurityEntryCapabilityGateTest {
 
   @Test
   void aPeerThatHasNotAdvertisedTheCapabilityRefusesTheTokenChangeToo() {
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.peersMissingCapabilityNow(PeerCapabilities.SECURITY_API_TOKENS_ENTRY)).thenReturn(List.of(LAGGING_PEER));
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.on("peersMissingCapabilityNow", a -> Objects.equals(a[0], PeerCapabilities.SECURITY_API_TOKENS_ENTRY) ? List.of(LAGGING_PEER) : List.of());
 
     assertThatThrownBy(() -> SecurityEntryCapabilityGate.requireEveryPeerCanDecode(serverWithGate(true), raft,
         RaftLogEntryType.SECURITY_API_TOKENS_ENTRY, "API-token document"))
@@ -173,8 +169,8 @@ class Issue7511SecurityEntryCapabilityGateTest {
    */
   @Test
   void theGateIsOnWhenNoServerConfigurationCanBeRead() {
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.peersMissingCapabilityNow(PeerCapabilities.SECURITY_GROUPS_ENTRY)).thenReturn(List.of(LAGGING_PEER));
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.on("peersMissingCapabilityNow", a -> Objects.equals(a[0], PeerCapabilities.SECURITY_GROUPS_ENTRY) ? List.of(LAGGING_PEER) : List.of());
 
     assertThatThrownBy(() -> SecurityEntryCapabilityGate.requireEveryPeerCanDecode(null, raft,
         RaftLogEntryType.SECURITY_GROUPS_ENTRY, "group document"))
@@ -184,13 +180,13 @@ class Issue7511SecurityEntryCapabilityGateTest {
   /** Turned off, the operation goes through as it did before #7511 - and the peers are not even asked. */
   @Test
   void theInterlockCanBeTurnedOffForAnOperatorWhoKnowsBetter() {
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.peersMissingCapabilityNow(PeerCapabilities.SECURITY_GROUPS_ENTRY)).thenReturn(List.of(LAGGING_PEER));
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.on("peersMissingCapabilityNow", a -> Objects.equals(a[0], PeerCapabilities.SECURITY_GROUPS_ENTRY) ? List.of(LAGGING_PEER) : List.of());
 
     assertThatCode(() -> SecurityEntryCapabilityGate.requireEveryPeerCanDecode(serverWithGate(false), raft,
         RaftLogEntryType.SECURITY_GROUPS_ENTRY, "group document")).doesNotThrowAnyException();
 
-    verify(raft, never()).peersMissingCapabilityNow(anyString());
+    assertThat(raft.calls("peersMissingCapabilityNow")).isEmpty();
   }
 
   // -------------------------------------------------------------------------------------------------------
@@ -264,17 +260,17 @@ class Issue7511SecurityEntryCapabilityGateTest {
    */
   @Test
   void aRefusedGroupChangeSubmitsNothingToTheRaftLog() {
-    final RaftTransactionBroker broker = mock(RaftTransactionBroker.class);
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.getTransactionBroker()).thenReturn(broker);
-    when(raft.peersMissingCapabilityNow(PeerCapabilities.SECURITY_GROUPS_ENTRY)).thenReturn(List.of(LAGGING_PEER));
+    final FakeRaftTransactionBroker broker = new FakeRaftTransactionBroker();
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.transactionBroker(broker);
+    raft.on("peersMissingCapabilityNow", a -> Objects.equals(a[0], PeerCapabilities.SECURITY_GROUPS_ENTRY) ? List.of(LAGGING_PEER) : List.of());
 
     final RaftHAPlugin plugin = pluginOn(raft, true);
 
     assertThatThrownBy(() -> plugin.replicateSecurityGroups("{\"databases\":{}}"))
         .isInstanceOf(ClusterCapabilityNotReadyException.class);
 
-    verify(broker, never()).replicateSecurityGroups(anyString(), any());
+    assertThat(broker.calls("replicateSecurityGroups")).isEmpty();
   }
 
   /**
@@ -283,34 +279,34 @@ class Issue7511SecurityEntryCapabilityGateTest {
    */
   @Test
   void aRefusedApiTokenChangeSubmitsNothingToTheRaftLog() {
-    final RaftTransactionBroker broker = mock(RaftTransactionBroker.class);
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.getTransactionBroker()).thenReturn(broker);
-    when(raft.peersMissingCapabilityNow(PeerCapabilities.SECURITY_API_TOKENS_ENTRY)).thenReturn(List.of(LAGGING_PEER));
+    final FakeRaftTransactionBroker broker = new FakeRaftTransactionBroker();
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.transactionBroker(broker);
+    raft.on("peersMissingCapabilityNow", a -> Objects.equals(a[0], PeerCapabilities.SECURITY_API_TOKENS_ENTRY) ? List.of(LAGGING_PEER) : List.of());
 
     final RaftHAPlugin plugin = pluginOn(raft, true);
 
     assertThatThrownBy(() -> plugin.replicateSecurityApiTokens("{\"version\":1,\"tokens\":[]}"))
         .isInstanceOf(ClusterCapabilityNotReadyException.class);
 
-    verify(broker, never()).replicateSecurityApiTokens(anyString(), any());
+    assertThat(broker.calls("replicateSecurityApiTokens")).isEmpty();
   }
 
   /** The other direction, so the test above cannot pass because the plugin submits nothing under any condition. */
   @Test
   void aFullyUpgradedClusterStillReplicatesBothDocuments() {
-    final RaftTransactionBroker broker = mock(RaftTransactionBroker.class);
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.getTransactionBroker()).thenReturn(broker);
-    when(raft.peersMissingCapabilityNow(anyString())).thenReturn(List.of());
+    final FakeRaftTransactionBroker broker = new FakeRaftTransactionBroker();
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.transactionBroker(broker);
+    raft.returns("peersMissingCapabilityNow", List.of());
 
     final RaftHAPlugin plugin = pluginOn(raft, true);
 
     plugin.replicateSecurityGroups("{\"databases\":{}}");
     plugin.replicateSecurityApiTokens("{\"version\":1,\"tokens\":[]}");
 
-    verify(broker).replicateSecurityGroups("{\"databases\":{}}", null);
-    verify(broker).replicateSecurityApiTokens("{\"version\":1,\"tokens\":[]}", null);
+    assertThat(broker.calls("replicateSecurityGroups")).containsOnlyOnce(Arrays.asList("{\"databases\":{}}", null));
+    assertThat(broker.calls("replicateSecurityApiTokens")).containsOnlyOnce(Arrays.asList("{\"version\":1,\"tokens\":[]}", null));
   }
 
   /**
@@ -320,16 +316,16 @@ class Issue7511SecurityEntryCapabilityGateTest {
    */
   @Test
   void theUsersEntryIsNotGatedAndStillReplicatesOnAMixedCluster() {
-    final RaftTransactionBroker broker = mock(RaftTransactionBroker.class);
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.getTransactionBroker()).thenReturn(broker);
-    when(raft.peersMissingCapabilityNow(anyString())).thenReturn(List.of(LAGGING_PEER));
+    final FakeRaftTransactionBroker broker = new FakeRaftTransactionBroker();
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.transactionBroker(broker);
+    raft.returns("peersMissingCapabilityNow", List.of(LAGGING_PEER));
 
     final RaftHAPlugin plugin = pluginOn(raft, true);
 
     plugin.replicateSecurityUsers("[{\"name\":\"root\"}]");
 
-    verify(broker).replicateSecurityUsers("[{\"name\":\"root\"}]", null);
+    assertThat(broker.calls("replicateSecurityUsers")).containsOnlyOnce(Arrays.asList("[{\"name\":\"root\"}]", null));
   }
 
   // -------------------------------------------------------------------------------------------------------

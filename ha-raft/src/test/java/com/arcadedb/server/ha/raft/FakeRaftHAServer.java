@@ -33,8 +33,10 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 /**
@@ -83,6 +85,15 @@ public class FakeRaftHAServer extends RaftHAServer {
   private final Setting<Long>                             raftLogStartIndex    = new Setting<>();
   private final Setting<TrustedHttpClientCache>           httpsClients         = new Setting<>();
   private final Setting<Long>                             lastAppliedIndex     = new Setting<>();
+  private final Setting<RaftTransactionBroker>            transactionBroker    = new Setting<>();
+  private final Setting<PeerCapabilityRegistry>           capabilityRegistry   = new Setting<>();
+  private final Setting<LocalDropVerbs>                   localDropVerbs       = new Setting<>();
+
+  // Calls whose effect is the call itself: recorded, answered by the test, else by what an unstubbed mock answered
+  private static final Set<String> RECORDED = Set.of("peersMissingCapability", "peersMissingCapabilityNow",
+      "waitForAppliedIndex");
+  private volatile CallLog         log     = new CallLog();
+  private final    CallLog.Answers answers = new CallLog.Answers(RECORDED);
 
   private FakeRaftHAServer(final ArcadeDBServer server, final ContextConfiguration configuration) {
     super(server, configuration);
@@ -237,6 +248,64 @@ public class FakeRaftHAServer extends RaftHAServer {
   public FakeRaftHAServer lastAppliedIndex(final long lastAppliedIndex) {
     this.lastAppliedIndex.set(lastAppliedIndex);
     return this;
+  }
+
+  public FakeRaftHAServer transactionBroker(final RaftTransactionBroker transactionBroker) {
+    this.transactionBroker.set(transactionBroker);
+    return this;
+  }
+
+  public FakeRaftHAServer peerCapabilityRegistry(final PeerCapabilityRegistry registry) {
+    this.capabilityRegistry.set(registry);
+    return this;
+  }
+
+  // Package-private like LocalDropVerbs itself
+  FakeRaftHAServer localDropVerbs(final LocalDropVerbs verbs) {
+    this.localDropVerbs.set(verbs);
+    return this;
+  }
+
+  /**
+   * Records on {@code log} from now on, which other fakes (a {@link FakeRaftTransactionBroker}) may share. Call it
+   * before the fake is used: calls already recorded stay on the previous log. Answers already set are kept.
+   */
+  public FakeRaftHAServer recordingOn(final CallLog log) {
+    this.log = log;
+    return this;
+  }
+
+  public CallLog log() {
+    return log;
+  }
+
+  /** The argument lists of every call to the recorded {@code method}, in arrival order. */
+  public List<List<Object>> calls(final String method) {
+    return log.argsOf(this, method);
+  }
+
+  /** The recorded {@code method} answers {@code value} from now on. */
+  public FakeRaftHAServer returns(final String method, final Object value) {
+    return on(method, args -> value);
+  }
+
+  /** The recorded {@code method} throws {@code failure} from now on. */
+  public FakeRaftHAServer fails(final String method, final RuntimeException failure) {
+    return on(method, args -> {
+      throw failure;
+    });
+  }
+
+  /** The recorded {@code method} runs {@code answer} on its arguments from now on. */
+  public FakeRaftHAServer on(final String method, final Function<Object[], Object> answer) {
+    answers.set(method, answer);
+    return this;
+  }
+
+  private Object call(final String method, final Supplier<Object> fallback, final Object... args) {
+    log.record(this, method, args);
+    final Function<Object[], Object> answer = answers.get(method);
+    return answer != null ? answer.apply(args) : fallback.get();
   }
 
   FakeRaftHAServer httpsClients(final TrustedHttpClientCache httpsClients) {
@@ -417,6 +486,38 @@ public class FakeRaftHAServer extends RaftHAServer {
   @Override
   public long getLastAppliedIndex() {
     return lastAppliedIndex.orElse(super::getLastAppliedIndex);
+  }
+
+  @Override
+  public RaftTransactionBroker getTransactionBroker() {
+    return transactionBroker.orElse(super::getTransactionBroker);
+  }
+
+  @Override
+  public PeerCapabilityRegistry getPeerCapabilityRegistry() {
+    return capabilityRegistry.orElse(super::getPeerCapabilityRegistry);
+  }
+
+  @Override
+  LocalDropVerbs getLocalDropVerbs() {
+    return localDropVerbs.orElse(super::getLocalDropVerbs);
+  }
+
+  @Override
+  @SuppressWarnings("unchecked")
+  public List<String> peersMissingCapability(final String capability) {
+    return (List<String>) call("peersMissingCapability", List::of, capability);
+  }
+
+  @Override
+  @SuppressWarnings("unchecked")
+  public List<String> peersMissingCapabilityNow(final String capability) {
+    return (List<String>) call("peersMissingCapabilityNow", List::of, capability);
+  }
+
+  @Override
+  public void waitForAppliedIndex(final String databaseName, final long targetIndex, final boolean throwOnTimeout) {
+    call("waitForAppliedIndex", () -> null, databaseName, targetIndex, throwOnTimeout);
   }
 
   @Override
