@@ -241,7 +241,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * the figure the pool actually recorded is what makes the reserve and the release the same number
    * by construction rather than by two places computing it alike.
    */
-  private record PartitionPlan(RID[] boundaries, int reservedWorkers) {
+  record PartitionPlan(RID[] boundaries, int reservedWorkers) {
   }
 
   /**
@@ -541,7 +541,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * document is still scored exactly once. Only the speedup suffers, and it shows up as one range
    * finishing long after its siblings.
    */
-  private PartitionPlan planPartitionBoundaries(final int[] queryDims, final PaginatedSegmentReader[] segSnapshot)
+  PartitionPlan planPartitionBoundaries(final int[] queryDims, final PaginatedSegmentReader[] segSnapshot)
       throws IOException {
     final int configured = GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.getValueAsInteger();
     if (configured == 1 || segSnapshot.length == 0)
