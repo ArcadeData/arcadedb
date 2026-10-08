@@ -212,6 +212,26 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   static final int EXPLICIT_PARTITION_OVERSUBSCRIPTION = 4;
 
   /**
+   * Ranges a query that has exactly {@code sparseVectorScoringMinPostingsForPartitioning} postings is
+   * split into on the default path; the range count then grows with the posting mass (see
+   * {@link #rangesByMass}).
+   */
+  static final int RANGES_AT_MIN_POSTINGS = 2;
+
+  /**
+   * Ranges a query of {@code totalPostings} postings can fill on the default (adaptive) path, one per
+   * {@code minPostings / RANGES_AT_MIN_POSTINGS} postings (issue #9482). The threshold says when the
+   * fan-out starts to pay for itself, so a range smaller than its share of it does not: a query just
+   * past the threshold is split in two rather than across the whole pool, and the workers it leaves
+   * alone stay free for the next query. Wide queries are unaffected - the pool size or the block
+   * layout is the limit long before this one is.
+   */
+  static int rangesByMass(final long totalPostings, final long minPostings) {
+    final long perRange = Math.max(1L, minPostings / RANGES_AT_MIN_POSTINGS);
+    return (int) Math.min(Integer.MAX_VALUE, totalPostings / perRange);
+  }
+
+  /**
    * A decided split: where the cuts go, and how many workers were actually claimed for it.
    * <p>
    * The two travel together because they are not derivable from each other. An explicit partition
@@ -545,7 +565,8 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     }
     if (widest == null)
       return null;
-    if (totalPostings < GlobalConfiguration.SPARSE_VECTOR_SCORING_MIN_POSTINGS_FOR_PARTITIONING.getValueAsLong())
+    final long minPostings = GlobalConfiguration.SPARSE_VECTOR_SCORING_MIN_POSTINGS_FOR_PARTITIONING.getValueAsLong();
+    if (totalPostings < minPostings)
       return null;
 
     final SparseVectorScoringPool pool = SparseVectorScoringPool.getInstance();
@@ -572,7 +593,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       reserved = pool.reserveWorkers(partitions - 1);
       pool.warnExplicitSplitUnderLoad(partitions);
     } else {
-      final int wanted = Math.min(pool.getMaxParallelism(), byLayout) - 1;
+      final int wanted = Math.min(Math.min(pool.getMaxParallelism(), byLayout), rangesByMass(totalPostings, minPostings)) - 1;
       final int granted = pool.tryReserveWorkers(wanted);
       if (granted < 1) {
         // Nothing free: every worker is already promised to another query. Staying serial here is the
