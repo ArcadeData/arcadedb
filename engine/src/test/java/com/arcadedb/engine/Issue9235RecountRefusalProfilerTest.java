@@ -57,34 +57,40 @@ class Issue9235RecountRefusalProfilerTest {
 
     try (final DatabaseFactory factory = new DatabaseFactory(DB_PATH)) {
       final Database db = factory.create();
-      db.getSchema().createDocumentType("Counted");
-      db.transaction(() -> {
-        for (int i = 0; i < 10; i++)
-          db.newDocument("Counted").set("name", "record-" + i).save();
-      });
-      final LocalBucket bucket = (LocalBucket) db.getSchema().getType("Counted").getBuckets(false).getFirst();
+      try {
+        db.getSchema().createDocumentType("Counted");
+        db.transaction(() -> {
+          for (int i = 0; i < 10; i++)
+            db.newDocument("Counted").set("name", "record-" + i).save();
+        });
+        final LocalBucket bucket = (LocalBucket) db.getSchema().getType("Counted").getBuckets(false).getFirst();
 
-      // What an unlocked replicated apply does to a recompute that overlapped it (#8640/#8649): the stamp the scan
-      // read at its start is no longer current, so the publish is refused
-      for (int i = 0; i < 2; i++) {
-        bucket.invalidateCachedRecordCountForUnlockedApply();
-        assertThat(bucket.publishRecomputedCount(10, bucket.getUnlockedApplyStamp() - 1)).isFalse();
+        // What an unlocked replicated apply does to a recompute that overlapped it (#8640/#8649): the stamp the scan
+        // read at its start is no longer current, so the publish is refused
+        for (int i = 0; i < 2; i++) {
+          bucket.invalidateCachedRecordCountForUnlockedApply();
+          assertThat(bucket.publishRecomputedCount(10, bucket.getUnlockedApplyStamp() - 1)).isFalse();
+        }
+        assertThat(bucket.getRecountPublishesRefused()).isEqualTo(2);
+
+        final long open = profilerCount();
+        assertThat(open).as("the refused recounts of an open database must reach the profiler")
+            .isGreaterThanOrEqualTo(before + 2);
+
+        final ByteArrayOutputStream out = new ByteArrayOutputStream();
+        Profiler.INSTANCE.dumpMetrics(new PrintStream(out));
+        assertThat(out.toString()).contains("recountPublishesRefused=");
+
+        db.close();
+
+        // #5636: a monotonic total that went back down on a close would read as a counter reset in Prometheus
+        assertThat(profilerCount()).as("closing the database must not rewind the refused-recount total")
+            .isGreaterThanOrEqualTo(open);
+      } finally {
+        // A failed assertion above must not leave the database open for the @AfterEach delete
+        if (db.isOpen())
+          db.close();
       }
-      assertThat(bucket.getRecountPublishesRefused()).isEqualTo(2);
-
-      final long open = profilerCount();
-      assertThat(open).as("the refused recounts of an open database must reach the profiler")
-          .isGreaterThanOrEqualTo(before + 2);
-
-      final ByteArrayOutputStream out = new ByteArrayOutputStream();
-      Profiler.INSTANCE.dumpMetrics(new PrintStream(out));
-      assertThat(out.toString()).contains("recountPublishesRefused=");
-
-      db.close();
-
-      // #5636: a monotonic total that went back down on a close would read as a counter reset in Prometheus
-      assertThat(profilerCount()).as("closing the database must not rewind the refused-recount total")
-          .isGreaterThanOrEqualTo(open);
     }
   }
 
