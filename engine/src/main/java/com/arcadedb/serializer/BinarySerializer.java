@@ -461,6 +461,20 @@ public class BinarySerializer {
    */
   public Object deserializeProperty(final Database database, final Binary buffer, final EmbeddedModifier embeddedModifier,
       final String fieldName, final RID rid, final Object absentValue) {
+    // ONLY THE OWNER OF THE MODIFIER IS USED: THE VALUE GETS A MODIFIER OF ITS OWN, NAMED AFTER ITS PROPERTY
+    return deserializePropertyOf(database, buffer, embeddedModifier != null ? embeddedModifier.getOwner() : null, fieldName, rid,
+        absentValue);
+  }
+
+  /**
+   * {@link #deserializeProperty(Database, Binary, EmbeddedModifier, String, RID, Object)} for a property of
+   * {@code owner}, the document whose content {@code buffer} is (null for none): an embedded document read from the
+   * value is told it lives in that property of {@code owner}. Taking the owner rather than a modifier spares a caller
+   * that reads a property per row the modifier it would build for every read, and this method builds one only for a
+   * value that can hold an embedded document (issue #9496).
+   */
+  public Object deserializePropertyOf(final Database database, final Binary buffer, final Document owner, final String fieldName,
+      final RID rid, final Object absentValue) {
     boolean found = false;
     try {
       final int initialPosition = buffer.position();
@@ -486,21 +500,7 @@ public class BinarySerializer {
 
         found = true;
         buffer.position(headerEndOffset + contentPosition);
-
-        final byte type = buffer.getByte();
-
-        final EmbeddedModifierProperty propertyModifier =
-            embeddedModifier != null ? new EmbeddedModifierProperty(embeddedModifier.getOwner(), fieldName) : null;
-
-        if (isExternalType(type)) {
-          final int extBucketId = (int) buffer.getNumber();
-          final long extPosition = buffer.getNumber();
-          return readExternalValue((DatabaseInternal) database, extBucketId, extPosition, propertyModifier,
-              isExternalCompressedType(type));
-        }
-
-        return convertStoredString(database, propertyModifier, fieldName,
-            deserializeValue(database, buffer, type, propertyModifier));
+        return readPropertyValue(database, buffer, owner, fieldName);
       }
     } catch (final DatabaseIsClosedException e) {
       throw e;
@@ -512,6 +512,83 @@ public class BinarySerializer {
   }
 
   /**
+   * Finds, in one pass over the header of the record {@code buffer} holds (positioned at the start of its properties),
+   * where the value of each wanted property starts, so a caller reading several properties of the same record walks
+   * its header once instead of once per property (issue #9496).
+   *
+   * @param slotByNameId the index in {@code positions} of every wanted property, by its dictionary id; a negative
+   *                     entry, or an id past the end of the array, for a property that is not wanted
+   * @param positions    receives, for every wanted property, the position of its value in {@code buffer} - to pass to
+   *                     {@link #deserializePropertyAt} - or -1 when the record does not have it
+   * @param wanted       how many properties {@code slotByNameId} wants: the walk stops once it has found them all, so it
+   *                     never reads more of the header than reading the last of them alone would
+   *
+   * @return false when the header cannot be read: the caller reads the properties one by one instead, which logs and
+   * answers a damaged record the way a single read always did
+   */
+  public boolean locateProperties(final Binary buffer, final int[] slotByNameId, final int[] positions, final int wanted) {
+    Arrays.fill(positions, -1);
+    try {
+      final int initialPosition = buffer.position();
+      final int headerEndOffset = buffer.getInt();
+      final int properties = checkPropertyCount(buffer, headerEndOffset, initialPosition);
+      int found = 0;
+      for (int i = 0; i < properties && found < wanted; ++i) {
+        final int nameId = (int) buffer.getUnsignedNumber();
+        final int contentPosition = (int) buffer.getUnsignedNumber();
+        if (nameId >= 0 && nameId < slotByNameId.length) {
+          final int slot = slotByNameId[nameId];
+          if (slot >= 0 && positions[slot] < 0) {
+            positions[slot] = headerEndOffset + contentPosition;
+            ++found;
+          }
+        }
+      }
+      return true;
+    } catch (final DatabaseIsClosedException e) {
+      throw e;
+    } catch (Exception e) {
+      return false;
+    }
+  }
+
+  /**
+   * The value of the property {@code fieldName} of {@code owner}, starting at {@code position} of {@code buffer} as
+   * {@link #locateProperties} found it: what {@link #deserializePropertyOf} answers for a property the record has.
+   */
+  public Object deserializePropertyAt(final Database database, final Binary buffer, final Document owner, final String fieldName,
+      final RID rid, final int position) {
+    try {
+      buffer.position(position);
+      return readPropertyValue(database, buffer, owner, fieldName);
+    } catch (final DatabaseIsClosedException e) {
+      throw e;
+    } catch (Exception e) {
+      LogManager.instance().log(this, Level.SEVERE, "Possible corrupted record %s", e, rid);
+      return null;
+    }
+  }
+
+  /** Reads the value of the property {@code fieldName} of {@code owner}, {@code buffer} positioned at its type byte. */
+  private Object readPropertyValue(final Database database, final Binary buffer, final Document owner, final String fieldName) {
+    final byte type = buffer.getByte();
+
+    // ONLY A VALUE THAT CAN HOLD AN EMBEDDED DOCUMENT IS TOLD WHERE IT LIVES: FOR EVERY OTHER ONE THE MODIFIER WAS AN
+    // OBJECT PER PROPERTY READ THAT NOTHING USED
+    final EmbeddedModifierProperty propertyModifier = owner != null && (type == BinaryTypes.TYPE_EMBEDDED || type == BinaryTypes.TYPE_LIST
+        || type == BinaryTypes.TYPE_MAP || isExternalType(type)) ? new EmbeddedModifierProperty(owner, fieldName) : null;
+
+    if (isExternalType(type)) {
+      final int extBucketId = (int) buffer.getNumber();
+      final long extPosition = buffer.getNumber();
+      return readExternalValue((DatabaseInternal) database, extBucketId, extPosition, propertyModifier,
+          isExternalCompressedType(type));
+    }
+
+    return convertStoredString(database, owner, fieldName, deserializeValue(database, buffer, type, propertyModifier));
+  }
+
+  /**
    * A String stored under a property the schema now declares as a native temporal type (OFFSET_TIME, LOCAL_TIME,
    * ZONED_DATETIME, DURATION) is the value as it was written before the property was declared, or before those types
    * existed: it is converted when read, and saved in the declared type the next time the record is written (issue
@@ -519,9 +596,13 @@ public class BinarySerializer {
    */
   private static Object convertStoredString(final Database database, final EmbeddedModifier modifier, final String propertyName,
       final Object value) {
-    if (!(value instanceof String) || modifier == null)
+    return modifier == null ? value : convertStoredString(database, modifier.getOwner(), propertyName, value);
+  }
+
+  private static Object convertStoredString(final Database database, final Document owner, final String propertyName,
+      final Object value) {
+    if (!(value instanceof String))
       return value;
-    final Document owner = modifier.getOwner();
     final DocumentType documentType = owner != null ? owner.getType() : null;
     if (documentType == null)
       return value;

@@ -90,8 +90,7 @@ public class ImmutableDocument extends BaseDocument {
     // CONCURRENTLY UNLOADED RECORD USED TO BE INDISTINGUISHABLE FROM ONE WITHOUT THAT PROPERTY
     final Binary content = requireBuffer("read a property of");
     try {
-      return database.getSerializer()
-          .deserializeProperty(database, content, new EmbeddedModifierProperty(this, propertyName), propertyName, rid);
+      return database.getSerializer().deserializePropertyOf(database, content, this, propertyName, rid, null);
     } catch (final DatabaseIsClosedException e) {
       // A CLOSED DATABASE IS NOT A DAMAGED RECORD: LET THE CALLER SEE IT, AS db.query() DOES (SAME AT EVERY CATCH BELOW)
       throw e;
@@ -112,9 +111,7 @@ public class ImmutableDocument extends BaseDocument {
     checkForLazyLoading();
     final Binary content = requireBuffer("read a property of");
     try {
-      return database.getSerializer()
-          .deserializeProperty(database, content, new EmbeddedModifierProperty(this, propertyName), propertyName, rid,
-              absentValue);
+      return database.getSerializer().deserializePropertyOf(database, content, this, propertyName, rid, absentValue);
     } catch (final DatabaseIsClosedException e) {
       throw e;
     } catch (Exception e) {
@@ -125,6 +122,39 @@ public class ImmutableDocument extends BaseDocument {
       LogManager.instance().log(this, Level.SEVERE, "Error on loading property '%s' from record %s", e, propertyName, rid);
       return absentValue;
     }
+  }
+
+  /**
+   * Finds in one pass over this record's header where the value of each wanted property starts, for a caller that reads
+   * several properties of the record and would otherwise walk the header once per property (issue #9496). The values
+   * are then read with {@link #getPropertyAt}.
+   *
+   * @param slotByNameId the index in {@code positions} of every wanted property, by its dictionary id (negative for a
+   *                     property that is not wanted)
+   * @param positions    receives where each wanted property's value starts, or -1 when the record does not have it
+   * @param wanted       how many properties {@code slotByNameId} wants
+   *
+   * @return the content the positions refer to, to hand back to {@link #getPropertyAt}, or null when the properties
+   * must be read one by one with {@link #getIfPresent}: the record was filtered away by an after-read event, or its
+   * header does not read
+   */
+  public Binary locateProperties(final int[] slotByNameId, final int[] positions, final int wanted) {
+    checkForLazyLoading();
+    final Binary content = buffer;
+    if (content == null || !database.getSerializer().locateProperties(content, slotByNameId, positions, wanted))
+      return null;
+    return content;
+  }
+
+  /**
+   * The value of the property {@code propertyName}, which {@link #locateProperties} found starting at {@code position}
+   * of {@code located}: what {@link #getIfPresent} answers for a property the record has. When this record's content is
+   * not {@code located} any longer - reloaded since - the property is looked up again.
+   */
+  public Object getPropertyAt(final Binary located, final String propertyName, final int position, final Object absentValue) {
+    if (located != buffer)
+      return getIfPresent(propertyName, absentValue);
+    return database.getSerializer().deserializePropertyAt(database, located, this, propertyName, rid, position);
   }
 
   /**

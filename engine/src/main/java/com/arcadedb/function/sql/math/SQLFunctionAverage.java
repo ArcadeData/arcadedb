@@ -20,6 +20,7 @@ package com.arcadedb.function.sql.math;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.function.sql.SQLAggregatedFunction;
 import com.arcadedb.schema.Type;
 
@@ -33,7 +34,7 @@ import java.math.RoundingMode;
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
-public class SQLFunctionAverage extends SQLAggregatedFunction {
+public class SQLFunctionAverage extends SQLFunctionRunningSumAbstract {
   public static final String NAME = "avg";
 
   /**
@@ -42,9 +43,7 @@ public class SQLFunctionAverage extends SQLAggregatedFunction {
    */
   private static final int BIG_DECIMAL_SCALE = 10;
 
-  // THE CROSS-ROW TOTAL, UNBOXED WHILE THE INPUTS ARE Double, Long OR Integer (#9496)
-  private final NumericSum sum          = new NumericSum();
-  private       int        total        = 0;
+  private int     total        = 0;
   // TRUE WHEN AN INPUT WAS A BigDecimal, FALSE WHEN A BigDecimal SUM IS ONLY THE WIDENED RESULT OF A long OVERFLOW (#8974)
   private       boolean    decimalInput = false;
 
@@ -55,7 +54,7 @@ public class SQLFunctionAverage extends SQLAggregatedFunction {
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
     if (params.length == 1) {
-      accumulateNumeric(params[0], this::sum);
+      aggregate(self, params[0], context);
       return getResult();
     }
 
@@ -73,12 +72,25 @@ public class SQLFunctionAverage extends SQLAggregatedFunction {
     return computeAverage(rowSum, rowTotal, rowSum instanceof BigDecimal && anyDecimal(params));
   }
 
+  @Override
+  public void aggregate(final Object self, final Object value, final CommandContext context) {
+    // NOT accumulateNumeric(value, this::sum): THE BOUND METHOD REFERENCE IS ONE MORE OBJECT PER ROW (ISSUE #9496)
+    if (value instanceof Number number)
+      sum(number);
+    else if (MultiValue.isMultiValue(value))
+      for (final Object item : MultiValue.getMultiValueIterable(value))
+        sum(requireNumericOrNull(item));
+    else
+      // A non-numeric, non-null, non-list value is a client-facing type error rather than a silently dropped one (#5799, #6390)
+      sum(requireNumericOrNull(value));
+  }
+
   protected void sum(final Number value) {
     if (value != null) {
       total++;
       if (value instanceof BigDecimal)
         decimalInput = true;
-      sum.add(value);
+      addToSum(value);
     }
   }
 
@@ -102,12 +114,7 @@ public class SQLFunctionAverage extends SQLAggregatedFunction {
 
   @Override
   public Object getResult() {
-    if (total == 0)
-      return null;
-    // NOT A BigDecimal: THE MEAN IS THE double TOTAL OVER THE COUNT, WITHOUT BOXING THE TOTAL FIRST
-    if (!sum.isDecimal())
-      return sum.doubleValue() / total;
-    return computeAverage(sum.get(), total, decimalInput);
+    return computeAverage(getSum(), total, decimalInput);
   }
 
   @Override
@@ -123,10 +130,9 @@ public class SQLFunctionAverage extends SQLAggregatedFunction {
   @Override
   public void mergePartial(final SQLAggregatedFunction other) {
     final SQLFunctionAverage partial = (SQLFunctionAverage) other;
-    final Number partialSum = partial.sum.get();
-    if (partialSum == null)
+    if (partial.total == 0)
       return;
-    sum.add(partialSum);
+    addToSum(partial);
     total += partial.total;
     decimalInput |= partial.decimalInput;
   }

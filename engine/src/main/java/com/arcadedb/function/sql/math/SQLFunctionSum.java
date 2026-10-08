@@ -30,11 +30,8 @@ import com.arcadedb.schema.Type;
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
-public class SQLFunctionSum extends SQLAggregatedFunction {
+public class SQLFunctionSum extends SQLFunctionRunningSumAbstract {
   public static final String NAME = "sum";
-
-  // THE CROSS-ROW TOTAL, UNBOXED WHILE THE INPUTS ARE Double, Long OR Integer (#9496)
-  private final NumericSum sum = new NumericSum();
 
   public SQLFunctionSum() {
     super(NAME);
@@ -58,17 +55,8 @@ public class SQLFunctionSum extends SQLAggregatedFunction {
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
     if (params.length == 1) {
-      if (params[0] instanceof Number number)
-        sum(number);
-      else if (MultiValue.isMultiValue(params[0]))
-        for (final Object n : MultiValue.getMultiValueIterable(params[0]))
-          sum(requireNumericOrNull(n));
-      else
-        // A NON-NUMERIC, NON-NULL, NON-LIST VALUE MUST BE A CLIENT-FACING TYPE ERROR RATHER THAN BEING SILENTLY
-        // DROPPED, WHICH USED TO LEAVE THE ACCUMULATOR UNCHANGED AND MAKE AN ALL-INVALID INPUT INDISTINGUISHABLE
-        // FROM AN ALL-NULL ONE (ISSUE #5799). requireNumericOrNull() itself is a no-op for null.
-        sum(requireNumericOrNull(params[0]));
-      return sum.get();
+      aggregate(self, params[0], context);
+      return getSum();
     }
 
     // MULTI-ARG IS A PER-ROW COMPUTATION: SUM THE ARGUMENTS INTO A LOCAL VARIABLE WITHOUT TOUCHING THE
@@ -82,21 +70,18 @@ public class SQLFunctionSum extends SQLAggregatedFunction {
     return rowSum;
   }
 
-  protected void sum(final Number value) {
-    if (value != null)
-      sum.add(value);
-  }
-
-  /**
-   * The per-row call of the aggregation: the cross-row form adds the value without boxing the running total that
-   * {@link #execute} would return (#9496).
-   */
   @Override
-  public void aggregate(final Object self, final Object[] params, final CommandContext context) {
-    if (params.length == 1 && params[0] instanceof Number number)
-      sum.add(number);
+  public void aggregate(final Object self, final Object value, final CommandContext context) {
+    if (value instanceof Number number)
+      addToSum(number);
+    else if (MultiValue.isMultiValue(value))
+      for (final Object n : MultiValue.getMultiValueIterable(value))
+        addToSum(requireNumericOrNull(n));
     else
-      execute(self, null, null, params, context);
+      // A NON-NUMERIC, NON-NULL, NON-LIST VALUE MUST BE A CLIENT-FACING TYPE ERROR RATHER THAN BEING SILENTLY
+      // DROPPED, WHICH USED TO LEAVE THE ACCUMULATOR UNCHANGED AND MAKE AN ALL-INVALID INPUT INDISTINGUISHABLE
+      // FROM AN ALL-NULL ONE (ISSUE #5799). requireNumericOrNull() itself is a no-op for null.
+      addToSum(requireNumericOrNull(value));
   }
 
   public String getSyntax() {
@@ -110,13 +95,13 @@ public class SQLFunctionSum extends SQLAggregatedFunction {
 
   @Override
   public void mergePartial(final SQLAggregatedFunction other) {
-    sum(((SQLFunctionSum) other).sum.get());
+    addToSum((SQLFunctionSum) other);
   }
 
   @Override
   public Object getResult() {
     // SQL: SUM over an empty group or an all-NULL group is NULL, not 0 (issue #9351). Same answer as avg/min/max and
     // as the time-series push-down.
-    return sum.get();
+    return getSum();
   }
 }

@@ -80,7 +80,13 @@ public class SuffixIdentifier extends SimpleNode {
 
   /**
    * Whether {@code name} names a context variable rather than a property of the value being evaluated: a user-visible
-   * {@code $variable}, or a {@link GeneratedAlias} the planner invented for itself.
+   * {@code $variable}, or the LET a lifted sub-query was moved into ({@link SubQueryCollector#isGeneratedAlias}).
+   * <p>
+   * Not every {@link GeneratedAlias}: the other ones the planner invents - the columns an aggregate is split across, an
+   * ORDER BY or GROUP BY term materialized as a column - are properties of the row and never variables. Asking the
+   * context about them first cost a miss through every level of the context hierarchy and the database's global
+   * variables for every aggregate argument of every row of a GROUP BY (issue #9496), and a global variable of the same
+   * name answered instead of the column.
    * <p>
    * Every overload of {@code execute()} has to agree on this, or the same condition answers differently depending on
    * the shape the value reaching it happens to have. Both directions have already gone wrong (issue #7054):
@@ -93,7 +99,13 @@ public class SuffixIdentifier extends SimpleNode {
    * </ul>
    */
   private static boolean isContextVariable(final String name) {
-    return name.startsWith("$") || GeneratedAlias.is(name);
+    // THE FIRST CHARACTER FIRST: THIS RUNS FOR EVERY PROPERTY AN EXPRESSION READS, AND A PROPERTY NAME RARELY STARTS WITH
+    // EITHER: THE startsWith() OF THE 16-CHARACTER SUB-QUERY PREFIX RUNS ONLY FOR A NAME THAT COULD BE ONE (ISSUE #9496)
+    return isDollarName(name) || !name.isEmpty() && name.charAt(0) == '_' && SubQueryCollector.isGeneratedAlias(name);
+  }
+
+  private static boolean isDollarName(final String name) {
+    return !name.isEmpty() && name.charAt(0) == '$';
   }
 
   public Object execute(final Identifiable currentRecord, final CommandContext context) {
@@ -154,7 +166,7 @@ public class SuffixIdentifier extends SimpleNode {
       }
       // For $ variables, check record metadata FIRST - this preserves LET variable values
       // through expand()/UNWIND operations (see GitHub issue #2776)
-      if (currentRecord != null && varName.startsWith("$") && currentRecord.getMetadataKeys().contains(varName)) {
+      if (currentRecord != null && isDollarName(varName) && currentRecord.getMetadataKeys().contains(varName)) {
         return currentRecord.getMetadata(varName);
       }
       if (context != null && isContextVariable(varName)) {
