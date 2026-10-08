@@ -152,7 +152,7 @@ test("profiler query rows hold a keyboard-reachable button", () => {
   const escapeHtml = (s) => String(s);
   eval(extractFn(profilerJs, "profilerRenderQueryRow"));
   const row = profilerRenderQueryRow({ queryText: "SELECT 1", language: "sql", database: "d", executionCount: 1, totalTimeMs: 1, avgTimeMs: 1 }, 3);
-  assert.match(row, /<td[^>]*><button type="button" class="profiler-query-button"/);
+  assert.match(row, /<td><button type="button" class="profiler-query-button" title="SELECT 1"/);
   assert.match(row, /onclick="profilerShowDetail\(3\)"/);
 });
 
