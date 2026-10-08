@@ -20,7 +20,6 @@ package com.arcadedb.function.sql.math;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.function.sql.SQLAggregatedFunction;
 import com.arcadedb.schema.Type;
 
@@ -74,15 +73,12 @@ public class SQLFunctionAverage extends SQLFunctionRunningSumAbstract {
 
   @Override
   public void aggregate(final Object self, final Object value, final CommandContext context) {
-    // NOT accumulateNumeric(value, this::sum): THE BOUND METHOD REFERENCE IS ONE MORE OBJECT PER ROW (ISSUE #9496)
-    if (value instanceof Number number)
-      sum(number);
-    else if (MultiValue.isMultiValue(value))
-      for (final Object item : MultiValue.getMultiValueIterable(value))
-        sum(requireNumericOrNull(item));
-    else
-      // A non-numeric, non-null, non-list value is a client-facing type error rather than a silently dropped one (#5799, #6390)
-      sum(requireNumericOrNull(value));
+    accumulate(value);
+  }
+
+  @Override
+  protected void accept(final Number value) {
+    sum(value);
   }
 
   protected void sum(final Number value) {
