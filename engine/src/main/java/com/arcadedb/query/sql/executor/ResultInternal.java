@@ -85,10 +85,6 @@ public class ResultInternal implements Result {
   }
 
   /**
-   * The one rule every property getter of a row applies to a stored value, shared with {@link #copyBindings} so the
-   * two can never diverge: an {@link Identifiable} that is not a loaded {@link Record} is answered as its identity.
-   */
-  /**
    * What {@link #setProperty} keeps of {@code value} in a row of {@code database}: so the aggregation of a GROUP BY,
    * which reads the values of the projection before it without making its row (issue #9496), reads them as the row
    * would answer them, {@code toPropertyValue(toStoredValue(database, value))}.
@@ -106,6 +102,10 @@ public class ResultInternal implements Result {
     return value;
   }
 
+  /**
+   * The one rule every property getter of a row applies to a stored value, shared with {@link #copyBindings} so the
+   * two can never diverge: an {@link Identifiable} that is not a loaded {@link Record} is answered as its identity.
+   */
   static Object toPropertyValue(final Object value) {
     if (!(value instanceof Record) && value instanceof Identifiable identifiable && identifiable.getIdentity() != null)
       return identifiable.getIdentity();

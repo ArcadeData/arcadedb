@@ -110,6 +110,8 @@ final class PropertyCachingResult implements Result {
 
   @Override
   public Object getPropertyIfPresent(final String name, final Object absentValue) {
+    if (name == null)
+      return row.getPropertyIfPresent(null, absentValue);
     int index = indexOf(name);
     if (index < 0) {
       index = learn(name);

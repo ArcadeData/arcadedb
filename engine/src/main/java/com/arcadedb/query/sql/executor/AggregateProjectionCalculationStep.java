@@ -321,8 +321,14 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
 
       groups.sort(Comparator.comparingLong(g -> g.firstSeen));
       final int size = limit > 0 ? (int) Math.min(limit, groups.size()) : groups.size();
-      // EVERY WORKER'S EVALUATOR MAKES THE SAME ROWS OF THE GROUPS: THE FIRST ONE'S
-      final AggregateRowEvaluator finisher = partials.getFirst().evaluator;
+      // EVERY WORKER'S EVALUATOR MAKES THE SAME ROWS OF THE GROUPS: THE FIRST ONE'S. partials HOLDS THE WORKERS' OWN, NEVER
+      // THE SHARED GROUPS (WHICH HAVE NO EVALUATOR), AND THE CALLER IS ALWAYS ONE OF THE WORKERS
+      AggregateRowEvaluator finisher = null;
+      for (final PartialAggregation partial : partials)
+        if (partial.evaluator != null) {
+          finisher = partial.evaluator;
+          break;
+        }
       final List<ResultInternal> result = new ArrayList<>(size);
       for (int i = 0; i < size; i++) {
         onWait.run();
