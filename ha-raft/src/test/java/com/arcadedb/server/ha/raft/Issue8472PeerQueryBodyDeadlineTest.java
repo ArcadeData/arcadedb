@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.StallAwareStopwatch;
 import com.sun.net.httpserver.HttpServer;
 import org.apache.ratis.protocol.RaftGroup;
@@ -254,8 +255,7 @@ class Issue8472PeerQueryBodyDeadlineTest {
   }
 
   private static ArcadeDBServer plainServer() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(new ContextConfiguration());
+    final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, new ContextConfiguration());
     return server;
   }
 
@@ -265,8 +265,7 @@ class Issue8472PeerQueryBodyDeadlineTest {
     cfg.setValue(GlobalConfiguration.NETWORK_USE_SSL, true);
     cfg.setValue(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE, pki.trustStore().toAbsolutePath().toString());
     cfg.setValue(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE_PASSWORD, RaftTestPki.password());
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(cfg);
+    final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, cfg);
     return server;
   }
 

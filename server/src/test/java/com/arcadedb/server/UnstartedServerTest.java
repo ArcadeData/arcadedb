@@ -79,6 +79,23 @@ class UnstartedServerTest {
   }
 
   @Test
+  void theNamedOverloadsAnswerTheNameFromTheConfiguration() {
+    assertThat(TestServerHelper.unstartedServer("ArcadeDB_7").getServerName()).isEqualTo("ArcadeDB_7");
+
+    final ContextConfiguration configuration = new ContextConfiguration();
+    final ArcadeDBServer server = TestServerHelper.unstartedServer("node-b", configuration);
+    assertThat(server.getServerName()).isEqualTo("node-b");
+    assertThat(server.getConfiguration()).isSameAs(configuration);
+
+    final ArcadeDBServer unrooted = TestServerHelper.unstartedServer();
+    assertThat(unrooted.getServerName()).isEqualTo(GlobalConfiguration.SERVER_NAME.getDefValue());
+    assertThat(Path.of(unrooted.getRootPath())).as("the shared default root is never created, so parallel forks cannot collide on it")
+        .doesNotExist();
+    assertThat(TestServerHelper.unstartedServer((String) null, new ContextConfiguration()).getServerName())
+        .isEqualTo(GlobalConfiguration.SERVER_NAME.getDefValue());
+  }
+
+  @Test
   void theDefaultModeIsNotProduction() {
     assertThat(TestServerHelper.unstartedServer(root, new ContextConfiguration()).isProductionMode()).isFalse();
   }

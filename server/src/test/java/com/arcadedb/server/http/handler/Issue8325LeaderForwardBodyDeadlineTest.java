@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
+import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.server.http.FakeLeader;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -275,8 +276,7 @@ class Issue8325LeaderForwardBodyDeadlineTest {
   }
 
   private static PostBatchHandler handlerWith(final ContextConfiguration cfg) {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(cfg);
+    final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, cfg);
     final HttpServer httpServer = mock(HttpServer.class);
     when(httpServer.getServer()).thenReturn(server);
     return new PostBatchHandler(httpServer);

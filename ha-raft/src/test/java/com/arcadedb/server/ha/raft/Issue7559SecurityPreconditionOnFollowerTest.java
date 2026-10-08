@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.TestServerHelper;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -237,8 +238,7 @@ class Issue7559SecurityPreconditionOnFollowerTest {
     final RaftHAPlugin plugin = new RaftHAPlugin();
     final ContextConfiguration configuration = new ContextConfiguration();
     configuration.setValue(GlobalConfiguration.HA_SECURITY_ENTRY_CAPABILITY_GATE, true);
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(configuration);
+    final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, configuration);
     plugin.configure(server, configuration);
     plugin.setRaftHAServer(raft);
     return plugin;

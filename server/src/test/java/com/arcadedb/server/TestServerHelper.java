@@ -104,6 +104,33 @@ public final class TestServerHelper {
     return new ArcadeDBServer(configuration);
   }
 
+  /**
+   * Where a server built without an explicit root is rooted. Nothing is ever created there: construction writes no file,
+   * and a test that needs the disk passes its own {@code @TempDir} to {@link #unstartedServer(Path, ContextConfiguration)}.
+   */
+  private static final Path UNSTARTED_SERVER_ROOT = Path.of(System.getProperty("java.io.tmpdir"), "arcadedb-unstarted-server");
+
+  /** {@link #unstartedServer(Path, ContextConfiguration)} with the default name, a new configuration and no disk. */
+  public static ArcadeDBServer unstartedServer() {
+    return unstartedServer(UNSTARTED_SERVER_ROOT, new ContextConfiguration());
+  }
+
+  /** {@link #unstartedServer(Path, ContextConfiguration)} named {@code serverName}, with a new configuration and no disk. */
+  public static ArcadeDBServer unstartedServer(final String serverName) {
+    return unstartedServer(serverName, new ContextConfiguration());
+  }
+
+  /**
+   * {@link #unstartedServer(Path, ContextConfiguration)} with no disk, named {@code serverName} (written into
+   * {@code configuration}, where {@link ArcadeDBServer#getServerName()} reads it) unless that is null. Do not share one
+   * configuration between servers that need different names: the last name written wins for all of them.
+   */
+  public static ArcadeDBServer unstartedServer(final String serverName, final ContextConfiguration configuration) {
+    if (serverName != null)
+      configuration.setValue(GlobalConfiguration.SERVER_NAME, serverName);
+    return unstartedServer(UNSTARTED_SERVER_ROOT, configuration);
+  }
+
   public static void stopServers(final ArcadeDBServer[] servers) {
     if (servers != null) {
       for (final ArcadeDBServer server : servers)

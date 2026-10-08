@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ClusterCapabilityNotReadyException;
+import com.arcadedb.server.TestServerHelper;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -349,8 +350,7 @@ class Issue7511SecurityEntryCapabilityGateTest {
   }
 
   private static ArcadeDBServer serverWith(final ContextConfiguration configuration) {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(configuration);
+    final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, configuration);
     return server;
   }
 

@@ -25,6 +25,7 @@ import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.server.http.FakeLeader;
 import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Test;
@@ -78,9 +79,7 @@ class Issue7527RaftReplicatedDatabaseForwardTimeoutTest {
   }
 
   private static ArcadeDBServer serverWith(final ContextConfiguration cfg) {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(cfg);
-    when(server.getHA()).thenReturn(null); // plain HTTP forward, no HTTPS dial to resolve
+    final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, cfg);
     return server;
   }
 

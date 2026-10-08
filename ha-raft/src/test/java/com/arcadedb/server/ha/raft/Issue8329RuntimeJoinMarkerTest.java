@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.FileUtils;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.junit.jupiter.api.Test;
@@ -33,8 +34,6 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Regression test for issue #8329: the runtime-join detector of issue #7819 was in memory only, so a peer added at
@@ -215,8 +214,7 @@ class Issue8329RuntimeJoinMarkerTest {
 
   /** A {@link RaftHAServer} whose constructor has run but whose Ratis server was never started. */
   private static RaftHAServer detachedServer(final ContextConfiguration config) {
-    final ArcadeDBServer arcadeServer = mock(ArcadeDBServer.class);
-    when(arcadeServer.getServerName()).thenReturn("arcadedb-0");
+    final ArcadeDBServer arcadeServer = TestServerHelper.unstartedServer("arcadedb-0");
     return new RaftHAServer(arcadeServer, config);
   }
 

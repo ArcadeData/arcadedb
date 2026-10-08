@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.server.http.HttpServer;
 import org.junit.jupiter.api.Test;
 
@@ -99,8 +100,7 @@ class SnapshotThrottleTest {
   }
 
   private static SnapshotHttpHandler handlerFor(final ContextConfiguration configuration) {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(configuration);
+    final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, configuration);
     final HttpServer httpServer = mock(HttpServer.class);
     when(httpServer.getServer()).thenReturn(server);
     return new SnapshotHttpHandler(httpServer);
