@@ -20,12 +20,15 @@ package com.arcadedb.schema;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.DocumentValidator;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.util.*;
+import java.util.logging.Level;
 
 public class LocalProperty extends AbstractProperty {
 
@@ -247,21 +250,7 @@ public class LocalProperty extends AbstractProperty {
     checkForSchemaMutation();
     final boolean changed = !Objects.equals(this.max, max);
     if (changed) {
-      switch (type) {
-      case LINK:
-      case BOOLEAN:
-      case EMBEDDED:
-        throw new IllegalArgumentException("Maximum value not applicable for type " + type);
-
-      case STRING:
-      case BINARY:
-      case LIST:
-      case MAP:
-        if (Integer.parseInt(max) < 0)
-          throw new IllegalArgumentException("Maximum value for type " + type + " is 0");
-        break;
-      }
-
+      checkBound(max, "Maximum");
       this.max = max;
       owner.getSchema().getEmbedded().saveConfiguration();
     }
@@ -273,25 +262,46 @@ public class LocalProperty extends AbstractProperty {
     checkForSchemaMutation();
     final boolean changed = !Objects.equals(this.min, min);
     if (changed) {
-      switch (type) {
-      case LINK:
-      case BOOLEAN:
-      case EMBEDDED:
-        throw new IllegalArgumentException("Minimum value not applicable for type " + type);
-
-      case STRING:
-      case BINARY:
-      case LIST:
-      case MAP:
-        if (Integer.parseInt(min) < 0)
-          throw new IllegalArgumentException("Minimum value for type " + type + " is 0");
-        break;
-      }
-
+      checkBound(min, "Minimum");
       this.min = min;
       owner.getSchema().getEmbedded().saveConfiguration();
     }
     return this;
+  }
+
+  /**
+   * Refuses a MIN or MAX the property's type cannot use (a type with no order and no size) or cannot read (a bound the
+   * write path would fail to parse), so that an accepted declaration never makes every later write of the property fail
+   * (issue #9026). Clearing the bound ({@code null}) is always allowed.
+   * <p>
+   * A schema loaded from disk is not refused: a database written before this rule may carry such a bound, and refusing it
+   * would make the database unopenable. The load only warns, and {@code ALTER PROPERTY ... MAX null} is the remedy.
+   * <p>
+   * The refusal is an {@link IllegalArgumentException}, the exception {@code setMin}/{@code setMax} always raised for a
+   * BOOLEAN, LINK or EMBEDDED property; an unknown property TYPE is a {@link SchemaException} from {@code createProperty}.
+   */
+  private void checkBound(final String bound, final String side) {
+    if (bound == null)
+      return;
+
+    final String reason;
+    if (!DocumentValidator.isBoundApplicable(type))
+      reason = side + " value not applicable for type " + type;
+    else {
+      final String unreadable = DocumentValidator.unreadableBound(owner.getSchema().getEmbedded().getDatabase(), type, bound);
+      reason = unreadable == null ? null : side + " value '" + bound + "' of property '" + owner.getName() + "." + name + "' " + unreadable;
+    }
+    if (reason == null)
+      return;
+
+    if (owner.getSchema().getEmbedded().isReadingFromFile()) {
+      LogManager.instance().log(this, Level.WARNING,
+          "%s: the bound in the stored schema is not usable and a write of a value may fail on it. Remove it with ALTER PROPERTY `%s`.`%s` %s null",
+          reason, owner.getName(), name, side.equals("Maximum") ? "MAX" : "MIN");
+      return;
+    }
+
+    throw new IllegalArgumentException(reason);
   }
 
   @Override

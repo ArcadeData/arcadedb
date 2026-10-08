@@ -681,7 +681,10 @@ public class ClusterAlerts {
         .put("recommendation", "Watch this node's localResync in this same document until it clears. If it does "
             + "not, check the logs for the resync error and force a fresh download of the named database(s) "
             + "(POST /api/v1/cluster/resync/{database}); a node that is itself the leader cannot resync from "
-            + "itself and needs leadership transferred first (POST /api/v1/cluster/leader).")
+            + "itself and needs leadership transferred first (POST /api/v1/cluster/leader). A node that is the only "
+            + "voter of its cluster has no peer to resync from: there, and only if the copy is known to be acceptable "
+            + "as it is, lift the quarantine with POST " + PostAcceptDivergedHandler.ROUTE + "{database} (root only), "
+            + "which records who did it in the server log.")
         .put("details", new JSONObject()
             .put("snapshotDownloadQueued", state.snapshotDownloadQueued())
             .put("snapshotDownloadInProgress", state.snapshotDownloadInProgress())

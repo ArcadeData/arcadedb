@@ -20,8 +20,10 @@ package com.arcadedb.graph.olap;
 
 import com.arcadedb.database.RID;
 import com.arcadedb.utility.IntIntHashMap;
+import com.arcadedb.utility.LongObjectHashMap;
 
 import java.util.*;
+import java.util.function.LongConsumer;
 
 /**
  * Immutable delta overlay on top of a base CSR snapshot. Stores new vertices, deleted vertices,
@@ -109,8 +111,9 @@ class DeltaOverlay {
   private final int deltaEdgeCount;
 
   // The edge types whose property columns a committed transaction has left out of date. Such a change has no
-  // overlay representation - an edge already in the base CSR is addressed by its column slot, and nothing maps
-  // that slot back from the edge's RID - so those columns are stale until the rebuild
+  // overlay representation when the edge's column slot cannot be identified - an edge already in the base CSR is
+  // addressed by its column slot, and nothing maps that slot back from the edge's RID; the sole edge of a pair is the
+  // exception, see updatedBaseEdgeValues - so those columns are stale until the rebuild
   // GraphAnalyticalView.applyDelta() forces for them lands. Until then the view answers "no edge properties"
   // for those types rather than a stale weight: the added edges below carry their own values and could be
   // served exactly, but a base edge whose weight was just updated could not, and there is no honest way to
@@ -123,6 +126,18 @@ class DeltaOverlay {
   // True when the columns are out of date for types unknown - the bulk case, where DeltaCollector gave up on
   // naming the edges individually. Every type is then out of date.
   private final boolean     allEdgeTypesDirty;
+
+  // New property values of base edges, per type and packed (src << 32 | tgt) pair, one slot per name of the view's edge
+  // property filter (issue #9437). A base edge is addressed by its column slot and nothing maps the slot back from the
+  // edge's RID - but when the pair is joined by exactly ONE base edge of the type, the pair names the slot, and the new
+  // value can be served from here instead of forcing a rebuild of the columns. A weight update on a road network, where
+  // parallel roads of one type between two junctions are rare, then costs nothing but this entry. A pair with parallel
+  // edges is still ambiguous and still marks the type dirty, as before.
+  private final Map<String, LongObjectHashMap<Object[]>> updatedBaseEdgeValues;
+  // How many pairs updatedBaseEdgeValues holds, counted once: the view asks on every commit, for the compaction threshold
+  private final int                              updatedBaseEdgeCount;
+  private static final Object[]                  NO_VALUES = new Object[0];
+  private static final LongObjectHashMap<Object[]> NO_BASE_EDGE_VALUES = new LongObjectHashMap<>(1);
 
   @SuppressWarnings("unchecked")
   DeltaOverlay(final int baseNodeCount) {
@@ -146,6 +161,8 @@ class DeltaOverlay {
     this.deltaEdgeCount = 0;
     this.dirtyEdgeTypes = Collections.emptySet();
     this.allEdgeTypesDirty = false;
+    this.updatedBaseEdgeValues = Collections.emptyMap();
+    this.updatedBaseEdgeCount = 0;
   }
 
   // The private constructor takes ownership of all passed collections — callers MUST NOT
@@ -167,7 +184,7 @@ class DeltaOverlay {
       final Map<String, Map<Integer, AddedNeighbors>> outNeighborIndex,
       final Map<String, Map<Integer, AddedNeighbors>> inNeighborIndex,
       final int overflowCount, final int deltaEdgeCount, final Set<String> dirtyEdgeTypes,
-      final boolean allEdgeTypesDirty) {
+      final boolean allEdgeTypesDirty, final Map<String, LongObjectHashMap<Object[]>> updatedBaseEdgeValues) {
     this.baseNodeCount = baseNodeCount;
     this.overflowNodeIds = overflowNodeIds;
     this.overflowIdToRID = overflowIdToRID;
@@ -188,6 +205,11 @@ class DeltaOverlay {
     this.deltaEdgeCount = deltaEdgeCount;
     this.dirtyEdgeTypes = dirtyEdgeTypes;
     this.allEdgeTypesDirty = allEdgeTypesDirty;
+    this.updatedBaseEdgeValues = updatedBaseEdgeValues;
+    int baseEdgeCount = 0;
+    for (final LongObjectHashMap<Object[]> values : updatedBaseEdgeValues.values())
+      baseEdgeCount += values.size();
+    this.updatedBaseEdgeCount = baseEdgeCount;
   }
 
   /**
@@ -270,9 +292,21 @@ class DeltaOverlay {
    * bucket and are budgeted as before. When {@code preCount} is null the reference is unavailable, no deletion
    * can be shown to be absorbed, and every one is budgeted - the pre-#7042 behaviour.
    */
-  @SuppressWarnings("unchecked")
   DeltaOverlay merge(final TxDelta delta, final NodeIdMapping baseMapping,
       final Map<String, CSRAdjacencyIndex> baseCsrPerType, final PreCompactionPairCount preCount) {
+    return merge(delta, baseMapping, baseCsrPerType, preCount, null);
+  }
+
+  /**
+   * As {@link #merge(TxDelta, NodeIdMapping, Map, PreCompactionPairCount)}, with the base CSR this overlay sits on
+   * passed as {@code baseForUpdates}: a property update to a base edge that is the only edge of its type between its two
+   * vertices is then kept as a new value for that pair instead of marking the type's columns out of date (issue #9437).
+   * Null keeps every such update a reason to rebuild the columns.
+   */
+  @SuppressWarnings("unchecked")
+  DeltaOverlay merge(final TxDelta delta, final NodeIdMapping baseMapping,
+      final Map<String, CSRAdjacencyIndex> baseCsrPerType, final PreCompactionPairCount preCount,
+      final Map<String, CSRAdjacencyIndex> baseForUpdates) {
     // Copy mutable structures from previous overlay
     final Map<RID, Integer> newOverflowIds = new HashMap<>(overflowNodeIds);
     final List<RID> overflowRIDsList = new ArrayList<>(Arrays.asList(overflowIdToRID));
@@ -294,6 +328,10 @@ class DeltaOverlay {
     final Map<String, Map<Long, Integer>> newAbsorbedAdditions = new HashMap<>();
     for (final var entry : absorbedAddedEdgesPerType.entrySet())
       newAbsorbedAdditions.put(entry.getKey(), new HashMap<>(entry.getValue()));
+    // Copied on the first base-edge value this delta records, and then only the map of each type it touches: a delta
+    // with none keeps sharing the previous maps, and one with a single update copies one type's values
+    Map<String, LongObjectHashMap<Object[]>> newBaseEdgeValues = updatedBaseEdgeValues;
+    Set<String> baseEdgeTypesCopied = null;
     final Map<Integer, Map<String, Object>> newPropOverrides = new HashMap<>(propertyOverrides.size());
     for (final var propEntry : propertyOverrides.entrySet())
       newPropOverrides.put(propEntry.getKey(), new HashMap<>(propEntry.getValue()));
@@ -421,6 +459,19 @@ class DeltaOverlay {
       else if (alreadyInFreshBase != null && alreadyInFreshBase.contains(ed.rid)) {
         // Nothing to do: the freshly built base CSR scanned this edge after the transaction that made both
         // the add and this update committed, so its columns already hold the value this update set.
+      } else if (isSoleBaseEdge(ed, baseMapping, baseForUpdates, newOverflowIds, newDeleted)) {
+        final int srcId = baseMapping.getGlobalId(ed.source);
+        final int tgtId = baseMapping.getGlobalId(ed.target);
+        if (baseEdgeTypesCopied == null) {
+          baseEdgeTypesCopied = new HashSet<>();
+          newBaseEdgeValues = new HashMap<>(updatedBaseEdgeValues);
+        }
+        if (baseEdgeTypesCopied.add(ed.edgeType)) {
+          final LongObjectHashMap<Object[]> previousValues = newBaseEdgeValues.get(ed.edgeType);
+          newBaseEdgeValues.put(ed.edgeType, previousValues != null ? copy(previousValues) : new LongObjectHashMap<>());
+        }
+        // no values at all: every materialised property was removed, so each reads as missing, as a rebuilt column would
+        newBaseEdgeValues.get(ed.edgeType).put(packEdge(srcId, tgtId), ed.properties != null ? ed.properties : NO_VALUES);
       } else if (!newDirtyTypes.contains(ed.edgeType)) {
         if (!dirtyTypesCopied) {
           newDirtyTypes = new HashSet<>(dirtyEdgeTypes);
@@ -541,7 +592,142 @@ class DeltaOverlay {
         newDeleted, newDeletedOverflow, newAddedEdges, newDeletedEdges, newDeletedEdgeRIDs,
         newAbsorbedDeletions, newAbsorbedAdditions, newDelOutCounts, newDelInCounts, newPropOverrides,
         newOutIndex, newInIndex,
-        newOverflowCount, newDeltaEdgeCount, newDirtyTypes, newAllDirty);
+        newOverflowCount, newDeltaEdgeCount, newDirtyTypes, newAllDirty, newBaseEdgeValues);
+  }
+
+  /**
+   * Whether an updated edge is the one base edge of its type between two live base vertices, so that its pair names its
+   * column slot. Only then can its new values be served from the overlay (see {@code updatedBaseEdgeValues}).
+   */
+  private boolean isSoleBaseEdge(final TxDelta.EdgeDelta ed, final NodeIdMapping baseMapping,
+      final Map<String, CSRAdjacencyIndex> baseForUpdates, final Map<RID, Integer> overflowIds, final BitSet deletedBase) {
+    if (baseForUpdates == null)
+      return false;
+    final CSRAdjacencyIndex csr = baseForUpdates.get(ed.edgeType);
+    if (csr == null)
+      return false;
+    final int srcId = baseMapping.getGlobalId(ed.source);
+    final int tgtId = baseMapping.getGlobalId(ed.target);
+    if (srcId < 0 || tgtId < 0 || srcId >= baseNodeCount || tgtId >= baseNodeCount)
+      return false;
+    // a reused slot names a vertex that is not the one the base CSR holds (#8948)
+    if (deletedBase.get(srcId) || deletedBase.get(tgtId) || overflowIds.containsKey(ed.source) || overflowIds.containsKey(
+        ed.target))
+      return false;
+    return csr.forwardEdgeCount(srcId, tgtId) == 1;
+  }
+
+  private static LongObjectHashMap<Object[]> copy(final LongObjectHashMap<Object[]> source) {
+    final LongObjectHashMap<Object[]> copy = new LongObjectHashMap<>(source.size() * 2 + 8);
+    source.forEach(copy::put);
+    return copy;
+  }
+
+  /**
+   * The new property values of the base edge of {@code edgeType} from {@code srcId} to {@code tgtId}, one per name of the
+   * view's edge property filter, or null when that edge's column slot still holds its current values.
+   */
+  Object[] getUpdatedBaseEdgeValues(final String edgeType, final int srcId, final int tgtId) {
+    final LongObjectHashMap<Object[]> values = updatedBaseEdgeValues.get(edgeType);
+    return values == null ? null : values.get(packEdge(srcId, tgtId));
+  }
+
+  /** Whether any base edge of {@code edgeType} has new property values here. */
+  boolean hasUpdatedBaseEdgeValues(final String edgeType) {
+    final LongObjectHashMap<Object[]> values = updatedBaseEdgeValues.get(edgeType);
+    return values != null && !values.isEmpty();
+  }
+
+  /**
+   * The vertex pairs whose edges differ between two overlays of the same base, for a structure kept in step with the
+   * view that wants to redo only the part a commit touched (issue #9437): an edge added or withdrawn, a deletion
+   * recorded, a base edge given new values. Each pair is handed to {@code pairs} packed as {@code src << 32 | tgt}; a
+   * pair can be handed more than once, and in either orientation is not implied.
+   *
+   * @param older the overlay the structure was last brought in step with, null for the bare base
+   * @param newer the overlay of the snapshot to catch up with, null for the bare base
+   *
+   * @return false when the difference cannot be expressed as pairs - a vertex deleted, columns gone out of date - and
+   * the caller has to look at the whole graph again
+   */
+  static boolean changedPairs(final DeltaOverlay older, final DeltaOverlay newer, final LongConsumer pairs) {
+    if (older == newer)
+      return true;
+    final DeltaOverlay before = older != null ? older : new DeltaOverlay(newer.baseNodeCount);
+    final DeltaOverlay after = newer != null ? newer : new DeltaOverlay(older.baseNodeCount);
+    if (!before.deletedBaseNodes.equals(after.deletedBaseNodes) || !before.deletedOverflowNodes.equals(after.deletedOverflowNodes))
+      return false;
+    if (after.allEdgeTypesDirty || !after.dirtyEdgeTypes.isEmpty())
+      return false;
+
+    final Set<String> types = new HashSet<>(before.addedEdgesPerType.keySet());
+    types.addAll(after.addedEdgesPerType.keySet());
+    for (final String type : types) {
+      final Map<RID, AddedEdge> was = before.addedEdgesPerType.getOrDefault(type, Collections.emptyMap());
+      final Map<RID, AddedEdge> is = after.addedEdgesPerType.getOrDefault(type, Collections.emptyMap());
+      for (final var entry : is.entrySet()) {
+        final AddedEdge edge = entry.getValue();
+        final AddedEdge previous = was.get(entry.getKey());
+        if (previous == null || previous.src() != edge.src() || previous.tgt() != edge.tgt()
+            || !Arrays.equals(previous.properties(), edge.properties()))
+          pairs.accept(packEdge(edge.src(), edge.tgt()));
+        // a RID reused for an edge between other vertices (#5279): the pair the old edge joined changed too
+        if (previous != null && (previous.src() != edge.src() || previous.tgt() != edge.tgt()))
+          pairs.accept(packEdge(previous.src(), previous.tgt()));
+      }
+      for (final var entry : was.entrySet())
+        if (!is.containsKey(entry.getKey()))
+          pairs.accept(packEdge(entry.getValue().src(), entry.getValue().tgt()));
+    }
+
+    diffCounts(before.deletedEdgesPerType, after.deletedEdgesPerType, pairs);
+
+    final Set<String> valueTypes = new HashSet<>(before.updatedBaseEdgeValues.keySet());
+    valueTypes.addAll(after.updatedBaseEdgeValues.keySet());
+    for (final String type : valueTypes) {
+      final LongObjectHashMap<Object[]> was = before.updatedBaseEdgeValues.getOrDefault(type, NO_BASE_EDGE_VALUES);
+      final LongObjectHashMap<Object[]> is = after.updatedBaseEdgeValues.getOrDefault(type, NO_BASE_EDGE_VALUES);
+      is.forEach((pair, values) -> {
+        if (!Arrays.equals(was.get(pair), values))
+          pairs.accept(pair);
+      });
+      was.forEach((pair, values) -> {
+        if (!is.containsKey(pair))
+          pairs.accept(pair);
+      });
+    }
+    return true;
+  }
+
+  private static void diffCounts(final Map<String, Map<Long, Integer>> before, final Map<String, Map<Long, Integer>> after,
+      final LongConsumer pairs) {
+    final Set<String> types = new HashSet<>(before.keySet());
+    types.addAll(after.keySet());
+    for (final String type : types) {
+      final Map<Long, Integer> was = before.getOrDefault(type, Collections.emptyMap());
+      final Map<Long, Integer> is = after.getOrDefault(type, Collections.emptyMap());
+      for (final var entry : is.entrySet())
+        if (!entry.getValue().equals(was.get(entry.getKey())))
+          pairs.accept(entry.getKey());
+      for (final Long pair : was.keySet())
+        if (!is.containsKey(pair))
+          pairs.accept(pair);
+    }
+  }
+
+  /** The source of a pair packed by {@link #changedPairs}. */
+  static int pairSource(final long pair) {
+    return (int) (pair >>> 32);
+  }
+
+  /** The target of a pair packed by {@link #changedPairs}. */
+  static int pairTarget(final long pair) {
+    return (int) pair;
+  }
+
+  /** How many base edges have new property values here, which counts toward the compaction threshold. */
+  int getUpdatedBaseEdgeCount() {
+    return updatedBaseEdgeCount;
   }
 
   /**
@@ -779,7 +965,7 @@ class DeltaOverlay {
   boolean hasChanges() {
     return overflowCount > 0 || !deletedBaseNodes.isEmpty()
         || !addedEdgesPerType.isEmpty() || !deletedEdgesPerType.isEmpty()
-        || !propertyOverrides.isEmpty() || isEdgePropertiesDirty();
+        || !propertyOverrides.isEmpty() || isEdgePropertiesDirty() || !updatedBaseEdgeValues.isEmpty();
   }
 
   // --- Internals ---

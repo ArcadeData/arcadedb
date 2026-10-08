@@ -23,6 +23,8 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
+import com.arcadedb.server.TestServerHelper;
+import com.arcadedb.server.UnstartedHttpServers;
 import com.arcadedb.server.http.FakeLeader;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -30,6 +32,7 @@ import io.undertow.server.HttpServerExchange;
 import io.undertow.server.RequestTooBigException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.extension.RegisterExtension;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
@@ -52,19 +55,19 @@ import static org.mockito.Mockito.when;
  * rethrows the {@link RequestTooBigException} so the same arm builds the same answer.
  */
 class Issue8161FollowerForwardBodyCapTest {
-
   private static final long CAP_BYTES  = 1_024L;
   private static final int  BODY_BYTES = 256 * 1_024;
+
+  @RegisterExtension
+  static final UnstartedHttpServers HTTP_SERVERS = new UnstartedHttpServers();
 
   private static PostBatchHandler handler() {
     final ContextConfiguration cfg = new ContextConfiguration();
     cfg.setValue(GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT, 5_000L);
     cfg.setValue(GlobalConfiguration.HA_PROXY_BATCH_READ_TIMEOUT, 60_000L);
     cfg.setValue(GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE, CAP_BYTES);
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(cfg);
-    final HttpServer httpServer = mock(HttpServer.class);
-    when(httpServer.getServer()).thenReturn(server);
+    final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, cfg);
+    final HttpServer httpServer = HTTP_SERVERS.of(server);
     return new PostBatchHandler(httpServer);
   }
 
@@ -76,9 +79,7 @@ class Issue8161FollowerForwardBodyCapTest {
   }
 
   private static ServerSecurityUser rootUser() {
-    final ServerSecurityUser user = mock(ServerSecurityUser.class);
-    when(user.getName()).thenReturn("root");
-    return user;
+    return TestServerHelper.securityUser("root");
   }
 
   private static byte[] ndjson(final int size) {

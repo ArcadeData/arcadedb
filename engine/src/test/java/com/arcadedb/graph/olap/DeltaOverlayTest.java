@@ -20,7 +20,9 @@ package com.arcadedb.graph.olap;
 
 import com.arcadedb.database.RID;
 
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -49,6 +51,36 @@ class DeltaOverlayTest {
 
   private RID rid(final int position) {
     return new RID(1, position);
+  }
+
+  /**
+   * Issue #9437: the pairs whose edges differ between two overlays of one base. A RID reused for an edge between other
+   * vertices changes both the pair its old edge joined and the pair its new edge joins.
+   */
+  @Test
+  void changedPairsNameBothPairsOfAReusedEdgeRid() {
+    final NodeIdMapping mapping = baseMappingWith(4);
+    final DeltaOverlay empty = new DeltaOverlay(mapping.size());
+    final RID edgeRid = rid(10);
+
+    final TxDelta add = new TxDelta();
+    add.addedEdges.add(new TxDelta.EdgeDelta(EDGE_TYPE, rid(0), rid(1), edgeRid));
+    final DeltaOverlay before = empty.merge(add, mapping);
+
+    final TxDelta delete = new TxDelta();
+    delete.deletedEdges.add(new TxDelta.EdgeDelta(EDGE_TYPE, rid(0), rid(1), edgeRid));
+    final TxDelta reuse = new TxDelta();
+    reuse.addedEdges.add(new TxDelta.EdgeDelta(EDGE_TYPE, rid(2), rid(3), edgeRid));
+    final DeltaOverlay after = before.merge(delete, mapping).merge(reuse, mapping);
+
+    final Set<Long> pairs = new HashSet<>();
+    assertThat(DeltaOverlay.changedPairs(before, after, pairs::add)).isTrue();
+    assertThat(pairs).contains((0L << 32) | 1L, (2L << 32) | 3L);
+
+    // and nothing changed is nothing to report
+    final Set<Long> none = new HashSet<>();
+    assertThat(DeltaOverlay.changedPairs(after, after, none::add)).isTrue();
+    assertThat(none).isEmpty();
   }
 
   /**

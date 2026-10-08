@@ -34,6 +34,25 @@ final class ClusterStatusSummary {
   private ClusterStatusSummary() {
   }
 
+  /**
+   * The node's in-place Raft restart counts from its {@code localInPlaceRestarts} member (issue #9429). A server that
+   * does not write the member, or writes it without both counts, fails as a harness error rather than reading as zero:
+   * zero is what lets a long-pause step pass, so it must come from the server.
+   */
+  static NodeControl.InPlaceRestarts inPlaceRestarts(final JSONObject cluster, final int node) {
+    if (!cluster.has("localInPlaceRestarts"))
+      throw new ChaosFailure(ResultKind.HARNESS, "Node " + node + " does not report localInPlaceRestarts in GET /api/v1/cluster"
+          + " (a server older than issue #9429?), so a Raft-storage reformat cannot be ruled out");
+    // A member of the wrong shape or type throws from the JSON getters: still a harness failure, never zero
+    try {
+      final JSONObject restarts = cluster.getJSONObject("localInPlaceRestarts");
+      return new NodeControl.InPlaceRestarts(restarts.getInt("recovered"), restarts.getInt("reformatted"));
+    } catch (final RuntimeException e) {
+      throw new ChaosFailure(ResultKind.HARNESS, "Node " + node + " reports unreadable localInPlaceRestarts "
+          + cluster.get("localInPlaceRestarts") + ", so a Raft-storage reformat cannot be ruled out: " + e.getMessage());
+    }
+  }
+
   static String describe(final JSONObject cluster) {
     final StringBuilder line = new StringBuilder();
     line.append("isLeader=").append(cluster.getBoolean("isLeader", false));

@@ -20,14 +20,13 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Issue #7641 (review of PR #7649): a DROP entry has to retire the quarantine bookkeeping of the database it
@@ -95,10 +94,8 @@ class Issue7641DroppedDatabaseClearsQuarantineTest {
 
   /** A server that holds no databases at all, which is all the already-absent drop branch needs to look at. */
   private static ArcadeDBServer serverWithout(final String databaseName) {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.existsDatabase(databaseName)).thenReturn(false);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create((String) null, new ContextConfiguration());
     // evictBootstrapBaseline resolves the baseline file through the server's configuration
-    when(server.getConfiguration()).thenReturn(new ContextConfiguration());
     return server;
   }
 

@@ -193,7 +193,7 @@ class Issue7127StepDownFailureTest {
           .isInstanceOf(TransactionCommittedRemotelyException.class)
           .hasMessageContaining("Do NOT retry")
           .hasCause(fault);
-      verify(raft.broker).replicateTransaction(anyString(), any(), any());
+      assertThat(raft.broker.calls("replicateTransaction")).hasSize(1);
     } finally {
       RaftReplicatedDatabase.TEST_PHASE2_COMMIT_FAULT = null;
       local.setWrappedDatabaseInstance(local);
@@ -215,7 +215,7 @@ class Issue7127StepDownFailureTest {
       return getLivePeers().stream().map(peer -> peer.getId().toString()).collect(Collectors.toSet());
     }
 
-    private final RaftTransactionBroker broker = mock(RaftTransactionBroker.class);
+    private final FakeRaftTransactionBroker broker = new FakeRaftTransactionBroker();
     private int targetedAttempts;
     private int fallbackAttempts;
     private boolean leader = true;
@@ -225,7 +225,7 @@ class Issue7127StepDownFailureTest {
 
     private ControlledTransfers(final ArcadeDBServer server, final ContextConfiguration config) {
       super(server, config);
-      when(broker.replicateTransaction(anyString(), any(), any())).thenReturn(1L);
+      broker.returns("replicateTransaction", 1L);
     }
 
     @Override

@@ -113,7 +113,7 @@ class GraphAnalyticalViewCCHTest {
     final GraphAnalyticalView view = syncView("roads");
     final ContractionHierarchy cch = view.getContractionHierarchy("distance", "ROAD");
     assertThat(cch.awaitReady(false, 60, TimeUnit.SECONDS)).isTrue();
-    final long customizations = cch.getCustomizationCount();
+    final long customizations = cch.getCustomizationCount() + cch.getPartialCustomizationCount();
 
     final Random random = new Random(8);
     database.transaction(() -> {
@@ -128,7 +128,182 @@ class GraphAnalyticalViewCCHTest {
     assertThat(cch.awaitReady(false, 60, TimeUnit.SECONDS)).isTrue();
     assertRandomPairs(random, 150, Vertex.DIRECTION.OUT, ShortestPathFinder.Engine.CONTRACTION_HIERARCHY);
     assertThat(cch.getTopologyBuildCount()).as("a weight change keeps the topology").isEqualTo(1);
-    assertThat(cch.getCustomizationCount()).isGreaterThan(customizations);
+    // a third of the roads changed at once: partially or fully, depending on how much of the hierarchy that reaches
+    assertThat(cch.getCustomizationCount() + cch.getPartialCustomizationCount()).isGreaterThan(customizations);
+  }
+
+  /**
+   * Weight changes, closed roads, removed roads and a road added beside an existing one are caught up incrementally:
+   * the view keeps its base CSR (the new weights live in its overlay), the hierarchy keeps its topology, and only the
+   * arcs above the change are re-customized.
+   */
+  @Test
+  void updatesAreCaughtUpIncrementally() {
+    grid(20, new Random(51));
+    final GraphAnalyticalView view = syncView("roads");
+    final ContractionHierarchy cch = view.getContractionHierarchy("distance", "ROAD");
+    assertThat(cch.awaitReady(true, 60, TimeUnit.SECONDS)).isTrue();
+    final long buildTimestamp = view.getBuildTimestamp();
+    final long fullCustomizations = cch.getCustomizationCount();
+    final Random random = new Random(52);
+    final List<RID> all = new ArrayList<>(roads.keySet());
+
+    // one weight
+    long partials = cch.getPartialCustomizationCount();
+    final RID one = all.get(random.nextInt(all.size()));
+    database.transaction(() -> setDistance(one, 500.0));
+    assertCaughtUp(cch, partials, random);
+
+    // a hundred weights in one commit
+    partials = cch.getPartialCustomizationCount();
+    database.transaction(() -> {
+      for (int i = 0; i < 100; i++)
+        setDistance(all.get(random.nextInt(all.size())), 1 + random.nextInt(60));
+    });
+    assertCaughtUp(cch, partials, random);
+
+    // a closed road: an infinite weight is not walkable
+    partials = cch.getPartialCustomizationCount();
+    final RID closed = all.get(random.nextInt(all.size()));
+    database.transaction(() -> setDistance(closed, Double.POSITIVE_INFINITY));
+    roads.remove(closed);
+    assertCaughtUp(cch, partials, random);
+
+    // a removed road
+    partials = cch.getPartialCustomizationCount();
+    final RID removed = all.get(random.nextInt(all.size()));
+    if (roads.remove(removed) != null)
+      database.transaction(() -> removed.asEdge().delete());
+    assertCaughtUp(cch, partials, random);
+
+    // a second road beside an existing one joins two vertices the hierarchy already joins
+    partials = cch.getPartialCustomizationCount();
+    database.transaction(() -> road(0, 1, 0.25));
+    assertCaughtUp(cch, partials, random);
+
+    assertThat(view.getBuildTimestamp()).as("no update rebuilt the view's CSR").isEqualTo(buildTimestamp);
+    assertThat(cch.getTopologyBuildCount()).as("no update rebuilt the topology").isEqualTo(1);
+    assertThat(cch.getCustomizationCount()).as("no update customized the whole hierarchy").isEqualTo(fullCustomizations);
+  }
+
+  /** New weights held in the overlay count toward compaction: once folded into a rebuilt base, answers stay exact. */
+  @Test
+  void weightUpdatesCrossingTheCompactionThreshold() {
+    grid(15, new Random(61));
+    final GraphAnalyticalView view = GraphAnalyticalView.builder(database).withName("roads").withEdgeTypes("ROAD")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS).withCompactionThreshold(25)
+        .withContractionHierarchy("distance").build();
+    final ContractionHierarchy cch = view.getContractionHierarchy("distance", "ROAD");
+    assertThat(cch.awaitReady(false, 60, TimeUnit.SECONDS)).isTrue();
+    final long buildTimestamp = view.getBuildTimestamp();
+
+    final Random random = new Random(62);
+    final List<RID> all = new ArrayList<>(roads.keySet());
+    for (int commit = 0; commit < 8; commit++) {
+      database.transaction(() -> {
+        for (int i = 0; i < 10; i++)
+          setDistance(all.get(random.nextInt(all.size())), 1 + random.nextInt(80));
+      });
+      assertThat(view.awaitReady(60, TimeUnit.SECONDS)).isTrue();
+      assertThat(cch.awaitReady(false, 60, TimeUnit.SECONDS)).isTrue();
+      // a compaction can publish a newer snapshot at any moment here, answered by Dijkstra until caught up: exact either way
+      assertRandomPairs(random, 30, Vertex.DIRECTION.OUT, null);
+    }
+    final long deadline = System.currentTimeMillis() + 60_000;
+    while (view.getBuildTimestamp() == buildTimestamp && System.currentTimeMillis() < deadline)
+      Thread.yield();
+    assertThat(view.getBuildTimestamp()).as("80 updated edges crossed the threshold of 25: the view compacted").isNotEqualTo(
+        buildTimestamp);
+    assertThat(cch.awaitReady(false, 60, TimeUnit.SECONDS)).isTrue();
+    assertRandomPairs(random, 60, Vertex.DIRECTION.OUT, ShortestPathFinder.Engine.CONTRACTION_HIERARCHY);
+    assertThat(cch.getTopologyBuildCount()).isEqualTo(1);
+  }
+
+  /**
+   * A base edge's new weight is held for its pair while it is the only BASE edge of the pair. A parallel edge added
+   * later lives in the overlay under its own identity, so it neither hides that value nor is mistaken for it.
+   */
+  @Test
+  void aSoleEdgeUpdatedThenGivenAParallelTwin() {
+    grid(10, new Random(71));
+    final GraphAnalyticalView view = syncView("roads");
+    final ContractionHierarchy cch = view.getContractionHierarchy("distance", "ROAD");
+    assertThat(cch.awaitReady(false, 60, TimeUnit.SECONDS)).isTrue();
+    final Random random = new Random(72);
+
+    RID original = null;
+    for (final Map.Entry<RID, double[]> road : roads.entrySet())
+      if ((int) road.getValue()[0] == 0) {
+        original = road.getKey();
+        break;
+      }
+    assertThat(original).isNotNull();
+    final RID edge = original;
+    final int to = (int) roads.get(edge)[1];
+
+    database.transaction(() -> setDistance(edge, 90.0));
+    assertThat(cch.awaitReady(false, 60, TimeUnit.SECONDS)).isTrue();
+    assertRandomPairs(random, 40, Vertex.DIRECTION.OUT, ShortestPathFinder.Engine.CONTRACTION_HIERARCHY);
+
+    database.transaction(() -> road(0, to, 45.0));
+    assertThat(cch.awaitReady(false, 60, TimeUnit.SECONDS)).isTrue();
+    assertThat(find(0, to, Vertex.DIRECTION.OUT).weight()).isLessThanOrEqualTo(45.0);
+    assertRandomPairs(random, 40, Vertex.DIRECTION.OUT, ShortestPathFinder.Engine.CONTRACTION_HIERARCHY);
+
+    database.transaction(() -> setDistance(edge, 2.0));
+    assertThat(cch.awaitReady(false, 60, TimeUnit.SECONDS)).isTrue();
+    assertThat(find(0, to, Vertex.DIRECTION.OUT).weight()).isEqualTo(2.0);
+    assertRandomPairs(random, 40, Vertex.DIRECTION.OUT, ShortestPathFinder.Engine.CONTRACTION_HIERARCHY);
+  }
+
+  private void setDistance(final RID edge, final double distance) {
+    final double[] road = roads.get(edge);
+    if (road != null)
+      road[2] = distance;
+    edge.asEdge().modify().set("distance", distance).save();
+  }
+
+  /**
+   * A weight update to one of two parallel roads rebuilds the view (the column slot cannot be told), and the hierarchy is
+   * UNAVAILABLE meanwhile. It keeps its metric across that state: on the rebuilt base it re-reads the view and finds one
+   * arc changed, so it updates the metric partially instead of customizing it afresh.
+   */
+  @Test
+  void aViewRebuildEndsInAPartialCustomization() {
+    grid(12, new Random(81));
+    database.transaction(() -> road(0, 1, 100.0)); // a parallel twin of the 0 -> 1 road, and the longer of the two
+    final GraphAnalyticalView view = syncView("roads");
+    final ContractionHierarchy cch = view.getContractionHierarchy("distance", "ROAD");
+    assertThat(cch.awaitReady(false, 60, TimeUnit.SECONDS)).isTrue();
+    final long buildTimestamp = view.getBuildTimestamp();
+    final long fullCustomizations = cch.getCustomizationCount();
+    final long partials = cch.getPartialCustomizationCount();
+
+    RID twin = null;
+    for (final Map.Entry<RID, double[]> road : roads.entrySet())
+      if ((int) road.getValue()[0] == 0 && (int) road.getValue()[1] == 1 && road.getValue()[2] == 100.0)
+        twin = road.getKey();
+    final RID edge = twin;
+    database.transaction(() -> setDistance(edge, 0.5));
+
+    final long deadline = System.currentTimeMillis() + 60_000;
+    while ((view.getBuildTimestamp() == buildTimestamp || cch.getPartialCustomizationCount() == partials)
+        && System.currentTimeMillis() < deadline)
+      Thread.yield();
+    assertThat(view.getBuildTimestamp()).as("the parallel pair made the view rebuild").isNotEqualTo(buildTimestamp);
+    assertThat(cch.awaitReady(false, 60, TimeUnit.SECONDS)).isTrue();
+    assertThat(cch.getPartialCustomizationCount()).isGreaterThan(partials);
+    assertThat(cch.getCustomizationCount()).as("no full customization after the rebuild").isEqualTo(fullCustomizations);
+    assertThat(cch.getTopologyBuildCount()).isEqualTo(1);
+    assertThat(find(0, 1, Vertex.DIRECTION.OUT).weight()).isEqualTo(0.5);
+    assertRandomPairs(new Random(82), 60, Vertex.DIRECTION.OUT, ShortestPathFinder.Engine.CONTRACTION_HIERARCHY);
+  }
+
+  private void assertCaughtUp(final ContractionHierarchy cch, final long partialsBefore, final Random random) {
+    assertThat(cch.awaitReady(true, 60, TimeUnit.SECONDS)).isTrue();
+    assertThat(cch.getPartialCustomizationCount()).isGreaterThan(partialsBefore);
+    for (final Vertex.DIRECTION direction : new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT, Vertex.DIRECTION.BOTH })
+      assertRandomPairs(random, 60, direction, ShortestPathFinder.Engine.CONTRACTION_HIERARCHY);
   }
 
   @Test
@@ -152,10 +327,12 @@ class GraphAnalyticalViewCCHTest {
     assertRandomPairs(random, 100, Vertex.DIRECTION.OUT, ShortestPathFinder.Engine.CONTRACTION_HIERARCHY);
     assertThat(cch.getTopologyBuildCount()).isEqualTo(1);
 
-    // a shortcut between two far corners is not an arc of the supergraph: a new topology
+    // a shortcut between two far corners is not an arc of the supergraph: a new topology, contracted in the order the
+    // old one had rather than in a new one
     database.transaction(() -> road(0, junctions.length - 1, 0.5));
     assertThat(cch.awaitReady(false, 60, TimeUnit.SECONDS)).isTrue();
-    assertThat(cch.getTopologyBuildCount()).isEqualTo(2);
+    assertThat(cch.getTopologyBuildCount()).isEqualTo(1);
+    assertThat(cch.getTopologyRecontractionCount()).isEqualTo(1);
     assertRandomPairs(random, 100, Vertex.DIRECTION.OUT, ShortestPathFinder.Engine.CONTRACTION_HIERARCHY);
 
     // a new junction joined to the grid
@@ -168,6 +345,9 @@ class GraphAnalyticalViewCCHTest {
       road(8, junctions.length - 1, 1.0);
     });
     assertThat(cch.awaitReady(false, 60, TimeUnit.SECONDS)).isTrue();
+    // the new junction is ranked below everything the kept order already held
+    assertThat(cch.getTopologyRecontractionCount()).isEqualTo(2);
+    assertThat(cch.getTopologyBuildCount()).isEqualTo(1);
     assertRandomPairs(random, 100, Vertex.DIRECTION.OUT, ShortestPathFinder.Engine.CONTRACTION_HIERARCHY);
   }
 
@@ -527,7 +707,7 @@ class GraphAnalyticalViewCCHTest {
         continue;
       }
       assertThat(result).as("%d -> %d %s", s, t, direction).isNotNull();
-      if (s != t)
+      if (s != t && engine != null)
         assertThat(result.engine()).isEqualTo(engine);
       assertThat(result.weight()).as("%d -> %d %s", s, t, direction).isCloseTo(expected, within(EPS));
       assertThat(result.vertices().getFirst()).isEqualTo(junctions[s]);

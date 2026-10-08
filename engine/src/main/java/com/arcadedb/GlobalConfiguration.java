@@ -425,8 +425,12 @@ public enum GlobalConfiguration {
       worth splitting into parallel ranges. Below this the fan-out (per-range cursor stacks, task \
       dispatch, result merge) costs more than the traversal it parallelises, so the query stays on \
       the caller thread. Counted as the summed document frequency of the query's dims, which is \
-      available from segment metadata without reading a page. Re-read on every query.""",
-      Long.class, 200_000L),
+      available from segment metadata without reading a page. On the default split (arcadedb.sparseVectorScoringMaxPartitions \
+      = 0) the number of ranges also follows this figure, one range per half of it, so a query just \
+      past the threshold is split in two instead of claiming the whole pool and the workers it leaves \
+      alone stay free for other queries. Raise it on a small or shared pool where the extra CPU of \
+      a split matters more than the latency. Re-read on every query.""",
+      Long.class, 50_000L),
 
   SPARSE_VECTOR_SCORING_TIMEOUT_SECONDS("arcadedb.sparseVectorScoringTimeoutSeconds", SCOPE.JVM,
       """
@@ -1628,6 +1632,12 @@ public enum GlobalConfiguration {
       OTLP metrics export endpoint. Metrics are pushed over OTLP/HTTP (protobuf), not gRPC, so this is the collector's \
       HTTP receiver (port 4318, path /v1/metrics), not the gRPC port 4317. A URL without a path gets /v1/metrics \
       appended""", String.class, "http://localhost:4318/v1/metrics"),
+
+  SERVER_METRICS_OTLP_STEP("arcadedb.serverMetrics.otlp.step", SCOPE.SERVER, """
+      How often the server metrics are pushed to the OTLP endpoint, in milliseconds. Also the window a step-based \
+      meter (a rate, a max) is measured over. Not positive keeps Micrometer's default of one minute; a positive value \
+      below 1000 is raised to 1000, so a typo cannot push to the collector in a busy loop. Read when the metrics \
+      plugin starts""", Long.class, 60_000L),
 
   SERVER_METRICS_TRACING_ENABLED("arcadedb.serverMetrics.tracing.enabled", SCOPE.SERVER,
       "Enable OpenTelemetry distributed tracing (requires the optional tracing plugin on the classpath). Note: query/command spans include the statement text as the db.statement span attribute, which may contain sensitive data, so secure the OTLP collector endpoint",

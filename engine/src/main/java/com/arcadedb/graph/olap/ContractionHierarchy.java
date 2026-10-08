@@ -21,10 +21,13 @@ package com.arcadedb.graph.olap;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
+import com.arcadedb.graph.EdgeWeight;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.NodeEdgeWeights;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.utility.IntIntHashMap;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -82,6 +85,10 @@ public final class ContractionHierarchy {
   private static final int  MODE_DIRECTED   = 1;
   private static final int  MODE_UNDIRECTED = 2;
   private static final long MIN_ARC_BUDGET  = 100_000;
+  // A partial customization pays for each changed arc what a full one pays per arc, plus the propagation: past an
+  // eighth of the arcs, a full one is cheaper
+  private static final int  PARTIAL_LIMIT_MIN     = 1_024;
+  private static final int  PARTIAL_LIMIT_DIVISOR = 8;
 
   private final GraphAnalyticalView view;
   private final String              weightProperty;
@@ -99,12 +106,17 @@ public final class ContractionHierarchy {
   private volatile GraphAnalyticalView.Snapshot lastAttempt;
   private final    Object        readyMonitor   = new Object();
 
-  private final LongAdder topologyBuilds      = new LongAdder();
-  private final LongAdder topologyRestores    = new LongAdder();
-  private final LongAdder customizations      = new LongAdder();
-  private final LongAdder customizationsSaved = new LongAdder();
-  private final LongAdder queries             = new LongAdder();
-  private final LongAdder fallbacks           = new LongAdder();
+  private final LongAdder topologyBuilds         = new LongAdder();
+  private final LongAdder topologyRestores       = new LongAdder();
+  private final LongAdder topologyRecontractions = new LongAdder();
+  private final LongAdder customizations         = new LongAdder();
+  private final LongAdder customizationsSaved    = new LongAdder();
+  private final LongAdder partialCustomizations  = new LongAdder();
+  private final LongAdder queries                = new LongAdder();
+  private final LongAdder fallbacks              = new LongAdder();
+  private volatile long   lastPartialCustomizationMicros;
+  private volatile int    lastPartialArcs;
+  private volatile long   lastCatchUpMicros;
   private volatile long   lastTopologyBuildMs;
   private volatile long   lastCustomizationMs;
 
@@ -130,6 +142,11 @@ public final class ContractionHierarchy {
                           CCHMetric directed, CCHMetric undirected) {
     CCHMetric metric(final int mode) {
       return mode == MODE_UNDIRECTED ? undirected : directed;
+    }
+
+    /** The same preparation, no longer tied to (and no longer keeping alive) the snapshot it was made for. */
+    Prepared detached() {
+      return new Prepared(null, root, denseToNode, nodeToDense, directed, undirected);
     }
   }
 
@@ -366,13 +383,20 @@ public final class ContractionHierarchy {
 
   private void prepare(final GraphAnalyticalView.Snapshot snap) {
     lastAttempt = snap;
+    // A commit on the base the last preparation already covered changed a few pairs of vertices: redo those, not the graph
+    final Prepared previous = prepared;
+    if (previous != null && previous.snapshot != null && previous.root == root && previous.snapshot.nodeMapping == snap.nodeMapping
+        && hasRequestedModes(previous) && catchUp(previous, snap))
+      return;
+
     final Input input = view.extractWeightedArcs(snap, edgeTypes, weightProperty, this::isClosed);
     if (closed)
       return;
     if (input == null) {
-      // what was prepared before answers for a snapshot the view no longer serves: holding it would pin that
-      // snapshot's CSR until this hierarchy can be prepared again, which may be never
-      prepared = null;
+      // what was prepared before answers for a snapshot the view no longer serves: holding the snapshot would pin its
+      // CSR until this hierarchy can be prepared again, which may be never. The topology and the metrics stay, so the
+      // next preparation - typically right after the rebuild the view is running - is a partial customization again
+      prepared = previous == null ? null : previous.detached();
       status = Status.UNAVAILABLE;
       statusReason = "the view cannot serve '" + weightProperty + "' exactly for its current snapshot";
       return;
@@ -384,6 +408,8 @@ public final class ContractionHierarchy {
     double[][] undirectedInput = null;
     final int modes = requestedModes.get();
 
+    // the order of the topology the change made unusable: still a valid order, see keptOrder()
+    int[] keptOrder = null;
     if (topologyRoot != null) {
       denseToNode = mapOnto(topologyRoot, snap, input.nodeCount());
       final int[] tails = translate(input.tails(), input.count(), denseToNode);
@@ -397,6 +423,7 @@ public final class ContractionHierarchy {
       final boolean fits = heads != null && ((modes & MODE_DIRECTED) == 0 || directedInput != null)
           && ((modes & MODE_UNDIRECTED) == 0 || undirectedInput != null);
       if (!fits) {
+        keptOrder = keptOrder(topologyRoot, denseToNode, input.nodeCount());
         topologyRoot = null;
         directedInput = null;
         undirectedInput = null;
@@ -408,11 +435,17 @@ public final class ContractionHierarchy {
       final long budget = Math.max(MIN_ARC_BUDGET,
           (long) input.count() * view.getDatabaseConfiguration().getValueAsInteger(GlobalConfiguration.GAV_CCH_MAX_ARCS_PER_EDGE));
       // a CSR restored from disk with nothing committed since may come with the order computed for it before the close
-      final int[] persistedOrder = root == null && snap.restoredFromDisk && snap.overlay == null && view.getName() != null ?
-          CCHOrderPersistence.load(view.getDatabase(), orderFile(), snap.asOfTransactionId) : null;
-      final boolean reusesOrder = persistedOrder != null && persistedOrder.length == input.nodeCount();
-      final CCHTopology topology = CCHTopology.build(input.nodeCount(), input.tails(), input.heads(), input.count(), budget,
-          reusesOrder ? persistedOrder : null, this::isClosed);
+      final int[] persistedOrder = keptOrder == null && root == null && snap.restoredFromDisk && snap.overlay == null
+          && view.getName() != null ? CCHOrderPersistence.load(view.getDatabase(), orderFile(), snap.asOfTransactionId) : null;
+      final int[] order = keptOrder != null ? keptOrder : persistedOrder;
+      final boolean reusesOrder = order != null && order.length == input.nodeCount();
+      CCHTopology topology = CCHTopology.build(input.nodeCount(), input.tails(), input.heads(), input.count(), budget,
+          reusesOrder ? order : null, this::isClosed);
+      final boolean builtFromOrder = reusesOrder && topology != null;
+      // the kept order may have degraded past the budget under the changes it absorbed: a fresh one may not
+      if (topology == null && keptOrder != null && !closed)
+        topology = CCHTopology.build(input.nodeCount(), input.tails(), input.heads(), input.count(), budget, null,
+            this::isClosed);
       if (closed)
         return;
       if (topology == null) {
@@ -425,7 +458,9 @@ public final class ContractionHierarchy {
         return;
       }
       lastTopologyBuildMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - begin);
-      if (reusesOrder)
+      if (builtFromOrder && keptOrder != null)
+        topologyRecontractions.increment();
+      else if (builtFromOrder)
         topologyRestores.increment();
       else
         topologyBuilds.increment();
@@ -438,7 +473,6 @@ public final class ContractionHierarchy {
         undirectedInput = CCHMetric.inputCosts(topology, input.tails(), input.heads(), input.weights(), input.count(), true);
     }
 
-    final Prepared previous = prepared;
     final CCHMetric directed = directedInput == null ? null : metric(previous, topologyRoot, directedInput, false);
     final CCHMetric undirected = undirectedInput == null ? null : metric(previous, topologyRoot, undirectedInput, true);
     if (closed || (directedInput != null && directed == null) || (undirectedInput != null && undirected == null))
@@ -455,14 +489,45 @@ public final class ContractionHierarchy {
     status = Status.READY;
   }
 
-  /** The previous metric when its input costs are unchanged, else a fresh customization. */
+  /**
+   * The previous metric, brought up to these input costs by a partial customization of the arcs that differ (none: as
+   * it is), or a fresh full customization when there is none for this topology or too much has changed for a partial
+   * one to be cheaper. Comparing the costs walks every arc; this is the path of a full re-read of the view (a new base
+   * after a compaction or a rebuild), which costs that much already - commits on the same base take catchUp() instead.
+   */
   private CCHMetric metric(final Prepared previous, final TopologyRoot topologyRoot, final double[][] input,
       final boolean undirected) {
     if (previous != null && previous.root == topologyRoot) {
       final CCHMetric old = undirected ? previous.undirected : previous.directed;
-      if (old != null && old.hasInput(input[0], input[1], undirected)) {
-        customizationsSaved.increment();
-        return old;
+      // a metric whose update failed half way has inputs that may already match these: only a full customization is exact
+      if (old != null && !old.isBroken()) {
+        final int arcs = topologyRoot.topology.arcCount();
+        final int limit = partialLimit(arcs);
+        int[] changed = new int[16];
+        int count = 0;
+        for (int a = 0; a < arcs && count <= limit; a++)
+          // Double.compare, not !=: equal for two NaNs (never produced, but harmless), and costs are never -0.0
+          if (Double.compare(input[0][a], old.inputUp[a]) != 0
+              || (!undirected && Double.compare(input[1][a], old.inputDown[a]) != 0)) {
+            if (count == changed.length)
+              changed = Arrays.copyOf(changed, count * 2);
+            changed[count++] = a;
+          }
+        if (count == 0) {
+          customizationsSaved.increment();
+          return old;
+        }
+        if (count <= limit) {
+          final double[] ups = new double[count];
+          final double[] downs = new double[count];
+          for (int i = 0; i < count; i++) {
+            ups[i] = input[0][changed[i]];
+            if (!undirected)
+              downs[i] = input[1][changed[i]];
+          }
+          partialUpdate(old, changed, ups, downs, count);
+          return old;
+        }
       }
     }
     final long begin = System.nanoTime();
@@ -472,6 +537,171 @@ public final class ContractionHierarchy {
       customizations.increment();
     }
     return metric;
+  }
+
+  /**
+   * Brings the previous preparation up to {@code snap}, which sits on the same base CSR, by re-pricing only the pairs
+   * of vertices whose edges the overlay difference between the two snapshots names, then partially customizing the arcs
+   * that changed. That is what keeps a weight update, a closed road or a removed edge in the milliseconds.
+   * <p>
+   * The metrics are updated in place, so they belong to the hierarchy rather than to one snapshot: a query that started
+   * on the previous preparation and overlaps the update reads either the costs before it or the costs after it, never a
+   * mix (see {@link CCHMetric#update}), and from the moment the view publishes the new snapshot until this preparation
+   * is published for it, queries are answered by Dijkstra as with any other preparation.
+   *
+   * @return false when the change cannot be handled this way - a vertex deleted, an edge between two vertices the
+   * topology does not join, an exact answer refused - and the whole graph has to be read again
+   */
+  private boolean catchUp(final Prepared previous, final GraphAnalyticalView.Snapshot snap) {
+    final long begin = System.nanoTime();
+    final LongPairs pairs = new LongPairs();
+    if (!DeltaOverlay.changedPairs(previous.snapshot.overlay, snap.overlay, pairs::add))
+      return false;
+
+    final CCHTopology topology = previous.root.topology;
+    // more changed pairs than a partial customization would take arcs: the full path decides, before allocating for them
+    if (pairs.size > partialLimit(topology.arcCount()))
+      return false;
+    final int[] rankOf = topology.rankOf;
+    final int[] arcs = new int[pairs.size];
+    final double[] directedUp = new double[pairs.size];
+    final double[] directedDown = new double[pairs.size];
+    final double[] undirectedCost = new double[pairs.size];
+    int count = 0;
+    final IntIntHashMap seen = new IntIntHashMap(Math.max(16, pairs.size * 2));
+    for (int i = 0; i < pairs.size; i++) {
+      final int u = DeltaOverlay.pairSource(pairs.items[i]);
+      final int v = DeltaOverlay.pairTarget(pairs.items[i]);
+      if (u == v)
+        continue;
+      final double uv = pairCost(snap, u, v);
+      final double vu = pairCost(snap, v, u);
+      if (Double.isNaN(uv) || Double.isNaN(vu))
+        return false; // the view could not answer exactly for one of them
+      final int nu = u < previous.denseToNode.length ? previous.denseToNode[u] : -1;
+      final int nv = v < previous.denseToNode.length ? previous.denseToNode[v] : -1;
+      final boolean walkable = uv < CCHMetric.INFINITY || vu < CCHMetric.INFINITY;
+      if (nu < 0 || nv < 0) {
+        if (walkable)
+          return false; // a vertex the topology does not know now has edges
+        continue;
+      }
+      final int ru = rankOf[nu];
+      final int rv = rankOf[nv];
+      final int arc = ru < rv ? topology.findArc(ru, rv) : topology.findArc(rv, ru);
+      if (arc < 0) {
+        if (walkable)
+          return false; // a new connection the supergraph does not have: the topology must be rebuilt
+        continue;
+      }
+      if (seen.put(arc, 1) != Integer.MIN_VALUE)
+        continue;
+      arcs[count] = arc;
+      directedUp[count] = ru < rv ? uv : vu;
+      directedDown[count] = ru < rv ? vu : uv;
+      undirectedCost[count] = Math.min(uv, vu);
+      count++;
+    }
+
+    // past the point where a full customization is cheaper, let the full path decide: it diffs every arc
+    if (count > partialLimit(topology.arcCount()))
+      return false;
+    if (count > 0) {
+      try {
+        if (previous.directed != null)
+          partialUpdate(previous.directed, arcs, directedUp, directedDown, count);
+        if (previous.undirected != null)
+          partialUpdate(previous.undirected, arcs, undirectedCost, undirectedCost, count);
+      } catch (final RuntimeException e) {
+        // The failed metric is marked broken and the other may be updated already, so neither may answer for the
+        // previous snapshot any more: the preparation is detached from it, and the full path customizes the broken one
+        // afresh and brings the other up to date by diffing it
+        prepared = previous.detached();
+        LogManager.instance().log(this, Level.WARNING, "Incremental update of contraction hierarchy on '%s' failed, "
+            + "re-reading the view", e, weightProperty);
+        return false;
+      }
+    } else
+      customizationsSaved.increment();
+
+    prepared = new Prepared(snap, previous.root, previous.denseToNode, previous.nodeToDense, previous.directed,
+        previous.undirected);
+    lastCatchUpMicros = TimeUnit.NANOSECONDS.toMicros(System.nanoTime() - begin);
+    statusReason = null;
+    status = Status.READY;
+    return true;
+  }
+
+  /**
+   * The cheapest walkable edge from dense vertex {@code u} to {@code v} over the routed types in {@code snap}: infinite
+   * when there is none, NaN when the view cannot price it exactly.
+   */
+  private double pairCost(final GraphAnalyticalView.Snapshot snap, final int u, final int v) {
+    if (!view.isNodeLive(snap, u) || !view.isNodeLive(snap, v))
+      return CCHMetric.INFINITY;
+    final NodeEdgeWeights edges = view.edgeWeightsOf(snap, u, Vertex.DIRECTION.OUT, weightProperty, EdgeWeight.MISSING,
+        edgeTypes);
+    if (edges == null)
+      return Double.NaN;
+    double best = CCHMetric.INFINITY;
+    final int[] neighbors = edges.neighbors();
+    final double[] weights = edges.weights();
+    for (int i = 0; i < neighbors.length; i++)
+      if (neighbors[i] == v && EdgeWeight.isWalkable(weights[i]) && weights[i] < best)
+        best = weights[i];
+    return best;
+  }
+
+  /** How many changed arcs a partial customization handles before a full one becomes cheaper. */
+  private static int partialLimit(final int arcs) {
+    return Math.min(arcs, PARTIAL_LIMIT_MIN + arcs / PARTIAL_LIMIT_DIVISOR);
+  }
+
+  private void partialUpdate(final CCHMetric metric, final int[] arcs, final double[] ups, final double[] downs,
+      final int count) {
+    final long begin = System.nanoTime();
+    lastPartialArcs = metric.update(arcs, ups, downs, count);
+    lastPartialCustomizationMicros = TimeUnit.NANOSECONDS.toMicros(System.nanoTime() - begin);
+    partialCustomizations.increment();
+  }
+
+  /** A growable list of packed pairs. */
+  private static final class LongPairs {
+    long[] items = new long[16];
+    int    size;
+
+    void add(final long pair) {
+      if (size == items.length)
+        items = Arrays.copyOf(items, size * 2);
+      items[size++] = pair;
+    }
+  }
+
+  /**
+   * The order of a topology a structural change (an edge between two vertices it does not join, a new vertex with edges)
+   * made unusable, carried over to the dense ids of the new snapshot: vertices it did not know are ranked first, the rest
+   * keep their relative order. Any order is a valid elimination order - the new edges only add some fill to the
+   * contraction - so a structural change costs a contraction and a customization instead of a new nested dissection,
+   * which on a road network is most of the build.
+   */
+  private static int[] keptOrder(final TopologyRoot topologyRoot, final int[] denseToNode, final int nodeCount) {
+    final CCHTopology topology = topologyRoot.topology;
+    final int[] nodeToDense = new int[topology.nodeCount];
+    Arrays.fill(nodeToDense, -1);
+    for (int d = 0; d < denseToNode.length; d++)
+      if (denseToNode[d] >= 0)
+        nodeToDense[denseToNode[d]] = d;
+    final int[] order = new int[nodeCount];
+    int r = 0;
+    for (int d = 0; d < nodeCount; d++)
+      if (d >= denseToNode.length || denseToNode[d] < 0)
+        order[r++] = d;
+    for (int rank = 0; rank < topology.nodeCount; rank++) {
+      final int d = nodeToDense[topology.nodeAt[rank]];
+      if (d >= 0 && d < nodeCount)
+        order[r++] = d;
+    }
+    return r == nodeCount ? order : null;
   }
 
   /**
@@ -596,9 +826,27 @@ public final class ContractionHierarchy {
     return topologyBuilds.sum();
   }
 
+  /** Topologies re-contracted in the order of the one a structural change made unusable, instead of a new order. */
+  public long getTopologyRecontractionCount() {
+    return topologyRecontractions.sum();
+  }
+
   /** Topologies contracted in an order persisted at the previous close, instead of a freshly computed one. */
   public long getTopologyRestoreCount() {
     return topologyRestores.sum();
+  }
+
+  /** Customizations that recomputed only the arcs a change could reach. */
+  public long getPartialCustomizationCount() {
+    return partialCustomizations.sum();
+  }
+
+  /**
+   * Microseconds the last incremental update took, from reading what changed between two snapshots to the partially
+   * customized metric: the latency of a weight change, a closed road or a removed edge.
+   */
+  public long getLastIncrementalUpdateMicros() {
+    return lastCatchUpMicros;
   }
 
   public long getCustomizationCount() {
@@ -644,10 +892,15 @@ public final class ContractionHierarchy {
     stats.put("memoryUsageBytes", getMemoryUsageBytes());
     stats.put("topologyBuilds", topologyBuilds.sum());
     stats.put("topologyRestores", topologyRestores.sum());
+    stats.put("topologyRecontractions", topologyRecontractions.sum());
     stats.put("lastTopologyBuildMs", lastTopologyBuildMs);
     stats.put("customizations", customizations.sum());
     stats.put("customizationsReused", customizationsSaved.sum());
     stats.put("lastCustomizationMs", lastCustomizationMs);
+    stats.put("partialCustomizations", partialCustomizations.sum());
+    stats.put("lastPartialCustomizationMicros", lastPartialCustomizationMicros);
+    stats.put("lastPartialCustomizationArcs", lastPartialArcs);
+    stats.put("lastIncrementalUpdateMicros", lastCatchUpMicros);
     stats.put("queries", queries.sum());
     stats.put("fallbacks", fallbacks.sum());
     return stats;

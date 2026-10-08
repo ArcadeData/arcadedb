@@ -22,6 +22,8 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
+import com.arcadedb.server.TestServerHelper;
+import com.arcadedb.server.UnstartedHttpServers;
 import com.arcadedb.server.http.FakeLeader;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -30,6 +32,7 @@ import io.undertow.Undertow;
 import io.undertow.server.handlers.BlockingHandler;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
 import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
@@ -65,13 +68,15 @@ import static org.mockito.Mockito.when;
  * @author Roberto Franchini (r.franchini@arcadedata.com)
  */
 class Issue7738StreamingBatchRelayReadDeadlineTest {
-
   private static final long   BUDGET_MS        = 1_000L;
   /** The tripwire between "the bound fired" and "the relay is unbounded" (forever, without the fix). */
   private static final long   GAVE_UP_BOUND_MS = 15_000L;
   /** How long the client waits on the follower before calling the relay unbounded. */
   private static final int    CLIENT_READ_MS   = 30_000;
   private static final String FIRST_LINE       = "{\"type\":\"progress\",\"verticesCreated\":1}";
+
+  @RegisterExtension
+  static final UnstartedHttpServers HTTP_SERVERS = new UnstartedHttpServers();
 
   private Undertow follower;
 
@@ -167,17 +172,14 @@ class Issue7738StreamingBatchRelayReadDeadlineTest {
     cfg.setValue(GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT, 5_000L);
     cfg.setValue(GlobalConfiguration.HA_PROXY_BATCH_READ_TIMEOUT, BUDGET_MS);
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(cfg);
-    final HttpServer httpServer = mock(HttpServer.class);
-    when(httpServer.getServer()).thenReturn(server);
+    final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, cfg);
+    final HttpServer httpServer = HTTP_SERVERS.of(server);
     final PostBatchHandler handler = new PostBatchHandler(httpServer);
 
     final HAServerPlugin ha = mock(HAServerPlugin.class);
     when(ha.getLeaderAddress()).thenReturn(leaderAddress);
     when(ha.getClusterToken()).thenReturn("test-token");
-    final ServerSecurityUser user = mock(ServerSecurityUser.class);
-    when(user.getName()).thenReturn("root");
+    final ServerSecurityUser user = TestServerHelper.securityUser("root");
 
     final RelayResult result = new RelayResult();
     follower = Undertow.builder()

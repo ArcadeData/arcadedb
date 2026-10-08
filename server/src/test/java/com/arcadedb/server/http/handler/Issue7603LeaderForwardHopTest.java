@@ -26,6 +26,8 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ForwardedRequestIdContext;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.LeaderForwardContext;
+import com.arcadedb.server.TestServerHelper;
+import com.arcadedb.server.UnstartedHttpServers;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.IdempotencyCache;
 import com.arcadedb.server.http.handler.PostBatchHandler.CountingInputStream;
@@ -38,6 +40,7 @@ import io.undertow.util.Methods;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -78,9 +81,11 @@ import static org.mockito.Mockito.when;
  * socket, and the stream is observed arriving event by event.
  */
 class Issue7603LeaderForwardHopTest {
-
   private static final String LOCAL_PEER  = "peer-follower";
   private static final String LEADER_PEER = "peer-leader";
+
+  @RegisterExtension
+  static final UnstartedHttpServers HTTP_SERVERS = new UnstartedHttpServers();
 
   private StubLeader leader;
 
@@ -440,11 +445,9 @@ class Issue7603LeaderForwardHopTest {
   }
 
   private static HttpServer httpServerWith(final HAServerPlugin ha, final ContextConfiguration configuration) {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getHA()).thenReturn(ha);
-    when(server.getConfiguration()).thenReturn(configuration);
-    final HttpServer httpServer = mock(HttpServer.class);
-    when(httpServer.getServer()).thenReturn(server);
+    final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, configuration);
+    server.setHA(ha);
+    final HttpServer httpServer = HTTP_SERVERS.of(server);
     return httpServer;
   }
 
@@ -463,9 +466,7 @@ class Issue7603LeaderForwardHopTest {
   }
 
   private static ServerSecurityUser user(final String name) {
-    final ServerSecurityUser user = mock(ServerSecurityUser.class);
-    when(user.getName()).thenReturn(name);
-    return user;
+    return TestServerHelper.securityUser(name);
   }
 
   /** Records what the relay wrote and whether it flushed it, the way a client socket would see it. */

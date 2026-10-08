@@ -51,6 +51,7 @@ import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.function.FunctionLibraryDefinition;
 import com.arcadedb.function.FunctionLibraryFactory;
 import com.arcadedb.function.polyglot.PolyglotFunctionDefinition;
+import com.arcadedb.function.polyglot.PolyglotFunctionLibraryDefinition;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexFactory;
@@ -3275,6 +3276,8 @@ public class LocalSchema implements Schema {
 
       warnAboutTypesThatCannotHoldRecords(types.keySet());
 
+      restoreManualIndexNames(root);
+
       // PARSE INDEXES. Warnings for indexes that are not yet present in {@code indexMap} are
       // deferred: the orphan-relinking pass below can match them by bucket prefix when index
       // files have been renamed (e.g. by LSM compaction). Logging upfront produces noisy
@@ -4217,6 +4220,14 @@ public class LocalSchema implements Schema {
       root.put("migratedFileIds", migratedJSON);
     }
 
+    final Map<String, String> manualNames = manualIndexLogicalNames();
+    if (!manualNames.isEmpty()) {
+      final JSONObject manualJSON = new JSONObject();
+      for (final Map.Entry<String, String> entry : manualNames.entrySet())
+        manualJSON.put(entry.getKey(), entry.getValue());
+      root.put(MANUAL_INDEXES, manualJSON);
+    }
+
     return root;
   }
 
@@ -4261,11 +4272,35 @@ public class LocalSchema implements Schema {
         f.onAfterLoad();
   }
 
+  /**
+   * Registers a function library. A library written to the schema file (js, sql, cypher: {@code getLanguage() != null})
+   * is registered inside a schema recording session for the reason {@link #defineFunction} is (issue #9422): a bare map
+   * insertion reached {@code schema.json} only if some unrelated DDL happened to save it later, and was never proposed
+   * to the HA followers. Registering a polyglot library takes security-admin on top of UPDATE_SCHEMA, as
+   * {@code DEFINE FUNCTION ... LANGUAGE js} does. A library backed by native Java code is never in the schema file, so
+   * its registration stays in memory only and costs no schema save.
+   * <p>
+   * The library is serialized when the schema is saved: functions added to it afterwards through
+   * {@link FunctionLibraryDefinition#registerFunction} directly are not a schema change and are neither saved nor
+   * replicated; use {@link #defineFunction} (or {@code DEFINE FUNCTION}) for that.
+   */
   @Override
   public Schema registerFunctionLibrary(final FunctionLibraryDefinition library) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
-    if (functionLibraries.putIfAbsent(library.getName(), library) != null)
-      throw new IllegalArgumentException("Function library '" + library.getName() + "' already registered");
+    if (library.getLanguage() == null) {
+      if (functionLibraries.putIfAbsent(library.getName(), library) != null)
+        throw new IllegalArgumentException("Function library '" + library.getName() + "' already registered");
+      return this;
+    }
+
+    if (library instanceof PolyglotFunctionLibraryDefinition)
+      database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SECURITY);
+
+    recordFileChanges(() -> {
+      if (functionLibraries.putIfAbsent(library.getName(), library) != null)
+        throw new IllegalArgumentException("Function library '" + library.getName() + "' already registered");
+      return null;
+    });
     return this;
   }
 
@@ -4398,6 +4433,39 @@ public class LocalSchema implements Schema {
    * when that name differs from the file the entry is keyed by (issue #9213). See {@link LSMTreeIndex#restoreLogicalName}.
    */
   static final String LOGICAL_INDEX_NAME = "logicalName";
+
+  /**
+   * Key of the schema member that maps the current file of a MANUAL (type-less) LSM index to the name its creator gave
+   * it, written only for an index whose name differs from its file's, i.e. one a compaction has swapped (issue #9434).
+   * A manual index has no type entry to carry a {@link #LOGICAL_INDEX_NAME}, so without this a restart named it after
+   * its post-compaction file.
+   */
+  static final String MANUAL_INDEXES = "manualIndexes";
+
+  /** Current file name -> logical name of every manual LSM index a compaction renamed, in file name order. */
+  private Map<String, String> manualIndexLogicalNames() {
+    final Map<String, String> result = new TreeMap<>();
+    for (final IndexInternal index : indexesDuringLoad()) {
+      if (index.getTypeName() != null)
+        continue;
+      final LSMTreeIndex lsm = lsmTreeIndexOf(index);
+      if (lsm != null && !lsm.getName().equals(lsm.getMostRecentFileName()))
+        result.put(lsm.getMostRecentFileName(), lsm.getName());
+    }
+    return result;
+  }
+
+  /** Gives the manual LSM indexes this load has just built from their files the names they were created with (issue #9434). */
+  private void restoreManualIndexNames(final JSONObject root) {
+    if (!root.has(MANUAL_INDEXES) || root.isNull(MANUAL_INDEXES))
+      return;
+    final JSONObject manual = root.getJSONObject(MANUAL_INDEXES);
+    for (final String fileName : manual.keySet()) {
+      final IndexInternal index = lookupIndex(fileName);
+      if (index != null)
+        restoreLogicalIndexName(fileName, manual.getString(fileName), index);
+    }
+  }
 
   /**
    * The {@link LSMTreeIndex} behind a bucket-level index - itself, or the one a full-text, geospatial or sparse vector

@@ -21,6 +21,7 @@ package com.arcadedb.server.grpc;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.TestServerHelper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -31,8 +32,6 @@ import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Regression test for issue #6756 (1): {@code GrpcServerPlugin.startService()} constructs the
@@ -68,14 +67,12 @@ class Issue6756StartServiceFailureCleanupTest {
     final int occupiedPort = portHog.getLocalPort();
 
     plugin = new GrpcServerPlugin();
-    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
     final ContextConfiguration config = new ContextConfiguration();
     // GrpcServerPlugin reads this back via ContextConfiguration.getValueAsString, which casts the stored
     // value directly to String - it must be stored as a String, not the boxed Integer overload would give.
     config.setValue(GlobalConfiguration.GRPC_PORT.getKey(), String.valueOf(occupiedPort));
-    when(mockServer.getRootPath()).thenReturn(tempDir.toString());
-    when(mockServer.getConfiguration()).thenReturn(config);
-    plugin.configure(mockServer, config);
+    final ArcadeDBServer server = TestServerHelper.unstartedServer(tempDir, config);
+    plugin.configure(server, config);
 
     assertThatThrownBy(plugin::startService).isInstanceOf(RuntimeException.class);
 

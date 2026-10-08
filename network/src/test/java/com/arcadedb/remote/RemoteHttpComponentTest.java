@@ -20,6 +20,7 @@ package com.arcadedb.remote;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
@@ -396,6 +397,65 @@ class RemoteHttpComponentTest {
     final Exception result = component.manageException(response, "test");
 
     assertThat(result).isInstanceOf(DuplicatedKeyException.class);
+  }
+
+  // Issue #9473: the buffered path (httpCommand and every other manageException caller) read parts [0], [1] and [2] of
+  // the DuplicatedKeyException exceptionArgs without checking them, so a malformed value escaped as an
+  // ArrayIndexOutOfBoundsException / IllegalArgumentException and the caller never saw the server's failure
+
+  private static String duplicatedKeyBody(final String exceptionArgs) {
+    return new JSONObject().put("exception", DuplicatedKeyException.class.getName())
+        .put("detail", "Found duplicate key in index").put("exceptionArgs", exceptionArgs).toString();
+  }
+
+  @Test
+  void manageExceptionDuplicatedKeyWithTooFewArgsFallsBackToTheGenericMapping() {
+    final Exception result = component.manageException(409, duplicatedKeyBody("only-one-part"), "command");
+
+    assertThat(result).isExactlyInstanceOf(RemoteException.class);
+    assertThat(result.getMessage()).contains(DuplicatedKeyException.class.getName()).contains("Found duplicate key in index");
+  }
+
+  @Test
+  void manageExceptionDuplicatedKeyWithTwoArgsFallsBackToTheGenericMapping() {
+    final Exception result = component.manageException(409, duplicatedKeyBody("Account[id]|[42]"), "command");
+
+    assertThat(result).isExactlyInstanceOf(RemoteException.class);
+  }
+
+  @Test
+  void manageExceptionDuplicatedKeyWithANonRidLastArgFallsBackToTheGenericMapping() {
+    final Exception result = component.manageException(409, duplicatedKeyBody("Account[id]|[42]|not-a-rid"), "command");
+
+    assertThat(result).isExactlyInstanceOf(RemoteException.class);
+  }
+
+  /** The generic mapping keeps its status-code contract: a malformed duplicate answered 503 is still retry-worthy. */
+  @Test
+  void manageExceptionDuplicatedKeyWithMalformedArgsOn503StaysRetryable() {
+    final Exception result = component.manageException(503, duplicatedKeyBody("only-one-part"), "command");
+
+    assertThat(result).isExactlyInstanceOf(NeedRetryException.class);
+  }
+
+  @Test
+  void manageExceptionDuplicatedKeyWithoutArgsFallsBackToTheGenericMapping() {
+    final String body = new JSONObject().put("exception", DuplicatedKeyException.class.getName())
+        .put("detail", "Found duplicate key in index").toString();
+
+    assertThat(component.manageException(409, body, "command")).isExactlyInstanceOf(RemoteException.class);
+  }
+
+  /** A key VALUE containing the '|' separator used to shift the RID out of parts[2]. */
+  @Test
+  void manageExceptionDuplicatedKeyWithAPipeInTheKeysKeepsItsType() {
+    final Exception result = component.manageException(409, duplicatedKeyBody("Account[name]|[a|b]|#7:1"), "command");
+
+    assertThat(result).isInstanceOf(DuplicatedKeyException.class);
+    final DuplicatedKeyException dup = (DuplicatedKeyException) result;
+    assertThat(dup.getIndexName()).isEqualTo("Account[name]");
+    assertThat(dup.getKeys()).isEqualTo("[a|b]");
+    assertThat(dup.getCurrentIndexedRID()).isEqualTo(new RID(7, 1L));
   }
 
   @Test

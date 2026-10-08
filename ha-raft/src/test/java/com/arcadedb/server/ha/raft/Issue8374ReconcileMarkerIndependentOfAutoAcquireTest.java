@@ -20,7 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
 import org.apache.ratis.server.protocol.TermIndex;
 import org.junit.jupiter.api.Test;
 
@@ -30,8 +30,6 @@ import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Regression tests for issue #8374: a leader-driven snapshot install registered an approximate boundary term
@@ -186,9 +184,8 @@ class Issue8374ReconcileMarkerIndependentOfAutoAcquireTest {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_AUTO_ACQUIRE_DATABASES, autoAcquire);
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(config);
-    when(server.getDatabaseNames()).thenReturn(localDbs);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create((String) null, config);
+    server.databaseNames(localDbs.toArray(new String[0]));
     reconciler.setServer(server);
   }
 

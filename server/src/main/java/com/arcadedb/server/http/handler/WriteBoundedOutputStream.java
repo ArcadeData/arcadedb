@@ -24,13 +24,11 @@ import com.arcadedb.server.http.HttpServer;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.server.ServerConnection;
 import org.xnio.IoUtils;
-import org.xnio.XnioExecutor;
 import org.xnio.XnioIoThread;
 
 import java.io.IOException;
 import java.io.OutputStream;
 import java.util.Objects;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 import java.util.logging.Level;
@@ -126,11 +124,17 @@ public final class WriteBoundedOutputStream extends OutputStream {
    * <p>
    * Scheduled on the connection's own XNIO thread, which is where Undertow schedules its own read and write
    * timeouts, so this adds no pool and no thread; arming is an insertion into that thread's delay queue and
-   * disarming is its removal. It is deliberately NOT Undertow's {@code Options.WRITE_TIMEOUT}: that conduit is
-   * installed only at connection open - setting the option later does nothing at all - and it measures the
-   * interval BETWEEN two successful writes, so a long server-side pause between two writes (the 195-second index
-   * compaction of issue #5470 between two batch progress lines) would kill the connection on the next write that
-   * SUCCEEDED.
+   * disarming is its removal. Arming runs on a worker, so the insertion is handed to the I/O thread through
+   * {@link IoThreadTimer}: a watchdog added straight from the worker can be missed by the selector and never fire,
+   * leaving the worker blocked on the client the watchdog exists to bound (#9439). The budget then starts when the I/O
+   * thread takes the hand-over, one turn of that thread later than the write: nothing next to a budget in seconds.
+   * Arming through the hand-over measured no dearer than the direct insertion it replaces (about 100 ns per
+   * arm-and-disarm against 200 ns), because a disarm that beats the hand-over never touches the delay queue at all.
+   * <p>
+   * It is deliberately NOT Undertow's {@code Options.WRITE_TIMEOUT}: that conduit is installed only at connection
+   * open - setting the option later does nothing at all - and it measures the interval BETWEEN two successful
+   * writes, so a long server-side pause between two writes (the 195-second index compaction of issue #5470 between
+   * two batch progress lines) would kill the connection on the next write that SUCCEEDED.
    * <p>
    * Arming and firing are settled by one compare-and-set, so a write that returns just as its timer fires can
    * never have the connection closed under the request that follows it on the same keep-alive connection:
@@ -153,7 +157,7 @@ public final class WriteBoundedOutputStream extends OutputStream {
     final XnioIoThread ioThread = exchange.getIoThread();
     return () -> {
       final AtomicBoolean armed = new AtomicBoolean(true);
-      final XnioExecutor.Key key = ioThread.executeAfter(() -> {
+      final Runnable cancel = IoThreadTimer.schedule(ioThread, () -> {
         if (!armed.compareAndSet(true, false))
           // The write returned between this task being dequeued and this line. Closing now would take down a
           // connection that is already serving something else.
@@ -163,10 +167,10 @@ public final class WriteBoundedOutputStream extends OutputStream {
                 + "rather than holding a worker thread indefinitely. Raise '%s' to allow a longer block", null,
             capitalize(what.get()), timeoutMs, GlobalConfiguration.SERVER_HTTP_STREAMING_WRITE_TIMEOUT.getKey());
         IoUtils.safeClose(connection);
-      }, timeoutMs, TimeUnit.MILLISECONDS);
+      }, timeoutMs);
       return () -> {
         if (armed.compareAndSet(true, false))
-          key.remove();
+          cancel.run();
       };
     };
   }

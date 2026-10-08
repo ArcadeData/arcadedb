@@ -143,7 +143,6 @@ class Issue8555SecurityConvergenceStatusTest {
   @Test
   void everyControlPlaneOfAServerSeesTheSameWindow() throws InterruptedException {
     final ArcadeDBServer server = onlineServerWith(staticMemberHa("users"), configurationWith(1L));
-    when(server.getSecurityConvergenceGate()).thenReturn(new SecurityConvergenceGate());
     final ServerControlPlane readinessProbe = new ServerControlPlane(server);
     final ServerControlPlane statusHandler = new ServerControlPlane(server);
 
@@ -167,8 +166,7 @@ class Issue8555SecurityConvergenceStatusTest {
     final HAServerPlugin ha = staticMemberHa("users");
     when(ha.getElectionStatus()).thenReturn(HAServerPlugin.ELECTION_STATUS.VOTING_FOR_ME);
     final SecurityConvergenceGate gate = new SecurityConvergenceGate();
-    final ArcadeDBServer server = onlineServerWith(ha, configurationWith(LONG_WINDOW_MS));
-    when(server.getSecurityConvergenceGate()).thenReturn(gate);
+    final ArcadeDBServer server = onlineServerWith(ha, configurationWith(LONG_WINDOW_MS)).securityConvergenceGate(gate);
     final ServerControlPlane controlPlane = new ServerControlPlane(server);
 
     assertThat(controlPlane.getSecurityConvergenceStatus()).isEqualTo(SecurityConvergenceStatus.NOT_CONVERGING);
@@ -188,8 +186,7 @@ class Issue8555SecurityConvergenceStatusTest {
   void aGaveUpNodeStaysReportedWhileHeldForAnotherReasonWithoutStartingAClock() throws InterruptedException {
     final HAServerPlugin ha = staticMemberHa("users");
     final SecurityConvergenceGate gate = new SecurityConvergenceGate();
-    final ArcadeDBServer server = onlineServerWith(ha, configurationWith(1L));
-    when(server.getSecurityConvergenceGate()).thenReturn(gate);
+    final ArcadeDBServer server = onlineServerWith(ha, configurationWith(1L)).securityConvergenceGate(gate);
     final ServerControlPlane controlPlane = new ServerControlPlane(server);
 
     assertThat(controlPlane.notReadyReason()).isNotNull();
@@ -230,14 +227,12 @@ class Issue8555SecurityConvergenceStatusTest {
     return configuration;
   }
 
-  private static ArcadeDBServer onlineServerWith(final HAServerPlugin ha, final ContextConfiguration configuration) {
-    final ServerSecurity security = mock(ServerSecurity.class);
-    when(security.unconvergedClusterSecurityDocuments()).thenReturn(List.of());
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getStatus()).thenReturn(ArcadeDBServer.STATUS.ONLINE);
-    when(server.getConfiguration()).thenReturn(configuration);
-    when(server.getHA()).thenReturn(ha);
-    when(server.getSecurity()).thenReturn(security);
+  private static FakeArcadeDBServer onlineServerWith(final HAServerPlugin ha, final ContextConfiguration configuration) {
+    final ServerSecurity security = TestServerHelper.securityConvergedExcept();
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create((String) null, configuration);
+    server.online();
+    server.setHA(ha);
+    server.security(security);
     return server;
   }
 }

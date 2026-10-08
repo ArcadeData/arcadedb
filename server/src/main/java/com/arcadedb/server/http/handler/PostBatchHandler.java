@@ -49,7 +49,6 @@ import io.undertow.util.HeaderValues;
 import io.undertow.util.Headers;
 import io.undertow.util.HttpString;
 import org.xnio.Options;
-import org.xnio.XnioExecutor;
 import org.xnio.XnioIoThread;
 
 import java.io.BufferedReader;
@@ -73,9 +72,7 @@ import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
 import java.util.Locale;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import java.util.logging.Level;
@@ -961,10 +958,8 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
         // through), 'exceptionArgs' carries the duplicate's index|keys|rid or the leader address, and the message
         // chain travels in 'detail' - which production mode conceals here exactly as it does there, instead of
         // the raw message this line used to carry in every mode (issue #8236, PR #8237 review).
-        final ErrorClassification classification = classifyError(reported);
-        final JSONObject error = new JSONObject(buildErrorBody(!isProductionMode(), classification.message(),
-            classification.reported(), classification.exceptionArgs(), getCorrelationId(exchange)))
-            .put("status", classification.status());
+        // 'retryAfter' carries the back-off the buffered encoding sends as a Retry-After header (issue #8899).
+        final JSONObject error = buildStreamedErrorLine(exchange, classifyError(reported));
         // What a client reconciles with, and what the buffered encoding still delivers for this same failure:
         // its counters travel in the error body, and its bookmark is emitted by the finally in execute(). Both
         // were dropped here, which is the one place this encoding was worse than the one it extends
@@ -1052,28 +1047,13 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     }
   }
 
-  /** The {@link ReadBoundedInputStream.Timer} of this exchange's XNIO thread, where the write watchdog runs too. */
+  /**
+   * The {@link ReadBoundedInputStream.Timer} of this exchange's XNIO thread, where the write watchdog runs too. Scheduled
+   * through {@link IoThreadTimer}, which hands the timer to the I/O thread rather than racing its selector (#9216, #9439).
+   */
   private static ReadBoundedInputStream.Timer ioThreadTimer(final HttpServerExchange exchange) {
     final XnioIoThread ioThread = exchange.getIoThread();
-    return (task, delayMs) -> {
-      // Scheduled FROM the I/O thread (issue #9216). XNIO wakes its selector for a delayed task added by another thread
-      // only when the selector is already polling: one added while the thread is between computing its next wait and
-      // starting it is not seen, and the selector can sleep past its deadline - indefinitely when nothing else is
-      // queued. An immediate task has no such window, and a delayed one added on the I/O thread is seen by the next
-      // wait it computes. A cancel that races the hand-over leaves the task to fire; the stream ignores a disarmed one.
-      final AtomicBoolean cancelled = new AtomicBoolean();
-      final AtomicReference<XnioExecutor.Key> key = new AtomicReference<>();
-      ioThread.execute(() -> {
-        if (!cancelled.get())
-          key.set(ioThread.executeAfter(task, delayMs, TimeUnit.MILLISECONDS));
-      });
-      return () -> {
-        cancelled.set(true);
-        final XnioExecutor.Key scheduled = key.get();
-        if (scheduled != null)
-          scheduled.remove();
-      };
-    };
+    return (task, delayMs) -> IoThreadTimer.schedule(ioThread, task, delayMs);
   }
 
   /**
@@ -2423,10 +2403,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    */
   private void writeRelayedCapRefusal(final HttpServerExchange exchange, final String databaseName,
       final OutputStream out, final RequestTooBigException tooBig, final long[] lastProgress) {
-    final ErrorClassification classification = classifyError(tooBig);
-    final JSONObject error = new JSONObject(buildErrorBody(!isProductionMode(), classification.message(),
-        classification.reported(), classification.exceptionArgs(), getCorrelationId(exchange)))
-        .put("status", classification.status());
+    final JSONObject error = buildStreamedErrorLine(exchange, classifyError(tooBig));
     final long vertices = lastProgress[0];
     final long edges = lastProgress[1];
     error.put("verticesCreated", vertices);

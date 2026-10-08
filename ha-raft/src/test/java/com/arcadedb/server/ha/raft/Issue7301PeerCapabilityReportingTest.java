@@ -23,6 +23,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -38,8 +39,6 @@ import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Issue #7301, a follow-up to #7219: what {@code GET /api/v1/cluster} is entitled to say about a peer's
@@ -357,8 +356,7 @@ class Issue7301PeerCapabilityReportingTest {
     configuration.setValue(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE, truststore.getAbsolutePath());
     configuration.setValue(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE_PASSWORD, password);
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(configuration);
+    final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, configuration);
     return server;
   }
 
@@ -367,8 +365,7 @@ class Issue7301PeerCapabilityReportingTest {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_SERVER_LIST, "localhost:2434:2480,localhost:2435:2481");
 
-    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
-    when(mockServer.getServerName()).thenReturn("ArcadeDB_0");
-    return new RaftHAServer(mockServer, config);
+    final ArcadeDBServer arcadeServer = TestServerHelper.unstartedServer("ArcadeDB_0");
+    return new RaftHAServer(arcadeServer, config);
   }
 }

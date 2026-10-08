@@ -79,6 +79,8 @@ class PrometheusEngineMetricsIT extends BaseGraphServerTest {
     assertThat(response.body()).contains("# TYPE arcadedb_engine_page_cache_hits_total counter");
     assertThat(response.body()).contains("# TYPE arcadedb_engine_queries_total counter");
     assertThat(response.body()).contains("# TYPE arcadedb_engine_databases gauge");
+    // #9235: the follower-side signal of #8649, a count(*) that keeps being a full scan
+    assertThat(response.body()).contains("# TYPE arcadedb_engine_bucket_recount_publishes_refused_total counter");
     // New RED timer series present (HTTP request timer is always-on):
     assertThat(response.body()).contains("arcadedb_http_requests");
   }

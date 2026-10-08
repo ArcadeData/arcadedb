@@ -1120,7 +1120,16 @@ body.col-resizing * {
   border-bottom: 1px solid var(--border-light);
 }
 
+/* A BUTTON (ISSUE #9375): THE WIDTH, BORDER, BACKGROUND, FONT AND ALIGNMENT STRIP THE NATIVE CHROME SO IT STILL LOOKS
+   LIKE THE FULL-WIDTH ROW IT REPLACED */
 .reference-section-header {
+  width: 100%;
+  margin: 0;
+  border: 0;
+  background: none;
+  font-family: inherit;
+  line-height: inherit;
+  text-align: left;
   padding: 8px 12px;
   font-size: 0.78rem;
   font-weight: 600;
@@ -1132,7 +1141,8 @@ body.col-resizing * {
   user-select: none;
 }
 
-.reference-section-header:hover {
+.reference-section-header:hover,
+.reference-section-header:focus-visible {
   background-color: var(--bg-reference);
 }
 
@@ -1155,9 +1165,16 @@ body.col-resizing * {
   display: block;
 }
 
+/* A BUTTON (ISSUE #9375): display, width, border AND text-align STRIP THE NATIVE CHROME SO IT STILL LOOKS LIKE THE
+   FULL-WIDTH BLOCK IT REPLACED */
 .reference-example {
+  display: block;
+  width: 100%;
+  margin: 0 0 4px;
+  border: 0;
+  text-align: left;
+  line-height: inherit;
   padding: 4px 8px;
-  margin-bottom: 4px;
   border-radius: 4px;
   font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
   font-size: 0.72rem;
@@ -1170,6 +1187,13 @@ body.col-resizing * {
 
 .reference-example:hover {
   background-color: #dbeafe;
+}
+
+.reference-section-header:focus-visible,
+.reference-example:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: -2px;
+  border-radius: 3px;
 }
 
 /* CodeMirror Autocomplete Hints */
@@ -4049,14 +4073,52 @@ body.col-resizing * {
 
 /* Quick Start Panel */
 .quick-start-card {
+  position: relative;
   cursor: pointer;
   transition: border-color 0.2s, box-shadow 0.2s;
   border: 1px solid var(--border-ddd, #dee2e6);
 }
 
-.quick-start-card:hover {
+.quick-start-card:hover,
+.quick-start-card:focus-within {
   border-color: #00aeee;
   box-shadow: 0 2px 8px rgba(0, 174, 238, 0.15);
+}
+
+/* THE IMPORT BUTTON WRAPS THE DATASET NAME ONLY (ISSUE #9375): STRIP THE NATIVE CHROME SO THE NAME LOOKS AS BEFORE, AND
+   STRETCH ITS ::after OVER THE WHOLE CARD SO A CLICK ANYWHERE ON THE CARD STILL LANDS ON THE BUTTON */
+.quick-start-card-button {
+  padding: 0;
+  margin: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.quick-start-card-button::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border-radius: inherit;
+}
+
+.quick-start-card-button:focus-visible {
+  outline: none;
+}
+
+.quick-start-card-button:focus-visible::after {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* THE INFO LINK SITS ABOVE THE STRETCHED BUTTON LAYER, OR A CLICK ON IT WOULD START THE IMPORT */
+.quick-start-card-info {
+  position: relative;
+  z-index: 2;
 }
 
 .quick-start-divider {

@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.TestServerHelper;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
@@ -29,7 +30,6 @@ import java.net.http.HttpClient;
 
 import static com.arcadedb.utility.SubclassMocks.mock;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.when;
 
 /**
  * Regression test for a review finding on PR #7650: {@link RaftReplicatedDatabase} used to build its own
@@ -59,20 +59,18 @@ class Issue7650SharedForwardHttpClientTest {
     config.setValue(GlobalConfiguration.HA_SERVER_LIST, "localhost:2434:2480");
     config.setValue(GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT, 4_000L);
 
-    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
-    when(mockServer.getServerName()).thenReturn("localhost");
-    when(mockServer.getConfiguration()).thenReturn(config);
+    final ArcadeDBServer arcadeServer = TestServerHelper.unstartedServer("localhost", config);
 
-    final RaftHAServer raft = new RaftHAServer(mockServer, config);
+    final RaftHAServer raft = new RaftHAServer(arcadeServer, config);
 
     // Same instance every time it is asked, not rebuilt per call.
     assertThat(raft.getForwardHttpClient()).isSameAs(raft.getForwardHttpClient());
 
     // What RaftHAPlugin's server.setDatabaseWrapper now does for every database it wraps: pass the ONE
     // shared client into each RaftReplicatedDatabase, instead of letting each build its own.
-    final RaftReplicatedDatabase db1 = new RaftReplicatedDatabase(mockServer, mock(LocalDatabase.class), raft,
+    final RaftReplicatedDatabase db1 = new RaftReplicatedDatabase(arcadeServer, mock(LocalDatabase.class), raft,
         raft.getForwardHttpClient());
-    final RaftReplicatedDatabase db2 = new RaftReplicatedDatabase(mockServer, mock(LocalDatabase.class), raft,
+    final RaftReplicatedDatabase db2 = new RaftReplicatedDatabase(arcadeServer, mock(LocalDatabase.class), raft,
         raft.getForwardHttpClient());
 
     assertThat(httpClientOf(db1))
@@ -89,10 +87,9 @@ class Issue7650SharedForwardHttpClientTest {
   @Test
   void theThreeArgConstructorStillBuildsItsOwnClientWhenNoneIsShared() throws Exception {
     final ContextConfiguration config = new ContextConfiguration();
-    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
-    when(mockServer.getConfiguration()).thenReturn(config);
+    final ArcadeDBServer arcadeServer = TestServerHelper.unstartedServer((String) null, config);
 
-    final RaftReplicatedDatabase db = new RaftReplicatedDatabase(mockServer, mock(LocalDatabase.class), mock(RaftHAServer.class));
+    final RaftReplicatedDatabase db = new RaftReplicatedDatabase(arcadeServer, mock(LocalDatabase.class), FakeRaftHAServer.detached());
 
     assertThat(httpClientOf(db)).isNotNull();
   }

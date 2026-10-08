@@ -23,8 +23,6 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.security.ServerSecurity;
 import org.junit.jupiter.api.Test;
 
-import java.util.List;
-
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
@@ -132,9 +130,7 @@ class Issue7819RuntimeJoinArmsSecurityGateTest {
   }
 
   private static ServerSecurity securityMissing(final String... documents) {
-    final ServerSecurity security = mock(ServerSecurity.class);
-    when(security.unconvergedClusterSecurityDocuments()).thenReturn(List.of(documents));
-    return security;
+    return TestServerHelper.securityConvergedExcept(documents);
   }
 
   /** The window is left at its default on purpose: see the class javadoc. */
@@ -143,11 +139,10 @@ class Issue7819RuntimeJoinArmsSecurityGateTest {
     configuration.setValue(GlobalConfiguration.HA_ENABLED, true);
     configuration.setValue(GlobalConfiguration.SERVER_READINESS_REQUIRES_HA, true);
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getStatus()).thenReturn(ArcadeDBServer.STATUS.ONLINE);
-    when(server.getConfiguration()).thenReturn(configuration);
-    when(server.getHA()).thenReturn(ha);
-    when(server.getSecurity()).thenReturn(security);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create((String) null, configuration);
+    server.online();
+    server.setHA(ha);
+    server.security(security);
     return server;
   }
 }

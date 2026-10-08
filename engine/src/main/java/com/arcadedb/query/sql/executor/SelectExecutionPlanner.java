@@ -91,6 +91,8 @@ import com.arcadedb.engine.timeseries.AggregationType;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.MultiColumnAggregationRequest;
 import com.arcadedb.engine.timeseries.TagFilter;
+import com.arcadedb.engine.timeseries.TimeSeriesEngine;
+import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.function.sql.time.SQLFunctionTimeBucket;
 import com.arcadedb.function.sql.time.SQLFunctionTsLast;
@@ -116,6 +118,7 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -3549,8 +3552,9 @@ public class SelectExecutionPlanner {
     if (info.distinct)
       return false;
 
-    // Must have exactly one GROUP BY
-    if (info.groupBy == null || info.groupBy.getItems() == null || info.groupBy.getItems().size() != 1)
+    // Must group by the time bucket, by TAG columns, or by both (issue #9489): at most one bucket and as many tags as the engine groups by
+    if (info.groupBy == null || info.groupBy.getItems() == null || info.groupBy.getItems().isEmpty()
+        || info.groupBy.getItems().size() > 1 + TimeSeriesEngine.MAX_GROUP_COLUMNS)
       return false;
 
     // No unsupported clauses
@@ -3569,11 +3573,25 @@ public class SelectExecutionPlanner {
     final List<MultiColumnAggregationRequest> requests = new ArrayList<>();
     final Map<String, String> requestAliasToOutputAlias = new HashMap<>();
     final List<ColumnDefinition> columns = tsType.getTsColumns();
+    // The projection in the order the query wrote it, and the bare TAG columns it names (output name -> column name)
+    final List<AggregateFromTimeSeriesStep.OutputColumn> outputs = new ArrayList<>();
+    final Map<String, String> projectedTags = new LinkedHashMap<>();
 
     for (final ProjectionItem item : originalProjection.getItems()) {
       final FunctionCall funcCall = extractFunctionCall(item.expression);
-      if (funcCall == null)
-        return false; // not a simple function call — bail out
+      if (funcCall == null) {
+        // The only other item a grouped answer carries is a bare TAG column, which must be one of the grouping keys (checked below)
+        if (item.expression == null || !item.expression.isBaseIdentifier())
+          return false; // not a simple function call or a tag — bail out
+        final String tagName = item.expression.toString().trim();
+        if (!isTimeSeriesTagColumn(columns, tagName))
+          return false;
+        final String outputName = item.getProjectionAliasAsString();
+        if (projectedTags.put(outputName, tagName) != null)
+          return false; // two columns under one name
+        outputs.add(new AggregateFromTimeSeriesStep.OutputColumn(outputName, AggregateFromTimeSeriesStep.OutputColumn.Kind.TAG, -1));
+        continue;
+      }
 
       final String funcName = funcCall.getName().getStringValue();
 
@@ -3582,6 +3600,7 @@ public class SelectExecutionPlanner {
         if (timeBucketAlias != null)
           return false; // duplicate timeBucket
         timeBucketAlias = item.getProjectionAliasAsString();
+        outputs.add(new AggregateFromTimeSeriesStep.OutputColumn(timeBucketAlias, AggregateFromTimeSeriesStep.OutputColumn.Kind.BUCKET, -1));
         // Extract interval from first parameter
         if (funcCall.getParams().size() < 2)
           return false;
@@ -3646,6 +3665,7 @@ public class SelectExecutionPlanner {
         }
 
         final String alias = item.getProjectionAliasAsString();
+        outputs.add(new AggregateFromTimeSeriesStep.OutputColumn(alias, AggregateFromTimeSeriesStep.OutputColumn.Kind.AGGREGATE, requests.size()));
         // The factory turns the schema index into the ROW index the request carries, and gives a COUNT no
         // column at all - the two rules every producer of a request has to get right (issue #8140).
         requests.add(aggType == AggregationType.COUNT
@@ -3655,19 +3675,75 @@ public class SelectExecutionPlanner {
       }
     }
 
-    // Must have found both timeBucket and at least one aggregate
-    if (timeBucketAlias == null || intervalStr == null || requests.isEmpty())
+    // Must have found at least one aggregate
+    if (requests.isEmpty())
       return false;
 
-    // Verify GROUP BY references the timeBucket alias
-    final String groupByStr = info.groupBy.getItems().get(0).toString().trim();
-    if (!groupByStr.equals(timeBucketAlias))
+    // Every GROUP BY key is the time bucket (by its alias) or a TAG column (by its projected name, or its own name when it is not projected)
+    boolean groupsByBucket = false;
+    final List<String> groupTags = new ArrayList<>();
+    // The keys as the query wrote them: info.groupBy has already swapped a key the projection does not show for a generated alias
+    final GroupBy writtenGroupBy = statement.getGroupBy() != null && statement.getGroupBy().getItems() != null
+        && statement.getGroupBy().getItems().size() == info.groupBy.getItems().size() ? statement.getGroupBy() : info.groupBy;
+    for (final Object groupByItem : writtenGroupBy.getItems()) {
+      final String key = groupByItem.toString().trim();
+      final String tagName;
+      if (timeBucketAlias != null && key.equals(timeBucketAlias)) {
+        if (groupsByBucket)
+          return false;
+        groupsByBucket = true;
+        continue;
+      } else if (projectedTags.containsKey(key))
+        tagName = projectedTags.get(key);
+      else if (isTimeSeriesTagColumn(columns, key))
+        tagName = key;
+      else
+        return false;
+      if (groupTags.contains(tagName))
+        return false;
+      groupTags.add(tagName);
+    }
+
+    // A time bucket in the projection must be grouped by (otherwise it is one arbitrary value per group), and so must every projected
+    // tag: the answer has one row per group
+    if ((timeBucketAlias != null) != groupsByBucket)
+      return false;
+    for (final String projectedTag : projectedTags.values())
+      if (!groupTags.contains(projectedTag))
+        return false;
+    // Without a bucket the query groups by tags alone, which is answered as one bucket per group
+    if (timeBucketAlias == null && groupTags.isEmpty())
+      return false;
+    if (groupTags.size() > TimeSeriesEngine.MAX_GROUP_COLUMNS)
+      return false;
+    if (timeBucketAlias != null && intervalStr == null)
       return false;
 
-    // Parse interval
+    // The grouping columns as the engine numbers them: among the columns that are not the timestamp, which is what a tag filter uses too
+    final int[] groupColumns = new int[groupTags.size()];
+    for (int g = 0; g < groupColumns.length; g++) {
+      int nonTimestampIndex = 0;
+      int found = -1;
+      for (final ColumnDefinition column : columns) {
+        if (column.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+          continue;
+        if (column.getName().equals(groupTags.get(g))) {
+          // Only a dictionary-coded column can be grouped by id; any other tag stays on the generic path
+          if (column.getCompressionHint() == TimeSeriesCodec.DICTIONARY)
+            found = nonTimestampIndex;
+          break;
+        }
+        nonTimestampIndex++;
+      }
+      if (found < 0)
+        return false;
+      groupColumns[g] = found;
+    }
+
+    // Parse interval (a query grouping by tags alone has none: one bucket per group)
     final long bucketIntervalMs;
     try {
-      bucketIntervalMs = SQLFunctionTimeBucket.parseInterval(intervalStr);
+      bucketIntervalMs = intervalStr != null ? SQLFunctionTimeBucket.parseInterval(intervalStr) : 0L;
     } catch (final IllegalArgumentException e) {
       return false;
     }
@@ -3678,13 +3754,13 @@ public class SelectExecutionPlanner {
     // bucketIntervalMs as "one bucket over the whole range" - so the SAME query answered one row when it was
     // pushed down and threw when it was not. Bailing out here is what makes the two plans agree: the normal
     // aggregation path then evaluates ts.timeBucket() per row and raises that existing refusal (issue #7675).
-    if (bucketIntervalMs <= 0)
+    if (intervalStr != null && bucketIntervalMs <= 0)
       return false;
 
     // Same for the grid options: a malformed one is the generic path's to refuse, with the message the function gives
     final long bucketOffsetMs;
     try {
-      bucketOffsetMs = SQLFunctionTimeBucket.resolveOffset(bucketOptions, intervalStr, bucketIntervalMs);
+      bucketOffsetMs = intervalStr != null ? SQLFunctionTimeBucket.resolveOffset(bucketOptions, intervalStr, bucketIntervalMs) : 0L;
     } catch (final IllegalArgumentException e) {
       return false;
     }
@@ -3701,8 +3777,19 @@ public class SelectExecutionPlanner {
       return false;
 
     // Chain the push-down step
-    plan.chain(new AggregateFromTimeSeriesStep(tsType, fromTs, toTs, requests, bucketIntervalMs, bucketOffsetMs,
-        timeBucketAlias, requestAliasToOutputAlias, tagFilter, context));
+    if (groupTags.isEmpty())
+      plan.chain(new AggregateFromTimeSeriesStep(tsType, fromTs, toTs, requests, bucketIntervalMs, bucketOffsetMs,
+          timeBucketAlias, requestAliasToOutputAlias, tagFilter, context));
+    else {
+      // A projected tag points at its position among the grouping keys
+      final List<AggregateFromTimeSeriesStep.OutputColumn> groupedOutputs = new ArrayList<>(outputs.size());
+      for (final AggregateFromTimeSeriesStep.OutputColumn output : outputs)
+        groupedOutputs.add(output.kind() == AggregateFromTimeSeriesStep.OutputColumn.Kind.TAG ?
+            new AggregateFromTimeSeriesStep.OutputColumn(output.name(), output.kind(), groupTags.indexOf(projectedTags.get(output.name()))) :
+            output);
+      plan.chain(new AggregateFromTimeSeriesStep(tsType, fromTs, toTs, requests, bucketIntervalMs, bucketOffsetMs, timeBucketAlias,
+          requestAliasToOutputAlias, tagFilter, groupColumns, groupTags.toArray(new String[0]), groupedOutputs, context));
+    }
 
     // Null out the aggregate projections so handleProjections doesn't add duplicate steps
     info.preAggregateProjection = null;
@@ -5241,14 +5328,18 @@ public class SelectExecutionPlanner {
   }
 
   /**
-   * True when a condition answered through {@code field.toLowerCase()} must still be checked on what the index returns:
-   * an equality or IN whose operand is not a lower-case literal (a parameter cannot be judged now). A range or BETWEEN is
-   * index-aware only with lower-case literal bounds, and an operand that is its own lower-case form is probed as written,
-   * so neither needs the check (issue #8560).
+   * True when a condition answered by a case-insensitive index must still be checked on what the index returns: the plain
+   * property's equality or IN (issue #9403), and through {@code field.toLowerCase()} an equality or IN whose operand is
+   * not a lower-case literal (a parameter cannot be judged now). A range or BETWEEN is index-aware only with lower-case
+   * literal bounds, and an operand that is its own lower-case form is probed as written, so neither needs the check
+   * (issue #8560).
    */
   private static boolean needsLowerCaseResidual(final BooleanExpression expression, final IndexSearchInfo info) {
+    // The plain property compared to a value is case sensitive, but the folded probe also returns the rows that differ
+    // from it only in case: the condition stays as a filter, so the answer is the one a scan gives (issue #9403)
     if (!isLowerCaseRewrite(expression, info))
-      return false;
+      return (expression instanceof BinaryCondition condition && condition.getOperator() instanceof EqualsCompareOperator)
+          || expression instanceof InCondition;
     final CommandContext context = info.getContext();
     if (expression instanceof BinaryCondition condition)
       return condition.getOperator() instanceof EqualsCompareOperator && !BinaryCondition.isLowerCaseLiteral(condition.getRight(), context);

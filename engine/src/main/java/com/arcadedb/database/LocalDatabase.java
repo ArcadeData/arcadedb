@@ -3500,11 +3500,6 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       DatabaseContext.INSTANCE.init(this);
       setLockingEnabled(configuration.getValueAsBoolean(GlobalConfiguration.BACKUP_ENABLED));
 
-      // #6075 (challenge C8): the copy-on-write shadow of a snapshot window is pure scratch - recovery never reads
-      // it - so a crash mid-window leaves nothing but an orphan file to delete here. Its extension is deliberately
-      // absent from SUPPORTED_FILE_EXT, so the FileManager scan below never mistakes one for a data file.
-      deleteOrphanSnapshotShadows();
-
       fileManager = new FileManager(databasePath, mode, SUPPORTED_FILE_EXT, resolveExternalBucketPath());
       fileManager.setDroppedFileHandler(file -> PageManager.INSTANCE.deferFileDrop(wrappedDatabaseInstance, file));
       transactionManager = new TransactionManager(wrappedDatabaseInstance);
@@ -3516,6 +3511,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
         // OWN THE DATABASE BEFORE READING IT: LOADING THE SCHEMA OF A CRASHED DATABASE WRITES TO IT.
         final boolean recoveryPending = prepareRecovery();
+
+        // #6075 (challenge C8): the copy-on-write shadow of a snapshot window is pure scratch - recovery never reads
+        // it - so a crash mid-window leaves nothing but an orphan file to delete. Only an owner of the database can say
+        // that nobody has a window open (#9412): after the exclusive lock, and never for a READ_ONLY open, which takes
+        // none. The extension is deliberately absent from SUPPORTED_FILE_EXT, so the FileManager scan never mistakes
+        // one for a data file.
+        if (mode == ComponentFile.MODE.READ_WRITE)
+          deleteOrphanSnapshotShadows();
 
         // #8849: AN INDEX-COMPACTION TEMPORARY NEVER OUTLIVES THE PROCESS THAT BUILT IT, SO ONE FOUND AT OPEN IS AN
         // ORPHAN. ONLY A READ_WRITE OPEN DELETES IT: THAT IS THE ONE THAT NOW HOLDS THE EXCLUSIVE LOCK ON database.lck

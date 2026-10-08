@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.TestServerHelper;
 import org.apache.ratis.proto.RaftProtos;
 import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
@@ -288,9 +289,8 @@ class Issue7619ReadinessAgainstLeaderCommitTest {
       config.setValue(GlobalConfiguration.HA_SERVER_LIST, SERVER_LIST);
       config.setValue(GlobalConfiguration.SERVER_READINESS_REQUIRES_HA, readinessRequiresHa);
 
-      final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
-      when(mockServer.getServerName()).thenReturn("ArcadeDB_0");
-      raft = new RaftHAServer(mockServer, config);
+      final ArcadeDBServer arcadeServer = TestServerHelper.unstartedServer("ArcadeDB_0");
+      raft = new RaftHAServer(arcadeServer, config);
 
       final RaftPeer self = peer(raft.getLocalPeerId().toString(), "localhost:2434");
       final RaftPeer leader = peer("leader", "localhost:2435");
@@ -321,9 +321,7 @@ class Issue7619ReadinessAgainstLeaderCommitTest {
       field.set(raft, ratis);
 
       // Neither resyncing nor halted: the gates this test is not about stay open.
-      final ArcadeStateMachine stateMachine = mock(ArcadeStateMachine.class);
-      when(stateMachine.isResyncInProgress()).thenReturn(false);
-      when(stateMachine.isHaltedAfterCriticalError()).thenReturn(false);
+      final ArcadeStateMachine stateMachine = new ArcadeStateMachine();
       final Field smField = RaftHAServer.class.getDeclaredField("stateMachine");
       smField.setAccessible(true);
       smField.set(raft, stateMachine);

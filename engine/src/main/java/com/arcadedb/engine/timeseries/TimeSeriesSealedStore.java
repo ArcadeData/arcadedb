@@ -194,9 +194,18 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * {@link #downsampleEpoch} for a walk in flight (kept apart from it because {@link #getDownsampleRewriteCount} counts
    * downsamples only, and the idempotency tests read that): a merge keeps every row but replaces the blocks they sat in, so a
    * walk that has read some of the old blocks and meets one that is gone cannot tell "retired" from "merged", and
-   * answering short would be silent. The snapshot stamps the SUM of the two counters.
+   * answering short would be silent. The snapshot stamps the SUM of the two counters. Unlike a downsample, a merge can be
+   * FOLLOWED: {@link #mergeLedger} records how each merged block was assembled, and {@link #resolveMergedAway} uses it to
+   * continue the walk in the merged block with exactly the rows it has not handed over yet (issue #9488).
    */
   private          long             mergeEpoch;
+  /**
+   * The newest node of the chain of merges that landed ({@link MergeLedger}, issue #9488). A walk keeps the node that
+   * was the newest when it took its snapshot and follows {@link MergeLedger#next} from there, so the store itself
+   * retains nothing about merges no walk in flight can still need. Replaced under the directory WRITE lock, read under
+   * the read lock.
+   */
+  private          MergeLedger      mergeLedger    = new MergeLedger();
   /**
    * The cutoff RETENTION has provably swept past, so a vanished block can be attributed to the pass that actually
    * removed it rather than to whichever maintenance pass happened to run (issue #8166, review of PR #8197).
@@ -708,7 +717,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           position = 0;
           final int blockIdx = nextBlock++;
           final BlockDirectorySnapshot oneBlock = new BlockDirectorySnapshot(List.of(blocks.get(blockIdx)),
-              directorySnapshot.firstIndex() + blockIdx, directorySnapshot.downsampleEpoch());
+              directorySnapshot.firstIndex() + blockIdx, directorySnapshot.downsampleEpoch(), directorySnapshot.origin());
           try {
             walkBlocks(oneBlock, fromTs, toTs, columnIndices, tagFilter, metrics, blockRows::add, false);
           } catch (final IOException e) {
@@ -820,7 +829,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       if (first >= end)
         return BlockDirectorySnapshot.EMPTY;
 
-      return new BlockDirectorySnapshot(new ArrayList<>(blockDirectory.subList(first, end)), first, downsampleEpoch + mergeEpoch);
+      final List<BlockEntry> blocks = new ArrayList<>(blockDirectory.subList(first, end));
+      return new BlockDirectorySnapshot(blocks, first, downsampleEpoch + mergeEpoch,
+          new WalkOrigin(blocks, first, downsampleEpoch, mergeLedger));
     } finally {
       directoryLock.readLock().unlock();
     }
@@ -841,9 +852,91 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * has already emitted is a consistent one. Comparing the epoch the snapshot was taken at against the store's
    * current one says whether a downsample can have been the cause, without keeping per-block state for it.
    */
-  record BlockDirectorySnapshot(List<BlockEntry> blocks, int firstIndex, long downsampleEpoch) {
-    static final BlockDirectorySnapshot EMPTY = new BlockDirectorySnapshot(List.of(), 0, 0L);
+  record BlockDirectorySnapshot(List<BlockEntry> blocks, int firstIndex, long downsampleEpoch, WalkOrigin origin) {
+    static final BlockDirectorySnapshot EMPTY = new BlockDirectorySnapshot(List.of(), 0, 0L, null);
   }
+
+  /**
+   * One node of the chain of merges of small blocks that landed in a store (issue #9488). The node a walk holds is the
+   * newest one at the instant of its snapshot; {@link #links} are the blocks the NEXT merge produced and {@link #next}
+   * is the node that merge appended, {@code null} while no merge has landed since. Written under the directory write
+   * lock, {@code links} before {@code next}.
+   */
+  static final class MergeLedger {
+    volatile List<MergeLink> links = List.of();
+    volatile MergeLedger     next;
+  }
+
+  /**
+   * How one merged block was assembled from the blocks it replaced (issue #9488): the ids of the sources in the order
+   * their rows were concatenated, how many rows each contributed, and the permutation the timestamp sort applied to the
+   * concatenation ({@code null} when the rows were already in order), so that row {@code r} of the merged block is row
+   * {@code order[r]} of the concatenation. That is all a walk needs to tell which rows of the merged block belong to
+   * the old blocks it has not read yet.
+   */
+  record MergeLink(BlockEntry merged, long[] sourceIds, int[] sourceSizes, int[] order) {
+  }
+
+  /**
+   * What a walk remembers about the store at the instant of its snapshot, shared by every slice of that snapshot (the lazy
+   * iterator walks it one block at a time) so the answer to "which merged rows did I already hand over" outlives a
+   * single {@link #walkBlocks} call (issue #9488).
+   * <p>
+   * {@code downsampleOnlyEpoch} is the downsample counter alone: a walk is overtaken by a MERGE when that did not
+   * move, and by a downsample when it did, which no hand-over can fix. {@code mergedAway} holds the ids of the
+   * snapshot blocks whose remaining rows were already emitted through the block that replaced them. The remaining
+   * fields are derived from the ledger chain on first need and cached for as long as the chain does not grow.
+   */
+  static final class WalkOrigin {
+    // Not synchronised: a walk (or the lazy iterator over one) is driven by a single thread, as every other piece of its state is
+    final List<BlockEntry> allBlocks;
+    final int              baseFirstIndex;
+    final long             downsampleOnlyEpoch;
+    final MergeLedger      ledger;
+    final Set<Long>        mergedAway = new HashSet<>();
+
+    /** The first node whose merge is not in {@link #parentOf}/{@link #linkOf} yet: the chain is read once, incrementally. */
+    private MergeLedger          loadedUpTo;
+    private final Map<Long, Long>      parentOf   = new HashMap<>();
+    private final Map<Long, MergeLink> linkOf     = new HashMap<>();
+    private       Map<Long, Integer>   positionOf;
+
+    WalkOrigin(final List<BlockEntry> allBlocks, final int baseFirstIndex, final long downsampleOnlyEpoch, final MergeLedger ledger) {
+      this.allBlocks = allBlocks;
+      this.baseFirstIndex = baseFirstIndex;
+      this.downsampleOnlyEpoch = downsampleOnlyEpoch;
+      this.ledger = ledger;
+    }
+
+    /** Loads the merges that landed since the snapshot, only the ones not loaded yet; {@code false} when there are none. */
+    private boolean loadChain() {
+      if (loadedUpTo == null)
+        loadedUpTo = ledger;
+      while (loadedUpTo.next != null) {
+        for (final MergeLink link : loadedUpTo.links) {
+          linkOf.put(link.merged().blockId, link);
+          for (final long source : link.sourceIds())
+            parentOf.put(source, link.merged().blockId);
+        }
+        loadedUpTo = loadedUpTo.next;
+      }
+      if (loadedUpTo == ledger)
+        return false;
+      if (positionOf == null) {
+        positionOf = new HashMap<>(allBlocks.size() * 2);
+        for (int i = 0; i < allBlocks.size(); i++)
+          positionOf.put(allBlocks.get(i).blockId, i);
+      }
+      return true;
+    }
+  }
+
+  /** The block a merge replaced a snapshot block with, and which of its rows the walk has not handed over (null = all). */
+  private record MergedBlock(BlockEntry live, BitSet rows) {
+  }
+
+  private static final BitSet ALL_ROWS = new BitSet();
+  private static final BitSet NO_ROWS  = new BitSet();
 
   /**
    * Visits the distinct TAG COMBINATIONS the sealed blocks carry in the range, rather than the samples that carry
@@ -909,6 +1002,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       final int[] columnIndices, final TagFilter tagFilter, final AggregationMetrics metrics,
       final TimeSeriesRowVisitor visitor, final boolean combinationsOnly) throws IOException {
     final List<BlockEntry> snapshot = directorySnapshot.blocks();
+    final WalkOrigin origin = directorySnapshot.origin();
     final int dirSize = snapshot.size();
     if (dirSize == 0)
       return true;
@@ -943,7 +1037,11 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       if (entry.maxTimestamp < fromTs)
         continue;
 
-      final BlockMatchResult tagMatch = tagFilter != null
+      // Its remaining rows were already handed over through the block a merge replaced it with (issue #9488)
+      if (origin != null && !origin.mergedAway.isEmpty() && origin.mergedAway.contains(entry.blockId))
+        continue;
+
+      BlockMatchResult tagMatch = tagFilter != null
           ? blockMatchesTagFilter(entry, tagFilter)
           : BlockMatchResult.FAST_PATH;
       if (tagMatch == BlockMatchResult.SKIP) {
@@ -970,9 +1068,23 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       Object[] combination = null;
       boolean vanished = false;
       boolean coarsened = false;
+      BitSet rowFilter = null;
       directoryLock.readLock().lock();
       try {
-        final BlockEntry live = resolveLiveBlock(entry, directorySnapshot.firstIndex() + blockIdx);
+        BlockEntry live = resolveLiveBlock(entry, directorySnapshot.firstIndex() + blockIdx);
+        if (live == null && !removedByRetention(entry) && downsampleEpoch + mergeEpoch != directorySnapshot.downsampleEpoch()
+            && origin != null && downsampleEpoch == origin.downsampleOnlyEpoch) {
+          // Only merges of small blocks landed (issue #9488): they keep every row, so the rows of this block are in
+          // the block that replaced it and the walk goes on there, minus what it already handed over
+          final MergedBlock merged = resolveMergedAway(entry, directorySnapshot.firstIndex() + blockIdx - origin.baseFirstIndex,
+              origin);
+          if (merged != null) {
+            live = merged.live();
+            rowFilter = merged.rows();
+            if (tagFilter != null)
+              tagMatch = blockMatchesTagFilter(live, tagFilter);
+          }
+        }
         // A null live entry means the block left the directory while this walk was between two blocks. It no
         // longer means "a sealed file was installed under this walk" - since issue #8043 the block's identity is
         // in the file, so a block the leader's copy still holds resolves - and the two causes that remain are
@@ -985,11 +1097,16 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           // meets BOTH passes from refusing an answer it could have given (review of PR #8197).
           coarsened = !removedByRetention(entry) && downsampleEpoch + mergeEpoch != directorySnapshot.downsampleEpoch();
         } else {
-          // The whole point of issue #7710: one row off the directory entry, with no file read and no decode.
-          if (combinationsOnly)
+          // The whole point of issue #7710: one row off the directory entry, with no file read and no decode. Not for
+          // a merged block read in part: its declaration covers rows this walk already handed over
+          if (combinationsOnly && rowFilter == null)
             combination = declaredSingleCombination(live, combinationColumns, combinationWidth, tsColIdx, fromTs, toTs);
 
-          if (combination == null) {
+          if (tagMatch == BlockMatchResult.SKIP) {
+            // only reachable for a merged block: the walk's own test already dropped every other one
+            if (metrics != null)
+              metrics.addSkippedBlock();
+          } else if (combination == null && (rowFilter == null || !rowFilter.isEmpty())) {
             final long[] decodedTs = decompressTimestamps(live, tsColIdx);
             final int from = lowerBound(decodedTs, fromTs);
             final int to = upperBound(decodedTs, toTs);
@@ -1020,7 +1137,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       if (coarsened)
         throw new TimeSeriesWalkCoarsenedException(
             "Sealed block [" + entry.minTimestamp + ".." + entry.maxTimestamp + "] of '" + getSealedFileName()
-                + "' was replaced by a downsample (or a merge of small blocks) while this read was in flight, so no"
+                + "' was replaced by a downsample (or by a merge of small blocks this read could not follow) while this read was in flight, so no"
                 + " answer it can still produce is a consistent one: the rows already returned came from the old blocks and"
                 + " the rows remaining sit in their replacements. Run the read again to get a whole answer");
 
@@ -1049,6 +1166,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
       final int resultCols = decompCols.length + 1;
       for (int i = start; i < end; i++) {
+        // A merged block read in part: the rows that came from blocks this walk already emitted are not handed over twice
+        if (rowFilter != null && !rowFilter.get(i))
+          continue;
         final Object[] row = new Object[resultCols];
         row[0] = ts[i];
         for (int c = 0; c < decompCols.length; c++)
@@ -1104,6 +1224,88 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    */
   private boolean removedByRetention(final BlockEntry snapshotEntry) {
     return snapshotEntry.maxTimestamp < retentionRemovedBelowTs;
+  }
+
+  /**
+   * Follows the merges that landed since the walk's snapshot to the live block now holding the rows of
+   * {@code snapshotEntry}, and works out which of that block's rows the walk has NOT yet handed over (issue #9488).
+   * Called under the directory read lock, for a block that no longer resolves when only merges of small blocks
+   * moved the store.
+   * <p>
+   * A merge keeps every row, so nothing is lost and nothing needs to be refused: the rows of the replacement that came
+   * from the snapshot blocks at or after {@code position} are exactly those the walk still owes. They are found by
+   * pushing "which snapshot blocks are still owed" down the chain of merges - a merged block's rows are the
+   * concatenation of its sources' rows permuted by the sort - so a block that a later merge folded again is resolved
+   * the same way. The snapshot blocks that contributed are recorded in {@link WalkOrigin#mergedAway}, which is what
+   * stops the walk reaching them again and emitting their rows a second time.
+   *
+   * @return the replacement and the rows still owed ({@code null} = all of them), or {@code null} when the block
+   *         cannot be followed (no merge accounts for it, or its replacement is gone too)
+   */
+  private MergedBlock resolveMergedAway(final BlockEntry snapshotEntry, final int position, final WalkOrigin origin) {
+    if (snapshotEntry.blockId == BlockEntry.NO_BLOCK_ID || !origin.loadChain())
+      return null;
+
+    long finalId = snapshotEntry.blockId;
+    Long parent;
+    while ((parent = origin.parentOf.get(finalId)) != null)
+      finalId = parent;
+    final MergeLink finalLink = origin.linkOf.get(finalId);
+    if (finalLink == null)
+      return null;
+
+    // A hint past the end of the directory skips the identity shortcut and goes straight to the search by block id
+    final BlockEntry live = resolveLiveBlock(finalLink.merged(), Integer.MAX_VALUE);
+    if (live == null)
+      return null;
+
+    final List<Long> contributed = new ArrayList<>();
+    final BitSet rows = owedRows(finalId, position, origin, contributed);
+    origin.mergedAway.addAll(contributed);
+    return new MergedBlock(live, rows == ALL_ROWS ? null : rows == NO_ROWS ? new BitSet() : rows);
+  }
+
+  /** The rows of block {@code id} the walk still owes: {@link #ALL_ROWS}, {@link #NO_ROWS}, or a set over the block's rows. */
+  private static BitSet owedRows(final long id, final int position, final WalkOrigin origin, final List<Long> contributed) {
+    final MergeLink link = origin.linkOf.get(id);
+    if (link == null) {
+      final Integer at = origin.positionOf.get(id);
+      if (at == null || at < position || origin.mergedAway.contains(id))
+        return NO_ROWS;
+      contributed.add(id);
+      return ALL_ROWS;
+    }
+
+    final int[] sizes = link.sourceSizes();
+    int total = 0;
+    for (final int size : sizes)
+      total += size;
+
+    final BitSet concatenated = new BitSet(total);
+    int offset = 0;
+    for (int s = 0; s < sizes.length; s++) {
+      final BitSet owed = owedRows(link.sourceIds()[s], position, origin, contributed);
+      if (owed == ALL_ROWS)
+        concatenated.set(offset, offset + sizes[s]);
+      else if (owed != NO_ROWS)
+        for (int r = owed.nextSetBit(0); r >= 0; r = owed.nextSetBit(r + 1))
+          concatenated.set(offset + r);
+      offset += sizes[s];
+    }
+
+    if (concatenated.isEmpty())
+      return NO_ROWS;
+    if (concatenated.cardinality() == total)
+      return ALL_ROWS;
+
+    final int[] order = link.order();
+    if (order == null)
+      return concatenated;
+    final BitSet result = new BitSet(total);
+    for (int r = 0; r < total; r++)
+      if (concatenated.get(order[r]))
+        result.set(r);
+    return result;
   }
 
   private BlockEntry resolveLiveBlock(final BlockEntry snapshotEntry, final int hintIdx) {
@@ -1841,6 +2043,265 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   }
 
   /**
+   * {@link #aggregateMultiBlocks} grouped by the values of one or more TAG columns (issue #9489): each group gets the
+   * result {@link #aggregateMultiBlocks} would have given for the samples of that tag combination alone.
+   * <p>
+   * A block is read ONCE however many groups it holds. When its directory entry declares a single value for every
+   * grouping column the whole block is one group and, if it also sits inside one time bucket, it is answered from its
+   * statistics without being decompressed. Otherwise (the usual shape: a compaction orders samples by time, so a block
+   * interleaves every series) the timestamps, the value columns and the grouping columns are decoded once and each row
+   * is routed to its group through the small dictionary index of the grouping column, with no string hashed per row.
+   *
+   * @param groupColumns the grouping columns, as NON-timestamp column indices; every one must be a dictionary-coded TAG
+   */
+  public void aggregateGroupedBlocks(final long fromTs, final long toTs, final List<MultiColumnAggregationRequest> requests,
+      final long bucketIntervalMs, final long bucketOffsetMs, final int[] groupColumns, final GroupedAggregationResult result,
+      final AggregationMetrics metrics, final TagFilter tagFilter) throws IOException {
+    final int tsColIdx = findTimestampColumnIndex();
+    final int reqCount = requests.size();
+    final int groupCount = groupColumns.length;
+
+    final int[] schemaColIndices = new int[reqCount];
+    final boolean[] isCount = new boolean[reqCount];
+    for (int r = 0; r < reqCount; r++) {
+      isCount[r] = requests.get(r).type() == AggregationType.COUNT;
+      schemaColIndices[r] = isCount[r] ? -1 : findAggregationSchemaIndex(requests.get(r).columnIndex());
+    }
+
+    final int[] groupSchema = new int[groupCount];
+    final boolean[] declarationExact = new boolean[groupCount];
+    for (int g = 0; g < groupCount; g++) {
+      groupSchema[g] = findNonTsColumnSchemaIndex(groupColumns[g]);
+      final ColumnDefinition column = columns.get(groupSchema[g]);
+      if (column.getRole() != ColumnDefinition.ColumnRole.TAG || column.getCompressionHint() != TimeSeriesCodec.DICTIONARY)
+        throw new IllegalArgumentException("Column '" + column.getName() + "' cannot be grouped by: only a dictionary-coded TAG can");
+      declarationExact[g] = declaredDistinctValuesAreExact(column);
+    }
+
+    final double[] rowValues = new double[reqCount];
+    final long[] rowCounts = new long[reqCount];
+    final double[][] decompressedCols = new double[columns.size()][];
+    // Reused by every block of the scan: groupFor only reads the tuple it is given and copies it when the group is new
+    final String[] wholeBlockGroup = new String[groupCount];
+    final String[][] dictionaries = new String[groupCount][];
+    final PackedGroupMap byPackedIndex = groupCount > 1 ? new PackedGroupMap() : null;
+    final int[][] groupIds = new int[groupCount][MAX_BLOCK_SIZE];
+    final long[] reusableTsBuf = new long[MAX_BLOCK_SIZE];
+    final long singleBucketTs = TimeSeriesEngine.singleBucketAnchor(fromTs);
+
+    directoryLock.readLock().lock();
+    try {
+      for (final BlockEntry entry : blockDirectory) {
+        if (result.isOverBucketCeiling())
+          break;
+
+        if (entry.maxTimestamp < fromTs || entry.minTimestamp > toTs) {
+          if (metrics != null)
+            metrics.addSkippedBlock();
+          continue;
+        }
+
+        final BlockMatchResult tagMatch = tagFilter != null ? blockMatchesTagFilter(entry, tagFilter) : BlockMatchResult.FAST_PATH;
+        if (tagMatch == BlockMatchResult.SKIP) {
+          if (metrics != null)
+            metrics.addSkippedBlock();
+          continue;
+        }
+
+        // The whole block is ONE group when its entry declares exactly one value for every grouping column
+        boolean singleGroup = entry.tagDistinctValues != null;
+        for (int g = 0; singleGroup && g < groupCount; g++) {
+          final String[] declared = declarationExact[g] && groupSchema[g] < entry.tagDistinctValues.length
+              ? entry.tagDistinctValues[groupSchema[g]] : null;
+          singleGroup = declared != null && declared.length == 1;
+          if (singleGroup)
+            wholeBlockGroup[g] = declared[0];
+        }
+
+        if (singleGroup && tagMatch == BlockMatchResult.FAST_PATH && bucketIntervalMs > 0
+            && entry.minTimestamp >= fromTs && entry.maxTimestamp <= toTs && !needsValues(entry, requests, schemaColIndices)) {
+          final long blockMinBucket = TimeBucketGrid.bucketStart(entry.minTimestamp, bucketIntervalMs, bucketOffsetMs);
+          if (blockMinBucket == TimeBucketGrid.bucketStart(entry.maxTimestamp, bucketIntervalMs, bucketOffsetMs)) {
+            if (metrics != null)
+              metrics.addFastPathBlock();
+            for (int r = 0; r < reqCount; r++) {
+              if (isCount[r]) {
+                rowValues[r] = entry.sampleCount;
+                rowCounts[r] = entry.sampleCount;
+              } else {
+                final int sci = schemaColIndices[r];
+                rowValues[r] = switch (requests.get(r).type()) {
+                  case MIN -> entry.columnMins[sci];
+                  case MAX -> entry.columnMaxs[sci];
+                  case SUM, AVG -> entry.columnSums[sci];
+                  case COUNT -> entry.sampleCount;
+                };
+                rowCounts[r] = entry.columnCounts[sci];
+              }
+            }
+            result.groupFor(wholeBlockGroup).accumulateBlockStats(blockMinBucket, rowValues, rowCounts);
+            continue;
+          }
+        }
+
+        if (metrics != null)
+          metrics.addSlowPathBlock();
+
+        long t0 = metrics != null ? System.nanoTime() : 0;
+        final byte[] blockData = readBlockData(entry);
+        if (metrics != null)
+          metrics.addIo(System.nanoTime() - t0);
+
+        t0 = metrics != null ? System.nanoTime() : 0;
+        final int tsCount = DeltaOfDeltaCodec.decode(sliceColumn(blockData, entry, tsColIdx), reusableTsBuf);
+        if (metrics != null)
+          metrics.addDecompTs(System.nanoTime() - t0);
+
+        Arrays.fill(decompressedCols, null);
+        for (int r = 0; r < reqCount; r++)
+          if (!isCount[r] && decompressedCols[schemaColIndices[r]] == null) {
+            t0 = metrics != null ? System.nanoTime() : 0;
+            decompressedCols[schemaColIndices[r]] = decompressDoubleColumnFromBytes(
+                sliceColumn(blockData, entry, schemaColIndices[r]), schemaColIndices[r]);
+            if (metrics != null)
+              metrics.addDecompVal(System.nanoTime() - t0);
+          }
+
+        t0 = metrics != null ? System.nanoTime() : 0;
+        for (int g = 0; g < groupCount; g++) {
+          final byte[] encoded = sliceColumn(blockData, entry, groupSchema[g]);
+          if (DictionaryCodec.valueCount(encoded) != tsCount)
+            throw new IOException("Sealed block at offset " + entry.blockStartOffset + " has " + tsCount + " timestamp(s) but column '"
+                + columns.get(groupSchema[g]).getName() + "' holds a different number of values");
+          dictionaries[g] = DictionaryCodec.decodeIndexed(encoded, groupIds[g]);
+          // The packed key below gives each dictionary index 16 bits. The format cannot hold more, so this only turns a damaged block into an error
+          if (dictionaries[g].length > 0xFFFF)
+            throw new IOException("Sealed block at offset " + entry.blockStartOffset + " has a dictionary of " + dictionaries[g].length
+                + " entries for column '" + columns.get(groupSchema[g]).getName() + "'");
+        }
+        if (metrics != null)
+          metrics.addDecompVal(System.nanoTime() - t0);
+
+        final boolean needRowTagFilter = tagFilter != null && tagMatch == BlockMatchResult.SLOW_PATH;
+        String[][] filterCols = null;
+        List<TagFilter.Condition> filterConditions = null;
+        if (needRowTagFilter) {
+          filterConditions = tagFilter.getConditions();
+          filterCols = new String[filterConditions.size()][];
+          for (int ci = 0; ci < filterConditions.size(); ci++)
+            filterCols[ci] = DictionaryCodec.decode(sliceColumn(blockData, entry, findNonTsColumnSchemaIndex(filterConditions.get(ci).columnIndex())));
+        }
+
+        t0 = metrics != null ? System.nanoTime() : 0;
+        final int rangeStart = lowerBound(reusableTsBuf, 0, tsCount, fromTs);
+        final int rangeEnd = upperBound(reusableTsBuf, 0, tsCount, toTs);
+
+        // The group of each dictionary value, resolved the first time a row carries it. One grouping column: an array
+        // indexed by the dictionary index. Several: a map keyed by the indices packed 16 bits apiece (a dictionary
+        // holds at most 65535 entries), which is why the engine groups by at most four columns.
+        final MultiColumnAggregationResult[] byIndex = groupCount == 1 ? new MultiColumnAggregationResult[dictionaries[0].length] : null;
+        if (byPackedIndex != null)
+          byPackedIndex.clear();
+        for (int i = rangeStart; i < rangeEnd; i++) {
+          if (needRowTagFilter && !matchesTagConditions(filterCols, filterConditions, i))
+            continue;
+
+          MultiColumnAggregationResult group;
+          if (groupCount == 1) {
+            final int id = groupIds[0][i];
+            group = byIndex[id];
+            if (group == null)
+              group = byIndex[id] = result.groupFor(new String[] { dictionaries[0][id] });
+          } else {
+            long packed = 0;
+            for (int g = 0; g < groupCount; g++)
+              packed = (packed << 16) | groupIds[g][i];
+            group = byPackedIndex.get(packed);
+            if (group == null) {
+              final String[] values = new String[groupCount];
+              for (int g = 0; g < groupCount; g++)
+                values[g] = dictionaries[g][groupIds[g][i]];
+              group = result.groupFor(values);
+              byPackedIndex.put(packed, group);
+            }
+          }
+
+          for (int r = 0; r < reqCount; r++)
+            rowValues[r] = isCount[r] ? 1.0 : decompressedCols[schemaColIndices[r]][i];
+          group.accumulateRow(bucketIntervalMs > 0 ? TimeBucketGrid.bucketStart(reusableTsBuf[i], bucketIntervalMs, bucketOffsetMs) : singleBucketTs,
+              rowValues);
+        }
+        if (metrics != null)
+          metrics.addAccum(System.nanoTime() - t0);
+      }
+    } finally {
+      directoryLock.readLock().unlock();
+    }
+  }
+
+  /**
+   * A map from a packed dictionary-index key to the group's result, with primitive keys so that routing a row to its group
+   * boxes nothing (issue #9489). Open addressing, grown at half load; a slot is free while its value is {@code null}. Local to
+   * one block of one scan, so single threaded.
+   */
+  private static final class PackedGroupMap {
+    private long[]                         keys   = new long[64];
+    private MultiColumnAggregationResult[] values = new MultiColumnAggregationResult[64];
+    private int                            size;
+
+    /**
+     * Forgets every entry for the next block. A map that stayed small keeps its arrays; one a high-cardinality block grew is
+     * dropped, so that later blocks do not pay to clear its capacity.
+     */
+    void clear() {
+      if (keys.length > 1024) {
+        keys = new long[64];
+        values = new MultiColumnAggregationResult[64];
+      } else
+        Arrays.fill(values, null);
+      size = 0;
+    }
+
+    MultiColumnAggregationResult get(final long key) {
+      final int mask = keys.length - 1;
+      for (int i = slot(key, mask); values[i] != null; i = (i + 1) & mask)
+        if (keys[i] == key)
+          return values[i];
+      return null;
+    }
+
+    void put(final long key, final MultiColumnAggregationResult value) {
+      if (size * 2 >= keys.length)
+        grow();
+      final int mask = keys.length - 1;
+      int i = slot(key, mask);
+      while (values[i] != null && keys[i] != key)
+        i = (i + 1) & mask;
+      if (values[i] == null)
+        size++;
+      keys[i] = key;
+      values[i] = value;
+    }
+
+    private static int slot(final long key, final int mask) {
+      long h = key * 0x9E3779B97F4A7C15L;
+      h ^= h >>> 32;
+      return (int) h & mask;
+    }
+
+    private void grow() {
+      final long[] oldKeys = keys;
+      final MultiColumnAggregationResult[] oldValues = values;
+      keys = new long[oldKeys.length * 2];
+      values = new MultiColumnAggregationResult[oldValues.length * 2];
+      size = 0;
+      for (int i = 0; i < oldKeys.length; i++)
+        if (oldValues[i] != null)
+          put(oldKeys[i], oldValues[i]);
+    }
+  }
+
+  /**
    * Removes all blocks with maxTimestamp < threshold.
    */
   public void truncateBefore(final long timestamp) throws IOException {
@@ -2139,8 +2600,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * @param directoryVersion the {@link #directoryVersion} the temp file was derived from: the commit installs it only
    *                         if the live directory still is that one
    * @param blocksBefore     blocks in the live directory when the plan was made
+   * @param links            how each merged block was assembled, for the walks in flight when the plan lands (issue #9488)
    */
-  record MergePlan(List<BlockEntry> newDirectory, int directoryVersion, int blocksBefore) {
+  record MergePlan(List<BlockEntry> newDirectory, int directoryVersion, int blocksBefore, List<MergeLink> links) {
   }
 
   /**
@@ -2236,6 +2698,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final int tsColIdx = findTimestampColumnIndex();
     final String tempPath = basePath + MERGE_TEMP_SUFFIX;
     final List<BlockEntry> newDirectory = new ArrayList<>(snapshot.size());
+    final List<MergeLink> links = new ArrayList<>(groups.size());
     boolean complete = false;
     try (final RandomAccessFile tempFile = new RandomAccessFile(tempPath, "rw")) {
       tempFile.setLength(0);
@@ -2262,7 +2725,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
               return null;
             runBytes.add(bytes);
           }
-          if (!writeMergedRun(tempFile, run, runBytes, tsColIdx, newDirectory))
+          if (!writeMergedRun(tempFile, run, runBytes, tsColIdx, newDirectory, links))
             // too many distinct values for one dictionary: keep the blocks of this run as they are
             for (int r = 0; r < run.size(); r++)
               newDirectory.add(writeRetainedBlock(tempFile, run.get(r), runBytes.get(r), colCount));
@@ -2280,7 +2743,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       if (!complete)
         deleteMergeTempFileIfExists();
     }
-    return new MergePlan(newDirectory, version, snapshot.size());
+    return new MergePlan(newDirectory, version, snapshot.size(), links);
   }
 
   /**
@@ -2310,7 +2773,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * {@code target}. Returns {@code false}, writing nothing, when the rows do not fit one block.
    */
   private boolean writeMergedRun(final RandomAccessFile tempFile, final List<BlockEntry> run, final List<byte[][]> runBytes,
-      final int tsColIdx, final List<BlockEntry> target) throws IOException {
+      final int tsColIdx, final List<BlockEntry> target, final List<MergeLink> links) throws IOException {
     final int colCount = columns.size();
     int total = 0;
     for (final BlockEntry entry : run)
@@ -2346,8 +2809,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     boolean sorted = true;
     for (int i = 1; i < total && sorted; i++)
       sorted = ts[i - 1] <= ts[i];
+    int[] order = null;
     if (!sorted) {
-      final int[] order = TimeSeriesShard.sortIndices(ts);
+      order = TimeSeriesShard.sortIndices(ts);
       ts = TimeSeriesShard.applyOrder(ts, order);
       for (int c = 0; c < colCount; c++)
         if (c != tsColIdx)
@@ -2409,7 +2873,26 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         new BlockStats(mins, maxs, sums, counts), colCount, tagDistinctValues, newBlockId());
     merged.downsampledGranularityMs = run.getFirst().downsampledGranularityMs;
     target.add(merged);
+    recordMergeLink(links, merged, run, order);
     return true;
+  }
+
+  /**
+   * Notes how {@code merged} was assembled so a walk in flight when it lands can follow it (issue #9488). Skipped when a
+   * source has no identity (a block read from a pre-#8043 file): the walk cannot name it, so it is refused as before.
+   */
+  private static void recordMergeLink(final List<MergeLink> links, final BlockEntry merged, final List<BlockEntry> run,
+      final int[] order) {
+    final long[] sourceIds = new long[run.size()];
+    final int[] sourceSizes = new int[run.size()];
+    for (int i = 0; i < sourceIds.length; i++) {
+      final BlockEntry source = run.get(i);
+      if (source.blockId == BlockEntry.NO_BLOCK_ID)
+        return;
+      sourceIds[i] = source.blockId;
+      sourceSizes[i] = source.sampleCount;
+    }
+    links.add(new MergeLink(merged, sourceIds, sourceSizes, order));
   }
 
   /**
@@ -2429,6 +2912,11 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       }
       commitTempFile(plan.newDirectory(), basePath + MERGE_TEMP_SUFFIX);
       ++mergeEpoch;
+      // links before next: a walk that sees the new node must find the links of the merge that created it
+      final MergeLedger appended = new MergeLedger();
+      mergeLedger.links = plan.links();
+      mergeLedger.next = appended;
+      mergeLedger = appended;
       return true;
     } finally {
       directoryLock.writeLock().unlock();

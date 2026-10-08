@@ -23,8 +23,11 @@ import org.junit.jupiter.api.Test;
 import java.util.Arrays;
 import java.util.PriorityQueue;
 import java.util.Random;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.within;
 
 /**
@@ -121,6 +124,119 @@ class CCHCoreTest {
   }
 
   @Test
+  void partialCustomizationMatchesAFullOne() {
+    final Random random = new Random(29);
+    for (final boolean undirected : new boolean[] { false, true }) {
+      final Arcs arcs = grid(40, random, true);
+      final CCHTopology topology = CCHTopology.build(arcs.nodeCount(), arcs.tails(), arcs.heads(), arcs.count(), Long.MAX_VALUE);
+      final CCHMetric metric = CCHMetric.customize(topology, arcs.tails(), arcs.heads(), arcs.weights(), arcs.count(), undirected);
+
+      for (int round = 0; round < 30; round++) {
+        // a handful of edges get heavier, lighter, or closed (infinite: not walkable)
+        final int changes = 1 + random.nextInt(round < 10 ? 2 : 40);
+        for (int c = 0; c < changes; c++) {
+          final int i = random.nextInt(arcs.count());
+          arcs.weights()[i] = switch (random.nextInt(3)) {
+            case 0 -> arcs.weights()[i] * 3 + 1;
+            case 1 -> Math.max(0, arcs.weights()[i] / 2);
+            default -> Double.POSITIVE_INFINITY;
+          };
+        }
+        final double[][] input = CCHMetric.inputCosts(topology, arcs.tails(), arcs.heads(), arcs.weights(), arcs.count(),
+            undirected);
+        final int[] changed = new int[topology.arcCount()];
+        final double[] ups = new double[topology.arcCount()];
+        final double[] downs = new double[topology.arcCount()];
+        int count = 0;
+        for (int a = 0; a < topology.arcCount(); a++)
+          if (input[0][a] != metric.inputUp[a] || input[1][a] != metric.inputDown[a]) {
+            changed[count] = a;
+            ups[count] = input[0][a];
+            downs[count++] = input[1][a];
+          }
+        final int recomputed = metric.update(changed, ups, downs, count);
+        assertThat(recomputed).as("only the arcs above the change are recomputed").isLessThan(topology.arcCount() / 2);
+
+        final CCHMetric full = CCHMetric.customize(topology, input[0], input[1], undirected, null);
+        assertThat(metric.up).as("round %d", round).containsExactly(full.up);
+        assertThat(metric.down).as("round %d", round).containsExactly(full.down);
+        assertPairs(arcs, metric, undirected, random, 40);
+      }
+    }
+  }
+
+  /**
+   * An update that fails half way has already written some input costs, so a later diff of the inputs would see nothing
+   * to repair: the metric says it is broken, and the hierarchy then customizes afresh instead of updating it.
+   */
+  @Test
+  void anUpdateFailingHalfWayMarksTheMetricBroken() {
+    final Arcs arcs = grid(10, new Random(37), false);
+    final CCHTopology topology = CCHTopology.build(arcs.nodeCount(), arcs.tails(), arcs.heads(), arcs.count(), Long.MAX_VALUE);
+    final CCHMetric metric = CCHMetric.customize(topology, arcs.tails(), arcs.heads(), arcs.weights(), arcs.count(), false);
+    assertThat(metric.isBroken()).isFalse();
+
+    final double[] costs = { 1, 2 };
+    assertThatThrownBy(() -> metric.update(new int[] { 0, topology.arcCount() }, costs, costs, 2)).isInstanceOf(
+        IndexOutOfBoundsException.class);
+    assertThat(metric.inputUp[0]).as("the first input was written before the failure").isEqualTo(1);
+    assertThat(metric.isBroken()).isTrue();
+  }
+
+  @Test
+  void queriesStayCorrectWhileTheMetricIsUpdated() throws Exception {
+    final Random random = new Random(31);
+    final Arcs arcs = grid(30, random, false);
+    final CCHTopology topology = CCHTopology.build(arcs.nodeCount(), arcs.tails(), arcs.heads(), arcs.count(), Long.MAX_VALUE);
+    final CCHMetric metric = CCHMetric.customize(topology, arcs.tails(), arcs.heads(), arcs.weights(), arcs.count(), false);
+    // every weight only ever alternates between two values, so every answer must be one of the distances the graph can
+    // take: no reader may see a half-updated metric, and none may fail
+    final double[] low = arcs.weights().clone();
+    final AtomicReference<Throwable> failure = new AtomicReference<>();
+    final AtomicBoolean done = new AtomicBoolean();
+    final Thread[] readers = new Thread[4];
+    for (int r = 0; r < readers.length; r++) {
+      final int seed = r;
+      readers[r] = new Thread(() -> {
+        final Random rnd = new Random(seed);
+        try {
+          while (!done.get()) {
+            final int s = rnd.nextInt(arcs.nodeCount());
+            final int t = rnd.nextInt(arcs.nodeCount());
+            final CCHMetric.PathResult result = metric.shortestPathWithDistance(s, t);
+            assertThat(result).isNotNull();
+            assertThat(result.nodes()[0]).isEqualTo(s);
+            assertThat(result.nodes()[result.nodes().length - 1]).isEqualTo(t);
+            assertThat(result.distance()).isFinite().isGreaterThanOrEqualTo(0);
+          }
+        } catch (final Throwable e) {
+          failure.compareAndSet(null, e);
+        }
+      });
+      readers[r].setDaemon(true);
+      readers[r].start();
+    }
+    try {
+      for (int round = 0; round < 300 && failure.get() == null; round++) {
+        final int i = random.nextInt(arcs.count());
+        arcs.weights()[i] = arcs.weights()[i] == low[i] ? low[i] * 10 : low[i];
+        final double[][] input = CCHMetric.inputCosts(topology, arcs.tails(), arcs.heads(), arcs.weights(), arcs.count(),
+            false);
+        final int rank = topology.rankOf[arcs.tails()[i]];
+        final int other = topology.rankOf[arcs.heads()[i]];
+        final int arc = rank < other ? topology.findArc(rank, other) : topology.findArc(other, rank);
+        metric.update(new int[] { arc }, new double[] { input[0][arc] }, new double[] { input[1][arc] }, 1);
+      }
+    } finally {
+      done.set(true);
+      for (final Thread reader : readers)
+        reader.join(60_000);
+    }
+    assertThat(failure.get()).isNull();
+    assertPairs(arcs, metric, false, random, 200);
+  }
+
+  @Test
   void anArcTheTopologyDoesNotKnowIsRefused() {
     final Arcs path = new Arcs(4, new int[] { 0, 1, 2 }, new int[] { 1, 2, 3 }, new double[] { 1, 1, 1 });
     final CCHTopology topology = CCHTopology.build(path.nodeCount(), path.tails(), path.heads(), path.count(), Long.MAX_VALUE);
@@ -165,6 +281,33 @@ class CCHCoreTest {
     final String shape = "arcs " + topology.arcCount() + ", search space " + topology.maxSearchSpace();
     assertThat(topology.arcCount()).as(shape).isLessThan(12 * undirectedEdges);
     assertThat(topology.maxSearchSpace()).as(shape).isLessThan(side * 4);
+
+    // the per-query scratch is sized to the deepest chain, not to the graph: here ~300 entries instead of 10,000
+    final CCHMetric.QueryState state = topology.borrowState();
+    assertThat(state.forward.length).isEqualTo(topology.maxSearchSpace());
+    assertThat(state.forwardArc.length).isLessThan(arcs.nodeCount() / 10);
+    topology.returnState(state);
+  }
+
+  @Test
+  void depthIndexedScratchIsReusedAcrossQueriesWithoutLeakingState() {
+    // the same pooled scratch answers many queries in a row: whatever one query leaves behind must not reach the next
+    final Random random = new Random(17);
+    final Arcs arcs = grid(30, random, true);
+    final CCHTopology topology = CCHTopology.build(arcs.nodeCount(), arcs.tails(), arcs.heads(), arcs.count(), Long.MAX_VALUE);
+    final CCHMetric metric = CCHMetric.customize(topology, arcs.tails(), arcs.heads(), arcs.weights(), arcs.count(), false);
+    for (int q = 0; q < 2000; q++) {
+      final int s = random.nextInt(arcs.nodeCount());
+      final int t = random.nextInt(arcs.nodeCount());
+      final double expected = dijkstra(arcs, s, false)[t];
+      assertThat(metric.distance(s, t)).isCloseTo(expected, within(EPS));
+    }
+    final CCHMetric.QueryState state = topology.borrowState();
+    for (int i = 0; i < state.forward.length; i++) {
+      assertThat(state.forward[i]).isEqualTo(Double.POSITIVE_INFINITY);
+      assertThat(state.backward[i]).isEqualTo(Double.POSITIVE_INFINITY);
+    }
+    topology.returnState(state);
   }
 
   // ---------------------------------------------------------------------------------------------------------------

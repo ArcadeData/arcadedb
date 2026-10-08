@@ -251,10 +251,7 @@ class HaChaosIT extends ContainersTestTemplate {
    * because Docker may assign a new one.
    */
   private final class DockerNodeControl implements NodeControl, Endpoints, ChaosRunner.TrendSource {
-    private static final Duration HEALTH_TIMEOUT       = Duration.ofSeconds(120);
-    /** Logged by RaftHAServer after an in-place Ratis restart, by storage outcome. */
-    private static final String   IN_PLACE_RECOVERED   = "Ratis restarted in place (recovered storage)";
-    private static final String   IN_PLACE_REFORMATTED = "Ratis restarted in place (reformatted storage)";
+    private static final Duration HEALTH_TIMEOUT = Duration.ofSeconds(120);
 
     private final List<GenericContainer<?>> nodes;
     private final List<Proxy>               raftProxies;
@@ -347,31 +344,41 @@ class HaChaosIT extends ContainersTestTemplate {
     }
 
     /**
-     * Counts the "Ratis restarted in place (recovered|reformatted storage)" lines in the node's whole log, line by line as
-     * it streams in, without buffering it. The whole log is read every time, not only the lines since the previous
-     * check, because Docker's one-second {@code since} granularity reads the boundary second twice and would count a line
-     * twice. Docker keeps a container's log across restarts, so the counts only grow. Called twice per long-pause step.
+     * Reads the node's in-place restart counts from {@code GET /api/v1/cluster} (issue #9429), rather than counting the
+     * restart's log line, which a rewording would have turned into a silent zero. A node that does not answer, or whose
+     * answer does not carry the counts, fails the step as a harness error: a missing count must never read as "no
+     * reformat". The counts restart from zero with the process; the runner reports a decrease as a harness error too.
      */
     @Override
     public InPlaceRestarts inPlaceRestarts(final int node) {
-      final LogLineCounter counter = new LogLineCounter(IN_PLACE_RECOVERED, IN_PLACE_REFORMATTED);
-      try (final ResultCallback.Adapter<Frame> callback = new ResultCallback.Adapter<>() {
-        @Override
-        public void onNext(final Frame frame) {
-          counter.accept(new String(frame.getPayload(), StandardCharsets.UTF_8));
-        }
-      }) {
-        // A partial read would undercount and hide a reformat
-        if (!docker().logContainerCmd(id(node)).withStdOut(true).withStdErr(true).exec(callback)
-            .awaitCompletion(60, TimeUnit.SECONDS))
-          throw new ChaosFailure(ResultKind.HARNESS, "Reading the logs of node " + node + " did not complete within 60 s");
-      } catch (final ChaosFailure e) {
-        throw e;
+      final JSONObject cluster;
+      try {
+        cluster = clusterStatus(node, 10_000);
       } catch (final Exception e) {
-        throw new ChaosFailure(ResultKind.HARNESS, "Could not read the logs of node " + node + ": " + e.getMessage());
+        throw new ChaosFailure(ResultKind.HARNESS,
+            "Could not read the in-place restart counts of node " + node + ": " + e.getClass().getSimpleName() + ": "
+                + e.getMessage());
       }
-      final int[] counts = counter.finish();
-      return new InPlaceRestarts(counts[0], counts[1]);
+      return ClusterStatusSummary.inPlaceRestarts(cluster, node);
+    }
+
+    /** {@code GET /api/v1/cluster} on the node as root; throws on a non-200 answer. */
+    private JSONObject clusterStatus(final int node, final int timeoutMs) throws IOException {
+      final Endpoint endpoint = endpoint(node);
+      final HttpURLConnection connection = (HttpURLConnection) URI.create(
+          "http://" + endpoint.host() + ":" + endpoint.port() + "/api/v1/cluster").toURL().openConnection();
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + PASSWORD).getBytes(StandardCharsets.UTF_8)));
+      connection.setConnectTimeout(timeoutMs);
+      connection.setReadTimeout(timeoutMs);
+      try {
+        final int status = connection.getResponseCode();
+        if (status != 200)
+          throw new IOException("HTTP " + status);
+        return new JSONObject(new String(connection.getInputStream().readAllBytes(), StandardCharsets.UTF_8));
+      } finally {
+        connection.disconnect();
+      }
     }
 
     private static String describeExit(final int node, final InspectContainerResponse.ContainerState container,

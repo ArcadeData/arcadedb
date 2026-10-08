@@ -25,6 +25,7 @@ import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.server.http.FakeLeader;
 import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Test;
@@ -78,16 +79,14 @@ class Issue7527RaftReplicatedDatabaseForwardTimeoutTest {
   }
 
   private static ArcadeDBServer serverWith(final ContextConfiguration cfg) {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(cfg);
-    when(server.getHA()).thenReturn(null); // plain HTTP forward, no HTTPS dial to resolve
+    final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, cfg);
     return server;
   }
 
   private static RaftHAServer raftPointingAt(final String leaderHttpAddress) {
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.getLeaderHttpAddress()).thenReturn(leaderHttpAddress);
-    when(raft.getClusterToken()).thenReturn("test-token");
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.leaderHttpAddress(leaderHttpAddress);
+    raft.clusterToken("test-token");
     return raft;
   }
 
@@ -180,7 +179,7 @@ class Issue7527RaftReplicatedDatabaseForwardTimeoutTest {
     final ContextConfiguration cfg = new ContextConfiguration();
     cfg.setValue(GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT, 2_500L);
 
-    final RaftReplicatedDatabase db = databaseWith(serverWith(cfg), mock(RaftHAServer.class));
+    final RaftReplicatedDatabase db = databaseWith(serverWith(cfg), FakeRaftHAServer.detached());
 
     final Field field = RaftReplicatedDatabase.class.getDeclaredField("httpClient");
     field.setAccessible(true);

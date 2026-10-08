@@ -26,15 +26,18 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.StaticBaseServerTest;
+import com.arcadedb.server.TestServerHelper;
+import com.arcadedb.server.UnstartedHttpServers;
+import com.arcadedb.server.ha.raft.UnverifiedClosedCopyCheck.CopyState;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.ExecutionResponse;
-import com.arcadedb.server.ha.raft.UnverifiedClosedCopyCheck.CopyState;
 import com.arcadedb.server.security.ServerSecurityUser;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.extension.RegisterExtension;
 import org.junit.jupiter.api.io.TempDir;
 
 import com.sun.net.httpserver.HttpExchange;
@@ -55,8 +58,6 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Regression tests for issue #8605, HA side: before a leader reopens a closed copy marked unverified by #8589 - which
@@ -67,6 +68,9 @@ import static org.mockito.Mockito.when;
  */
 @Timeout(120)
 class Issue8605UnverifiedClosedCopyCheckTest {
+  @RegisterExtension
+  static final UnstartedHttpServers HTTP_SERVERS = new UnstartedHttpServers();
+
 
   private static final String     DB_NAME  = "db8605";
   private static final String     PASSWORD = "DefaultPasswordForTests";
@@ -78,17 +82,16 @@ class Issue8605UnverifiedClosedCopyCheckTest {
 
   private ArcadeDBServer     server;
   private ArcadeStateMachine sm;
-  private RaftHAServer       raft;
+  private FakeRaftHAServer       raft;
 
   @BeforeEach
   void setUp() throws IOException {
     server = startServer();
-    raft = mock(RaftHAServer.class);
-    when(raft.getLocalPeerId()).thenReturn(RaftPeerId.valueOf("local"));
+    raft = FakeRaftHAServer.detached().localPeerId(RaftPeerId.valueOf("local"));
     sm = new ArcadeStateMachine();
     sm.setServer(server);
     sm.setRaftHAServer(raft);
-    when(raft.getStateMachine()).thenReturn(sm);
+    raft.stateMachine(sm);
   }
 
   @AfterEach
@@ -449,12 +452,9 @@ class Issue8605UnverifiedClosedCopyCheckTest {
   }
 
   private ExecutionResponse handlerResponse(final String name) throws Exception {
-    final HttpServer httpServer = mock(HttpServer.class);
-    when(httpServer.getServer()).thenReturn(server);
-    final RaftHAPlugin plugin = mock(RaftHAPlugin.class);
-    when(plugin.getRaftHAServer()).thenReturn(raft);
-    final ServerSecurityUser root = mock(ServerSecurityUser.class);
-    when(root.getName()).thenReturn("root");
+    final HttpServer httpServer = HTTP_SERVERS.of(server);
+    final RaftHAPlugin plugin = raft.plugin();
+    final ServerSecurityUser root = TestServerHelper.securityUser("root");
 
     return new PostBootstrapStateHandler(httpServer, plugin).execute(null, root,
         new JSONObject().put(UnverifiedClosedCopyCheck.COPY_OF, name));

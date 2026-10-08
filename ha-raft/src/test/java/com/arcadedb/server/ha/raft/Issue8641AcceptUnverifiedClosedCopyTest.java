@@ -28,9 +28,11 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.StaticBaseServerTest;
+import com.arcadedb.server.TestServerHelper;
+import com.arcadedb.server.UnstartedHttpServers;
+import com.arcadedb.server.ha.raft.UnverifiedClosedCopyCheck.CopyState;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.ExecutionResponse;
-import com.arcadedb.server.ha.raft.UnverifiedClosedCopyCheck.CopyState;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 import org.apache.ratis.protocol.RaftPeerId;
@@ -38,6 +40,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.extension.RegisterExtension;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
@@ -51,8 +54,6 @@ import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Regression tests for issue #8641: before it, the only way to reopen a leader's closed copy that a peer can never
@@ -64,6 +65,9 @@ import static org.mockito.Mockito.when;
  */
 @Timeout(120)
 class Issue8641AcceptUnverifiedClosedCopyTest {
+  @RegisterExtension
+  static final UnstartedHttpServers HTTP_SERVERS = new UnstartedHttpServers();
+
 
   private static final String     DB_NAME  = "db8641";
   private static final String     PASSWORD = "DefaultPasswordForTests";
@@ -74,22 +78,20 @@ class Issue8641AcceptUnverifiedClosedCopyTest {
 
   private ArcadeDBServer            server;
   private ArcadeStateMachine        sm;
-  private RaftHAServer              raft;
+  private FakeRaftHAServer              raft;
   private UnverifiedClosedCopyCheck check;
 
   @BeforeEach
   void setUp() throws IOException {
     server = startServer();
-    raft = mock(RaftHAServer.class);
-    when(raft.getLocalPeerId()).thenReturn(RaftPeerId.valueOf("local"));
-    when(raft.isLeader()).thenReturn(true);
+    raft = FakeRaftHAServer.detached().localPeerId(RaftPeerId.valueOf("local")).leader(true);
     sm = new ArcadeStateMachine();
     sm.setServer(server);
     sm.setRaftHAServer(raft);
-    when(raft.getStateMachine()).thenReturn(sm);
+    raft.stateMachine(sm);
     check = new UnverifiedClosedCopyCheck(raft, server);
     check.refusalReuseMs = 0L;
-    when(raft.getUnverifiedClosedCopyCheck()).thenReturn(check);
+    raft.unverifiedClosedCopyCheck(check);
   }
 
   @AfterEach
@@ -199,7 +201,8 @@ class Issue8641AcceptUnverifiedClosedCopyTest {
   @Test
   void aFollowerRefusesAndKeepsItsMarker() throws IOException {
     createClosedCopy();
-    when(raft.isLeader()).thenReturn(false);
+    // setUp() made this node the leader, where accepting is allowed; this test is about a follower
+    raft.leader(false);
 
     final ExecutionResponse response = handler().accept(raft, DB_NAME, "user 'root'");
     assertThat(response.getCode()).isEqualTo(400);
@@ -225,19 +228,16 @@ class Issue8641AcceptUnverifiedClosedCopyTest {
   @Test
   void theHandlerGuardsItsCaller() throws IOException {
     createClosedCopy();
-    final ServerSecurityUser notRoot = mock(ServerSecurityUser.class);
-    when(notRoot.getName()).thenReturn("alice");
+    final ServerSecurityUser notRoot = TestServerHelper.securityUser("alice");
     assertThatThrownBy(() -> handler().execute(null, notRoot, new JSONObject()))
         .isInstanceOf(ServerSecurityException.class);
     assertThat(Files.exists(marker())).isTrue();
 
-    final ServerSecurityUser root = mock(ServerSecurityUser.class);
-    when(root.getName()).thenReturn("root");
+    final ServerSecurityUser root = TestServerHelper.securityUser("root");
     assertThat(handler().execute(null, root, new JSONObject()).getCode()).as("no database in the path").isEqualTo(400);
 
-    final RaftHAPlugin noRaft = mock(RaftHAPlugin.class);
-    final HttpServer httpServer = mock(HttpServer.class);
-    when(httpServer.getServer()).thenReturn(server);
+    final RaftHAPlugin noRaft = new RaftHAPlugin();
+    final HttpServer httpServer = HTTP_SERVERS.of(server);
     assertThat(new PostAcceptCopyHandler(httpServer, noRaft).execute(null, root, new JSONObject()).getCode())
         .isEqualTo(400);
     assertThat(Files.exists(marker())).isTrue();
@@ -254,10 +254,8 @@ class Issue8641AcceptUnverifiedClosedCopyTest {
   }
 
   private PostAcceptCopyHandler handler() {
-    final HttpServer httpServer = mock(HttpServer.class);
-    when(httpServer.getServer()).thenReturn(server);
-    final RaftHAPlugin plugin = mock(RaftHAPlugin.class);
-    when(plugin.getRaftHAServer()).thenReturn(raft);
+    final HttpServer httpServer = HTTP_SERVERS.of(server);
+    final RaftHAPlugin plugin = raft.plugin();
     return new PostAcceptCopyHandler(httpServer, plugin);
   }
 

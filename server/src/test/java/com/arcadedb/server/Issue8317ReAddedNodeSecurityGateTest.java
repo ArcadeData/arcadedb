@@ -112,9 +112,7 @@ class Issue8317ReAddedNodeSecurityGateTest {
   }
 
   private static ServerSecurity fingerprintsMissing(final String... documents) {
-    final ServerSecurity security = mock(ServerSecurity.class);
-    when(security.unconvergedClusterSecurityDocuments()).thenReturn(List.of(documents));
-    return security;
+    return TestServerHelper.securityConvergedExcept(documents);
   }
 
   /** The window is left at its default, which is on (issue #7819). */
@@ -123,11 +121,10 @@ class Issue8317ReAddedNodeSecurityGateTest {
     configuration.setValue(GlobalConfiguration.HA_ENABLED, true);
     configuration.setValue(GlobalConfiguration.SERVER_READINESS_REQUIRES_HA, true);
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getStatus()).thenReturn(ArcadeDBServer.STATUS.ONLINE);
-    when(server.getConfiguration()).thenReturn(configuration);
-    when(server.getHA()).thenReturn(ha);
-    when(server.getSecurity()).thenReturn(security);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create((String) null, configuration);
+    server.online();
+    server.setHA(ha);
+    server.security(security);
     return server;
   }
 }

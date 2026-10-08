@@ -26,6 +26,7 @@ import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.utility.FileUtils;
 import org.apache.ratis.protocol.RaftPeerId;
@@ -46,8 +47,6 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Regression tests for issue #8843: every production reader of a node's own bootstrap state fingerprinted the OPEN
@@ -95,11 +94,10 @@ class Issue8843BootstrapStateInFlightPagesTest {
     config.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, DB_DIR);
     config.setValue(GlobalConfiguration.NETWORK_USE_SSL, false);
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(config);
-    when(server.getDatabaseNames()).thenReturn(Set.of(DB_NAME));
-    when(server.existsDatabase(DB_NAME)).thenReturn(true);
-    when(server.getDatabase(DB_NAME)).thenReturn(new ServerDatabase(null, localDb));
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create((String) null, config);
+    server.databaseNames(DB_NAME);
+    server.databaseNames(DB_NAME);
+    server.database(DB_NAME, new ServerDatabase(null, localDb));
     return server;
   }
 
@@ -118,7 +116,7 @@ class Issue8843BootstrapStateInFlightPagesTest {
 
   @Test
   void theElectionSamplesTheSettledCopy() throws Exception {
-    final BootstrapElection election = new BootstrapElection(mock(RaftHAServer.class), stubbedServer());
+    final BootstrapElection election = new BootstrapElection(FakeRaftHAServer.detached(), stubbedServer());
 
     final Sample sample = sampleWhileTheLastCommitIsInFlight(() -> {
       final Map<String, BootstrapElection.PeerState> states = election.computeLocalStates(RaftPeerId.valueOf("peer-0"),

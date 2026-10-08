@@ -4516,15 +4516,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * guard in {@link #build(BuildIndexCallback, GraphBuildCallback, boolean)}).
    * <p>
    * The cap is the one {@code ha-raft} enforces at submit, further bounded by the 64MB of uncompressed payload its
-   * codec accepts per entry for a cluster that raised the cap past that. It is read from this database's
-   * configuration, as {@code TimeSeriesShard} reads its own replicated ceiling.
+   * codec accepts per entry for a cluster that raised the cap past that. It is read from the wrapper's
+   * {@link DatabaseInternal#getReplicationConfiguration()}, the configuration the replication layer enforces it from,
+   * not from this database's own, which never sees a cap set only in the server configuration (issue #9430).
    */
   private long getBulkLoadChunkSizeBytes() {
     final long chunkSizeBytes = getTxChunkSize() * 1024 * 1024;
     if (!isReplicated())
       return chunkSizeBytes;
 
-    final long entryCap = Math.min(GlobalConfiguration.maxReplicatedRaftEntrySize(getDatabase().getConfiguration()),
+    final long entryCap = Math.min(GlobalConfiguration.maxReplicatedRaftEntrySize(
+        getDatabase().getWrappedDatabaseInstance().getReplicationConfiguration()),
         GlobalConfiguration.MAX_REPLICATED_UNCOMPRESSED_ENTRY_BYTES);
     return Math.min(chunkSizeBytes, entryCap / REPLICATED_CHUNK_SHARE_OF_ENTRY_CAP);
   }
@@ -11296,6 +11298,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
           currentOffset += (originalLength + 7) / 8; // packed bytes (1 bit per dimension)
           currentOffset += 4; // median (float)
         }
+
+        // The page may carry ids another node allocated (issue #9428): a follower's own commit applied on the leader,
+        // the leader's applied on a follower, a build run elsewhere. Left behind them, the next local insert would mint
+        // an id one of these entries already holds and supersede it in the location index of every node. Advanced
+        // BEFORE the entry is published, so no allocation can slip in between the two, and only ever forward, so a
+        // page carrying older ids (a tombstone, a renumbered compaction) never rewinds it. The read is only a fast path
+        // that skips the CAS when the allocator is already ahead; accumulateAndGet alone is what makes it correct.
+        if (id >= nextId.get())
+          nextId.accumulateAndGet(id + 1, Math::max);
 
         // Update VectorLocationIndex with this entry's absolute file offset
         // LSM semantics: later entries override earlier ones

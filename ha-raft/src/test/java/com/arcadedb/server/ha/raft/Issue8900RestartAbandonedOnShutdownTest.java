@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.TestServerHelper;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.util.LifeCycle;
@@ -91,7 +92,7 @@ class Issue8900RestartAbandonedOnShutdownTest {
       return LifeCycle.State.CLOSING;
     });
     final RaftClient client = mock(RaftClient.class);
-    final RaftTransactionBroker broker = mock(RaftTransactionBroker.class);
+    final FakeRaftTransactionBroker broker = new FakeRaftTransactionBroker();
     setField(raft, "raftServer", old);
     setField(raft, "raftClient", client);
     setField(raft, "transactionBroker", broker);
@@ -104,7 +105,7 @@ class Issue8900RestartAbandonedOnShutdownTest {
     restart.join();
 
     // The restart was abandoned before closing anything, so the next tick finds the client and broker still usable.
-    verify(broker, never()).stop();
+    assertThat(broker.calls("stop")).isEmpty();
     verify(client, never()).close();
     verify(old, never()).close();
     assertThat(getField(raft, "raftClient")).isSameAs(client);
@@ -135,9 +136,8 @@ class Issue8900RestartAbandonedOnShutdownTest {
   private static RaftHAServer detachedServer() {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_SERVER_LIST, SERVER_LIST);
-    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
-    when(mockServer.getServerName()).thenReturn("ArcadeDB_0");
-    return new RaftHAServer(mockServer, config);
+    final ArcadeDBServer arcadeServer = TestServerHelper.unstartedServer("ArcadeDB_0");
+    return new RaftHAServer(arcadeServer, config);
   }
 
   private static void setField(final Object target, final String name, final Object value) throws Exception {

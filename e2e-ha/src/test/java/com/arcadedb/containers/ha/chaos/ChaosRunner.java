@@ -209,7 +209,18 @@ public final class ChaosRunner {
       report.trend(trends.sample(step, acksPerSecond(), result.durationMillis()));
     // Checked whatever the checkpoint found: a node that reformatted and then failed to converge is the case where the
     // reformat is the most useful diagnostic
-    final Violation reformat = restartsBefore != null ? reformatViolation(step, fault, targets, restartsBefore) : null;
+    final Violation reformat;
+    try {
+      reformat = restartsBefore != null ? reformatViolation(step, fault, targets, restartsBefore) : null;
+    } catch (final ChaosFailure e) {
+      // The counts come from each node's HTTP status since issue #9429, so a node the checkpoint already found broken
+      // may not answer: its violations are the finding, and must not be replaced by a harness error about the counts
+      if (result.violations().isEmpty())
+        throw e;
+      LOGGER.warn("CHAOS step {}: in-place restart counts unavailable, reporting the checkpoint violations: {}", step,
+          e.getMessage());
+      return fromViolations(result.violations(), step);
+    }
     if (reformat == null)
       return result.violations().isEmpty() ? null : fromViolations(result.violations(), step);
     final List<Violation> violations = new ArrayList<>(result.violations());
@@ -240,7 +251,7 @@ public final class ChaosRunner {
       if (recovered < 0 || reformats < 0)
         throw new ChaosFailure(ResultKind.HARNESS,
             "In-place restart count of node " + i + " went down during step " + step + " (" + before[i] + " -> " + after[i]
-                + "): its log lost lines, so a reformat cannot be ruled out");
+                + "): the counts restart with the server process, so it restarted and a reformat cannot be ruled out");
       if (recovered > 0 || reformats > 0)
         LOGGER.info("CHAOS step {} fault={}: node {} restarted Ratis in place {} time(s) keeping its storage, {} time(s) reformatting it",
             step, fault.name(), i, recovered, reformats);

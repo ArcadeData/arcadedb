@@ -969,6 +969,37 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
   }
 
   /**
+   * The operator's override of issue #9449, the twin of {@code POST /api/v1/cluster/accept-diverged/{database}}. A thin
+   * adapter over {@code HAServerPlugin.acceptDivergedDatabase}, the method the HTTP route calls too, so the two transports
+   * cannot drift on what the override does. Root-only, as {@code checkRootUser} makes the HTTP route, and not
+   * leader-routed: the quarantine is this node's own. The refusals map through {@link #toStatus}: nothing standing is
+   * {@code NOT_FOUND}, a node that is not the sole voter (or runs without HA) is {@code FAILED_PRECONDITION}, a malformed
+   * name is {@code INVALID_ARGUMENT}.
+   */
+  @Override
+  public void acceptDivergedDatabase(final AcceptDivergedDatabaseRequest req,
+      final StreamObserver<AcceptDivergedDatabaseResponse> resp) {
+    respond(resp, "acceptDivergedDatabase", () -> {
+      final ServerSecurityUser user = authenticate(req.getCredentials());
+      requireServerAdmin(user);
+
+      final HAServerPlugin ha = ha();
+      if (ha == null)
+        throw new ServerControlPlane.OperationNotAvailableException(
+            "ArcadeDB is not running with High Availability module enabled: there is no quarantine to lift");
+
+      final JSONObject result = ha.acceptDivergedDatabase(req.getDatabase(), "user '" + user.getName() + "' (over gRPC)");
+      return AcceptDivergedDatabaseResponse.newBuilder()
+          .setDatabase(result.getString("database", req.getDatabase()))
+          .setLocalServer(result.getString("localServer", ""))
+          .setAppliedIndex(result.getLong("appliedIndex", -1L))
+          .setDivergenceCause(result.getString("divergenceCause", ""))
+          .setReadFloor(result.getLong("readFloor", -1L))
+          .build();
+    });
+  }
+
+  /**
    * The server's open HTTP authentication sessions, the RPC equivalent of {@code GET /api/v1/sessions}
    * (issue #7310), root-only as {@code GetSessionsHandler}'s {@code checkRootUser} makes it.
    * <p>

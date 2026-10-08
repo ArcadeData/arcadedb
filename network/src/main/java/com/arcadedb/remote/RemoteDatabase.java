@@ -1006,6 +1006,16 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   }
 
   /**
+   * The result set over a streamed body: rows converted as the buffered encoding converts them, and an in-band
+   * {@code error} line rebuilt into the typed exception the buffered encoding would have raised (issue #8874).
+   */
+  RemoteStreamingResultSet newStreamingResultSet(final BufferedReader reader, final boolean warnOnTruncation,
+      final String command) {
+    return new RemoteStreamingResultSet(reader, this::json2Result, warnOnTruncation,
+        error -> manageStreamedError(error, command));
+  }
+
+  /**
    * Issues one query/command and hands back its NDJSON body as a lazily-read {@link ResultSet}.
    * <p>
    * Deliberately a single attempt against the currently selected server, unlike the buffered
@@ -1074,7 +1084,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
       final BufferedReader reader = new BufferedReader(new InputStreamReader(body, StandardCharsets.UTF_8));
       body = null; // ownership passes to the ResultSet, which closes it
-      return new RemoteStreamingResultSet(reader, this::json2Result, maxRows == null);
+      return newStreamingResultSet(reader, maxRows == null, command);
 
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();

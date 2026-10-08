@@ -635,7 +635,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       if (!buffered.isEmpty()) {
         DeltaOverlay overlay = new DeltaOverlay(result.getMapping().size());
         for (final TxDelta d : buffered)
-          overlay = mergeAgainstBase(overlay, d, result.getMapping(), baseWatch);
+          overlay = mergeAgainstBase(overlay, d, result.getMapping(), baseWatch, result.getCsrPerType());
         edgePropertiesDirty = overlay.isEdgePropertiesDirty();
         if (overlay.hasChanges())
           fresh = fresh.withOverlay(overlay);
@@ -666,11 +666,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * produced the base read when {@code watch} describes that scan (issue #8378).
    */
   private static DeltaOverlay mergeAgainstBase(final DeltaOverlay overlay, final TxDelta delta, final NodeIdMapping mapping,
-      final BuildWatch watch) {
+      final BuildWatch watch, final Map<String, CSRAdjacencyIndex> baseCsrPerType) {
     if (watch == null)
-      return overlay.merge(delta, mapping);
+      return overlay.merge(delta, mapping, null, null, baseCsrPerType);
     watch.account(delta);
-    return overlay.merge(delta, mapping, watch.getCsrPerType(), watch);
+    return overlay.merge(delta, mapping, watch.getCsrPerType(), watch, baseCsrPerType);
   }
 
   /**
@@ -2297,9 +2297,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * captured for it at commit time.
    * <p>
    * What the answer still turns on is {@link DeltaOverlay#isEdgePropertiesDirty(String)}: a committed change to
-   * a base edge's own properties leaves that type's columns holding a value the database no longer has, and
-   * unlike an addition or a deletion it has nothing in the overlay to correct it with - an edge already in the
-   * base CSR is addressed by a column slot, and nothing maps that slot back from its RID. The rebuild
+   * a base edge's own properties can leave that type's columns holding a value the database no longer has, when the
+   * overlay cannot tell which column slot it belongs to - an edge already in the base CSR is addressed by a column
+   * slot, and nothing maps that slot back from its RID. An edge that is the only one of its type between its two
+   * vertices is the exception: its pair names its slot, so its new values are kept in the overlay and served by
+   * {@link #edgeWeightsForSlice} (issue #9437). For any other base-edge update, the rebuild
    * {@link #applyDelta} forces for it is what repairs the columns; until it lands the honest answer is no, the
    * same reading {@link #getMeanEdgesPerConnectedPair} gives when it cannot answer exactly. This method asks
    * the coarse form of that question - is ANY type out of date - because it is itself the coarse question;
@@ -2387,6 +2389,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
     final DeltaOverlay ov = snap.overlay;
     final CSRAdjacencyIndex csr = snap.csrPerType.get(edgeType);
+    // A base edge whose value a commit changed answers from the overlay, not from its column slot (issue #9437)
+    final BaseValues baseValues = ov != null && ov.hasUpdatedBaseEdgeValues(edgeType) ?
+        new BaseValues(ov, edgeType, nodeId, outgoing, indexOfMaterialisedProperty(propertyName)) : null;
 
     // The base slice this node's edges of this type occupy, as offsets into the CSR's own neighbour array.
     //
@@ -2414,7 +2419,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
     if (ov == null)
       return baseSliceWeights(column, baseNeighbors, baseStart, baseEnd, outgoing, bwdToFwd, defaultWeight,
-          edgeCheckpoint);
+          edgeCheckpoint, null);
 
     final boolean[] deleted = baseEnd > baseStart
         ? deletedSliceMask(baseNeighbors, baseStart, baseEnd, ov, edgeType, nodeId, outgoing) : null;
@@ -2436,7 +2441,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     // arrived at by the same arithmetic and byte for byte the same.
     if (deleted == null && addedNeighbors.length == 0)
       return baseSliceWeights(column, baseNeighbors, baseStart, baseEnd, outgoing, bwdToFwd, defaultWeight,
-          edgeCheckpoint);
+          edgeCheckpoint, baseValues);
 
     int keptBase = baseEnd - baseStart;
     if (deleted != null)
@@ -2461,7 +2466,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         if (edgeCheckpoint != null)
           edgeCheckpoint.accept(kept);
         keptNeighbors[kept] = baseNeighbors[i];
-        keptWeights[kept] = columnWeight(column, outgoing ? i : bwdToFwd[i], defaultWeight);
+        keptWeights[kept] = baseWeight(column, outgoing ? i : bwdToFwd[i], defaultWeight, baseValues, baseNeighbors[i]);
         kept++;
       }
       return new NodeEdgeWeights(keptNeighbors, keptWeights);
@@ -2474,11 +2479,14 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     final int[] neighbors = new int[degree];
     final int[] provenance = new int[degree];
     final int[] baseSlots = keptBase > 0 ? new int[keptBase] : EMPTY_INT;
+    final int[] baseOthers = keptBase > 0 && baseValues != null ? new int[keptBase] : null;
     int pos = 0;
     for (int i = baseStart; i < baseEnd; i++) {
       if (deleted != null && deleted[i - baseStart])
         continue;
       baseSlots[pos] = outgoing ? i : bwdToFwd[i];
+      if (baseOthers != null)
+        baseOthers[pos] = baseNeighbors[i];
       neighbors[pos] = baseNeighbors[i];
       provenance[pos] = pos;
       pos++;
@@ -2500,7 +2508,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       if (edgeCheckpoint != null)
         edgeCheckpoint.accept(i);
       final int origin = provenance[i];
-      weights[i] = origin < keptBase ? columnWeight(column, baseSlots[origin], defaultWeight)
+      weights[i] = origin < keptBase ?
+          baseWeight(column, baseSlots[origin], defaultWeight, baseValues, baseOthers != null ? baseOthers[origin] : -1)
           : overlayWeight(addedProperties, origin - keptBase, propertyIndex, defaultWeight);
     }
     return new NodeEdgeWeights(neighbors, weights);
@@ -2512,7 +2521,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    */
   private static NodeEdgeWeights baseSliceWeights(final Column column, final int[] baseNeighbors,
       final int baseStart, final int baseEnd, final boolean outgoing, final int[] bwdToFwd,
-      final double defaultWeight, final IntConsumer edgeCheckpoint) {
+      final double defaultWeight, final IntConsumer edgeCheckpoint, final BaseValues baseValues) {
     final int degree = baseEnd - baseStart;
     if (degree == 0)
       return EMPTY_EDGE_WEIGHTS;
@@ -2520,9 +2529,31 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     for (int i = 0; i < degree; i++) {
       if (edgeCheckpoint != null)
         edgeCheckpoint.accept(i);
-      weights[i] = columnWeight(column, outgoing ? baseStart + i : bwdToFwd[baseStart + i], defaultWeight);
+      weights[i] = baseWeight(column, outgoing ? baseStart + i : bwdToFwd[baseStart + i], defaultWeight, baseValues,
+          baseNeighbors[baseStart + i]);
     }
     return new NodeEdgeWeights(Arrays.copyOfRange(baseNeighbors, baseStart, baseEnd), weights);
+  }
+
+  /** The overlay's new values for the base edges of one node's slice (issue #9437). */
+  private record BaseValues(DeltaOverlay overlay, String edgeType, int nodeId, boolean outgoing, int propertyIndex) {
+    /** The new values of the edge joining the node to {@code other}, or null when its column slot is current. */
+    Object[] of(final int other) {
+      return outgoing ? overlay.getUpdatedBaseEdgeValues(edgeType, nodeId, other) :
+          overlay.getUpdatedBaseEdgeValues(edgeType, other, nodeId);
+    }
+  }
+
+  /** A base edge's weight: the overlay's new value when a commit changed it, else its column slot. */
+  private static double baseWeight(final Column column, final int slot, final double defaultWeight,
+      final BaseValues baseValues, final int other) {
+    if (baseValues != null) {
+      final Object[] values = baseValues.of(other);
+      if (values != null)
+        return baseValues.propertyIndex() >= 0 && baseValues.propertyIndex() < values.length
+            && values[baseValues.propertyIndex()] instanceof Number number ? number.doubleValue() : defaultWeight;
+    }
+    return columnWeight(column, slot, defaultWeight);
   }
 
   /** The position of {@code propertyName} in this view's edge property filter, or -1 if it holds no such name. */
@@ -3299,7 +3330,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     // commit (issue #8378)
     // Cleared by every path that replaces the base, so it always describes the scan of the one being served
     final BuildWatch watch = baseWatch;
-    final DeltaOverlay merged = mergeAgainstBase(base, delta, current.nodeMapping, watch);
+    final DeltaOverlay merged = mergeAgainstBase(base, delta, current.nodeMapping, watch, current.csrPerType);
     this.snapshot = current.withOverlay(merged);
     notifyContractionHierarchies();
 
@@ -3332,7 +3363,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     if (buildWatch != null)
       return;
 
-    if (forceRebuild || (compactionThreshold > 0 && Math.abs(merged.getDeltaEdgeCount()) > compactionThreshold)) {
+    if (forceRebuild || (compactionThreshold > 0
+        && Math.abs(merged.getDeltaEdgeCount()) + merged.getUpdatedBaseEdgeCount() > compactionThreshold)) {
       // Guard: only one compaction thread at a time
       if (!compacting.compareAndSet(false, true))
         return;
@@ -3403,7 +3435,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
                       // crossed its bucket is already in the new base, so re-merging it blindly would
                       // create duplicate neighbours (adds, issue #4588) or spend an exclusion budget the
                       // fresh run cannot pay without hiding a live parallel edge (deletions, issue #7042).
-                      overlay = overlay.merge(d, result.getMapping(), result.getCsrPerType(), preCount);
+                      overlay = overlay.merge(d, result.getMapping(), result.getCsrPerType(), preCount,
+                          result.getCsrPerType());
                     }
                     // A change to a base edge's properties has no overlay representation, so a delta buffered
                     // during this rebuild may not be reflected in the fresh CSR (if it committed after the

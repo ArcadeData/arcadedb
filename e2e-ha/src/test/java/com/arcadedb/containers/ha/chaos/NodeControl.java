@@ -82,6 +82,9 @@ public interface NodeControl {
    */
   String outOfMemory();
 
-  /** @return the in-place Ratis restarts the node has logged since the run started */
+  /**
+   * @return the in-place Ratis restarts the node's server process reports (its {@code localInPlaceRestarts} cluster status
+   * member, issue #9429), counted since that process started
+   */
   InPlaceRestarts inPlaceRestarts(int node);
 }

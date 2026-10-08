@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.TestServerHelper;
 import org.apache.ratis.conf.Parameters;
 import org.apache.ratis.grpc.GrpcConfigKeys;
 import org.junit.jupiter.api.BeforeEach;
@@ -33,8 +34,6 @@ import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * {@code RaftHAServer.raftParameters} is what the Raft client builders read to speak the same transport the
@@ -134,8 +133,7 @@ class Issue3890RaftParametersPublicationTest {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_SERVER_LIST, SERVER_LIST);
 
-    final ArcadeDBServer arcadeServer = mock(ArcadeDBServer.class);
-    when(arcadeServer.getServerName()).thenReturn("ArcadeDB_0");
+    final ArcadeDBServer arcadeServer = TestServerHelper.unstartedServer("ArcadeDB_0");
 
     return new RaftHAServer(arcadeServer, config);
   }

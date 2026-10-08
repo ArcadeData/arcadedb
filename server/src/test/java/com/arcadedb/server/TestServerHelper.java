@@ -25,14 +25,25 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.security.ReplicatedSecurityFingerprintRepository;
+import com.arcadedb.server.security.ServerSecurity;
+import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.CallableNoReturn;
 import com.arcadedb.utility.CallableParameterNoReturn;
 import com.arcadedb.utility.FileUtils;
 
 import java.io.File;
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.util.Collection;
+import java.util.List;
+import java.util.Set;
+import java.util.UUID;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -82,6 +93,117 @@ public final class TestServerHelper {
     }
 
     return servers;
+  }
+
+  /**
+   * A real server that is constructed and never started: {@link ArcadeDBServer#getConfiguration()} is the very instance
+   * passed in, the root and config paths resolve under {@code rootPath}, and nothing binds a port, opens a database or
+   * writes a file. It replaces a Mockito mock of {@link ArcadeDBServer} that only stubbed those getters (issue #9464).
+   * <p>
+   * It sets {@code SERVER_ROOT_PATH} and {@code SERVER_DATABASE_DIRECTORY} on {@code configuration} itself, so that
+   * {@code getConfiguration()} stays the caller's instance; a configuration already rooted elsewhere is refused. Like any
+   * {@link ArcadeDBServer}, the constructor registers a JVM shutdown hook, which is a no-op for a server never started.
+   */
+  public static ArcadeDBServer unstartedServer(final Path rootPath, final ContextConfiguration configuration) {
+    return new ArcadeDBServer(rooted(rootPath, configuration));
+  }
+
+  /**
+   * Roots {@code configuration} at {@code rootPath}, refusing one already rooted elsewhere, and puts the database directory
+   * under it unless the configuration names its own; returns it.
+   */
+  static ContextConfiguration rooted(final Path rootPath, final ContextConfiguration configuration) {
+    final String root = rootPath.toString();
+    if (configuration.getContextKeys().contains(GlobalConfiguration.SERVER_ROOT_PATH.getKey())
+        && !root.equals(configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PATH)))
+      throw new IllegalArgumentException("The configuration already belongs to a server rooted at '"
+          + configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PATH) + "': use a new ContextConfiguration per root");
+    configuration.setValue(GlobalConfiguration.SERVER_ROOT_PATH, root);
+    // A database directory the test chose stays: only the default one is moved under the root
+    if (!configuration.getContextKeys().contains(GlobalConfiguration.SERVER_DATABASE_DIRECTORY.getKey()))
+      configuration.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, rootPath.resolve("databases").toString());
+    return configuration;
+  }
+
+  /**
+   * Where a server built without an explicit root is rooted: a fresh path under the module's {@code target} directory,
+   * never shared with another server and not created by construction. Code under test that persists something (a state
+   * machine bound to the server writes {@code <databases>/.raft}) lands there and nowhere else, and {@code mvn clean}
+   * removes it; a test that reads it back passes its own {@code @TempDir} to
+   * {@link #unstartedServer(Path, ContextConfiguration)}.
+   */
+  static Path defaultUnstartedServerRoot() {
+    return Path.of("target", "unstarted-servers", UUID.randomUUID().toString()).toAbsolutePath();
+  }
+
+  /** {@link #unstartedServer(Path, ContextConfiguration)} with the default name, a new configuration and no disk. */
+  public static ArcadeDBServer unstartedServer() {
+    return unstartedServer(defaultUnstartedServerRoot(), new ContextConfiguration());
+  }
+
+  /** {@link #unstartedServer(Path, ContextConfiguration)} named {@code serverName}, with a new configuration and no disk. */
+  public static ArcadeDBServer unstartedServer(final String serverName) {
+    return unstartedServer(serverName, new ContextConfiguration());
+  }
+
+  /**
+   * {@link #unstartedServer(Path, ContextConfiguration)} with no disk, named {@code serverName} (written into
+   * {@code configuration}, where {@link ArcadeDBServer#getServerName()} reads it) unless that is null. Do not share one
+   * configuration between servers that need different names: the last name written wins for all of them.
+   */
+  public static ArcadeDBServer unstartedServer(final String serverName, final ContextConfiguration configuration) {
+    if (serverName != null)
+      configuration.setValue(GlobalConfiguration.SERVER_NAME, serverName);
+    return unstartedServer(defaultUnstartedServerRoot(), configuration);
+  }
+
+  /**
+   * A real server user named {@code name}, with access to {@code databases} (none when empty), for code that reads only
+   * the user's name and authorized databases. It is bound to no server, so {@code getDatabaseUser()} is out of reach:
+   * a test that needs it builds the user against a real server instead (issue #9464). Every database is granted with the
+   * {@code admin} group: do not use it to test group permissions.
+   */
+  public static ServerSecurityUser securityUser(final String name, final String... databases) {
+    final JSONObject configuration = new JSONObject().put("name", name);
+    if (databases.length > 0) {
+      final JSONObject access = new JSONObject();
+      for (final String database : databases)
+        access.put(database, new JSONArray().put("admin"));
+      configuration.put("databases", access);
+    }
+    return new ServerSecurityUser(null, configuration);
+  }
+
+  /**
+   * A real {@link ServerSecurity} whose cluster security documents have all converged except {@code unconverged} (named
+   * as {@link ServerSecurity#unconvergedClusterSecurityDocuments()} reports them: {@code users}, {@code groups},
+   * {@code API tokens}). Each converged document gets a replicated fingerprint in a fresh config directory under
+   * {@code target/}, so the security derives the answer exactly as on a node, from what is on disk (issue #9464). It is
+   * bound to no server: use it for code that reads the convergence and nothing that needs a running server.
+   */
+  private static final List<String> SECURITY_DOCUMENTS = List.of("users", "groups", "API tokens");
+
+  public static ServerSecurity securityConvergedExcept(final String... unconverged) {
+    final Path configDirectory = defaultUnstartedServerRoot().resolve("config");
+    try {
+      Files.createDirectories(configDirectory);
+    } catch (final IOException e) {
+      throw new UncheckedIOException(e);
+    }
+    final Set<String> missing = Set.of(unconverged);
+    // Named as unconvergedClusterSecurityDocuments() reports them: a typo would otherwise read as "converged"
+    for (final String document : missing)
+      if (!SECURITY_DOCUMENTS.contains(document))
+        throw new IllegalArgumentException("Unknown security document '" + document + "', expected one of " + SECURITY_DOCUMENTS);
+    final ReplicatedSecurityFingerprintRepository fingerprints = new ReplicatedSecurityFingerprintRepository(configDirectory.toString());
+    // Only the PRESENCE of a fingerprint marks a document converged, so one placeholder value serves all three
+    if (!missing.contains("users"))
+      fingerprints.record(ReplicatedSecurityFingerprintRepository.USERS, "test-fingerprint");
+    if (!missing.contains("groups"))
+      fingerprints.record(ReplicatedSecurityFingerprintRepository.GROUPS, "test-fingerprint");
+    if (!missing.contains("API tokens"))
+      fingerprints.record(ReplicatedSecurityFingerprintRepository.API_TOKENS, "test-fingerprint");
+    return new ServerSecurity(null, new ContextConfiguration(), configDirectory.toString());
   }
 
   public static void stopServers(final ArcadeDBServer[] servers) {

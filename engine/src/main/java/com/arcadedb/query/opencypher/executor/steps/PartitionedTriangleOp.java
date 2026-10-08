@@ -204,7 +204,7 @@ public final class PartitionedTriangleOp implements CountOp {
     return result;
   }
 
-  private static long countRange(final GraphTraversalProvider provider, final NeighborView knowsView, final int[] nbrs,
+  private long countRange(final GraphTraversalProvider provider, final NeighborView knowsView, final int[] nbrs,
       final int[] personPartition, final int start, final int end, final WorkGuard guard) {
     long count = 0;
     for (int u = start; u < end; u++) {
@@ -220,9 +220,10 @@ public final class PartitionedTriangleOp implements CountOp {
       final int uStart = knowsView.offset(u);
       final int uEnd = knowsView.offsetEnd(u);
 
+      // A self loop is not a step between two distinct persons: it is counted apart (see loopTermOfPartition), never as a neighbour
       for (int k = uStart; k < uEnd; k++) {
         final int v = nbrs[k];
-        if (personPartition[v] != country)
+        if (v == u || personPartition[v] != country)
           continue;
 
         final int vStart = knowsView.offset(v);
@@ -237,15 +238,66 @@ public final class PartitionedTriangleOp implements CountOp {
           else {
             // a value occurring m times in one range and n times in the other is m * n matches (issue #9298)
             final int ue = runEnd(nbrs, iu, uEnd), ve = runEnd(nbrs, iv, vEnd);
-            if (personPartition[nu] == country)
+            if (nu != u && nu != v && personPartition[nu] == country)
               count += (long) (ue - iu) * (ve - iv);
             iu = ue;
             iv = ve;
           }
         }
       }
+
+      if (Arrays.binarySearch(nbrs, uStart, uEnd, u) >= 0)
+        count += loopTermOfPartition(provider, u, nbrs, uStart, uEnd, personPartition, country);
     }
     return count;
+  }
+
+  /**
+   * The matches of the triangle that run over a self loop of {@code u}, with the loops of the triangle counted once each and
+   * the three relationships distinct (relationship uniqueness holds inside one MATCH clause, issue #9486).
+   * <p>
+   * A loop at {@code u} is a step from {@code u} to {@code u}, so the triangle either repeats {@code u} once (two positions at
+   * {@code u}, the third at another person {@code y}: one loop, and two of the {@code m} edges between {@code u} and {@code y},
+   * in order) or sits at {@code u} entirely (three distinct loops). The three positions that can hold the repeated {@code u}
+   * make the factor 3. Triangles of three distinct persons use no loop and are counted by the intersection.
+   * <p>
+   * {@code sorted} is the neighbour range of {@code u}, ascending like every range the intersection merges, so equal values form
+   * one run and {@code Arrays.binarySearch} finds the loop.
+   */
+  private long loopTermOfPartition(final GraphTraversalProvider provider, final int u, final int[] sorted, final int from,
+      final int to, final int[] personPartition, final int country) {
+    final long loops = loopsOf(provider, u);
+    long term = orderedLoopTriples(loops);
+    for (int i = from; i < to; ) {
+      final int y = sorted[i];
+      final int run = runEnd(sorted, i, to) - i;
+      if (y != u && personPartition[y] == country)
+        term = Math.addExact(term, repeatedPairTriples(loops, run));
+      i += run;
+    }
+    return term;
+  }
+
+  /** Ordered triples of distinct loops among {@code loops}: loops * (loops - 1) * (loops - 2), exact. */
+  private static long orderedLoopTriples(final long loops) {
+    return loops < 3 ? 0L : Math.multiplyExact(Math.multiplyExact(loops, loops - 1), loops - 2);
+  }
+
+  /**
+   * Triples with one loop and an ordered pair of distinct edges among the {@code run} between the loop's vertex and another
+   * one, in each of the three positions the repeated vertex can take: 3 * loops * run * (run - 1), exact.
+   */
+  private static long repeatedPairTriples(final long loops, final long run) {
+    return run < 2 ? 0L : Math.multiplyExact(Math.multiplyExact(3L * loops, run), run - 1);
+  }
+
+  /** The self loops of {@code node}: each one is listed once in its out adjacency, unlike the undirected one that lists it twice. */
+  private long loopsOf(final GraphTraversalProvider provider, final int node) {
+    long loops = 0;
+    for (final int n : provider.getNeighborIds(node, Vertex.DIRECTION.OUT, triangleEdgeType))
+      if (n == node)
+        loops++;
+    return loops;
   }
 
   /** End (exclusive) of the run of values equal to {@code a[from]} in the sorted range {@code [from, to)}. */
@@ -410,7 +462,7 @@ public final class PartitionedTriangleOp implements CountOp {
         continue;
       final int[] uNeighbors = provider.getNeighborIds(u, Vertex.DIRECTION.BOTH, triangleEdgeType);
       for (final int v : uNeighbors) {
-        if (countries[v] == null)
+        if (v == u || countries[v] == null)
           continue;
         final int[] vNeighbors = provider.getNeighborIds(v, Vertex.DIRECTION.BOTH, triangleEdgeType);
         int iu = 0, iv = 0;
@@ -422,12 +474,29 @@ public final class PartitionedTriangleOp implements CountOp {
           else {
             final int w = uNeighbors[iu];
             final int ue = runEnd(uNeighbors, iu, uNeighbors.length), ve = runEnd(vNeighbors, iv, vNeighbors.length);
-            if (countries[w] != null)
+            if (w != u && w != v && countries[w] != null)
               total = Math.addExact(total, Math.multiplyExact((long) (ue - iu) * (ve - iv),
                   sharedWeight(countries[u], weights[u], countries[v], weights[v], countries[w], weights[w])));
             iu = ue;
             iv = ve;
           }
+        }
+      }
+
+      if (Arrays.binarySearch(uNeighbors, u) >= 0) {
+        // the triangles over a self loop of u: see loopTermOfPartition
+        final long loops = loopsOf(provider, u);
+        final long allLoops = orderedLoopTriples(loops);
+        if (allLoops != 0L)
+          total = Math.addExact(total, Math.multiplyExact(allLoops,
+              sharedWeight(countries[u], weights[u], countries[u], weights[u], countries[u], weights[u])));
+        for (int i = 0; i < uNeighbors.length; ) {
+          final int y = uNeighbors[i];
+          final int run = runEnd(uNeighbors, i, uNeighbors.length) - i;
+          if (y != u && countries[y] != null && run > 1)
+            total = Math.addExact(total, Math.multiplyExact(repeatedPairTriples(loops, run),
+                sharedWeight(countries[u], weights[u], countries[u], weights[u], countries[y], weights[y])));
+          i += run;
         }
       }
     }
@@ -470,7 +539,7 @@ public final class PartitionedTriangleOp implements CountOp {
         continue;
       final int[] uNeighbors = provider.getNeighborIds(u, Vertex.DIRECTION.BOTH, triangleEdgeType);
       for (final int v : uNeighbors) {
-        if (personPartition[v] != country)
+        if (v == u || personPartition[v] != country)
           continue;
         final int[] vNeighbors = provider.getNeighborIds(v, Vertex.DIRECTION.BOTH, triangleEdgeType);
         int iu = 0, iv = 0;
@@ -482,13 +551,15 @@ public final class PartitionedTriangleOp implements CountOp {
           else {
             final int value = uNeighbors[iu];
             final int ue = runEnd(uNeighbors, iu, uNeighbors.length), ve = runEnd(vNeighbors, iv, vNeighbors.length);
-            if (personPartition[value] == country)
+            if (value != u && value != v && personPartition[value] == country)
               total += (long) (ue - iu) * (ve - iv);
             iu = ue;
             iv = ve;
           }
         }
       }
+      if (Arrays.binarySearch(uNeighbors, u) >= 0)
+        total += loopTermOfPartition(provider, u, uNeighbors, 0, uNeighbors.length, personPartition, country);
     }
     return total;
   }
@@ -677,6 +748,8 @@ public final class PartitionedTriangleOp implements CountOp {
       guard.check();
       final int[] uAdjacent = adjacency[u];
       for (final int v : uAdjacent) {
+        if (v == u)
+          continue;
         // the triangles closing the wedge u-v: the vertices w both are connected to, with the multiplicity of each edge
         final int[] vAdjacent = adjacency[v];
         int i = 0, j = 0;
@@ -688,7 +761,7 @@ public final class PartitionedTriangleOp implements CountOp {
             ++j;
           else {
             final int uRun = runLength(uAdjacent, i), vRun = runLength(vAdjacent, j);
-            final long shared = sharedWeight(partitions[u], partitions[v], partitions[a]);
+            final long shared = a == u || a == v ? 0L : sharedWeight(partitions[u], partitions[v], partitions[a]);
             if (shared != 0L)
               total = Math.addExact(total, Math.multiplyExact(Math.multiplyExact((long) uRun, vRun), shared));
             i += uRun;
@@ -696,8 +769,33 @@ public final class PartitionedTriangleOp implements CountOp {
           }
         }
       }
+
+      if (Arrays.binarySearch(uAdjacent, u) >= 0) {
+        // the triangles over a self loop of u: see loopTermOfPartition
+        final long loops = loopsOfOLTP(db, gavProvider, persons.get(u));
+        final long allLoops = orderedLoopTriples(loops);
+        if (allLoops != 0L)
+          total = Math.addExact(total, Math.multiplyExact(allLoops, sharedWeight(partitions[u], partitions[u], partitions[u])));
+        for (int i = 0; i < uAdjacent.length; ) {
+          final int y = uAdjacent[i];
+          final int run = runLength(uAdjacent, i);
+          if (y != u && run > 1)
+            total = Math.addExact(total, Math.multiplyExact(repeatedPairTriples(loops, run),
+                sharedWeight(partitions[u], partitions[u], partitions[y])));
+          i += run;
+        }
+      }
     }
     return total;
+  }
+
+  /** The self loops of {@code vertex}: each one is listed once in its out adjacency, unlike the undirected one that lists it twice. */
+  private long loopsOfOLTP(final Database db, final GraphTraversalProvider provider, final RID vertex) {
+    long loops = 0;
+    for (final RID n : getNeighborRIDs(db, provider, vertex, Vertex.DIRECTION.OUT, triangleEdgeType))
+      if (n.equals(vertex))
+        loops++;
+    return loops;
   }
 
   /** Whether {@code type} is the labelled type or one of its sub-types; a null label lets everything through. */

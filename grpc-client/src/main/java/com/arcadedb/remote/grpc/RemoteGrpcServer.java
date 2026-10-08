@@ -18,10 +18,13 @@
  */
 package com.arcadedb.remote.grpc;
 
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.HostUtil;
 import com.arcadedb.remote.RemoteException;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.grpc.AcceptDivergedDatabaseRequest;
+import com.arcadedb.server.grpc.AcceptDivergedDatabaseResponse;
 import com.arcadedb.server.grpc.AlignDatabaseRequest;
 import com.arcadedb.server.grpc.ApiTokenInfo;
 import com.arcadedb.server.grpc.ArcadeDbAdminServiceGrpc;
@@ -478,6 +481,10 @@ public class RemoteGrpcServer implements AutoCloseable {
               .setIfNotExists(ifNotExists).build())
           .getCreated();
     } catch (StatusException e) {
+      // Only the unknown outcome goes through the mapper; every other failure keeps the RuntimeException this method
+      // has always thrown, so a caller matching on it (e.g. an ALREADY_EXISTS refusal) sees no change (issue #8822)
+      if (GrpcClientErrorMapper.outcomeUnknown(e))
+        throw GrpcClientErrorMapper.toAutoCommitWriteException(e, "create database");
       throw new RuntimeException("Failed to create database: " + e.getMessage(), e);
     }
   }
@@ -507,6 +514,9 @@ public class RemoteGrpcServer implements AutoCloseable {
               .setIfExists(ifExists).build())
           .getDropped();
     } catch (StatusException e) {
+      // Same split as createDatabase: only the unknown outcome changes type
+      if (GrpcClientErrorMapper.outcomeUnknown(e))
+        throw GrpcClientErrorMapper.toAutoCommitWriteException(e, "drop database");
       throw new RuntimeException("Failed to drop database: " + e.getMessage(), e);
     }
   }
@@ -521,7 +531,7 @@ public class RemoteGrpcServer implements AutoCloseable {
    * Opens a database on the server, loading it if it was closed.
    */
   public void openDatabase(final String database) {
-    call("open database", stub -> stub.openDatabase(
+    callWrite("open database", stub -> stub.openDatabase(
         OpenDatabaseRequest.newBuilder().setCredentials(buildCredentials()).setName(database).build()));
   }
 
@@ -529,22 +539,22 @@ public class RemoteGrpcServer implements AutoCloseable {
    * Closes a database on the server and removes it from the server's cache. The files stay on disk.
    */
   public void closeDatabase(final String database) {
-    call("close database", stub -> stub.closeDatabase(
+    callWrite("close database", stub -> stub.closeDatabase(
         CloseDatabaseRequest.newBuilder().setCredentials(buildCredentials()).setName(database).build()));
   }
 
   public void alignDatabase(final String database) {
-    call("align database", stub -> stub.alignDatabase(
+    callWrite("align database", stub -> stub.alignDatabase(
         AlignDatabaseRequest.newBuilder().setCredentials(buildCredentials()).setName(database).build()));
   }
 
   public void setServerSetting(final String key, final String value) {
-    call("set server setting", stub -> stub.setServerSetting(
+    callWrite("set server setting", stub -> stub.setServerSetting(
         SetServerSettingRequest.newBuilder().setCredentials(buildCredentials()).setKey(key).setValue(value).build()));
   }
 
   public void setDatabaseSetting(final String database, final String key, final String value) {
-    call("set database setting", stub -> stub.setDatabaseSetting(
+    callWrite("set database setting", stub -> stub.setDatabaseSetting(
         SetDatabaseSettingRequest.newBuilder().setCredentials(buildCredentials()).setDatabase(database).setKey(key)
             .setValue(value).build()));
   }
@@ -566,11 +576,11 @@ public class RemoteGrpcServer implements AutoCloseable {
     databases.forEach((database, groups) -> request.putDatabases(database,
         UserGroups.newBuilder().addAllGroups(groups).build()));
 
-    call("create user", stub -> stub.createUser(request.build()));
+    callWrite("create user", stub -> stub.createUser(request.build()));
   }
 
   public void dropUser(final String user) {
-    call("drop user", stub -> stub.deleteUser(
+    callWrite("drop user", stub -> stub.deleteUser(
         DeleteUserRequest.newBuilder().setCredentials(buildCredentials()).setUser(user).build()));
   }
 
@@ -599,7 +609,7 @@ public class RemoteGrpcServer implements AutoCloseable {
       request.setDatabases(grants.build());
     }
 
-    call("update user", stub -> stub.updateUser(request.build()));
+    callWrite("update user", stub -> stub.updateUser(request.build()));
   }
 
   /**
@@ -630,12 +640,12 @@ public class RemoteGrpcServer implements AutoCloseable {
    * {@code groupConfig}, it is not merged into an existing group of the same name.
    */
   public void saveGroup(final String database, final String name, final JSONObject groupConfig) {
-    call("save group", stub -> stub.saveGroup(SaveGroupRequest.newBuilder().setCredentials(buildCredentials())
+    callWrite("save group", stub -> stub.saveGroup(SaveGroupRequest.newBuilder().setCredentials(buildCredentials())
         .setDatabase(database).setName(name).setGroupJson(groupConfig.toString()).build()));
   }
 
   public void deleteGroup(final String database, final String name) {
-    call("delete group", stub -> stub.deleteGroup(DeleteGroupRequest.newBuilder().setCredentials(buildCredentials())
+    callWrite("delete group", stub -> stub.deleteGroup(DeleteGroupRequest.newBuilder().setCredentials(buildCredentials())
         .setDatabase(database).setName(name).build()));
   }
 
@@ -670,7 +680,7 @@ public class RemoteGrpcServer implements AutoCloseable {
     if (permissions != null)
       request.setPermissionsJson(permissions.toString());
 
-    return call("create api token", stub -> stub.createApiToken(request.build()));
+    return callWrite("create api token", stub -> stub.createApiToken(request.build()));
   }
 
   /**
@@ -679,7 +689,7 @@ public class RemoteGrpcServer implements AutoCloseable {
    * by the server.
    */
   public void deleteApiToken(final String tokenHash) {
-    call("delete api token", stub -> stub.deleteApiToken(DeleteApiTokenRequest.newBuilder()
+    callWrite("delete api token", stub -> stub.deleteApiToken(DeleteApiTokenRequest.newBuilder()
         .setCredentials(buildCredentials()).setTokenHash(tokenHash).build()));
   }
 
@@ -689,7 +699,7 @@ public class RemoteGrpcServer implements AutoCloseable {
   }
 
   public void setBackupConfig(final JSONObject config) {
-    call("set backup config", stub -> stub.setBackupConfig(
+    callWrite("set backup config", stub -> stub.setBackupConfig(
         SetBackupConfigRequest.newBuilder().setCredentials(buildCredentials()).setConfigJson(config.toString()).build()));
   }
 
@@ -702,12 +712,12 @@ public class RemoteGrpcServer implements AutoCloseable {
    * Runs a full backup inline and returns the archive path.
    */
   public String triggerBackup(final String database) {
-    return call("trigger backup", stub -> stub.triggerBackup(
+    return callWrite("trigger backup", stub -> stub.triggerBackup(
         TriggerBackupRequest.newBuilder().setCredentials(buildCredentials()).setDatabase(database).build())).getBackupFile();
   }
 
   public void deleteBackup(final String database, final String fileName) {
-    call("delete backup", stub -> stub.deleteBackup(
+    callWrite("delete backup", stub -> stub.deleteBackup(
         DeleteBackupRequest.newBuilder().setCredentials(buildCredentials()).setDatabase(database).setFileName(fileName)
             .build()));
   }
@@ -724,18 +734,18 @@ public class RemoteGrpcServer implements AutoCloseable {
    * is the live recording's own bound, not this call's argument, if a recording was already in flight
    */
   public int profilerStart(final int timeoutSeconds) {
-    return call("profiler start", stub -> stub.profilerStart(
+    return callWrite("profiler start", stub -> stub.profilerStart(
         ProfilerStartRequest.newBuilder().setCredentials(buildCredentials()).setTimeoutSeconds(timeoutSeconds).build()))
         .getTimeoutSeconds();
   }
 
   public JSONObject profilerStop() {
-    return profilerDocument(call("profiler stop", stub -> stub.profilerStop(
+    return profilerDocument(callWrite("profiler stop", stub -> stub.profilerStop(
         ProfilerStopRequest.newBuilder().setCredentials(buildCredentials()).build())));
   }
 
   public void profilerReset() {
-    call("profiler reset", stub -> stub.profilerReset(
+    callWrite("profiler reset", stub -> stub.profilerReset(
         ProfilerResetRequest.newBuilder().setCredentials(buildCredentials()).build()));
   }
 
@@ -765,15 +775,16 @@ public class RemoteGrpcServer implements AutoCloseable {
   /**
    * Stops the server that answers this call, or - when {@code serverName} is not empty - the named
    * HA peer. The local shutdown is scheduled a second out server-side, so this call returns before
-   * the process exits.
+   * the process exits: a lost answer is therefore not the normal outcome, and is reported as an unknown one, like any
+   * other admin write (see {@link #callWrite}).
    */
   public void shutdown(final String serverName) {
-    call("shutdown", stub -> stub.shutdown(
+    callWrite("shutdown", stub -> stub.shutdown(
         ShutdownRequest.newBuilder().setCredentials(buildCredentials()).setServerName(serverName).build()));
   }
 
   public void disconnectCluster() {
-    call("disconnect cluster", stub -> stub.disconnectCluster(
+    callWrite("disconnect cluster", stub -> stub.disconnectCluster(
         DisconnectClusterRequest.newBuilder().setCredentials(buildCredentials()).build()));
   }
 
@@ -793,7 +804,7 @@ public class RemoteGrpcServer implements AutoCloseable {
    * every transport, and surfaces a refusal through {@code GrpcClientErrorMapper}.
    * <p>
    * <b>A join that succeeded but left a security document unseeded raises
-   * {@link com.arcadedb.exception.NeedRetryException}</b> (issue #7532, from the server's
+   * {@link NeedRetryException}</b> (issue #7532, from the server's
    * {@code UNAVAILABLE}, mapped here the way HTTP's 503 is on the other transport). It does <em>not</em> mean
    * the server failed to join - it is a committed cluster member by then - but that it is enforcing its own
    * copy of the named documents until the seed is reissued. Re-running this call does exactly that, and is
@@ -801,8 +812,22 @@ public class RemoteGrpcServer implements AutoCloseable {
    * server's log, so an operator driving the join over gRPC had nothing to branch on.
    */
   public void connectCluster(final String serverAddress) {
-    call("connect cluster", stub -> stub.connectCluster(
+    callWrite("connect cluster", stub -> stub.connectCluster(
         ConnectClusterRequest.newBuilder().setCredentials(buildCredentials()).setServerAddress(serverAddress).build()));
+  }
+
+  /**
+   * Lifts the quarantine standing on {@code database} of the server this client is connected to, accepting its copy as it
+   * is WITHOUT a resync (issue #9449), the twin of {@code POST /api/v1/cluster/accept-diverged/{database}}. Only allowed
+   * on a server that is the sole voter of its cluster, where no peer exists to resync from; the entry the quarantine
+   * skipped is not replayed. Root only.
+   * <p>
+   * A database with nothing standing on it raises the client's not-found error, a server that is not the sole voter (or
+   * runs without HA) its failed-precondition error, through {@code GrpcClientErrorMapper}.
+   */
+  public AcceptDivergedDatabaseResponse acceptDivergedDatabase(final String database) {
+    return callWrite("accept diverged database", stub -> stub.acceptDivergedDatabase(
+        AcceptDivergedDatabaseRequest.newBuilder().setCredentials(buildCredentials()).setDatabase(database).build()));
   }
 
   /**
@@ -943,7 +968,9 @@ public class RemoteGrpcServer implements AutoCloseable {
       }
       return last;
     } catch (final StatusException e) {
-      final RuntimeException mapped = GrpcClientErrorMapper.toException(e);
+      // Every one of these creates or replaces a database and runs to its end server-side whatever happens to the call,
+      // so a lost answer is an unknown outcome, never a retryable failure (issue #8822)
+      final RuntimeException mapped = GrpcClientErrorMapper.toAutoCommitWriteException(e, operation);
       if (mapped.getMessage() == null || mapped.getMessage().isBlank())
         throw new RemoteException("Failed to " + operation, e);
       throw mapped;
@@ -992,13 +1019,35 @@ public class RemoteGrpcServer implements AutoCloseable {
    * {@code ServerIsNotTheLeaderException} carrying that address. Flattening the status to a message
    * string would throw the address away, which is the one thing the caller needs (issue #7304).
    *
+   * <p>
+   * For a read only: a lost answer stays a retryable {@link NeedRetryException}, because asking
+   * again changes nothing. An RPC that changes server state goes through {@link #callWrite} instead.
+   *
    * @param operation the operation name, used only when the failure carries no description of its own
    */
   private <T> T call(final String operation, final AdminCall<T> body) {
+    return call(operation, body, false);
+  }
+
+  /**
+   * {@link #call} for an RPC that changes server state. A status-only {@code UNAVAILABLE} that is not a failure to
+   * connect, or a client deadline that expired unanswered, may follow a request the server already applied, so it is an
+   * unknown outcome rather than a {@link NeedRetryException} (issue #8822). That holds for an
+   * idempotent write too, the line the HTTP client draws for every server command (issue #8136): only the caller knows
+   * whether asking again is harmless. An error the server classified (a class-name trailer, such as the
+   * {@code NeedRetryException} {@link #connectCluster} documents) keeps its type.
+   */
+  private <T> T callWrite(final String operation, final AdminCall<T> body) {
+    return call(operation, body, true);
+  }
+
+  private <T> T call(final String operation, final AdminCall<T> body, final boolean write) {
     try {
       return body.run(withDeadline(adminServiceBlockingV2Stub(), defaultTimeoutMs));
     } catch (final StatusException e) {
-      final RuntimeException mapped = GrpcClientErrorMapper.toException(e);
+      final RuntimeException mapped = write ?
+          GrpcClientErrorMapper.toAutoCommitWriteException(e, operation) :
+          GrpcClientErrorMapper.toException(e);
       if (mapped.getMessage() == null || mapped.getMessage().isBlank())
         throw new RemoteException("Failed to " + operation, e);
       throw mapped;

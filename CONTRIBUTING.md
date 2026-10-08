@@ -121,6 +121,14 @@ To run additional integration test locally use:
 $ mvn clean install -P integration
 ```
 
+Test runs are supported on Temurin/HotSpot (C2). The GraalVM JIT compiler (JVMCI) is **not supported** for running the
+tests: Mockito inline mocks of classes already compiled by it can read stale fields (see #8021, #8867). If you run the
+tests on a GraalVM JDK, disable it with `-XX:-UseJVMCICompiler`.
+
+New tests must not mock the concrete server/HA classes (`ArcadeDBServer`, `RaftHAServer`, `HttpServer`, `ServerSecurity`,
+`RaftTransactionBroker`, ...). Use a real server or database (`BaseGraphServerTest`, `TestHelper`) or a hand-written fake
+behind a narrow interface. `NoNewMocksOfServerTypesTest` enforces this with a shrinking allow-list (#9464).
+
 Rebuild Docker images for `e2e` tests:
 
 ```shell

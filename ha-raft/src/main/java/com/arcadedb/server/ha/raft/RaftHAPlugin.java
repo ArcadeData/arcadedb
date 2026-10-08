@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ha.raft.PostSecuritySeedHandler.DeclaredPeerHttpAddress;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
@@ -536,6 +537,8 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     routes.addPrefixPath("/api/v1/cluster/resync/", new PostResyncDatabaseHandler(httpServer, this));
     // Issue #8641: the operator's audited override of a leader's refusal to reopen a closed copy it cannot verify.
     routes.addPrefixPath(PostAcceptCopyHandler.ROUTE, new PostAcceptCopyHandler(httpServer, this));
+    // Issue #9449: the operator's audited override of a quarantine a sole voter can never resync away.
+    routes.addPrefixPath(PostAcceptDivergedHandler.ROUTE, new PostAcceptDivergedHandler(httpServer, this));
     // Issue #4147: pre-bootstrap state RPC, used by the bootstrap leader at first cluster
     // formation to collect each peer's (fingerprint, lastTxId) per database.
     routes.addExactPath("/api/v1/cluster/bootstrap-state", new PostBootstrapStateHandler(httpServer, this));
@@ -584,6 +587,68 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     if (s == null)
       return "the HA layer of this server has not started yet";
     return s.getUnverifiedClosedCopyCheck().check(databaseName);
+  }
+
+  /** Lifts a quarantine a sole voter can never resync away (issue #9449); see {@link #acceptDivergedDatabase(ArcadeStateMachine, boolean, String, String, String)}. */
+  @Override
+  public JSONObject acceptDivergedDatabase(final String databaseName, final String acceptedBy) throws IOException {
+    final RaftHAServer s = raftHAServer;
+    final ArcadeStateMachine sm = s != null ? s.getStateMachine() : null;
+    if (sm == null)
+      throw new ServerControlPlane.OperationNotAvailableException("The HA layer of this server has not started yet");
+    return acceptDivergedDatabase(sm, s.isSoleVoter(), server.getServerName(), databaseName, acceptedBy);
+  }
+
+  /**
+   * The override of issue #9449 past the HA lookup, so it can be driven with a real state machine and a chosen voter
+   * count. Package-private for tests.
+   * <p>
+   * Refused on a node that is not the sole voter: there the quarantine is lifted by the targeted resync from a peer (or,
+   * on a leader, by the hand-off that lets one), and lifting it by hand would leave this copy silently different from
+   * every other server's, since nothing replays the entry the quarantine skipped.
+   * <p>
+   * The voter count is read before the lift, not atomically with it: a peer added to the configuration in between would
+   * see the lift go through on a node that has just gained someone to resync from. The window is one operator request
+   * wide and the joining peer installs its copy FROM this node anyway, so it inherits the same state rather than
+   * diverging from it; a membership change cannot be held off from inside the state machine's file lock.
+   */
+  static JSONObject acceptDivergedDatabase(final ArcadeStateMachine sm, final boolean soleVoter, final String localServer,
+      final String databaseName, final String acceptedBy) throws IOException {
+    if (databaseName == null || !PostVerifyDatabaseHandler.VALID_DATABASE_NAME.matcher(databaseName).matches())
+      throw new IllegalArgumentException("Invalid database name '" + databaseName + "'");
+
+    if (sm.quarantineCause(databaseName) == null && sm.getDatabaseAppliedFloor(databaseName) < 0)
+      throw new ServerControlPlane.NotFoundException(notQuarantined(databaseName));
+
+    if (!soleVoter)
+      throw new ServerControlPlane.OperationNotAvailableException("Database '" + databaseName + "' is quarantined on this "
+          + "node, but this node is not the only voter of its cluster, so the quarantine is lifted by a resync from a peer "
+          + "(POST /api/v1/cluster/resync/" + databaseName + " on this node, or a leadership transfer when this node is "
+          + "the leader). Accepting the copy by hand is only allowed on a sole voter, where no peer exists to resync from: "
+          + "anywhere else it would leave this copy silently different from the other servers'");
+
+    final ArcadeStateMachine.DivergedAcceptance acceptance = sm.acceptDivergedDatabase(databaseName, acceptedBy);
+    if (acceptance == null)
+      // Lifted between the check above and here, by a resync or a drop
+      throw new ServerControlPlane.NotFoundException(notQuarantined(databaseName));
+
+    final JSONObject result = new JSONObject()
+        .put("result", "Database '" + databaseName + "': the quarantine is lifted and this node's copy is accepted as it "
+            + "is. The entry the quarantine skipped is not replayed; check the database (CHECK DATABASE) and restore it "
+            + "from a backup if it is damaged")
+        .put("database", databaseName)
+        .put("localServer", localServer)
+        .put("appliedIndex", acceptance.appliedIndex());
+    if (acceptance.cause() != null)
+      result.put("divergenceCause", acceptance.cause().name());
+    if (acceptance.readFloor() >= 0)
+      result.put("readFloor", acceptance.readFloor());
+    return result;
+  }
+
+  private static String notQuarantined(final String databaseName) {
+    return "Database '" + databaseName + "' is not quarantined on this server and carries no read floor: there is "
+        + "nothing to accept";
   }
 
   /** Someone wants the database now: the next health tick re-verifies the copy (issue #8606). */
@@ -689,6 +754,12 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   public List<FollowerSample> getFollowerSamples() {
     final RaftHAServer s = raftHAServer;
     return s != null ? s.getFollowerSamples() : List.of();
+  }
+
+  @Override
+  public InPlaceRestartStats getInPlaceRestartStats() {
+    final RaftHAServer s = raftHAServer;
+    return s != null ? s.getInPlaceRestartStats() : InPlaceRestartStats.NONE;
   }
 
   @Override

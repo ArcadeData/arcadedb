@@ -147,6 +147,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   private static final String     IN_FLIGHT_ERROR_LABEL         =
       "A request with the same " + IdempotencyCache.HEADER_REQUEST_ID + " is still executing";
   private static final HttpString RETRY_AFTER_HEADER            = HttpString.tryFromString("Retry-After");
+  // The same back-off in band, on the error line of a streamed response that can no longer send the header (#8899).
+  public static final  String     STREAMED_RETRY_AFTER_MEMBER   = "retryAfter";
   // Tags the forward-ordinal section of an idempotency key (issue #8323).
   private static final byte[]     FORWARD_ORDINAL_KEY_TAG = "forward-ordinal".getBytes(StandardCharsets.US_ASCII);
   // Ends that section: non-zero, so its input can never equal an untagged key's, which always ends in a zero byte.
@@ -2284,6 +2286,29 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       json.put("detail", encodeError(buildDetailChain(e)));
 
     return json.toString();
+  }
+
+  /**
+   * Builds the body of the in-band {@code error} line a streamed (NDJSON) response writes once its 200 is already on
+   * the wire: the body the buffered encoding sends for the same failure ({@link #buildErrorBody}, so production mode
+   * conceals the free-form {@code detail} exactly as there), plus the {@code status} it would have been sent under
+   * and, for a classification that carries one, the {@code Retry-After} back-off as a {@code retryAfter} member in
+   * seconds - a header can no longer be added once the response has started (issue #8899).
+   */
+  protected JSONObject buildStreamedErrorLine(final HttpServerExchange exchange, final ErrorClassification classification) {
+    final JSONObject error = new JSONObject(buildErrorBody(!isProductionMode(), classification.message(),
+        classification.reported(), classification.exceptionArgs(), getCorrelationId(exchange)))
+        .put("status", classification.status());
+    if (classification.retryAfter() != null)
+      // Defensive: the value doubles as the raw header, which HTTP also allows as a date. Every producer sends
+      // integer seconds today, but a throw here would cut the stream instead of reporting the failure, so a value
+      // that is not a number is left out of the line rather than allowed to lose the line itself.
+      try {
+        error.put(STREAMED_RETRY_AFTER_MEMBER, Long.parseLong(classification.retryAfter().trim()));
+      } catch (final NumberFormatException e) {
+        // Not in seconds: the client gets the line without a back-off hint
+      }
+    return error;
   }
 
   /**

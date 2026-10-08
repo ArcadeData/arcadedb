@@ -25,6 +25,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ForwardedRequestIdContext;
+import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.server.http.IdempotencyCache;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
@@ -43,7 +44,6 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
 import static com.arcadedb.utility.SubclassMocks.mock;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.when;
 
 /**
  * Regression test for issue #8323: the SQL write a follower forwards to the leader
@@ -167,15 +167,13 @@ class Issue8323SqlForwardRequestIdTest {
   static RaftReplicatedDatabase database(final RecordingLeader leader, final boolean localIsLeader,
       final String clusterToken, final LocalDatabase proxied) {
     final ContextConfiguration cfg = config();
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(cfg);
-    when(server.getHA()).thenReturn(null); // plain HTTP forward, no HTTPS dial to resolve
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.getLeaderHttpAddress()).thenReturn(leader.address());
-    when(raft.getClusterToken()).thenReturn(clusterToken);
-    when(raft.isLeader()).thenReturn(localIsLeader);
-    // A node that became the leader resolves the leader's address to its own.
-    when(raft.isOwnHttpAddress(leader.address())).thenReturn(localIsLeader);
+    final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, cfg);
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached().leaderHttpAddress(leader.address()).clusterToken(clusterToken)
+        .leader(localIsLeader);
+    // A node that became the leader resolves the leader's address to its own: the real isOwnHttpAddress compares it
+    // with this node's address.
+    if (localIsLeader)
+      raft.localHttpAddress(leader.address());
     return new RaftReplicatedDatabase(server, proxied, raft);
   }
 

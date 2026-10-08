@@ -23,12 +23,15 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
+import com.arcadedb.server.TestServerHelper;
+import com.arcadedb.server.UnstartedHttpServers;
 import com.arcadedb.server.http.FakeLeader;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.StallAwareStopwatch;
 import io.undertow.server.HttpServerExchange;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
 import java.io.ByteArrayInputStream;
 import java.lang.reflect.Field;
@@ -52,15 +55,15 @@ import static org.mockito.Mockito.when;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue7526PostBatchHandlerForwardTimeoutTest {
-
   /** The tripwire between "the deadline fired" and "the call is unbounded" (minutes, without the fix). */
   private static final long GAVE_UP_BOUND_MS = 30_000L;
 
+  @RegisterExtension
+  static final UnstartedHttpServers HTTP_SERVERS = new UnstartedHttpServers();
+
   private static PostBatchHandler handlerWith(final ContextConfiguration cfg) {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(cfg);
-    final HttpServer httpServer = mock(HttpServer.class);
-    when(httpServer.getServer()).thenReturn(server);
+    final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, cfg);
+    final HttpServer httpServer = HTTP_SERVERS.of(server);
     return new PostBatchHandler(httpServer);
   }
 
@@ -72,9 +75,7 @@ class Issue7526PostBatchHandlerForwardTimeoutTest {
   }
 
   private static ServerSecurityUser rootUser() {
-    final ServerSecurityUser user = mock(ServerSecurityUser.class);
-    when(user.getName()).thenReturn("root");
-    return user;
+    return TestServerHelper.securityUser("root");
   }
 
   private static PostBatchHandler.CountingInputStream emptyBody() {

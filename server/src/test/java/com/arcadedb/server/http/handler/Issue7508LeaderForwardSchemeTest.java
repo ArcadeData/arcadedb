@@ -22,6 +22,8 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
+import com.arcadedb.server.TestServerHelper;
+import com.arcadedb.server.UnstartedHttpServers;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.PostBatchHandler.CountingInputStream;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -29,6 +31,7 @@ import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HttpString;
 import io.undertow.util.Methods;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLParameters;
@@ -56,8 +59,6 @@ import java.util.function.BiPredicate;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Regression for issue #7508: a forward to the cluster leader used to build {@code "http://" + leaderAddress + path}
@@ -71,9 +72,11 @@ import static org.mockito.Mockito.when;
  * {@link PostBatchHandler#forwardBatchToLeader} ({@code POST /api/v1/batch/{database}}).
  */
 class Issue7508LeaderForwardSchemeTest {
-
   private static final String LEADER_HTTP  = "leader.example.com:2480";
   private static final String LEADER_HTTPS = "leader.example.com:2490";
+
+  @RegisterExtension
+  static final UnstartedHttpServers HTTP_SERVERS = new UnstartedHttpServers();
 
   // ---------------------------------------------------------------------------------------------------------------
   // The decision itself
@@ -294,11 +297,9 @@ class Issue7508LeaderForwardSchemeTest {
   // ---------------------------------------------------------------------------------------------------------------
 
   private static HttpServer httpServerWith(final HAServerPlugin ha) {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getHA()).thenReturn(ha);
-    when(server.getConfiguration()).thenReturn(new ContextConfiguration());
-    final HttpServer httpServer = mock(HttpServer.class);
-    when(httpServer.getServer()).thenReturn(server);
+    final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, new ContextConfiguration());
+    server.setHA(ha);
+    final HttpServer httpServer = HTTP_SERVERS.of(server);
     return httpServer;
   }
 
@@ -319,9 +320,7 @@ class Issue7508LeaderForwardSchemeTest {
   }
 
   private static ServerSecurityUser user(final String name) {
-    final ServerSecurityUser user = mock(ServerSecurityUser.class);
-    when(user.getName()).thenReturn(name);
-    return user;
+    return TestServerHelper.securityUser(name);
   }
 
   /** An {@link HAServerPlugin} that answers only what the forward asks it. */

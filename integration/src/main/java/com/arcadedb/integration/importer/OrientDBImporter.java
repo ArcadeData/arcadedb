@@ -1520,11 +1520,21 @@ public class OrientDBImporter {
         if (orientdbProperty.notNull != null)
           property.setNotNull(orientdbProperty.notNull);
 
+        // A bound ArcadeDB cannot use on this type is refused (#9172); skipping it keeps the rest of the property, where
+        // accepting it would have refused every imported value
         if (orientdbProperty.min != null)
-          property.setMin(orientdbProperty.min.toString());
+          try {
+            property.setMin(orientdbProperty.min.toString());
+          } catch (final IllegalArgumentException e) {
+            logger.logLine(1, "- Ignoring the MIN of '%s.%s': %s", t.getName(), entry.getKey(), e.getMessage());
+          }
 
         if (orientdbProperty.max != null)
-          property.setMax(orientdbProperty.max.toString());
+          try {
+            property.setMax(orientdbProperty.max.toString());
+          } catch (final IllegalArgumentException e) {
+            logger.logLine(1, "- Ignoring the MAX of '%s.%s': %s", t.getName(), entry.getKey(), e.getMessage());
+          }
 
         if (orientdbProperty.regexp != null)
           property.setRegexp(orientdbProperty.regexp);

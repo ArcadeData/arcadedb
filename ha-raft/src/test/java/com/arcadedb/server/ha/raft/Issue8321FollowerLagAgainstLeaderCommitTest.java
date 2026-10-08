@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.TestServerHelper;
 import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.server.DivisionInfo;
 import org.apache.ratis.server.RaftConfiguration;
@@ -121,9 +122,8 @@ class Issue8321FollowerLagAgainstLeaderCommitTest {
       final ContextConfiguration config = new ContextConfiguration();
       config.setValue(GlobalConfiguration.HA_SERVER_LIST, SERVER_LIST);
 
-      final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
-      when(mockServer.getServerName()).thenReturn("ArcadeDB_0");
-      raft = new RaftHAServer(mockServer, config);
+      final ArcadeDBServer arcadeServer = TestServerHelper.unstartedServer("ArcadeDB_0");
+      raft = new RaftHAServer(arcadeServer, config);
 
       final RaftPeer self = peer(raft.getLocalPeerId().toString(), "localhost:2434");
       final RaftPeer leader = peer("leader", "localhost:2435");
@@ -153,7 +153,7 @@ class Issue8321FollowerLagAgainstLeaderCommitTest {
       field.setAccessible(true);
       field.set(raft, ratis);
 
-      final ArcadeStateMachine stateMachine = mock(ArcadeStateMachine.class);
+      final ArcadeStateMachine stateMachine = new ArcadeStateMachine();
       final Field smField = RaftHAServer.class.getDeclaredField("stateMachine");
       smField.setAccessible(true);
       smField.set(raft, stateMachine);

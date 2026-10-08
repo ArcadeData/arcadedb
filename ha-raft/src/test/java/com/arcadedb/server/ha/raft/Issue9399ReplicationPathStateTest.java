@@ -22,7 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
 import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.server.DivisionInfo;
@@ -184,7 +184,7 @@ class Issue9399ReplicationPathStateTest {
   @Test
   void aResyncInFlightIsLeftToItsOwnAlert() throws Exception {
     final Fixture f = reported();
-    when(f.stateMachine.isResyncInProgress()).thenReturn(true);
+    f.stateMachine.resyncInProgress(true);
     f.tick(2 * f.grace);
     assertThat(unreachableMs(f.raft)).isEqualTo(-1L);
   }
@@ -298,8 +298,7 @@ class Issue9399ReplicationPathStateTest {
 
   private static JSONArray scan(final boolean stuck, final FollowerStallTracker.Stall stall, final boolean unproven,
       final LeaderReachSinceRestartTracker.Unreachable unreachable) {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getDatabaseNames()).thenReturn(Set.of());
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
     return ClusterAlerts.scan(server, null, List.of(), Set.of(), null, null, null,
         new ClusterAlerts.NodeStatus(null, null, false, true), stuck, stall, unproven, unreachable);
   }
@@ -344,7 +343,7 @@ class Issue9399ReplicationPathStateTest {
     final RaftHAServer       raft;
     final DivisionInfo       info;
     final RaftLog            log;
-    final ArcadeStateMachine stateMachine;
+    final FakeArcadeStateMachine stateMachine;
     final AtomicLong         now          = new AtomicLong();
     final AtomicLong         leaderCommit = new AtomicLong(5_000L);
     final long               grace;
@@ -357,8 +356,7 @@ class Issue9399ReplicationPathStateTest {
           config.getValueAsInteger(GlobalConfiguration.HA_ELECTION_TIMEOUT_MIN),
           config.getValueAsInteger(GlobalConfiguration.HA_ELECTION_TIMEOUT_MAX));
 
-      final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
-      when(mockServer.getServerName()).thenReturn("ArcadeDB_0");
+      final FakeArcadeDBServer mockServer = FakeArcadeDBServer.create("ArcadeDB_0", new ContextConfiguration());
       raft = new RaftHAServer(mockServer, config);
 
       final RaftPeer self = peer(raft.getLocalPeerId().toString(), "localhost:2434");
@@ -391,8 +389,7 @@ class Issue9399ReplicationPathStateTest {
       field.setAccessible(true);
       field.set(raft, ratis);
 
-      stateMachine = mock(ArcadeStateMachine.class);
-      when(stateMachine.isResyncInProgress()).thenReturn(false);
+      stateMachine = new FakeArcadeStateMachine();
       final Field smField = RaftHAServer.class.getDeclaredField("stateMachine");
       smField.setAccessible(true);
       smField.set(raft, stateMachine);

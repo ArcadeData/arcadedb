@@ -24,6 +24,7 @@ import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -62,12 +63,10 @@ class Issue8325LeaderBodyDeadlineTest {
       cfg.setValue(GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT, 5_000L);
       cfg.setValue(GlobalConfiguration.HA_PROXY_COMMAND_TIMEOUT, 1_000L);
 
-      final ArcadeDBServer server = mock(ArcadeDBServer.class);
-      when(server.getConfiguration()).thenReturn(cfg);
-      when(server.getHA()).thenReturn(null);
-      final RaftHAServer raft = mock(RaftHAServer.class);
-      when(raft.getLeaderHttpAddress()).thenReturn(leader.address());
-      when(raft.getClusterToken()).thenReturn("test-token");
+      final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, cfg);
+      final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+      raft.leaderHttpAddress(leader.address());
+      raft.clusterToken("test-token");
       final LocalDatabase local = mock(LocalDatabase.class);
       when(local.getConfiguration()).thenReturn(cfg);
       final RaftReplicatedDatabase db = new RaftReplicatedDatabase(server, local, raft);
@@ -120,14 +119,11 @@ class Issue8325LeaderBodyDeadlineTest {
       cfg.setValue(GlobalConfiguration.HA_SECURITY_SEED_RETRY_TIMEOUT, 0L);
       final long deadlineMs = ClusterSecuritySeedQuery.reportTimeoutMs(cfg);
 
-      final ArcadeDBServer server = mock(ArcadeDBServer.class);
-      when(server.getConfiguration()).thenReturn(cfg);
-      final RaftHAServer raft = mock(RaftHAServer.class);
-      when(raft.getClusterToken()).thenReturn("test-token");
-      final RaftHAPlugin plugin = mock(RaftHAPlugin.class);
-      when(plugin.getRaftHAServer()).thenReturn(raft);
-      when(plugin.isLeader()).thenReturn(false);
-      when(plugin.getLeaderAddress()).thenReturn(leader.address());
+      final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, cfg);
+      final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+      raft.clusterToken("test-token");
+      raft.leader(false).leaderHttpAddress(leader.address());
+      final RaftHAPlugin plugin = raft.plugin();
 
       final StallAwareStopwatch watch = StallAwareStopwatch.start();
       // The first attempt meets the stall; the leader then stops listening, so the retries fail at once and the
