@@ -2248,9 +2248,16 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     private MultiColumnAggregationResult[] values = new MultiColumnAggregationResult[64];
     private int                            size;
 
-    /** Forgets every entry but keeps the (possibly grown) arrays, for the next block. */
+    /**
+     * Forgets every entry for the next block. A map that stayed small keeps its arrays; one a high-cardinality block grew is
+     * dropped, so that later blocks do not pay to clear its capacity.
+     */
     void clear() {
-      Arrays.fill(values, null);
+      if (keys.length > 1024) {
+        keys = new long[64];
+        values = new MultiColumnAggregationResult[64];
+      } else
+        Arrays.fill(values, null);
       size = 0;
     }
 
