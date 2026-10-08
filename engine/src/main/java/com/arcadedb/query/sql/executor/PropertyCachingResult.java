@@ -301,15 +301,7 @@ final class PropertyCachingResult implements Result {
     return row.toMap();
   }
 
-  @Override
-  public boolean equals(final Object obj) {
-    return row.equals(obj instanceof PropertyCachingResult other ? other.row : obj);
-  }
-
-  @Override
-  public int hashCode() {
-    return row.hashCode();
-  }
+  // NO equals()/hashCode() OF THE ROW'S: THE VIEW NEVER LEAVES ITS ROW, AND ONE THAT DID IS ITS OWN OBJECT, NOT THE ROW
 
   @Override
   public String toString() {
