@@ -66,6 +66,7 @@ final class PropertyCachingResult implements Result {
 
   private final Database   database;
   private       String[]   names        = new String[8];
+  private       int[]      nameHashes   = new int[8];
   // THE DICTIONARY ID OF EACH NAME, -1 WHEN THE DICTIONARY DID NOT KNOW IT WHEN IT WAS LEARNED
   private       int[]      nameIds      = new int[8];
   private       int        count        = 0;
@@ -126,12 +127,11 @@ final class PropertyCachingResult implements Result {
   }
 
   private int indexOf(final String name) {
-    // THE NAMES AN EXPRESSION READS ARE THE STRINGS OF ITS AST, SO THE SAME INSTANCE COMES BACK ROW AFTER ROW
+    // THE HASH OF A STRING IS CACHED IN IT, AND THE NAMES AN EXPRESSION READS ARE THE STRINGS OF ITS AST, SO equals() MEETS
+    // THE SAME INSTANCE ROW AFTER ROW AND ANSWERS AT ITS FIRST CHECK
+    final int hash = name.hashCode();
     for (int i = 0; i < count; i++)
-      if (names[i] == name)
-        return i;
-    for (int i = 0; i < count; i++)
-      if (names[i].equals(name))
+      if (nameHashes[i] == hash && names[i].equals(name))
         return i;
     return -1;
   }
@@ -144,6 +144,7 @@ final class PropertyCachingResult implements Result {
     if (count == names.length) {
       final int newLength = names.length * 2;
       names = Arrays.copyOf(names, newLength);
+      nameHashes = Arrays.copyOf(nameHashes, newLength);
       nameIds = Arrays.copyOf(nameIds, newLength);
       values = Arrays.copyOf(values, newLength);
       positions = Arrays.copyOf(positions, newLength);
@@ -153,6 +154,7 @@ final class PropertyCachingResult implements Result {
     final int nameId = dictionary.getIdByName(name, false);
     final int index = count++;
     names[index] = name;
+    nameHashes[index] = name.hashCode();
     values[index] = NOT_READ;
     if (nameId >= 0 && nameId < MAX_DICTIONARY_ID) {
       nameIds[index] = nameId;

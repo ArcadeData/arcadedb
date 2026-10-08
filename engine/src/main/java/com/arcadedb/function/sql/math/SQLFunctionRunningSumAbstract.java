@@ -112,7 +112,12 @@ public abstract class SQLFunctionRunningSumAbstract extends SQLAggregatedFunctio
     }
   }
 
-  /** Adds the running sum of {@code other}, an instance fed other rows. */
+  /**
+   * Adds the running sum of {@code other}, an instance fed other rows: {@code Type.increment(this sum, other sum)}, as the
+   * merge of two partial sums always was, result type included. A double sum of rows split between workers is added in
+   * another order than one thread would add it, so it can differ in its last bits from the sequential sum; that is the
+   * parallel aggregation's, not this class's, and is unchanged by it.
+   */
   protected void addToSum(final SQLFunctionRunningSumAbstract other) {
     switch (other.sumMode) {
     case EMPTY -> {
