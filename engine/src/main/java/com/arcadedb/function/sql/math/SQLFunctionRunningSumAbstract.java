@@ -117,6 +117,8 @@ public abstract class SQLFunctionRunningSumAbstract extends SQLAggregatedFunctio
    * merge of two partial sums always was, result type included. A double sum of rows split between workers is added in
    * another order than one thread would add it, so it can differ in its last bits from the sequential sum; that is the
    * parallel aggregation's, not this class's, and is unchanged by it.
+   * <p>
+   * {@code other} is read, not copied: the caller merges a partial state once and discards it, it is never fed again.
    */
   protected void addToSum(final SQLFunctionRunningSumAbstract other) {
     switch (other.sumMode) {
