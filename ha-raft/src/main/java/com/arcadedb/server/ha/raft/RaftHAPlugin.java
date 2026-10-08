@@ -606,6 +606,11 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
    * Refused on a node that is not the sole voter: there the quarantine is lifted by the targeted resync from a peer (or,
    * on a leader, by the hand-off that lets one), and lifting it by hand would leave this copy silently different from
    * every other server's, since nothing replays the entry the quarantine skipped.
+   * <p>
+   * The voter count is read before the lift, not atomically with it: a peer added to the configuration in between would
+   * see the lift go through on a node that has just gained someone to resync from. The window is one operator request
+   * wide and the joining peer installs its copy FROM this node anyway, so it inherits the same state rather than
+   * diverging from it; a membership change cannot be held off from inside the state machine's file lock.
    */
   static JSONObject acceptDivergedDatabase(final ArcadeStateMachine sm, final boolean soleVoter, final String localServer,
       final String databaseName, final String acceptedBy) throws IOException {

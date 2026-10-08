@@ -8401,7 +8401,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * <p>
    * The persistence is NOT best-effort here, unlike the quarantine's own write: an override that does not survive a
    * restart would bring the quarantine back from disk, so on a failed write the in-memory state is put back and the
-   * caller is told.
+   * caller is told. Between the removal and that rollback a lock-free reader ({@link #isDatabaseDiverged}, the readiness
+   * probe) can see the database as not quarantined for the duration of the failed write; only the file is authoritative
+   * across a restart, and it never stops saying "quarantined".
    *
    * @return what was lifted, or {@code null} when {@code dbName} carried neither a quarantine nor a read floor
    *
@@ -8429,6 +8431,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
       final Long applied = appliedIndexByDb.get(dbName);
       acceptance = new DivergedAcceptance(cause, floor != null ? floor : -1L, applied != null ? applied : -1L);
     }
+    // Outside the lock, as clearDivergedDatabase does: the log throttle and the swallow budget are advisory counters, not
+    // part of the persisted quarantine, and a racing quarantine on another database at worst keeps a budget it had.
     lastDivergedResyncLogByDb.remove(dbName);
     if (divergedDatabases.isEmpty())
       divergedSwallowedErrors.set(0);

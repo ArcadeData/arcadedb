@@ -19,6 +19,7 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.ServerControlPlane;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
@@ -39,7 +40,7 @@ import java.net.InetSocketAddress;
  * from a peer or a DROP of the database, and a sole voter has no peer. Lifting it discards the guarantee that the entry
  * the quarantine skipped stays replayable, so it is an operator decision, logged at WARNING with the user, the caller's
  * address, the applied index and the cause. The same override is reachable over gRPC through
- * {@link com.arcadedb.server.HAServerPlugin#acceptDivergedDatabase}.
+ * {@link HAServerPlugin#acceptDivergedDatabase}.
  * <p>
  * Root only. 404 when nothing stands on the database, 409 when this node is not the sole voter (the resync is the way
  * out there), 500 when the change could not be persisted (nothing is lifted then).
