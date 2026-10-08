@@ -895,10 +895,11 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final MergeLedger      ledger;
     final Set<Long>        mergedAway = new HashSet<>();
 
-    private MergeLedger        cachedTail;
-    private Map<Long, Long>    parentOf;
-    private Map<Long, MergeLink> linkOf;
-    private Map<Long, Integer> positionOf;
+    /** The first node whose merge is not in {@link #parentOf}/{@link #linkOf} yet: the chain is read once, incrementally. */
+    private MergeLedger          loadedUpTo;
+    private final Map<Long, Long>      parentOf   = new HashMap<>();
+    private final Map<Long, MergeLink> linkOf     = new HashMap<>();
+    private       Map<Long, Integer>   positionOf;
 
     WalkOrigin(final List<BlockEntry> allBlocks, final int baseFirstIndex, final long downsampleOnlyEpoch, final MergeLedger ledger) {
       this.allBlocks = allBlocks;
@@ -907,26 +908,20 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       this.ledger = ledger;
     }
 
-    /** Loads the merges that landed since the snapshot; {@code false} when there are none. */
+    /** Loads the merges that landed since the snapshot, only the ones not loaded yet; {@code false} when there are none. */
     private boolean loadChain() {
-      MergeLedger tail = ledger;
-      while (tail.next != null)
-        tail = tail.next;
-      if (tail == ledger)
-        return false;
-      if (tail != cachedTail) {
-        final Map<Long, Long> parents = new HashMap<>();
-        final Map<Long, MergeLink> links = new HashMap<>();
-        for (MergeLedger node = ledger; node != tail; node = node.next)
-          for (final MergeLink link : node.links) {
-            links.put(link.merged().blockId, link);
-            for (final long source : link.sourceIds())
-              parents.put(source, link.merged().blockId);
-          }
-        parentOf = parents;
-        linkOf = links;
-        cachedTail = tail;
+      if (loadedUpTo == null)
+        loadedUpTo = ledger;
+      while (loadedUpTo.next != null) {
+        for (final MergeLink link : loadedUpTo.links) {
+          linkOf.put(link.merged().blockId, link);
+          for (final long source : link.sourceIds())
+            parentOf.put(source, link.merged().blockId);
+        }
+        loadedUpTo = loadedUpTo.next;
       }
+      if (loadedUpTo == ledger)
+        return false;
       if (positionOf == null) {
         positionOf = new HashMap<>(allBlocks.size() * 2);
         for (int i = 0; i < allBlocks.size(); i++)
