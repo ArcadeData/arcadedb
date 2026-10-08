@@ -24,6 +24,8 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.engine.Bucket;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.event.AfterRecordCreateListener;
 import com.arcadedb.event.AfterRecordDeleteListener;
 import com.arcadedb.event.AfterRecordUpdateListener;
@@ -258,10 +260,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   // Per-view override of GlobalConfiguration.GAV_USE_WHEN_STALE; null follows the database's configuration, read
   // live on every isReady() so an ALTER DATABASE reaches views already built (and restored ones) - see #7875.
   private volatile Boolean useWhenStale;
-  // coversVertexType(null) answer with the schema version it was computed at: asked once per vertex by the SQL traversal
-  // functions, and the answer only changes with the schema, so the type list is not copied on every call
-  // one immutable holder behind one reference, so a reader never pairs a version with another thread's answer
-  private record VertexCoverage(long schemaVersion, boolean coversAll) {
+  // coversVertexType(null) input with the schema version it was computed at: the own buckets of the vertex types the view
+  // does not list. Asked once per vertex by the SQL traversal functions, so the type list is not walked on every call;
+  // one immutable holder behind one reference, so a reader never pairs a version with another thread's buckets
+  private record VertexCoverage(long schemaVersion, LocalBucket[] unlistedBuckets) {
   }
 
   private volatile VertexCoverage allVertexTypesCovered;
@@ -976,24 +978,43 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     if (typeName == null) {
       if (vertexTypes == null)
         return true; // built without filter = all types
-      // Check if explicit types cover all vertex types in the schema
       // the version is read before the scan: a type created meanwhile leaves a cached entry for the older version
       final long version = database.getSchema().getEmbedded().getVersion();
-      final VertexCoverage cached = allVertexTypesCovered;
-      if (cached != null && cached.schemaVersion() == version)
-        return cached.coversAll();
-      boolean covered = true;
-      for (final DocumentType dt : database.getSchema().getTypes())
-        if (dt instanceof VertexType && !containsType(vertexTypes, dt.getName())) {
-          covered = false;
-          break;
-        }
-      allVertexTypesCovered = new VertexCoverage(version, covered);
-      return covered;
+      VertexCoverage cached = allVertexTypesCovered;
+      if (cached == null || cached.schemaVersion() != version) {
+        final List<LocalBucket> unlisted = new ArrayList<>();
+        for (final DocumentType dt : database.getSchema().getTypes())
+          if (dt instanceof VertexType && !containsType(vertexTypes, dt.getName()))
+            for (final Bucket bucket : dt.getBuckets(false)) {
+              if (!(bucket instanceof LocalBucket localBucket))
+                return false;
+              unlisted.add(localBucket);
+            }
+        cached = new VertexCoverage(version, unlisted.toArray(new LocalBucket[0]));
+        allVertexTypesCovered = cached;
+      }
+      // An unlisted vertex type breaks coverage only once it holds a vertex: no walk can reach a type that has none. The
+      // common case is an abstract parent whose records all live in listed sub-types (LSQB's Message over Post and
+      // Comment), which made the view unusable for every walk (#9301 follow-up). Read per call, not cached, because a
+      // record created in such a type changes the answer without changing the schema
+      for (final LocalBucket bucket : cached.unlistedBuckets())
+        if (!isCommittedEmpty(bucket))
+          return false;
+      return true;
     }
     if (vertexTypes == null)
       return true; // we include all vertex types
     return containsType(vertexTypes, typeName);
+  }
+
+  /**
+   * Whether {@code bucket} holds no committed record, with no scan and none of the per-user permission check of
+   * {@link LocalBucket#count()}: the committed counter, or, while that is not known yet (a fresh open with no statistics,
+   * an unclean shutdown), a bucket with no page written. A bucket that cannot be proven empty counts as holding a record.
+   */
+  private static boolean isCommittedEmpty(final LocalBucket bucket) {
+    final long count = bucket.getCachedRecordCount();
+    return count == 0 || (count < 0 && bucket.getTotalPages() == 0);
   }
 
   @Override
