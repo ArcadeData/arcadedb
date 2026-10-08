@@ -11301,7 +11301,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // the leader's applied on a follower, a build run elsewhere. Left behind them, the next local insert would mint
         // an id one of these entries already holds and supersede it in the location index of every node. Advanced
         // BEFORE the entry is published, so no allocation can slip in between the two, and only ever forward, so a
-        // page carrying older ids (a tombstone, a renumbered compaction) never rewinds it.
+        // page carrying older ids (a tombstone, a renumbered compaction) never rewinds it. The read is only a fast path
+        // that skips the CAS when the allocator is already ahead; accumulateAndGet alone is what makes it correct.
         if (id >= nextId.get())
           nextId.accumulateAndGet(id + 1, Math::max);
 

@@ -46,6 +46,7 @@ class Issue9428ReplicatedPageAdvancesVectorIdTest extends TestHelper {
   void aReplicatedPageAdvancesTheVectorIdAllocator() throws Exception {
     final VertexType type = database.getSchema().buildVertexType().withName(TYPE_NAME).withTotalBuckets(1).create();
     type.createProperty("vector", float[].class);
+    // NOT INDEXED: ONLY HOLDS THE RECORD THE SIMULATED PEER ENTRY POINTS AT
     database.getSchema().buildVertexType().withName("Other").withTotalBuckets(1).create();
     final TypeLSMVectorIndexBuilder builder = database.getSchema().buildTypeIndex(TYPE_NAME, new String[] { "vector" })
         .withLSMVectorType();

@@ -89,7 +89,7 @@ class Issue9428FollowerVectorInsertHATest extends BaseRaftHATest {
     final LSMVectorIndex bucketIndex =
         (LSMVectorIndex) ((TypeIndex) follower.getSchema().getIndexByName(index.getName())).getIndexesOnBuckets()[0];
     bucketIndex.build(null, null);
-    // TWICE THE RECORDS: THE BUILD APPENDS A SECOND ENTRY PER RECORD (ISSUE #9506). WHEN THAT IS FIXED THESE TWO
+    // TODO(#9506) TWICE THE RECORDS: THE BUILD APPENDS A SECOND ENTRY PER RECORD (ISSUE #9506). WHEN THAT IS FIXED THESE TWO
     // EXPECTATIONS BECOME BATCH AND BATCH + 1, AND THE INSERT BELOW STILL HAS TO GET AN ID OF ITS OWN
     assertIndexOnEveryServer(index.getName(), BATCH, 2L * BATCH);
 
