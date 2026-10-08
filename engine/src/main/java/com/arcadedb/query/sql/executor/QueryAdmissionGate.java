@@ -132,10 +132,14 @@ public final class QueryAdmissionGate {
     // HOLDS, A DEADLOCK AS SOON AS EVERY SLOT IS TAKEN. ONLY WHILE THE SLOT IS STILL HELD: A TICKET CLOSED ON ANOTHER THREAD MAY
     // HAVE GIVEN IT BACK
     final Slot held = currentSlot.get();
-    if (held != null && !held.released.get())
-      for (int n = held.tickets.get(); n > 0; n = held.tickets.get())
-        if (held.tickets.compareAndSet(n, n + 1))
-          return new Ticket(this, held);
+    if (held != null) {
+      if (!held.released.get())
+        for (int n = held.tickets.get(); n > 0; n = held.tickets.get())
+          if (held.tickets.compareAndSet(n, n + 1))
+            return new Ticket(this, held);
+      // GIVEN BACK BY A TICKET CLOSED ON ANOTHER THREAD: DROP THE STALE REFERENCE THIS POOLED THREAD STILL HOLDS
+      currentSlot.remove();
+    }
 
     lock.lock();
     try {
@@ -210,7 +214,8 @@ public final class QueryAdmissionGate {
   public static final class Ticket implements AutoCloseable {
     private final QueryAdmissionGate gate;
     private final Slot               slot;
-    private       boolean            closed;
+    // ATOMIC: A TICKET MAY BE CLOSED ON ANOTHER THREAD THAN THE ONE THAT TOOK IT, AND TWO RACING CLOSES MUST COUNT ONCE
+    private final AtomicBoolean      closed = new AtomicBoolean();
 
     private Ticket(final QueryAdmissionGate gate, final Slot slot) {
       this.gate = gate;
@@ -220,9 +225,8 @@ public final class QueryAdmissionGate {
     /** Gives the slot back once no other ticket holds it, and lets the head of the queue start. Closing it again does nothing. */
     @Override
     public void close() {
-      if (slot == null || closed)
+      if (slot == null || !closed.compareAndSet(false, true))
         return;
-      closed = true;
       if (slot.tickets.decrementAndGet() == 0) {
         if (gate.currentSlot.get() == slot)
           gate.currentSlot.remove();

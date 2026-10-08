@@ -403,7 +403,7 @@ public class Profiler {
     json.put("scanReadAheadReserved", new JSONObject().put("space", ScanReadAheadBudget.getReservedBytes()));
     json.put("scanReadAheadReservedPeak", new JSONObject().put("space", ScanReadAheadBudget.getPeakReservedBytes()));
     json.put("scanReadAheadLimit", new JSONObject().put("space", ScanReadAheadBudget.getLimitBytes()));
-    // #9518: THE QUERIES RECEIVED OVER HTTP THE ADMISSION GATE STARTED, KEPT WAITING AND REFUSED
+    // #9518: THE REQUESTS OF REMOTE CLIENTS THE ADMISSION GATE STARTED, KEPT WAITING AND REFUSED
     final QueryAdmissionGate admissionGate = QueryAdmissionGate.getInstance();
     json.put("queryAdmissionRunning", new JSONObject().put("value", admissionGate.getRunning()));
     json.put("queryAdmissionQueued", new JSONObject().put("value", admissionGate.getQueued()));

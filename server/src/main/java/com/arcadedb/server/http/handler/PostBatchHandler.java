@@ -21,6 +21,7 @@ package com.arcadedb.server.http.handler;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.QueryAdmissionException;
 import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.QueryAdmissionGate;
@@ -519,7 +520,13 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       // A load is work like a command: it waits for the query admission gate (issue #9518) like one, inside the session
       // lock and once the read timeout is relaxed, so the client socket is not dropped while the request waits. Only where
       // it runs: a follower that relays it to the leader does no work here and takes no slot
-      admission = QueryAdmissionGate.getInstance().admit();
+      try {
+        admission = QueryAdmissionGate.getInstance().admit();
+      } catch (final QueryAdmissionException e) {
+        // Refused before a byte of the body was read: the upload is declined, not drained first, as the other refusals do
+        inputStream.close();
+        throw e;
+      }
 
       final DatabaseInternal database = httpServer.getServer().getDatabase(databaseName, false, false);
       final boolean isCsv = contentType.contains("text/csv");

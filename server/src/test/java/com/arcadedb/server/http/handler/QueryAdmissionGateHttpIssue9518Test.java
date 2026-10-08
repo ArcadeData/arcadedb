@@ -221,28 +221,43 @@ class QueryAdmissionGateHttpIssue9518Test extends BaseGraphServerTest {
     assertThat(new GetGrafanaHealthHandler(null).mayWaitForAdmission()).isFalse();
   }
 
-  /** A session's rollback, which releases what its queries hold, is never queued behind them. */
+  /**
+   * A session's rollback, which releases what its queries hold, is never queued behind them, and a query of the session
+   * waiting for a slot does not hold the session's lock while it waits: the rollback ends the session meanwhile.
+   */
   @Test
-  void aSessionIsRolledBackWhileEverySlotIsTaken() throws Exception {
+  void aSessionIsRolledBackWhileOneOfItsQueriesWaitsForASlot() throws Exception {
     GlobalConfiguration.QUERY_MAX_CONCURRENT.setValue(1);
-    GlobalConfiguration.QUERY_QUEUE_TIMEOUT.setValue(0L);
+    GlobalConfiguration.QUERY_QUEUE_TIMEOUT.setValue(60_000L);
 
     final HttpResponse<String> begin = HTTP.send(HttpRequest.newBuilder(URI.create(getServerHttpUrl(0, "/api/v1/begin/" + getDatabaseName())))
         .header("Authorization", basicAuth()).POST(HttpRequest.BodyPublishers.noBody()).build(), HttpResponse.BodyHandlers.ofString());
     assertThat(begin.statusCode()).as(begin.body()).isEqualTo(204);
     final String sessionId = begin.headers().firstValue("arcadedb-session-id").orElseThrow();
 
-    try (final QueryAdmissionGate.Ticket ignored = gate.admit()) {
-      final HttpResponse<String> query = HTTP.send(HttpRequest.newBuilder(request("POST /query", QUERY), (n, v) -> true)
+    final int queuedBefore = gate.getQueued();
+    final CompletableFuture<HttpResponse<String>> query;
+    final QueryAdmissionGate.Ticket held = gate.admit();
+    try {
+      query = HTTP.sendAsync(HttpRequest.newBuilder(request("POST /query", QUERY), (n, v) -> true)
           .header("arcadedb-session-id", sessionId).build(), HttpResponse.BodyHandlers.ofString());
-      assertThat(query.statusCode()).as("the session's query waits for a slot like any other: " + query.body()).isEqualTo(503);
+      await().atMost(Duration.ofSeconds(30)).until(() -> gate.getQueued() == queuedBefore + 1 || query.isDone());
+      assertThat(query).as("the session's query waits for a slot like any other").isNotDone();
 
+      // THE SESSION LOCK IS FREE: THE ROLLBACK ENDS THE SESSION WHILE ITS QUERY IS STILL WAITING
       final HttpResponse<String> rollback = HTTP.send(
           HttpRequest.newBuilder(URI.create(getServerHttpUrl(0, "/api/v1/rollback/" + getDatabaseName())))
               .header("Authorization", basicAuth()).header("arcadedb-session-id", sessionId)
               .POST(HttpRequest.BodyPublishers.noBody()).build(), HttpResponse.BodyHandlers.ofString());
       assertThat(rollback.statusCode()).as(rollback.body()).isEqualTo(204);
+      assertThat(query).isNotDone();
+    } finally {
+      held.close();
     }
+
+    // THE WAITING QUERY STARTS ONCE THE SLOT IS FREE; WHAT IT ANSWERS FOR A SESSION ENDED MEANWHILE IS NOT THIS TEST'S CONCERN
+    query.get(30, TimeUnit.SECONDS);
+    await().atMost(Duration.ofSeconds(30)).until(() -> gate.getRunning() == 0);
   }
 
   /** A bulk load is work like a command: it waits for the gate too, and gives its slot back when it is done. */

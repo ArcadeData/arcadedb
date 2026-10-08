@@ -1036,6 +1036,9 @@ public class BoltNetworkExecutor extends Thread {
       LogManager.instance().log(this, isRetryableConflict(e) ? Level.FINE : Level.WARNING, "BOLT PULL error", e);
       final String errorMsg = e.getMessage() != null ? e.getMessage() : "Error fetching records";
       sendFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR), errorMsg);
+      // The failed stream can neither be pulled nor discarded any more: released now, with its admission slot (issue #9518),
+      // rather than held until the client RESETs or disconnects
+      closeStream(stream, "PULL failure");
       state = State.FAILED;
     }
   }
@@ -1065,8 +1068,13 @@ public class BoltNetworkExecutor extends Thread {
       // Statistics are computed eagerly when the write is materialized in the query plan, so they
       // are valid to read before draining/closing the result set.
       stats = stream.resultSet.getStatistics();
-      while (stream.resultSet.hasNext()) {
-        stream.resultSet.next();
+      try {
+        while (stream.resultSet.hasNext())
+          stream.resultSet.next();
+      } catch (final RuntimeException e) {
+        // AS FOR A FAILED PULL: THE STREAM AND ITS ADMISSION SLOT (ISSUE #9518) GO NOW, NOT AT THE CLIENT'S RESET
+        closeStream(stream, "DISCARD failure");
+        throw e;
       }
     }
 
