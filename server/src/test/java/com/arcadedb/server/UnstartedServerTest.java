@@ -109,6 +109,14 @@ class UnstartedServerTest {
   }
 
   @Test
+  void aSecurityConvergedExceptReportsExactlyTheNamedDocuments() {
+    assertThat(TestServerHelper.securityConvergedExcept().unconvergedClusterSecurityDocuments()).isEmpty();
+    assertThat(TestServerHelper.securityConvergedExcept("users").unconvergedClusterSecurityDocuments()).containsExactly("users");
+    assertThat(TestServerHelper.securityConvergedExcept("groups", "API tokens").unconvergedClusterSecurityDocuments())
+        .containsExactly("groups", "API tokens");
+  }
+
+  @Test
   void theDefaultModeIsNotProduction() {
     assertThat(TestServerHelper.unstartedServer(root, new ContextConfiguration()).isProductionMode()).isFalse();
   }

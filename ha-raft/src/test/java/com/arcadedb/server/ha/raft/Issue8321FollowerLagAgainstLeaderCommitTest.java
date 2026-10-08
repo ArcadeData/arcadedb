@@ -153,7 +153,7 @@ class Issue8321FollowerLagAgainstLeaderCommitTest {
       field.setAccessible(true);
       field.set(raft, ratis);
 
-      final ArcadeStateMachine stateMachine = mock(ArcadeStateMachine.class);
+      final ArcadeStateMachine stateMachine = new ArcadeStateMachine();
       final Field smField = RaftHAServer.class.getDeclaredField("stateMachine");
       smField.setAccessible(true);
       smField.set(raft, stateMachine);

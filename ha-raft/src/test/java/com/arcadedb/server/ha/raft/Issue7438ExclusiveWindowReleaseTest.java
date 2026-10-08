@@ -41,8 +41,6 @@ import java.util.Collections;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Issue #7438: the window a leader opens for a drop or an install must be closed on EVERY exit of
@@ -61,7 +59,7 @@ class Issue7438ExclusiveWindowReleaseTest {
   private ArcadeStateMachine     stateMachine;
   private RaftReplicatedDatabase replicated;
   private RID                    counter;
-  private RaftHAServer           raft;
+  private FakeRaftHAServer           raft;
 
   @BeforeEach
   void setUp() {
@@ -77,8 +75,7 @@ class Issue7438ExclusiveWindowReleaseTest {
       }
     };
     // No transaction broker: every replicate call fails, which is the exit these tests take.
-    raft = mock(RaftHAServer.class);
-    when(raft.getStateMachine()).thenReturn(stateMachine);
+    raft = FakeRaftHAServer.detached().stateMachine(stateMachine);
     replicated = new RaftReplicatedDatabase(TestServerHelper.unstartedServer(), db, raft);
   }
 
@@ -109,7 +106,7 @@ class Issue7438ExclusiveWindowReleaseTest {
   /** The DDL path: a callback that throws must not leave the leader exclusive on the database. */
   @Test
   void aDdlWhoseCallbackThrowsReleasesTheWindow() throws Exception {
-    when(raft.isLeader()).thenReturn(true);
+    raft.leader(true);
 
     assertThatThrownBy(() -> replicated.recordFileChanges(() -> {
       throw new IllegalStateException("the DDL failed");

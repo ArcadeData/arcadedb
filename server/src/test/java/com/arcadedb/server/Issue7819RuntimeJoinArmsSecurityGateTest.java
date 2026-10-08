@@ -23,7 +23,6 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.security.ServerSecurity;
 import org.junit.jupiter.api.Test;
 
-import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -132,9 +131,7 @@ class Issue7819RuntimeJoinArmsSecurityGateTest {
   }
 
   private static ServerSecurity securityMissing(final String... documents) {
-    final ServerSecurity security = mock(ServerSecurity.class);
-    when(security.unconvergedClusterSecurityDocuments()).thenReturn(List.of(documents));
-    return security;
+    return TestServerHelper.securityConvergedExcept(documents);
   }
 
   /** The window is left at its default on purpose: see the class javadoc. */

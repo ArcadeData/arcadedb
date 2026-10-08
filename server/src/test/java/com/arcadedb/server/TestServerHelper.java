@@ -27,15 +27,21 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.security.ReplicatedSecurityFingerprintRepository;
+import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.CallableNoReturn;
 import com.arcadedb.utility.CallableParameterNoReturn;
 import com.arcadedb.utility.FileUtils;
 
 import java.io.File;
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.util.Collection;
+import java.util.Set;
 import java.util.UUID;
 import java.util.logging.Level;
 
@@ -165,6 +171,31 @@ public final class TestServerHelper {
       configuration.put("databases", access);
     }
     return new ServerSecurityUser(null, configuration);
+  }
+
+  /**
+   * A real {@link ServerSecurity} whose cluster security documents have all converged except {@code unconverged} (named
+   * as {@link ServerSecurity#unconvergedClusterSecurityDocuments()} reports them: {@code users}, {@code groups},
+   * {@code API tokens}). Each converged document gets a replicated fingerprint in a fresh config directory under
+   * {@code target/}, so the security derives the answer exactly as on a node, from what is on disk (issue #9464). It is
+   * bound to no server: use it for code that reads the convergence and nothing that needs a running server.
+   */
+  public static ServerSecurity securityConvergedExcept(final String... unconverged) {
+    final Path configDirectory = defaultUnstartedServerRoot().resolve("config");
+    try {
+      Files.createDirectories(configDirectory);
+    } catch (final IOException e) {
+      throw new UncheckedIOException(e);
+    }
+    final Set<String> missing = Set.of(unconverged);
+    final ReplicatedSecurityFingerprintRepository fingerprints = new ReplicatedSecurityFingerprintRepository(configDirectory.toString());
+    if (!missing.contains("users"))
+      fingerprints.record(ReplicatedSecurityFingerprintRepository.USERS, "test-fingerprint");
+    if (!missing.contains("groups"))
+      fingerprints.record(ReplicatedSecurityFingerprintRepository.GROUPS, "test-fingerprint");
+    if (!missing.contains("API tokens"))
+      fingerprints.record(ReplicatedSecurityFingerprintRepository.API_TOKENS, "test-fingerprint");
+    return new ServerSecurity(null, new ContextConfiguration(), configDirectory.toString());
   }
 
   public static void stopServers(final ArcadeDBServer[] servers) {

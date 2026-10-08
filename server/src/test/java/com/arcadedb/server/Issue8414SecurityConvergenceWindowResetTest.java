@@ -187,9 +187,7 @@ class Issue8414SecurityConvergenceWindowResetTest {
 
   /** The node re-added with its config volume retained: a fingerprint for every document unless named here. */
   private static ServerSecurity fingerprintsMissing(final String... documents) {
-    final ServerSecurity security = mock(ServerSecurity.class);
-    when(security.unconvergedClusterSecurityDocuments()).thenReturn(List.of(documents));
-    return security;
+    return TestServerHelper.securityConvergedExcept(documents);
   }
 
   private static ContextConfiguration configurationWith(final long windowMs) {
