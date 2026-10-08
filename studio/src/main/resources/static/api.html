@@ -13,156 +13,156 @@
         <!-- Health & Status -->
         <div class="api-section">
           <div class="api-section-label">Health &amp; Status</div>
-          <div class="api-endpoint" onclick="showApiDetail('ready')">
+          <button type="button" class="api-endpoint" onclick="showApiDetail('ready')">
             <span class="api-method api-method-get">GET</span>
             <span class="api-path">/api/v1/ready</span>
             <span class="api-desc">Server readiness check</span>
-          </div>
+          </button>
         </div>
 
         <!-- Authentication -->
         <div class="api-section">
           <div class="api-section-label">Authentication</div>
-          <div class="api-endpoint" onclick="showApiDetail('login')">
+          <button type="button" class="api-endpoint" onclick="showApiDetail('login')">
             <span class="api-method api-method-post">POST</span>
             <span class="api-path">/api/v1/login</span>
             <span class="api-desc">Authenticate with credentials</span>
-          </div>
-          <div class="api-endpoint" onclick="showApiDetail('logout')">
+          </button>
+          <button type="button" class="api-endpoint" onclick="showApiDetail('logout')">
             <span class="api-method api-method-post">POST</span>
             <span class="api-path">/api/v1/logout</span>
             <span class="api-desc">End current session</span>
-          </div>
+          </button>
         </div>
 
         <!-- Query Execution -->
         <div class="api-section">
           <div class="api-section-label">Query Execution</div>
-          <div class="api-endpoint" onclick="showApiDetail('queryGet')">
+          <button type="button" class="api-endpoint" onclick="showApiDetail('queryGet')">
             <span class="api-method api-method-get">GET</span>
             <span class="api-path">/api/v1/query/{db}/{lang}/{cmd}</span>
             <span class="api-desc">Execute a query via GET</span>
-          </div>
-          <div class="api-endpoint" onclick="showApiDetail('queryPost')">
+          </button>
+          <button type="button" class="api-endpoint" onclick="showApiDetail('queryPost')">
             <span class="api-method api-method-post">POST</span>
             <span class="api-path">/api/v1/query/{db}</span>
             <span class="api-desc">Execute a query via POST</span>
-          </div>
+          </button>
         </div>
 
         <!-- Commands -->
         <div class="api-section">
           <div class="api-section-label">Commands</div>
-          <div class="api-endpoint" onclick="showApiDetail('command')">
+          <button type="button" class="api-endpoint" onclick="showApiDetail('command')">
             <span class="api-method api-method-post">POST</span>
             <span class="api-path">/api/v1/command/{db}</span>
             <span class="api-desc">Execute a database command</span>
-          </div>
+          </button>
         </div>
 
         <!-- Data Import -->
         <div class="api-section">
           <div class="api-section-label">Data Import</div>
-          <div class="api-endpoint" onclick="showApiDetail('batch')">
+          <button type="button" class="api-endpoint" onclick="showApiDetail('batch')">
             <span class="api-method api-method-post">POST</span>
             <span class="api-path">/api/v1/batch/{db}</span>
             <span class="api-desc">Batch import vertices &amp; edges</span>
-          </div>
+          </button>
         </div>
 
         <!-- Transactions -->
         <div class="api-section">
           <div class="api-section-label">Transactions</div>
-          <div class="api-endpoint" onclick="showApiDetail('begin')">
+          <button type="button" class="api-endpoint" onclick="showApiDetail('begin')">
             <span class="api-method api-method-post">POST</span>
             <span class="api-path">/api/v1/begin/{db}</span>
             <span class="api-desc">Begin a new transaction</span>
-          </div>
-          <div class="api-endpoint" onclick="showApiDetail('commit')">
+          </button>
+          <button type="button" class="api-endpoint" onclick="showApiDetail('commit')">
             <span class="api-method api-method-post">POST</span>
             <span class="api-path">/api/v1/commit/{db}</span>
             <span class="api-desc">Commit current transaction</span>
-          </div>
-          <div class="api-endpoint" onclick="showApiDetail('rollback')">
+          </button>
+          <button type="button" class="api-endpoint" onclick="showApiDetail('rollback')">
             <span class="api-method api-method-post">POST</span>
             <span class="api-path">/api/v1/rollback/{db}</span>
             <span class="api-desc">Rollback current transaction</span>
-          </div>
+          </button>
         </div>
 
         <!-- Server Management -->
         <div class="api-section">
           <div class="api-section-label">Server Management</div>
-          <div class="api-endpoint" onclick="showApiDetail('serverGet')">
+          <button type="button" class="api-endpoint" onclick="showApiDetail('serverGet')">
             <span class="api-method api-method-get">GET</span>
             <span class="api-path">/api/v1/server</span>
             <span class="api-desc">Get server information</span>
-          </div>
-          <div class="api-endpoint" onclick="showApiDetail('serverPost')">
+          </button>
+          <button type="button" class="api-endpoint" onclick="showApiDetail('serverPost')">
             <span class="api-method api-method-post">POST</span>
             <span class="api-path">/api/v1/server</span>
             <span class="api-desc">Execute server command</span>
-          </div>
+          </button>
         </div>
 
         <!-- Database Management -->
         <div class="api-section">
           <div class="api-section-label">Database Management</div>
-          <div class="api-endpoint" onclick="showApiDetail('databases')">
+          <button type="button" class="api-endpoint" onclick="showApiDetail('databases')">
             <span class="api-method api-method-get">GET</span>
             <span class="api-path">/api/v1/databases</span>
             <span class="api-desc">List all databases</span>
-          </div>
-          <div class="api-endpoint" onclick="showApiDetail('exists')">
+          </button>
+          <button type="button" class="api-endpoint" onclick="showApiDetail('exists')">
             <span class="api-method api-method-get">GET</span>
             <span class="api-path">/api/v1/exists/{db}</span>
             <span class="api-desc">Check if database exists</span>
-          </div>
+          </button>
         </div>
 
         <!-- TimeSeries -->
         <div class="api-section">
           <div class="api-section-label">TimeSeries</div>
-          <div class="api-endpoint" onclick="showApiDetail('tsWrite')">
+          <button type="button" class="api-endpoint" onclick="showApiDetail('tsWrite')">
             <span class="api-method api-method-post">POST</span>
             <span class="api-path">/api/v1/ts/{db}/write</span>
             <span class="api-desc">Ingest via Line Protocol</span>
-          </div>
-          <div class="api-endpoint" onclick="showApiDetail('tsQuery')">
+          </button>
+          <button type="button" class="api-endpoint" onclick="showApiDetail('tsQuery')">
             <span class="api-method api-method-post">POST</span>
             <span class="api-path">/api/v1/ts/{db}/query</span>
             <span class="api-desc">Query timeseries data</span>
-          </div>
-          <div class="api-endpoint" onclick="showApiDetail('tsLatest')">
+          </button>
+          <button type="button" class="api-endpoint" onclick="showApiDetail('tsLatest')">
             <span class="api-method api-method-get">GET</span>
             <span class="api-path">/api/v1/ts/{db}/latest</span>
             <span class="api-desc">Get latest value</span>
-          </div>
-          <div class="api-endpoint" onclick="showApiDetail('tsGrafanaHealth')">
+          </button>
+          <button type="button" class="api-endpoint" onclick="showApiDetail('tsGrafanaHealth')">
             <span class="api-method api-method-get">GET</span>
             <span class="api-path">/api/v1/ts/{db}/grafana/health</span>
             <span class="api-desc">Grafana health check</span>
-          </div>
-          <div class="api-endpoint" onclick="showApiDetail('tsGrafanaMetadata')">
+          </button>
+          <button type="button" class="api-endpoint" onclick="showApiDetail('tsGrafanaMetadata')">
             <span class="api-method api-method-get">GET</span>
             <span class="api-path">/api/v1/ts/{db}/grafana/metadata</span>
             <span class="api-desc">Grafana metadata</span>
-          </div>
-          <div class="api-endpoint" onclick="showApiDetail('tsGrafanaQuery')">
+          </button>
+          <button type="button" class="api-endpoint" onclick="showApiDetail('tsGrafanaQuery')">
             <span class="api-method api-method-post">POST</span>
             <span class="api-path">/api/v1/ts/{db}/grafana/query</span>
             <span class="api-desc">Grafana DataFrame query</span>
-          </div>
+          </button>
         </div>
 
         <!-- Documentation -->
         <div class="api-section">
           <div class="api-section-label">Documentation</div>
-          <div class="api-endpoint" onclick="window.open('/docs', '_blank')">
+          <button type="button" class="api-endpoint" onclick="window.open('/docs', '_blank')">
             <span class="api-method api-method-get">GET</span>
             <span class="api-path">/docs</span>
             <span class="api-desc">Swagger UI (interactive)</span>
-          </div>
+          </button>
         </div>
       </div>
     </div>
@@ -483,6 +483,11 @@ var apiEndpoints = {
 var _apiPlaygroundVisible = {};
 var _apiSessionId = null;
 
+function toggleApiRespHeaders(toggle) {
+  var open = toggle.parentNode.classList.toggle("open");
+  toggle.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
 function showApiDetail(key) {
   var ep = apiEndpoints[key];
   if (!ep) return;
@@ -509,7 +514,7 @@ function showApiDetail(key) {
                    : "<span class='api-detail-tag api-detail-tag-public'><i class='fa fa-lock-open'></i> No auth</span>";
   html += "<a href='https://docs.arcadedb.com/#" + ep.docsAnchor + "' target='_blank' class='api-detail-tag api-detail-tag-docs'><i class='fa fa-external-link-alt'></i> Full docs</a>";
   if (ep.tryIt)
-    html += "<span class='api-detail-tag api-detail-tag-tryit' onclick='toggleApiPlayground(\"" + key + "\")'><i class='fa fa-play'></i> Try It</span>";
+    html += "<button type='button' class='api-detail-tag api-detail-tag-tryit' onclick='toggleApiPlayground(\"" + key + "\")'><i class='fa fa-play' aria-hidden='true'></i> Try It</button>";
   html += "</div>";
   html += "</div>";
 
@@ -851,9 +856,9 @@ function renderApiResponse(key, status, elapsed, data, jqXHR) {
   // Collapsible response headers
   if (headersText) {
     html += "<div class='api-playground-resp-headers'>";
-    html += "<div class='api-playground-resp-headers-toggle' onclick='this.parentNode.classList.toggle(\"open\")'>";
-    html += "<i class='fa fa-caret-right'></i> Response Headers";
-    html += "</div>";
+    html += "<button type='button' class='api-playground-resp-headers-toggle' aria-expanded='false' onclick='toggleApiRespHeaders(this)'>";
+    html += "<i class='fa fa-caret-right' aria-hidden='true'></i> Response Headers";
+    html += "</button>";
     html += "<pre class='api-playground-resp-headers-body'>" + escapeHtml(headersText) + "</pre>";
     html += "</div>";
   }
