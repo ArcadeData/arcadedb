@@ -37,13 +37,6 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
 /**
  * Issue #8149: the schema-commit arm of {@link RaftReplicatedDatabase#commit()} - the one a DDL callback inside
@@ -68,7 +61,7 @@ class Issue8149SchemaCommitArmRollsBackRefusedPhase1Test {
   Path tempDir;
 
   private LocalDatabase                        proxied;
-  private RaftTransactionBroker                broker;
+  private FakeRaftTransactionBroker                broker;
   private RaftReplicatedDatabase               database;
   private ThreadLocal<Boolean>                 schemaCommitThread;
   private ThreadLocal<List<byte[]>>            schemaWalBuffer;
@@ -87,10 +80,8 @@ class Issue8149SchemaCommitArmRollsBackRefusedPhase1Test {
     proxied.transaction(() -> proxied.newDocument(UNIQUE_TYPE).set("key", "taken").save());
     proxied.transaction(() -> proxied.command("sql", "DELETE FROM " + TYPE));
 
-    broker = mock(RaftTransactionBroker.class);
-    final RaftHAServer raftServer = mock(RaftHAServer.class, RETURNS_DEEP_STUBS);
-    when(raftServer.isLeader()).thenReturn(true);
-    when(raftServer.getTransactionBroker()).thenReturn(broker);
+    broker = new FakeRaftTransactionBroker();
+    final RaftHAServer raftServer = FakeRaftHAServer.detached().leader(true).transactionBroker(broker);
 
     database = new RaftReplicatedDatabase(null, proxied, raftServer);
 
@@ -130,7 +121,7 @@ class Issue8149SchemaCommitArmRollsBackRefusedPhase1Test {
         .isFalse();
     assertThat(schemaWalBuffer.get()).as("nothing refused may be buffered for the SCHEMA_ENTRY").isEmpty();
     assertThat(schemaBucketDeltaBuffer.get()).isEmpty();
-    verify(broker, never()).replicateTransaction(anyString(), any(), any());
+    assertThat(broker.calls("replicateTransaction")).as("nothing was submitted to Raft").isEmpty();
 
     schemaCommitThread.remove();
     assertThat(proxied.countType(TYPE, false)).as("nothing of the refused transaction may be durable").isZero();
@@ -197,7 +188,7 @@ class Issue8149SchemaCommitArmRollsBackRefusedPhase1Test {
     proxied.newDocument(UNIQUE_TYPE).set("key", "taken").save();
 
     assertThatThrownBy(database::commit).isInstanceOf(DuplicatedKeyException.class);
-    verify(broker, never()).replicateTransaction(anyString(), any(), any());
+    assertThat(broker.calls("replicateTransaction")).as("nothing was submitted to Raft").isEmpty();
 
     assertThat(proxied.getNestedTransactions()).as("only the refused inner transaction is removed").isEqualTo(1);
     assertThat(proxied.getTransaction()).isSameAs(outer);

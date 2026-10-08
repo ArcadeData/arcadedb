@@ -92,7 +92,7 @@ class Issue8900RestartAbandonedOnShutdownTest {
       return LifeCycle.State.CLOSING;
     });
     final RaftClient client = mock(RaftClient.class);
-    final RaftTransactionBroker broker = mock(RaftTransactionBroker.class);
+    final FakeRaftTransactionBroker broker = new FakeRaftTransactionBroker();
     setField(raft, "raftServer", old);
     setField(raft, "raftClient", client);
     setField(raft, "transactionBroker", broker);
@@ -105,7 +105,7 @@ class Issue8900RestartAbandonedOnShutdownTest {
     restart.join();
 
     // The restart was abandoned before closing anything, so the next tick finds the client and broker still usable.
-    verify(broker, never()).stop();
+    assertThat(broker.calls("stop")).isEmpty();
     verify(client, never()).close();
     verify(old, never()).close();
     assertThat(getField(raft, "raftClient")).isSameAs(client);
