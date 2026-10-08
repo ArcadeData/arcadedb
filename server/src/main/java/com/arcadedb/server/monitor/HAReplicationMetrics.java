@@ -23,12 +23,14 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.FollowerSample;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.HAReplicationStats;
+import com.arcadedb.server.monitor.HAReplicationStatsProvider.InPlaceRestartStats;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.PendingPhase2Stats;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.SchemaInstalmentSample;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.UnreferencedFilesSample;
 import com.arcadedb.server.security.PermissionRefreshMetrics;
 import com.arcadedb.server.security.ServerSecurity;
 
+import io.micrometer.core.instrument.FunctionCounter;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.MultiGauge;
@@ -105,10 +107,45 @@ public final class HAReplicationMetrics implements MeterBinder, Closeable {
 
     bindPendingPhase2Gauges(registry);
     bindSecurityRefreshGauges(registry);
+    bindInPlaceRestartCounters(registry);
 
     // One scheduler for every re-registering MultiGauge on this binder, rather than one each: they all refresh at
     // the same cadence and none of them blocks, so a second thread would buy nothing.
     startMultiGaugeRefresh(bindPerFollowerGauges(registry), bindPerDatabaseGauges(registry));
+  }
+
+  /**
+   * Registers this node's in-place Raft restart counts (issue #9429). They were reachable only through the INFO line
+   * the restart logs, so anything that wanted them - the HA chaos harness first of all - had to scrape the log for an
+   * exact wording and would count zero the day that wording changed. Meaningful on every node, leader or follower.
+   * <p>
+   * Counters rather than gauges: both are monotonic totals that restart from zero with the process, which is exactly
+   * the reset a counter's {@code rate()} / {@code increase()} handle (Prometheus exports them with a {@code _total}
+   * suffix). A function counter holds its observed object weakly, so the server - which outlives this binder - is
+   * passed only to keep the counter alive; the function ignores it and reads through this binder, which the registered
+   * function itself keeps reachable.
+   */
+  private void bindInPlaceRestartCounters(final MeterRegistry registry) {
+    FunctionCounter.builder("arcadedb.ha.in_place_restarts.recovered", server, s -> inPlaceRestarts().recovered())
+        .description("Times this node restarted its Raft layer in place keeping its log, since the process started: the "
+            + "health monitor's recovery of a CLOSED or EXCEPTION division, e.g. after a long JVM pause. Each is "
+            + "survivable, but a count that keeps climbing is a node that keeps losing its division. Restarts from 0 "
+            + "with the process: alert on increase(), not on the value.")
+        .register(registry);
+
+    FunctionCounter.builder("arcadedb.ha.in_place_restarts.reformatted", server, s -> inPlaceRestarts().reformatted())
+        .description("Times this node restarted its Raft layer in place after DISCARDING its Raft storage, since the "
+            + "process started: the divergence reformat, after which the node is refilled from a leader snapshot. Any "
+            + "increase() outside a known divergence is worth investigating. Restarts from 0 with the process.")
+        .register(registry);
+  }
+
+  /** In-place restart counts from the started HA plugin, or none when HA is disabled. */
+  private InPlaceRestartStats inPlaceRestarts() {
+    for (final ServerPlugin plugin : server.getPlugins())
+      if (plugin instanceof HAReplicationStatsProvider provider)
+        return provider.getInPlaceRestartStats();
+    return InPlaceRestartStats.NONE;
   }
 
   /**

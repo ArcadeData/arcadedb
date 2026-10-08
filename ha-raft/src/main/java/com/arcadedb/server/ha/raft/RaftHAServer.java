@@ -2629,8 +2629,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
         restartFailureCount = 0;
         (formatStorage ? formatRestartCount : recoverRestartCount).incrementAndGet();
-        // The HA chaos harness counts this exact line ("Ratis restarted in place (recovered|reformatted storage)") to fail a
-        // long-pause step that reformatted (HaChaosIT, issue #8954): rewording it makes that check silently count zero
+        // The counters above, not this line, are the contract: GET /api/v1/cluster publishes them as localInPlaceRestarts
+        // and the metrics as arcadedb.ha.in_place_restarts.* (issue #9429), and that is what the HA chaos harness reads
         LogManager.instance().log(this, Level.INFO, "Ratis restarted in place (%s storage)", formatStorage ? "reformatted" : "recovered");
       } catch (final Throwable t) {
         if (abandoned.getAsBoolean()) {
@@ -2676,6 +2676,16 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         LogManager.instance().log(this, Level.WARNING,
             "Old Ratis division is %s after its server closed; starting the new server anyway", divisionState);
     }
+  }
+
+  /**
+   * Completed in-place restarts of this node's Raft layer since the process started, by storage outcome (issue #9429):
+   * published by {@code GET /api/v1/cluster} as {@code localInPlaceRestarts} and by the metrics as
+   * {@code arcadedb.ha.in_place_restarts.*}. The two counters are read one after the other, not as one snapshot; each
+   * only grows, so a reader sees at worst a restart that completed between the two reads in one counter only.
+   */
+  public HAReplicationStatsProvider.InPlaceRestartStats getInPlaceRestartStats() {
+    return new HAReplicationStatsProvider.InPlaceRestartStats(recoverRestartCount.get(), formatRestartCount.get());
   }
 
   /** Completed in-place restarts that kept the Raft log ({@code RECOVER}). Package-private: tests (issue #8900). */

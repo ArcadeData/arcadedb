@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.monitor.HAReplicationStatsProvider;
 
 import org.apache.ratis.util.LifeCycle;
 import org.awaitility.Awaitility;
@@ -103,6 +104,17 @@ class Issue5271ClosedDivisionRecoveryIT extends BaseRaftHATest {
     // the process continues to run and report itself as part of the cluster.
     Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(500, TimeUnit.MILLISECONDS)
         .untilAsserted(() -> assertThat(followerRaft.getRaftLifeCycleState()).isEqualTo(LifeCycle.State.RUNNING));
+
+    // Issue #9429: the restart is visible on the status endpoint, from the same counters the process keeps - so the
+    // chaos harness and an operator read it there instead of grepping the log for its wording.
+    // Counted once the restart completes, which can be a moment after the new division reads RUNNING.
+    final RaftHAServer restarted = getRaftPlugin(followerIndex).getRaftHAServer();
+    Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(200, TimeUnit.MILLISECONDS)
+        .until(() -> restarted.getInPlaceRestartStats().recovered() + restarted.getInPlaceRestartStats().reformatted() >= 1);
+    final HAReplicationStatsProvider.InPlaceRestartStats counted = restarted.getInPlaceRestartStats();
+    final JSONObject published = new JSONObject(httpGet(followerIndex, "/api/v1/cluster")).getJSONObject("localInPlaceRestarts");
+    assertThat(published.getInt("recovered", -1)).isEqualTo(counted.recovered());
+    assertThat(published.getInt("reformatted", -1)).isEqualTo(counted.reformatted());
 
     // And the recovered node must be a functional replica again.
     final var leaderDb = getServerDatabase(leaderIndex, getDatabaseName());

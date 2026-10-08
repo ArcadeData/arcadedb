@@ -757,6 +757,12 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   }
 
   @Override
+  public InPlaceRestartStats getInPlaceRestartStats() {
+    final RaftHAServer s = raftHAServer;
+    return s != null ? s.getInPlaceRestartStats() : InPlaceRestartStats.NONE;
+  }
+
+  @Override
   public PendingPhase2Stats getPendingPhase2Stats() {
     final RaftHAServer s = raftHAServer;
     return s != null ? s.getPendingPhase2Stats() : new PendingPhase2Stats(0, 0, -1);
