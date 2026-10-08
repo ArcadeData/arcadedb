@@ -59,6 +59,7 @@ class UnstartedHttpServersTest {
     final ArcadeDBServer server = TestServerHelper.unstartedServer();
     assertThat(HTTP_SERVERS.of(server).getPort()).as("an unstarted server listens on nothing").isZero();
 
+    // Reported, never bound: listeningOn() opens no socket, so any number serves
     final HttpServer plain = HTTP_SERVERS.listeningOn(server, 41234);
     assertThat(plain.getPort()).isEqualTo(41234);
     assertThat(plain.getHttpsPort()).isEqualTo(-1);

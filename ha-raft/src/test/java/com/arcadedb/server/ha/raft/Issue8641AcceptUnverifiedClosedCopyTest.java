@@ -201,6 +201,7 @@ class Issue8641AcceptUnverifiedClosedCopyTest {
   @Test
   void aFollowerRefusesAndKeepsItsMarker() throws IOException {
     createClosedCopy();
+    // setUp() made this node the leader, where accepting is allowed; this test is about a follower
     raft.leader(false);
 
     final ExecutionResponse response = handler().accept(raft, DB_NAME, "user 'root'");
