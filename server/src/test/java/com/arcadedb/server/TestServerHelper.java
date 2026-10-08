@@ -137,7 +137,8 @@ public final class TestServerHelper {
   /**
    * A real server user named {@code name}, with access to {@code databases} (none when empty), for code that reads only
    * the user's name and authorized databases. It is bound to no server, so {@code getDatabaseUser()} is out of reach:
-   * a test that needs it builds the user against a real server instead (issue #9464).
+   * a test that needs it builds the user against a real server instead (issue #9464). Every database is granted with the
+   * {@code admin} group: do not use it to test group permissions.
    */
   public static ServerSecurityUser securityUser(final String name, final String... databases) {
     final JSONObject configuration = new JSONObject().put("name", name);

@@ -25,7 +25,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestMethodOrder;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
+import java.time.Duration;
+
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 
 /** Issue #9464: {@link UnstartedHttpServers} hands out real servers bound to the given server and stops them all. */
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
@@ -52,14 +55,23 @@ class UnstartedHttpServersTest {
 
   @Test
   @Order(3)
-  void aServerStoppedTwiceDoesNotPreventTheOthersFromStopping() {
+  void everyServerIsStoppedEvenWhenOneWasAlreadyStopped() {
+    final long before = liveCleanupTimers();
     final UnstartedHttpServers servers = new UnstartedHttpServers();
     final HttpServer first = servers.of(TestServerHelper.unstartedServer());
     servers.of(TestServerHelper.unstartedServer());
+    assertThat(liveCleanupTimers()).as("each server starts its own auth-session cleanup timer").isEqualTo(before + 2);
     first.stopService();
 
     servers.afterEach(null);
 
     assertThat(servers.pending()).isZero();
+    // Timer.cancel() lets the thread exit on its own: wait for it rather than for a fixed time
+    await().atMost(Duration.ofSeconds(30)).until(() -> liveCleanupTimers() == before);
+  }
+
+  private static long liveCleanupTimers() {
+    return Thread.getAllStackTraces().keySet().stream()
+        .filter(t -> t.isAlive() && t.getName().equals("HttpAuthSessionManager-Cleanup")).count();
   }
 }
