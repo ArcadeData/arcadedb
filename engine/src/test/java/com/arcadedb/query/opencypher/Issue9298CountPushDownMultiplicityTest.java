@@ -39,6 +39,7 @@ class Issue9298CountPushDownMultiplicityTest extends TestHelper {
   private static final String Q3 = "MATCH (country:Country) MATCH (person1:Person)-[:IS_LOCATED_IN]->(city1:City)-[:IS_PART_OF]->(country) "
       + "MATCH (person2:Person)-[:IS_LOCATED_IN]->(city2:City)-[:IS_PART_OF]->(country) MATCH (person3:Person)-[:IS_LOCATED_IN]->(city3:City)-[:IS_PART_OF]->(country) "
       + "MATCH (person1)-[:KNOWS]-(person2)-[:KNOWS]-(person3)-[:KNOWS]-(person1)";
+  private static final String Q3_VARS = "country, person1, person2, person3, city1, city2, city3";
 
   private RID[] p;
 
@@ -98,6 +99,49 @@ class Issue9298CountPushDownMultiplicityTest extends TestHelper {
     assertAllAgree(Q3, "country, person1, person2, person3, city1, city2, city3", 12L);
   }
 
+  /**
+   * A value that occurs more than once in BOTH of the two sorted neighbour ranges that are intersected: the matches are m * n,
+   * not min(m, n) or max(m, n). Two parallel edges p0-p1, three p1-p2 and two p2-p0 close 2 * 3 * 2 relationship triples, in each of
+   * the six orderings of the three persons.
+   */
+  @Test
+  void q3ParallelEdgesOnEverySideMultiply() throws InterruptedException {
+    knowsTimes(0, 1, 2);
+    knowsTimes(1, 2, 3);
+    knowsTimes(2, 0, 2);
+    assertAllAgree(Q3, Q3_VARS, 6L * 2 * 3 * 2);
+  }
+
+  /**
+   * A SYNCHRONOUS view keeps a commit in its delta overlay and hands out no neighbour view until the next compaction, so the
+   * triangle count intersects the per-node neighbour arrays instead of the CSR ranges.
+   */
+  @Test
+  void q3ParallelEdgesOnEverySideMultiplyAfterAnOverlayCommit() throws InterruptedException {
+    knowsTimes(0, 1, 1);
+    knowsTimes(1, 2, 3);
+    knowsTimes(2, 0, 2);
+    createView("overlay", "VERTEX TYPES (Person, Comment, Post, Country, City) EDGE TYPES (KNOWS, HAS_CREATOR, REPLY_OF, IS_LOCATED_IN, IS_PART_OF) PROPERTIES (id) UPDATE MODE SYNCHRONOUS");
+    try {
+      final String written = Q3 + " RETURN count(*) AS n";
+      assertThat(count(written)).as("before the commit").isEqualTo(6L * 1 * 3 * 2);
+
+      knows(0, 1);
+      assertThat(explain(written)).as("the push-down is the plan").contains("COUNT TRIANGLES");
+      assertThat(count(Q3 + " WITH " + Q3_VARS + " RETURN count(*) AS n")).as("row pipeline after the commit").isEqualTo(6L * 2 * 3 * 2);
+      assertThat(count(written)).as("push-down after the commit").isEqualTo(6L * 2 * 3 * 2);
+    } finally {
+      database.command("sql", "DROP GRAPH ANALYTICAL VIEW overlay");
+    }
+  }
+
+  private void knowsTimes(final int from, final int to, final int times) {
+    database.transaction(() -> {
+      for (int i = 0; i < times; i++)
+        p[from].asVertex().newEdge("KNOWS", p[to]);
+    });
+  }
+
   private void assertAllAgree(final String match, final String withVars, final long expected) throws InterruptedException {
     assertThat(count(match + " WITH " + withVars + " RETURN count(*) AS n")).as("row pipeline").isEqualTo(expected);
     final String written = match + " RETURN count(*) AS n";
@@ -119,6 +163,12 @@ class Issue9298CountPushDownMultiplicityTest extends TestHelper {
     while (!view.isReady() && System.currentTimeMillis() < deadline)
       Thread.sleep(20);
     assertThat(view.isReady()).isTrue();
+  }
+
+  private String explain(final String query) {
+    try (final ResultSet rs = database.query("opencypher", "EXPLAIN " + query)) {
+      return rs.next().getProperty("executionPlanAsString");
+    }
   }
 
   private long count(final String query) {
