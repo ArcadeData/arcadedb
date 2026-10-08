@@ -109,6 +109,34 @@ public class QueryAdmissionGateBoltIssue9518IT extends BaseBoltServerTest {
     }
   }
 
+  /**
+   * A stream the client leaves open when it ends its transaction goes with the transaction, and so does its slot: the
+   * next query of the same connection is admitted on its own rather than sharing a stale slot.
+   */
+  @Test
+  void aStreamLeftOpenWhenItsTransactionEndsGivesItsSlotBack() {
+    GlobalConfiguration.QUERY_MAX_CONCURRENT.setValue(1);
+    GlobalConfiguration.QUERY_QUEUE_TIMEOUT.setValue(0L);
+
+    // ONE CONNECTION, SO THE NEXT QUERY RUNS ON THE SAME SERVER THREAD AS THE ABANDONED STREAM
+    try (final Driver driver = GraphDatabase.driver(getServerBoltUrl(), AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS),
+        Config.builder().withoutEncryption().withFetchSize(1).withMaxConnectionPoolSize(1).build());
+        final Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+      final Transaction tx = session.beginTransaction();
+      final Result abandoned = tx.run("UNWIND range(1, 10) AS x RETURN x");
+      assertThat(abandoned.next().get("x").asInt()).isEqualTo(1);
+      assertThat(gate.getRunning()).isEqualTo(1);
+
+      tx.rollback();
+      assertThat(gate.getRunning()).as("the stream went with its transaction").isZero();
+
+      final long admittedBefore = gate.getAdmitted();
+      assertThat(session.run("RETURN 1 AS one").single().get("one").asInt()).isEqualTo(1);
+      assertThat(gate.getAdmitted()).as("admitted on its own, not on the abandoned stream's slot").isEqualTo(admittedBefore + 1);
+    }
+    assertThat(gate.getRunning()).isZero();
+  }
+
   private Driver driver(final int fetchSize) {
     return GraphDatabase.driver(getServerBoltUrl(), AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS),
         Config.builder().withoutEncryption().withFetchSize(fetchSize).build());
