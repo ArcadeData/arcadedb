@@ -104,6 +104,11 @@ class Issue9430ServerOnlySealedCeilingHATest extends BaseRaftHATest {
     return ((LocalTimeSeriesType) db.getSchema().getType("weather")).getEngine();
   }
 
+  /**
+   * The sealed file is created with its header together with the type, before anything seals, so the test compares
+   * its length before and after the compaction instead of expecting zero. A missing file counts as zero bytes so the
+   * comparison still holds if a future layout creates it lazily.
+   */
   private long sealedFileLength(final int serverIndex) throws IOException {
     final File sealed = new File(getDatabasePath(serverIndex), "weather_shard_0.ts.sealed");
     return sealed.exists() ? sealed.length() : 0L;

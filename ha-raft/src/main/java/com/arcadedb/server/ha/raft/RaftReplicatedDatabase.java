@@ -1714,11 +1714,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   @Override
   public ContextConfiguration getReplicationConfiguration() {
     final RaftHAServer raft = raftHAServer;
-    if (raft != null && raft.getConfiguration() != null)
-      return raft.getConfiguration();
-    if (server != null && server.getConfiguration() != null)
-      return server.getConfiguration();
-    return proxied.getConfiguration();
+    final ContextConfiguration raftConfiguration = raft != null ? raft.getConfiguration() : null;
+    if (raftConfiguration != null)
+      return raftConfiguration;
+    final ContextConfiguration serverConfiguration = server != null ? server.getConfiguration() : null;
+    return serverConfiguration != null ? serverConfiguration : proxied.getConfiguration();
   }
 
   @Override
