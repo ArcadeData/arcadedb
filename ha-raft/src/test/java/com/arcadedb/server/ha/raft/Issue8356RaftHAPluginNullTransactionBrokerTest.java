@@ -23,8 +23,6 @@ import com.arcadedb.exception.TransactionException;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Regression test for issue #8356, the security-replication siblings of the fix in
@@ -43,8 +41,8 @@ class Issue8356RaftHAPluginNullTransactionBrokerTest {
   @Test
   void replicateSecurityUsersReportsANullBrokerInsteadOfThrowingNPE() {
     final RaftHAPlugin plugin = new RaftHAPlugin();
-    final RaftHAServer raftServer = mock(RaftHAServer.class);
-    when(raftServer.getTransactionBroker()).thenReturn(null);
+    // Detached, never started: no transaction broker, as after the HA stop this issue is about
+    final RaftHAServer raftServer = FakeRaftHAServer.detached();
     plugin.setRaftHAServer(raftServer);
 
     assertThatThrownBy(() -> plugin.replicateSecurityUsers("[]", null))

@@ -47,7 +47,6 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
-import static org.mockito.Mockito.mock;
 
 /**
  * Regression tests for issue #8843: every production reader of a node's own bootstrap state fingerprinted the OPEN
@@ -117,7 +116,7 @@ class Issue8843BootstrapStateInFlightPagesTest {
 
   @Test
   void theElectionSamplesTheSettledCopy() throws Exception {
-    final BootstrapElection election = new BootstrapElection(mock(RaftHAServer.class), stubbedServer());
+    final BootstrapElection election = new BootstrapElection(FakeRaftHAServer.detached(), stubbedServer());
 
     final Sample sample = sampleWhileTheLastCommitIsInFlight(() -> {
       final Map<String, BootstrapElection.PeerState> states = election.computeLocalStates(RaftPeerId.valueOf("peer-0"),

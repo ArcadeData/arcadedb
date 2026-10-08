@@ -321,9 +321,7 @@ class Issue7619ReadinessAgainstLeaderCommitTest {
       field.set(raft, ratis);
 
       // Neither resyncing nor halted: the gates this test is not about stay open.
-      final ArcadeStateMachine stateMachine = mock(ArcadeStateMachine.class);
-      when(stateMachine.isResyncInProgress()).thenReturn(false);
-      when(stateMachine.isHaltedAfterCriticalError()).thenReturn(false);
+      final ArcadeStateMachine stateMachine = new ArcadeStateMachine();
       final Field smField = RaftHAServer.class.getDeclaredField("stateMachine");
       smField.setAccessible(true);
       smField.set(raft, stateMachine);

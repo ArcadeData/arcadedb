@@ -112,9 +112,7 @@ class Issue8317ReAddedNodeSecurityGateTest {
   }
 
   private static ServerSecurity fingerprintsMissing(final String... documents) {
-    final ServerSecurity security = mock(ServerSecurity.class);
-    when(security.unconvergedClusterSecurityDocuments()).thenReturn(List.of(documents));
-    return security;
+    return TestServerHelper.securityConvergedExcept(documents);
   }
 
   /** The window is left at its default, which is on (issue #7819). */

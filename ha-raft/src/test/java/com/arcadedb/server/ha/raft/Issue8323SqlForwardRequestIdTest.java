@@ -44,7 +44,6 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
 import static com.arcadedb.utility.SubclassMocks.mock;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.when;
 
 /**
  * Regression test for issue #8323: the SQL write a follower forwards to the leader
@@ -169,12 +168,12 @@ class Issue8323SqlForwardRequestIdTest {
       final String clusterToken, final LocalDatabase proxied) {
     final ContextConfiguration cfg = config();
     final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, cfg);
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.getLeaderHttpAddress()).thenReturn(leader.address());
-    when(raft.getClusterToken()).thenReturn(clusterToken);
-    when(raft.isLeader()).thenReturn(localIsLeader);
-    // A node that became the leader resolves the leader's address to its own.
-    when(raft.isOwnHttpAddress(leader.address())).thenReturn(localIsLeader);
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached().leaderHttpAddress(leader.address()).clusterToken(clusterToken)
+        .leader(localIsLeader);
+    // A node that became the leader resolves the leader's address to its own: the real isOwnHttpAddress compares it
+    // with this node's address.
+    if (localIsLeader)
+      raft.localHttpAddress(leader.address());
     return new RaftReplicatedDatabase(server, proxied, raft);
   }
 

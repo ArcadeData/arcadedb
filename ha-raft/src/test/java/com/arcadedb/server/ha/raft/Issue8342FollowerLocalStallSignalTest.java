@@ -192,7 +192,7 @@ class Issue8342FollowerLocalStallSignalTest {
 
   @Test
   void aResyncInFlightIsLeftToItsOwnAlert() throws Exception {
-    final Fixture f = f(stalled -> when(stalled.stateMachine.isResyncInProgress()).thenReturn(true));
+    final Fixture f = f(stalled -> stalled.stateMachine.resyncInProgress(true));
     assertThat(f.raft.getFollowerStallBehindLeader()).isNull();
   }
 
@@ -334,7 +334,7 @@ class Issue8342FollowerLocalStallSignalTest {
     final RaftHAServer        raft;
     final DivisionInfo        info;
     final RaftLog             log;
-    final ArcadeStateMachine  stateMachine;
+    final FakeArcadeStateMachine  stateMachine;
     final AtomicLong          now = new AtomicLong();
 
     Fixture() throws Exception {
@@ -375,8 +375,7 @@ class Issue8342FollowerLocalStallSignalTest {
       field.setAccessible(true);
       field.set(raft, ratis);
 
-      stateMachine = mock(ArcadeStateMachine.class);
-      when(stateMachine.isResyncInProgress()).thenReturn(false);
+      stateMachine = new FakeArcadeStateMachine();
       final Field smField = RaftHAServer.class.getDeclaredField("stateMachine");
       smField.setAccessible(true);
       smField.set(raft, stateMachine);

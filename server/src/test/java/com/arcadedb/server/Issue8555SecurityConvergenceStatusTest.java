@@ -228,8 +228,7 @@ class Issue8555SecurityConvergenceStatusTest {
   }
 
   private static FakeArcadeDBServer onlineServerWith(final HAServerPlugin ha, final ContextConfiguration configuration) {
-    final ServerSecurity security = mock(ServerSecurity.class);
-    when(security.unconvergedClusterSecurityDocuments()).thenReturn(List.of());
+    final ServerSecurity security = TestServerHelper.securityConvergedExcept();
     final FakeArcadeDBServer server = FakeArcadeDBServer.create((String) null, configuration);
     server.online();
     server.setHA(ha);
