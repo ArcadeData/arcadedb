@@ -20,11 +20,14 @@ package com.arcadedb.server.http.handler;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.QueryAdmissionException;
 import com.arcadedb.exception.QueryHeapBudgetExceededException;
+import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.query.sql.executor.QueryHeapBudget;
 import com.arcadedb.query.sql.executor.QueryHeapTracker;
+import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 import io.undertow.server.HttpServerExchange;
@@ -38,9 +41,13 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Collections;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -165,6 +172,63 @@ class QueryAdmissionGateHttpIssue9518Test extends BaseGraphServerTest {
         others.close();
       GlobalConfiguration.QUERY_MAX_HEAP_RAM.reset();
     }
+  }
+
+  /**
+   * An explicit lock is held across the requests of its transaction. Requests waiting for it must not hold the slots its
+   * holder needs for its next request: with fewer slots than clients they used to fill the gate, the holder queued behind
+   * them, and every waiter timed out on the lock (RemoteDatabaseJavaApiIT.explicitLock on a 4-core CI runner).
+   */
+  @Test
+  void transactionsWaitingForAnExplicitLockDoNotStarveItsHolder() throws Exception {
+    GlobalConfiguration.QUERY_MAX_CONCURRENT.setValue(2);
+    GlobalConfiguration.QUERY_QUEUE_TIMEOUT.setValue(60_000L);
+
+    final RID[] rid = new RID[1];
+    try (final RemoteDatabase setup = remote()) {
+      setup.getSchema().getOrCreateVertexType("Locked9518");
+      setup.transaction(() -> rid[0] = setup.newVertex("Locked9518").set("id", 0).save().getIdentity());
+    }
+
+    final int clients = 8;
+    final int iterations = 10;
+    final AtomicInteger committed = new AtomicInteger();
+    final List<Throwable> failures = Collections.synchronizedList(new ArrayList<>());
+    final List<Thread> threads = new ArrayList<>();
+    for (int c = 0; c < clients; c++) {
+      final Thread thread = new Thread(() -> {
+        try (final RemoteDatabase db = remote()) {
+          for (int i = 0; i < iterations; i++) {
+            try {
+              db.transaction(() -> {
+                db.acquireLock().type("Locked9518").lock();
+                final MutableVertex v = db.lookupByRID(rid[0]).asVertex().modify();
+                v.set("id", v.getInteger("id") + 1);
+                v.save();
+              });
+              committed.incrementAndGet();
+            } catch (final Throwable t) {
+              failures.add(t);
+            }
+          }
+        }
+      });
+      threads.add(thread);
+      thread.start();
+    }
+    for (final Thread thread : threads)
+      thread.join(120_000);
+
+    assertThat(failures).as("no transaction timed out on the lock while its holder waited for a slot").isEmpty();
+    assertThat(committed.get()).isEqualTo(clients * iterations);
+    try (final RemoteDatabase check = remote()) {
+      assertThat(check.lookupByRID(rid[0]).asVertex().getInteger("id")).isEqualTo(clients * iterations);
+    }
+    assertThat(gate.getRunning()).isZero();
+  }
+
+  private RemoteDatabase remote() {
+    return new RemoteDatabase("127.0.0.1", getServerHttpPort(0), getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
   }
 
   @Test

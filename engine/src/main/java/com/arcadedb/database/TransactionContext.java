@@ -45,6 +45,7 @@ import com.arcadedb.index.IndexReplayConclusion;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.IntIntHashMap;
@@ -3044,6 +3045,12 @@ public class TransactionContext implements Transaction {
         (newPages != null && !newPages.isEmpty()) //
     )
       throw new TransactionException("Explicit lock must be acquired before any modification");
+
+    // An explicit lock is held across the requests of its transaction, so a request waiting for one must not hold a query
+    // admission slot meanwhile (issue #9518): the lock holder's next request would queue for a slot the lock waiters
+    // hold, and every waiter would time out on the lock first. The slot goes back before the wait, as before a forward to
+    // the leader; the rest of this request runs without one, and the transaction's next requests are admitted as usual
+    QueryAdmissionGate.getInstance().releaseCurrentSlot();
 
     // EXPLICIT_LOCK_TIMEOUT, not COMMIT_LOCK_TIMEOUT: an explicit `LOCK` is taken up front, before any work, and an
     // application that asks for one is telling the engine how long it is prepared to wait for a busy resource. The
