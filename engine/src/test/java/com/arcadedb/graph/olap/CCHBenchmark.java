@@ -106,9 +106,10 @@ class CCHBenchmark {
         + measure(metric, n, offsets, adjacency, adjacencyWeights, shortRoutes, "short");
 
     LogManager.instance().log(CCHBenchmark.class, Level.INFO,
-        "grid %dx%d: %d nodes, %d arcs -> %d supergraph arcs (%.1fx), search space %d | order+contract %d ms, customize %d ms | %s",
+        "grid %dx%d: %d nodes, %d arcs -> %d supergraph arcs (%.1fx), search space %d | order+contract %d ms, customize %d ms | "
+            + "query scratch %d KB (graph-sized would be %d KB) | %s",
         side, side, n, m, topology.arcCount(), topology.arcCount() / (m / 2.0), topology.maxSearchSpace(), topologyMs,
-        customizeMs, routes);
+        customizeMs, 24L * topology.maxSearchSpace() / 1024, 24L * n / 1024, routes);
   }
 
   private static String measure(final CCHMetric metric, final int n, final int[] offsets, final int[] adjacency,
