@@ -22,7 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.FollowerSample;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
@@ -34,8 +34,6 @@ import java.util.List;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Unit tests for {@link ClusterAlerts} single-bucket type detection: the core diagnostic behind the
@@ -224,8 +222,7 @@ class ClusterAlertsTest {
 
   @Test
   void scanIncludesStuckAtStaleTermAlertWhenFlagged() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getDatabaseNames()).thenReturn(Set.of());
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
 
     final JSONArray alerts = ClusterAlerts.scan(server, null, List.of(), Set.of(), null, null, null,
         new ClusterAlerts.NodeStatus(null, null, false, true), true);
@@ -236,8 +233,7 @@ class ClusterAlertsTest {
 
   @Test
   void scanOmitsStuckAtStaleTermAlertWhenNotFlagged() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getDatabaseNames()).thenReturn(Set.of());
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
 
     final JSONArray alerts = ClusterAlerts.scan(server, null, List.of(), Set.of(), null, null, null,
         new ClusterAlerts.NodeStatus(null, null, false, true), false);

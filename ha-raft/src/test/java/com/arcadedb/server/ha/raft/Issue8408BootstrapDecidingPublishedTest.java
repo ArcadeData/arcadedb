@@ -26,6 +26,7 @@ import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
@@ -37,8 +38,6 @@ import java.util.List;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Regression test for issue #8408: the third arm of {@code ArcadeStateMachine.bootstrapWindowReason()} - a first-formation
@@ -159,12 +158,10 @@ class Issue8408BootstrapDecidingPublishedTest {
     config.setValue(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRIES, 0);
     config.setValue(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRY_BASE_MS, 0L);
     config.setValue(GlobalConfiguration.NETWORK_USE_SSL, false);
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(config);
-    when(server.existsDatabase(DB_NAME)).thenReturn(true);
-    when(server.getDatabase(DB_NAME)).thenReturn(new ServerDatabase(null, localDb));
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create((String) null, config);
+    server.databaseNames(DB_NAME);
+    server.database(DB_NAME, new ServerDatabase(null, localDb));
     // The single-bucket check walks the registry; nothing in it is what this test is about.
-    when(server.getDatabaseNames()).thenReturn(Set.of());
     return server;
   }
 

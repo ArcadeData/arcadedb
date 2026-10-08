@@ -20,7 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
 import com.arcadedb.server.http.HttpServer;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.junit.jupiter.api.Test;
@@ -341,12 +341,11 @@ class Issue7256SharedAddressCapabilityProbeTest {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_SERVER_LIST, serverList);
 
-    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
-    when(mockServer.getServerName()).thenReturn("ArcadeDB_0");
+    final FakeArcadeDBServer mockServer = FakeArcadeDBServer.create("ArcadeDB_0", new ContextConfiguration());
     if (localHttpPort > 0) {
       final HttpServer httpServer = mock(HttpServer.class);
       when(httpServer.getPort()).thenReturn(localHttpPort);
-      when(mockServer.getHttpServer()).thenReturn(httpServer);
+      mockServer.httpServer(httpServer);
     }
 
     return new RaftHAServer(mockServer, config);

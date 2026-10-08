@@ -89,8 +89,9 @@ class UnstartedServerTest {
     assertThat(server.getConfiguration()).isSameAs(configuration);
 
     final ArcadeDBServer unrooted = TestServerHelper.unstartedServer();
+    assertThat(TestServerHelper.unstartedServer().getRootPath()).isNotEqualTo(unrooted.getRootPath());
     assertThat(unrooted.getServerName()).isEqualTo(GlobalConfiguration.SERVER_NAME.getDefValue());
-    assertThat(Path.of(unrooted.getRootPath())).as("the shared default root is never created, so parallel forks cannot collide on it")
+    assertThat(Path.of(unrooted.getRootPath())).as("construction does not create the default root, and every unrooted server gets its own")
         .doesNotExist();
     assertThat(TestServerHelper.unstartedServer((String) null, new ContextConfiguration()).getServerName())
         .isEqualTo(GlobalConfiguration.SERVER_NAME.getDefValue());

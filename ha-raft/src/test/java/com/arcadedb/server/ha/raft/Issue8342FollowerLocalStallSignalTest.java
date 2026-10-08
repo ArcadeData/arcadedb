@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
 import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.server.DivisionInfo;
@@ -285,8 +286,7 @@ class Issue8342FollowerLocalStallSignalTest {
   // ---- helpers ---------------------------------------------------------------------------------------------------
 
   private static ArcadeDBServer emptyServer() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getDatabaseNames()).thenReturn(Set.of());
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
     return server;
   }
 
@@ -343,8 +343,7 @@ class Issue8342FollowerLocalStallSignalTest {
       config.setValue(GlobalConfiguration.HA_REPLICATION_LAG_WARNING, THRESHOLD);
       config.setValue(GlobalConfiguration.SERVER_READINESS_REQUIRES_HA, false);
 
-      final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
-      when(mockServer.getServerName()).thenReturn("ArcadeDB_0");
+      final FakeArcadeDBServer mockServer = FakeArcadeDBServer.create("ArcadeDB_0", new ContextConfiguration());
       raft = new RaftHAServer(mockServer, config);
 
       final RaftPeer self = peer(raft.getLocalPeerId().toString(), "localhost:2434");

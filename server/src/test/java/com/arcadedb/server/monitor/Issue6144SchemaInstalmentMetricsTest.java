@@ -18,7 +18,7 @@
  */
 package com.arcadedb.server.monitor;
 
-import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
 import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.HAReplicationStats;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.SchemaInstalmentSample;
@@ -32,8 +32,6 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Issue #6144: schema-WAL instalments, and what they cost, as operator-facing metrics.
@@ -77,11 +75,10 @@ class Issue6144SchemaInstalmentMetricsTest {
 
   @Test
   void everyDatabaseGetsItsOwnInstalmentCountAndDuration() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getPlugins()).thenReturn(List.of(new FakeHAPlugin(
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create().plugins(new FakeHAPlugin(
         List.of(new SchemaInstalmentSample("busy", 37, 4_200, 900),
             new SchemaInstalmentSample("idle", 0, 0, 0)),
-        List.of())));
+        List.of()));
 
     final SimpleMeterRegistry registry = new SimpleMeterRegistry();
     try (final HAReplicationMetrics metrics = new HAReplicationMetrics(server)) {
@@ -104,9 +101,8 @@ class Issue6144SchemaInstalmentMetricsTest {
 
   @Test
   void unreferencedFilesAreReportedPerDatabaseToo() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getPlugins()).thenReturn(List.of(new FakeHAPlugin(List.of(),
-        List.of(new UnreferencedFilesSample("leaky", 2), new UnreferencedFilesSample("clean", 0)))));
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create().plugins(new FakeHAPlugin(List.of(),
+        List.of(new UnreferencedFilesSample("leaky", 2), new UnreferencedFilesSample("clean", 0))));
 
     final SimpleMeterRegistry registry = new SimpleMeterRegistry();
     try (final HAReplicationMetrics metrics = new HAReplicationMetrics(server)) {
@@ -123,8 +119,7 @@ class Issue6144SchemaInstalmentMetricsTest {
   /** With HA disabled there is no per-database row at all, rather than a row full of placeholders. */
   @Test
   void nothingIsPublishedWhenHAIsDisabled() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getPlugins()).thenReturn(List.of());
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
 
     final SimpleMeterRegistry registry = new SimpleMeterRegistry();
     try (final HAReplicationMetrics metrics = new HAReplicationMetrics(server)) {
@@ -143,8 +138,7 @@ class Issue6144SchemaInstalmentMetricsTest {
    */
   @Test
   void aFailingRefreshCostsOnlyItsOwnGauges() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getPlugins()).thenReturn(List.of());
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
 
     final boolean[] laterRefreshRan = { false };
     try (final HAReplicationMetrics metrics = new HAReplicationMetrics(server)) {

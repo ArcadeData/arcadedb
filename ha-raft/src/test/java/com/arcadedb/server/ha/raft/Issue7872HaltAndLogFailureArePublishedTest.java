@@ -20,7 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
 import com.arcadedb.server.http.handler.openapi.OpenApiContributor;
 import com.arcadedb.server.http.handler.openapi.PluginApiSpec;
 import io.swagger.v3.oas.models.Components;
@@ -33,8 +33,6 @@ import java.util.List;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Regression test for issue #7872: two readiness inputs the #7136 invariant never published.
@@ -153,8 +151,7 @@ class Issue7872HaltAndLogFailureArePublishedTest {
    */
   @Test
   void theThreeNodeLevelConditionsAreNotSuppressedForAScopedCaller() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getDatabaseNames()).thenReturn(Set.of());
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
 
     // A caller authorized on no database at all: the strictest filter the endpoint can build.
     final JSONArray alerts = ClusterAlerts.scan(server, null, List.of(), Set.of(), null, null, null,

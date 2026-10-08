@@ -22,7 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
 import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.utility.FileUtils;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -32,11 +32,8 @@ import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.util.List;
-import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Issue #7529: the replicated-permission refresh counters have to reach a scrape, or an operator still has
@@ -51,7 +48,7 @@ class Issue7529SecurityRefreshMetricsTest {
   private static final String CONFIG_PATH = "target/test-security-7529-metrics";
 
   private ServerSecurity      security;
-  private ArcadeDBServer      server;
+  private FakeArcadeDBServer  server;
   private SimpleMeterRegistry registry;
 
   @BeforeEach
@@ -62,12 +59,10 @@ class Issue7529SecurityRefreshMetricsTest {
       FileUtils.deleteRecursively(dir);
     assertThat(dir.mkdirs()).isTrue();
 
-    server = mock(ArcadeDBServer.class);
-    when(server.getPlugins()).thenReturn(List.of());
-    when(server.getDatabaseNames()).thenReturn(Set.of());
+    server = FakeArcadeDBServer.create();
 
     security = new ServerSecurity(server, new ContextConfiguration(), CONFIG_PATH);
-    when(server.getSecurity()).thenReturn(security);
+    server.security(security);
 
     registry = new SimpleMeterRegistry();
   }
@@ -119,9 +114,7 @@ class Issue7529SecurityRefreshMetricsTest {
   /** A scrape that lands before the security service is installed, or after it is gone, reads zeros - not a throw. */
   @Test
   void theGaugesDegradeWhenThereIsNoSecurityService() {
-    final ArcadeDBServer bare = mock(ArcadeDBServer.class);
-    when(bare.getPlugins()).thenReturn(List.of());
-    when(bare.getSecurity()).thenReturn(null);
+    final FakeArcadeDBServer bare = FakeArcadeDBServer.create();
 
     try (final HAReplicationMetrics metrics = new HAReplicationMetrics(bare)) {
       metrics.bindTo(registry);

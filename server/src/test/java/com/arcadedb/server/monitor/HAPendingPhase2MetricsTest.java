@@ -18,18 +18,15 @@
  */
 package com.arcadedb.server.monitor;
 
-import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
 import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.HAReplicationStats;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.PendingPhase2Stats;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 
-import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Issue #5410: a phase-2 hold that never clears pins Raft log compaction until the node restarts,
@@ -64,8 +61,8 @@ class HAPendingPhase2MetricsTest {
 
   @Test
   void gaugesExposeAnOutstandingPhase2Hold() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getPlugins()).thenReturn(List.of(new FakeHAPlugin(new PendingPhase2Stats(2, 620_000L, 4711L))));
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+    server.plugins(new FakeHAPlugin(new PendingPhase2Stats(2, 620_000L, 4711L)));
 
     final SimpleMeterRegistry registry = new SimpleMeterRegistry();
     try (final HAReplicationMetrics metrics = new HAReplicationMetrics(server)) {
@@ -81,8 +78,8 @@ class HAPendingPhase2MetricsTest {
 
   @Test
   void gaugesReportNothingHeldOnAnIdleNode() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getPlugins()).thenReturn(List.of(new FakeHAPlugin(new PendingPhase2Stats(0, 0, -1))));
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+    server.plugins(new FakeHAPlugin(new PendingPhase2Stats(0, 0, -1)));
 
     final SimpleMeterRegistry registry = new SimpleMeterRegistry();
     try (final HAReplicationMetrics metrics = new HAReplicationMetrics(server)) {
@@ -98,8 +95,7 @@ class HAPendingPhase2MetricsTest {
 
   @Test
   void gaugesDegradeWhenHAIsDisabled() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getPlugins()).thenReturn(List.of());
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
 
     final SimpleMeterRegistry registry = new SimpleMeterRegistry();
     try (final HAReplicationMetrics metrics = new HAReplicationMetrics(server)) {
@@ -114,12 +110,11 @@ class HAPendingPhase2MetricsTest {
   /** A provider that never overrides the default must still publish usable numbers. */
   @Test
   void providerDefaultReportsNothingHeld() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getPlugins()).thenReturn(List.of(new ServerPlugin() {
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create().plugins(new ServerPlugin() {
       @Override
       public void startService() {
       }
-    }));
+    });
 
     final SimpleMeterRegistry registry = new SimpleMeterRegistry();
     try (final HAReplicationMetrics metrics = new HAReplicationMetrics(server)) {

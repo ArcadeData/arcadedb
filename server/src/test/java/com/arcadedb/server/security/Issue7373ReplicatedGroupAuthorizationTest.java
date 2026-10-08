@@ -26,7 +26,7 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.security.SecurityDatabaseUser.DATABASE_ACCESS;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -76,9 +76,9 @@ class Issue7373ReplicatedGroupAuthorizationTest {
     // server.getSecurity().getDatabaseGroupsConfiguration(...), so the principal has to be able to see the very
     // store the replicated document is applied to. getHA() answers null, so this node is not in a cluster and
     // createUser() takes the local path - which is what a peer applying someone else's entry looks like.
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
     security = new ServerSecurity(server, new ContextConfiguration(), CONFIG_PATH);
-    when(server.getSecurity()).thenReturn(security);
+    server.security(security);
   }
 
   @AfterEach

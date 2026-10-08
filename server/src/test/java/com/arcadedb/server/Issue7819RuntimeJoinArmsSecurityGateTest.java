@@ -143,11 +143,10 @@ class Issue7819RuntimeJoinArmsSecurityGateTest {
     configuration.setValue(GlobalConfiguration.HA_ENABLED, true);
     configuration.setValue(GlobalConfiguration.SERVER_READINESS_REQUIRES_HA, true);
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getStatus()).thenReturn(ArcadeDBServer.STATUS.ONLINE);
-    when(server.getConfiguration()).thenReturn(configuration);
-    when(server.getHA()).thenReturn(ha);
-    when(server.getSecurity()).thenReturn(security);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create((String) null, configuration);
+    server.online();
+    server.setHA(ha);
+    server.security(security);
     return server;
   }
 }

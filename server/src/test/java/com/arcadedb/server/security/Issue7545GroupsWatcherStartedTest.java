@@ -22,7 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -32,14 +32,11 @@ import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.lang.reflect.Modifier;
 import java.nio.file.Files;
-import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Issue #7545: the {@code server-groups.json} reload watcher must be running on a node whose FIRST contact with
@@ -320,14 +317,13 @@ class Issue7545GroupsWatcherStartedTest {
   }
 
   private ServerSecurity newSecurity() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getDatabaseNames()).thenReturn(Set.of());
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
 
     final ContextConfiguration configuration = new ContextConfiguration();
     configuration.setValue(GlobalConfiguration.SERVER_SECURITY_RELOAD_EVERY, RELOAD_EVERY_MS);
 
     final ServerSecurity instance = new ServerSecurity(server, configuration, CONFIG_PATH);
-    when(server.getSecurity()).thenReturn(instance);
+    server.security(instance);
     return instance;
   }
 

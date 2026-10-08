@@ -18,17 +18,20 @@
  */
 package com.arcadedb.server.http.handler;
 
-import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.server.FakeArcadeDBServer;
+import com.arcadedb.server.ServerDatabase;
 import io.micrometer.core.instrument.Timer;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.PathTemplateMatch;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Path;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Unit tests for the bounded HTTP RED-metric plumbing in {@link AbstractServerHttpHandler} (issue #5025):
@@ -72,15 +75,19 @@ class AbstractServerHttpHandlerMetricsTest {
   }
 
   @Test
-  void databaseTagKeepsTheNameOfADatabaseThatExists() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.existsDatabase("graph")).thenReturn(true);
+  void databaseTagKeepsTheNameOfADatabaseThatExists(@TempDir final Path root) {
+    final DatabaseInternal graph = (DatabaseInternal) new DatabaseFactory(root.resolve("graph").toString()).create();
+    try {
+      final FakeArcadeDBServer server = FakeArcadeDBServer.create().database("graph", new ServerDatabase(null, graph));
 
-    final HttpServerExchange exchange = new HttpServerExchange(null);
-    exchange.putAttachment(PathTemplateMatch.ATTACHMENT_KEY,
-        new PathTemplateMatch("/query/{database}", Map.of("database", "graph")));
+      final HttpServerExchange exchange = new HttpServerExchange(null);
+      exchange.putAttachment(PathTemplateMatch.ATTACHMENT_KEY,
+          new PathTemplateMatch("/query/{database}", Map.of("database", "graph")));
 
-    assertThat(AbstractServerHttpHandler.databaseTag(exchange, server)).isEqualTo("graph");
+      assertThat(AbstractServerHttpHandler.databaseTag(exchange, server)).isEqualTo("graph");
+    } finally {
+      graph.drop();
+    }
   }
 
   @Test
@@ -88,8 +95,7 @@ class AbstractServerHttpHandlerMetricsTest {
     // Issue #6805: {database} matches any path segment and the RED timer is recorded in a finally block that
     // also runs for the 401 an unauthenticated caller gets, so echoing the raw parameter registered one
     // permanent percentile-histogram Timer per invented name - the #5025 leak on the other half of the tuple.
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.existsDatabase("db12345")).thenReturn(false);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
 
     final HttpServerExchange exchange = new HttpServerExchange(null);
     exchange.putAttachment(PathTemplateMatch.ATTACHMENT_KEY,
@@ -100,7 +106,7 @@ class AbstractServerHttpHandlerMetricsTest {
 
   @Test
   void databaseTagIsNoneForRoutesThatAreNotDatabaseScoped() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
 
     final HttpServerExchange withoutParameter = new HttpServerExchange(null);
     withoutParameter.putAttachment(PathTemplateMatch.ATTACHMENT_KEY, new PathTemplateMatch("/ready", Map.of()));

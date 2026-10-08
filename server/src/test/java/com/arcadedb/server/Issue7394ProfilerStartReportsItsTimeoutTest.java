@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.monitor.ServerQueryProfiler;
 import org.junit.jupiter.api.AfterEach;
@@ -28,8 +29,6 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Issue #7394 item 4: a recording started with no timeout was documented as open-ended and was not.
@@ -49,18 +48,16 @@ import static org.mockito.Mockito.when;
  */
 class Issue7394ProfilerStartReportsItsTimeoutTest {
 
-  private ArcadeDBServer      server;
+  private FakeArcadeDBServer  server;
   private ServerQueryProfiler profiler;
   private ServerControlPlane  controlPlane;
 
   @BeforeEach
   void setup(@TempDir final Path rootPath) {
-    server = mock(ArcadeDBServer.class);
-    // stop() persists the run under <rootPath>/profiler. Unstubbed, getRootPath() answers null and that path
-    // becomes the literal "null/profiler", dropped into whatever the working directory happens to be.
-    when(server.getRootPath()).thenReturn(rootPath.toString());
+    // stop() persists the run under <rootPath>/profiler, so the server is rooted in the test's own directory
+    server = FakeArcadeDBServer.create(rootPath, new ContextConfiguration());
     profiler = new ServerQueryProfiler(server);
-    when(server.getQueryProfiler()).thenReturn(profiler);
+    server.queryProfiler(profiler);
     controlPlane = new ServerControlPlane(server);
   }
 
