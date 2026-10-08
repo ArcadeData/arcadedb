@@ -151,6 +151,11 @@ public class HttpServer implements ServerPlugin {
   private          int                    httpPortListening;
   private          int                    httpsPortListening = -1;
   private volatile List<RouteRecordingRoutingHandler.RouteDescriptor> registeredRoutes = List.of();
+  /**
+   * Test-only: runs after the ports are probed and right before {@code Undertow.start()}, so a test can take a port in
+   * the window between the two (issue #9479). Always {@code null} in production.
+   */
+  static volatile Runnable beforeUndertowStart;
 
   public HttpServer(final ArcadeDBServer server) {
     this.server = server;
@@ -246,10 +251,10 @@ public class HttpServer implements ServerPlugin {
 
     final boolean useSSL = configuration.getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
     int httpsPortListening = httpsPortRange != null ? httpsPortRange[0] : 0;
-    // Undertow.start() binds its listeners in order and, when a later one fails, shuts its worker down but leaves the
-    // earlier channels open for the life of the JVM, and Undertow.stop() on that half-started server spins forever. So
-    // whenever more than one listener is about to be bound (several addresses, or HTTP + HTTPS) every port is probed
-    // first, and a taken HTTPS port advances through ITS OWN range while the HTTP port stays (issue #9225).
+    // Undertow.start() binds its listeners in order and, when a later one fails, the whole attempt is lost and the retry
+    // below moves the HTTP port on too, although it was free. So whenever more than one listener is about to be bound
+    // (several addresses, or HTTP + HTTPS) every port is probed first, and a taken HTTPS port advances through ITS OWN
+    // range while the HTTP port stays (issue #9225).
     final boolean probeHttps = useSSL && httpsPortListening > 0;
     final boolean probe = listenHosts.size() > 1 || probeHttps;
 
@@ -276,6 +281,9 @@ public class HttpServer implements ServerPlugin {
 
       try {
         undertow = buildUndertowServer(configuration, listenHosts, routes, httpsPortListening);
+        final Runnable hook = beforeUndertowStart;
+        if (hook != null)
+          hook.run();
         undertow.start();
 
         LogManager.instance().log(this, Level.INFO, "- HTTP Server started (host=%s port=%d httpsPort=%s)",
@@ -295,10 +303,13 @@ public class HttpServer implements ServerPlugin {
       } catch (final Exception e) {
         handleServerStartException(e);
         // A stranger took a port between the probe and the bind, and the exception does not say which. Move past the
-        // HTTP port (an earlier listener of the failed attempt may still hold it) and past the HTTPS one too when it is
-        // the taken one, so neither attempt is retried on a port that cannot be bound. The HTTPS re-probe is a heuristic:
-        // if both ports were taken in that window, both move on, which costs at most one port of each range. This window
-        // still leaks the listener the failed attempt already bound; closing it needs an owned XNIO worker (issue #9479).
+        // HTTP port (an earlier listener of the failed attempt may still be closing on it) and past the HTTPS one too when
+        // it is the taken one, so neither attempt is retried on a port that cannot be bound. The HTTPS re-probe is a
+        // heuristic: if both ports were taken in that window, both move on, which costs at most one port of each range.
+        // The listeners the failed attempt already bound are not leaked: Undertow.start() calls shutdownNow() on the XNIO
+        // worker it created, and each I/O thread closes the channels registered with its selector before exiting. The
+        // failed instance is dropped (handleServerStartException nulls it) and never stopped, because Undertow.stop() on
+        // it would block forever closing channels on I/O threads that are gone (issue #9479).
         ++httpPortListening;
         if (probeHttps && portConflict(listenHosts, httpsPortListening) != null)
           httpsPortListening = advanceHttpsPortOrFail(httpsPortListening, httpsPortRange);
@@ -507,10 +518,10 @@ public class HttpServer implements ServerPlugin {
   /**
    * Why {@code port} cannot be bound on every one of {@code hosts} ({@code "<address>: <reason>"}), or {@code null} when
    * it can. Asked before Undertow starts with more than one listener, because {@code Undertow.start()} binds them in
-   * order and, when a later one fails, shuts its worker down but leaves the earlier channels open, and
-   * {@code Undertow.stop()} on that half-started server spins forever waiting for the dead worker. The probe binds with
-   * {@code SO_REUSEADDR}, as XNIO does, so a port it calls free is one Undertow can take; only a stranger arriving
-   * between the probe and the bind can still fail the start.
+   * order and a later one failing loses the whole attempt, moving the HTTP port on although it was free. The probe binds
+   * with {@code SO_REUSEADDR}, as XNIO does, so a port it calls free is one Undertow can take; only a stranger arriving
+   * between the probe and the bind can still fail the start, and that attempt's listeners are released with its worker
+   * (issue #9479).
    */
   static String portConflict(final List<String> hosts, final int port) {
     for (final String host : hosts) {
