@@ -42,6 +42,12 @@ import java.util.concurrent.atomic.AtomicInteger;
  * {@link RaftHAServer} - {@link #isOwnHttpAddress(String)}, {@link #isLeaderReady()} - follow the values set here.
  * Everything else is the real detached server: a test that needs another piece of Raft state needs a running cluster
  * ({@code BaseRaftHATest}) or another field here.
+ * <p>
+ * A value given as several answers is a sequence, and EVERY read advances it, as Mockito's {@code thenReturn(a, b)}
+ * did: production code that reads two getters backed by the same sequence in one decision consumes two answers.
+ * <p>
+ * Detached means no Ratis server, client or division. The one resource construction allocates is the forward
+ * {@code HttpClient}, whose daemon selector thread ends once the client is garbage collected.
  */
 public class FakeRaftHAServer extends RaftHAServer {
   private final    ContextConfiguration             configuration;
@@ -117,7 +123,8 @@ public class FakeRaftHAServer extends RaftHAServer {
    */
   public FakeRaftHAServer peerHttpAddress(final RaftPeerId peerId, final String... addresses) {
     final Answers<String> answers = new Answers<>(null);
-    answers.set(addresses);
+    if (addresses != null && addresses.length > 0)
+      answers.set(addresses);
     peerHttpAddresses.put(peerId, answers);
     return this;
   }
@@ -264,24 +271,30 @@ public class FakeRaftHAServer extends RaftHAServer {
     return commitIndex.next();
   }
 
-  /** Answers its values in order, then keeps answering the last one; thread-safe, the fake is read from Raft threads. */
+  /**
+   * Answers its values in order, then keeps answering the last one. The values and their read counter are swapped as
+   * one immutable pair, so a read concurrent with a re-set sees either the old sequence or the new one, never a mix.
+   */
   private static final class Answers<T> {
-    private final    AtomicInteger reads = new AtomicInteger();
-    private volatile List<T>       values;
+    private record Sequence<T>(List<T> values, AtomicInteger reads) {
+    }
+
+    private volatile Sequence<T> sequence;
 
     private Answers(final T initial) {
-      this.values = Collections.singletonList(initial);
+      this.sequence = new Sequence<>(Collections.singletonList(initial), new AtomicInteger());
     }
 
     @SafeVarargs
     private void set(final T... values) {
-      this.values = values == null || values.length == 0 ? Collections.singletonList(null) : Arrays.asList(values);
-      reads.set(0);
+      if (values == null || values.length == 0)
+        throw new IllegalArgumentException("A sequence needs at least one answer");
+      this.sequence = new Sequence<>(Arrays.asList(values), new AtomicInteger());
     }
 
     private T next() {
-      final List<T> current = values;
-      return current.get(Math.min(reads.getAndIncrement(), current.size() - 1));
+      final Sequence<T> current = sequence;
+      return current.values().get(Math.min(current.reads().getAndIncrement(), current.values().size() - 1));
     }
   }
 }

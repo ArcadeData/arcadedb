@@ -22,6 +22,7 @@ import org.apache.ratis.protocol.RaftPeerId;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Issue #9464: {@link FakeRaftHAServer} starts where an unstubbed mock did and answers what the test set. */
 class FakeRaftHAServerTest {
@@ -72,6 +73,23 @@ class FakeRaftHAServerTest {
     assertThat(raft.getUnambiguousPeerHttpAddress(LEADER)).isEqualTo("peer-b:2480");
     assertThat(raft.getUnambiguousPeerHttpAddress(LEADER)).isEqualTo("localhost:2480");
     assertThat(raft.getPeerHttpAddress(LEADER)).isEqualTo("localhost:2480");
+  }
+
+  @Test
+  void anEmptySequenceIsRefused() {
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+
+    assertThatThrownBy(raft::leader).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(raft::commitIndex).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(raft::currentTerm).isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  void theRunningClusterStateMachineHasAppliedEntriesWhereTheDetachedOneHasNot() {
+    assertThat(FakeRaftHAServer.detached().getStateMachine().hasNeverAppliedApplicationEntry()).isTrue();
+
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached().stateMachine(FakeRaftHAServer.stateMachineOfARunningCluster());
+    assertThat(raft.getStateMachine().hasNeverAppliedApplicationEntry()).isFalse();
   }
 
   @Test
