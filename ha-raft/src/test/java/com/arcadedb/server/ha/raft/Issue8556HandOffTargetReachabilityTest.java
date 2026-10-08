@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.TestServerHelper;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.client.api.AdminApi;
 import org.apache.ratis.protocol.RaftClientReply;
@@ -221,9 +222,7 @@ class Issue8556HandOffTargetReachabilityTest {
   void theStepDownNeverTargetsAnUnreachablePeer() {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_SERVER_LIST, "localhost:2434:2480,localhost:2435:2481,localhost:2436:2482");
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getServerName()).thenReturn("ArcadeDB_0");
-    when(server.getConfiguration()).thenReturn(config);
+    final ArcadeDBServer server = TestServerHelper.unstartedServer("ArcadeDB_0", config);
     final RecordingStepDown raft = new RecordingStepDown(server, config);
     try {
       final List<String> peerIds = new ArrayList<>();
@@ -370,9 +369,7 @@ class Issue8556HandOffTargetReachabilityTest {
 
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_SERVER_LIST, "localhost:2434:2480,localhost:2435:2481,localhost:2436:2482");
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getServerName()).thenReturn("ArcadeDB_0");
-    when(server.getConfiguration()).thenReturn(config);
+    final ArcadeDBServer server = TestServerHelper.unstartedServer("ArcadeDB_0", config);
     final RecordingStepDown tick = new RecordingStepDown(server, config);
     try {
       tick.queueReplacingDatabaseHandOff(sm); // a health tick with nothing being replaced

@@ -79,6 +79,20 @@ class UnstartedServerTest {
   }
 
   @Test
+  void theNamedOverloadsAnswerTheNameFromTheConfiguration() {
+    assertThat(TestServerHelper.unstartedServer("ArcadeDB_7").getServerName()).isEqualTo("ArcadeDB_7");
+
+    final ContextConfiguration configuration = new ContextConfiguration();
+    final ArcadeDBServer server = TestServerHelper.unstartedServer("node-b", configuration);
+    assertThat(server.getServerName()).isEqualTo("node-b");
+    assertThat(server.getConfiguration()).isSameAs(configuration);
+
+    assertThat(TestServerHelper.unstartedServer().getServerName()).isEqualTo(GlobalConfiguration.SERVER_NAME.getDefValue());
+    assertThat(TestServerHelper.unstartedServer((String) null, new ContextConfiguration()).getServerName())
+        .isEqualTo(GlobalConfiguration.SERVER_NAME.getDefValue());
+  }
+
+  @Test
   void theDefaultModeIsNotProduction() {
     assertThat(TestServerHelper.unstartedServer(root, new ContextConfiguration()).isProductionMode()).isFalse();
   }

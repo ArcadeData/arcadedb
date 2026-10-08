@@ -43,29 +43,28 @@ class Issue7622LivenessCrashLoopEscalatedTest {
 
   @Test
   void isLiveWhenHaIsNotEnabled() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getHA()).thenReturn(null);
+    final ArcadeDBServer server = TestServerHelper.unstartedServer();
 
     assertThat(new ServerControlPlane(server).isLive()).isTrue();
   }
 
   @Test
   void isLiveWhenHaHasNotEscalatedACrashLoop() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = TestServerHelper.unstartedServer();
     final HAServerPlugin ha = mock(HAServerPlugin.class);
     when(ha.isCrashLoopEscalated()).thenReturn(false);
-    when(server.getHA()).thenReturn(ha);
+    server.setHA(ha);
 
     assertThat(new ServerControlPlane(server).isLive()).isTrue();
   }
 
   @Test
   void isNotLiveOnceHaHasEscalatedACrashLoopInThisLifetime() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = TestServerHelper.unstartedServer();
     final HAServerPlugin ha = mock(HAServerPlugin.class);
     when(ha.isCrashLoopEscalated()).thenReturn(true);
     when(ha.isCrashLoopRestartPending()).thenReturn(true);
-    when(server.getHA()).thenReturn(ha);
+    server.setHA(ha);
 
     assertThat(new ServerControlPlane(server).isLive()).isFalse();
   }
@@ -77,11 +76,11 @@ class Issue7622LivenessCrashLoopEscalatedTest {
    */
   @Test
   void isLiveWhenTheEscalationWasInheritedFromAPreviousLifetime() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = TestServerHelper.unstartedServer();
     final HAServerPlugin ha = mock(HAServerPlugin.class);
     when(ha.isCrashLoopEscalated()).thenReturn(true);
     when(ha.isCrashLoopRestartPending()).thenReturn(false);
-    when(server.getHA()).thenReturn(ha);
+    server.setHA(ha);
 
     assertThat(new ServerControlPlane(server).isLive()).isTrue();
   }

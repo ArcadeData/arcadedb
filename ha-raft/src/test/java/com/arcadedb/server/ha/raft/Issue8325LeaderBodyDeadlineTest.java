@@ -24,6 +24,7 @@ import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -62,9 +63,7 @@ class Issue8325LeaderBodyDeadlineTest {
       cfg.setValue(GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT, 5_000L);
       cfg.setValue(GlobalConfiguration.HA_PROXY_COMMAND_TIMEOUT, 1_000L);
 
-      final ArcadeDBServer server = mock(ArcadeDBServer.class);
-      when(server.getConfiguration()).thenReturn(cfg);
-      when(server.getHA()).thenReturn(null);
+      final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, cfg);
       final RaftHAServer raft = mock(RaftHAServer.class);
       when(raft.getLeaderHttpAddress()).thenReturn(leader.address());
       when(raft.getClusterToken()).thenReturn("test-token");
@@ -120,8 +119,7 @@ class Issue8325LeaderBodyDeadlineTest {
       cfg.setValue(GlobalConfiguration.HA_SECURITY_SEED_RETRY_TIMEOUT, 0L);
       final long deadlineMs = ClusterSecuritySeedQuery.reportTimeoutMs(cfg);
 
-      final ArcadeDBServer server = mock(ArcadeDBServer.class);
-      when(server.getConfiguration()).thenReturn(cfg);
+      final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, cfg);
       final RaftHAServer raft = mock(RaftHAServer.class);
       when(raft.getClusterToken()).thenReturn("test-token");
       final RaftHAPlugin plugin = mock(RaftHAPlugin.class);

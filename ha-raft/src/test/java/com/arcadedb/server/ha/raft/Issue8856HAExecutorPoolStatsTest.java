@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.DedicatedThreadPool.PoolStats;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -231,8 +232,7 @@ class Issue8856HAExecutorPoolStatsTest {
   }
 
   private static ArcadeDBServer detachedServer() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getServerName()).thenReturn("ArcadeDB_0");
+    final ArcadeDBServer server = TestServerHelper.unstartedServer("ArcadeDB_0");
     return server;
   }
 

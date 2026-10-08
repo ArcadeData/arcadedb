@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.server.http.SilentPeer;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.StallAwareStopwatch;
@@ -43,8 +44,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Issue #8025: {@link TrustedHttpClientCache#clientFor} released the client it was replacing with
@@ -272,8 +271,7 @@ class Issue8025TrustedClientRebuildDoesNotBlockTest {
   }
 
   private static ArcadeDBServer serverWithTruststore(final File truststore) {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(configurationWithTruststore(truststore));
+    final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, configurationWithTruststore(truststore));
     return server;
   }
 
@@ -282,9 +280,7 @@ class Issue8025TrustedClientRebuildDoesNotBlockTest {
     final ContextConfiguration configuration = configurationWithTruststore(truststore);
     configuration.setValue(GlobalConfiguration.HA_SERVER_LIST, "localhost:2434:2480");
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getServerName()).thenReturn("localhost");
-    when(server.getConfiguration()).thenReturn(configuration);
+    final ArcadeDBServer server = TestServerHelper.unstartedServer("localhost", configuration);
     return new RaftHAServer(server, configuration);
   }
 }

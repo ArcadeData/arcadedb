@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.LeaderForwardContext;
+import com.arcadedb.server.TestServerHelper;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -128,9 +129,7 @@ class Issue8313ForwardCarriesCommandBudgetTest {
 
   private RaftReplicatedDatabase database(final ContextConfiguration serverConfig, final ContextConfiguration databaseConfig,
       final String clusterToken) {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(serverConfig);
-    when(server.getHA()).thenReturn(null); // plain HTTP forward, no HTTPS dial to resolve
+    final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, serverConfig);
     final RaftHAServer raft = mock(RaftHAServer.class);
     when(raft.getLeaderHttpAddress()).thenReturn(leader.address());
     when(raft.getClusterToken()).thenReturn(clusterToken);

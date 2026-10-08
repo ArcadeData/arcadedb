@@ -25,6 +25,7 @@ import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.TestServerHelper;
 import org.apache.ratis.protocol.ClientId;
 import org.apache.ratis.protocol.Message;
 import org.apache.ratis.protocol.RaftClientRequest;
@@ -78,7 +79,7 @@ class Issue7438ExclusiveWindowReleaseTest {
     // No transaction broker: every replicate call fails, which is the exit these tests take.
     raft = mock(RaftHAServer.class);
     when(raft.getStateMachine()).thenReturn(stateMachine);
-    replicated = new RaftReplicatedDatabase(mock(ArcadeDBServer.class), db, raft);
+    replicated = new RaftReplicatedDatabase(TestServerHelper.unstartedServer(), db, raft);
   }
 
   @AfterEach

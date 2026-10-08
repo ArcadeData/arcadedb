@@ -21,14 +21,13 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.TestServerHelper;
 import org.junit.jupiter.api.Test;
 
 import java.net.http.HttpClient;
 import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Regression test for a review finding on PR #7650: {@code RaftHAServer.forwardHttpClient} - the client every
@@ -49,10 +48,9 @@ class Issue7650ForwardHttpClientClosedOnStopTest {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_SERVER_LIST, "localhost:2434:2480");
 
-    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
-    when(mockServer.getServerName()).thenReturn("localhost");
+    final ArcadeDBServer arcadeServer = TestServerHelper.unstartedServer("localhost");
 
-    final RaftHAServer raft = new RaftHAServer(mockServer, config);
+    final RaftHAServer raft = new RaftHAServer(arcadeServer, config);
     final HttpClient client = raft.getForwardHttpClient();
     assertThat(client.isTerminated()).as("not yet closed before stop()").isFalse();
 
