@@ -20,7 +20,6 @@ package com.arcadedb.server.ha.raft;
 
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
@@ -34,12 +33,17 @@ import java.util.function.Supplier;
  * with no answer set answers what an unstubbed mock did: {@code 0} for an index, {@code false} for "applied".
  */
 public class FakeRaftTransactionBroker extends RaftTransactionBroker {
-  private static final Set<String> RECORDED = Set.of("replicateTransaction", "replicateSchema", "replicateSealedChunk",
-      "replicateSchemaInstalment", "replicateInstallDatabase", "replicateDropDatabase", "replicateBootstrapFingerprint",
-      "replicateSecurityUsers", "replicateSecurityGroups", "replicateSecurityApiTokens", "stop", "transferPendingTo");
+  /** What each recorded method answers; {@code Void} for the ones that answer nothing. */
+  private static final Map<String, Class<?>> RETURN_TYPES = Map.ofEntries(Map.entry("replicateTransaction", Long.class),
+      Map.entry("replicateSchema", Void.class), Map.entry("replicateSealedChunk", Void.class),
+      Map.entry("replicateSchemaInstalment", Void.class), Map.entry("replicateInstallDatabase", Void.class),
+      Map.entry("replicateDropDatabase", Long.class), Map.entry("replicateBootstrapFingerprint", Void.class),
+      Map.entry("replicateSecurityUsers", Boolean.class), Map.entry("replicateSecurityGroups", Boolean.class),
+      Map.entry("replicateSecurityApiTokens", Boolean.class), Map.entry("stop", Void.class),
+      Map.entry("transferPendingTo", Integer.class));
 
   private final CallLog         log;
-  private final CallLog.Answers answers = new CallLog.Answers(RECORDED);
+  private final CallLog.Answers answers = new CallLog.Answers(RETURN_TYPES.keySet());
 
   /** A broker on its own call log. */
   public FakeRaftTransactionBroker() {
@@ -63,8 +67,12 @@ public class FakeRaftTransactionBroker extends RaftTransactionBroker {
     return log.argsOf(this, method);
   }
 
-  /** {@code method} answers {@code value} from now on. */
+  /** {@code method} answers {@code value} from now on; a value of the wrong type is refused here, where it is written. */
   public FakeRaftTransactionBroker returns(final String method, final Object value) {
+    final Class<?> expected = RETURN_TYPES.get(method);
+    if (expected != null && expected != Void.class && !expected.isInstance(value))
+      throw new IllegalArgumentException("'" + method + "' answers a " + expected.getSimpleName() + ", not "
+          + (value == null ? "null" : value.getClass().getSimpleName() + " (write 42L for a long)"));
     return on(method, args -> value);
   }
 
@@ -84,7 +92,13 @@ public class FakeRaftTransactionBroker extends RaftTransactionBroker {
   private Object call(final String method, final Supplier<Object> fallback, final Object... args) {
     log.record(this, method, args);
     final Function<Object[], Object> answer = answers.get(method);
-    return answer != null ? answer.apply(args) : fallback.get();
+    final Object value = answer != null ? answer.apply(args) : fallback.get();
+    // An on(...) function is checked at the call: a wrong type or a null would otherwise surface as a bare cast failure
+    final Class<?> expected = RETURN_TYPES.get(method);
+    if (expected != Void.class && !expected.isInstance(value))
+      throw new IllegalStateException("The answer set for '" + method + "' must be a " + expected.getSimpleName()
+          + ", it gave " + (value == null ? "null" : value.getClass().getSimpleName()));
+    return value;
   }
 
   @Override

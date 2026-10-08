@@ -24,6 +24,7 @@ import org.junit.jupiter.api.Test;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -43,6 +44,7 @@ class FakeRaftTransactionBrokerTest {
     assertThat(broker.calls("replicateSecurityUsers")).containsExactly(List.of("[]", "fp"));
     assertThat(broker.calls("replicateDropDatabase")).containsExactly(List.of("db"));
     assertThat(broker.calls("replicateTransaction")).hasSize(1);
+    // -1: the "not prepared at any index" the real 3-argument overload passes to the 4-argument form
     assertThat(broker.calls("replicateTransaction").getFirst().get(3)).isEqualTo(-1L);
     assertThat(broker.calls("replicateSecurityGroups")).isEmpty();
   }
@@ -83,9 +85,22 @@ class FakeRaftTransactionBrokerTest {
   }
 
   @Test
+  void aValueOfTheWrongTypeIsRefusedWhereItIsWritten() {
+    final FakeRaftTransactionBroker broker = new FakeRaftTransactionBroker();
+    assertThatThrownBy(() -> broker.returns("replicateDropDatabase", 42)).isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Long");
+    broker.on("replicateDropDatabase", args -> null);
+    assertThatThrownBy(() -> broker.replicateDropDatabase("db")).isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("replicateDropDatabase");
+  }
+
+  @Test
   void theFakeHoldsNoCommitterThread() {
+    // Only the threads this construction started: another test's real broker may own a committer of its own
+    final Set<Thread> before = Set.copyOf(Thread.getAllStackTraces().keySet());
     new FakeRaftTransactionBroker();
     await().atMost(Duration.ofSeconds(10)).until(() -> Thread.getAllStackTraces().keySet().stream()
+        .filter(t -> !before.contains(t))
         .noneMatch(t -> t.isAlive() && t.getName().equals("arcadedb-raft-group-committer")));
   }
 }

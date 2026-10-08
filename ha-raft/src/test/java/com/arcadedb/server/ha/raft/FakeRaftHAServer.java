@@ -260,12 +260,16 @@ public class FakeRaftHAServer extends RaftHAServer {
     return this;
   }
 
+  // Package-private like LocalDropVerbs itself
   FakeRaftHAServer localDropVerbs(final LocalDropVerbs verbs) {
     this.localDropVerbs.set(verbs);
     return this;
   }
 
-  /** Records on {@code log} from now on, which other fakes (a {@link FakeRaftTransactionBroker}) may share. */
+  /**
+   * Records on {@code log} from now on, which other fakes (a {@link FakeRaftTransactionBroker}) may share. Call it
+   * before the fake is used: calls already recorded stay on the previous log. Answers already set are kept.
+   */
   public FakeRaftHAServer recordingOn(final CallLog log) {
     this.log = log;
     return this;
