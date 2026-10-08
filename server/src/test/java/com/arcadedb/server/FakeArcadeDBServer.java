@@ -41,14 +41,19 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>
  * Every overridden getter starts where the unstarted server does: {@code OFFLINE}, no security, no HTTP server, no
  * plugins, no databases. Everything else - configuration, name, paths, HA, query profiler - is the real server's.
+ * <p>
+ * A fake built without a root gets its own path under {@code target/} (see
+ * {@link TestServerHelper#defaultUnstartedServerRoot()}). Code that persists through the server - a state machine bound
+ * to it writes {@code <databases>/.raft} - lands there; a test that reads that state back roots the fake in its own
+ * {@code @TempDir} with {@link #create(Path, ContextConfiguration)}.
  */
 public class FakeArcadeDBServer extends ArcadeDBServer {
   private final    Map<String, ServerDatabase> databases   = new ConcurrentHashMap<>();
   private final    Set<String>                 listedNames = ConcurrentHashMap.newKeySet();
-  private volatile STATUS                      status    = STATUS.OFFLINE;
+  private volatile STATUS                      status      = STATUS.OFFLINE;
+  private volatile List<ServerPlugin>          plugins     = List.of();
   private volatile ServerSecurity              security;
   private volatile HttpServer                  httpServer;
-  private volatile List<ServerPlugin>          plugins   = List.of();
   private volatile ServerQueryProfiler         queryProfiler;
   private volatile SecurityConvergenceGate     securityConvergenceGate;
 
