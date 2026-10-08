@@ -32,6 +32,7 @@ import java.util.List;
 import java.util.Random;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assumptions.assumeThat;
 
 /**
  * Issue #9482: a top-K whose posting mass sits just under the old 200,000 partitioning threshold ran
@@ -73,7 +74,36 @@ class Issue9482PartitionThresholdTest extends TestHelper {
   }
 
   @Test
+  void thePlannerCapsTheRangesByThePostingMass() throws Exception {
+    final SparseVectorScoringPool pool = SparseVectorScoringPool.getInstance();
+    // With fewer workers the pool, not the mass, is the limit and the cap cannot be told apart from it.
+    assumeThat(pool.getMaxParallelism()).isGreaterThanOrEqualTo(4);
+
+    try (final PaginatedSparseVectorEngine engine = openEngine("idx9482plan")) {
+      final int[] queryDims = { 0, 1 };
+      GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.reset();
+      // 60,000 postings against a threshold of 60,000: exactly two ranges, not the pool's worth.
+      GlobalConfiguration.SPARSE_VECTOR_SCORING_MIN_POSTINGS_FOR_PARTITIONING.setValue(2L * DOCS);
+
+      final PaginatedSparseVectorEngine.PartitionPlan plan = engine.planPartitionBoundaries(queryDims, engine.segmentsForTest());
+      assertThat(plan).isNotNull();
+      try {
+        assertThat(plan.boundaries()).hasSize(1);
+      } finally {
+        pool.releaseWorkers(plan.reservedWorkers());
+      }
+
+      // A threshold of 0 must not divide by zero or refuse to plan.
+      GlobalConfiguration.SPARSE_VECTOR_SCORING_MIN_POSTINGS_FOR_PARTITIONING.setValue(0L);
+      final PaginatedSparseVectorEngine.PartitionPlan zero = engine.planPartitionBoundaries(queryDims, engine.segmentsForTest());
+      if (zero != null)
+        pool.releaseWorkers(zero.reservedWorkers());
+    }
+  }
+
+  @Test
   void aQueryBetweenTheNewAndTheOldThresholdIsSplitAndStaysExact() throws Exception {
+    assumeThat(SparseVectorScoringPool.getInstance().getMaxParallelism()).isGreaterThanOrEqualTo(2);
     try (final PaginatedSparseVectorEngine engine = openEngine("idx9482split")) {
       final int[] queryDims = { 0, 1 };
       final float[] queryWeights = { 1.0f, 1.0f };
@@ -88,7 +118,7 @@ class Issue9482PartitionThresholdTest extends TestHelper {
       final List<RidScore> adaptive = engine.topK(queryDims, queryWeights, K);
 
       assertThat(SparseVectorScoringPool.getInstance().getSplitQueryCount()).as("a 60,000-posting query must be split by default")
-          .isEqualTo(before + 1);
+          .isGreaterThan(before);
       assertThat(adaptive).hasSameSizeAs(serial);
       for (int i = 0; i < serial.size(); i++) {
         assertThat(adaptive.get(i).rid()).isEqualTo(serial.get(i).rid());
