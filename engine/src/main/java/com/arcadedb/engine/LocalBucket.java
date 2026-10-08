@@ -2732,6 +2732,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // so declare those bytes covered by it. Everything else here - a multi-page record, a placeholder, a record on
       // a brand-new page - stays undeclared, which is what makes a forgotten poison call harmless.
       final int previousCoverage = selectedPage.beginCoveredWrite(singleSlotInsert ? MutablePage.COVERAGE_SLOT_MERGE : 0);
+      // #9483: a record that fits is appended at the end of the page's content, which leaves no hole. The multi-page
+      // branch writes through paths that do not make that promise, so only the plain append is declared.
+      final boolean packedAppend = spaceNeeded <= spaceAvailableInCurrentPage;
+      final boolean previousPackedWrite = packedAppend && selectedPage.beginPackedWrite();
       final short recordCountInPage;
       try {
         // RESERVE A SPOT IMMEDIATELY TO AVOID USAGE FOR MULTI PAGE RECORD
@@ -2771,6 +2775,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           updatePageStatistics(selectedPage, spaceAvailableInCurrentPage, -spaceNeeded);
         }
       } finally {
+        if (packedAppend)
+          selectedPage.endPackedWrite(previousPackedWrite);
         selectedPage.endCoveredWrite(previousCoverage);
       }
 
@@ -4079,11 +4085,18 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                 MutablePage.COVERAGE_SLOT_MERGE :
                 (edgeAppendReplayable ? MutablePage.COVERAGE_EDGE_APPEND_MERGE : 0));
         final long footprintBefore = recordSize[0] + recordSize[1];
+        // #9483: an overwrite of the same footprint moves nothing and frees nothing, so it cannot leave a hole. A
+        // shorter one does, and stays undeclared.
+        final boolean packedOverwrite =
+            bufferSize + Binary.getNumberSpace(isPlaceHolder ? -1L * bufferSize : bufferSize) == footprintBefore;
+        final boolean previousPackedWrite = packedOverwrite && page.beginPackedWrite();
         try {
           recordSize[1] = page.writeNumber(recordPositionInPage, isPlaceHolder ? -1L * bufferSize : bufferSize);
           final int recordContentPositionInPage = (int) (recordPositionInPage + recordSize[1]);
           page.writeByteArray(recordContentPositionInPage, buffer.getContent(), buffer.getContentBeginOffset(), bufferSize);
         } finally {
+          if (packedOverwrite)
+            page.endPackedWrite(previousPackedWrite);
           page.endCoveredWrite(previousCoverage);
         }
 
@@ -4620,6 +4633,37 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     } finally {
       page.endCoveredWrite(previousCoverage);
     }
+  }
+
+  /**
+   * What the commit runs on every bucket page the transaction modified or created (#9483). A page every write of
+   * which was declared hole-free ({@link MutablePage#beginPackedWrite()}: records appended at the end of the content,
+   * records overwritten in place by the same footprint) was packed when the transaction found it and still is, so the
+   * proof of that ({@link #packedContentEnd}) - a walk of the whole slot table, the largest single part of the commit
+   * of a small-record transaction - is not paid again. The accounting {@link #compressPageInternal} does for a page it
+   * proves is not needed either: each of those writes already told the free-space statistics the exact free tail it
+   * left, and an overwrite of the same footprint changes none.
+   * <p>
+   * Every other page takes {@link #compressPage} unchanged. A page that carried a hole in before the transaction
+   * (written by an old engine) and is only appended to now keeps it until a write that can free bytes lands on it;
+   * the hole costs the space it always cost and nothing reads through it.
+   * <p>
+   * Under assertions (surefire's default) the skip is held to its word: the proof is run anyway and a page it cannot
+   * vouch for takes the full path, so the free-space claim check keeps confronting every write with the page.
+   */
+  public void compressPageAtCommit(final MutablePage page) throws IOException {
+    if (page.hasOnlyPackedWrites()) {
+      if (!CHECK_FREE_SPACE_CLAIMS)
+        return;
+
+      final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
+      final int contentEndInPage = packedContentEnd(page, recordCountInPage);
+      if (contentEndInPage > 0) {
+        verifyFreeSpaceClaim(page, page.getMaxContentSize() - contentEndInPage, recordCountInPage);
+        return;
+      }
+    }
+    compressPage(page, false);
   }
 
   private void compressPageInternal(final MutablePage page, final boolean forceWipeOut) throws IOException {

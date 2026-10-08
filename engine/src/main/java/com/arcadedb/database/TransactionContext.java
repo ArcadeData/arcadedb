@@ -2337,12 +2337,12 @@ public class TransactionContext implements Transaction {
       for (MutablePage page : modifiedPages.values()) {
         final LocalBucket bucket = localSchema.getBucketById(page.getPageId().getFileId(), false);
         if (bucket != null)
-          bucket.compressPage(page, false);
+          bucket.compressPageAtCommit(page);
       }
       for (MutablePage page : newPages.values()) {
         final LocalBucket bucket = localSchema.getBucketById(page.getPageId().getFileId(), false);
         if (bucket != null)
-          bucket.compressPage(page, false);
+          bucket.compressPageAtCommit(page);
       }
 
       List<PageId> pagesToRebase = null;
