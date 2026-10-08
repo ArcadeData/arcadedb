@@ -24,6 +24,7 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.LeaderForwardContext;
 import com.arcadedb.server.TestServerHelper;
+import com.arcadedb.server.UnstartedHttpServers;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.PostBatchHandler.CountingInputStream;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -34,15 +35,14 @@ import io.undertow.util.Methods;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -59,11 +59,8 @@ import static org.mockito.Mockito.when;
  * The leader is a real loopback HTTP listener, so the headers asserted are the ones that crossed a socket.
  */
 class Issue8343RetryAfterRelayTest {
-  /**
-   * Real HTTP servers the helpers build: each owns cleanup threads that only stopService() ends. Static because the
-   * helpers are, and safe because this class's tests run one at a time.
-   */
-  private static final List<HttpServer> HTTP_SERVERS = new ArrayList<>();
+  @RegisterExtension
+  static final UnstartedHttpServers HTTP_SERVERS = new UnstartedHttpServers();
 
   private StubLeader leader;
 
@@ -74,8 +71,6 @@ class Issue8343RetryAfterRelayTest {
 
   @AfterEach
   void stopLeader() {
-    HTTP_SERVERS.forEach(HttpServer::stopService);
-    HTTP_SERVERS.clear();
     leader.close();
     LeaderForwardContext.clear();
   }
@@ -216,8 +211,7 @@ class Issue8343RetryAfterRelayTest {
   private static HttpServer httpServerWith(final HAServerPlugin ha, final ContextConfiguration configuration) {
     final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, configuration);
     server.setHA(ha);
-    final HttpServer httpServer = new HttpServer(server);
-    HTTP_SERVERS.add(httpServer);
+    final HttpServer httpServer = HTTP_SERVERS.of(server);
     return httpServer;
   }
 
@@ -236,8 +230,7 @@ class Issue8343RetryAfterRelayTest {
   }
 
   private static ServerSecurityUser user(final String name) {
-    final ServerSecurityUser user = TestServerHelper.securityUser(name);
-    return user;
+    return TestServerHelper.securityUser(name);
   }
 
   /** The leader: a loopback HTTP listener that answers every request with the status, body and headers set last. */

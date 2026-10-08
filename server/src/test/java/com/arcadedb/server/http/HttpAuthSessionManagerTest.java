@@ -23,7 +23,6 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
-
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -46,9 +45,8 @@ class HttpAuthSessionManagerTest {
     }
   }
 
-  private ServerSecurityUser createMockUser(final String username) {
-    final ServerSecurityUser user = TestServerHelper.securityUser(username);
-    return user;
+  private ServerSecurityUser createUser(final String username) {
+    return TestServerHelper.securityUser(username);
   }
 
   /**
@@ -63,7 +61,7 @@ class HttpAuthSessionManagerTest {
   @Test
   void createAndGetSession() {
     manager = new HttpAuthSessionManager(30_000L); // 30 second idle timeout
-    final ServerSecurityUser user = createMockUser("testuser");
+    final ServerSecurityUser user = createUser("testuser");
 
     final HttpAuthSession session = manager.createSession(user);
 
@@ -81,7 +79,7 @@ class HttpAuthSessionManagerTest {
   @Test
   void sessionIdleTimeout() throws Exception {
     manager = createManagerWithFakeClock(100L, 0); // 100ms idle timeout
-    final ServerSecurityUser user = createMockUser("testuser");
+    final ServerSecurityUser user = createUser("testuser");
 
     final HttpAuthSession session = manager.createSession(user);
 
@@ -100,7 +98,7 @@ class HttpAuthSessionManagerTest {
   @Test
   void sessionIdleTimeoutResetByAccess() throws Exception {
     manager = createManagerWithFakeClock(200L, 0); // 200ms idle timeout
-    final ServerSecurityUser user = createMockUser("testuser");
+    final ServerSecurityUser user = createUser("testuser");
 
     final HttpAuthSession session = manager.createSession(user);
 
@@ -120,7 +118,7 @@ class HttpAuthSessionManagerTest {
   @Test
   void absoluteTimeoutZeroMeansUnlimited() throws Exception {
     manager = createManagerWithFakeClock(10_000L, 0); // 10s idle timeout, 0 = unlimited absolute
-    final ServerSecurityUser user = createMockUser("testuser");
+    final ServerSecurityUser user = createUser("testuser");
 
     final HttpAuthSession session = manager.createSession(user);
 
@@ -135,7 +133,7 @@ class HttpAuthSessionManagerTest {
   @Test
   void absoluteTimeoutExpiresSession() throws Exception {
     manager = createManagerWithFakeClock(10_000L, 100L); // 10s idle timeout, 100ms absolute timeout
-    final ServerSecurityUser user = createMockUser("testuser");
+    final ServerSecurityUser user = createUser("testuser");
 
     final HttpAuthSession session = manager.createSession(user);
     assertThat(manager.getSessionByToken(session.getToken())).isNotNull();
@@ -154,7 +152,7 @@ class HttpAuthSessionManagerTest {
   @Test
   void absoluteTimeoutNotResetByAccess() throws Exception {
     manager = createManagerWithFakeClock(10_000L, 200L); // 10s idle timeout, 200ms absolute timeout
-    final ServerSecurityUser user = createMockUser("testuser");
+    final ServerSecurityUser user = createUser("testuser");
 
     final HttpAuthSession session = manager.createSession(user);
 
@@ -175,7 +173,7 @@ class HttpAuthSessionManagerTest {
   @Test
   void removeSession() {
     manager = new HttpAuthSessionManager(30_000L);
-    final ServerSecurityUser user = createMockUser("testuser");
+    final ServerSecurityUser user = createUser("testuser");
 
     final HttpAuthSession session = manager.createSession(user);
     assertThat(manager.getActiveSessionCount()).isEqualTo(1);
@@ -201,7 +199,7 @@ class HttpAuthSessionManagerTest {
   @Test
   void elapsedFromCreation() throws Exception {
     manager = createManagerWithFakeClock(30_000L, 0);
-    final ServerSecurityUser user = createMockUser("testuser");
+    final ServerSecurityUser user = createUser("testuser");
 
     final HttpAuthSession session = manager.createSession(user);
     assertThat(session.elapsedFromCreation()).isEqualTo(0);
@@ -214,8 +212,8 @@ class HttpAuthSessionManagerTest {
   @Test
   void multipleSessions() {
     manager = new HttpAuthSessionManager(30_000L);
-    final ServerSecurityUser user1 = createMockUser("user1");
-    final ServerSecurityUser user2 = createMockUser("user2");
+    final ServerSecurityUser user1 = createUser("user1");
+    final ServerSecurityUser user2 = createUser("user2");
 
     final HttpAuthSession session1 = manager.createSession(user1);
     final HttpAuthSession session2 = manager.createSession(user2);
@@ -241,7 +239,7 @@ class HttpAuthSessionManagerTest {
   @Test
   void perPrincipalCapEvictsThatPrincipalsOldestSession() {
     manager = new HttpAuthSessionManager(30_000L, 0, 1_000, 3, () -> fakeNow);
-    final ServerSecurityUser user = createMockUser("looper");
+    final ServerSecurityUser user = createUser("looper");
 
     final HttpAuthSession first = manager.createSession(user);
     final HttpAuthSession second = manager.createSession(user);
@@ -268,9 +266,9 @@ class HttpAuthSessionManagerTest {
   @Test
   void perPrincipalCapNeverEvictsAnotherPrincipalsSession() {
     manager = new HttpAuthSessionManager(30_000L, 0, 1_000, 2, () -> fakeNow);
-    final HttpAuthSession victim = manager.createSession(createMockUser("victim"));
+    final HttpAuthSession victim = manager.createSession(createUser("victim"));
 
-    final ServerSecurityUser attacker = createMockUser("attacker");
+    final ServerSecurityUser attacker = createUser("attacker");
     for (int i = 0; i < 100; i++)
       manager.createSession(attacker);
 
@@ -284,11 +282,11 @@ class HttpAuthSessionManagerTest {
     // Per-principal cap disabled so only the global one is under test.
     manager = new HttpAuthSessionManager(30_000L, 0, 2, 0, () -> fakeNow);
 
-    assertThat(manager.createSession(createMockUser("u1"))).isNotNull();
-    assertThat(manager.createSession(createMockUser("u2"))).isNotNull();
+    assertThat(manager.createSession(createUser("u1"))).isNotNull();
+    assertThat(manager.createSession(createUser("u2"))).isNotNull();
 
     // Third distinct principal: the map is full, so the login is refused (the handler answers 503).
-    assertThat(manager.createSession(createMockUser("u3"))).isNull();
+    assertThat(manager.createSession(createUser("u3"))).isNull();
     assertThat(manager.getActiveSessionCount()).isEqualTo(2);
   }
 
@@ -296,14 +294,14 @@ class HttpAuthSessionManagerTest {
   void globalCapReclaimsIdleExpiredSessionsBeforeRefusing() {
     manager = new HttpAuthSessionManager(100L, 0, 2, 0, () -> fakeNow);
 
-    manager.createSession(createMockUser("u1"));
-    manager.createSession(createMockUser("u2"));
+    manager.createSession(createUser("u1"));
+    manager.createSession(createUser("u2"));
     assertThat(manager.getActiveSessionCount()).isEqualTo(2);
 
     // Both are now idle-expired: a legitimate login must not be refused just because the background sweep
     // has not fired yet.
     fakeNow += 300;
-    assertThat(manager.createSession(createMockUser("u3"))).isNotNull();
+    assertThat(manager.createSession(createUser("u3"))).isNotNull();
     assertThat(manager.getActiveSessionCount()).isEqualTo(1);
   }
 
@@ -312,7 +310,7 @@ class HttpAuthSessionManagerTest {
     // Evicting frees exactly one slot, so this login costs the server nothing - and the decision must be
     // taken BEFORE the eviction, or the refusal would destroy a live session of the principal it refuses.
     manager = new HttpAuthSessionManager(30_000L, 0, 2, 2, () -> fakeNow);
-    final ServerSecurityUser user = createMockUser("regular");
+    final ServerSecurityUser user = createUser("regular");
 
     final HttpAuthSession first = manager.createSession(user);
     final HttpAuthSession second = manager.createSession(user);
@@ -326,7 +324,7 @@ class HttpAuthSessionManagerTest {
     assertThat(manager.getSessionByToken(third.getToken())).isNotNull();
 
     // A different principal, however, is refused - and the refusal must not disturb anybody's sessions.
-    assertThat(manager.createSession(createMockUser("newcomer"))).isNull();
+    assertThat(manager.createSession(createUser("newcomer"))).isNull();
     assertThat(manager.getActiveSessionCount()).isEqualTo(2);
     assertThat(manager.getActiveSessionCount("regular")).isEqualTo(2);
     assertThat(manager.getActiveSessionCount("newcomer")).isZero();
@@ -335,7 +333,7 @@ class HttpAuthSessionManagerTest {
   @Test
   void zeroOrNegativeCapsMeanUnlimited() {
     manager = new HttpAuthSessionManager(30_000L, 0, 0, 0, () -> fakeNow);
-    final ServerSecurityUser user = createMockUser("testuser");
+    final ServerSecurityUser user = createUser("testuser");
 
     for (int i = 0; i < 200; i++)
       assertThat(manager.createSession(user)).isNotNull();
@@ -348,7 +346,7 @@ class HttpAuthSessionManagerTest {
     manager = new HttpAuthSessionManager(30_000L);
     final String oversized = "x".repeat(1_000_000);
 
-    final HttpAuthSession session = manager.createSession(createMockUser("testuser"), oversized, oversized,
+    final HttpAuthSession session = manager.createSession(createUser("testuser"), oversized, oversized,
         oversized, oversized);
 
     assertThat(session.getSourceIp()).hasSize(HttpAuthSession.MAX_METADATA_LENGTH);
@@ -378,7 +376,7 @@ class HttpAuthSessionManagerTest {
   void metadataThatFitsIsKeptVerbatimAndNullStaysNull() {
     manager = new HttpAuthSessionManager(30_000L);
 
-    final HttpAuthSession session = manager.createSession(createMockUser("testuser"), "10.0.0.1", "curl/8.4.0",
+    final HttpAuthSession session = manager.createSession(createUser("testuser"), "10.0.0.1", "curl/8.4.0",
         "IT", null);
 
     assertThat(session.getSourceIp()).isEqualTo("10.0.0.1");
@@ -392,8 +390,8 @@ class HttpAuthSessionManagerTest {
     // A dropped user (or one whose password changed) must not keep authenticating with a token minted
     // before the change. The per-principal index added for the cap is what makes this cheap.
     manager = new HttpAuthSessionManager(30_000L, 0, 1_000, 0, () -> fakeNow);
-    final ServerSecurityUser revoked = createMockUser("revoked");
-    final ServerSecurityUser other = createMockUser("other");
+    final ServerSecurityUser revoked = createUser("revoked");
+    final ServerSecurityUser other = createUser("other");
 
     final HttpAuthSession first = manager.createSession(revoked);
     final HttpAuthSession second = manager.createSession(revoked);
@@ -416,7 +414,7 @@ class HttpAuthSessionManagerTest {
   @Test
   void removedAndExpiredSessionsAreDroppedFromThePerPrincipalIndex() {
     manager = new HttpAuthSessionManager(100L, 0, 1_000, 2, () -> fakeNow);
-    final ServerSecurityUser user = createMockUser("testuser");
+    final ServerSecurityUser user = createUser("testuser");
 
     final HttpAuthSession session = manager.createSession(user);
     manager.removeSession(session.getToken());
@@ -437,7 +435,7 @@ class HttpAuthSessionManagerTest {
   @Test
   void tokenNamesTheIssuingNode() {
     manager = new HttpAuthSessionManager(30_000L, 0L, 0, 0, "arcadedb-0");
-    final HttpAuthSession session = manager.createSession(createMockUser("alice"));
+    final HttpAuthSession session = manager.createSession(createUser("alice"));
 
     assertThat(session.getToken()).startsWith("AU-arcadedb-0-");
     assertThat(HttpAuthSessionManager.issuerOf(session.getToken())).isEqualTo("arcadedb-0");
@@ -449,7 +447,7 @@ class HttpAuthSessionManagerTest {
   @Test
   void tokenWithoutIssuerKeepsTheLegacyForm() {
     manager = new HttpAuthSessionManager(30_000L);
-    final HttpAuthSession session = manager.createSession(createMockUser("alice"));
+    final HttpAuthSession session = manager.createSession(createUser("alice"));
 
     assertThat(session.getToken()).matches("AU-[0-9a-f-]{36}");
     assertThat(HttpAuthSessionManager.issuerOf(session.getToken())).isNull();
@@ -479,7 +477,7 @@ class HttpAuthSessionManagerTest {
     assertThat(HttpAuthSessionManager.sanitizeIssuerName(null)).isNull();
 
     manager = new HttpAuthSessionManager(30_000L, 0L, 0, 0, "node one/2");
-    final HttpAuthSession session = manager.createSession(createMockUser("alice"));
+    final HttpAuthSession session = manager.createSession(createUser("alice"));
     assertThat(HttpAuthSessionManager.issuerOf(session.getToken())).isEqualTo("node_one_2");
     assertThat(manager.getIssuerName()).isEqualTo("node_one_2");
   }
@@ -488,7 +486,7 @@ class HttpAuthSessionManagerTest {
   void remoteCopyKeepsTheIssuersCreationTimeAndIsIndexedLikeALocalSession() {
     fakeNow = 100_000L;
     manager = new HttpAuthSessionManager(30_000L, 60_000L, 0, 0, "node-b", () -> fakeNow);
-    final ServerSecurityUser alice = createMockUser("alice");
+    final ServerSecurityUser alice = createUser("alice");
     final String token = "AU-node-a-2af64e60-8455-423a-bc64-ed0e19729f04";
 
     final HttpAuthSession copy = manager.addRemoteSession(token, alice, 50_000L, "node-a");
@@ -511,7 +509,7 @@ class HttpAuthSessionManagerTest {
     fakeNow = 0L;
     manager = new HttpAuthSessionManager(30_000L, 0L, 0, 0, "node-b", () -> fakeNow);
     final HttpAuthSession copy = manager.addRemoteSession("AU-node-a-2af64e60-8455-423a-bc64-ed0e19729f04",
-        createMockUser("alice"), 0L, "node-a");
+        createUser("alice"), 0L, "node-a");
 
     fakeNow = 5_000L;
     copy.touch();
@@ -519,7 +517,7 @@ class HttpAuthSessionManagerTest {
     copy.confirm();
     assertThat(copy.elapsedFromConfirmation()).isZero();
 
-    final HttpAuthSession local = manager.createSession(createMockUser("bob"));
+    final HttpAuthSession local = manager.createSession(createUser("bob"));
     fakeNow = 20_000L;
     assertThat(local.elapsedFromConfirmation()).as("a local session needs no confirmation").isZero();
   }
@@ -527,9 +525,9 @@ class HttpAuthSessionManagerTest {
   @Test
   void remoteCopyIsRefusedByTheGlobalCapLikeALogin() {
     manager = new HttpAuthSessionManager(30_000L, 0L, 1, 0, "node-b");
-    assertThat(manager.createSession(createMockUser("alice"))).isNotNull();
+    assertThat(manager.createSession(createUser("alice"))).isNotNull();
 
-    assertThat(manager.addRemoteSession("AU-node-a-2af64e60-8455-423a-bc64-ed0e19729f04", createMockUser("bob"), 0L,
+    assertThat(manager.addRemoteSession("AU-node-a-2af64e60-8455-423a-bc64-ed0e19729f04", createUser("bob"), 0L,
         "node-a")).isNull();
   }
 

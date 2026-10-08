@@ -27,6 +27,7 @@ import com.arcadedb.server.ForwardedRequestIdContext;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.LeaderForwardContext;
 import com.arcadedb.server.TestServerHelper;
+import com.arcadedb.server.UnstartedHttpServers;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.IdempotencyCache;
 import com.arcadedb.server.http.handler.PostBatchHandler.CountingInputStream;
@@ -39,6 +40,7 @@ import io.undertow.util.Methods;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -49,8 +51,6 @@ import java.net.InetSocketAddress;
 import java.net.http.HttpRequest;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
@@ -81,14 +81,11 @@ import static org.mockito.Mockito.when;
  * socket, and the stream is observed arriving event by event.
  */
 class Issue7603LeaderForwardHopTest {
-  /**
-   * Real HTTP servers the helpers build: each owns cleanup threads that only stopService() ends. Static because the
-   * helpers are, and safe because this class's tests run one at a time.
-   */
-  private static final List<HttpServer> HTTP_SERVERS = new ArrayList<>();
-
   private static final String LOCAL_PEER  = "peer-follower";
   private static final String LEADER_PEER = "peer-leader";
+
+  @RegisterExtension
+  static final UnstartedHttpServers HTTP_SERVERS = new UnstartedHttpServers();
 
   private StubLeader leader;
 
@@ -99,8 +96,6 @@ class Issue7603LeaderForwardHopTest {
 
   @AfterEach
   void stopLeader() {
-    HTTP_SERVERS.forEach(HttpServer::stopService);
-    HTTP_SERVERS.clear();
     leader.close();
     LeaderForwardContext.clear();
     ForwardedRequestIdContext.clear();
@@ -452,8 +447,7 @@ class Issue7603LeaderForwardHopTest {
   private static HttpServer httpServerWith(final HAServerPlugin ha, final ContextConfiguration configuration) {
     final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, configuration);
     server.setHA(ha);
-    final HttpServer httpServer = new HttpServer(server);
-    HTTP_SERVERS.add(httpServer);
+    final HttpServer httpServer = HTTP_SERVERS.of(server);
     return httpServer;
   }
 
@@ -472,8 +466,7 @@ class Issue7603LeaderForwardHopTest {
   }
 
   private static ServerSecurityUser user(final String name) {
-    final ServerSecurityUser user = TestServerHelper.securityUser(name);
-    return user;
+    return TestServerHelper.securityUser(name);
   }
 
   /** Records what the relay wrote and whether it flushed it, the way a client socket would see it. */

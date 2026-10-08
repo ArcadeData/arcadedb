@@ -23,14 +23,15 @@ import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.TestServerHelper;
+import com.arcadedb.server.UnstartedHttpServers;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.PostBatchHandler.CountingInputStream;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HttpString;
 import io.undertow.util.Methods;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLParameters;
@@ -56,8 +57,6 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiPredicate;
 
-import java.util.ArrayList;
-
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -73,20 +72,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * {@link PostBatchHandler#forwardBatchToLeader} ({@code POST /api/v1/batch/{database}}).
  */
 class Issue7508LeaderForwardSchemeTest {
-  /**
-   * Real HTTP servers the helpers build: each owns cleanup threads that only stopService() ends. Static because the
-   * helpers are, and safe because this class's tests run one at a time.
-   */
-  private static final List<HttpServer> HTTP_SERVERS = new ArrayList<>();
-
-  @AfterEach
-  void stopHttpServers() {
-    HTTP_SERVERS.forEach(HttpServer::stopService);
-    HTTP_SERVERS.clear();
-  }
-
   private static final String LEADER_HTTP  = "leader.example.com:2480";
   private static final String LEADER_HTTPS = "leader.example.com:2490";
+
+  @RegisterExtension
+  static final UnstartedHttpServers HTTP_SERVERS = new UnstartedHttpServers();
 
   // ---------------------------------------------------------------------------------------------------------------
   // The decision itself
@@ -309,8 +299,7 @@ class Issue7508LeaderForwardSchemeTest {
   private static HttpServer httpServerWith(final HAServerPlugin ha) {
     final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, new ContextConfiguration());
     server.setHA(ha);
-    final HttpServer httpServer = new HttpServer(server);
-    HTTP_SERVERS.add(httpServer);
+    final HttpServer httpServer = HTTP_SERVERS.of(server);
     return httpServer;
   }
 
@@ -331,8 +320,7 @@ class Issue7508LeaderForwardSchemeTest {
   }
 
   private static ServerSecurityUser user(final String name) {
-    final ServerSecurityUser user = TestServerHelper.securityUser(name);
-    return user;
+    return TestServerHelper.securityUser(name);
   }
 
   /** An {@link HAServerPlugin} that answers only what the forward asks it. */

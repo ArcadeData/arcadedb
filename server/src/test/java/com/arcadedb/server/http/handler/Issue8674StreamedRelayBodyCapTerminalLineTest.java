@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.TestServerHelper;
+import com.arcadedb.server.UnstartedHttpServers;
 import com.arcadedb.server.http.FakeLeader;
 import com.arcadedb.server.http.HttpServer;
 import io.undertow.Undertow;
@@ -31,6 +32,7 @@ import io.undertow.server.handlers.BlockingHandler;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
 import javax.net.ssl.SSLSession;
 import java.io.BufferedReader;
@@ -79,12 +81,6 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  * writes through the exchange's own output stream.
  */
 class Issue8674StreamedRelayBodyCapTerminalLineTest {
-  /**
-   * Real HTTP servers the helpers build: each owns cleanup threads that only stopService() ends. Static because the
-   * helpers are, and safe because this class's tests run one at a time.
-   */
-  private static final List<HttpServer> HTTP_SERVERS = new ArrayList<>();
-
   private static final long   CAP_BYTES      = 1_024L;
   private static final long   BUDGET_MS      = 10_000L;
   private static final int    CLIENT_READ_MS = 30_000;
@@ -92,12 +88,13 @@ class Issue8674StreamedRelayBodyCapTerminalLineTest {
   private static final String PROGRESS_LINE  = leaderLine("progress",
       new JSONObject().put("phase", "vertices").put("verticesCreated", 7L).put("edgesCreated", 0L));
 
+  @RegisterExtension
+  static final UnstartedHttpServers HTTP_SERVERS = new UnstartedHttpServers();
+
   private Undertow follower;
 
   @AfterEach
   void stopFollower() {
-    HTTP_SERVERS.forEach(HttpServer::stopService);
-    HTTP_SERVERS.clear();
     if (follower != null)
       follower.stop();
   }
@@ -306,8 +303,7 @@ class Issue8674StreamedRelayBodyCapTerminalLineTest {
     cfg.setValue(GlobalConfiguration.HA_PROXY_BATCH_READ_TIMEOUT, BUDGET_MS);
     cfg.setValue(GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE, CAP_BYTES);
     final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, cfg);
-    final HttpServer httpServer = new HttpServer(server);
-    HTTP_SERVERS.add(httpServer);
+    final HttpServer httpServer = HTTP_SERVERS.of(server);
     final PostBatchHandler handler = new PostBatchHandler(httpServer);
 
     final byte[] scripted = leaderLines.getBytes(StandardCharsets.UTF_8);

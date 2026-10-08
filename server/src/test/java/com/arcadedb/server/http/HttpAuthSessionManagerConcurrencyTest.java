@@ -36,16 +36,15 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class HttpAuthSessionManagerConcurrencyTest {
 
-  private ServerSecurityUser createMockUser(final String username) {
-    final ServerSecurityUser user = TestServerHelper.securityUser(username);
-    return user;
+  private ServerSecurityUser createUser(final String username) {
+    return TestServerHelper.securityUser(username);
   }
 
   @Test
   void concurrentReadsAndWritesDoNotThrow() throws Exception {
     final HttpAuthSessionManager manager = new HttpAuthSessionManager(30_000L);
     try {
-      final ServerSecurityUser user = createMockUser("stress");
+      final ServerSecurityUser user = createUser("stress");
 
       final int writers = 8;
       final int readers = 8;

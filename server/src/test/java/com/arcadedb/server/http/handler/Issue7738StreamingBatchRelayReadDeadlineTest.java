@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.TestServerHelper;
+import com.arcadedb.server.UnstartedHttpServers;
 import com.arcadedb.server.http.FakeLeader;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -31,6 +32,7 @@ import io.undertow.Undertow;
 import io.undertow.server.handlers.BlockingHandler;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
 import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
@@ -66,9 +68,6 @@ import static org.mockito.Mockito.when;
  * @author Roberto Franchini (r.franchini@arcadedata.com)
  */
 class Issue7738StreamingBatchRelayReadDeadlineTest {
-  /** Real HTTP servers built by the test: each owns cleanup threads that only stopService() ends. */
-  private final List<HttpServer> httpServers = new ArrayList<>();
-
   private static final long   BUDGET_MS        = 1_000L;
   /** The tripwire between "the bound fired" and "the relay is unbounded" (forever, without the fix). */
   private static final long   GAVE_UP_BOUND_MS = 15_000L;
@@ -76,11 +75,13 @@ class Issue7738StreamingBatchRelayReadDeadlineTest {
   private static final int    CLIENT_READ_MS   = 30_000;
   private static final String FIRST_LINE       = "{\"type\":\"progress\",\"verticesCreated\":1}";
 
+  @RegisterExtension
+  static final UnstartedHttpServers HTTP_SERVERS = new UnstartedHttpServers();
+
   private Undertow follower;
 
   @AfterEach
   void stopFollower() {
-    httpServers.forEach(HttpServer::stopService);
     if (follower != null)
       follower.stop();
   }
@@ -172,8 +173,7 @@ class Issue7738StreamingBatchRelayReadDeadlineTest {
     cfg.setValue(GlobalConfiguration.HA_PROXY_BATCH_READ_TIMEOUT, BUDGET_MS);
 
     final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, cfg);
-    final HttpServer httpServer = new HttpServer(server);
-    httpServers.add(httpServer);
+    final HttpServer httpServer = HTTP_SERVERS.of(server);
     final PostBatchHandler handler = new PostBatchHandler(httpServer);
 
     final HAServerPlugin ha = mock(HAServerPlugin.class);
