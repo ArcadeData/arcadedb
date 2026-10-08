@@ -19,6 +19,7 @@
 package com.arcadedb.function.sql;
 
 import com.arcadedb.function.AggregatedFunction;
+import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 
 import java.util.function.Consumer;
@@ -84,6 +85,19 @@ public abstract class SQLAggregatedFunction extends SQLFunctionConfigurableAbstr
   @Override
   public boolean aggregateResults() {
     return configuredParameters.length == 1;
+  }
+
+  /**
+   * Feeds the arguments of one row to the cross-row state: what the aggregation of a query calls for every row, which
+   * ignores the value {@link #execute} returns. A function whose return value costs something to build per row (a boxed
+   * running total, a running average) overrides it to skip that (#9496).
+   *
+   * @param self    the row, passed to {@link #execute} as its {@code self}
+   * @param params  the values of the arguments for this row
+   * @param context the command context
+   */
+  public void aggregate(final Object self, final Object[] params, final CommandContext context) {
+    execute(self, null, null, params, context);
   }
 
   /**
