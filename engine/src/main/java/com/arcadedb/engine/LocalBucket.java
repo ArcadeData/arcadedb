@@ -2735,7 +2735,6 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // #9483: a record that fits is appended at the end of the page's content, which leaves no hole. The multi-page
       // branch writes through paths that do not make that promise, so only the plain append is declared.
       final boolean packedAppend = spaceNeeded <= spaceAvailableInCurrentPage;
-      // (the previous declaration is only read back, and only restored, when this one was made)
       final boolean previousPackedWrite = packedAppend && selectedPage.beginPackedWrite();
       final short recordCountInPage;
       try {
@@ -4093,7 +4092,6 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // be added between begin and end.
         final long sizeMarker = isPlaceHolder ? -1L * bufferSize : bufferSize;
         final boolean packedOverwrite = bufferSize + Binary.getNumberSpace(sizeMarker) == footprintBefore;
-        // (the previous declaration is only read back, and only restored, when this one was made)
         final boolean previousPackedWrite = packedOverwrite && page.beginPackedWrite();
         try {
           recordSize[1] = page.writeNumber(recordPositionInPage, sizeMarker);
@@ -4661,6 +4659,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    *
    * @return true when the full compression was skipped: the same answer with and without assertions, but on a page
    * that brought a hole in from an old engine, which the assertions send through the full compression.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   public boolean compressPageAtCommit(final MutablePage page) throws IOException {
     if (page.hasOnlyPackedWrites()) {
@@ -6806,7 +6806,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           // #9483: the statistics promised more than the page has. A commit that only appended to a page no longer
           // re-measures it, so an entry rewritten while the appends were still private (a gather reads the committed
           // image) can outlive that commit over-stated. Correct it here, or every allocation that trusts it pays this
-          // page read and slot walk again for a page that cannot take the record.
+          // page read and slot walk again for a page that cannot take the record. Safe against concurrent writers of
+          // the map: the whole scan, the probe included, runs under the freeSpaceInPages monitor every one of them
+          // takes, and this branch only ever lowers an entry, to what the page holds.
           if (pageAnalysis.spaceAvailableInCurrentPage < MINIMUM_SPACE_LEFT_IN_PAGE) {
             if (pagesToRemove == null)
               pagesToRemove = new int[snapSize];

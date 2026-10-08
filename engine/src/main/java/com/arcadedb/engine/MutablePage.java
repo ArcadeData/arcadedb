@@ -411,15 +411,19 @@ public class MutablePage extends BasePage implements TrackableContent {
    * why any write outside a declaration - a delete, a shrinking update, a record that moved or spilled - permanently
    * withdraws the page from that shortcut. Under assertions the commit holds the page to both promises.
    *
-   * @return the previous declaration, to be handed to {@link #endPackedWrite(boolean)} from a {@code finally} block.
+   * Package-private: only the bucket's own write paths can know whether a write keeps a page packed.
+   *
+   * @return the previous declaration, to be handed to {@link #endPackedWrite(boolean)} from a {@code finally} block. A
+   * caller that declares only under a condition calls this as {@code condition && page.beginPackedWrite()} and
+   * restores under the same condition, so the {@code false} it holds when it did not declare is never handed back.
    */
-  public boolean beginPackedWrite() {
+  boolean beginPackedWrite() {
     final boolean previous = packedWriteInProgress;
     packedWriteInProgress = true;
     return previous;
   }
 
-  public void endPackedWrite(final boolean previous) {
+  void endPackedWrite(final boolean previous) {
     packedWriteInProgress = previous;
   }
 
@@ -427,7 +431,7 @@ public class MutablePage extends BasePage implements TrackableContent {
    * Whether every write this transaction made to the page was declared hole-free with {@link #beginPackedWrite()}.
    * A page nothing wrote to is trivially such a page.
    */
-  public boolean hasOnlyPackedWrites() {
+  boolean hasOnlyPackedWrites() {
     return !unpackedWrite;
   }
 
