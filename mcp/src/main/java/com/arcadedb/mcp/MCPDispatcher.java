@@ -22,6 +22,7 @@ import com.arcadedb.Constants;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
@@ -89,6 +90,12 @@ public class MCPDispatcher {
       2. Call list_databases when you do not know the target database name.
       3. Call get_schema before querying an unfamiliar database. If your client supports MCP Resources, prefer reading arcadedb://{database}/schema instead.
       4. Use query for read-only SQL or Cypher retrieval.""";
+
+  // THE TOOLS THAT RUN WORK IN A DATABASE: THEY WAIT FOR THE QUERY ADMISSION GATE LIKE ANY OTHER CLIENT REQUEST (ISSUE #9518).
+  // LISTING DATABASES, READING THE SCHEMA, THE SERVER STATUS, THE PROFILER AND THE SETTINGS DO NOT: THEY MUST STAY ANSWERABLE ON
+  // A SERVER BUSY WITH QUERIES
+  private static final Set<String> ADMITTED_TOOL_NAMES = Set.of("query", "execute_command", "sample_records", "vector_search",
+      "full_text_search", "hybrid_search", "upsert_entity", "upsert_relationship");
 
   private static final Set<String> RAG_TOOL_NAMES = Set.of(
       "list_databases",
@@ -364,25 +371,30 @@ public class MCPDispatcher {
         throw new SecurityException(
             "Tool '" + toolName + "' is not available in " + profile.description());
 
-      final JSONObject toolResult = switch (toolName) {
-        case "list_databases" -> ListDatabasesTool.execute(server, user, args, config);
-        case "get_schema" -> GetSchemaTool.execute(server, user, args, config);
-        case "query" -> QueryTool.execute(server, user, args, config);
-        case "execute_command" -> ExecuteCommandTool.execute(server, user, args, config);
-        case "sample_records" -> SampleRecordsTool.execute(server, user, args, config);
-        case "vector_search" -> VectorSearchTool.execute(server, user, args, config);
-        case "full_text_search" -> FullTextSearchTool.execute(server, user, args, config);
-        case "hybrid_search" -> HybridSearchTool.execute(server, user, args, config);
-        case "upsert_entity" -> UpsertEntityTool.execute(server, user, args, config);
-        case "upsert_relationship" -> UpsertRelationshipTool.execute(server, user, args, config);
-        case "server_status" -> ServerStatusTool.execute(server, user, args, config);
-        case "profiler_start" -> ProfilerStartTool.execute(server, user, args, config);
-        case "profiler_stop" -> ProfilerStopTool.execute(server, user, args, config);
-        case "profiler_status" -> ProfilerStatusTool.execute(server, user, args, config);
-        case "get_server_settings" -> GetServerSettingsTool.execute(server, user, args, config);
-        case "set_server_setting" -> SetServerSettingTool.execute(server, user, args, config);
-        default -> throw new IllegalArgumentException("Unknown tool: " + toolName);
-      };
+      final JSONObject toolResult;
+      try (final QueryAdmissionGate.Ticket ignored = ADMITTED_TOOL_NAMES.contains(toolName) ?
+          QueryAdmissionGate.getInstance().admit() :
+          null) {
+        toolResult = switch (toolName) {
+          case "list_databases" -> ListDatabasesTool.execute(server, user, args, config);
+          case "get_schema" -> GetSchemaTool.execute(server, user, args, config);
+          case "query" -> QueryTool.execute(server, user, args, config);
+          case "execute_command" -> ExecuteCommandTool.execute(server, user, args, config);
+          case "sample_records" -> SampleRecordsTool.execute(server, user, args, config);
+          case "vector_search" -> VectorSearchTool.execute(server, user, args, config);
+          case "full_text_search" -> FullTextSearchTool.execute(server, user, args, config);
+          case "hybrid_search" -> HybridSearchTool.execute(server, user, args, config);
+          case "upsert_entity" -> UpsertEntityTool.execute(server, user, args, config);
+          case "upsert_relationship" -> UpsertRelationshipTool.execute(server, user, args, config);
+          case "server_status" -> ServerStatusTool.execute(server, user, args, config);
+          case "profiler_start" -> ProfilerStartTool.execute(server, user, args, config);
+          case "profiler_stop" -> ProfilerStopTool.execute(server, user, args, config);
+          case "profiler_status" -> ProfilerStatusTool.execute(server, user, args, config);
+          case "get_server_settings" -> GetServerSettingsTool.execute(server, user, args, config);
+          case "set_server_setting" -> SetServerSettingTool.execute(server, user, args, config);
+          default -> throw new IllegalArgumentException("Unknown tool: " + toolName);
+        };
+      }
 
       LogManager.instance()
           .log(this, Level.INFO, "MCP[%s] tools/call '%s' -> %s", transport, toolName, formatResult(toolName, toolResult));

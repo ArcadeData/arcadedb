@@ -34,7 +34,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.awaitility.Awaitility.await;
 
 /**
@@ -65,8 +64,16 @@ class QueryAdmissionGateTest {
   }
 
   @Test
-  void disabledByDefaultEveryQueryStartsAtOnceAndNothingIsCounted() {
-    assertThat(GlobalConfiguration.QUERY_MAX_CONCURRENT.getValueAsInteger()).isZero();
+  void enabledByDefaultWithTwiceTheCoresAndAtLeastFourSlots() {
+    GlobalConfiguration.QUERY_MAX_CONCURRENT.reset();
+    assertThat(GlobalConfiguration.QUERY_MAX_CONCURRENT.getValueAsInteger())
+        .isEqualTo(Math.max(4, 2 * Runtime.getRuntime().availableProcessors()));
+    assertThat(gate.isEnabled()).isTrue();
+  }
+
+  @Test
+  void disabledEveryQueryStartsAtOnceAndNothingIsCounted() {
+    GlobalConfiguration.QUERY_MAX_CONCURRENT.setValue(0);
     assertThat(gate.isEnabled()).isFalse();
 
     final List<QueryAdmissionGate.Ticket> tickets = new ArrayList<>();
@@ -124,12 +131,12 @@ class QueryAdmissionGateTest {
   }
 
   @Test
-  void aQueryThatWaitsTooLongIsRefusedWithARetryableErrorAndLeavesTheQueue() {
+  void aQueryThatWaitsTooLongIsRefusedWithARetryableErrorAndLeavesTheQueue() throws Exception {
     GlobalConfiguration.QUERY_MAX_CONCURRENT.setValue(1);
     GlobalConfiguration.QUERY_QUEUE_TIMEOUT.setValue(50L);
 
     try (final QueryAdmissionGate.Ticket ignored = gate.admit()) {
-      assertThatThrownBy(gate::admit).isInstanceOf(QueryAdmissionException.class)
+      assertThat(admitElsewhere()).isInstanceOf(QueryAdmissionException.class)
           .hasMessageContaining(GlobalConfiguration.QUERY_QUEUE_TIMEOUT.getKey())
           .satisfies(e -> assertThat(ErrorCategory.of(e)).isEqualTo(ErrorCategory.RETRY));
       assertThat(gate.getQueued()).isZero();
@@ -144,7 +151,7 @@ class QueryAdmissionGateTest {
   }
 
   @Test
-  void aQueryThatFindsTheQueueFullIsRefusedAtOnce() {
+  void aQueryThatFindsTheQueueFullIsRefusedAtOnce() throws Exception {
     GlobalConfiguration.QUERY_MAX_CONCURRENT.setValue(1);
     GlobalConfiguration.QUERY_QUEUE_MAX_SIZE.setValue(1);
     // LONG ENOUGH THAT A QUERY WAITING INSTEAD OF BEING REFUSED WOULD FAIL WITH THE TIMEOUT MESSAGE, NOT THE QUEUE ONE
@@ -162,7 +169,7 @@ class QueryAdmissionGateTest {
     });
     await().atMost(Duration.ofSeconds(30)).until(() -> gate.getQueued() == 1);
 
-    assertThatThrownBy(gate::admit).isInstanceOf(QueryAdmissionException.class)
+    assertThat(admitElsewhere()).isInstanceOf(QueryAdmissionException.class)
         .hasMessageContaining(GlobalConfiguration.QUERY_QUEUE_MAX_SIZE.getKey());
     assertThat(gate.getQueued()).isEqualTo(1);
     assertThat(gate.getRefused()).isEqualTo(1);
@@ -255,7 +262,7 @@ class QueryAdmissionGateTest {
   }
 
   @Test
-  void theFirstQueryStartsWhateverTheHeapSoABudgetHeldByOtherWorkCannotStallTheQueue() {
+  void theFirstQueryStartsWhateverTheHeapSoABudgetHeldByOtherWorkCannotStallTheQueue() throws Exception {
     GlobalConfiguration.QUERY_MAX_CONCURRENT.setValue(10);
     GlobalConfiguration.QUERY_ADMISSION_HEAP_WATERMARK.setValue(50);
     GlobalConfiguration.QUERY_QUEUE_TIMEOUT.setValue(0L);
@@ -268,8 +275,8 @@ class QueryAdmissionGateTest {
       // NO GATED QUERY RUNNING: ADMITTED AT ONCE, EVEN WITH A TIMEOUT OF 0
       try (final QueryAdmissionGate.Ticket ignored = gate.admit()) {
         assertThat(gate.getRunning()).isEqualTo(1);
-        // A SECOND ONE CANNOT: THE BUDGET IS ABOVE THE WATERMARK AND IT DOES NOT WAIT
-        assertThatThrownBy(gate::admit).isInstanceOf(QueryAdmissionException.class);
+        // A SECOND ONE, FROM ANOTHER CLIENT, CANNOT: THE BUDGET IS ABOVE THE WATERMARK AND IT DOES NOT WAIT
+        assertThat(admitElsewhere()).isInstanceOf(QueryAdmissionException.class);
       }
     } finally {
       QueryHeapBudget.release(held);
@@ -277,19 +284,17 @@ class QueryAdmissionGateTest {
   }
 
   @Test
-  void theWatermarkIsIgnoredWhenTheHeapBudgetIsDisabled() {
+  void theWatermarkIsIgnoredWhenTheHeapBudgetIsDisabled() throws Exception {
     GlobalConfiguration.QUERY_MAX_CONCURRENT.setValue(10);
     GlobalConfiguration.QUERY_ADMISSION_HEAP_WATERMARK.setValue(1);
     GlobalConfiguration.QUERY_QUEUE_TIMEOUT.setValue(0L);
     GlobalConfiguration.QUERY_MAX_HEAP_RAM.setValue(0L);
 
-    final List<QueryAdmissionGate.Ticket> tickets = new ArrayList<>();
-    for (int i = 0; i < 10; i++)
-      tickets.add(gate.admit());
-    assertThat(gate.getRunning()).isEqualTo(10);
-    assertThatThrownBy(gate::admit).as("the 11th exceeds the slots").isInstanceOf(QueryAdmissionException.class);
-    for (final QueryAdmissionGate.Ticket ticket : tickets)
-      ticket.close();
+    // ONE QUERY RUNNING, SO THE FIRST-QUERY RULE DOES NOT APPLY: ADMITTED ONLY BECAUSE THE WATERMARK IS IGNORED
+    try (final QueryAdmissionGate.Ticket ignored = gate.admit()) {
+      assertThat(admitElsewhere()).isNull();
+      assertThat(gate.getAdmitted()).isEqualTo(2);
+    }
     assertThat(gate.getRunning()).isZero();
   }
 
@@ -321,17 +326,115 @@ class QueryAdmissionGateTest {
   }
 
   @Test
-  void closingATicketTwiceGivesTheSlotBackOnce() {
+  void aQueryStartedFromInsideAnAdmittedOneSharesItsSlotInsteadOfWaitingForIt() {
+    GlobalConfiguration.QUERY_MAX_CONCURRENT.setValue(1);
+    // NO WAITING: A NESTED QUERY THAT QUEUED FOR THE ONLY SLOT, WHICH ITS OWN CALLER HOLDS, WOULD BE REFUSED AT ONCE
+    GlobalConfiguration.QUERY_QUEUE_TIMEOUT.setValue(0L);
+
+    final QueryAdmissionGate.Ticket outer = gate.admit();
+    final QueryAdmissionGate.Ticket inner = gate.admit();
+    final QueryAdmissionGate.Ticket innermost = gate.admit();
+    assertThat(gate.getRunning()).isEqualTo(1);
+    assertThat(gate.getAdmitted()).as("only the outermost query is counted").isEqualTo(1);
+
+    // CLOSED IN ANY ORDER: THE SLOT GOES BACK WITH THE LAST TICKET
+    outer.close();
+    assertThat(gate.getRunning()).isEqualTo(1);
+    innermost.close();
+    assertThat(gate.getRunning()).isEqualTo(1);
+    inner.close();
+    assertThat(gate.getRunning()).isZero();
+
+    // THE THREAD HOLDS NOTHING ANY MORE: ITS NEXT QUERY TAKES A SLOT OF ITS OWN
+    try (final QueryAdmissionGate.Ticket ignored = gate.admit()) {
+      assertThat(gate.getAdmitted()).isEqualTo(2);
+    }
+  }
+
+  @Test
+  void anotherThreadDoesNotShareTheSlot() throws Exception {
+    GlobalConfiguration.QUERY_MAX_CONCURRENT.setValue(1);
+    GlobalConfiguration.QUERY_QUEUE_TIMEOUT.setValue(0L);
+
+    try (final QueryAdmissionGate.Ticket ignored = gate.admit()) {
+      final CompletableFuture<Throwable> other = new CompletableFuture<>();
+      startWaiter(() -> {
+        try {
+          gate.admit().close();
+          other.complete(null);
+        } catch (final Throwable t) {
+          other.complete(t);
+        }
+      });
+      assertThat(other.get(30, TimeUnit.SECONDS)).isInstanceOf(QueryAdmissionException.class);
+    }
+  }
+
+  @Test
+  void aTicketClosedOnAnotherThreadGivesTheSlotBackAndTheOwnerQueuesAgain() throws Exception {
+    GlobalConfiguration.QUERY_MAX_CONCURRENT.setValue(1);
+    GlobalConfiguration.QUERY_QUEUE_TIMEOUT.setValue(0L);
+
+    final QueryAdmissionGate.Ticket ticket = gate.admit();
+    final Thread closer = startWaiter(ticket::close);
+    closer.join(30_000);
+    assertThat(gate.getRunning()).isZero();
+
+    // THIS THREAD'S SLOT WAS GIVEN BACK ELSEWHERE: ITS NEXT QUERY IS ADMITTED AND COUNTED, NOT WAVED THROUGH
+    try (final QueryAdmissionGate.Ticket ignored = gate.admit()) {
+      assertThat(gate.getRunning()).isEqualTo(1);
+      assertThat(gate.getAdmitted()).isEqualTo(2);
+    }
+  }
+
+  @Test
+  void aRequestWaitingOnAnotherServerGivesItsSlotBackOnceAndEarly() throws Exception {
+    GlobalConfiguration.QUERY_MAX_CONCURRENT.setValue(1);
+    GlobalConfiguration.QUERY_QUEUE_TIMEOUT.setValue(0L);
+
+    final QueryAdmissionGate.Ticket outer = gate.admit();
+    final QueryAdmissionGate.Ticket nested = gate.admit();
+    assertThat(admitElsewhere()).as("the only slot is taken").isInstanceOf(QueryAdmissionException.class);
+
+    // A FOLLOWER ABOUT TO FORWARD THE REQUEST TO THE LEADER: THE SLOT GOES BACK WHILE ITS TICKETS ARE STILL OPEN
+    gate.releaseCurrentSlot();
+    assertThat(gate.getRunning()).isZero();
+    assertThat(admitElsewhere()).as("the leader, in the same JVM, gets the slot").isNull();
+    gate.releaseCurrentSlot();
+    assertThat(gate.getRunning()).isZero();
+
+    // A QUERY THE THREAD STARTS AFTERWARDS TAKES A SLOT OF ITS OWN INSTEAD OF SHARING THE ONE IT GAVE BACK
+    try (final QueryAdmissionGate.Ticket ignored = gate.admit()) {
+      assertThat(gate.getRunning()).isEqualTo(1);
+    }
+
+    // THE TICKETS OF THE REQUEST CLOSE NORMALLY AND GIVE NOTHING BACK A SECOND TIME
+    nested.close();
+    outer.close();
+    assertThat(gate.getRunning()).isZero();
+    try (final QueryAdmissionGate.Ticket ignored = gate.admit()) {
+      assertThat(admitElsewhere()).as("still exactly one slot").isInstanceOf(QueryAdmissionException.class);
+    }
+
+    // NOTHING HELD: NOTHING TO GIVE BACK
+    gate.releaseCurrentSlot();
+    assertThat(gate.getRunning()).isZero();
+  }
+
+  @Test
+  void closingATicketTwiceCountsOnce() {
     GlobalConfiguration.QUERY_MAX_CONCURRENT.setValue(2);
 
-    final QueryAdmissionGate.Ticket first = gate.admit();
-    final QueryAdmissionGate.Ticket second = gate.admit();
-    assertThat(gate.getRunning()).isEqualTo(2);
-
-    first.close();
-    first.close();
+    final QueryAdmissionGate.Ticket outer = gate.admit();
+    final QueryAdmissionGate.Ticket nested = gate.admit();
     assertThat(gate.getRunning()).isEqualTo(1);
-    second.close();
+
+    // THE SECOND CLOSE OF THE NESTED TICKET MUST NOT TAKE THE SLOT FROM UNDER THE OUTER ONE
+    nested.close();
+    nested.close();
+    assertThat(gate.getRunning()).isEqualTo(1);
+    outer.close();
+    outer.close();
     assertThat(gate.getRunning()).isZero();
   }
 
@@ -344,6 +447,20 @@ class QueryAdmissionGateTest {
     GlobalConfiguration.QUERY_MAX_CONCURRENT.setValue(0);
     ticket.close();
     assertThat(gate.getRunning()).isZero();
+  }
+
+  /** Admits and closes on a thread of its own, which holds no slot: a query of another client. Null when it was admitted. */
+  private Throwable admitElsewhere() throws Exception {
+    final CompletableFuture<Throwable> outcome = new CompletableFuture<>();
+    startWaiter(() -> {
+      try {
+        gate.admit().close();
+        outcome.complete(null);
+      } catch (final Throwable t) {
+        outcome.complete(t);
+      }
+    });
+    return outcome.get(90, TimeUnit.SECONDS);
   }
 
   private Thread startWaiter(final Runnable body) {

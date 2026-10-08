@@ -87,6 +87,7 @@ import com.arcadedb.query.opencypher.query.CypherStatementCache;
 import com.arcadedb.query.select.Select;
 import com.arcadedb.query.sql.executor.CommandTimeoutOverride;
 import com.arcadedb.query.sql.executor.InternalResultSet;
+import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.ExecutionPlanCache;
@@ -4058,6 +4059,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   private ResultSet forwardCommandToLeaderViaRaft(final String language, final String query,
       final Map<String, Object> mapArgs, final Object[] positionalArgs) {
     final RaftHAServer raft = requireRaftServer();
+
+    // The request waits on the leader from here on and does no work on this node: its query admission slot goes back now
+    // (issue #9518), so it is not held for as long as the leader takes, nor taken from a leader sharing this JVM
+    QueryAdmissionGate.getInstance().releaseCurrentSlot();
 
     // This request is already the result of a peer redirecting it to what it believed was the leader, and it
     // arrived on a node that is not the leader either. Redirecting it once more sends it round the cycle the

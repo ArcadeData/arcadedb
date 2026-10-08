@@ -21,7 +21,6 @@ package com.arcadedb.server.http.handler;
 import com.arcadedb.database.Database;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.ExecutionPlan;
-import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.ExplainResultSet;
 import com.arcadedb.serializer.json.JSONObject;
@@ -87,11 +86,6 @@ public class GetQueryHandler extends AbstractQueryHandler {
 
       final JSONObject response = new JSONObject();
 
-      // Same admission as the POST endpoints (issue #9518), held until the result set is closed. A worker thread is
-      // the one waiting: mustExecuteOnWorkerThread() never leaves a request on the IO thread while the gate is enabled.
-      // A request that reached it anyway, because the gate was enabled after it was dispatched, does not wait there.
-      final QueryAdmissionGate gate = QueryAdmissionGate.getInstance();
-      final QueryAdmissionGate.Ticket admission = exchange.isInIoThread() ? gate.admit(0) : gate.admit();
       ResultSet qResult = null;
       try {
         final long engineStart = System.nanoTime();
@@ -150,12 +144,8 @@ public class GetQueryHandler extends AbstractQueryHandler {
         } finally {
           // Nested finally so that an unchecked exception from profile recording does not
           // skip the close and leak the ResultSet (caught in #4197 audit follow-up review).
-          try {
-            if (qResult != null)
-              qResult.close();
-          } finally {
-            admission.close();
-          }
+          if (qResult != null)
+            qResult.close();
         }
       }
 
@@ -191,23 +181,20 @@ public class GetQueryHandler extends AbstractQueryHandler {
 
   /**
    * A buffered, session-less GET query is short enough to answer on the IO thread, which is what this handler has
-   * always done. Three kinds of request are not:
+   * always done. Two kinds of request are not:
    * <ul>
    * <li>a STREAMED one, which writes blocking output for as long as the client takes to read it;</li>
    * <li>one that names a session (issue #7684), because {@code DatabaseAbstractHandler.execute} then runs it
    * inside {@code HttpSession.execute}, which waits up to five seconds on the session lock. "Short" is a
    * property of the query; the lock wait is not, and it is reached by nothing worse than a client issuing two
-   * requests on one session at the same time, or retrying one whose predecessor is still running;</li>
-   * <li>any request while the query admission gate is enabled (issue #9518), because the query may then wait in its
-   * queue. Deciding per request whether it would wait cannot be exact - a slot taken between the check and the
-   * admission leaves the request waiting on the IO thread anyway - so the whole endpoint dispatches.</li>
+   * requests on one session at the same time, or retrying one whose predecessor is still running.</li>
    * </ul>
    * Blocking an IO thread starves every other connection multiplexed onto it, so neither cost is paid by the
-   * caller that incurred it. A session-less buffered GET keeps answering on the IO thread while the gate is
-   * disabled, the default, so nothing gets slower for the common case.
+   * caller that incurred it. A session-less buffered GET keeps answering on the IO thread, so nothing gets
+   * slower for the common case.
    */
   @Override
   protected boolean mustExecuteOnWorkerThread(final HttpServerExchange exchange) {
-    return isNdJsonRequested(exchange) || carriesSessionId(exchange) || QueryAdmissionGate.getInstance().isEnabled();
+    return isNdJsonRequested(exchange) || carriesSessionId(exchange);
   }
 }

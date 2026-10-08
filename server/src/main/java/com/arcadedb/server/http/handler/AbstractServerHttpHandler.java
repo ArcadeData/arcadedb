@@ -391,7 +391,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
 
   @Override
   public void handleRequest(final HttpServerExchange exchange) {
-    if (mustExecuteOnWorkerThread(exchange) && exchange.isInIoThread()) {
+    if ((mustExecuteOnWorkerThread(exchange) || mayWaitForAdmission()) && exchange.isInIoThread()) {
       exchange.dispatch(this);
       return;
     }
@@ -2103,6 +2103,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    */
   protected boolean mustExecuteOnWorkerThread(final HttpServerExchange exchange) {
     return mustExecuteOnWorkerThread();
+  }
+
+  /**
+   * Whether this handler may park its thread in the query admission gate (issue #9518), which an Undertow IO thread must
+   * never do: it serves every other connection multiplexed onto it. A handler that answers true is always dispatched to a
+   * worker thread. Deciding per request whether the gate would make it wait cannot be exact - a slot taken between the
+   * check and the admission leaves the request waiting anyway - so the answer is per handler.
+   */
+  protected boolean mayWaitForAdmission() {
+    return false;
   }
 
   /**

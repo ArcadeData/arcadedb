@@ -30,6 +30,7 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ChannelBinaryServer;
+import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalEdgeType;
 import com.arcadedb.schema.LocalVertexType;
@@ -310,6 +311,7 @@ public class RedisNetworkExecutor extends Thread {
       // Redis is traced like the other protocols (protocol=redis comes from ProtocolContext, set in
       // run()). No query language applies to a native Redis command, so language is null. No-op
       // unless the tracing plugin is active.
+      QueryAdmissionGate.Ticket admission = null;
       try (final QueryTracer.Span span = QueryTracer.Holder.begin(
           selectedDatabaseName, null, "command", cmdString)) {
 
@@ -346,6 +348,11 @@ public class RedisNetworkExecutor extends Thread {
         }
 
         checkArity(cmdString, list.size());
+
+        // Waits for the query admission gate (issue #9518) like the requests of every other protocol. PING and SELECT touch no
+        // data and must stay answerable on a server busy with queries
+        if (!"PING".equals(cmdString) && !"SELECT".equals(cmdString))
+          admission = QueryAdmissionGate.getInstance().admit();
 
         switch (cmdString) {
           case "DECR":
@@ -422,6 +429,9 @@ public class RedisNetworkExecutor extends Thread {
         value.append(respErrorPrefix(e));
         value.append(' ');
         value.append(respErrorMessage(e));
+      } finally {
+        if (admission != null)
+          admission.close();
       }
 
       appendCrLf();

@@ -28,6 +28,7 @@ import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.InvalidPropertyTypeException;
 import com.arcadedb.exception.LockTimeoutException;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.QueryAdmissionException;
 import com.arcadedb.exception.TimeoutException;
 
 import org.junit.jupiter.api.Test;
@@ -120,6 +121,8 @@ class BoltErrorClassificationTest {
     // Drives both the transient classification and the FINE-vs-WARNING log level in the RUN/PULL handlers.
     assertThat(BoltNetworkExecutor.isRetryableConflict(new ConcurrentModificationException("retry"))).isTrue();
     assertThat(BoltNetworkExecutor.isRetryableConflict(new RuntimeException("x", new LockTimeoutException("t")))).isTrue();
+    // #9518: a query the admission gate did not start is expected under load, not a server fault to log at WARNING
+    assertThat(BoltNetworkExecutor.isRetryableConflict(new QueryAdmissionException("busy"))).isTrue();
     assertThat(BoltNetworkExecutor.isRetryableConflict(new IllegalStateException("other"))).isFalse();
     assertThat(BoltNetworkExecutor.isRetryableConflict(null)).isFalse();
   }

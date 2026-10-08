@@ -949,16 +949,19 @@ public enum GlobalConfiguration {
       }),
 
   QUERY_MAX_CONCURRENT("arcadedb.queryMaxConcurrent", SCOPE.JVM, """
-      Maximum number of queries and commands received over HTTP (/api/v1/query and /api/v1/command) that may run at once \
-      in the JVM, across every database (issue #9518). A request that arrives when this many are running, or when the \
-      heap the running queries hold reserved is above arcadedb.queryAdmissionHeapWatermark, waits in a queue and starts \
-      in arrival order (FIFO) as soon as both allow it, instead of running at once and risking a refusal from \
-      arcadedb.queryMaxHeapRAM. The wait happens before anything of the query runs, never in the middle of it. A request \
-      that waits longer than arcadedb.queryQueueTimeout, or that finds arcadedb.queryQueueMaxSize requests already \
-      waiting, fails with a QueryAdmissionException, which is transient (HTTP answers it with 503). Waiting requests park \
-      the HTTP worker thread that received them, so keep arcadedb.queryQueueMaxSize below arcadedb.server.httpWorkerThreads \
-      to leave threads for the other requests. 0 or a negative value disables the gate: every request runs at once""",
-      Integer.class, 0),
+      Maximum number of requests of remote clients (HTTP, Postgres, Bolt, Redis, gRPC, Gremlin Server, MCP, MongoDB) that \
+      may run at once in the JVM, across every database (issue #9518). A request that arrives when this many are running, \
+      or when the heap the running queries hold reserved is above arcadedb.queryAdmissionHeapWatermark, waits in a queue \
+      and starts in arrival order (FIFO) as soon as both allow it, instead of running at once and risking a refusal from \
+      arcadedb.queryMaxHeapRAM. The wait happens before anything of the request runs, never in the middle of it, and a \
+      query started from inside a running one shares its slot. A request that waits longer than arcadedb.queryQueueTimeout, \
+      or that finds arcadedb.queryQueueMaxSize requests already waiting, fails with a QueryAdmissionException, which is \
+      transient (HTTP answers it with 503). Waiting requests park the thread that received them, so keep \
+      arcadedb.queryQueueMaxSize below arcadedb.server.httpWorkerThreads to leave HTTP threads for the other requests. The \
+      MongoDB protocol runs its requests on threads shared by other connections, so it does not wait: a request that \
+      cannot start at once is refused. The embedded API does not go through the gate. When left at the default it is \
+      twice the number of cores, at least 4. 0 or a negative value disables the gate: every request runs at once""",
+      Integer.class, 0, null, value -> Math.max(4, 2 * Runtime.getRuntime().availableProcessors())),
 
   QUERY_ADMISSION_HEAP_WATERMARK("arcadedb.queryAdmissionHeapWatermark", SCOPE.JVM, """
       Percentage of arcadedb.queryMaxHeapRAM above which the query admission gate (arcadedb.queryMaxConcurrent) stops \

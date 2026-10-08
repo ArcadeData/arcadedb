@@ -23,12 +23,14 @@ import com.arcadedb.exception.QueryAdmissionException;
 
 import java.util.ArrayDeque;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
- * Decides when a query received over HTTP starts, across every database of the JVM (issue #9518): at once when fewer than
+ * Decides when a query a remote client sent starts, across every database of the JVM (issue #9518): at once when fewer than
  * {@link GlobalConfiguration#QUERY_MAX_CONCURRENT} queries are running and the heap the running queries hold reserved is
  * below {@link GlobalConfiguration#QUERY_ADMISSION_HEAP_WATERMARK} of the {@link QueryHeapBudget}, otherwise after
  * waiting in a queue, in arrival order. Without it a burst of heavy queries all starts together and the ones that come
@@ -52,8 +54,19 @@ import java.util.concurrent.locks.ReentrantLock;
  * admitted query is running, the head starts whatever the heap: a budget held by work outside the gate must not stall
  * the queue until every waiter times out.
  * <p>
+ * <b>Only the outermost query takes a slot.</b> A query started on a thread that already holds one - a SQL function or an
+ * MCP tool running a query, a script calling another language - shares it: queueing would make it wait for the slot its own
+ * caller holds, which deadlocks as soon as every slot is taken. The slot goes back when the last ticket that shares it is
+ * closed.
+ * <p>
+ * <b>Who goes through it.</b> Every protocol that executes the requests of a remote client, at the point where the request
+ * starts: HTTP, Postgres, Bolt, Redis, gRPC, Gremlin Server, MCP and MongoDB. A protocol that runs its requests on a
+ * thread shared by other connections cannot park it, so it admits with no wait and answers "busy" instead. The embedded API
+ * does not go through it: the server's own work (security, schema, replication, triggers) runs queries the same way, and
+ * making it wait behind client queries could stall the server.
+ * <p>
  * The settings are read on every admission, so a change applies to the next query. With
- * {@link GlobalConfiguration#QUERY_MAX_CONCURRENT} at 0, the default, {@link #admit()} returns at once and counts nothing.
+ * {@link GlobalConfiguration#QUERY_MAX_CONCURRENT} at 0, {@link #admit()} returns at once and counts nothing.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -64,7 +77,7 @@ public final class QueryAdmissionGate {
   private static final QueryAdmissionGate INSTANCE = new QueryAdmissionGate();
 
   /** What {@link #admit()} returns when the gate is disabled: it holds no slot, so closing it gives nothing back. */
-  private static final Ticket NOT_GATED = new Ticket(null);
+  private static final Ticket NOT_GATED = new Ticket(null, null);
 
   private final ReentrantLock          lock  = new ReentrantLock();
   // ONE CONDITION PER WAITING QUERY, IN ARRIVAL ORDER. GUARDED BY lock
@@ -77,12 +90,14 @@ public final class QueryAdmissionGate {
   private final LongAdder              refused              = new LongAdder();
   private final LongAdder              heapDeferrals        = new LongAdder();
   private final LongAdder              waitNanos            = new LongAdder();
+  // THE SLOT THE CURRENT THREAD HOLDS: A QUERY STARTED FROM INSIDE AN ADMITTED ONE TAKES A TICKET ON IT INSTEAD OF QUEUEING
+  private final ThreadLocal<Slot>      currentSlot          = new ThreadLocal<>();
 
   // PACKAGE-PRIVATE FOR THE TESTS, WHICH NEED A GATE OF THEIR OWN: THE COUNTERS AND THE QUEUE OF THE JVM-WIDE ONE ARE SHARED
   QueryAdmissionGate() {
   }
 
-  /** The gate every query received over HTTP goes through. */
+  /** The gate the queries of every remote client go through. */
   public static QueryAdmissionGate getInstance() {
     return INSTANCE;
   }
@@ -113,6 +128,15 @@ public final class QueryAdmissionGate {
     if (maxConcurrent <= 0)
       return NOT_GATED;
 
+    // STARTED FROM INSIDE A QUERY THIS THREAD ALREADY RUNS: IT SHARES THAT SLOT. QUEUEING WOULD WAIT FOR THE SLOT ITS OWN CALLER
+    // HOLDS, A DEADLOCK AS SOON AS EVERY SLOT IS TAKEN. ONLY WHILE THE SLOT IS STILL HELD: A TICKET CLOSED ON ANOTHER THREAD MAY
+    // HAVE GIVEN IT BACK
+    final Slot held = currentSlot.get();
+    if (held != null && !held.released.get())
+      for (int n = held.tickets.get(); n > 0; n = held.tickets.get())
+        if (held.tickets.compareAndSet(n, n + 1))
+          return new Ticket(this, held);
+
     lock.lock();
     try {
       // A QUERY THAT ARRIVES WHILE OTHERS WAIT QUEUES BEHIND THEM EVEN WHEN IT COULD START: ARRIVAL ORDER
@@ -121,6 +145,22 @@ public final class QueryAdmissionGate {
       return waitForTurn(timeoutMs);
     } finally {
       lock.unlock();
+    }
+  }
+
+  /**
+   * Gives back, before the request ends, the slot the current thread holds: for a request about to wait on another server
+   * - a follower forwarding a write to the leader - which does no work here while it waits, and which would otherwise hold
+   * a slot of this server for as long as the leader takes. It also keeps the wait from closing a cycle where the servers
+   * share one JVM, and so one gate: the follower holding the last slot while the leader waits for it. The tickets of the
+   * request still close normally, and give nothing back a second time. A query the thread starts afterwards takes a slot of
+   * its own. Does nothing when the thread holds no slot.
+   */
+  public void releaseCurrentSlot() {
+    final Slot held = currentSlot.get();
+    if (held != null && held.released.compareAndSet(false, true)) {
+      currentSlot.remove();
+      release();
     }
   }
 
@@ -162,23 +202,41 @@ public final class QueryAdmissionGate {
     return waitNanos.sum();
   }
 
-  /** The slot of an admitted query. Closed by the thread that took it, once the query and its results are done with. */
+  /**
+   * What a query gets from {@link #admit()}, to close once the query and its results are done with. The tickets of one slot -
+   * the query that took it and every query started from inside it on the same thread - give it back together, when the last
+   * of them is closed, whichever order they are closed in and whichever thread closes them.
+   */
   public static final class Ticket implements AutoCloseable {
     private final QueryAdmissionGate gate;
+    private final Slot               slot;
     private       boolean            closed;
 
-    private Ticket(final QueryAdmissionGate gate) {
+    private Ticket(final QueryAdmissionGate gate, final Slot slot) {
       this.gate = gate;
+      this.slot = slot;
     }
 
-    /** Gives the slot back and lets the head of the queue start. Closing it again does nothing. */
+    /** Gives the slot back once no other ticket holds it, and lets the head of the queue start. Closing it again does nothing. */
     @Override
     public void close() {
-      if (gate == null || closed)
+      if (slot == null || closed)
         return;
       closed = true;
-      gate.release();
+      if (slot.tickets.decrementAndGet() == 0) {
+        if (gate.currentSlot.get() == slot)
+          gate.currentSlot.remove();
+        if (slot.released.compareAndSet(false, true))
+          gate.release();
+      }
     }
+  }
+
+  /** One admitted slot, shared by the tickets of the queries the thread that took it starts while it holds it. */
+  private static final class Slot {
+    private final AtomicInteger tickets = new AtomicInteger(1);
+    // SET ONCE, BY THE LAST TICKET CLOSED OR BY releaseCurrentSlot(), WHICHEVER COMES FIRST: THE SLOT GOES BACK EXACTLY ONCE
+    private final AtomicBoolean released = new AtomicBoolean();
   }
 
   private enum Blocker {NONE, SLOTS, HEAP}
@@ -203,7 +261,9 @@ public final class QueryAdmissionGate {
   private Ticket admitLocked() {
     running++;
     admitted.increment();
-    return new Ticket(this);
+    final Slot slot = new Slot();
+    currentSlot.set(slot);
+    return new Ticket(this, slot);
   }
 
   /** Queues the query and parks it until it is the head of the queue and can start. Called with the lock held. */
