@@ -20,7 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
 import org.apache.ratis.proto.RaftProtos;
 import org.apache.ratis.protocol.RaftGroupId;
 import org.apache.ratis.protocol.RaftPeerId;
@@ -42,8 +42,6 @@ import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Regression test for issue #8432: a STATICALLY configured member removed while down, re-added with its config volume
@@ -250,8 +248,7 @@ class Issue8432StaticMemberSnapshotInstallHoldTest {
     config.setValue(GlobalConfiguration.HA_SERVER_LIST, "arcadedb-0:2434:2480");
     config.setValue(GlobalConfiguration.HA_RAFT_STORAGE_DIRECTORY, tempDir.getAbsolutePath());
     config.setValue(GlobalConfiguration.HA_RAFT_PERSIST_STORAGE, false);
-    final ArcadeDBServer arcadeServer = mock(ArcadeDBServer.class);
-    when(arcadeServer.getServerName()).thenReturn("arcadedb-0");
+    final FakeArcadeDBServer arcadeServer = FakeArcadeDBServer.create("arcadedb-0", new ContextConfiguration());
     return new RaftHAServer(arcadeServer, config);
   }
 
@@ -288,9 +285,7 @@ class Issue8432StaticMemberSnapshotInstallHoldTest {
     config.setValue(GlobalConfiguration.HA_AUTO_ACQUIRE_DATABASES, false);
     config.setValue(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRIES, 0);
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(config);
-    when(server.getDatabaseNames()).thenReturn(Set.of());
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create((String) null, config);
 
     final ArcadeStateMachine sm = new ArcadeStateMachine();
     sm.setServer(server);

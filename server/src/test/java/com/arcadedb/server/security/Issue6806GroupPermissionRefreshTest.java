@@ -24,7 +24,7 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.security.SecurityDatabaseUser.DATABASE_ACCESS;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -200,8 +200,8 @@ class Issue6806GroupPermissionRefreshTest {
     final ServerSecurity security = mock(ServerSecurity.class);
     when(security.getDatabaseGroupsConfiguration(DATABASE)).thenReturn(groupConfiguration);
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getSecurity()).thenReturn(security);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+    server.security(security);
 
     final JSONObject userConfiguration = new JSONObject()
         .put("name", "alice")

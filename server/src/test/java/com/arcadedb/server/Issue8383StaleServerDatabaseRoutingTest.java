@@ -207,10 +207,9 @@ class Issue8383StaleServerDatabaseRoutingTest extends TestHelper {
 
   @Test
   void theProfilingPathOfAStaleHandleReachesTheWrapperToo() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
     final ServerQueryProfiler profiler = mock(ServerQueryProfiler.class);
     when(profiler.isRecording()).thenReturn(true);
-    when(server.getQueryProfiler()).thenReturn(profiler);
+    final ArcadeDBServer server = FakeArcadeDBServer.create().queryProfiler(profiler);
 
     final ServerDatabase staleHandle = new ServerDatabase(server, local());
     final Map<String, AtomicInteger> calls = new ConcurrentHashMap<>();

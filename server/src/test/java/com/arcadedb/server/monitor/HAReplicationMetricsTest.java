@@ -18,7 +18,7 @@
  */
 package com.arcadedb.server.monitor;
 
-import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
 import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.FollowerSample;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.HAReplicationStats;
@@ -30,8 +30,6 @@ import java.util.List;
 import java.util.concurrent.ScheduledExecutorService;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Verifies {@link HAReplicationMetrics} translates an {@link HAReplicationStatsProvider}'s snapshot
@@ -72,9 +70,8 @@ class HAReplicationMetricsTest {
 
   @Test
   void gaugesReflectLeaderProviderSnapshot() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getPlugins()).thenReturn(List.of(new FakeHAPlugin(
-        new HAReplicationStats(true, 1234L, 7L, 2))));
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create().plugins(new FakeHAPlugin(
+        new HAReplicationStats(true, 1234L, 7L, 2)));
 
     final SimpleMeterRegistry registry = new SimpleMeterRegistry();
     try (final HAReplicationMetrics metrics = new HAReplicationMetrics(server)) {
@@ -89,8 +86,7 @@ class HAReplicationMetricsTest {
 
   @Test
   void gaugesReportNotApplicableWhenNoHAPlugin() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getPlugins()).thenReturn(List.of());
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
 
     final SimpleMeterRegistry registry = new SimpleMeterRegistry();
     try (final HAReplicationMetrics metrics = new HAReplicationMetrics(server)) {
@@ -106,12 +102,11 @@ class HAReplicationMetricsTest {
 
   @Test
   void perFollowerGaugesAreTaggedByPeer() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getPlugins()).thenReturn(List.of(new FakeHAPlugin(
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create().plugins(new FakeHAPlugin(
         new HAReplicationStats(true, 900, 4200, 2),
         List.of(
             new FollowerSample("n1", 100, 101, 12, 30, "HEALTHY", 0),
-            new FollowerSample("slow", 50, 51, 4200, 900, "FALLING_BEHIND", 8000)))));
+            new FollowerSample("slow", 50, 51, 4200, 900, "FALLING_BEHIND", 8000))));
 
     final SimpleMeterRegistry registry = new SimpleMeterRegistry();
     try (final HAReplicationMetrics metrics = new HAReplicationMetrics(server)) {
@@ -131,9 +126,8 @@ class HAReplicationMetricsTest {
 
   @Test
   void gaugeValuesAreFinite() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getPlugins()).thenReturn(List.of(new FakeHAPlugin(
-        new HAReplicationStats(false, -1, -1, 0))));
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create().plugins(new FakeHAPlugin(
+        new HAReplicationStats(false, -1, -1, 0)));
 
     final SimpleMeterRegistry registry = new SimpleMeterRegistry();
     try (final HAReplicationMetrics metrics = new HAReplicationMetrics(server)) {
@@ -148,8 +142,7 @@ class HAReplicationMetricsTest {
 
   @Test
   void closeShutsDownTheFollowerMetricsScheduler() throws Exception {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getPlugins()).thenReturn(List.of());
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
 
     final HAReplicationMetrics metrics = new HAReplicationMetrics(server);
     metrics.bindTo(new SimpleMeterRegistry());
@@ -166,7 +159,7 @@ class HAReplicationMetricsTest {
 
   @Test
   void closeIsNullSafeWhenNeverBound() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
     new HAReplicationMetrics(server).close();
   }
 
