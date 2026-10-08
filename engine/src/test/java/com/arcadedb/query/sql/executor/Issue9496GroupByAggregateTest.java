@@ -241,6 +241,60 @@ class Issue9496GroupByAggregateTest extends TestHelper {
         assertThat(row.<Number>getProperty("s").longValue()).isEqualTo(perRow * row.<Long>getProperty("n"));
   }
 
+  /**
+   * Integers, longs, doubles, decimals, floats and nulls in one column: every aggregate answers the same number in both
+   * paths, a null key is one group, and the boxed sums (a float or a decimal joining) widen as Type.increment does. The
+   * values are small quarters, exact in every type the sums pass through in any order; numbers are compared by value,
+   * since a decimal sum's scale follows the order it was added in.
+   */
+  @Test
+  void decimalsFloatsAndNullsAggregateAlikeInBothPaths() {
+    database.getSchema().createDocumentType("Decimals", 2);
+    database.transaction(() -> {
+      for (int i = 0; i < 3_000; i++) {
+        final Object w = switch (i % 6) {
+          case 0 -> i % 97;
+          case 1 -> (long) (i % 89);
+          case 2 -> (i % 83) + 0.25;
+          case 3 -> BigDecimal.valueOf(i % 79).add(new BigDecimal("0.50"));
+          case 4 -> (i % 73) + 0.75f;
+          default -> null;
+        };
+        database.newDocument("Decimals").set("k", "g" + (i % 4), "w", w).save();
+      }
+    });
+
+    final String query = "SELECT k, sum(w) AS s, avg(w) AS a, min(w) AS mi, max(w) AS ma, count(w) AS c, count(*) AS n "
+        + "FROM Decimals GROUP BY k ORDER BY k";
+    final List<Result> parallel = query(query, true);
+    final List<Result> sequential = query(query, false);
+    assertThat(parallel).hasSize(4).hasSameSizeAs(sequential);
+    for (int i = 0; i < parallel.size(); i++)
+      for (final String column : new String[] { "s", "a", "mi", "ma", "c", "n" })
+        assertThat(new BigDecimal(parallel.get(i).getProperty(column).toString()))
+            .as("%s of %s", column, parallel.get(i).<String>getProperty("k"))
+            .isEqualByComparingTo(new BigDecimal(sequential.get(i).getProperty(column).toString()));
+
+    final String byValue = "SELECT w, count(*) AS n FROM Decimals GROUP BY w ORDER BY n DESC, w LIMIT 5";
+    assertThat(render(query(byValue, true))).isEqualTo(render(query(byValue, false)));
+    for (final boolean inParallel : new boolean[] { true, false })
+      assertThat(query("SELECT count(*) AS n FROM Decimals WHERE w IS NULL GROUP BY w", inParallel).getFirst().<Long>getProperty("n"))
+          .isEqualTo(500L);
+  }
+
+  /** A parallel aggregation whose filter keeps no row answers no group, or the one empty group of an aggregation without GROUP BY. */
+  @Test
+  void aParallelAggregationOverNoRowAnswersAsTheSequentialOne() {
+    for (final boolean parallel : new boolean[] { true, false }) {
+      assertThat(query("SELECT l_returnflag, count(*) AS n, sum(l_quantity) AS q FROM LineItem WHERE l_quantity < 0 GROUP BY l_returnflag",
+          parallel)).isEmpty();
+      final List<Result> single = query("SELECT count(*) AS n, sum(l_quantity) AS q FROM LineItem WHERE l_quantity < 0", parallel);
+      assertThat(single).hasSize(1);
+      assertThat(single.getFirst().<Long>getProperty("n")).isEqualTo(0L);
+      assertThat(single.getFirst().<Object>getProperty("q")).isNull();
+    }
+  }
+
   /** An aggregate that keeps every value, which only the sequential path runs, still sees every row. */
   @Test
   void aggregatesThatKeepEveryValueStillSeeEveryRow() {
@@ -339,6 +393,22 @@ class Issue9496GroupByAggregateTest extends TestHelper {
     doubles.aggregate(null, 0.5, null);
     doubles.aggregate(null, 2L, null);
     assertThat(doubles.getResult()).isEqualTo(5.5);
+
+    // A DOUBLE MEETING A DECIMAL AND A FLOAT: THE BOXED SUM CARRIES ON AS Type.increment() DOES
+    final SQLFunctionSum mixed = new SQLFunctionSum();
+    final Number[] values = { 0.5, new BigDecimal("0.25"), 0.25f, 2, (short) 1, 3L };
+    Number folded = null;
+    for (final Number value : values) {
+      mixed.aggregate(null, value, null);
+      folded = folded == null ? value : Type.increment(folded, value);
+    }
+    assertThat(mixed.getResult()).isInstanceOf(BigDecimal.class).isEqualTo(folded);
+
+    final SQLFunctionSum floats = new SQLFunctionSum();
+    floats.aggregate(null, 2, null);
+    floats.aggregate(null, 0.25f, null);
+    floats.aggregate(null, (short) 3, null);
+    assertThat(floats.getResult()).isInstanceOf(Float.class).isEqualTo(Type.increment(Type.increment(2, 0.25f), (short) 3));
   }
 
   /**
