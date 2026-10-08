@@ -88,22 +88,38 @@ public class FunctionAggregationContext implements AggregationContext, HeapBuffe
 
   @Override
   public void apply(final Result next, final CommandContext context) {
+    final Object[] paramValues = evaluateArguments(next, context);
+    if (seen != null && !firstTimeSeen(paramValues))
+      return;
+
+    applyArguments(next, paramValues, context);
+    // a DISTINCT call is charged through the set of distinct values it remembers, which share the function's own items
+    if (heapLimit != null && seen == null)
+      heapLimit.chargeElement(paramValues.length == 1 ? paramValues[0] : new ArrayList<>(Arrays.asList(paramValues)), 0);
+  }
+
+  /**
+   * The values of the arguments for a row: the first half of {@link #apply}. A parallel GROUP BY evaluates them on the
+   * worker that read the row and hands them to the worker that owns the row's group (#9496).
+   */
+  public Object[] evaluateArguments(final Result next, final CommandContext context) {
     // ONE ARRAY PER ROW, NOT A LIST PLUS ITS COPY (#9496)
     final int size = params.size();
     final Object[] paramValues = new Object[size];
     for (int i = 0; i < size; i++)
       paramValues[i] = params.get(i).execute(next, context);
+    return paramValues;
+  }
 
-    if (seen != null && !firstTimeSeen(paramValues))
-      return;
-
+  /**
+   * Feeds the function arguments {@link #evaluateArguments} computed, possibly on another copy of the same expressions:
+   * the second half of {@link #apply}, for a context that {@link #canMerge()} (no DISTINCT, nothing charged per value).
+   */
+  public void applyArguments(final Result next, final Object[] paramValues, final CommandContext context) {
     if (aggregatedFunction != null)
       aggregatedFunction.aggregate(next, paramValues, context);
     else
       aggregateFunction.execute(next, null, null, paramValues, context);
-    // a DISTINCT call is charged through the set of distinct values it remembers, which share the function's own items
-    if (heapLimit != null && seen == null)
-      heapLimit.chargeElement(size == 1 ? paramValues[0] : new ArrayList<>(Arrays.asList(paramValues)), 0);
   }
 
   /**
