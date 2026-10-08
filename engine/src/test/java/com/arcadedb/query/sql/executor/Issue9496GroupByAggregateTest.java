@@ -38,8 +38,10 @@ import org.junit.jupiter.api.Test;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
@@ -296,6 +298,28 @@ class Issue9496GroupByAggregateTest extends TestHelper {
       assertThat(single.getFirst().<Long>getProperty("n")).isEqualTo(0L);
       assertThat(single.getFirst().<Object>getProperty("q")).isNull();
     }
+  }
+
+  /**
+   * A bound aggregate is fed the same argument array for every row: an aggregate that keeps every value keeps the values,
+   * not the array, so its result holds each row's own value and not the last one many times.
+   */
+  @Test
+  void aggregatesThatKeepEveryValueKeepTheValuesNotTheReusedArray() {
+    final Map<Object, List<Integer>> expected = new HashMap<>();
+    try (final ResultSet rs = database.query("sql", "SELECT l_returnflag, l_count FROM LineItem")) {
+      while (rs.hasNext()) {
+        final Result row = rs.next();
+        expected.computeIfAbsent(row.getProperty("l_returnflag"), k -> new ArrayList<>()).add(row.getProperty("l_count"));
+      }
+    }
+    for (final boolean parallel : new boolean[] { true, false })
+      for (final Result row : query("SELECT l_returnflag, list(l_count) AS l, set(l_count) AS s FROM LineItem GROUP BY l_returnflag",
+          parallel)) {
+        final List<Integer> values = expected.get(row.getProperty("l_returnflag"));
+        assertThat(row.<List<Integer>>getProperty("l")).containsExactlyInAnyOrderElementsOf(values);
+        assertThat(row.<Collection<Integer>>getProperty("s")).containsExactlyInAnyOrderElementsOf(new HashSet<>(values));
+      }
   }
 
   /** An aggregate that keeps every value, which only the sequential path runs, still sees every row. */
