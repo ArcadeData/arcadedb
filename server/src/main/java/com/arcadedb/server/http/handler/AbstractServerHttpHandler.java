@@ -1119,6 +1119,14 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       return retryable(heapBudget);
     }
 
+    // 503: the query admission gate did not start the query, because it waited in the queue too long or found the queue
+    // full (issue #9518). Nothing of it ran, so the identical request re-issued later can succeed. Ahead of the generic
+    // CommandExecutionException arm below for the same reason as the arm above.
+    final QueryAdmissionException admission = firstOf(e, cause, QueryAdmissionException.class);
+    if (admission != null) {
+      return retryable(admission);
+    }
+
     // 503: an HA snapshot-reinstall resync (issue #5977 pattern) closed and reinstalled the database out from
     // under a handle a request had already resolved (or resolved while one was in flight). The condition is
     // transient by construction - a handle resolved a moment later sees the reinstalled database - so it must be

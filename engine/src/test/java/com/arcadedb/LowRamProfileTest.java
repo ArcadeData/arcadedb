@@ -68,6 +68,8 @@ class LowRamProfileTest {
     // SCAN READ-AHEAD (#9404)
     assertThat(GlobalConfiguration.QUERY_BATCH_MAX_BYTES.getValueAsLong()).isEqualTo(200L * 1024);
     assertThat(GlobalConfiguration.QUERY_SCAN_READ_AHEAD_MAX_RAM.getValueAsLong()).isEqualTo(16L);
+    // #9518: the admission queue cannot park more than half of the 16 HTTP worker threads
+    assertThat(GlobalConfiguration.QUERY_QUEUE_MAX_SIZE.getValueAsInteger()).isEqualTo(8);
 
     // SERVER HTTP
     assertThat(GlobalConfiguration.SERVER_HTTP_WORKER_THREADS.getValueAsInteger()).isEqualTo(16);

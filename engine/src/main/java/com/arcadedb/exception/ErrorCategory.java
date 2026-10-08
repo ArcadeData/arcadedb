@@ -138,6 +138,8 @@ public enum ErrorCategory {
    * re-issued once they complete can succeed (issue #8591). Nor is it a {@link NeedRetryException}: a commit loop
    * retrying on the spot would only meet the same full budget. It is decided before {@link #VALIDATION} and before
    * the {@link CommandExecutionException} fall-through to {@link #SERVER}, which it extends.
+   * {@link QueryAdmissionException} rides with it too: the query admission gate did not start the query because the
+   * server was busy, so nothing of it ran and the same request re-issued later can succeed (issue #9518).
    * <p>
    * Each arm walks the chain separately, which is deliberate and not the same as one walk testing every type per
    * frame. Priority here is by category, not by depth: a chain whose {@link NeedRetryException} sits *below* an
@@ -148,7 +150,8 @@ public enum ErrorCategory {
   public static ErrorCategory of(final Throwable error) {
     if (CauseChain.contains(error, NeedRetryException.class) //
         || CauseChain.contains(error, TimeSeriesWalkCoarsenedException.class) //
-        || CauseChain.contains(error, QueryHeapBudgetExceededException.class))
+        || CauseChain.contains(error, QueryHeapBudgetExceededException.class) //
+        || CauseChain.contains(error, QueryAdmissionException.class))
       return RETRY;
     if (CauseChain.contains(error, ArithmeticErrorException.class))
       return ARITHMETIC;
