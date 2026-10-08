@@ -36,6 +36,7 @@ import java.io.File;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.util.Collection;
+import java.util.UUID;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -97,25 +98,40 @@ public final class TestServerHelper {
    * {@link ArcadeDBServer}, the constructor registers a JVM shutdown hook, which is a no-op for a server never started.
    */
   public static ArcadeDBServer unstartedServer(final Path rootPath, final ContextConfiguration configuration) {
+    return new ArcadeDBServer(rooted(rootPath, configuration));
+  }
+
+  /**
+   * Roots {@code configuration} at {@code rootPath}, refusing one already rooted elsewhere, and puts the database directory
+   * under it unless the configuration names its own; returns it.
+   */
+  static ContextConfiguration rooted(final Path rootPath, final ContextConfiguration configuration) {
     final String root = rootPath.toString();
     if (configuration.getContextKeys().contains(GlobalConfiguration.SERVER_ROOT_PATH.getKey())
         && !root.equals(configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PATH)))
       throw new IllegalArgumentException("The configuration already belongs to a server rooted at '"
           + configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PATH) + "': use a new ContextConfiguration per root");
     configuration.setValue(GlobalConfiguration.SERVER_ROOT_PATH, root);
-    configuration.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, rootPath.resolve("databases").toString());
-    return new ArcadeDBServer(configuration);
+    // A database directory the test chose stays: only the default one is moved under the root
+    if (!configuration.getContextKeys().contains(GlobalConfiguration.SERVER_DATABASE_DIRECTORY.getKey()))
+      configuration.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, rootPath.resolve("databases").toString());
+    return configuration;
   }
 
   /**
-   * Where a server built without an explicit root is rooted. Nothing is ever created there: construction writes no file,
-   * and a test that needs the disk passes its own {@code @TempDir} to {@link #unstartedServer(Path, ContextConfiguration)}.
+   * Where a server built without an explicit root is rooted: a fresh path under the module's {@code target} directory,
+   * never shared with another server and not created by construction. Code under test that persists something (a state
+   * machine bound to the server writes {@code <databases>/.raft}) lands there and nowhere else, and {@code mvn clean}
+   * removes it; a test that reads it back passes its own {@code @TempDir} to
+   * {@link #unstartedServer(Path, ContextConfiguration)}.
    */
-  private static final Path UNSTARTED_SERVER_ROOT = Path.of(System.getProperty("java.io.tmpdir"), "arcadedb-unstarted-server");
+  static Path defaultUnstartedServerRoot() {
+    return Path.of("target", "unstarted-servers", UUID.randomUUID().toString()).toAbsolutePath();
+  }
 
   /** {@link #unstartedServer(Path, ContextConfiguration)} with the default name, a new configuration and no disk. */
   public static ArcadeDBServer unstartedServer() {
-    return unstartedServer(UNSTARTED_SERVER_ROOT, new ContextConfiguration());
+    return unstartedServer(defaultUnstartedServerRoot(), new ContextConfiguration());
   }
 
   /** {@link #unstartedServer(Path, ContextConfiguration)} named {@code serverName}, with a new configuration and no disk. */
@@ -131,7 +147,7 @@ public final class TestServerHelper {
   public static ArcadeDBServer unstartedServer(final String serverName, final ContextConfiguration configuration) {
     if (serverName != null)
       configuration.setValue(GlobalConfiguration.SERVER_NAME, serverName);
-    return unstartedServer(UNSTARTED_SERVER_ROOT, configuration);
+    return unstartedServer(defaultUnstartedServerRoot(), configuration);
   }
 
   /**

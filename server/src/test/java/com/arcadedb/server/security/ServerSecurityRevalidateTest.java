@@ -22,19 +22,16 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
-import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * {@link ServerSecurity#revalidate(ServerSecurityUser)}: what a long-lived wire connection sees of a change made to its
@@ -57,10 +54,9 @@ class ServerSecurityRevalidateTest {
       FileUtils.deleteRecursively(dir);
     assertThat(dir.mkdirs()).isTrue();
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getDatabaseNames()).thenReturn(Set.of());
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
     security = new ServerSecurity(server, new ContextConfiguration(), CONFIG_PATH);
-    when(server.getSecurity()).thenReturn(security);
+    server.security(security);
     security.startService();
     security.createUser(userConfiguration(security.encodePassword(PASSWORD), "db1"));
   }

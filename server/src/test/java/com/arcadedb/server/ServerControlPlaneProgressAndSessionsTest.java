@@ -46,8 +46,7 @@ class ServerControlPlaneProgressAndSessionsTest {
 
   @Test
   void sessionsAreEmptyWhenTheServerRunsWithoutAnHttpListener() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getHttpServer()).thenReturn(null);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
 
     assertThat(new ServerControlPlane(server).listHttpSessions()).isEmpty();
   }
@@ -56,10 +55,10 @@ class ServerControlPlaneProgressAndSessionsTest {
   void sessionsAreReadLiveFromTheHttpSessionManager() {
     final HttpAuthSessionManager manager = new HttpAuthSessionManager(60_000);
     try {
-      final ArcadeDBServer server = mock(ArcadeDBServer.class);
+      final FakeArcadeDBServer server = FakeArcadeDBServer.create();
       final HttpServer httpServer = mock(HttpServer.class);
       when(httpServer.getAuthSessionManager()).thenReturn(manager);
-      when(server.getHttpServer()).thenReturn(httpServer);
+      server.httpServer(httpServer);
 
       final ServerControlPlane controlPlane = new ServerControlPlane(server);
       assertThat(controlPlane.listHttpSessions()).isEmpty();
@@ -80,7 +79,7 @@ class ServerControlPlaneProgressAndSessionsTest {
 
   @Test
   void progressReportsTheOperationsOfTheNamedDatabaseOnly() {
-    final ServerControlPlane controlPlane = new ServerControlPlane(mock(ArcadeDBServer.class));
+    final ServerControlPlane controlPlane = new ServerControlPlane(FakeArcadeDBServer.create());
 
     final OperationProgress operation = OperationProgressRegistry.instance().register("cp7310db", "check database");
     try {
@@ -103,7 +102,7 @@ class ServerControlPlaneProgressAndSessionsTest {
    */
   @Test
   void progressRefusesAMissingDatabaseName() {
-    final ServerControlPlane controlPlane = new ServerControlPlane(mock(ArcadeDBServer.class));
+    final ServerControlPlane controlPlane = new ServerControlPlane(FakeArcadeDBServer.create());
 
     assertThatThrownBy(() -> controlPlane.getProgress(null)).isInstanceOf(IllegalArgumentException.class);
     assertThatThrownBy(() -> controlPlane.getProgress("")).isInstanceOf(IllegalArgumentException.class);
