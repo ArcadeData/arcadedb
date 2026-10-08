@@ -32,7 +32,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
-import java.util.Arrays;
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -166,6 +166,6 @@ class ArcadeStateMachineBootstrapMismatchTest {
     assertThat(baseline.lastTxId()).isEqualTo(realLastTxId);
 
     // No snapshot install: removeDatabase must never be called.
-    assertThat(mockServer.calls("removeDatabase")).doesNotContain(Arrays.asList(DB_NAME));
+    assertThat(mockServer.calls("removeDatabase")).doesNotContain(List.of(DB_NAME));
   }
 }

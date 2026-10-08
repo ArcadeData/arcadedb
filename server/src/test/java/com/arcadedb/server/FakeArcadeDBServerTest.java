@@ -108,6 +108,8 @@ class FakeArcadeDBServerTest {
     assertThat(stops.get()).isEqualTo(1);
     assertThat(server.getServerName()).isEqualTo("renamed");
     assertThat(server.calls("existsDatabase")).containsExactly(List.of("present"), List.of("other"));
+    assertThat(server.calls("getDatabase")).as("a refused call is still recorded, so a never-called assertion cannot pass vacuously")
+        .containsExactly(List.of("present"));
   }
 
   @Test

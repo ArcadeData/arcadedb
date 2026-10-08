@@ -25,7 +25,8 @@ import com.arcadedb.server.CallLog;
 import com.arcadedb.server.TestServerHelper;
 import org.junit.jupiter.api.Test;
 
-import java.util.Arrays;
+import java.util.List;
+
 
 import static com.arcadedb.utility.SubclassMocks.mock;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -71,10 +72,10 @@ class Issue7641DropInReplicasWaitsForLocalApplyTest {
 
     databaseWith(raft).dropInReplicas();
 
-    assertThat(broker.calls("replicateDropDatabase")).containsOnlyOnce(Arrays.asList(DB_NAME));
+    assertThat(broker.calls("replicateDropDatabase")).containsOnlyOnce(List.of(DB_NAME));
     // throwOnTimeout = true: a caller that cannot confirm the local delete finished must be told, not left
     // to assume it did because nothing complained.
-    assertThat(raft.calls("waitForAppliedIndex")).containsOnlyOnce(Arrays.asList(DB_NAME, COMMITTED_LOG_INDEX, true));
+    assertThat(raft.calls("waitForAppliedIndex")).containsOnlyOnce(List.of(DB_NAME, COMMITTED_LOG_INDEX, true));
   }
 
   /**
@@ -94,7 +95,7 @@ class Issue7641DropInReplicasWaitsForLocalApplyTest {
     databaseWith(raft).dropInReplicas();
 
     assertThat(log.methods()).containsExactly("replicateDropDatabase", "waitForAppliedIndex");
-    assertThat(raft.calls("waitForAppliedIndex")).containsExactly(Arrays.asList(DB_NAME, COMMITTED_LOG_INDEX, true));
+    assertThat(raft.calls("waitForAppliedIndex")).containsExactly(List.of(DB_NAME, COMMITTED_LOG_INDEX, true));
   }
 
   /**

@@ -25,7 +25,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CyclicBarrier;
@@ -73,8 +72,8 @@ class Issue7641DropDatabaseSlotTest {
           .hasMessageContaining(DB_NAME);
 
       // NOTHING WAS TOUCHED: THE DATABASE WAS NEVER EVEN LOOKED UP TO BE DROPPED
-      assertThat(server.calls("getDatabase")).doesNotContain(Arrays.asList(DB_NAME));
-      assertThat(server.calls("removeDatabase")).doesNotContain(Arrays.asList(DB_NAME));
+      assertThat(server.calls("getDatabase")).doesNotContain(List.of(DB_NAME));
+      assertThat(server.calls("removeDatabase")).doesNotContain(List.of(DB_NAME));
     } finally {
       coordinator.end(DB_NAME, Operation.BACKUP);
     }
@@ -94,7 +93,7 @@ class Issue7641DropDatabaseSlotTest {
       assertThatThrownBy(() -> controlPlane.dropDatabase(DB_NAME))
           .isInstanceOf(ServerControlPlane.OperationInProgressException.class);
 
-      assertThat(server.calls("getDatabase")).doesNotContain(Arrays.asList(DB_NAME));
+      assertThat(server.calls("getDatabase")).doesNotContain(List.of(DB_NAME));
     } finally {
       coordinator.end(DB_NAME, Operation.RESTORE);
     }
@@ -156,7 +155,7 @@ class Issue7641DropDatabaseSlotTest {
     controlPlane.dropDatabase(DB_NAME);
 
     verify(embedded).drop();
-    assertThat(server.calls("removeDatabase")).containsOnlyOnce(Arrays.asList(DB_NAME));
+    assertThat(server.calls("removeDatabase")).containsOnlyOnce(List.of(DB_NAME));
 
     // THE SLOT WAS RELEASED: A FRESH RESERVATION OF ANY KIND IS ADMITTED RIGHT AFTER
     assertThat(coordinator.begin(DB_NAME, Operation.DROP)).isNull();
@@ -252,7 +251,7 @@ class Issue7641DropDatabaseSlotTest {
 
     // EXACTLY ONE DELETE, AND THE OTHER CALLER WAS TOLD WHY RATHER THAN SILENTLY RE-DROPPING
     verify(embedded, times(1)).drop();
-    assertThat(server.calls("removeDatabase")).containsOnlyOnce(Arrays.asList(DB_NAME));
+    assertThat(server.calls("removeDatabase")).containsOnlyOnce(List.of(DB_NAME));
     assertThat(failures).hasSize(1);
     assertThat(failures.get(0)).isInstanceOfAny(ServerControlPlane.OperationInProgressException.class,
         IllegalArgumentException.class);

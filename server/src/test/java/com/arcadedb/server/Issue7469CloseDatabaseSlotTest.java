@@ -23,7 +23,7 @@ import com.arcadedb.engine.MaintenanceCoordinator.Operation;
 import com.arcadedb.server.backup.BackupCoordinator;
 import org.junit.jupiter.api.Test;
 
-import java.util.Arrays;
+import java.util.List;
 import java.util.Objects;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -65,8 +65,8 @@ class Issue7469CloseDatabaseSlotTest {
           .hasMessageContaining(DB_NAME);
 
       // NOT EVEN LOOKED UP: THE REFUSAL HAPPENS BEFORE ANYTHING IS TOUCHED
-      assertThat(server.calls("getDatabase")).doesNotContain(Arrays.asList(DB_NAME));
-      assertThat(server.calls("removeDatabase")).doesNotContain(Arrays.asList(DB_NAME));
+      assertThat(server.calls("getDatabase")).doesNotContain(List.of(DB_NAME));
+      assertThat(server.calls("removeDatabase")).doesNotContain(List.of(DB_NAME));
     } finally {
       coordinator.end(DB_NAME, Operation.BACKUP);
     }
@@ -123,7 +123,7 @@ class Issue7469CloseDatabaseSlotTest {
     new ServerControlPlane(server).closeDatabase(DB_NAME);
 
     verify(embedded).close();
-    assertThat(server.calls("removeDatabase")).containsOnlyOnce(Arrays.asList(DB_NAME));
+    assertThat(server.calls("removeDatabase")).containsOnlyOnce(List.of(DB_NAME));
 
     assertThat(coordinator.begin(DB_NAME, Operation.BACKUP)).isNull();
     coordinator.end(DB_NAME, Operation.BACKUP);

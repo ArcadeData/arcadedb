@@ -119,7 +119,10 @@ public class FakeArcadeDBServer extends ArcadeDBServer {
     });
   }
 
-  /** The recorded {@code method} runs {@code answer} on its arguments from now on. */
+  /**
+   * The recorded {@code method} runs {@code answer} on its arguments from now on. For a {@code void} method, such as
+   * {@code stop} or {@code removeDatabase}, the value the function returns is ignored.
+   */
   public FakeArcadeDBServer on(final String method, final Function<Object[], Object> answer) {
     answers.set(method, answer);
     return this;
