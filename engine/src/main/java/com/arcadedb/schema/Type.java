@@ -2281,7 +2281,7 @@ public enum Type {
           return value;
         // AN INTEGRAL DOUBLE UP TO 2^53 IS AN INTEGER ITS DECIMAL FORM WRITES EXACTLY (THE SHORTEST DIGITS THAT TELL IT FROM
         // ITS NEIGHBOURS, WHICH ARE AT MOST 1 APART): BigDecimal.valueOf(d) WOULD HOLD THAT INTEGER, KEYED AS ITS Long
-        if (d == Math.rint(d) && Math.abs(d) <= MAX_EXACT_INTEGRAL_DOUBLE)
+        if (d == Math.rint(d) && Math.abs(d) <= EXACT_INTEGRAL_DOUBLE)
           return (long) d;
         return integralAsLong(BigDecimal.valueOf(d).stripTrailingZeros());
       }
@@ -2292,19 +2292,14 @@ public enum Type {
     return value;
   }
 
-  // 2^53: EVERY INTEGER UP TO IT IS A DOUBLE, AND NO TWO DOUBLES BELOW IT ARE MORE THAN 1 APART
-  private static final double MAX_EXACT_INTEGRAL_DOUBLE = 9007199254740992.0;
-
   /** A stripped BigDecimal holding an integer within the {@code long} range as that {@link Long}, any other as it is. */
   private static Object integralAsLong(final BigDecimal stripped) {
-    // STRIPPED, AN INTEGER HAS A SCALE OF 0 OR LESS; ITS DIGITS BEFORE THE POINT ARE precision - scale, 19 AT MOST FOR A long
-    if (stripped.scale() <= 0 && stripped.precision() - stripped.scale() <= 19) {
-      try {
-        return stripped.longValueExact();
-      } catch (final ArithmeticException e) {
-        // PAST THE long RANGE: KEPT AS A BigDecimal
-      }
-    }
+    // STRIPPED, AN INTEGER HAS A SCALE OF 0 OR LESS, AND precision - scale DIGITS: UP TO 18 ALWAYS FIT A long, 19 MAY
+    if (stripped.scale() > 0)
+      return stripped;
+    final int digits = stripped.precision() - stripped.scale();
+    if (digits <= 18 || digits == 19 && stripped.compareTo(LONG_MIN_DECIMAL) >= 0 && stripped.compareTo(LONG_MAX_DECIMAL) <= 0)
+      return stripped.longValue();
     return stripped;
   }
 
