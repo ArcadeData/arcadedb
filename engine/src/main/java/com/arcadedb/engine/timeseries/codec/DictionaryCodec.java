@@ -100,6 +100,52 @@ public final class DictionaryCodec {
     return buf.array();
   }
 
+  /**
+   * Decodes the column as the dictionary plus, per value, the index into it, which is what a caller grouping by the
+   * column needs: it resolves each DISTINCT value once and then works on small integers, instead of hashing a string
+   * per row.
+   *
+   * @param indices receives one dictionary index per value, so it must hold at least as many entries as the column has
+   *                values (see {@link #valueCount(byte[])}); entries past the count are left untouched
+   *
+   * @return the dictionary, in index order
+   */
+  public static String[] decodeIndexed(final byte[] data, final int[] indices) throws IOException {
+    if (data == null || data.length == 0)
+      return new String[0];
+
+    try {
+      final ByteBuffer buf = ByteBuffer.wrap(data);
+      final int count = buf.getInt();
+      final int dictSize = buf.getShort() & 0xFFFF;
+      if (count > indices.length)
+        throw new IOException("DictionaryCodec: " + count + " values do not fit a buffer of " + indices.length);
+
+      final String[] dictEntries = new String[dictSize];
+      for (int i = 0; i < dictSize; i++) {
+        final int len = buf.getShort() & 0xFFFF;
+        final byte[] utf8 = new byte[len];
+        buf.get(utf8);
+        dictEntries[i] = new String(utf8, StandardCharsets.UTF_8);
+      }
+
+      for (int i = 0; i < count; i++) {
+        final int idx = buf.getShort() & 0xFFFF;
+        if (idx >= dictSize)
+          throw new IOException("DictionaryCodec: invalid dictionary index " + idx + " (dict size=" + dictSize + ")");
+        indices[i] = idx;
+      }
+      return dictEntries;
+    } catch (final BufferUnderflowException e) {
+      throw new IOException("DictionaryCodec: malformed data (truncated buffer, size=" + data.length + ")", e);
+    }
+  }
+
+  /** The number of values an encoded column holds, read off its header without decoding anything. */
+  public static int valueCount(final byte[] data) {
+    return data == null || data.length < 4 ? 0 : ByteBuffer.wrap(data).getInt();
+  }
+
   public static String[] decode(final byte[] data) throws IOException {
     if (data == null || data.length == 0)
       return new String[0];

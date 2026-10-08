@@ -27,7 +27,6 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * #8794: a continuous feed slower than one full block per maintenance pass sealed one small block per shard per
@@ -36,7 +35,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>
  * {@link TimeSeriesEngine#mergeSmallBlocks()} is the missing merge. It must be LOSSLESS (same rows, same order,
  * same statistics), it must leave a block that already sits in one compaction bucket in that bucket, and a read
- * that is walking the old blocks while it lands must be refused rather than answered short.
+ * that is walking the old blocks while it lands must be answered whole (issue #9488; it used to be refused).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -217,7 +216,7 @@ class Issue8794MergeSmallSealedBlocksTest extends TestHelper {
   }
 
   @Test
-  void aWalkThatCrossesAMergeIsRefusedNotAnsweredShort() throws Exception {
+  void aWalkThatCrossesAMergeIsAnsweredWholeNotShort() throws Exception {
     database.command("sql", "CREATE TIMESERIES TYPE Slow TIMESTAMP ts TAGS (id STRING) FIELDS (v DOUBLE) SHARDS 1");
     final TimeSeriesEngine engine = engine("Slow");
     feedAndCompact(engine, 5, 20, 1_000L);
@@ -228,10 +227,10 @@ class Issue8794MergeSmallSealedBlocksTest extends TestHelper {
 
     engine.mergeSmallBlocks();
 
+    // a merge keeps every row, so the walk follows it to the merged block instead of being refused (issue #9488)
     final List<Object[]> rows = new ArrayList<>();
-    assertThatThrownBy(
-        () -> sealed.forEachRow(snapshot, Long.MIN_VALUE, Long.MAX_VALUE, null, null, new AggregationMetrics(), rows::add))
-        .isInstanceOf(TimeSeriesWalkCoarsenedException.class);
+    sealed.forEachRow(snapshot, Long.MIN_VALUE, Long.MAX_VALUE, null, null, new AggregationMetrics(), rows::add);
+    assertThat(rows).as("the walk is whole").hasSize(100);
     assertThat(allRows(engine)).as("a fresh read is whole").hasSize(100);
   }
 
