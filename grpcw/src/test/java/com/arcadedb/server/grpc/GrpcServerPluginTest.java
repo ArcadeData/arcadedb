@@ -20,6 +20,7 @@ package com.arcadedb.server.grpc;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.TestServerHelper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -27,8 +28,6 @@ import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 class GrpcServerPluginTest {
 
@@ -38,13 +37,11 @@ class GrpcServerPluginTest {
   @Test
   void pluginConfiguresWithDefaults() {
     GrpcServerPlugin plugin = new GrpcServerPlugin();
-    ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
     ContextConfiguration config = new ContextConfiguration();
 
-    when(mockServer.getRootPath()).thenReturn(tempDir.toString());
-    when(mockServer.getConfiguration()).thenReturn(config);
+    final ArcadeDBServer server = TestServerHelper.unstartedServer(tempDir, config);
 
-    plugin.configure(mockServer, config);
+    plugin.configure(server, config);
 
     // Plugin should be configured without errors
     GrpcServerPlugin.ServerStatus status = plugin.getStatus();
@@ -54,14 +51,12 @@ class GrpcServerPluginTest {
   @Test
   void pluginDisabledWhenConfigured() {
     GrpcServerPlugin plugin = new GrpcServerPlugin();
-    ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
     ContextConfiguration config = new ContextConfiguration();
     config.setValue("arcadedb.grpc.enabled", "false");
 
-    when(mockServer.getRootPath()).thenReturn(tempDir.toString());
-    when(mockServer.getConfiguration()).thenReturn(config);
+    final ArcadeDBServer server = TestServerHelper.unstartedServer(tempDir, config);
 
-    plugin.configure(mockServer, config);
+    plugin.configure(server, config);
     plugin.startService();
 
     GrpcServerPlugin.ServerStatus status = plugin.getStatus();
@@ -84,14 +79,12 @@ class GrpcServerPluginTest {
   @Test
   void tlsEnabledWithANonBooleanValueRefusesToStart() {
     final GrpcServerPlugin plugin = new GrpcServerPlugin();
-    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue("arcadedb.grpc.tls.enabled", "yes");
 
-    when(mockServer.getRootPath()).thenReturn(tempDir.toString());
-    when(mockServer.getConfiguration()).thenReturn(config);
+    final ArcadeDBServer server = TestServerHelper.unstartedServer(tempDir, config);
 
-    plugin.configure(mockServer, config);
+    plugin.configure(server, config);
     assertThatThrownBy(plugin::startService)
         .isInstanceOf(RuntimeException.class)
         .hasMessageContaining("arcadedb.grpc.tls.enabled")
@@ -102,14 +95,12 @@ class GrpcServerPluginTest {
   @Test
   void enabledAcceptsTrimmedCaseInsensitiveBooleans() {
     final GrpcServerPlugin plugin = new GrpcServerPlugin();
-    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue("arcadedb.grpc.enabled", " FALSE ");
 
-    when(mockServer.getRootPath()).thenReturn(tempDir.toString());
-    when(mockServer.getConfiguration()).thenReturn(config);
+    final ArcadeDBServer server = TestServerHelper.unstartedServer(tempDir, config);
 
-    plugin.configure(mockServer, config);
+    plugin.configure(server, config);
     plugin.startService();
     assertThat(plugin.getStatus().standardServerRunning).isFalse();
   }

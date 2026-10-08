@@ -21,6 +21,7 @@ package com.arcadedb.server.grpc;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.TestServerHelper;
 import io.grpc.ServerBuilder;
 import io.grpc.ServerInterceptor;
 import org.junit.jupiter.api.Test;
@@ -39,7 +40,6 @@ import static org.mockito.Mockito.RETURNS_SELF;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
 /**
  * Issue #7821, reachability: the transport-security interceptor the gRPC plugin actually registers must be the one
@@ -54,9 +54,7 @@ class Issue7821GrpcTrustedProxyWiringTest {
   @Test
   void theRegisteredInterceptorHonorsTheServersTrustedProxyList() {
     final ContextConfiguration serverConfiguration = new ContextConfiguration();
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getRootPath()).thenReturn(tempDir.toString());
-    when(server.getConfiguration()).thenReturn(serverConfiguration);
+    final ArcadeDBServer server = TestServerHelper.unstartedServer(tempDir, serverConfiguration);
 
     final GrpcServerPlugin plugin = new GrpcServerPlugin();
     plugin.configure(server, serverConfiguration);

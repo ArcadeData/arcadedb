@@ -18,16 +18,19 @@
  */
 package com.arcadedb.server.gremlin;
 
+import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.TestServerHelper;
 import org.apache.tinkerpop.gremlin.util.message.ResponseMessage;
 import org.apache.tinkerpop.gremlin.util.message.ResponseStatusCode;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Path;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Issue #9317: the Gremlin Server answers an evaluation failure with {@code Throwable.getMessage()} verbatim, which for a
@@ -44,9 +47,13 @@ class Issue9317GremlinErrorConcealmentTest {
         .create();
   }
 
-  private static ResponseMessage send(final boolean production, final ResponseMessage message) {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.isProductionMode()).thenReturn(production);
+  @TempDir
+  Path root;
+
+  private ResponseMessage send(final boolean production, final ResponseMessage message) {
+    final ContextConfiguration configuration = new ContextConfiguration();
+    configuration.setValue(GlobalConfiguration.SERVER_MODE, production ? "production" : "development");
+    final ArcadeDBServer server = TestServerHelper.unstartedServer(root, configuration);
     return ConcealingWebSocketChannelizer.conceal(server, message);
   }
 

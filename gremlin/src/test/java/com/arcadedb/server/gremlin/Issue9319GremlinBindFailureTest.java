@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.StaticBaseServerTest;
+import com.arcadedb.server.TestServerHelper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -33,8 +34,6 @@ import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Issue #9319: TinkerPop's {@code GremlinServer.start()} reports a failed bind on the future it returns, which the plugin
@@ -45,14 +44,14 @@ import static org.mockito.Mockito.when;
  */
 class Issue9319GremlinBindFailureTest {
   @TempDir
-  Path configDirectory;
+  Path root;
 
   private GremlinServerPlugin newPlugin(final int port) {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfigPath()).thenReturn(configDirectory.toString());
+    // One configuration, as on a live node: the plugin is configured with the server's own
     final ContextConfiguration configuration = new ContextConfiguration();
     configuration.setValue("gremlin.host", "127.0.0.1");
     configuration.setValue("gremlin.port", String.valueOf(port));
+    final ArcadeDBServer server = TestServerHelper.unstartedServer(root, configuration);
     final GremlinServerPlugin plugin = new GremlinServerPlugin();
     plugin.configure(server, configuration);
     return plugin;

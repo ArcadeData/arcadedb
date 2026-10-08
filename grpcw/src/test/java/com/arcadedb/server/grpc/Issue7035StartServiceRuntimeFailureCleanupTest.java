@@ -21,6 +21,7 @@ package com.arcadedb.server.grpc;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.TestServerHelper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -31,8 +32,6 @@ import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Regression test for the second residue of issue #7035: {@code GrpcServerPlugin.startService()}'s cleanup added by
@@ -73,12 +72,10 @@ class Issue7035StartServiceRuntimeFailureCleanupTest {
         throw new IllegalStateException("simulated runtime failure while building the gRPC server");
       }
     };
-    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.GRPC_PORT.getKey(), String.valueOf(freePort));
-    when(mockServer.getRootPath()).thenReturn(tempDir.toString());
-    when(mockServer.getConfiguration()).thenReturn(config);
-    plugin.configure(mockServer, config);
+    final ArcadeDBServer server = TestServerHelper.unstartedServer(tempDir, config);
+    plugin.configure(server, config);
 
     assertThatThrownBy(plugin::startService)
         .as("a runtime failure keeps its own type on the way out")

@@ -21,18 +21,20 @@ package com.arcadedb.server.grpc;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.network.binary.QuorumNotReachedException;
+import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerControlPlane;
+import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.server.security.credential.DefaultCredentialsValidator;
 import io.grpc.Status;
 import io.grpc.StatusException;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Path;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Issue #7532 (absorbing #7550) on the gRPC transport: the status a residual seed failure reaches the client as.
@@ -50,6 +52,8 @@ import static org.mockito.Mockito.when;
  * @author Roberto Franchini (r.franchini@arcadedata.com)
  */
 class Issue7532ConnectClusterSeedFailureStatusTest {
+  @TempDir
+  Path root;
 
   @Test
   void aQuorumThatCouldNotBeReachedIsRetryableRatherThanAnInternalError() {
@@ -79,13 +83,9 @@ class Issue7532ConnectClusterSeedFailureStatusTest {
    */
   @Test
   void theNotLeaderRefusalKeepsItsOwnArmDespiteExtendingTheSupertype() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(new ContextConfiguration());
-    when(server.getHA()).thenReturn(null);
-
-    final StatusException mapped = new ArcadeDbGrpcAdminService(server, new DefaultCredentialsValidator())
+    final StatusException mapped = adminService()
         .toStatus("createDatabase",
-            new com.arcadedb.network.binary.ServerIsNotTheLeaderException("Not the leader", "db2:2480"));
+            new ServerIsNotTheLeaderException("Not the leader", "db2:2480"));
 
     assertThat(mapped.getStatus().getCode())
         .as("routed through GrpcErrorMapper, not through the new NeedRetryException arm")
@@ -111,9 +111,8 @@ class Issue7532ConnectClusterSeedFailureStatusTest {
     assertThat(description).contains("db2:2435", "users", "API tokens", "connect cluster");
   }
 
-  private static ArcadeDbGrpcAdminService adminService() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(new ContextConfiguration());
+  private ArcadeDbGrpcAdminService adminService() {
+    final ArcadeDBServer server = TestServerHelper.unstartedServer(root, new ContextConfiguration());
     return new ArcadeDbGrpcAdminService(server, new DefaultCredentialsValidator());
   }
 }

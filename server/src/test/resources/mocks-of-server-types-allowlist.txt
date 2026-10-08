@@ -2,20 +2,8 @@
 # no longer mocks one of the guarded types. Format: <path> <Type>[,<Type>...]. Never add to it - use a real server/database or a fake.
 bolt/src/test/java/com/arcadedb/bolt/BoltHandlerProbe.java ArcadeDBServer,ServerSecurity,ServerSecurityUser
 bolt/src/test/java/com/arcadedb/bolt/Issue7874BoltDatabaseSelectionHandlerTest.java ArcadeDBServer,ServerDatabase
-gremlin/src/test/java/com/arcadedb/server/gremlin/Issue8363GremlinWorkerTaggedAsClientTest.java ArcadeDBServer
-gremlin/src/test/java/com/arcadedb/server/gremlin/Issue9317GremlinErrorConcealmentTest.java ArcadeDBServer
-gremlin/src/test/java/com/arcadedb/server/gremlin/Issue9319GremlinBindFailureTest.java ArcadeDBServer
 grpcw/src/test/java/com/arcadedb/server/grpc/GrpcAuthInterceptorTest.java HttpAuthSession,HttpAuthSessionManager,ServerSecurity,ServerSecurityUser
-grpcw/src/test/java/com/arcadedb/server/grpc/GrpcServerPluginTest.java ArcadeDBServer
-grpcw/src/test/java/com/arcadedb/server/grpc/GrpcServerPluginTlsHardeningTest.java ArcadeDBServer
-grpcw/src/test/java/com/arcadedb/server/grpc/Issue5050GrpcPluginLifecycleTest.java ArcadeDBServer
-grpcw/src/test/java/com/arcadedb/server/grpc/Issue6756StartServiceFailureCleanupTest.java ArcadeDBServer
-grpcw/src/test/java/com/arcadedb/server/grpc/Issue7035StartServiceRuntimeFailureCleanupTest.java ArcadeDBServer
-grpcw/src/test/java/com/arcadedb/server/grpc/Issue7233GrpcReadsServerConfigurationTest.java ArcadeDBServer
 grpcw/src/test/java/com/arcadedb/server/grpc/Issue7320GrpcAuthInterceptorDatabaseHeaderTest.java ServerSecurity,ServerSecurityUser
-grpcw/src/test/java/com/arcadedb/server/grpc/Issue7511GrpcClusterNotReadyStatusTest.java ArcadeDBServer
-grpcw/src/test/java/com/arcadedb/server/grpc/Issue7532ConnectClusterSeedFailureStatusTest.java ArcadeDBServer
-grpcw/src/test/java/com/arcadedb/server/grpc/Issue7821GrpcTrustedProxyWiringTest.java ArcadeDBServer
 ha-raft/src/test/java/com/arcadedb/server/ha/raft/ApplyWaitBoundedRecheckTest.java ArcadeDBServer
 ha-raft/src/test/java/com/arcadedb/server/ha/raft/ArcadeStateMachineBootstrapMismatchTest.java ArcadeDBServer
 ha-raft/src/test/java/com/arcadedb/server/ha/raft/ArcadeStateMachineReinitializeNotifiesTest.java RaftHAServer
