@@ -11253,7 +11253,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       // Parse variable-sized entries sequentially (no pointer table)
       int currentOffset = headerSize;
-      int maxId = -1;
       for (int i = 0; i < numberOfEntries; i++) {
         // Record absolute file offset for this entry
         final long entryFileOffset = pageStartOffset + BasePage.PAGE_HEADER_SIZE + currentOffset;
@@ -11298,18 +11297,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
           currentOffset += 4; // median (float)
         }
 
+        // The page may carry ids another node allocated (issue #9428): a follower's own commit applied on the leader,
+        // the leader's applied on a follower, a build run elsewhere. Left behind them, the next local insert would mint
+        // an id one of these entries already holds and supersede it in the location index of every node. Advanced
+        // BEFORE the entry is published, so no allocation can slip in between the two, and only ever forward, so a
+        // page carrying older ids (a tombstone, a renumbered compaction) never rewinds it.
+        if (id >= nextId.get())
+          nextId.accumulateAndGet(id + 1, Math::max);
+
         // Update VectorLocationIndex with this entry's absolute file offset
         // LSM semantics: later entries override earlier ones
         vectorIndex().addOrUpdate(id, isCompacted, entryFileOffset, rid, deleted);
-        if (id > maxId)
-          maxId = id;
       }
-
-      // The page may carry ids another node allocated (issue #9428): a follower's own commit applied on the leader,
-      // the leader's applied on a follower, a build run elsewhere. Left behind them, the next local insert would mint
-      // an id one of these entries already holds and supersede it in the location index of every node. Only ever
-      // moved forward, so a page carrying older ids (a tombstone, a renumbered compaction) never rewinds it.
-      nextId.accumulateAndGet(maxId + 1, Math::max);
 
       LogManager.instance()
           .log(this, Level.FINE, "Applied replicated page update: pageNum=%d, fileId=%d, isCompacted=%b, entries=%d",
