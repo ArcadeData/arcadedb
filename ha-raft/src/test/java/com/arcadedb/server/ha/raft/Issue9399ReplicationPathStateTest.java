@@ -184,7 +184,7 @@ class Issue9399ReplicationPathStateTest {
   @Test
   void aResyncInFlightIsLeftToItsOwnAlert() throws Exception {
     final Fixture f = reported();
-    when(f.stateMachine.isResyncInProgress()).thenReturn(true);
+    f.stateMachine.resyncInProgress(true);
     f.tick(2 * f.grace);
     assertThat(unreachableMs(f.raft)).isEqualTo(-1L);
   }
@@ -343,7 +343,7 @@ class Issue9399ReplicationPathStateTest {
     final RaftHAServer       raft;
     final DivisionInfo       info;
     final RaftLog            log;
-    final ArcadeStateMachine stateMachine;
+    final FakeArcadeStateMachine stateMachine;
     final AtomicLong         now          = new AtomicLong();
     final AtomicLong         leaderCommit = new AtomicLong(5_000L);
     final long               grace;
@@ -389,8 +389,7 @@ class Issue9399ReplicationPathStateTest {
       field.setAccessible(true);
       field.set(raft, ratis);
 
-      stateMachine = mock(ArcadeStateMachine.class);
-      when(stateMachine.isResyncInProgress()).thenReturn(false);
+      stateMachine = new FakeArcadeStateMachine();
       final Field smField = RaftHAServer.class.getDeclaredField("stateMachine");
       smField.setAccessible(true);
       smField.set(raft, stateMachine);

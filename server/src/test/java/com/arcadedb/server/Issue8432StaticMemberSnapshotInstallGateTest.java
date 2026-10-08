@@ -148,9 +148,7 @@ class Issue8432StaticMemberSnapshotInstallGateTest {
   }
 
   private static ServerSecurity fingerprintsMissing(final String... documents) {
-    final ServerSecurity security = mock(ServerSecurity.class);
-    when(security.unconvergedClusterSecurityDocuments()).thenReturn(List.of(documents));
-    return security;
+    return TestServerHelper.securityConvergedExcept(documents);
   }
 
   private static ContextConfiguration configurationWith(final long windowMs) {

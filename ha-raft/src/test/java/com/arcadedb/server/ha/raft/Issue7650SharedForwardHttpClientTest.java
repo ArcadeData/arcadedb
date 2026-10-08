@@ -89,7 +89,7 @@ class Issue7650SharedForwardHttpClientTest {
     final ContextConfiguration config = new ContextConfiguration();
     final ArcadeDBServer arcadeServer = TestServerHelper.unstartedServer((String) null, config);
 
-    final RaftReplicatedDatabase db = new RaftReplicatedDatabase(arcadeServer, mock(LocalDatabase.class), mock(RaftHAServer.class));
+    final RaftReplicatedDatabase db = new RaftReplicatedDatabase(arcadeServer, mock(LocalDatabase.class), FakeRaftHAServer.detached());
 
     assertThat(httpClientOf(db)).isNotNull();
   }
