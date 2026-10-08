@@ -4087,8 +4087,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                 (edgeAppendReplayable ? MutablePage.COVERAGE_EDGE_APPEND_MERGE : 0));
         final long footprintBefore = recordSize[0] + recordSize[1];
         // #9483: an overwrite of the same footprint moves nothing and frees nothing, so it cannot leave a hole. A
-        // shorter one does, and stays undeclared. The declaration spans exactly the two writes below - the size marker
-        // and the content - and nothing that could move bytes may ever be added between begin and end.
+        // shorter one does, and stays undeclared. footprintBefore is what the read side calls a footprint (content plus
+        // size marker, see recordFootprint), which is what the comparison below must keep meaning. The declaration spans
+        // exactly the two writes below - the size marker and the content - and nothing that could move bytes may ever
+        // be added between begin and end.
         final long sizeMarker = isPlaceHolder ? -1L * bufferSize : bufferSize;
         final boolean packedOverwrite = bufferSize + Binary.getNumberSpace(sizeMarker) == footprintBefore;
         // (the previous declaration is only read back, and only restored, when this one was made)
@@ -4650,6 +4652,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * Every other page takes {@link #compressPage} unchanged. A page that carried a hole in before the transaction
    * (written by an old engine) and is only appended to now keeps it until a write that can free bytes lands on it;
    * the hole costs the space it always cost and nothing reads through it.
+   * <p>
+   * The pages the commit rebases onto a newer committed version never arrive here already skipped: the two rebase
+   * methods build a fresh image and run {@link #compressPage} on it themselves (#5608), so a merged page is always
+   * proven.
    * <p>
    * Under assertions (surefire's default) the skip is held to its word: the proof is run anyway and a page it cannot
    * vouch for takes the full path, so the free-space claim check keeps confronting every write with the page.
