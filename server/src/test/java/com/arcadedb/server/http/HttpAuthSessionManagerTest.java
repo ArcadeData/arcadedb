@@ -18,15 +18,13 @@
  */
 package com.arcadedb.server.http;
 
+import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.server.security.ServerSecurityUser;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
-import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Unit tests for {@link HttpAuthSessionManager}.
@@ -49,9 +47,7 @@ class HttpAuthSessionManagerTest {
   }
 
   private ServerSecurityUser createMockUser(final String username) {
-    final ServerSecurityUser user = mock(ServerSecurityUser.class);
-    when(user.getName()).thenReturn(username);
-    when(user.getAuthorizedDatabases()).thenReturn(Set.of());
+    final ServerSecurityUser user = TestServerHelper.securityUser(username);
     return user;
   }
 

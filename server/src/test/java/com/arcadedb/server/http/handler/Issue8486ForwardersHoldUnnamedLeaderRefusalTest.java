@@ -48,6 +48,8 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -72,6 +74,11 @@ import static org.mockito.Mockito.when;
  */
 @Timeout(value = 60, unit = TimeUnit.SECONDS)
 class Issue8486ForwardersHoldUnnamedLeaderRefusalTest {
+  /**
+   * Real HTTP servers the helpers build: each owns cleanup threads that only stopService() ends. Static because the
+   * helpers are, and safe because this class's tests run one at a time.
+   */
+  private static final List<HttpServer> HTTP_SERVERS = new ArrayList<>();
 
   private static final String EX_LEADER  = "peer-leader";
   private static final String NEW_LEADER = "peer-new-leader";
@@ -93,6 +100,8 @@ class Issue8486ForwardersHoldUnnamedLeaderRefusalTest {
 
   @AfterEach
   void tearDown() {
+    HTTP_SERVERS.forEach(HttpServer::stopService);
+    HTTP_SERVERS.clear();
     leader.close();
     LeaderForwardContext.clear();
   }
@@ -429,8 +438,8 @@ class Issue8486ForwardersHoldUnnamedLeaderRefusalTest {
   private static HttpServer httpServerWith(final HAServerPlugin ha, final ContextConfiguration configuration) {
     final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, configuration);
     server.setHA(ha);
-    final HttpServer httpServer = mock(HttpServer.class);
-    when(httpServer.getServer()).thenReturn(server);
+    final HttpServer httpServer = new HttpServer(server);
+    HTTP_SERVERS.add(httpServer);
     return httpServer;
   }
 
@@ -449,8 +458,7 @@ class Issue8486ForwardersHoldUnnamedLeaderRefusalTest {
   }
 
   private static ServerSecurityUser user(final String name) {
-    final ServerSecurityUser user = mock(ServerSecurityUser.class);
-    when(user.getName()).thenReturn(name);
+    final ServerSecurityUser user = TestServerHelper.securityUser(name);
     return user;
   }
 

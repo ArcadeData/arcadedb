@@ -75,6 +75,11 @@ import static org.mockito.Mockito.when;
  * the leader started answering is reached on the live forward rather than only by a scripted one.
  */
 class Issue9216StreamedForwardIncrementalAcksTest {
+  /**
+   * Real HTTP servers the helpers build: each owns cleanup threads that only stopService() ends. Static because the
+   * helpers are, and safe because this class's tests run one at a time.
+   */
+  private static final List<HttpServer> HTTP_SERVERS = new ArrayList<>();
 
   private static final long   BUDGET_MS      = 10_000L;
   private static final int    CLIENT_READ_MS = 30_000;
@@ -89,6 +94,8 @@ class Issue9216StreamedForwardIncrementalAcksTest {
 
   @AfterEach
   void stopFollower() {
+    HTTP_SERVERS.forEach(HttpServer::stopService);
+    HTTP_SERVERS.clear();
     if (follower != null)
       follower.stop();
   }
@@ -274,8 +281,8 @@ class Issue9216StreamedForwardIncrementalAcksTest {
 
   private static PostBatchHandler handlerWith(final ContextConfiguration cfg) {
     final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, cfg);
-    final HttpServer httpServer = mock(HttpServer.class);
-    when(httpServer.getServer()).thenReturn(server);
+    final HttpServer httpServer = new HttpServer(server);
+    HTTP_SERVERS.add(httpServer);
     return new PostBatchHandler(httpServer);
   }
 
@@ -287,8 +294,7 @@ class Issue9216StreamedForwardIncrementalAcksTest {
   }
 
   private static ServerSecurityUser rootUser() {
-    final ServerSecurityUser user = mock(ServerSecurityUser.class);
-    when(user.getName()).thenReturn("root");
+    final ServerSecurityUser user = TestServerHelper.securityUser("root");
     return user;
   }
 

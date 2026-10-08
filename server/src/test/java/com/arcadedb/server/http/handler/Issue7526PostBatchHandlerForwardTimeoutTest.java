@@ -29,6 +29,7 @@ import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.StallAwareStopwatch;
 import io.undertow.server.HttpServerExchange;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
@@ -39,6 +40,8 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
@@ -53,14 +56,25 @@ import static org.mockito.Mockito.when;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue7526PostBatchHandlerForwardTimeoutTest {
+  /**
+   * Real HTTP servers the helpers build: each owns cleanup threads that only stopService() ends. Static because the
+   * helpers are, and safe because this class's tests run one at a time.
+   */
+  private static final List<HttpServer> HTTP_SERVERS = new ArrayList<>();
+
+  @AfterEach
+  void stopHttpServers() {
+    HTTP_SERVERS.forEach(HttpServer::stopService);
+    HTTP_SERVERS.clear();
+  }
 
   /** The tripwire between "the deadline fired" and "the call is unbounded" (minutes, without the fix). */
   private static final long GAVE_UP_BOUND_MS = 30_000L;
 
   private static PostBatchHandler handlerWith(final ContextConfiguration cfg) {
     final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, cfg);
-    final HttpServer httpServer = mock(HttpServer.class);
-    when(httpServer.getServer()).thenReturn(server);
+    final HttpServer httpServer = new HttpServer(server);
+    HTTP_SERVERS.add(httpServer);
     return new PostBatchHandler(httpServer);
   }
 
@@ -72,8 +86,7 @@ class Issue7526PostBatchHandlerForwardTimeoutTest {
   }
 
   private static ServerSecurityUser rootUser() {
-    final ServerSecurityUser user = mock(ServerSecurityUser.class);
-    when(user.getName()).thenReturn("root");
+    final ServerSecurityUser user = TestServerHelper.securityUser("root");
     return user;
   }
 

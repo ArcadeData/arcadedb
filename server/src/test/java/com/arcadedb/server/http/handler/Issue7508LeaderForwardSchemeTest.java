@@ -29,6 +29,7 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HttpString;
 import io.undertow.util.Methods;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import javax.net.ssl.SSLContext;
@@ -55,10 +56,10 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiPredicate;
 
+import java.util.ArrayList;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Regression for issue #7508: a forward to the cluster leader used to build {@code "http://" + leaderAddress + path}
@@ -72,6 +73,17 @@ import static org.mockito.Mockito.when;
  * {@link PostBatchHandler#forwardBatchToLeader} ({@code POST /api/v1/batch/{database}}).
  */
 class Issue7508LeaderForwardSchemeTest {
+  /**
+   * Real HTTP servers the helpers build: each owns cleanup threads that only stopService() ends. Static because the
+   * helpers are, and safe because this class's tests run one at a time.
+   */
+  private static final List<HttpServer> HTTP_SERVERS = new ArrayList<>();
+
+  @AfterEach
+  void stopHttpServers() {
+    HTTP_SERVERS.forEach(HttpServer::stopService);
+    HTTP_SERVERS.clear();
+  }
 
   private static final String LEADER_HTTP  = "leader.example.com:2480";
   private static final String LEADER_HTTPS = "leader.example.com:2490";
@@ -297,8 +309,8 @@ class Issue7508LeaderForwardSchemeTest {
   private static HttpServer httpServerWith(final HAServerPlugin ha) {
     final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, new ContextConfiguration());
     server.setHA(ha);
-    final HttpServer httpServer = mock(HttpServer.class);
-    when(httpServer.getServer()).thenReturn(server);
+    final HttpServer httpServer = new HttpServer(server);
+    HTTP_SERVERS.add(httpServer);
     return httpServer;
   }
 
@@ -319,8 +331,7 @@ class Issue7508LeaderForwardSchemeTest {
   }
 
   private static ServerSecurityUser user(final String name) {
-    final ServerSecurityUser user = mock(ServerSecurityUser.class);
-    when(user.getName()).thenReturn(name);
+    final ServerSecurityUser user = TestServerHelper.securityUser(name);
     return user;
   }
 

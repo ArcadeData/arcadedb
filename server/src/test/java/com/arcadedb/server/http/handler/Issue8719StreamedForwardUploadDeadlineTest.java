@@ -73,6 +73,11 @@ import static org.mockito.Mockito.when;
  * tested in {@code network}, by {@code Issue8719SendWhileProgressingTest}.
  */
 class Issue8719StreamedForwardUploadDeadlineTest {
+  /**
+   * Real HTTP servers the helpers build: each owns cleanup threads that only stopService() ends. Static because the
+   * helpers are, and safe because this class's tests run one at a time.
+   */
+  private static final List<HttpServer> HTTP_SERVERS = new ArrayList<>();
 
   private static final long   BUDGET_MS        = 1_000L;
   /** The tripwire between "the deadline fired" and "the forward is unbounded". */
@@ -90,6 +95,8 @@ class Issue8719StreamedForwardUploadDeadlineTest {
 
   @AfterEach
   void stopFollower() {
+    HTTP_SERVERS.forEach(HttpServer::stopService);
+    HTTP_SERVERS.clear();
     if (follower != null)
       follower.stop();
   }
@@ -157,8 +164,8 @@ class Issue8719StreamedForwardUploadDeadlineTest {
 
   private static PostBatchHandler handlerWith(final ContextConfiguration cfg) {
     final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, cfg);
-    final HttpServer httpServer = mock(HttpServer.class);
-    when(httpServer.getServer()).thenReturn(server);
+    final HttpServer httpServer = new HttpServer(server);
+    HTTP_SERVERS.add(httpServer);
     return new PostBatchHandler(httpServer);
   }
 
@@ -170,8 +177,7 @@ class Issue8719StreamedForwardUploadDeadlineTest {
   }
 
   private static ServerSecurityUser rootUser() {
-    final ServerSecurityUser user = mock(ServerSecurityUser.class);
-    when(user.getName()).thenReturn("root");
+    final ServerSecurityUser user = TestServerHelper.securityUser("root");
     return user;
   }
 

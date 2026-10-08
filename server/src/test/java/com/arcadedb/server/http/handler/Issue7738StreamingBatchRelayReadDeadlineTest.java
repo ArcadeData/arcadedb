@@ -66,6 +66,8 @@ import static org.mockito.Mockito.when;
  * @author Roberto Franchini (r.franchini@arcadedata.com)
  */
 class Issue7738StreamingBatchRelayReadDeadlineTest {
+  /** Real HTTP servers built by the test: each owns cleanup threads that only stopService() ends. */
+  private final List<HttpServer> httpServers = new ArrayList<>();
 
   private static final long   BUDGET_MS        = 1_000L;
   /** The tripwire between "the bound fired" and "the relay is unbounded" (forever, without the fix). */
@@ -78,6 +80,7 @@ class Issue7738StreamingBatchRelayReadDeadlineTest {
 
   @AfterEach
   void stopFollower() {
+    httpServers.forEach(HttpServer::stopService);
     if (follower != null)
       follower.stop();
   }
@@ -169,15 +172,14 @@ class Issue7738StreamingBatchRelayReadDeadlineTest {
     cfg.setValue(GlobalConfiguration.HA_PROXY_BATCH_READ_TIMEOUT, BUDGET_MS);
 
     final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, cfg);
-    final HttpServer httpServer = mock(HttpServer.class);
-    when(httpServer.getServer()).thenReturn(server);
+    final HttpServer httpServer = new HttpServer(server);
+    httpServers.add(httpServer);
     final PostBatchHandler handler = new PostBatchHandler(httpServer);
 
     final HAServerPlugin ha = mock(HAServerPlugin.class);
     when(ha.getLeaderAddress()).thenReturn(leaderAddress);
     when(ha.getClusterToken()).thenReturn("test-token");
-    final ServerSecurityUser user = mock(ServerSecurityUser.class);
-    when(user.getName()).thenReturn("root");
+    final ServerSecurityUser user = TestServerHelper.securityUser("root");
 
     final RelayResult result = new RelayResult();
     follower = Undertow.builder()

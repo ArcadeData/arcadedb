@@ -37,6 +37,8 @@ import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowableOfType;
@@ -55,12 +57,19 @@ import static org.mockito.Mockito.when;
  * end to end by {@code Issue7603LeaderForwardHopIT}.
  */
 class Issue8393UndeterminedForwardRefusalTest {
+  /**
+   * Real HTTP servers the helpers build: each owns cleanup threads that only stopService() ends. Static because the
+   * helpers are, and safe because this class's tests run one at a time.
+   */
+  private static final List<HttpServer> HTTP_SERVERS = new ArrayList<>();
 
   private static final String LOCAL_PEER  = "peer-follower";
   private static final String LEADER_PEER = "peer-leader";
 
   @AfterEach
   void clear() {
+    HTTP_SERVERS.forEach(HttpServer::stopService);
+    HTTP_SERVERS.clear();
     LeaderForwardContext.clear();
   }
 
@@ -191,8 +200,8 @@ class Issue8393UndeterminedForwardRefusalTest {
     final ContextConfiguration cfg = new ContextConfiguration();
     final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, cfg);
     server.setHA(ha);
-    final HttpServer httpServer = mock(HttpServer.class);
-    when(httpServer.getServer()).thenReturn(server);
+    final HttpServer httpServer = new HttpServer(server);
+    HTTP_SERVERS.add(httpServer);
     return httpServer;
   }
 
@@ -206,8 +215,7 @@ class Issue8393UndeterminedForwardRefusalTest {
   }
 
   private static ServerSecurityUser user() {
-    final ServerSecurityUser user = mock(ServerSecurityUser.class);
-    when(user.getName()).thenReturn("root");
+    final ServerSecurityUser user = TestServerHelper.securityUser("root");
     return user;
   }
 }

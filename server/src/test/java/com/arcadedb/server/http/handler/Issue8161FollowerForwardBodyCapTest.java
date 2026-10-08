@@ -29,6 +29,7 @@ import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.server.RequestTooBigException;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -36,6 +37,8 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -53,6 +56,17 @@ import static org.mockito.Mockito.when;
  * rethrows the {@link RequestTooBigException} so the same arm builds the same answer.
  */
 class Issue8161FollowerForwardBodyCapTest {
+  /**
+   * Real HTTP servers the helpers build: each owns cleanup threads that only stopService() ends. Static because the
+   * helpers are, and safe because this class's tests run one at a time.
+   */
+  private static final List<HttpServer> HTTP_SERVERS = new ArrayList<>();
+
+  @AfterEach
+  void stopHttpServers() {
+    HTTP_SERVERS.forEach(HttpServer::stopService);
+    HTTP_SERVERS.clear();
+  }
 
   private static final long CAP_BYTES  = 1_024L;
   private static final int  BODY_BYTES = 256 * 1_024;
@@ -63,8 +77,8 @@ class Issue8161FollowerForwardBodyCapTest {
     cfg.setValue(GlobalConfiguration.HA_PROXY_BATCH_READ_TIMEOUT, 60_000L);
     cfg.setValue(GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE, CAP_BYTES);
     final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, cfg);
-    final HttpServer httpServer = mock(HttpServer.class);
-    when(httpServer.getServer()).thenReturn(server);
+    final HttpServer httpServer = new HttpServer(server);
+    HTTP_SERVERS.add(httpServer);
     return new PostBatchHandler(httpServer);
   }
 
@@ -76,8 +90,7 @@ class Issue8161FollowerForwardBodyCapTest {
   }
 
   private static ServerSecurityUser rootUser() {
-    final ServerSecurityUser user = mock(ServerSecurityUser.class);
-    when(user.getName()).thenReturn("root");
+    final ServerSecurityUser user = TestServerHelper.securityUser("root");
     return user;
   }
 

@@ -40,7 +40,9 @@ import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -57,6 +59,11 @@ import static org.mockito.Mockito.when;
  * The leader is a real loopback HTTP listener, so the headers asserted are the ones that crossed a socket.
  */
 class Issue8343RetryAfterRelayTest {
+  /**
+   * Real HTTP servers the helpers build: each owns cleanup threads that only stopService() ends. Static because the
+   * helpers are, and safe because this class's tests run one at a time.
+   */
+  private static final List<HttpServer> HTTP_SERVERS = new ArrayList<>();
 
   private StubLeader leader;
 
@@ -67,6 +74,8 @@ class Issue8343RetryAfterRelayTest {
 
   @AfterEach
   void stopLeader() {
+    HTTP_SERVERS.forEach(HttpServer::stopService);
+    HTTP_SERVERS.clear();
     leader.close();
     LeaderForwardContext.clear();
   }
@@ -207,8 +216,8 @@ class Issue8343RetryAfterRelayTest {
   private static HttpServer httpServerWith(final HAServerPlugin ha, final ContextConfiguration configuration) {
     final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, configuration);
     server.setHA(ha);
-    final HttpServer httpServer = mock(HttpServer.class);
-    when(httpServer.getServer()).thenReturn(server);
+    final HttpServer httpServer = new HttpServer(server);
+    HTTP_SERVERS.add(httpServer);
     return httpServer;
   }
 
@@ -227,8 +236,7 @@ class Issue8343RetryAfterRelayTest {
   }
 
   private static ServerSecurityUser user(final String name) {
-    final ServerSecurityUser user = mock(ServerSecurityUser.class);
-    when(user.getName()).thenReturn(name);
+    final ServerSecurityUser user = TestServerHelper.securityUser(name);
     return user;
   }
 
