@@ -214,6 +214,33 @@ class Issue9496GroupByAggregateTest extends TestHelper {
       assertThat(render(query(query, true))).as(query).isNotEmpty().isEqualTo(render(query(query, false)));
   }
 
+  /**
+   * The property cache of a row holds 64 names: an aggregation reading more properties than that reads the others off the
+   * row, as before, and still sees every value.
+   */
+  @Test
+  void anAggregationReadingMorePropertiesThanTheCacheHoldsStillReadsThemAll() {
+    database.getSchema().createDocumentType("Wide", 2);
+    final int properties = 80;
+    database.transaction(() -> {
+      for (int i = 0; i < 2_000; i++) {
+        final MutableDocument doc = database.newDocument("Wide").set("k", i % 3);
+        for (int p = 0; p < properties; p++)
+          doc.set("p" + p, p);
+        doc.save();
+      }
+    });
+
+    final StringBuilder sum = new StringBuilder();
+    for (int p = 0; p < properties; p++)
+      sum.append(p == 0 ? "" : " + ").append("p").append(p);
+    final String query = "SELECT k, sum(" + sum + ") AS s, count(*) AS n FROM Wide GROUP BY k ORDER BY k";
+    final long perRow = (long) properties * (properties - 1) / 2;
+    for (final boolean parallel : new boolean[] { true, false })
+      for (final Result row : query(query, parallel))
+        assertThat(row.<Number>getProperty("s").longValue()).isEqualTo(perRow * row.<Long>getProperty("n"));
+  }
+
   /** An aggregate that keeps every value, which only the sequential path runs, still sees every row. */
   @Test
   void aggregatesThatKeepEveryValueStillSeeEveryRow() {
@@ -388,7 +415,8 @@ class Issue9496GroupByAggregateTest extends TestHelper {
         BigInteger.ONE, 100, 100.0, new BigDecimal("1E+2"), 0.5, 0.05f, 0.05, new BigDecimal("0.050"), Long.MAX_VALUE, Long.MIN_VALUE,
         (double) Long.MAX_VALUE, 9007199254740992.0, 9007199254740994.0, -9007199254740992.0, 1152921504606846976.0,
         1152921504606846980L, 1152921504606846976L, new BigDecimal("9223372036854775808"), new BigInteger("9223372036854775808"),
-        new BigDecimal("-9223372036854775809"), 1e20, -1e20, 123456789.0, 123456789L, 1.5e15, 1500000000000000L, Double.NaN,
+        new BigDecimal("-9223372036854775809"), 1e20, -1e20, 123456789.0, 123456789L, 1.5e15, 1500000000000000L, 16777217f, 16777216f,
+        16777216L, 16777217L, -0.0f, 3.4e38f, 9007199254740993L, -9007199254740994.0, Double.NaN,
         Double.POSITIVE_INFINITY, Float.NEGATIVE_INFINITY, new AtomicLong(42), 42));
     final Random rnd = new Random(9496);
     for (int i = 0; i < 300; i++) {
