@@ -27,6 +27,8 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -265,6 +267,24 @@ class Issue9488WalkAcrossMergeTest extends TestHelper {
 
     assertThat(failure.get()).isNull();
     assertThat(reads.get()).isPositive();
+  }
+
+  @Test
+  void theTagCombinationWalkAcrossAMergeAnswersTheSameCombinations() throws Exception {
+    database.command("sql", "CREATE TIMESERIES TYPE Slow TIMESTAMP ts TAGS (id STRING) FIELDS (v DOUBLE) SHARDS 1");
+    final TimeSeriesEngine engine = engine("Slow");
+    feedAndCompact(engine, 6, 20, 0, false);
+
+    final TimeSeriesSealedStore sealed = engine.getShard(0).getSealedStore();
+    final BlockDirectorySnapshot snapshot = sealed.snapshotBlockDirectory(Long.MIN_VALUE, Long.MAX_VALUE);
+    final Set<Object> before = new TreeSet<>();
+    sealed.forEachTagCombination(snapshot, Long.MIN_VALUE, Long.MAX_VALUE, new int[] { 0 }, null, row -> before.add(row[1]));
+
+    engine.mergeSmallBlocks();
+
+    final Set<Object> after = new TreeSet<>();
+    sealed.forEachTagCombination(snapshot, Long.MIN_VALUE, Long.MAX_VALUE, new int[] { 0 }, null, row -> after.add(row[1]));
+    assertThat(after).isEqualTo(before).containsExactly("series-0", "series-1", "series-2");
   }
 
   @Test

@@ -1254,6 +1254,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     if (finalLink == null)
       return null;
 
+    // A hint past the end of the directory skips the identity shortcut and goes straight to the search by block id
     final BlockEntry live = resolveLiveBlock(finalLink.merged(), Integer.MAX_VALUE);
     if (live == null)
       return null;

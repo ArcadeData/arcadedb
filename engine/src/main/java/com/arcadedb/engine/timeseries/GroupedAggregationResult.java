@@ -42,10 +42,10 @@ public final class GroupedAggregationResult {
   /** The largest bucket window a group still gets as a flat array. */
   static final int MAX_FLAT_WINDOW_PER_GROUP = 8_192;
   /**
-   * The most flat-array slots (groups x window) ONE result pre-allocates - a multi-shard query holds one result per shard, so its worst case is the
-   * shard count times this: a slot costs 17 bytes before any request is
-   * accumulated in it, so the per-group limit alone would let a thousand groups reserve hundreds of megabytes. Groups past the
-   * budget fall back to map mode, which pays only for the buckets they hold.
+   * The most flat-array slots (groups x window) ONE result pre-allocates. A slot costs 17 bytes before anything is accumulated in
+   * it, so the per-group limit alone would let a thousand groups reserve hundreds of megabytes. Groups past the budget fall back
+   * to map mode, which pays only for the buckets they hold. A multi-shard query holds one result per shard, so its worst case is
+   * the shard count times this.
    */
   static final long MAX_FLAT_SLOTS = 2_000_000L;
 
