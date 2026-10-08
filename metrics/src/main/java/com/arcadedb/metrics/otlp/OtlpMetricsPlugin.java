@@ -29,6 +29,7 @@ import io.micrometer.core.instrument.Metrics;
 import io.micrometer.registry.otlp.OtlpConfig;
 import io.micrometer.registry.otlp.OtlpMeterRegistry;
 
+import java.time.Duration;
 import java.util.Map;
 import java.util.logging.Level;
 import java.util.regex.Matcher;
@@ -45,6 +46,9 @@ public class OtlpMetricsPlugin implements ServerPlugin {
   private static final Pattern URL_WITHOUT_PATH = Pattern.compile("^([a-zA-Z][a-zA-Z0-9+.-]*://[^/?#\\s]+)/?([?#].*)?$");
   private static final Pattern GRPC_PORT        = Pattern.compile("^[a-zA-Z][a-zA-Z0-9+.-]*://(?:[^/?#@\\s]*@)?[^/?#@\\s]*:4317(?:[/?#].*)?$");
 
+
+  /** The shortest push interval honoured: a smaller step would push to the collector in a near busy loop. */
+  static final long MIN_STEP_MS = 1_000L;
 
   private OtlpMeterRegistry registry;
   private boolean           enabled;
@@ -85,11 +89,11 @@ public class OtlpMetricsPlugin implements ServerPlugin {
   }
 
   /**
-   * The OTLP registry's configuration: the endpoint from the ArcadeDB setting, and the resource attributes resolved by
-   * {@link OtelResourceAttributes}, the same resolution the tracing plugin uses, so metrics and spans report the same
-   * {@code service.name} (issue #7295). Micrometer's own default read the OpenTelemetry variables too, but let a
-   * {@code service.name} in {@code OTEL_RESOURCE_ATTRIBUTES} win over {@code OTEL_SERVICE_NAME} and otherwise reported
-   * {@code unknown_service}.
+   * The OTLP registry's configuration: the endpoint and the push interval from the ArcadeDB settings, and the resource
+   * attributes resolved by {@link OtelResourceAttributes}, the same resolution the tracing plugin uses, so metrics and
+   * spans report the same {@code service.name} (issue #7295). Micrometer's own default read the OpenTelemetry
+   * variables too, but let a {@code service.name} in {@code OTEL_RESOURCE_ATTRIBUTES} win over {@code OTEL_SERVICE_NAME}
+   * and otherwise reported {@code unknown_service}.
    */
   static OtlpConfig otlpConfig(final ContextConfiguration configuration, final Map<String, String> environment) {
     final String configured = configuration.getValueAsString(GlobalConfiguration.SERVER_METRICS_OTLP_ENDPOINT);
@@ -99,10 +103,20 @@ public class OtlpMetricsPlugin implements ServerPlugin {
           GlobalConfiguration.SERVER_METRICS_OTLP_ENDPOINT.getKey());
     final String endpoint = normalizeEndpoint(configured);
     final Map<String, String> resourceAttributes = OtelResourceAttributes.resolve(configuration, environment);
+    final long stepMs = configuration.getValueAsLong(GlobalConfiguration.SERVER_METRICS_OTLP_STEP);
     return new OtlpConfig() {
       @Override
       public String get(final String key) {
         return "otlp.url".equals(key) ? endpoint : null;
+      }
+
+      /**
+       * The push interval of {@code arcadedb.serverMetrics.otlp.step}, at least {@link #MIN_STEP_MS} ms, or Micrometer's
+       * one minute when not positive.
+       */
+      @Override
+      public Duration step() {
+        return stepMs > 0 ? Duration.ofMillis(Math.max(stepMs, MIN_STEP_MS)) : OtlpConfig.super.step();
       }
 
       @Override

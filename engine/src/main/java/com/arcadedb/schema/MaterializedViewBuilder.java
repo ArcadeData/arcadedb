@@ -122,12 +122,10 @@ public class MaterializedViewBuilder {
       throw new IllegalArgumentException("Materialized view name must not contain backtick characters");
     if (query == null || query.isEmpty())
       throw new IllegalArgumentException("Materialized view query is required");
-    if (refreshMode == null)
-      throw new IllegalArgumentException("Materialized view refresh mode is required");
-    // A negative interval is refused rather than carried: the SQL rendering has no expression for it, so the same
-    // builder body would store the caller's negative number embedded and something else remotely.
-    if (refreshInterval < 0)
-      throw new IllegalArgumentException("Materialized view refresh interval cannot be negative, was " + refreshInterval + "ms");
+    // A null mode, a negative interval and an interval on a non-PERIODIC mode are refused rather than carried: the SQL
+    // rendering has no expression for any of them, so the same builder body would store the caller's state embedded
+    // and fail remotely (issue #9380). An interval on MANUAL or INCREMENTAL is also one nothing ever schedules.
+    validateRefresh(refreshMode, refreshInterval);
   }
 
   /**

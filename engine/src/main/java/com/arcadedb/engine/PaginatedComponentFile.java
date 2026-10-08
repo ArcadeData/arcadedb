@@ -720,7 +720,12 @@ public class PaginatedComponentFile extends ComponentFile {
     this.open = true;
   }
 
-  private void doNotCloseOnInterrupt(final FileChannel fc) {
+  /**
+   * Keeps an interrupt landing on a thread doing I/O on {@code fc} from closing the channel for every thread using it.
+   * Needs {@code --add-opens java.base/java.nio.channels.spi}; without it the channel stays interruptible and its users
+   * fall back to reopening it. Shared with the snapshot shadow's spill file (#9444).
+   */
+  static void doNotCloseOnInterrupt(final FileChannel fc) {
     try {
       final Field field = AbstractInterruptibleChannel.class.getDeclaredField("interruptor");
       final Class<?> interruptibleClass = field.getType();
@@ -730,7 +735,8 @@ public class PaginatedComponentFile extends ComponentFile {
     } catch (final Exception e) {
       if (!warningPrinted) {
         warningPrinted = true;
-        LogManager.instance().log(this, Level.FINE, "Unable to disable channel close on interrupt: %s", e.getMessage());
+        LogManager.instance().log(PaginatedComponentFile.class, Level.FINE, "Unable to disable channel close on interrupt: %s",
+            e.getMessage());
       }
     }
   }

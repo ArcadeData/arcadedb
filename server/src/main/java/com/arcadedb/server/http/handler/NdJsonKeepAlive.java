@@ -19,12 +19,10 @@
 package com.arcadedb.server.http.handler;
 
 import io.undertow.server.HttpServerExchange;
-import org.xnio.XnioExecutor;
 import org.xnio.XnioIoThread;
 import org.xnio.XnioWorker;
 
 import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Drives {@link NdJsonResultStream#keepAlive} for one streamed response (issue #8565): every {@code intervalMs} it
@@ -44,8 +42,9 @@ final class NdJsonKeepAlive implements AutoCloseable {
   private final XnioWorker         worker;
   private final long               intervalMs;
 
-  private volatile boolean         stopped;
-  private volatile XnioExecutor.Key timer;
+  private volatile boolean  stopped;
+  /** Cancels the pending timer, or {@code null} before the first one is scheduled. */
+  private volatile Runnable timer;
 
   private NdJsonKeepAlive(final HttpServerExchange exchange, final NdJsonResultStream stream, final long intervalMs) {
     this.stream = stream;
@@ -67,9 +66,15 @@ final class NdJsonKeepAlive implements AutoCloseable {
     return keepAlive;
   }
 
+  /**
+   * Called from the request's worker on {@link #start} and from the XNIO worker pool on every re-schedule, never from the
+   * I/O thread: hence {@link IoThreadTimer}, so the selector cannot miss the timer and the stream go silent (#9439). A
+   * {@link #close()} racing this call can miss the timer it schedules; {@link #dispatch()} checks {@link #stopped} first,
+   * so that timer fires once and does nothing.
+   */
   private void schedule(final long delayMs) {
     if (!stopped)
-      timer = ioThread.executeAfter(this::dispatch, delayMs, TimeUnit.MILLISECONDS);
+      timer = IoThreadTimer.schedule(ioThread, this::dispatch, delayMs);
   }
 
   private void dispatch() {
@@ -97,8 +102,8 @@ final class NdJsonKeepAlive implements AutoCloseable {
   @Override
   public void close() {
     stopped = true;
-    final XnioExecutor.Key key = timer;
-    if (key != null)
-      key.remove();
+    final Runnable cancel = timer;
+    if (cancel != null)
+      cancel.run();
   }
 }

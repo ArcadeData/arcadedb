@@ -74,11 +74,14 @@ export HTTP="${HTTP:-2480}"
 
 WORK="$(mktemp -d)"
 SRV_PID=""
+# shellcheck source=otlp-sink.sh
+. "$SCRIPT_DIR/otlp-sink.sh"
 cleanup() {
   if [ -n "$SRV_PID" ] && kill -0 "$SRV_PID" 2>/dev/null; then
     kill "$SRV_PID" 2>/dev/null || true
     wait "$SRV_PID" 2>/dev/null || true
   fi
+  stop_otlp_sink
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -105,6 +108,10 @@ JVM_FLAGS=(
 )
 
 # ---- Phase 1: one server, every wire protocol and the observability plugins ----
+# The exporters point at a stand-in OTLP collector (#9425), so the span batch export and the metrics push really run
+# under the agent and their reflection/resource metadata is recorded - with nothing listening they only fail to connect.
+start_otlp_sink "$WORK"
+
 echo "[trace] phase 1: launching instrumented server from $DIST"
 # Root every server-generated path under $WORK, matching smoke.sh.
 "$JAVA_BIN" \
@@ -119,18 +126,20 @@ echo "[trace] phase 1: launching instrumented server from $DIST"
   -Darcadedb.serverMetrics.otlp.enabled=true \
   -Darcadedb.serverMetrics.tracing.enabled=true \
   -Darcadedb.serverMetrics.tracing.samplingRate=1.0 \
+  ${OTLP_ARGS[@]+"${OTLP_ARGS[@]}"} \
   -cp "$DIST/lib/*" com.arcadedb.server.ArcadeDBServer \
   >"$WORK/server.log" 2>&1 &
 SRV_PID=$!
 
 ARCADEDB_ROOT_PASSWORD="PlayWithData123!" \
-  SRV_PID="$SRV_PID" SERVER_LOG="$WORK/server.log" PASS="PlayWithData123!" \
+  SRV_PID="$SRV_PID" SERVER_LOG="$WORK/server.log" PASS="PlayWithData123!" OTLP_SINK_DIR="$OTLP_SINK_DIR" \
   "$SCRIPT_DIR/exercise.sh"
 
 echo "[trace] shutting down instrumented server (pid $SRV_PID)"
 kill "$SRV_PID" 2>/dev/null || true
 wait "$SRV_PID" 2>/dev/null || true
 SRV_PID=""
+stop_otlp_sink
 
 # ---- Phase 2: a three-node Raft cluster ----
 # One server cannot reach most of Ratis: a leader only builds its log appenders (loaded reflectively by

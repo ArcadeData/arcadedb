@@ -345,9 +345,9 @@ jobs:
             PLUGINS="$PLUGINS,Bolt:com.arcadedb.bolt.BoltProtocolPlugin"
             PLUGINS="$PLUGINS,Grpc:com.arcadedb.server.grpc.GrpcServerPlugin"
             # Prometheus is the only observability plugin that must be named; the OTLP metrics and
-            # tracing plugins activate from their enable flag alone (#7281). The OTLP endpoints keep
-            # their defaults: nothing listens there, which is fine, exercise.sh asserts the plugins
-            # came up, not that a collector received anything.
+            # tracing plugins activate from their enable flag alone (#7281). smoke.sh points both OTLP
+            # endpoints at its own stand-in collector (otlp_sink.py, #9425), and exercise.sh asserts a
+            # metrics push and a span batch reached it, so the export path runs inside the image.
             PLUGINS="$PLUGINS,Prometheus:com.arcadedb.metrics.prometheus.PrometheusMetricsPlugin"
             WIRE_STRICT=1 native/src/test/scripts/smoke.sh "$BIN" -Dorg.jline.terminal.dumb=true "-Darcadedb.server.plugins=$PLUGINS" \
               -Darcadedb.serverMetrics.otlp.enabled=true \

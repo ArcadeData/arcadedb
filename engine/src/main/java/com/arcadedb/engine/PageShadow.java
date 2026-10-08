@@ -24,6 +24,7 @@ import com.arcadedb.utility.LongLongHashMap;
 import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.channels.ClosedChannelException;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.StandardOpenOption;
@@ -57,12 +58,23 @@ import java.util.logging.Level;
  * {@link #read} looks the entry up under the same monitor, so a reader that observes an entry is guaranteed to
  * observe the complete pre-image. It is what lets {@link PageSnapshot} read runs of pages in bulk with no per-page
  * lock at all, re-checking the shadow afterwards for anything a writer touched underneath it.
+ * <p>
+ * <b>Interrupts</b> (issue #9444). An interrupt landing on any thread doing I/O on a {@link FileChannel} closes it for
+ * every thread (ClosedByInterruptException), and a closed spill channel used to fail every later capture (the window
+ * turned FAILED) and every later read (the HA ship or backup died mid-archive). The channel is therefore opened
+ * through {@link PaginatedComponentFile#doNotCloseOnInterrupt}, exactly like a data file, and where that protection is
+ * unavailable (the JVM was started without opening {@code java.nio.channels.spi}) every spill write and read reopens
+ * the channel and retries a bounded number of times, mirroring {@code PaginatedComponentFile.reopenAndRetry} (#9306).
+ * A reopen is refused once the shadow is closed, and it never creates the file: {@link #close()} deletes it, and a
+ * spill file re-created behind it would be an empty scratch file nothing ever cleans up.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 final class PageShadow implements AutoCloseable {
   /** A RAM slot index is stored as-is; a spill offset as {@code -(offset + 1)}, so the two never collide. */
-  private static final long NOT_FOUND = Long.MIN_VALUE;
+  private static final long NOT_FOUND       = Long.MIN_VALUE;
+  /** Reopen-and-retry rounds of one spill write or read whose channel an interrupt closed under it (#9444). */
+  private static final int  REOPEN_ATTEMPTS = 5;
 
   private final File spillFile;
   private final long maxRAMBytes;
@@ -78,6 +90,11 @@ final class PageShadow implements AutoCloseable {
   private long        spillBytes = 0L;
 
   private boolean closed = false;
+  /**
+   * Reopens of the spill channel so far: the first is logged at WARNING, the rest at FINE (an interrupt storm). Read and
+   * written only under this instance's monitor, in {@link #reopenSpillChannel}.
+   */
+  private int     reopens = 0;
 
   PageShadow(final File spillFile, final long maxRAMBytes, final long maxTotalBytes) {
     this.spillFile = spillFile;
@@ -129,8 +146,7 @@ final class PageShadow implements AutoCloseable {
       }
 
       if (spillChannel == null)
-        spillChannel = FileChannel.open(spillFile.toPath(), StandardOpenOption.CREATE_NEW, StandardOpenOption.READ,
-            StandardOpenOption.WRITE);
+        spillChannel = openSpillChannel(StandardOpenOption.CREATE_NEW, StandardOpenOption.READ, StandardOpenOption.WRITE);
       channel = spillChannel;
       // RESERVE THE RANGE, SO CONCURRENT SPILLS GET DISJOINT OFFSETS AND THE CAP ACCOUNTING STAYS EXACT EVEN WHILE
       // THE WRITES THEMSELVES ARE IN FLIGHT
@@ -142,10 +158,20 @@ final class PageShadow implements AutoCloseable {
     // AN UNRELATED PAGE. A FAILURE HERE LEAVES A HOLE IN THE SPILL FILE AND NO INDEX ENTRY, AND THE CALLER
     // INVALIDATES THE WHOLE WINDOW - WHICH IS CORRECT, SINCE THAT PAGE'S PRE-IMAGE IS GONE
     final ByteBuffer buffer = ByteBuffer.wrap(content, 0, length);
-    long pos = offset;
     try {
-      while (buffer.hasRemaining())
-        pos += channel.write(buffer, pos);
+      try {
+        writeFully(channel, buffer, offset);
+      } catch (final ClosedChannelException e) {
+        // AN INTERRUPT (THIS THREAD'S OR ANOTHER ONE'S) CLOSED THE CHANNEL: REOPEN IT AND WRITE THE WHOLE RANGE AGAIN
+        if (!reopenAndRetry(channel, c -> {
+          buffer.limit(length).position(0);
+          writeFully(c, buffer, offset);
+        }))
+          // CLOSED WHILE THE WRITE WAS IN FLIGHT: true, LIKE THE closed CHECK AFTER THE WRITE BELOW AND UNLIKE THE ONE
+          // AT THE TOP. false MEANS "CAP BREACHED" AND WOULD INVALIDATE THE WINDOW AS OVERFLOWED, WHILE A WINDOW BEING
+          // CLOSED IS NEVER READ AGAIN
+          return true;
+      }
     } catch (final IOException e) {
       // #6125: NAME THE FILE AND HOW BIG IT HAD GROWN. THE CAP BREACH ABOVE AND A FULL FILESYSTEM BOTH END THE
       // WINDOW, BUT ONLY THE FIRST IS A TUNING PROBLEM - THE STATUS ALREADY SEPARATES THEM (OVERFLOWED vs FAILED),
@@ -199,14 +225,111 @@ final class PageShadow implements AutoCloseable {
     }
 
     final ByteBuffer buffer = ByteBuffer.wrap(dst, dstOffset, length);
-    long pos = -(slot + 1);
+    final long offset = -(slot + 1);
+    try {
+      readFully(channel, buffer, offset);
+    } catch (final ClosedChannelException e) {
+      if (!reopenAndRetry(channel, c -> {
+        buffer.clear().position(dstOffset).limit(dstOffset + length);
+        readFully(c, buffer, offset);
+      }))
+        // THE SLOT WAS RESOLVED, SO ANSWERING "NOT SHADOWED" WOULD SEND THE READER TO THE LIVE, POST-t0 PAGE
+        throw new IOException("The snapshot shadow file '" + spillFile.getName() + "' was closed while reading it");
+    }
+    return true;
+  }
+
+  /** One spill-channel operation {@link #reopenAndRetry} can repeat from its start on a reopened channel. */
+  @FunctionalInterface
+  private interface SpillOperation {
+    void run(FileChannel channel) throws IOException;
+  }
+
+  private FileChannel openSpillChannel(final StandardOpenOption... options) throws IOException {
+    final FileChannel channel = FileChannel.open(spillFile.toPath(), options);
+    PaginatedComponentFile.doNotCloseOnInterrupt(channel);
+    return channel;
+  }
+
+  /**
+   * Reopens the spill channel after {@code closedChannel} was found closed, and repeats {@code operation} on the reopened
+   * one, a bounded number of times (#9444): this thread's own interrupt can land again during the retry and close the
+   * fresh channel too. Called only from the {@code catch (ClosedChannelException)} of the fast path, so the lambda is
+   * allocated on the recovery path alone.
+   * <p>
+   * ClosedByInterruptException leaves the interrupted flag set, which would close the reopened channel at once: it is
+   * cleared for the retry and restored before returning, so the caller is still told it was interrupted.
+   *
+   * @return {@code false} when the shadow was closed in the meantime: the channel is not reopened and nothing was done.
+   */
+  private boolean reopenAndRetry(final FileChannel closedChannel, final SpillOperation operation) throws IOException {
+    FileChannel lastClosed = closedChannel;
+    boolean wasInterrupted = false;
+    try {
+      for (int attempt = 1; ; attempt++) {
+        wasInterrupted |= Thread.interrupted();
+        final FileChannel channel = reopenSpillChannel(lastClosed);
+        if (channel == null)
+          return false;
+        try {
+          operation.run(channel);
+          return true;
+        } catch (final ClosedChannelException e) {
+          if (attempt >= REOPEN_ATTEMPTS)
+            // NAMED AS SUCH, SO AN INTERRUPT STORM READS DIFFERENTLY IN THE LOG FROM A FAILING DISK
+            throw new IOException(
+                "The snapshot shadow file '" + spillFile.getName() + "' was closed again after " + attempt + " reopen attempts", e);
+          lastClosed = channel;
+        }
+      }
+    } finally {
+      if (wasInterrupted)
+        Thread.currentThread().interrupt();
+    }
+  }
+
+  /**
+   * Reopens the spill channel under the monitor, so concurrent writers and readers that all found the same channel
+   * closed reopen it once and share the result (no leaked descriptors). A channel another thread already replaced is
+   * returned as-is.
+   *
+   * @return the channel to retry on, or {@code null} when the shadow is closed: {@link #close()} deleted the file, and
+   *     reopening it - even without {@code CREATE} - is exactly the resurrection a closed shadow must refuse.
+   */
+  @SuppressWarnings("PMD.CompareObjectsWithEquals") // identity on purpose: "is it still the channel I saw closed?"
+  private synchronized FileChannel reopenSpillChannel(final FileChannel closedChannel) throws IOException {
+    if (closed)
+      return null;
+    if (spillChannel != closedChannel && spillChannel != null && spillChannel.isOpen())
+      return spillChannel;
+    final int reopen = ++reopens;
+    LogManager.instance()
+        .log(this, reopen == 1 ? Level.WARNING : Level.FINE,
+            "Snapshot shadow file '%s' was closed (thread interrupted?). Reopen it and retry... (reopen #%d)", null,
+            spillFile.getName(), reopen);
+    if (spillChannel != null)
+      try {
+        spillChannel.close();
+      } catch (final IOException e) {
+        // ALREADY CLOSED BY THE INTERRUPT: NOTHING LEFT TO RELEASE
+      }
+    // NO CREATE OPTION: THE FILE EXISTS FOR AS LONG AS THE SHADOW IS OPEN, AND A MISSING ONE IS A REAL FAILURE
+    spillChannel = openSpillChannel(StandardOpenOption.READ, StandardOpenOption.WRITE);
+    return spillChannel;
+  }
+
+  private static void writeFully(final FileChannel channel, final ByteBuffer buffer, long pos) throws IOException {
+    while (buffer.hasRemaining())
+      pos += channel.write(buffer, pos);
+  }
+
+  private void readFully(final FileChannel channel, final ByteBuffer buffer, long pos) throws IOException {
     while (buffer.hasRemaining()) {
       final int r = channel.read(buffer, pos);
       if (r < 0)
         throw new IOException("Unexpected EOF reading the snapshot shadow file '" + spillFile.getName() + "' at " + pos);
       pos += r;
     }
-    return true;
   }
 
   /** Number of pages currently shadowed. */

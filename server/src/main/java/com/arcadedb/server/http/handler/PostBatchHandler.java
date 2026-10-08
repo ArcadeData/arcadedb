@@ -49,7 +49,6 @@ import io.undertow.util.HeaderValues;
 import io.undertow.util.Headers;
 import io.undertow.util.HttpString;
 import org.xnio.Options;
-import org.xnio.XnioExecutor;
 import org.xnio.XnioIoThread;
 
 import java.io.BufferedReader;
@@ -73,9 +72,7 @@ import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
 import java.util.Locale;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import java.util.logging.Level;
@@ -1052,28 +1049,13 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     }
   }
 
-  /** The {@link ReadBoundedInputStream.Timer} of this exchange's XNIO thread, where the write watchdog runs too. */
+  /**
+   * The {@link ReadBoundedInputStream.Timer} of this exchange's XNIO thread, where the write watchdog runs too. Scheduled
+   * through {@link IoThreadTimer}, which hands the timer to the I/O thread rather than racing its selector (#9216, #9439).
+   */
   private static ReadBoundedInputStream.Timer ioThreadTimer(final HttpServerExchange exchange) {
     final XnioIoThread ioThread = exchange.getIoThread();
-    return (task, delayMs) -> {
-      // Scheduled FROM the I/O thread (issue #9216). XNIO wakes its selector for a delayed task added by another thread
-      // only when the selector is already polling: one added while the thread is between computing its next wait and
-      // starting it is not seen, and the selector can sleep past its deadline - indefinitely when nothing else is
-      // queued. An immediate task has no such window, and a delayed one added on the I/O thread is seen by the next
-      // wait it computes. A cancel that races the hand-over leaves the task to fire; the stream ignores a disarmed one.
-      final AtomicBoolean cancelled = new AtomicBoolean();
-      final AtomicReference<XnioExecutor.Key> key = new AtomicReference<>();
-      ioThread.execute(() -> {
-        if (!cancelled.get())
-          key.set(ioThread.executeAfter(task, delayMs, TimeUnit.MILLISECONDS));
-      });
-      return () -> {
-        cancelled.set(true);
-        final XnioExecutor.Key scheduled = key.get();
-        if (scheduled != null)
-          scheduled.remove();
-      };
-    };
+    return (task, delayMs) -> IoThreadTimer.schedule(ioThread, task, delayMs);
   }
 
   /**
