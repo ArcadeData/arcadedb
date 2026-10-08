@@ -181,6 +181,8 @@ class Issue9489GroupByTagPushDownTest extends TestHelper {
     forEachState(1, () -> {
       assertSameAsTheDocumentTwin("host AS machine, ts.timeBucket('1h', ts) AS h, " + AGGREGATES, "machine, h", RANGE);
       // grouped by a tag the projection does not show
+      assertThat(plan("SELECT ts.timeBucket('1h', ts) AS h, " + AGGREGATES + " FROM T" + RANGE + " GROUP BY host, h"))
+          .contains("AGGREGATE FROM TIMESERIES").contains("group by host");
       assertSameAsTheDocumentTwin("ts.timeBucket('1h', ts) AS h, " + AGGREGATES, "host, h", RANGE);
     });
   }
