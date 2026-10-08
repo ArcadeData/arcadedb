@@ -21,11 +21,13 @@ package com.arcadedb.server.grpc;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.TestServerHelper;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Issue #7233: the gRPC row caps and stream write timeout are SCOPE.SERVER, so they live in the server's
@@ -39,14 +41,16 @@ import static org.mockito.Mockito.when;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue7233GrpcReadsServerConfigurationTest {
+  @TempDir
+  Path root;
+
 
   @Test
   void theSettingsResolveAgainstTheServersOwnConfiguration() {
     final ContextConfiguration configuration = new ContextConfiguration();
     configuration.fromJSON("{\"configuration\":{\"server.grpcQueryMaxResultRows\":4242}}");
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(configuration);
+    final ArcadeDBServer server = TestServerHelper.unstartedServer(root, configuration);
 
     final ArcadeDbGrpcService service = new ArcadeDbGrpcService("./target/databases", server);
 

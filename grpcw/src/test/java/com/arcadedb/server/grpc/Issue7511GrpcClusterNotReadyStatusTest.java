@@ -21,16 +21,17 @@ package com.arcadedb.server.grpc;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ClusterCapabilityNotReadyException;
+import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.server.security.credential.DefaultCredentialsValidator;
 import io.grpc.Status;
 import io.grpc.StatusException;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Path;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Issue #7511 on the gRPC transport: a group or API-token change refused because a peer cannot decode the entry it
@@ -48,6 +49,9 @@ import static org.mockito.Mockito.when;
  * @author Roberto Franchini (r.franchini@arcadedata.com)
  */
 class Issue7511GrpcClusterNotReadyStatusTest {
+  @TempDir
+  Path root;
+
 
   @Test
   void aClusterNotReadyRefusalIsAPreconditionFailureRatherThanAnInternalError() {
@@ -70,9 +74,8 @@ class Issue7511GrpcClusterNotReadyStatusTest {
     assertThat(mapped.getStatus().getCode()).isEqualTo(Status.Code.FAILED_PRECONDITION);
   }
 
-  private static ArcadeDbGrpcAdminService adminService() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(new ContextConfiguration());
+  private ArcadeDbGrpcAdminService adminService() {
+    final ArcadeDBServer server = TestServerHelper.unstartedServer(root, new ContextConfiguration());
     return new ArcadeDbGrpcAdminService(server, new DefaultCredentialsValidator());
   }
 }

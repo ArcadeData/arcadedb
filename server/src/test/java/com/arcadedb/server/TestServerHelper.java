@@ -84,6 +84,17 @@ public final class TestServerHelper {
     return servers;
   }
 
+  /**
+   * A real server that is constructed and never started: {@link ArcadeDBServer#getConfiguration()} is the very instance
+   * passed in, the root and config paths resolve under {@code rootPath}, and nothing binds a port, opens a database or
+   * writes a file. It replaces a Mockito mock of {@link ArcadeDBServer} that only stubbed those getters (issue #9464).
+   */
+  public static ArcadeDBServer unstartedServer(final Path rootPath, final ContextConfiguration configuration) {
+    configuration.setValue(GlobalConfiguration.SERVER_ROOT_PATH, rootPath.toString());
+    configuration.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, rootPath.resolve("databases").toString());
+    return new ArcadeDBServer(configuration);
+  }
+
   public static void stopServers(final ArcadeDBServer[] servers) {
     if (servers != null) {
       for (final ArcadeDBServer server : servers)
