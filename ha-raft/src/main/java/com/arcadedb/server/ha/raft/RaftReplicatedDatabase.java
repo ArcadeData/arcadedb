@@ -1702,6 +1702,25 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     return proxied.getConfiguration();
   }
 
+  /**
+   * The configuration this node's Raft layer was built from (issue #9430): {@code RaftHAServer} sizes the
+   * transaction broker's per-entry cap from it, and it is the server's configuration, so a cap set only in
+   * {@code config/server-configuration.json} reaches the engine code that sizes its work against it. The
+   * database's own configuration falls back to the JVM-global values instead and would miss that cap.
+   * <p>
+   * Falls back to the server's configuration, then to the database's, only where no Raft server is attached - a
+   * state some unit tests construct, never a running cluster.
+   */
+  @Override
+  public ContextConfiguration getReplicationConfiguration() {
+    final RaftHAServer raft = raftHAServer;
+    final ContextConfiguration raftConfiguration = raft != null ? raft.getConfiguration() : null;
+    if (raftConfiguration != null)
+      return raftConfiguration;
+    final ContextConfiguration serverConfiguration = server != null ? server.getConfiguration() : null;
+    return serverConfiguration != null ? serverConfiguration : proxied.getConfiguration();
+  }
+
   @Override
   public Record invokeAfterReadEvents(final Record record) {
     return record;
@@ -3201,7 +3220,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // to leave room for.
       final JSONObject compactionSchema = proxied.getSchema().getEmbedded().toJSON();
       final String serializedSchema = compactionSchema.toString();
-      final long sealedChunkBudget = GlobalConfiguration.replicatedSealedChunkBudget(proxied.getConfiguration());
+      final long sealedChunkBudget = GlobalConfiguration.replicatedSealedChunkBudget(getReplicationConfiguration());
       final List<SealedSlicePlan> sealedPlans = planSealedShipping(recordedSealed, sealedChunkBudget,
           publishingSealedCapacity(sealedChunkBudget, broker.maxEntrySize(),
               publishingHeaderSize(getName(), serializedSchema, addFiles, removeFiles)), getName());

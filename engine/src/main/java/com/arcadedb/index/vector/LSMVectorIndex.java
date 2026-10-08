@@ -4516,15 +4516,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * guard in {@link #build(BuildIndexCallback, GraphBuildCallback, boolean)}).
    * <p>
    * The cap is the one {@code ha-raft} enforces at submit, further bounded by the 64MB of uncompressed payload its
-   * codec accepts per entry for a cluster that raised the cap past that. It is read from this database's
-   * configuration, as {@code TimeSeriesShard} reads its own replicated ceiling.
+   * codec accepts per entry for a cluster that raised the cap past that. It is read from the wrapper's
+   * {@link DatabaseInternal#getReplicationConfiguration()}, the configuration the replication layer enforces it from,
+   * not from this database's own, which never sees a cap set only in the server configuration (issue #9430).
    */
   private long getBulkLoadChunkSizeBytes() {
     final long chunkSizeBytes = getTxChunkSize() * 1024 * 1024;
     if (!isReplicated())
       return chunkSizeBytes;
 
-    final long entryCap = Math.min(GlobalConfiguration.maxReplicatedRaftEntrySize(getDatabase().getConfiguration()),
+    final long entryCap = Math.min(GlobalConfiguration.maxReplicatedRaftEntrySize(
+        getDatabase().getWrappedDatabaseInstance().getReplicationConfiguration()),
         GlobalConfiguration.MAX_REPLICATED_UNCOMPRESSED_ENTRY_BYTES);
     return Math.min(chunkSizeBytes, entryCap / REPLICATED_CHUNK_SHARE_OF_ENTRY_CAP);
   }
