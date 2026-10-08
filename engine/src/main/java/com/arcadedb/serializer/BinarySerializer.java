@@ -504,7 +504,7 @@ public class BinarySerializer {
       }
     } catch (final DatabaseIsClosedException e) {
       throw e;
-    } catch (Exception e) {
+    } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Possible corrupted record %s", e, rid);
       return found ? null : absentValue;
     }
@@ -547,7 +547,8 @@ public class BinarySerializer {
       return true;
     } catch (final DatabaseIsClosedException e) {
       throw e;
-    } catch (Exception e) {
+    } catch (final Exception e) {
+      // NOT LOGGED HERE: THE CALLER READS EVERY PROPERTY ON ITS OWN, WHICH LOGS THE DAMAGED RECORD AS A SINGLE READ ALWAYS DID
       return false;
     }
   }
@@ -563,7 +564,7 @@ public class BinarySerializer {
       return readPropertyValue(database, buffer, owner, fieldName);
     } catch (final DatabaseIsClosedException e) {
       throw e;
-    } catch (Exception e) {
+    } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Possible corrupted record %s", e, rid);
       return null;
     }
