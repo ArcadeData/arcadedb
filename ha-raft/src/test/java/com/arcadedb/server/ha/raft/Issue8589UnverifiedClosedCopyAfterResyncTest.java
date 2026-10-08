@@ -104,13 +104,13 @@ class Issue8589UnverifiedClosedCopyAfterResyncTest {
     leader.start();
     leaderAddress = "localhost:" + leader.getAddress().getPort();
 
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.isLeader()).thenReturn(false);
-    when(raft.getLocalPeerId()).thenReturn(LOCAL);
-    when(raft.getLocalHttpAddress()).thenReturn("local-host:2480");
-    when(raft.getClusterToken()).thenReturn(null);
-    when(raft.getLeaderId()).thenReturn(LEADER);
-    when(raft.getUnambiguousPeerHttpAddress(LEADER)).thenReturn(leaderAddress);
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.leader(false);
+    raft.localPeerId(LOCAL);
+    raft.localHttpAddress("local-host:2480");
+    raft.clusterToken(null);
+    raft.leaderId(LEADER);
+    raft.peerHttpAddress(LEADER, leaderAddress);
 
     sm = new ArcadeStateMachine();
     sm.setServer(server);

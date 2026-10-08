@@ -41,8 +41,6 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Regression tests for issue #7735.
@@ -462,10 +460,10 @@ class Issue7735QuarantineSurvivesRestartTest {
 
   private static RaftHAServer followerRaftHAServerMock() {
     final RaftPeerId leader = RaftPeerId.valueOf("peer-b_2434");
-    final RaftHAServer mockRaft = mock(RaftHAServer.class);
-    when(mockRaft.isLeader()).thenReturn(false);
-    when(mockRaft.getLeaderId()).thenReturn(leader);
-    when(mockRaft.getUnambiguousPeerHttpAddress(leader)).thenReturn("peer-b:2480");
+    final FakeRaftHAServer mockRaft = FakeRaftHAServer.detached();
+    mockRaft.leader(false);
+    mockRaft.leaderId(leader);
+    mockRaft.peerHttpAddress(leader, "peer-b:2480");
     return mockRaft;
   }
 

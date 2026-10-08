@@ -84,9 +84,9 @@ class Issue7527RaftReplicatedDatabaseForwardTimeoutTest {
   }
 
   private static RaftHAServer raftPointingAt(final String leaderHttpAddress) {
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.getLeaderHttpAddress()).thenReturn(leaderHttpAddress);
-    when(raft.getClusterToken()).thenReturn("test-token");
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.leaderHttpAddress(leaderHttpAddress);
+    raft.clusterToken("test-token");
     return raft;
   }
 
@@ -179,7 +179,7 @@ class Issue7527RaftReplicatedDatabaseForwardTimeoutTest {
     final ContextConfiguration cfg = new ContextConfiguration();
     cfg.setValue(GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT, 2_500L);
 
-    final RaftReplicatedDatabase db = databaseWith(serverWith(cfg), mock(RaftHAServer.class));
+    final RaftReplicatedDatabase db = databaseWith(serverWith(cfg), FakeRaftHAServer.detached());
 
     final Field field = RaftReplicatedDatabase.class.getDeclaredField("httpClient");
     field.setAccessible(true);
