@@ -42,6 +42,28 @@ class FakeServerSecurityTest {
   }
 
   @Test
+  void unansweredAuthenticationRunsTheRealChecksAgainstAnEmptyUserList() {
+    final FakeServerSecurity security = FakeServerSecurity.create();
+
+    assertThatThrownBy(() -> security.authenticate("nobody", "pw", null)).isInstanceOf(ServerSecurityException.class);
+    assertThatThrownBy(() -> security.revalidate(TestServerHelper.securityUser("nobody")))
+        .isInstanceOf(ServerSecurityException.class);
+  }
+
+  @Test
+  void unansweredReplicationAndSeedingRunTheRealCode() {
+    final FakeServerSecurity security = FakeServerSecurity.create();
+
+    security.applyReplicatedUsers("[]");
+    assertThatThrownBy(() -> security.applyReplicatedGroups("{}")).as("the real validation refuses an unusable document")
+        .isInstanceOf(ServerSecurityException.class).hasMessageContaining("databases");
+    security.applyReplicatedApiTokens("{\"tokens\":[]}");
+    assertThat(security.getUsers()).isEmpty();
+    assertThat(security.seedSecurityStateClusterWide()).as("bound to no server, there is no cluster to seed").isEmpty();
+    assertThat(security.calls("seedSecurityStateClusterWide")).as("the no-argument form delegates").hasSize(1);
+  }
+
+  @Test
   void overloadsShareOneNameAndAreToldApartByArity() {
     final FakeServerSecurity security = FakeServerSecurity.create()
         .on("applyReplicatedUsers", args -> args.length == 2 && "expected".equals(args[1]));
