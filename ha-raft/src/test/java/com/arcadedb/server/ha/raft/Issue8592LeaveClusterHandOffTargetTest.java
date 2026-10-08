@@ -53,7 +53,7 @@ class Issue8592LeaveClusterHandOffTargetTest {
   private static final RaftPeerId B    = RaftPeerId.valueOf("peer-b_2435");
   private static final RaftPeerId C    = RaftPeerId.valueOf("peer-c_2436");
 
-  private RaftHAServer   raft;
+  private FakeRaftHAServer   raft;
   private ClusterMonitor monitor;
   private AtomicBoolean  leader;
 
@@ -63,16 +63,16 @@ class Issue8592LeaveClusterHandOffTargetTest {
 
   @BeforeEach
   void setUp() {
-    raft = mock(RaftHAServer.class);
+    raft = FakeRaftHAServer.detached();
     monitor = mock(ClusterMonitor.class);
     leader = new AtomicBoolean(true);
-    when(raft.getClient()).thenReturn(mock(RaftClient.class));
-    when(raft.getLocalPeerId()).thenReturn(SELF);
-    when(raft.isLeader()).thenAnswer(invocation -> leader.get());
-    when(raft.getClusterMonitor()).thenReturn(monitor);
-    when(raft.getLivePeers()).thenReturn(List.of(peer(SELF, 0), peer(B, 0), peer(C, 0)));
+    raft.returns("getClient", mock(RaftClient.class));
+    raft.localPeerId(SELF);
+    raft.on("isLeader", args -> leader.get());
+    raft.returns("getClusterMonitor", monitor);
+    raft.returns("getLivePeers", List.of(peer(SELF, 0), peer(B, 0), peer(C, 0)));
     // Both peers answered this leader recently: without it the #8556 screen drops every candidate (issue #8632)
-    when(raft.handoffReachablePeers()).thenReturn(Set.of(B.toString(), C.toString()));
+    raft.returns("handoffReachablePeers", Set.of(B.toString(), C.toString()));
   }
 
   /** The first configured peer is lagging (the shape a peer that went down takes): the leave hands off to the next. */
@@ -93,7 +93,7 @@ class Issue8592LeaveClusterHandOffTargetTest {
    */
   @Test
   void anUnreachableFirstPeerIsNeverTried() {
-    when(raft.handoffReachablePeers()).thenReturn(Set.of(C.toString()));
+    raft.returns("handoffReachablePeers", Set.of(C.toString()));
 
     manager(C).leaveCluster(false);
 
@@ -106,7 +106,7 @@ class Issue8592LeaveClusterHandOffTargetTest {
   /** No peer is reachable: the screen alone leaves nothing to try, and the removal still demotes this leader. */
   @Test
   void noReachablePeerSkipsTheHandOffAndStillRemoves() {
-    when(raft.handoffReachablePeers()).thenReturn(Set.of());
+    raft.returns("handoffReachablePeers", Set.of());
 
     manager(C).leaveCluster(false);
 
@@ -118,7 +118,7 @@ class Issue8592LeaveClusterHandOffTargetTest {
   /** A priority-0 first peer, while a higher-priority voter exists, is never the target: Ratis would not keep it leader. */
   @Test
   void theHighestPriorityPeerIsTriedFirst() {
-    when(raft.getLivePeers()).thenReturn(List.of(peer(SELF, 1), peer(B, 0), peer(C, 1)));
+    raft.returns("getLivePeers", List.of(peer(SELF, 1), peer(B, 0), peer(C, 1)));
 
     manager(C).leaveCluster(false);
 

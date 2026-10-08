@@ -57,27 +57,27 @@ class Issue8487TargetedTransferSettlesTest {
   private static final RaftPeerId B    = RaftPeerId.valueOf("peer-b_2435");
   private static final RaftPeerId C    = RaftPeerId.valueOf("peer-c_2436");
 
-  private RaftHAServer raft;
+  private FakeRaftHAServer raft;
   private AdminApi     admin;
 
   @BeforeEach
   void setUp() {
-    raft = mock(RaftHAServer.class);
+    raft = FakeRaftHAServer.detached();
     admin = mock(AdminApi.class);
     final RaftClient client = mock(RaftClient.class);
     when(client.admin()).thenReturn(admin);
-    when(raft.getClient()).thenReturn(client);
-    when(raft.getLocalPeerId()).thenReturn(SELF);
-    when(raft.isLeader()).thenReturn(true);
+    raft.returns("getClient", client);
+    raft.localPeerId(SELF);
+    raft.leader(true);
   }
 
   /** The crux: the target is seen as leader only some polls after the failure, and that is still the handoff. */
   @Test
   void aClosedClientFailureIsSettledByWaitingForTheTarget() throws Exception {
     when(admin.transferLeadership(eq(B), anyLong())).thenThrow(closed());
-    when(raft.isLeader()).thenReturn(true, false);
+    raft.leader(true, false);
     // A leaderless window first - the moment the old code sampled - then the target.
-    when(raft.getLeaderId()).thenReturn(null, null, null, B);
+    raft.on("getLeaderId", CallLog.inOrder(null, null, null, B));
 
     assertThatCode(() -> manager().transferLeadership(B.toString(), 10_000)).doesNotThrowAnyException();
     verify(admin, times(1)).transferLeadership(eq(B), anyLong());
@@ -87,8 +87,8 @@ class Issue8487TargetedTransferSettlesTest {
   @Test
   void aTransferWhereAnotherPeerWonNamesTheActualLeader() throws Exception {
     when(admin.transferLeadership(eq(B), anyLong())).thenThrow(closed());
-    when(raft.isLeader()).thenReturn(true, false);
-    when(raft.getLeaderId()).thenReturn(null, C);
+    raft.leader(true, false);
+    raft.on("getLeaderId", CallLog.inOrder(null, C));
 
     assertThatThrownBy(() -> manager().transferLeadership(B.toString(), 10_000))
         .isInstanceOf(ConfigurationException.class)
@@ -101,8 +101,8 @@ class Issue8487TargetedTransferSettlesTest {
   @Test
   void noLeaderSettlingWithinTheBudgetFails() throws Exception {
     when(admin.transferLeadership(eq(B), anyLong())).thenThrow(closed());
-    when(raft.isLeader()).thenReturn(true, false);
-    when(raft.getLeaderId()).thenReturn(null);
+    raft.leader(true, false);
+    raft.leaderId(null);
 
     assertThatThrownBy(() -> manager().transferLeadership(B.toString(), 200))
         .isInstanceOf(ConfigurationException.class)
@@ -119,11 +119,11 @@ class Issue8487TargetedTransferSettlesTest {
     final RaftClient freshClient = mock(RaftClient.class);
     when(freshClient.admin()).thenReturn(freshAdmin);
     final RaftClient staleClient = raft.getClient();
-    when(raft.getClient()).thenReturn(staleClient, freshClient);
+    raft.on("getClient", CallLog.inOrder(staleClient, freshClient));
     when(admin.transferLeadership(eq(B), anyLong())).thenThrow(closed());
     final RaftClientReply ok = reply(true);
     when(freshAdmin.transferLeadership(eq(B), anyLong())).thenReturn(ok);
-    when(raft.getLeaderId()).thenReturn(SELF);
+    raft.leaderId(SELF);
 
     assertThatCode(() -> manager().transferLeadership(B.toString(), 10_000)).doesNotThrowAnyException();
     verify(admin, times(1)).transferLeadership(eq(B), anyLong());
@@ -139,8 +139,8 @@ class Issue8487TargetedTransferSettlesTest {
     final RaftClientReply ok = reply(true);
     when(admin.transferLeadership(eq(B), anyLong())).thenThrow(closed()).thenReturn(ok);
     // entry guard, then leaderless while the target's election fails, then this node again
-    when(raft.isLeader()).thenReturn(true, false, false, true);
-    when(raft.getLeaderId()).thenReturn(null, null, SELF);
+    raft.leader(true, false, false, true);
+    raft.on("getLeaderId", CallLog.inOrder(null, null, SELF));
 
     assertThatCode(() -> manager().transferLeadership(B.toString(), 10_000)).doesNotThrowAnyException();
     verify(admin, times(2)).transferLeadership(eq(B), anyLong());
@@ -156,7 +156,7 @@ class Issue8487TargetedTransferSettlesTest {
     when(refused.getException()).thenReturn(new TransferLeadershipException("peer-b_2435 is not in the configuration"));
     when(admin.transferLeadership(eq(B), anyLong())).thenReturn(refused);
     final AtomicInteger polls = new AtomicInteger();
-    when(raft.getLeaderId()).thenAnswer(invocation -> {
+    raft.on("getLeaderId", args -> {
       polls.incrementAndGet();
       return SELF;
     });
@@ -172,7 +172,7 @@ class Issue8487TargetedTransferSettlesTest {
   @Test
   void closedClientRetriesAreBounded() throws Exception {
     when(admin.transferLeadership(eq(B), anyLong())).thenThrow(closed());
-    when(raft.getLeaderId()).thenReturn(SELF);
+    raft.leaderId(SELF);
 
     assertThatThrownBy(() -> manager().transferLeadership(B.toString(), 10_000))
         .isInstanceOf(ConfigurationException.class)
@@ -188,7 +188,7 @@ class Issue8487TargetedTransferSettlesTest {
 
     assertThatCode(() -> manager().transferLeadership(B.toString(), 10_000)).doesNotThrowAnyException();
     verify(admin, times(1)).transferLeadership(eq(B), anyLong());
-    verify(raft, times(0)).getLeaderId();
+    assertThat(raft.calls("getLeaderId")).isEmpty();
   }
 
   private RaftClusterManager manager() {

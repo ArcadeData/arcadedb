@@ -174,13 +174,13 @@ class Issue8556HandOffTargetReachabilityTest {
   @Test
   void theNoTargetTransferNeverTargetsAnUnreachablePeer() throws Exception {
     final AdminApi admin = mock(AdminApi.class);
-    final RaftHAServer raft = leaderWithPeers(admin);
-    when(raft.handoffReachablePeers()).thenReturn(Set.of(B.toString()));
+    final FakeRaftHAServer raft = leaderWithPeers(admin);
+    raft.returns("handoffReachablePeers", Set.of(B.toString()));
     final RaftClientReply ok = reply(true);
     when(admin.transferLeadership(eq(B), anyLong())).thenReturn(ok);
 
     // C first in the configuration order, which is the order equal priorities keep
-    when(raft.getLivePeers()).thenReturn(List.of(peer(SELF), peer(C), peer(B)));
+    raft.returns("getLivePeers", List.of(peer(SELF), peer(C), peer(B)));
 
     assertThat(manager(raft).transferLeadership(10_000)).isTrue();
 
@@ -192,9 +192,9 @@ class Issue8556HandOffTargetReachabilityTest {
   @Test
   void aCandidateThatCannotWinHoldsOnlyASliceOfTheBudget() throws Exception {
     final AdminApi admin = mock(AdminApi.class);
-    final RaftHAServer raft = leaderWithPeers(admin);
-    when(raft.handoffReachablePeers()).thenReturn(Set.of(B.toString(), C.toString()));
-    when(raft.getLeaderId()).thenReturn(SELF);
+    final FakeRaftHAServer raft = leaderWithPeers(admin);
+    raft.returns("handoffReachablePeers", Set.of(B.toString(), C.toString()));
+    raft.leaderId(SELF);
     final RaftClientReply failed = reply(false);
     final RaftClientReply ok = reply(true);
     when(admin.transferLeadership(eq(B), anyLong())).thenReturn(failed);
@@ -251,9 +251,9 @@ class Issue8556HandOffTargetReachabilityTest {
   void theReplacingLeaderHandOffPausesAfterAnAttemptEndsAndBacksOff() throws Exception {
     final AtomicLong clock = new AtomicLong(1_000_000L);
     final AtomicInteger attempts = new AtomicInteger();
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.isLeader()).thenReturn(true);
-    when(raft.transferLeadership(anyLong(), eq(false))).thenAnswer(invocation -> {
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.leader(true);
+    raft.on("transferLeadership", args -> {
       attempts.incrementAndGet();
       clock.addAndGet(13_000L); // an attempt on a dead peer: the transfer budget plus the confirmation grace
       return false;
@@ -290,9 +290,9 @@ class Issue8556HandOffTargetReachabilityTest {
   void aSuccessfulHandOffResetsTheBackOff() throws Exception {
     final AtomicLong clock = new AtomicLong(1_000_000L);
     final AtomicInteger attempts = new AtomicInteger();
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.isLeader()).thenReturn(true);
-    when(raft.transferLeadership(anyLong(), eq(false))).thenAnswer(invocation -> attempts.incrementAndGet() == 3);
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.leader(true);
+    raft.on("transferLeadership", args -> attempts.incrementAndGet() == 3);
     final ArcadeStateMachine sm = new ArcadeStateMachine();
     sm.setRaftHAServer(raft);
     sm.replacingLeaderHandOffClock = clock::get;
@@ -314,9 +314,9 @@ class Issue8556HandOffTargetReachabilityTest {
   void theBackOffDoesNotOutliveTheReplacement() throws Exception {
     final AtomicLong clock = new AtomicLong(1_000_000L);
     final AtomicInteger attempts = new AtomicInteger();
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.isLeader()).thenReturn(true);
-    when(raft.transferLeadership(anyLong(), eq(false))).thenAnswer(invocation -> {
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.leader(true);
+    raft.on("transferLeadership", args -> {
       attempts.incrementAndGet();
       return false;
     });
@@ -348,9 +348,9 @@ class Issue8556HandOffTargetReachabilityTest {
   void theHealthTickEndsTheBackOffWhenNothingIsBeingReplaced() throws Exception {
     final AtomicLong clock = new AtomicLong(1_000_000L);
     final AtomicInteger attempts = new AtomicInteger();
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.isLeader()).thenReturn(true);
-    when(raft.transferLeadership(anyLong(), eq(false))).thenAnswer(invocation -> {
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.leader(true);
+    raft.on("transferLeadership", args -> {
       attempts.incrementAndGet();
       return false;
     });
@@ -396,14 +396,14 @@ class Issue8556HandOffTargetReachabilityTest {
 
   // -- helpers --
 
-  private static RaftHAServer leaderWithPeers(final AdminApi admin) {
-    final RaftHAServer raft = mock(RaftHAServer.class);
+  private static FakeRaftHAServer leaderWithPeers(final AdminApi admin) {
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
     final RaftClient client = mock(RaftClient.class);
     when(client.admin()).thenReturn(admin);
-    when(raft.getClient()).thenReturn(client);
-    when(raft.getLocalPeerId()).thenReturn(SELF);
-    when(raft.isLeader()).thenReturn(true);
-    when(raft.getLivePeers()).thenReturn(peers());
+    raft.returns("getClient", client);
+    raft.localPeerId(SELF);
+    raft.leader(true);
+    raft.returns("getLivePeers", peers());
     return raft;
   }
 

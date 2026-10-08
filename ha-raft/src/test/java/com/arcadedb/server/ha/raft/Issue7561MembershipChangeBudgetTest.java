@@ -86,7 +86,7 @@ class Issue7561MembershipChangeBudgetTest {
     final long budgetMs = 500;
     final AtomicInteger attempts = new AtomicInteger();
 
-    final RaftHAServer server = stubServer();
+    final FakeRaftHAServer server = stubServer();
     final AdminApi admin = server.getClient().admin();
     when(admin.setConfiguration(any(SetConfigurationRequest.Arguments.class))).thenAnswer(invocation -> {
       attempts.incrementAndGet();
@@ -119,7 +119,7 @@ class Issue7561MembershipChangeBudgetTest {
   void aPeerFromAnotherRaftGroupIsRefusedWithoutWaitingOutTheBudget() throws Exception {
     final AtomicInteger attempts = new AtomicInteger();
 
-    final RaftHAServer server = stubServer();
+    final FakeRaftHAServer server = stubServer();
     final AdminApi admin = server.getClient().admin();
     when(admin.setConfiguration(any(SetConfigurationRequest.Arguments.class))).thenAnswer(invocation -> {
       attempts.incrementAndGet();
@@ -141,7 +141,7 @@ class Issue7561MembershipChangeBudgetTest {
   void aGroupMismatchCarriedInTheReplyIsRefusedTheSameWay() throws Exception {
     final AtomicInteger attempts = new AtomicInteger();
 
-    final RaftHAServer server = stubServer();
+    final FakeRaftHAServer server = stubServer();
     final AdminApi admin = server.getClient().admin();
     when(admin.setConfiguration(any(SetConfigurationRequest.Arguments.class))).thenAnswer(invocation -> {
       attempts.incrementAndGet();
@@ -163,7 +163,7 @@ class Issue7561MembershipChangeBudgetTest {
   void anOrdinaryRaftFailureIsStillRetried() throws Exception {
     final AtomicInteger attempts = new AtomicInteger();
 
-    final RaftHAServer server = stubServer();
+    final FakeRaftHAServer server = stubServer();
     final AdminApi admin = server.getClient().admin();
     when(admin.setConfiguration(any(SetConfigurationRequest.Arguments.class))).thenAnswer(invocation -> {
       attempts.incrementAndGet();
@@ -210,8 +210,9 @@ class Issue7561MembershipChangeBudgetTest {
    */
   @Test
   void aNodeWithNoRaftClientIsRefusedInASentence() {
-    final RaftHAServer server = mock(RaftHAServer.class);
-    when(server.getLivePeers()).thenReturn(List.of(peer("A"), peer("B"), peer("C")));
+    final FakeRaftHAServer server = FakeRaftHAServer.detached();
+    server.returns("getLivePeers", List.of(peer("A"), peer("B"), peer("C")));
+    server.returns("getCommittedPeersOrNull", List.of(peer("A"), peer("B"), peer("C")));
 
     assertThatThrownBy(() -> new RaftClusterManager(server, 1_000L).addPeer("D", "localhost:2447"))
         .isInstanceOf(ConfigurationException.class)
@@ -226,9 +227,10 @@ class Issue7561MembershipChangeBudgetTest {
    */
   @Test
   void aMembershipClientThatCannotBeBuiltIsReportedAsAConfigurationFailure() {
-    final RaftHAServer server = mock(RaftHAServer.class);
-    when(server.getLivePeers()).thenReturn(List.of(peer("A"), peer("B"), peer("C")));
-    when(server.newMembershipClient()).thenThrow(new IllegalStateException("no transport parameters"));
+    final FakeRaftHAServer server = FakeRaftHAServer.detached();
+    server.returns("getLivePeers", List.of(peer("A"), peer("B"), peer("C")));
+    server.returns("getCommittedPeersOrNull", List.of(peer("A"), peer("B"), peer("C")));
+    server.fails("newMembershipClient", new IllegalStateException("no transport parameters"));
 
     assertThatThrownBy(() -> new RaftClusterManager(server, 1_000L).addPeer("D", "localhost:2447"))
         .isInstanceOf(ConfigurationException.class)
@@ -248,16 +250,17 @@ class Issue7561MembershipChangeBudgetTest {
    * left unstubbed and therefore null, which is the production answer on a node whose Raft server has not been
    * started - and makes the manager fall back to {@link RaftHAServer#getClient()}, the one this test drives.
    */
-  private static RaftHAServer stubServer() throws Exception {
-    final RaftHAServer server = mock(RaftHAServer.class);
+  private static FakeRaftHAServer stubServer() throws Exception {
+    final FakeRaftHAServer server = FakeRaftHAServer.detached();
     final RaftClient client = mock(RaftClient.class);
     final AdminApi admin = mock(AdminApi.class);
 
-    when(server.getClient()).thenReturn(client);
+    server.returns("getClient", client);
     when(client.admin()).thenReturn(admin);
-    when(server.getLivePeers()).thenReturn(List.of(peer("A"), peer("B"), peer("C")));
-    when(server.getHttpAddresses()).thenReturn(new HashMap<>());
-    when(server.getRaftGroup()).thenReturn(RaftGroup.valueOf(RaftGroupId.randomId()));
+    server.returns("getLivePeers", List.of(peer("A"), peer("B"), peer("C")));
+    server.returns("getCommittedPeersOrNull", List.of(peer("A"), peer("B"), peer("C")));
+    server.httpAddresses(new HashMap<>());
+    server.raftGroup(RaftGroup.valueOf(RaftGroupId.randomId()));
     return server;
   }
 

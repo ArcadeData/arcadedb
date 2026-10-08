@@ -67,19 +67,20 @@ class Issue8330DeclaredHttpAddressTest {
   private final AtomicReference<List<RaftPeer>> livePeersOverride = new AtomicReference<>();
 
   /** A cluster whose Raft and HTTP ports are NOT in step, so a derived address is detectably wrong. */
-  private RaftHAServer stubServer(final Map<RaftPeerId, String> httpAddresses, final AdminApi admin) {
-    final RaftHAServer server = mock(RaftHAServer.class);
+  private FakeRaftHAServer stubServer(final Map<RaftPeerId, String> httpAddresses, final AdminApi admin) {
+    final FakeRaftHAServer server = FakeRaftHAServer.detached();
     final RaftClient client = mock(RaftClient.class);
-    when(server.getClient()).thenReturn(client);
+    server.returns("getClient", client);
     when(client.admin()).thenReturn(admin);
     final RaftPeer a = RaftPeer.newBuilder().setId(RaftPeerId.valueOf("A")).setAddress("localhost:28654").build();
     final RaftPeer b = RaftPeer.newBuilder().setId(RaftPeerId.valueOf("B")).setAddress("localhost:15712").build();
     final List<RaftPeer> live = List.of(a, b);
-    when(server.getLivePeers()).thenAnswer(invocation -> livePeersOverride.get() != null ? livePeersOverride.get() : live);
-    when(server.getRaftGroup()).thenReturn(RaftGroup.valueOf(RaftGroupId.randomId(), a, b));
+    server.on("getLivePeers", args -> livePeersOverride.get() != null ? livePeersOverride.get() : live);
+    server.on("getCommittedPeersOrNull", args -> livePeersOverride.get() != null ? livePeersOverride.get() : live);
+    server.raftGroup(RaftGroup.valueOf(RaftGroupId.randomId(), a, b));
     httpAddresses.put(a.getId(), "localhost:2480");
     httpAddresses.put(b.getId(), "localhost:2481");
-    when(server.getHttpAddresses()).thenReturn(httpAddresses);
+    server.httpAddresses(httpAddresses);
     return server;
   }
 
@@ -101,7 +102,7 @@ class Issue8330DeclaredHttpAddressTest {
       return reply;
     });
 
-    final RaftHAServer server = stubServer(httpAddresses, admin);
+    final FakeRaftHAServer server = stubServer(httpAddresses, admin);
     final JoinTarget target = RaftPeerAddressResolver.parseJoinTarget("localhost:22898:2482", DEFAULT_RAFT_PORT, "");
     assertThat(target.peer().getId()).isEqualTo(joining);
 
@@ -129,7 +130,7 @@ class Issue8330DeclaredHttpAddressTest {
       return reply;
     });
 
-    final RaftHAServer server = stubServer(httpAddresses, admin);
+    final FakeRaftHAServer server = stubServer(httpAddresses, admin);
     final JoinTarget target = RaftPeerAddressResolver.parseJoinTarget("localhost:22898", DEFAULT_RAFT_PORT, "");
     assertThat(target.httpAddress()).isNull();
 
@@ -151,7 +152,7 @@ class Issue8330DeclaredHttpAddressTest {
     when(admin.setConfiguration(any(SetConfigurationRequest.Arguments.class))).thenAnswer(invocation -> {
       throw new GroupMismatchException("group-AAAA does not match group-BBBB");
     });
-    final RaftHAServer server = stubServer(httpAddresses, admin);
+    final FakeRaftHAServer server = stubServer(httpAddresses, admin);
 
     final JoinTarget fresh = RaftPeerAddressResolver.parseJoinTarget("localhost:22898:2482", DEFAULT_RAFT_PORT, "");
     assertThatThrownBy(() -> new RaftClusterManager(server, 60_000L).addPeer(fresh.peer(), fresh.name(), fresh.httpAddress()))
@@ -174,7 +175,7 @@ class Issue8330DeclaredHttpAddressTest {
   void aFailureAfterThePeerBecameAMemberKeepsTheDeclaredAddress() throws Exception {
     final Map<RaftPeerId, String> httpAddresses = new ConcurrentHashMap<>();
     final AdminApi admin = mock(AdminApi.class);
-    final RaftHAServer server = stubServer(httpAddresses, admin);
+    final FakeRaftHAServer server = stubServer(httpAddresses, admin);
     final JoinTarget target = RaftPeerAddressResolver.parseJoinTarget("localhost:22898:2482", DEFAULT_RAFT_PORT, "");
 
     when(admin.setConfiguration(any(SetConfigurationRequest.Arguments.class))).thenAnswer(invocation -> {
@@ -194,7 +195,7 @@ class Issue8330DeclaredHttpAddressTest {
   void theRollbackKeepsAnEntryWrittenWhileTheChangeWasInFlight() throws Exception {
     final Map<RaftPeerId, String> httpAddresses = new ConcurrentHashMap<>();
     final AdminApi admin = mock(AdminApi.class);
-    final RaftHAServer server = stubServer(httpAddresses, admin);
+    final FakeRaftHAServer server = stubServer(httpAddresses, admin);
 
     final RaftPeerId knownId = RaftPeerId.valueOf("localhost_24001");
     httpAddresses.put(knownId, "localhost:2483");

@@ -40,6 +40,7 @@ import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Objects;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
@@ -48,8 +49,6 @@ import java.util.zip.ZipOutputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNoException;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Regression tests for issue #8367: a first-formation bootstrap replacement whose retry ALSO fails used to release
@@ -79,7 +78,7 @@ class Issue8367BootstrapReplacementRearmTest {
 
   private ArcadeDBServer                server;
   private ArcadeStateMachine            sm;
-  private RaftHAServer                  raft;
+  private FakeRaftHAServer                  raft;
   private HttpServer                    leader;
   private final AtomicReference<String> leaderAddress     = new AtomicReference<>();
   private final AtomicInteger           snapshotDownloads = new AtomicInteger();
@@ -96,15 +95,15 @@ class Issue8367BootstrapReplacementRearmTest {
 
     leader = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
 
-    raft = mock(RaftHAServer.class);
-    when(raft.isLeader()).thenReturn(false);
-    when(raft.getLocalPeerId()).thenReturn(LOCAL);
-    when(raft.getLocalHttpAddress()).thenReturn("local-host:2480");
-    when(raft.getClusterToken()).thenReturn(null);
+    raft = FakeRaftHAServer.detached();
+    raft.leader(false);
+    raft.localPeerId(LOCAL);
+    raft.localHttpAddress("local-host:2480");
+    raft.clusterToken(null);
     // The leader is unknown until reachableLeader() publishes one: the ordinary state at a first formation, where the
     // bootstrap entry is applied while the election on this peer may still be settling.
-    when(raft.getLeaderId()).thenAnswer(invocation -> leaderAddress.get() == null ? null : LEADER);
-    when(raft.getUnambiguousPeerHttpAddress(LEADER)).thenAnswer(invocation -> leaderAddress.get());
+    raft.on("getLeaderId", args -> leaderAddress.get() == null ? null : LEADER);
+    raft.on("getUnambiguousPeerHttpAddress", args -> Objects.equals(args[0], LEADER) ? leaderAddress.get() : null);
 
     sm = new ArcadeStateMachine();
     sm.setServer(server);
@@ -281,7 +280,7 @@ class Issue8367BootstrapReplacementRearmTest {
   void onTheLeaderTheTickInstallsNothingAndKeepsHolding() throws Exception {
     applyMismatchedBaseline();
     reachableLeader();
-    when(raft.isLeader()).thenReturn(true);
+    raft.leader(true);
 
     sm.retryPendingBootstrapReplacements();
     sm.awaitLifecycleTasksForTesting(60_000);

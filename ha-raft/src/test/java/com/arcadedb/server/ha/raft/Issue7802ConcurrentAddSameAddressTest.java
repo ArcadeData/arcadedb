@@ -63,17 +63,17 @@ class Issue7802ConcurrentAddSameAddressTest {
   @Test
   void theLoserOfTheRaceIsRefusedAgainstTheConfigurationHoldingTheWinner() throws Exception {
     final List<RaftPeer> live = new ArrayList<>(List.of(peer("A", "h1:2434"), peer("B", "h2:2434"), peer("C", "h3:2434")));
-    final RaftHAServer server = mock(RaftHAServer.class);
+    final FakeRaftHAServer server = FakeRaftHAServer.detached();
     final RaftClient client = mock(RaftClient.class);
     final AdminApi admin = mock(AdminApi.class);
     final AtomicInteger attempts = new AtomicInteger();
 
-    when(server.getClient()).thenReturn(client);
+    server.returns("getClient", client);
     when(client.admin()).thenReturn(admin);
-    when(server.getHttpAddresses()).thenReturn(new HashMap<>());
-    when(server.getRaftGroup()).thenReturn(RaftGroup.valueOf(RaftGroupId.randomId()));
-    when(server.getLivePeers()).thenAnswer(invocation -> List.copyOf(live));
-    when(server.getCommittedPeersOrNull()).thenAnswer(invocation -> List.copyOf(live));
+    server.httpAddresses(new HashMap<>());
+    server.raftGroup(RaftGroup.valueOf(RaftGroupId.randomId()));
+    server.on("getLivePeers", args -> List.copyOf(live));
+    server.on("getCommittedPeersOrNull", args -> List.copyOf(live));
     when(admin.setConfiguration(any(SetConfigurationRequest.Arguments.class))).thenAnswer(invocation -> {
       attempts.incrementAndGet();
       // The other admin request commits first: the leader's configuration moves under this request's precondition.
@@ -97,17 +97,17 @@ class Issue7802ConcurrentAddSameAddressTest {
   @Test
   void aRaceBetweenTwoDifferentPeersStillCommitsBoth() throws Exception {
     final List<RaftPeer> live = new ArrayList<>(List.of(peer("A", "h1:2434"), peer("B", "h2:2434"), peer("C", "h3:2434")));
-    final RaftHAServer server = mock(RaftHAServer.class);
+    final FakeRaftHAServer server = FakeRaftHAServer.detached();
     final RaftClient client = mock(RaftClient.class);
     final AdminApi admin = mock(AdminApi.class);
     final List<SetConfigurationRequest.Arguments> sent = new ArrayList<>();
 
-    when(server.getClient()).thenReturn(client);
+    server.returns("getClient", client);
     when(client.admin()).thenReturn(admin);
-    when(server.getHttpAddresses()).thenReturn(new HashMap<>());
-    when(server.getRaftGroup()).thenReturn(RaftGroup.valueOf(RaftGroupId.randomId()));
-    when(server.getLivePeers()).thenAnswer(invocation -> List.copyOf(live));
-    when(server.getCommittedPeersOrNull()).thenAnswer(invocation -> List.copyOf(live));
+    server.httpAddresses(new HashMap<>());
+    server.raftGroup(RaftGroup.valueOf(RaftGroupId.randomId()));
+    server.on("getLivePeers", args -> List.copyOf(live));
+    server.on("getCommittedPeersOrNull", args -> List.copyOf(live));
     when(admin.setConfiguration(any(SetConfigurationRequest.Arguments.class))).thenAnswer(invocation -> {
       final SetConfigurationRequest.Arguments args = invocation.getArgument(0);
       sent.add(args);
@@ -135,10 +135,10 @@ class Issue7802ConcurrentAddSameAddressTest {
   /** A configuration that cannot be read is reported as such, not papered over with the declared list; the wait is cut short by an interrupt. */
   @Test
   void anUnreadableConfigurationIsReportedNotGuessed() {
-    final RaftHAServer server = mock(RaftHAServer.class);
-    when(server.getCommittedPeersOrNull()).thenReturn(null);
-    when(server.getClient()).thenReturn(mock(RaftClient.class));
-    when(server.getRaftGroup()).thenReturn(RaftGroup.valueOf(RaftGroupId.randomId()));
+    final FakeRaftHAServer server = FakeRaftHAServer.detached();
+    server.returns("getCommittedPeersOrNull", null);
+    server.returns("getClient", mock(RaftClient.class));
+    server.raftGroup(RaftGroup.valueOf(RaftGroupId.randomId()));
 
     Thread.currentThread().interrupt();
     try {

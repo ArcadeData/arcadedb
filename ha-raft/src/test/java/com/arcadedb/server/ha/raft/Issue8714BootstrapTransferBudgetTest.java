@@ -18,21 +18,15 @@
  */
 package com.arcadedb.server.ha.raft;
 
-import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.TestServerHelper;
 import org.junit.jupiter.api.Test;
 
+import java.util.Arrays;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.anyLong;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
 /**
  * The bootstrap election's transfer to the elected source is capped to a hand-off candidate's slice and only issued
@@ -44,30 +38,30 @@ class Issue8714BootstrapTransferBudgetTest {
 
   @Test
   void transferIsCappedToACandidateSlice() {
-    final RaftHAServer ha = mock(RaftHAServer.class);
-    when(ha.followerContactPeers()).thenReturn(Set.of("peer-b"));
+    final FakeRaftHAServer ha = FakeRaftHAServer.detached();
+    ha.returns("followerContactPeers", Set.of("peer-b"));
     final BootstrapElection election = new BootstrapElection(ha, TestServerHelper.unstartedServer());
 
     election.transferToElectedSource("peer-b", 120_000L);
 
-    verify(ha).transferLeadership("peer-b", RaftClusterManager.candidateTransferBudgetMs(120_000L, 120_000L));
+    assertThat(ha.calls("transferLeadership")).containsOnlyOnce(Arrays.asList("peer-b", RaftClusterManager.candidateTransferBudgetMs(120_000L, 120_000L)));
   }
 
   @Test
   void aSourceThatBecomesReachableAfterAFewPollsIsTransferredTo() {
-    final RaftHAServer ha = mock(RaftHAServer.class);
-    when(ha.followerContactPeers()).thenReturn(Set.of(), Set.of(), Set.of("peer-b"));
+    final FakeRaftHAServer ha = FakeRaftHAServer.detached();
+    ha.on("followerContactPeers", CallLog.inOrder(Set.of(), Set.of(), Set.of("peer-b")));
     final BootstrapElection election = new BootstrapElection(ha, TestServerHelper.unstartedServer());
 
     election.transferToElectedSource("peer-b", 120_000L, 5_000L);
 
-    verify(ha).transferLeadership("peer-b", RaftClusterManager.candidateTransferBudgetMs(120_000L, 120_000L));
+    assertThat(ha.calls("transferLeadership")).containsOnlyOnce(Arrays.asList("peer-b", RaftClusterManager.candidateTransferBudgetMs(120_000L, 120_000L)));
   }
 
   @Test
   void unreachableSourceIsNeverTransferredTo() {
-    final RaftHAServer ha = mock(RaftHAServer.class);
-    when(ha.followerContactPeers()).thenReturn(Set.of("peer-c"));
+    final FakeRaftHAServer ha = FakeRaftHAServer.detached();
+    ha.returns("followerContactPeers", Set.of("peer-c"));
     final BootstrapElection election = new BootstrapElection(ha, TestServerHelper.unstartedServer());
 
     final AtomicBoolean announced = new AtomicBoolean();
@@ -75,6 +69,6 @@ class Issue8714BootstrapTransferBudgetTest {
         .isInstanceOf(IllegalStateException.class);
     assertThat(announced).as("the hold is not replaced when no transfer is issued").isFalse();
 
-    verify(ha, never()).transferLeadership(anyString(), anyLong());
+    assertThat(ha.calls("transferLeadership")).isEmpty();
   }
 }

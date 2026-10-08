@@ -106,19 +106,20 @@ class Issue7253SnapshotInstallReadsHAServerOnceTest {
    * is asked for that address - the last read {@code PeerDialAddress.resolve} makes through its own local, and so
    * the exact instant at which a second read of the field would see {@code null}.
    */
-  private static RaftHAServer haServerThatIsTornDownMidResolution(final ArcadeStateMachine sm) {
-    final RaftHAServer raftHA = mock(RaftHAServer.class);
-    when(raftHA.isLeader()).thenReturn(false);
-    when(raftHA.getLocalPeerId()).thenReturn(LOCAL);
-    when(raftHA.getLeaderId()).thenReturn(LEADER);
-    when(raftHA.getClusterToken()).thenReturn("cluster-token");
-    when(raftHA.getUnambiguousPeerHttpAddress(LEADER)).thenAnswer(invocation -> {
+  private static FakeRaftHAServer haServerThatIsTornDownMidResolution(final ArcadeStateMachine sm) {
+    final FakeRaftHAServer raftHA = FakeRaftHAServer.detached();
+    raftHA.leader(false);
+    raftHA.localPeerId(LOCAL);
+    raftHA.leaderId(LEADER);
+    raftHA.clusterToken("cluster-token");
+    raftHA.on("getUnambiguousPeerHttpAddress", args -> {
+      if (!LEADER.equals(args[0]))
+        return null;
       sm.setRaftHAServer(null);
       return "leader-host:2480";
     });
-    when(raftHA.getLocalHttpAddress()).thenReturn("local-host:2480");
-    when(raftHA.getUnambiguousPeerHttpsAddress(LEADER)).thenReturn(null);
-    when(raftHA.getLocalHttpsAddress()).thenReturn(null);
+    raftHA.localHttpAddress("local-host:2480");
+    raftHA.peerHttpsAddress(LEADER, null);
     return raftHA;
   }
 
