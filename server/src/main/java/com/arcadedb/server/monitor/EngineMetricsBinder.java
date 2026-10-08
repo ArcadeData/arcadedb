@@ -110,6 +110,11 @@ public final class EngineMetricsBinder implements MeterBinder {
     // batching collapsing toward one commit per task.
     counter(registry, "arcadedb.engine.async.boundary.commits",
         "Async batch transactions closed early by a durability-flag change", "asyncForcedBoundaryCommits");
+    // #9235: a count() recompute a bucket could not cache because a replicated apply wrote it without its lock while
+    // it scanned (#8649). One or two are the normal cost of a catch-up; a rate that never returns to zero is a
+    // follower on which every count(*) is a full scan.
+    counter(registry, "arcadedb.engine.bucket.recount.publishes.refused",
+        "Bucket count() recomputes not cached because a replicated apply ran under the scan", "recountPublishesRefused");
     counter(registry, "arcadedb.engine.tx.write", "Write transactions", "writeTx");
     counter(registry, "arcadedb.engine.tx.read", "Read transactions", "readTx");
     counter(registry, "arcadedb.engine.tx.rollbacks", "Transaction rollbacks", "txRollbacks");

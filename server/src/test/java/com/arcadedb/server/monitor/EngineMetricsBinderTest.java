@@ -69,7 +69,9 @@ class EngineMetricsBinderTest {
         // #6217: the read-path twin of the page merges above
         "arcadedb.engine.record.chunked.read.revalidations", "arcadedb.engine.record.chunked.read.retries",
         // #6526: async batch transactions cut short by a durability-flag change
-        "arcadedb.engine.async.boundary.commits" }) {
+        "arcadedb.engine.async.boundary.commits",
+        // #9235: bucket count() recomputes refused because a replicated apply ran under the scan
+        "arcadedb.engine.bucket.recount.publishes.refused" }) {
       final FunctionCounter counter = registry.find(name).functionCounter();
       assertThat(counter).as(name).isNotNull();
       assertThat(Double.isNaN(counter.count())).as(name).isFalse();
