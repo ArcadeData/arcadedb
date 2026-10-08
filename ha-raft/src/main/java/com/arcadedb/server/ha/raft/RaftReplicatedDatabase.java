@@ -4532,16 +4532,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       return new RetryLaterException(detail != null ? detail : message, parseRetryAfterSeconds(exceptionArgs));
 
     // DuplicatedKeyException carries structured args (index name, keys, existing RID), so it is
-    // reconstructed explicitly rather than from a plain message.
-    if (DuplicatedKeyException.class.getName().equals(exceptionClass) && exceptionArgs != null) {
-      final String[] parts = exceptionArgs.split("\\|", 3);
-      if (parts.length == 3)
-        try {
-          return new DuplicatedKeyException(parts[0], parts[1], new RID(parts[2]));
-        } catch (final Exception ignored) {
-          // fall through if the RID token is malformed
-        }
-    }
+    // reconstructed explicitly rather than from a plain message. The same parser the remote client uses, so a key value
+    // containing the '|' separator survives the hop typed (issue #9473); malformed args fall through.
+    if (DuplicatedKeyException.class.getName().equals(exceptionClass)
+        && DuplicatedKeyException.fromExceptionArgs(exceptionArgs) instanceof final DuplicatedKeyException duplicatedKey)
+      return duplicatedKey;
 
     final Function<String, RuntimeException> factory = LEADER_EXCEPTION_FACTORIES.get(exceptionClass);
     if (factory != null)

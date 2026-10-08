@@ -1149,9 +1149,10 @@ public class RemoteHttpComponent extends RWLockContext {
     try {
       mapped = manageException(status, body.toString(), operation);
     } catch (final RuntimeException e) {
-      // Malformed exceptionArgs (a DuplicatedKeyException without its three parts): reporting the failure matters
-      // more than typing it, so it must not escape hasNext() as an ArrayIndexOutOfBoundsException. Logged at WARNING:
-      // a line the mapping cannot read is a server/client contract mismatch (or a mapping bug) someone should see
+      // The mapping tolerates malformed arguments itself (a DuplicatedKeyException without its three parts falls back to
+      // the generic mapping, issue #9473), so this guards against a mapping bug: reporting the failure matters more than
+      // typing it, so nothing the mapping throws may escape hasNext(). Logged at WARNING: a line the mapping cannot read
+      // is a server/client contract mismatch (or a mapping bug) someone should see
       LogManager.instance()
           .log(this, Level.WARNING, "Cannot rebuild the typed exception of the streamed error line %s", e, error);
       return null;
@@ -1215,9 +1216,12 @@ public class RemoteHttpComponent extends RWLockContext {
         return new RecordNotFoundException(detail, rid);
       } else if (exception.equals(QuorumNotReachedException.class.getName())) {
         return new QuorumNotReachedException(detail);
-      } else if (exception.equals(DuplicatedKeyException.class.getName()) && exceptionArgs != null) {
-        final String[] exceptionArgsParts = exceptionArgs.split("\\|");
-        return new DuplicatedKeyException(exceptionArgsParts[0], exceptionArgsParts[1], new RID(exceptionArgsParts[2]));
+      } else if (exception.equals(DuplicatedKeyException.class.getName())
+          && DuplicatedKeyException.fromExceptionArgs(exceptionArgs) instanceof final DuplicatedKeyException duplicatedKey) {
+        // MISSING OR MALFORMED exceptionArgs (FEWER THAN THREE PARTS, A LAST PART THAT IS NOT A RID) FALL THROUGH TO THE
+        // GENERIC MAPPING BELOW: THE CALLER STILL GETS THE SERVER'S FAILURE, JUST UNTYPED, INSTEAD OF AN
+        // ArrayIndexOutOfBoundsException OUT OF THIS METHOD (ISSUE #9473)
+        return duplicatedKey;
       } else if (exception.equals(ConcurrentModificationException.class.getName())) {
         return new ConcurrentModificationException(detail);
       } else if (exception.equals(TransactionException.class.getName())) {
