@@ -242,6 +242,28 @@ class Issue9489GroupByTagPushDownTest extends TestHelper {
     });
   }
 
+  /** Shards can cross the flat-slot budget at different group counts, so a flat result is merged into a map-mode one and the reverse. */
+  @Test
+  void flatAndMapModeResultsMergeInBothDirections() {
+    final List<MultiColumnAggregationRequest> requests = List.of(MultiColumnAggregationRequest.count("c"));
+    for (final boolean flatIntoMap : new boolean[] { true, false }) {
+      final MultiColumnAggregationResult flat = new MultiColumnAggregationResult(requests, 0L, 1_000L, 4);
+      final MultiColumnAggregationResult map = new MultiColumnAggregationResult(requests);
+      flat.accumulateRow(1_000L, new double[] { 1 });
+      flat.accumulateRow(2_000L, new double[] { 1 });
+      map.accumulateRow(2_000L, new double[] { 1 });
+      map.accumulateRow(9_000L, new double[] { 1 });
+
+      final MultiColumnAggregationResult target = flatIntoMap ? map : flat;
+      target.mergeFrom(flatIntoMap ? flat : map);
+
+      assertThat(target.getBucketTimestamps()).containsExactlyInAnyOrder(1_000L, 2_000L, 9_000L);
+      assertThat(target.getValue(1_000L, 0)).isEqualTo(1.0);
+      assertThat(target.getValue(2_000L, 0)).isEqualTo(2.0);
+      assertThat(target.getValue(9_000L, 0)).isEqualTo(1.0);
+    }
+  }
+
   @Test
   void fourTagsArePushedDownAndFiveAreNot() {
     database.command("sql", "CREATE TIMESERIES TYPE M TIMESTAMP ts TAGS (a STRING, b STRING, c STRING, d STRING, e STRING) FIELDS (v DOUBLE)");

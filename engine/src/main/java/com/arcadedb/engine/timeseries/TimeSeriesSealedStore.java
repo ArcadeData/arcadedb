@@ -2083,7 +2083,12 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     }
 
     final double[] rowValues = new double[reqCount];
+    final long[] rowCounts = new long[reqCount];
     final double[][] decompressedCols = new double[columns.size()][];
+    // Reused by every block of the scan: groupFor only reads the tuple it is given and copies it when the group is new
+    final String[] wholeBlockGroup = new String[groupCount];
+    final String[][] dictionaries = new String[groupCount][];
+    final PackedGroupMap byPackedIndex = groupCount > 1 ? new PackedGroupMap() : null;
     final int[][] groupIds = new int[groupCount][MAX_BLOCK_SIZE];
     final long[] reusableTsBuf = new long[MAX_BLOCK_SIZE];
     final long singleBucketTs = TimeSeriesEngine.singleBucketAnchor(fromTs);
@@ -2108,27 +2113,21 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         }
 
         // The whole block is ONE group when its entry declares exactly one value for every grouping column
-        String[] wholeBlockGroup = null;
-        if (entry.tagDistinctValues != null) {
-          wholeBlockGroup = new String[groupCount];
-          for (int g = 0; g < groupCount; g++) {
-            final String[] declared = declarationExact[g] && groupSchema[g] < entry.tagDistinctValues.length
-                ? entry.tagDistinctValues[groupSchema[g]] : null;
-            if (declared == null || declared.length != 1) {
-              wholeBlockGroup = null;
-              break;
-            }
+        boolean singleGroup = entry.tagDistinctValues != null;
+        for (int g = 0; singleGroup && g < groupCount; g++) {
+          final String[] declared = declarationExact[g] && groupSchema[g] < entry.tagDistinctValues.length
+              ? entry.tagDistinctValues[groupSchema[g]] : null;
+          singleGroup = declared != null && declared.length == 1;
+          if (singleGroup)
             wholeBlockGroup[g] = declared[0];
-          }
         }
 
-        if (wholeBlockGroup != null && tagMatch == BlockMatchResult.FAST_PATH && bucketIntervalMs > 0
+        if (singleGroup && tagMatch == BlockMatchResult.FAST_PATH && bucketIntervalMs > 0
             && entry.minTimestamp >= fromTs && entry.maxTimestamp <= toTs && !needsValues(entry, requests, schemaColIndices)) {
           final long blockMinBucket = TimeBucketGrid.bucketStart(entry.minTimestamp, bucketIntervalMs, bucketOffsetMs);
           if (blockMinBucket == TimeBucketGrid.bucketStart(entry.maxTimestamp, bucketIntervalMs, bucketOffsetMs)) {
             if (metrics != null)
               metrics.addFastPathBlock();
-            final long[] rowCounts = new long[reqCount];
             for (int r = 0; r < reqCount; r++) {
               if (isCount[r]) {
                 rowValues[r] = entry.sampleCount;
@@ -2173,7 +2172,6 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           }
 
         t0 = metrics != null ? System.nanoTime() : 0;
-        final String[][] dictionaries = new String[groupCount][];
         for (int g = 0; g < groupCount; g++) {
           final byte[] encoded = sliceColumn(blockData, entry, groupSchema[g]);
           if (DictionaryCodec.valueCount(encoded) != tsCount)
@@ -2206,7 +2204,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         // indexed by the dictionary index. Several: a map keyed by the indices packed 16 bits apiece (a dictionary
         // holds at most 65535 entries), which is why the engine groups by at most four columns.
         final MultiColumnAggregationResult[] byIndex = groupCount == 1 ? new MultiColumnAggregationResult[dictionaries[0].length] : null;
-        final PackedGroupMap byPackedIndex = groupCount > 1 ? new PackedGroupMap() : null;
+        if (byPackedIndex != null)
+          byPackedIndex.clear();
         for (int i = rangeStart; i < rangeEnd; i++) {
           if (needRowTagFilter && !matchesTagConditions(filterCols, filterConditions, i))
             continue;
@@ -2253,6 +2252,12 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     private long[]                         keys   = new long[64];
     private MultiColumnAggregationResult[] values = new MultiColumnAggregationResult[64];
     private int                            size;
+
+    /** Forgets every entry but keeps the (possibly grown) arrays, for the next block. */
+    void clear() {
+      Arrays.fill(values, null);
+      size = 0;
+    }
 
     MultiColumnAggregationResult get(final long key) {
       final int mask = keys.length - 1;
