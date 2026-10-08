@@ -111,6 +111,27 @@ class Issue9485CommaPatternRelationshipUniquenessTest extends TestHelper {
     }
   }
 
+  @Test
+  void disjointEdgeTypesKeepTheStarPushDown() {
+    database.command("sql", "CREATE VERTEX TYPE Message");
+    database.command("sql", "CREATE VERTEX TYPE Tag");
+    database.command("sql", "CREATE EDGE TYPE HAS_TAG");
+    database.command("sql", "CREATE EDGE TYPE HAS_CREATOR");
+    database.command("sql", "CREATE EDGE TYPE LIKES");
+    database.transaction(() -> {
+      final MutableVertex m = database.newVertex("Message").save();
+      m.newEdge("HAS_TAG", database.newVertex("Tag").save());
+      m.newEdge("HAS_CREATOR", database.newVertex("P").save());
+      database.newVertex("P").save().newEdge("LIKES", m);
+      database.newVertex("P").save().newEdge("LIKES", m);
+    });
+    final String query = "MATCH (:Tag)<-[:HAS_TAG]-(m:Message)-[:HAS_CREATOR]->(:P), (m)<-[:LIKES]-(:P) RETURN count(*) AS n";
+    assertThat(count(query)).isEqualTo(2L);
+    try (final ResultSet rs = database.query("opencypher", "EXPLAIN " + query)) {
+      assertThat(rs.getExecutionPlan().orElseThrow().prettyPrint(0, 2)).contains("COUNT STAR JOIN");
+    }
+  }
+
   private void build(final boolean selfLoop) {
     database.transaction(() -> {
       final MutableVertex a = database.newVertex("P").set("id", 1).save();
