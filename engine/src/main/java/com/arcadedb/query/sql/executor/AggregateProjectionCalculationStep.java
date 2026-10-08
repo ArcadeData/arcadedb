@@ -510,7 +510,11 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
     return input != null && input.source().wouldRunInParallel(context);
   }
 
-  /** #9496: rows a worker queues for one partition of the exchange: what their groups need, never the rows themselves. */
+  /**
+   * #9496: rows a worker queues for one partition of the exchange: what their groups need, never the rows themselves. The
+   * aggregates that merge partials take their arguments alone, and a queued row would keep its record alive, uncharged,
+   * until the batch is handed over - or be the evaluator's reused view, which serves the next row.
+   */
   private static final class ExchangeRows {
     final GroupByKey[] keys;
     final long[]       positions;
@@ -559,9 +563,13 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
     // GUARDED BY this: SET BY THE CALLER, WHICH RELEASES THE HEAP OF A WORKER A FAILURE CANCELLED WHILE IT MAY STILL RUN
     private       boolean                      heapReleased;
 
-    // #9496, A WORKER: THE GROUPS IT EVER CREATED (A #9402 FLUSH RESETS groupCount, NOT THIS), AND WHETHER IT SENDS THE ROWS
-    // OF THE KEYS IT DOES NOT HOLD TO THE EXCHANGE, GATHERED PER PARTITION OF THE EXCHANGE OF THIS EXECUTION
+    // #9496, A WORKER: THE GROUPS IT EVER CREATED, WHICH A FLUSH TO THE SHARED GROUPS DOES NOT RESET AS IT DOES groupCount. A
+    // WORKER THAT FLUSHED BEFORE IT HELD exchangeMinGroups GROUPS (LARGE GROUPS, A TIGHT BUDGET) HAS MET MANY KEYS ALL THE
+    // SAME, AND WOULD OTHERWISE START OVER AFTER EVERY FLUSH AND NEVER REACH THE EXCHANGE
     private       int                          createdGroups;
+    // SET ONCE IT CREATED exchangeMinGroups GROUPS, FROM THEN ON THE ROWS OF THE KEYS IT DOES NOT HOLD GO TO THE EXCHANGE,
+    // GATHERED PER PARTITION OF THE EXCHANGE OF THIS EXECUTION (READ ONCE: THE STEP FORGETS IT WHEN THE EXECUTION ENDS, A
+    // CANCELLED WORKER MAY RUN ON)
     private       boolean                      exchanging;
     private       ExchangeRows[]               outbox;
     private       PartialAggregation           exchangeTarget;
