@@ -244,18 +244,33 @@ public class HttpServer implements ServerPlugin {
     // Every local address the host name resolves to, not only the first one: see resolveListenHosts() (issue #8692)
     final List<String> listenHosts = resolveListenHosts(host);
 
+    final boolean useSSL = configuration.getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
     int httpsPortListening = httpsPortRange != null ? httpsPortRange[0] : 0;
-    for (httpPortListening = httpPortRange[0]; httpPortListening <= httpPortRange[1]; ++httpPortListening) {
-      if (listenHosts.size() > 1) {
-        // Probe every port Undertow is about to bind, the HTTPS one included: a half-started Undertow cannot be cleaned up
-        String conflict = portConflict(listenHosts, httpPortListening);
-        if (conflict == null && httpsPortListening > 0 && configuration.getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL))
-          conflict = portConflict(listenHosts, httpsPortListening);
-        if (conflict != null) {
-          // The conflict names the port actually taken: the HTTPS one when that is the culprit
+    // Undertow.start() binds its listeners in order and, when a later one fails, shuts its worker down but leaves the
+    // earlier channels open for the life of the JVM, and Undertow.stop() on that half-started server spins forever. So
+    // whenever more than one listener is about to be bound (several addresses, or HTTP + HTTPS) every port is probed
+    // first, and a taken HTTPS port advances through ITS OWN range while the HTTP port stays (issue #9225).
+    final boolean probeHttps = useSSL && httpsPortListening > 0;
+    final boolean probe = listenHosts.size() > 1 || probeHttps;
+
+    httpPortListening = httpPortRange[0];
+    while (httpPortListening <= httpPortRange[1]) {
+      if (probe) {
+        final String httpConflict = portConflict(listenHosts, httpPortListening);
+        if (httpConflict != null) {
           LogManager.instance().log(this, Level.WARNING, "- HTTP Port %s skipped, '%s' cannot listen on every address: %s",
-              httpPortListening, host, conflict);
+              httpPortListening, host, httpConflict);
+          ++httpPortListening;
           continue;
+        }
+        if (probeHttps) {
+          final String httpsConflict = portConflict(listenHosts, httpsPortListening);
+          if (httpsConflict != null) {
+            LogManager.instance().log(this, Level.WARNING, "- HTTPS Port %s skipped, '%s' cannot listen on every address: %s",
+                httpsPortListening, host, httpsConflict);
+            httpsPortListening = advanceHttpsPortOrFail(httpsPortListening, httpsPortRange);
+            continue;
+          }
         }
       }
 
@@ -269,7 +284,7 @@ public class HttpServer implements ServerPlugin {
 
         // Record the bound HTTPS port (when SSL is enabled) so the HA layer can advertise/derive
         // encrypted peer endpoints for snapshot download. Left at -1 when SSL is disabled.
-        if (configuration.getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL) && httpsPortListening > 0)
+        if (useSSL && httpsPortListening > 0)
           this.httpsPortListening = httpsPortListening;
 
         listeningAddress = "0.0.0.0".equals(host) ?
@@ -278,7 +293,15 @@ public class HttpServer implements ServerPlugin {
         return;
 
       } catch (final Exception e) {
-        handleServerStartException(e, httpsPortListening);
+        handleServerStartException(e);
+        // A stranger took a port between the probe and the bind, and the exception does not say which. Move past the
+        // HTTP port (an earlier listener of the failed attempt may still hold it) and past the HTTPS one too when it is
+        // the taken one, so neither attempt is retried on a port that cannot be bound. The HTTPS re-probe is a heuristic:
+        // if both ports were taken in that window, both move on, which costs at most one port of each range. This window
+        // still leaks the listener the failed attempt already bound; closing it needs an owned XNIO worker (issue #9479).
+        ++httpPortListening;
+        if (probeHttps && portConflict(listenHosts, httpsPortListening) != null)
+          httpsPortListening = advanceHttpsPortOrFail(httpsPortListening, httpsPortRange);
       }
     }
 
@@ -587,17 +610,31 @@ public class HttpServer implements ServerPlugin {
     };
   }
 
-  private void handleServerStartException(final Exception e, int httpsPortListening) {
+  private void handleServerStartException(final Exception e) {
     undertow = null;
 
-    if (hasCause(e, BindException.class)) {
+    if (hasCause(e, BindException.class))
       LogManager.instance().log(this, Level.WARNING, "- HTTP Port %s not available", httpPortListening);
-      if (httpsPortListening > 0) {
-        ++httpsPortListening;
-      }
-    } else {
+    else
       throw new ServerException("Error on starting HTTP Server", e);
+  }
+
+  /**
+   * The HTTPS port after {@code current}, or a {@link ServerException} once {@code arcadedb.server.httpsIncomingPort}'s
+   * range is exhausted: the HTTPS port moves through its own range, independently of the HTTP one (issue #9225). On
+   * exhaustion it fails the whole start exactly as {@link #handleServerStartFailure(int[])} does for the HTTP range,
+   * resetting {@code httpPortListening} to {@code -1} so {@link #getPort()} does not report a port nothing listens on.
+   */
+  private int advanceHttpsPortOrFail(final int current, final int[] httpsPortRange) {
+    final int next = current + 1;
+    if (next > httpsPortRange[1]) {
+      httpPortListening = -1;
+      final String msg = "Unable to listen to a HTTPS port in the configured port range %d - %d".formatted(httpsPortRange[0],
+          httpsPortRange[1]);
+      LogManager.instance().log(this, Level.SEVERE, msg);
+      throw new ServerException("Error on starting HTTP Server: " + msg);
     }
+    return next;
   }
 
   private static boolean hasCause(Throwable t, final Class<? extends Throwable> causeClass) {
