@@ -41,6 +41,7 @@ import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.util.Collection;
+import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 import java.util.logging.Level;
@@ -180,6 +181,8 @@ public final class TestServerHelper {
    * {@code target/}, so the security derives the answer exactly as on a node, from what is on disk (issue #9464). It is
    * bound to no server: use it for code that reads the convergence and nothing that needs a running server.
    */
+  private static final List<String> SECURITY_DOCUMENTS = List.of("users", "groups", "API tokens");
+
   public static ServerSecurity securityConvergedExcept(final String... unconverged) {
     final Path configDirectory = defaultUnstartedServerRoot().resolve("config");
     try {
@@ -188,7 +191,12 @@ public final class TestServerHelper {
       throw new UncheckedIOException(e);
     }
     final Set<String> missing = Set.of(unconverged);
+    // Named as unconvergedClusterSecurityDocuments() reports them: a typo would otherwise read as "converged"
+    for (final String document : missing)
+      if (!SECURITY_DOCUMENTS.contains(document))
+        throw new IllegalArgumentException("Unknown security document '" + document + "', expected one of " + SECURITY_DOCUMENTS);
     final ReplicatedSecurityFingerprintRepository fingerprints = new ReplicatedSecurityFingerprintRepository(configDirectory.toString());
+    // Only the PRESENCE of a fingerprint marks a document converged, so one placeholder value serves all three
     if (!missing.contains("users"))
       fingerprints.record(ReplicatedSecurityFingerprintRepository.USERS, "test-fingerprint");
     if (!missing.contains("groups"))

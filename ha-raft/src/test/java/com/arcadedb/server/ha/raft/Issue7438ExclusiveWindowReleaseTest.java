@@ -24,7 +24,6 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.TransactionContext;
-import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.TestServerHelper;
 import org.apache.ratis.protocol.ClientId;
 import org.apache.ratis.protocol.Message;

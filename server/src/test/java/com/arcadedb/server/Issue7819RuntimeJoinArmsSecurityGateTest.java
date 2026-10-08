@@ -23,7 +23,6 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.security.ServerSecurity;
 import org.junit.jupiter.api.Test;
 
-
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
