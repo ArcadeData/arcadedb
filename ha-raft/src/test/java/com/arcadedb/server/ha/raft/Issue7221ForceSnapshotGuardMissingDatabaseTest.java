@@ -35,10 +35,6 @@ import java.nio.file.Path;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
 /**
  * Regression test for issue #7221: the {@code forceSnapshot} replay guard added for #7143 returned early on
@@ -139,8 +135,8 @@ class Issue7221ForceSnapshotGuardMissingDatabaseTest {
     // copy of the database to justify the skip.
     wipeTheLocalCopy();
 
-    final RaftHAServer leader = mock(RaftHAServer.class);
-    when(leader.isLeader()).thenReturn(true);
+    final FakeRaftHAServer leader = FakeRaftHAServer.detached();
+    leader.leader(true);
     sm.setRaftHAServer(leader);
 
     assertThatThrownBy(() -> sm.applyInstallDatabaseEntry(forceSnapshotEntry(), ENTRY_INDEX))
@@ -148,7 +144,7 @@ class Issue7221ForceSnapshotGuardMissingDatabaseTest {
         .isInstanceOf(IllegalStateException.class)
         .hasMessageContaining("this node is the Raft leader")
         .hasMessageNotContaining("Cannot reinstall database '" + DB + "' from the leader");
-    verify(leader, never()).getLeaderId();
+    assertThat(leader.calls("getLeaderId")).isEmpty();
   }
 
   /** A leader that still holds the database takes no action at all: its files are the authoritative ones. */
@@ -157,14 +153,14 @@ class Issue7221ForceSnapshotGuardMissingDatabaseTest {
     final ArcadeStateMachine sm = newStateMachine();
     sm.writePersistedAppliedIndex(ENTRY_INDEX + 8, DB);
 
-    final RaftHAServer leader = mock(RaftHAServer.class);
-    when(leader.isLeader()).thenReturn(true);
+    final FakeRaftHAServer leader = FakeRaftHAServer.detached();
+    leader.leader(true);
     sm.setRaftHAServer(leader);
 
     assertThatCode(() -> sm.applyInstallDatabaseEntry(forceSnapshotEntry(), ENTRY_INDEX))
         .as("the leader's own files are authoritative: it neither reinstalls nor fails")
         .doesNotThrowAnyException();
-    verify(leader, never()).getLeaderId();
+    assertThat(leader.calls("getLeaderId")).isEmpty();
   }
 
   /**

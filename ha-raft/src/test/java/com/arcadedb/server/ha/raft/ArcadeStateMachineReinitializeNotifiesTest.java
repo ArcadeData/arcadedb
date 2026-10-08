@@ -31,11 +31,8 @@ import java.nio.file.Path;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNoException;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
 
 /**
  * Regression tests for issue #5846.
@@ -66,7 +63,7 @@ class ArcadeStateMachineReinitializeNotifiesTest {
     final RaftStorage raftStorage = newFormattedStorage(tempDir);
 
     final ArcadeStateMachine sm = new ArcadeStateMachine();
-    final RaftHAServer mockRaft = mock(RaftHAServer.class);
+    final FakeRaftHAServer mockRaft = FakeRaftHAServer.detached();
     try {
       sm.initialize(stubServer(), groupId, raftStorage);
 
@@ -81,7 +78,7 @@ class ArcadeStateMachineReinitializeNotifiesTest {
       // call StateMachineUpdater.reload() makes right after installing a snapshot.
       sm.reinitialize();
 
-      verify(mockRaft, times(1)).notifyApplied();
+      assertThat(mockRaft.calls("notifyApplied")).hasSize(1);
     } finally {
       sm.close();
       raftStorage.close();
@@ -99,14 +96,14 @@ class ArcadeStateMachineReinitializeNotifiesTest {
     final RaftStorage raftStorage = newFormattedStorage(tempDir);
 
     final ArcadeStateMachine sm = new ArcadeStateMachine();
-    final RaftHAServer mockRaft = mock(RaftHAServer.class);
+    final FakeRaftHAServer mockRaft = FakeRaftHAServer.detached();
     try {
       sm.initialize(stubServer(), groupId, raftStorage);
       sm.setRaftHAServer(mockRaft);
 
       sm.reinitialize();
 
-      verify(mockRaft, never()).notifyApplied();
+      assertThat(mockRaft.calls("notifyApplied")).isEmpty();
     } finally {
       sm.close();
       raftStorage.close();
