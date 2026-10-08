@@ -72,16 +72,14 @@ class Issue8905VectorBuildHATest extends BaseRaftHATest {
 
   @BeforeEach
   void countWalVersionGaps() {
+    // THE CAP IS SET ONLY IN THE SERVER CONFIGURATION (onServerConfiguration), NEVER AS A GLOBAL: THE BUILD MUST FIND
+    // IT THROUGH THE REPLICATION CONFIGURATION, NOT THROUGH THE DATABASE'S OWN, WHICH NEVER SEES IT (ISSUE #9430)
     ArcadeStateMachine.TEST_WAL_GAP_COUNTER = new AtomicInteger();
-    // A DATABASE READS ITS SETTINGS FROM ITS OWN CONFIGURATION, WHICH FALLS BACK TO THE GLOBAL ONE AND NOT TO THE
-    // SERVER'S: THE BUILD MEASURES ITSELF AGAINST THE CAP IT FINDS THERE
-    GlobalConfiguration.HA_APPEND_BUFFER_SIZE.setValue(APPEND_BUFFER_SIZE);
   }
 
   @AfterEach
   void stopCountingWalVersionGaps() {
     ArcadeStateMachine.TEST_WAL_GAP_COUNTER = null;
-    GlobalConfiguration.HA_APPEND_BUFFER_SIZE.reset();
   }
 
   /**

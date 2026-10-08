@@ -954,8 +954,11 @@ public class TimeSeriesShard implements AutoCloseable {
           // GlobalConfiguration.maxReplicatedSealedStoreSize, which still folds in the #4743 rule that the
           // real per-entry ceiling is min(grpcMessageSizeMax, appendBufferSize) and NOT the configured cap
           // alone: shipping an entry above it makes Ratis reject it and the leader step down, over and over.
+          // The ceiling is read from the configuration the replication layer enforces it from, not from this
+          // database's own, which falls back to the JVM-global values and misses a cap set only in the server
+          // configuration (issue #9430).
           if (db.isReplicated()) {
-            final long cap = GlobalConfiguration.maxReplicatedSealedStoreSize(database.getConfiguration());
+            final long cap = GlobalConfiguration.maxReplicatedSealedStoreSize(db.getReplicationConfiguration());
             final long projected = sealedStore.getFileSizeBytes() + (long) pageCount * mutableBucket.getPageSize();
             if (projected > cap) {
               tx.rollbackIfMine();
@@ -1348,7 +1351,8 @@ public class TimeSeriesShard implements AutoCloseable {
       return;
     lastOversizedWarnMs = now;
 
-    final long budget = GlobalConfiguration.replicatedSealedChunkBudget(database.getConfiguration());
+    final long budget = GlobalConfiguration.replicatedSealedChunkBudget(
+        database.getWrappedDatabaseInstance().getReplicationConfiguration());
     final String ceilingExplanation;
     if (budget <= 0)
       ceilingExplanation = "one entry, because the configured cap leaves no room for a slice's own framing";

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.database;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.async.AsyncQuiesce;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.LocalBucket;
@@ -342,6 +343,22 @@ public interface DatabaseInternal extends Database {
    */
   default boolean isReplicated() {
     return false;
+  }
+
+  /**
+   * The configuration the replication layer sizes its entries against: where engine code that must fit its work into
+   * one replicated entry reads the cap from, as {@code GlobalConfiguration.maxReplicatedRaftEntrySize(...)} and the
+   * sealed-store helpers next to it (issue #9430).
+   * <p>
+   * Not {@link #getConfiguration()}: a database's configuration falls back to the JVM-global values, not to the
+   * server's, while the replication layer enforces the cap from the server's. A cap set only in
+   * {@code config/server-configuration.json} was therefore enforced at submit and invisible to the engine, which
+   * kept producing entries sized for the default. The default answers the database's own configuration, which is
+   * right for a database nothing replicates; a replicated wrapper overrides it with the configuration its
+   * replication layer was built from.
+   */
+  default ContextConfiguration getReplicationConfiguration() {
+    return getConfiguration();
   }
 
   /**

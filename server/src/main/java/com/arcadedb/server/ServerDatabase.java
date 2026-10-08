@@ -205,6 +205,15 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   /**
+   * Delegated with {@link #isReplicated()}: a server handle around a replicated database must answer the cap its
+   * replication layer enforces, not the database's own configuration (issue #9430).
+   */
+  @Override
+  public ContextConfiguration getReplicationConfiguration() {
+    return current().getReplicationConfiguration();
+  }
+
+  /**
    * Delegated like {@link #isReplicated()}, which it is read together with. Inheriting the interface default
    * ({@code true}) made every handle on a follower answer "replicated, and the leader", so engine code handed a server
    * handle - a graph analytical view built through the embedded API on {@code server.getDatabase()}, for one - that
