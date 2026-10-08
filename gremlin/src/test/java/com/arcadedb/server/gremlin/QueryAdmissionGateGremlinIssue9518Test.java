@@ -66,8 +66,8 @@ class QueryAdmissionGateGremlinIssue9518Test extends AbstractGremlinServerIT {
 
       final long refusedBefore = gate.getRefused();
       try (final QueryAdmissionGate.Ticket ignored = gate.admit()) {
-        assertThatThrownBy(() -> g.V().count().next()).as("a traversal");
-        assertThatThrownBy(() -> client.submit("g.V().count()").all().get()).as("a script");
+        assertThatThrownBy(() -> g.V().count().next()).as("a traversal").isInstanceOf(Exception.class);
+        assertThatThrownBy(() -> client.submit("g.V().count()").all().get()).as("a script").isInstanceOf(Exception.class);
       }
       assertThat(gate.getRefused()).as("both refused by the gate").isEqualTo(refusedBefore + 2);
 

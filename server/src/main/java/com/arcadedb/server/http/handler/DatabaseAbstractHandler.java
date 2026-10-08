@@ -218,6 +218,7 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
     emitCommitIndexBookmarkOnResponseCommit(exchange, haDbForRead);
 
     final AtomicReference<ExecutionResponse> response = new AtomicReference<>();
+    QueryAdmissionGate.Ticket admission = null;
     try {
       // Set read consistency context for HA follower reads.
       // Must be inside the try block so the finally always clears the ThreadLocal.
@@ -250,14 +251,22 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
         }
       }
       boolean finalAtomicTransaction = atomicTransaction;
+      admission = admit(exchange);
       if (activeSession != null) {
         // EXECUTE THE CODE LOCKING THE CURRENT SESSION. THIS AVOIDS USING THE SAME SESSION FROM MULTIPLE THREADS AT THE SAME TIME
         activeSession.execute(user, () -> {
-          executeAdmitted(exchange, user, database, payload, response, finalAtomicTransaction, retries);
+          if (finalAtomicTransaction)
+            executeInTransaction(exchange, user, database, payload, response, retries);
+          else
+            response.set(execute(exchange, user, database, payload));
           return null;
         }, participatesInSessionTransaction(), endsSession());
-      } else
-        executeAdmitted(exchange, user, database, payload, response, finalAtomicTransaction, retries);
+      } else {
+        if (finalAtomicTransaction)
+          executeInTransaction(exchange, user, database, payload, response, retries);
+        else
+          response.set(execute(exchange, user, database, payload));
+      }
 
       if (database != null && atomicTransaction && database.isTransactionActive())
         // STARTED ATOMIC TRANSACTION, COMMIT
@@ -267,22 +276,28 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
       emitCommitIndexBookmark(exchange, haDbForRead);
 
     } finally {
-      // Clear read consistency context
-      if (haDbForRead != null)
-        haDbForRead.clearReadConsistencyContext();
+      try {
+        // Clear read consistency context
+        if (haDbForRead != null)
+          haDbForRead.clearReadConsistencyContext();
 
-      if (activeSession != null)
-        // DETACH CURRENT CONTEXT/TRANSACTIONS FROM CURRENT THREAD
-        DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
-      else if (database != null) {
-        try {
-          if (!atomicTransaction)
-            // NO TRANSACTION, ROLLBACK TO MAKE SURE ANY PENDING OPERATION IS REMOVED
-            database.rollbackAllNested();
-        } finally {
-          // DO NOT CLEAN THE CURRENT SESSION BECAUSE IT COULD HAVE AN OPEN TX
-          cleanTL(database, null);
+        if (activeSession != null)
+          // DETACH CURRENT CONTEXT/TRANSACTIONS FROM CURRENT THREAD
+          DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
+        else if (database != null) {
+          try {
+            if (!atomicTransaction)
+              // NO TRANSACTION, ROLLBACK TO MAKE SURE ANY PENDING OPERATION IS REMOVED
+              database.rollbackAllNested();
+          } finally {
+            // DO NOT CLEAN THE CURRENT SESSION BECAUSE IT COULD HAVE AN OPEN TX
+            cleanTL(database, null);
+          }
         }
+      } finally {
+        // LAST: THE SLOT COVERS THE WHOLE REQUEST, ITS COMMIT AND ITS CLEANUP INCLUDED
+        if (admission != null)
+          admission.close();
       }
     }
 
@@ -441,34 +456,22 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
   }
 
   /**
-   * Runs the request once the query admission gate (issue #9518) lets it start: in arrival order, when a slot is free and
-   * the running queries leave enough of the heap budget. The ticket is held until the request is done, result set
-   * included, so the next request starts only once this one has given back the heap its buffers reserved.
+   * Waits until the query admission gate (issue #9518) lets the request start: in arrival order, when a slot is free and
+   * the running queries leave enough of the heap budget. The caller holds the ticket until the request is done - its
+   * auto-commit and its cleanup included - so the next request starts only once this one has given back the heap its
+   * buffers reserved. Null when the handler does not go through the gate.
    * <p>
-   * Taken INSIDE the session lock, never around it: a request holding a slot while it waits for a session lock that a
-   * queued request of the same session holds would be a cycle. Here a request waits for its slot holding nothing the
-   * running ones need. A request that reached this point on an IO thread - the gate was enabled after it was dispatched -
-   * does not wait there: it is refused if it cannot start at once.
+   * Taken BEFORE the session lock, never inside it: a request waiting for its slot while holding its session's lock would
+   * keep a concurrent {@code /rollback} from ending the session for as long as it waits. Taken first, the only wait a slot
+   * holder can still do is the bounded wait for its session lock, held by a request that already runs, so there is no cycle.
+   * A request that reached this point on an IO thread - the gate was enabled after it was dispatched - does not wait there:
+   * it is refused if it cannot start at once.
    */
-  private void executeAdmitted(final HttpServerExchange exchange, final ServerSecurityUser user, final DatabaseInternal database,
-      final JSONObject payload, final AtomicReference<ExecutionResponse> response, final boolean atomicTransaction,
-      final int retries) throws Exception {
-    final QueryAdmissionGate.Ticket admission;
-    if (goesThroughAdmissionGate()) {
-      final QueryAdmissionGate gate = QueryAdmissionGate.getInstance();
-      admission = exchange.isInIoThread() ? gate.admit(0) : gate.admit();
-    } else
-      admission = null;
-
-    try {
-      if (atomicTransaction)
-        executeInTransaction(exchange, user, database, payload, response, retries);
-      else
-        response.set(execute(exchange, user, database, payload));
-    } finally {
-      if (admission != null)
-        admission.close();
-    }
+  private QueryAdmissionGate.Ticket admit(final HttpServerExchange exchange) {
+    if (!goesThroughAdmissionGate())
+      return null;
+    final QueryAdmissionGate gate = QueryAdmissionGate.getInstance();
+    return exchange.isInIoThread() ? gate.admit(0) : gate.admit();
   }
 
   /**
