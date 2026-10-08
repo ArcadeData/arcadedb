@@ -354,7 +354,8 @@ public class PluginApiSpec implements OpenApiContributor {
             never lifts there. The entry the quarantine skipped is NOT replayed: if the copy is missing it, it \
             stays missing. The change is persisted and logged with who made it, at which applied index, over \
             which cause. Root only. Answers 404 when no quarantine and no read floor stands on the database, and \
-            409 on a node that is not the sole voter, where the resync is the way out. The body is ignored. \
+            409 on a node that is not the sole voter, where the resync is the way out; nothing standing is \
+            checked first, so a node with peers and no quarantine answers 404. The body is ignored. \
             """ + RAFT_REQUIRED);
     post.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
     post.setResponses(SpecBuilders.standardResponses("200",
