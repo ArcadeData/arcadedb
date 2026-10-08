@@ -23,6 +23,7 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.FollowerSample;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.HAReplicationStats;
+import com.arcadedb.server.monitor.HAReplicationStatsProvider.InPlaceRestartStats;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.PendingPhase2Stats;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.SchemaInstalmentSample;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.UnreferencedFilesSample;
@@ -105,10 +106,38 @@ public final class HAReplicationMetrics implements MeterBinder, Closeable {
 
     bindPendingPhase2Gauges(registry);
     bindSecurityRefreshGauges(registry);
+    bindInPlaceRestartGauges(registry);
 
     // One scheduler for every re-registering MultiGauge on this binder, rather than one each: they all refresh at
     // the same cadence and none of them blocks, so a second thread would buy nothing.
     startMultiGaugeRefresh(bindPerFollowerGauges(registry), bindPerDatabaseGauges(registry));
+  }
+
+  /**
+   * Registers this node's in-place Raft restart counts (issue #9429). They were reachable only through the INFO line
+   * the restart logs, so anything that wanted them - the HA chaos harness first of all - had to scrape the log for an
+   * exact wording and would count zero the day that wording changed. Meaningful on every node, leader or follower.
+   */
+  private void bindInPlaceRestartGauges(final MeterRegistry registry) {
+    Gauge.builder("arcadedb.ha.in_place_restarts.recovered", () -> inPlaceRestarts().recovered())
+        .description("Times this node restarted its Raft layer in place keeping its log, since the process started: the "
+            + "health monitor's recovery of a CLOSED or EXCEPTION division, e.g. after a long JVM pause. Each is "
+            + "survivable, but a count that keeps climbing is a node that keeps losing its division.")
+        .register(registry);
+
+    Gauge.builder("arcadedb.ha.in_place_restarts.reformatted", () -> inPlaceRestarts().reformatted())
+        .description("Times this node restarted its Raft layer in place after DISCARDING its Raft storage, since the "
+            + "process started: the divergence reformat, after which the node is refilled from a leader snapshot. Any "
+            + "increase outside a known divergence is worth investigating.")
+        .register(registry);
+  }
+
+  /** In-place restart counts from the started HA plugin, or none when HA is disabled. */
+  private InPlaceRestartStats inPlaceRestarts() {
+    for (final ServerPlugin plugin : server.getPlugins())
+      if (plugin instanceof HAReplicationStatsProvider provider)
+        return provider.getInPlaceRestartStats();
+    return InPlaceRestartStats.NONE;
   }
 
   /**

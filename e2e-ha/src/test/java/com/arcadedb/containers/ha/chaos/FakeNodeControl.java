@@ -45,8 +45,11 @@ final class FakeNodeControl implements NodeControl {
   /** An unpaused node restarts Ratis in place reformatting (or recovering) its storage. */
   boolean                reformatOnUnpause;
   boolean                recoverOnUnpause;
-  /** An unpaused node's log loses lines: its counts drop to zero. */
-  boolean                shrinkLogsOnUnpause;
+  /** An unpaused node's server process restarts: its counts drop to zero. */
+  boolean                processRestartsOnUnpause;
+  /** After an unpause, reading the in-place restart counts fails, as for a node that no longer answers HTTP. */
+  boolean                countsUnreadableAfterUnpause;
+  boolean                restartCountsUnreadable;
 
   private void log(final String call) {
     if (failure != null)
@@ -81,10 +84,12 @@ final class FakeNodeControl implements NodeControl {
       ++reformatted[node];
     if (recoverOnUnpause)
       ++recovered[node];
-    if (shrinkLogsOnUnpause) {
+    if (processRestartsOnUnpause) {
       recovered[node] = 0;
       reformatted[node] = 0;
     }
+    if (countsUnreadableAfterUnpause)
+      restartCountsUnreadable = true;
   }
 
   @Override
@@ -125,6 +130,8 @@ final class FakeNodeControl implements NodeControl {
 
   @Override
   public InPlaceRestarts inPlaceRestarts(final int node) {
+    if (restartCountsUnreadable)
+      throw new ChaosFailure(ResultKind.HARNESS, "Could not read the in-place restart counts of node " + node);
     return new InPlaceRestarts(recovered[node], reformatted[node]);
   }
 

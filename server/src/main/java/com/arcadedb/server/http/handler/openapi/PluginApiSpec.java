@@ -651,6 +651,19 @@ public class PluginApiSpec implements OpenApiContributor {
             + "leader. No leader known is also what every node of a cluster without a quorum sees; the "
             + "'follower-leader-unreachable-since-restart' alert says which case applies in 'details.leaderKnown' and is "
             + "critical only when a known leader reports entries this node does not hold"));
+    // Issue #9429: the in-place restart counts were reachable only through an INFO log line.
+    final Schema<Object> inPlaceRestarts = SpecBuilders.object("""
+        How many times this node's Raft layer has been restarted in place since the process started, by what happened \
+        to its Raft storage. Both counts only grow, and both start again from 0 when the process restarts. Also \
+        published as the 'arcadedb.ha.in_place_restarts.recovered' and '.reformatted' metrics.""");
+    inPlaceRestarts.addProperty("recovered", SpecBuilders.integer(
+        "Restarts that kept the Raft log: the health monitor's recovery of a CLOSED or EXCEPTION division, for example "
+            + "after a long JVM pause"));
+    inPlaceRestarts.addProperty("reformatted", SpecBuilders.integer(
+        "Restarts that discarded the Raft storage, after which the node is refilled from a leader snapshot: the "
+            + "divergence reformat. An increase outside a known divergence is worth investigating"));
+    inPlaceRestarts.setRequired(List.of("recovered", "reformatted"));
+    schema.addProperty("localInPlaceRestarts", inPlaceRestarts);
     // Issue #8342: a follower whose log stops receiving entries while the term does not change also reads
     // 'localReplicationLag' 0 and 'localStuckAtStaleTerm' false; only the leader's commit index shows the gap.
     schema.addProperty("leaderCommitIndex", SpecBuilders.integer(
@@ -699,7 +712,7 @@ public class PluginApiSpec implements OpenApiContributor {
     schema.setRequired(List.of("implementation", "clusterName", "localPeerId", "capabilities", "raftState",
         "leaderContactElapsedMs", "isLeader", "leaderReady", "leaderId", "leaderHttpAddress", "electionCount", "lastElectionTime",
         "uptime", "localAppliedIndex", "localCommitIndex", "localReplicationLag", "localStuckAtStaleTerm",
-        "localReplicationPathUnproven", "localLeaderUnreachableSinceRestart",
+        "localReplicationPathUnproven", "localLeaderUnreachableSinceRestart", "localInPlaceRestarts",
         "leaderCommitIndex", "localStalledBehindLeader", "peers",
         "databases", "localResync", "criticalHalt", "raftLogFailure", "crashLoopEscalated", "bootstrapInstalls",
         "bootstrapDeciding", "securityConvergence", "alerts"));

@@ -133,13 +133,14 @@ class PluginApiSpecTest {
     // 'raftState' reads RUNNING while the leader's appends never reach this division, and only this figure shows it.
     // 'localReplicationPathUnproven' and 'localLeaderUnreachableSinceRestart' joined with issues #9013 and #8953: the
     // state of the replication path since an in-place restart, which that figure cannot show once a follower nobody
-    // reaches resets it on every rejected pre-vote.
+    // reaches resets it on every rejected pre-vote. 'localInPlaceRestarts' joined with issue #9429: the restart counts
+    // that were reachable only through a log line.
     assertThat(schema.getProperties().keySet()).containsExactlyInAnyOrder(
         "implementation", "clusterName", "localPeerId", "capabilities", "raftState", "leaderContactElapsedMs",
         "isLeader", "leaderReady",
         "leaderId", "leaderHttpAddress", "electionCount", "lastElectionTime", "uptime",
         "localAppliedIndex", "localCommitIndex", "localReplicationLag", "localStuckAtStaleTerm",
-        "localReplicationPathUnproven", "localLeaderUnreachableSinceRestart",
+        "localReplicationPathUnproven", "localLeaderUnreachableSinceRestart", "localInPlaceRestarts",
         "leaderCommitIndex", "localStalledBehindLeader",
         "peers", "databases", "databasePresence", "alerts", "localResync",
         "criticalHalt", "raftLogFailure", "crashLoopEscalated", "bootstrapInstalls",

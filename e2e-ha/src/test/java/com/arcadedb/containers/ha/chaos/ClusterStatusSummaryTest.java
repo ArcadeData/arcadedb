@@ -24,6 +24,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class ClusterStatusSummaryTest {
 
@@ -53,6 +54,25 @@ class ClusterStatusSummaryTest {
     assertThat(ClusterStatusSummary.describe(cluster)).isEqualTo(
         "isLeader=false leader=proxy:8672 raftState=RUNNING applied=228631 commit=228631 STUCK_AT_STALE_TERM"
             + " alerts=[follower-stuck-at-stale-term]");
+  }
+
+  /** Issue #9429: the restart counts come from the server's own counters, not from its log. */
+  @Test
+  void inPlaceRestartsAreReadFromTheClusterStatus() {
+    final JSONObject cluster = new JSONObject().put("isLeader", false)
+        .put("localInPlaceRestarts", new JSONObject().put("recovered", 2).put("reformatted", 1));
+    assertThat(ClusterStatusSummary.inPlaceRestarts(cluster, 1)).isEqualTo(new NodeControl.InPlaceRestarts(2, 1));
+  }
+
+  /** A missing count must fail the step, never read as the zero that lets a long-pause step pass. */
+  @Test
+  void missingInPlaceRestartsAreAHarnessFailureNotZero() {
+    assertThatThrownBy(() -> ClusterStatusSummary.inPlaceRestarts(new JSONObject().put("isLeader", false), 2))
+        .isInstanceOfSatisfying(ChaosFailure.class, e -> assertThat(e.kind()).isEqualTo(ResultKind.HARNESS))
+        .hasMessageContaining("Node 2").hasMessageContaining("localInPlaceRestarts");
+    assertThatThrownBy(() -> ClusterStatusSummary.inPlaceRestarts(
+        new JSONObject().put("localInPlaceRestarts", new JSONObject().put("recovered", 0)), 0))
+        .isInstanceOf(ChaosFailure.class);
   }
 
   @Test
