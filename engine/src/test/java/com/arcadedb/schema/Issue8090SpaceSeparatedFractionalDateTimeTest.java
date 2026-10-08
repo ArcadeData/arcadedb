@@ -681,14 +681,15 @@ class Issue8090SpaceSeparatedFractionalDateTimeTest extends TestHelper {
    */
   @Test
   void anUnreadableDateBoundIsAValidationErrorRatherThanAnNPE() {
+    // Since #9172 (#9026) such a bound is refused when it is declared, instead of being accepted and then failing every
+    // write; the write-time ValidationException stays for a bound a schema written before that still carries.
     final DocumentType type = database.getSchema().createDocumentType("Ev8090Bound");
-    type.createProperty("d", Type.DATETIME).setMax("not-a-date");
-
-    database.transaction(() -> assertThatThrownBy(
-        () -> database.newDocument("Ev8090Bound").set("d", "2024-02-29 13:45:10").save())//
-        .isInstanceOf(ValidationException.class)//
-        .hasMessageContaining("max")//
-        .hasMessageContaining("not-a-date"));
+    final Property bounded = type.createProperty("d", Type.DATETIME);
+    assertThatThrownBy(() -> bounded.setMax("not-a-date"))//
+        .isInstanceOf(IllegalArgumentException.class)//
+        .hasMessageContaining("Maximum")//
+        .hasMessageContaining("not-a-date");
+    assertThat(bounded.getMax()).isNull();
 
     // A readable bound still validates normally, in the SQL-timestamp spelling this issue added.
     final DocumentType ok = database.getSchema().createDocumentType("Ev8090BoundOk");
