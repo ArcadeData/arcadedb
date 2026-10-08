@@ -23,10 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.FakeArcadeDBServer;
 import org.junit.jupiter.api.Test;
 
-
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.when;
 
 /**
  * Regression tests for the leadership-transfer branch of the first-formation gate in
@@ -54,7 +51,7 @@ class BootstrapElectionTransferGateTest {
 
     // No local databases: an open gate is told apart from a closed one by the outcome, SKIPPED_NO_DATABASES being the
     // one returned only after the databases are collected
-    final FakeArcadeDBServer server = FakeArcadeDBServer.create((String) null, config);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create(config);
 
     // A fresh state machine has never applied an application entry
     final FakeRaftHAServer raft = FakeRaftHAServer.detached().leader(true)
@@ -76,7 +73,7 @@ class BootstrapElectionTransferGateTest {
     config.setValue(GlobalConfiguration.HA_BOOTSTRAP_FROM_LOCAL_DATABASE, true);
 
     // A local database: had the gate opened, it would be collected and the outcome would not be the gate's own
-    final FakeArcadeDBServer server = FakeArcadeDBServer.create((String) null, config).databaseNames("alpha");
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create(config).databaseNames("alpha");
 
     final FakeRaftHAServer raft = FakeRaftHAServer.detached().leader(true).commitIndex(2L)
         .stateMachine(FakeRaftHAServer.stateMachineOfARunningCluster());
@@ -95,7 +92,7 @@ class BootstrapElectionTransferGateTest {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_BOOTSTRAP_FROM_LOCAL_DATABASE, true);
 
-    final FakeArcadeDBServer server = FakeArcadeDBServer.create((String) null, config).databaseNames("alpha");
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create(config).databaseNames("alpha");
 
     final FakeRaftHAServer raft = FakeRaftHAServer.detached().leader(true).commitIndex(2L)
         .noStateMachine(); // state machine not wired yet

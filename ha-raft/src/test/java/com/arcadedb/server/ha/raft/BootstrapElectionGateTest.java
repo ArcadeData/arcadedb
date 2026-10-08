@@ -23,10 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.FakeArcadeDBServer;
 import org.junit.jupiter.api.Test;
 
-
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.when;
 
 /**
  * Regression tests for the first-formation gate in {@link BootstrapElection} (issue #4800).
@@ -71,7 +68,7 @@ class BootstrapElectionGateTest {
 
     // Two local databases: had the gate let this pass through, it would collect them and end in an outcome other than
     // SKIPPED_NOT_FIRST_FORMATION, which is returned before anything is collected
-    final FakeArcadeDBServer server = FakeArcadeDBServer.create((String) null, config).databaseNames("beta", "alpha");
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create(config).databaseNames("beta", "alpha");
 
     final FakeRaftHAServer raft = FakeRaftHAServer.detached();
     raft.leader(true);
@@ -82,7 +79,6 @@ class BootstrapElectionGateTest {
     final BootstrapElection.Outcome outcome = election.runIfEligible();
 
     assertThat(outcome).isEqualTo(BootstrapElection.Outcome.SKIPPED_NOT_FIRST_FORMATION);
-    // The gate short-circuits before any data is collected: that is the outcome above, with databases present.
   }
 
   /**
@@ -97,7 +93,7 @@ class BootstrapElectionGateTest {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_BOOTSTRAP_FROM_LOCAL_DATABASE, true);
 
-    final FakeArcadeDBServer server = FakeArcadeDBServer.create((String) null, config);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create(config);
 
     final FakeRaftHAServer raft = FakeRaftHAServer.detached();
     raft.leader(true);
@@ -122,7 +118,7 @@ class BootstrapElectionGateTest {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_BOOTSTRAP_FROM_LOCAL_DATABASE, true);
 
-    final FakeArcadeDBServer server = FakeArcadeDBServer.create((String) null, config).databaseNames("alpha");
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create(config).databaseNames("alpha");
 
     final FakeRaftHAServer raft = FakeRaftHAServer.detached();
     // Leader at the entry guard and on the first loop check, then leadership is lost.
@@ -145,7 +141,7 @@ class BootstrapElectionGateTest {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_BOOTSTRAP_FROM_LOCAL_DATABASE, true);
 
-    final FakeArcadeDBServer server = FakeArcadeDBServer.create((String) null, config);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create(config);
 
     final FakeRaftHAServer raft = FakeRaftHAServer.detached();
     raft.leader(true);
@@ -167,7 +163,7 @@ class BootstrapElectionGateTest {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_BOOTSTRAP_FROM_LOCAL_DATABASE, true);
 
-    final FakeArcadeDBServer server = FakeArcadeDBServer.create((String) null, config).databaseNames("alpha");
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create(config).databaseNames("alpha");
 
     final FakeRaftHAServer raft = FakeRaftHAServer.detached();
     raft.leader(true);
