@@ -145,6 +145,7 @@ public abstract class SQLFunctionRunningSumAbstract extends SQLAggregatedFunctio
     case EMPTY -> {
     }
     case DOUBLE -> addToSum(other.doubleSum);
+    // INTEGER MODE HOLDS A SUM WITHIN THE int RANGE: THE CAST IS EXACT
     case INTEGER -> addToSum((int) other.longSum);
     case LONG -> addToSum(other.longSum);
     default -> addToSum(other.boxedSum);

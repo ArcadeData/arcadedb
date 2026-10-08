@@ -96,8 +96,10 @@ final class PropertyCachingResult implements Result {
     if (row == null || row.getClass() != ResultInternal.class)
       return row;
     final ResultInternal internal = (ResultInternal) row;
+    // A TEMPORARY PROPERTY IS READ OFF A ResultInternal ONLY (SuffixIdentifier): A ROW CARRYING ONE IS NOT VIEWED
     if (!(internal.element instanceof ImmutableDocument immutable) || internal.tombstones != null
-        || internal.content != null && !internal.content.isEmpty())
+        || internal.content != null && !internal.content.isEmpty()
+        || internal.temporaryContent != null && !internal.temporaryContent.isEmpty())
       return row;
 
     this.row = internal;
