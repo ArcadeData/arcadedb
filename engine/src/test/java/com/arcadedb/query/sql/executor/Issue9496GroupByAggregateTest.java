@@ -459,6 +459,23 @@ class Issue9496GroupByAggregateTest extends TestHelper {
   }
 
   /**
+   * A row carrying a temporary property is read as it is, never through the cache: SuffixIdentifier finds a temporary
+   * property on a ResultInternal only, so through the view it would read as missing.
+   */
+  @Test
+  void aRowWithATemporaryPropertyIsNotReadThroughTheCache() {
+    final RID[] rid = new RID[1];
+    database.transaction(() -> rid[0] = database.newDocument("LineItem").set("l_quantity", 3.0).save().getIdentity());
+    final ResultInternal plain = new ResultInternal(database.lookupByRID(rid[0], true));
+    final PropertyCachingResult cache = new PropertyCachingResult(database);
+    assertThat(cache.of(plain)).isSameAs(cache);
+
+    final ResultInternal withTemporary = new ResultInternal(database.lookupByRID(rid[0], true));
+    withTemporary.setTemporaryProperty("_$$$OALIAS$$$_1", 42);
+    assertThat(cache.of(withTemporary)).isSameAs(withTemporary);
+  }
+
+  /**
    * The partition of a group in a parallel aggregation is taken from the top bits of its spread hash, for any number of
    * workers: every partition is in range and they share the keys evenly, also with as many workers as no power of two.
    */

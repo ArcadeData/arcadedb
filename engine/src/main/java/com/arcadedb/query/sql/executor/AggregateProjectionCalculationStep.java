@@ -125,6 +125,7 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
       // WHEN AN EXPRESSION NEEDS IT, INSTEAD OF BY ITS OWN STEP, WHICH MADE ONE FOR EVERY ROW
       ExecutionStepInternal source = prevStep;
       Projection preProjection = null;
+      // THE EXACT CLASS: A SUBCLASS OF THE PROJECTION STEP MAY DO MORE PER ROW, AND IS PULLED AS ITS OWN STEP
       if (prevStep.getClass() == ProjectionCalculationStep.class && ((ProjectionCalculationStep) prevStep).prev != null) {
         preProjection = ((ProjectionCalculationStep) prevStep).projection;
         source = ((ProjectionCalculationStep) prevStep).prev;
