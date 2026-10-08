@@ -385,7 +385,9 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
         throw new IllegalStateException("Parallel aggregation ended without the partial aggregation of any worker");
       final List<ResultInternal> result = new ArrayList<>(size);
       for (int i = 0; i < size; i++) {
-        onWait.run();
+        // THE TIMEOUT, EVERY 1,024 GROUPS: A CHECK PER GROUP WOULD BE A CLOCK READ PER GROUP
+        if ((i & 1023) == 0)
+          onWait.run();
         result.add(finisher.toResult(groups.get(i)));
       }
 
