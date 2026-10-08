@@ -4643,24 +4643,24 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   /**
    * What the commit runs on every bucket page the transaction modified or created (#9483). A page every write of
    * which was declared hole-free ({@link MutablePage#beginPackedWrite()}: records appended at the end of the content,
-   * records overwritten in place by the same footprint) was packed when the transaction found it and still is, so the
-   * proof of that ({@link #packedContentEnd}) - a walk of the whole slot table, the largest single part of the commit
-   * of a small-record transaction - is not paid again. The accounting {@link #compressPageInternal} does for a page it
-   * proves is not needed either: each of those writes already told the free-space statistics the exact free tail it
-   * left, and an overwrite of the same footprint changes none.
+   * records overwritten in place by the same footprint, records grown inside the page) was packed when the
+   * transaction found it and still is, so the proof of that ({@link #packedContentEnd}) - a walk of the whole slot
+   * table, the largest single part of the commit of a small-record transaction - is not paid again. The accounting
+   * {@link #compressPageInternal} does for a page it proves is not needed either: each of those writes already told
+   * the free-space statistics the exact free tail it left, and an overwrite of the same footprint changes none.
    * <p>
-   * Every other page takes {@link #compressPage} unchanged. A page that carried a hole in before the transaction
-   * (written by an old engine) and is only appended to now keeps it until a write that can free bytes lands on it;
-   * the hole costs the space it always cost and nothing reads through it.
+   * "Packed when the transaction found it" holds by induction: every committed page went through this method or
+   * through {@link #compressPage}, and the rebased pages of the commit-time merges are compressed in full by the two
+   * rebase methods themselves (#5608), so they never arrive here already skipped. The one exception is a page an old
+   * engine left a hole in: appended to now, it keeps the hole until a write that can free bytes lands on it, which
+   * costs the space it always cost - nothing reads through a hole.
    * <p>
-   * The pages the commit rebases onto a newer committed version never arrive here already skipped: the two rebase
-   * methods build a fresh image and run {@link #compressPage} on it themselves (#5608), so a merged page is always
-   * proven.
-   * <p>
-   * Under assertions (surefire's default) the skip is held to its word: the proof is run anyway and a page it cannot
-   * vouch for takes the full path, so the free-space claim check keeps confronting every write with the page.
+   * Under assertions (surefire's default) the skip is held to its word: the proof is run anyway, a page that fails
+   * it is an assertion error unless the hole came in with the committed image ({@link #failedProofIsExplained}), and
+   * the free-space claim check keeps confronting every write with the page.
    *
-   * @return true when the full compression was skipped, which is the same answer with and without assertions.
+   * @return true when the full compression was skipped: the same answer with and without assertions, but on a page
+   * that brought a hole in from an old engine, which the assertions send through the full compression.
    */
   public boolean compressPageAtCommit(final MutablePage page) throws IOException {
     if (page.hasOnlyPackedWrites()) {
@@ -4671,11 +4671,53 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final int contentEndInPage = packedContentEnd(page, recordCountInPage);
       if (contentEndInPage > 0) {
         verifyFreeSpaceClaim(page, page.getMaxContentSize() - contentEndInPage, recordCountInPage);
+        // The other half of the contract: a declared write reports the exact free tail it leaves, because nothing
+        // re-measures this page. A claim demoted to a floor means a write gave bytes back unreported, which only the
+        // full compression would have accounted for - even when the floor itself is honest.
+        assert page.getFreeSpaceClaim() == MutablePage.FREE_SPACE_CLAIM_UNKNOWN || page.isFreeSpaceClaimExact() :
+            "page " + page.getPageId() + " of bucket '" + componentName
+                + "' skips the commit-time compression, but a write on it gave bytes back without reporting them";
         return true;
       }
+
+      assert failedProofIsExplained(page, recordCountInPage) :
+          "page " + page.getPageId() + " of bucket '" + componentName + "' (" + recordCountInPage + " record slots) was "
+              + "written only by writes declared hole-free (MutablePage.beginPackedWrite) and found packed, but has a "
+              + "hole now: one of those writes broke its promise. Fix the write, or stop declaring it";
     }
     compressPage(page, false);
     return false;
+  }
+
+  /**
+   * Under assertions only: whether a page every write of which was declared hole-free may fail the proof that it is
+   * packed without any of those writes being at fault (#9483). It may when it holds no live record - there is
+   * nothing to pack, which the proof reports the same way - and when the hole came in with the committed image the
+   * transaction started from, i.e. a page an old engine wrote. A brand-new page is born empty and a committed page is
+   * packed by the commit that wrote it, so anything else is a declared write that left a hole.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  private boolean failedProofIsExplained(final MutablePage page, final short recordCountInPage) throws IOException {
+    if (getOrderedRecordsInPage(page, recordCountInPage).isEmpty())
+      return true;
+
+    // The commit holds this file's lock, so the committed image cannot move between the two reads below
+    final PageManager pageManager = database.getPageManager();
+    final int committedVersion = pageManager.getMostRecentVersionOfPage(page.getPageId(), pageSize);
+    if (committedVersion != page.getVersion())
+      // THE TRANSACTION STARTED FROM AN OLDER IMAGE, WHICH IS NOT HERE TO ASK: THE VERSION CHECK REFUSES OR REBASES IT
+      return true;
+    if (committedVersion == 0)
+      // A BRAND-NEW PAGE: NOTHING CAN HAVE COME IN WITH IT
+      return false;
+
+    final ImmutablePage committed = pageManager.getImmutablePage(page.getPageId(), pageSize, false, false);
+    if (committed == null)
+      return true;
+    final short committedRecordCount = committed.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
+    return !getOrderedRecordsInPage(committed, committedRecordCount).isEmpty()
+        && packedContentEnd(committed, committedRecordCount) < 0;
   }
 
   private void compressPageInternal(final MutablePage page, final boolean forceWipeOut) throws IOException {
@@ -4770,7 +4812,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    *
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
-  int packedContentEnd(final MutablePage page, final short recordCountInPage) {
+  int packedContentEnd(final BasePage page, final short recordCountInPage) {
     final int pageContentSize = page.getContentSize();
     final int maxFootprint = getPageSize() - contentHeaderSize;
     int footprints = 0;
@@ -4842,12 +4884,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * Holds what a transaction's writes SAID this page's free tail would be against what the page, read here, actually
    * has (#6396).
    * <p>
-   * Everything the free-space statistics are told by a write is a delta that write computes about its own bytes,
-   * and nothing observable after a commit depends on it being right: every page a transaction touches is compressed
-   * at commit, {@link #compressPageInternal} MEASURES its free tail there and {@link #accountCompressedPage}
-   * overwrites whatever the deltas had accumulated. So a writer could be - and, until #6154, #6339 and #6358 were
+   * Everything the free-space statistics are told by a write is a delta that write computes about its own bytes.
+   * Until #9483 nothing observable after a commit depended on it being right: every page a transaction touched was
+   * compressed at commit, {@link #compressPageInternal} MEASURED its free tail there and {@link #accountCompressedPage}
+   * overwrote whatever the deltas had accumulated. So a writer could be - and, until #6154, #6339 and #6358 were
    * each opened for one, repeatedly was - thousands of bytes wrong without a single red test. Two independent
-   * descriptions of one quantity, and no mechanism keeping them honest.
+   * descriptions of one quantity, and no mechanism keeping them honest. Since #9483 a page written only by writes
+   * declared hole-free skips that compression ({@link #compressPageAtCommit}), so for such a page the deltas ARE what
+   * the statistics keep, and this check is what holds them to it.
    * <p>
    * This is that mechanism, and it needs no fixture: every commit in every test becomes a check of the write-path
    * arithmetic. The comparison is an EQUALITY, against the tail the page has BEFORE the defrag - which is exactly
@@ -6415,14 +6459,22 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // NOT ENOUGH ROOM LEFT IN THE PAGE
       return false;
 
-    // THERE IS SPACE LEFT IN THE PAGE, SHIFT ON THE RIGHT THE EXISTENT RECORDS
-    if (lastRecordPositionInPage != recordPositionInPage)
-      // NOT LAST RECORD IN PAGE, SHIFT NEXT RECORDS
-      shiftFollowingRecordsRight(page, recordCountInPage, (int) (recordPositionInPage + recordSize[0] + recordSize[1]),
-              pageOccupiedInBytes, additionalSpaceNeeded);
+    // #9483: what follows the record moves right by exactly the bytes the record gains, so a packed page stays packed,
+    // and the statistics are told the exact free tail below. Declared here rather than at the callers because both
+    // halves of that promise are made here; a growth that does not fit returned above, writing nothing.
+    final boolean previousPackedWrite = page.beginPackedWrite();
+    try {
+      // THERE IS SPACE LEFT IN THE PAGE, SHIFT ON THE RIGHT THE EXISTENT RECORDS
+      if (lastRecordPositionInPage != recordPositionInPage)
+        // NOT LAST RECORD IN PAGE, SHIFT NEXT RECORDS
+        shiftFollowingRecordsRight(page, recordCountInPage, (int) (recordPositionInPage + recordSize[0] + recordSize[1]),
+                pageOccupiedInBytes, additionalSpaceNeeded);
 
-    recordSize[1] = page.writeNumber(recordPositionInPage, isPlaceHolder ? -1L * contentSize : contentSize);
-    page.writeByteArray((int) (recordPositionInPage + recordSize[1]), content, contentOffset, contentSize);
+      recordSize[1] = page.writeNumber(recordPositionInPage, isPlaceHolder ? -1L * contentSize : contentSize);
+      page.writeByteArray((int) (recordPositionInPage + recordSize[1]), content, contentOffset, contentSize);
+    } finally {
+      page.endPackedWrite(previousPackedWrite);
+    }
 
     updatePageStatistics(page, spaceAvailableInCurrentPage, -additionalSpaceNeeded);
     return true;
@@ -6750,6 +6802,17 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
           bestPageAnalysis = pageAnalysis;
           break;
+        } else if (pageAnalysis.spaceAvailableInCurrentPage > -1 && pageAnalysis.spaceAvailableInCurrentPage < pageStats) {
+          // #9483: the statistics promised more than the page has. A commit that only appended to a page no longer
+          // re-measures it, so an entry rewritten while the appends were still private (a gather reads the committed
+          // image) can outlive that commit over-stated. Correct it here, or every allocation that trusts it pays this
+          // page read and slot walk again for a page that cannot take the record.
+          if (pageAnalysis.spaceAvailableInCurrentPage < MINIMUM_SPACE_LEFT_IN_PAGE) {
+            if (pagesToRemove == null)
+              pagesToRemove = new int[snapSize];
+            pagesToRemove[pagesToRemoveCount++] = pageId;
+          } else
+            freeSpaceInPages.put(pageId, pageAnalysis.spaceAvailableInCurrentPage);
         }
       }
     }
