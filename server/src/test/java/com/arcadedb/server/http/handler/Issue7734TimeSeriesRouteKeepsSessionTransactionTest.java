@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.server.http.HttpSession;
 import com.arcadedb.server.http.HttpSessionManager;
@@ -70,7 +71,7 @@ class Issue7734TimeSeriesRouteKeepsSessionTransactionTest {
   @BeforeEach
   void setUp() {
     manager = new HttpSessionManager(60_000);
-    user = mock(ServerSecurityUser.class);
+    user = TestServerHelper.securityUser("tester");
     transaction = mock(TransactionContext.class);
     when(transaction.isActive()).thenReturn(true);
     session = manager.createSession(user, transaction);

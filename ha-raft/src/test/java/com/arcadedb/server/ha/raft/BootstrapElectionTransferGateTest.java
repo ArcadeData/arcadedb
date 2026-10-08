@@ -20,16 +20,12 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
 import org.junit.jupiter.api.Test;
 
-import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.lenient;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -56,22 +52,18 @@ class BootstrapElectionTransferGateTest {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_BOOTSTRAP_FROM_LOCAL_DATABASE, true);
 
-    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
-    when(mockServer.getConfiguration()).thenReturn(config);
-    when(mockServer.getDatabaseNames()).thenReturn(Set.of());
+    // No local databases: an open gate is told apart from a closed one by the outcome, SKIPPED_NO_DATABASES being the
+    // one returned only after the databases are collected
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create((String) null, config);
 
-    final ArcadeStateMachine mockSm = mock(ArcadeStateMachine.class);
-    when(mockSm.hasNeverAppliedApplicationEntry()).thenReturn(true);
+    // A fresh state machine has never applied an application entry
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached().leader(true)
+        .commitIndex(2L) // post-transfer: internal no-op/config entries
+        .stateMachine(new ArcadeStateMachine());
 
-    final RaftHAServer mockHa = mock(RaftHAServer.class);
-    when(mockHa.isLeader()).thenReturn(true);
-    when(mockHa.getCommitIndex()).thenReturn(2L); // post-transfer: internal no-op/config entries
-    when(mockHa.getStateMachine()).thenReturn(mockSm);
-
-    final BootstrapElection election = new BootstrapElection(mockHa, mockServer);
+    final BootstrapElection election = new BootstrapElection(raft, server);
 
     assertThat(election.runIfEligible()).isEqualTo(BootstrapElection.Outcome.SKIPPED_NO_DATABASES);
-    verify(mockServer).getDatabaseNames();
   }
 
   /**
@@ -83,22 +75,15 @@ class BootstrapElectionTransferGateTest {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_BOOTSTRAP_FROM_LOCAL_DATABASE, true);
 
-    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
-    when(mockServer.getConfiguration()).thenReturn(config);
-    lenient().when(mockServer.getDatabaseNames()).thenReturn(Set.of("alpha"));
+    // A local database: had the gate opened, it would be collected and the outcome would not be the gate's own
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create((String) null, config).databaseNames("alpha");
 
-    final ArcadeStateMachine mockSm = mock(ArcadeStateMachine.class);
-    when(mockSm.hasNeverAppliedApplicationEntry()).thenReturn(false);
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached().leader(true).commitIndex(2L)
+        .stateMachine(FakeRaftHAServer.stateMachineOfARunningCluster());
 
-    final RaftHAServer mockHa = mock(RaftHAServer.class);
-    when(mockHa.isLeader()).thenReturn(true);
-    when(mockHa.getCommitIndex()).thenReturn(2L);
-    when(mockHa.getStateMachine()).thenReturn(mockSm);
-
-    final BootstrapElection election = new BootstrapElection(mockHa, mockServer);
+    final BootstrapElection election = new BootstrapElection(raft, server);
 
     assertThat(election.runIfEligible()).isEqualTo(BootstrapElection.Outcome.SKIPPED_NOT_FIRST_FORMATION);
-    verify(mockServer, never()).getDatabaseNames();
   }
 
   /**
@@ -110,18 +95,13 @@ class BootstrapElectionTransferGateTest {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_BOOTSTRAP_FROM_LOCAL_DATABASE, true);
 
-    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
-    when(mockServer.getConfiguration()).thenReturn(config);
-    lenient().when(mockServer.getDatabaseNames()).thenReturn(Set.of("alpha"));
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create((String) null, config).databaseNames("alpha");
 
-    final RaftHAServer mockHa = mock(RaftHAServer.class);
-    when(mockHa.isLeader()).thenReturn(true);
-    when(mockHa.getCommitIndex()).thenReturn(2L);
-    when(mockHa.getStateMachine()).thenReturn(null); // state machine not wired yet
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached().leader(true).commitIndex(2L)
+        .noStateMachine(); // state machine not wired yet
 
-    final BootstrapElection election = new BootstrapElection(mockHa, mockServer);
+    final BootstrapElection election = new BootstrapElection(raft, server);
 
     assertThat(election.runIfEligible()).isEqualTo(BootstrapElection.Outcome.SKIPPED_NOT_FIRST_FORMATION);
-    verify(mockServer, never()).getDatabaseNames();
   }
 }
