@@ -3711,6 +3711,8 @@ public class SelectExecutionPlanner {
     // Without a bucket the query groups by tags alone, which is answered as one bucket per group
     if (timeBucketAlias == null && groupTags.isEmpty())
       return false;
+    if (groupTags.size() > TimeSeriesEngine.MAX_GROUP_COLUMNS)
+      return false;
     if (timeBucketAlias != null && intervalStr == null)
       return false;
 

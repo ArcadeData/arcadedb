@@ -194,6 +194,33 @@ class Issue9489GroupByTagPushDownTest extends TestHelper {
   }
 
   @Test
+  void fourTagsArePushedDownAndFiveAreNot() {
+    database.command("sql", "CREATE TIMESERIES TYPE M TIMESTAMP ts TAGS (a STRING, b STRING, c STRING, d STRING, e STRING) FIELDS (v DOUBLE)");
+    database.command("sql", "CREATE DOCUMENT TYPE MD");
+    database.transaction(() -> {
+      for (int i = 0; i < 400; i++)
+        for (final String type : new String[] { "M", "MD" })
+          database.command("sql", "INSERT INTO " + type + " SET ts = ?, a = ?, b = ?, c = ?, d = ?, e = ?, v = ?", T0 + i * 1_000L,
+              "a" + i % 2, "b" + i % 3, "c" + i % 4, "d" + i % 5, "e" + i % 6, (double) i);
+    });
+    for (int pass = 0; pass < 2; pass++) {
+      final String four = "SELECT a, b, c, d, count(*) AS n, sum(v) AS s FROM %s GROUP BY a, b, c, d";
+      assertThat(plan(String.format(four, "M"))).contains("AGGREGATE FROM TIMESERIES").contains("group by a, b, c, d");
+      assertThat(rows(String.format(four, "M"))).isEqualTo(rows(String.format(four, "MD")));
+
+      // a tag filter that cannot be answered from a block's declaration (the block holds several values of it) filters row by row
+      final String filtered = "SELECT b, c, count(*) AS n, sum(v) AS s FROM %s WHERE a = 'a1' GROUP BY b, c";
+      assertThat(rows(String.format(filtered, "M"))).isEqualTo(rows(String.format(filtered, "MD")));
+
+      final String five = "SELECT a, b, c, d, e, count(*) AS n FROM %s GROUP BY a, b, c, d, e";
+      assertThat(plan(String.format(five, "M"))).doesNotContain("AGGREGATE FROM TIMESERIES");
+      assertThat(rows(String.format(five, "M"))).isEqualTo(rows(String.format(five, "MD")));
+
+      database.command("sql", "COMPACT TIMESERIES TYPE M");
+    }
+  }
+
+  @Test
   void aProjectedTagThatIsNotGroupedByStaysOnTheGenericPath() {
     createTypes(1);
     load(1, 0, 10);
