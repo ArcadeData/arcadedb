@@ -31,6 +31,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -436,6 +437,85 @@ class QueryAdmissionGateTest {
     outer.close();
     outer.close();
     assertThat(gate.getRunning()).isZero();
+  }
+
+  /**
+   * Many threads admitting at once, half of them starting a nested query and some giving their slot back early: the
+   * running queries never exceed the limit, and every slot comes back.
+   */
+  @Test
+  void underContentionTheLimitHoldsAndEverySlotComesBack() throws Exception {
+    final int limit = 4;
+    final int threads = 16;
+    final int iterations = 200;
+    GlobalConfiguration.QUERY_MAX_CONCURRENT.setValue(limit);
+    GlobalConfiguration.QUERY_QUEUE_TIMEOUT.setValue(60_000L);
+    GlobalConfiguration.QUERY_QUEUE_MAX_SIZE.setValue(threads);
+
+    final AtomicInteger maxSeen = new AtomicInteger();
+    final List<CompletableFuture<Void>> done = new ArrayList<>();
+    for (int t = 0; t < threads; t++) {
+      final int id = t;
+      final CompletableFuture<Void> future = new CompletableFuture<>();
+      done.add(future);
+      startWaiter(() -> {
+        try {
+          for (int i = 0; i < iterations; i++) {
+            try (final QueryAdmissionGate.Ticket ignored = gate.admit()) {
+              maxSeen.accumulateAndGet(gate.getRunning(), Math::max);
+              if ((id + i) % 2 == 0)
+                gate.admit().close();
+              if ((id + i) % 7 == 0)
+                gate.releaseCurrentSlot();
+            }
+          }
+          future.complete(null);
+        } catch (final Throwable e) {
+          future.completeExceptionally(e);
+        }
+      });
+    }
+
+    for (final CompletableFuture<Void> future : done)
+      future.get(90, TimeUnit.SECONDS);
+    assertThat(maxSeen.get()).as("running queries never exceed the limit").isBetween(1, limit);
+    assertThat(gate.getRunning()).isZero();
+    assertThat(gate.getQueued()).isZero();
+    assertThat(gate.getAdmitted()).as("only the outermost queries are counted").isEqualTo((long) threads * iterations);
+    assertThat(gate.getRefused()).isZero();
+  }
+
+  /** Disabling the gate while queries wait lets them all start: the head re-reads the setting on its own. */
+  @Test
+  void disablingTheGateWhileQueriesWaitLetsThemStart() throws Exception {
+    GlobalConfiguration.QUERY_MAX_CONCURRENT.setValue(1);
+    GlobalConfiguration.QUERY_QUEUE_TIMEOUT.setValue(60_000L);
+
+    final QueryAdmissionGate.Ticket held = gate.admit();
+    final List<CompletableFuture<Void>> done = new ArrayList<>();
+    for (int i = 0; i < 3; i++) {
+      final int queuedBefore = i;
+      final CompletableFuture<Void> future = new CompletableFuture<>();
+      done.add(future);
+      startWaiter(() -> {
+        try {
+          gate.admit().close();
+          future.complete(null);
+        } catch (final Throwable e) {
+          future.completeExceptionally(e);
+        }
+      });
+      await().atMost(Duration.ofSeconds(30)).until(() -> gate.getQueued() == queuedBefore + 1);
+    }
+
+    // NO SLOT IS GIVEN BACK: ONLY THE SETTING CHANGES
+    GlobalConfiguration.QUERY_MAX_CONCURRENT.setValue(0);
+    for (final CompletableFuture<Void> future : done)
+      future.get(30, TimeUnit.SECONDS);
+    assertThat(gate.getQueued()).isZero();
+
+    held.close();
+    assertThat(gate.getRunning()).as("every slot taken while the gate was on came back").isZero();
   }
 
   @Test
