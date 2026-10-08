@@ -88,7 +88,16 @@ public class FunctionAggregationContext implements AggregationContext, HeapBuffe
 
   @Override
   public void apply(final Result next, final CommandContext context) {
-    final Object[] paramValues = evaluateArguments(next, context);
+    applyEvaluated(next, evaluateArguments(next, context), context);
+  }
+
+  /**
+   * {@link #apply} for a row whose arguments the caller evaluated already: the aggregation of a GROUP BY reads them off
+   * the projection that computed them (#9496). DISTINCT and the heap charge of a function that keeps every value apply as
+   * in {@link #apply}. Neither keeps {@code paramValues}, and a built-in aggregate does not either, so a caller feeding a
+   * built-in aggregate may pass the same array for every row.
+   */
+  public void applyEvaluated(final Result next, final Object[] paramValues, final CommandContext context) {
     if (seen != null && !firstTimeSeen(paramValues))
       return;
 
@@ -96,6 +105,21 @@ public class FunctionAggregationContext implements AggregationContext, HeapBuffe
     // a DISTINCT call is charged through the set of distinct values it remembers, which share the function's own items
     if (heapLimit != null && seen == null)
       heapLimit.chargeElement(paramValues.length == 1 ? paramValues[0] : new ArrayList<>(Arrays.asList(paramValues)), 0);
+  }
+
+  /** The arguments of this aggregation, which {@link #apply} evaluates on every row. */
+  public List<Expression> getParams() {
+    return params;
+  }
+
+  /** The function this aggregation feeds. */
+  public SQLFunction getFunction() {
+    return aggregateFunction;
+  }
+
+  /** Whether the function is fed every distinct value of the arguments once: {@code count(DISTINCT x)}. */
+  public boolean isDistinct() {
+    return seen != null;
   }
 
   /**

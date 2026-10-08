@@ -85,10 +85,28 @@ public class ResultInternal implements Result {
   }
 
   /**
+   * What {@link #setProperty} keeps of {@code value} in a row of {@code database}: so the aggregation of a GROUP BY,
+   * which reads the values of the projection before it without making its row (issue #9496), reads them as the row
+   * would answer them, {@code toPropertyValue(toStoredValue(database, value))}.
+   */
+  static Object toStoredValue(final Database database, Object value) {
+    if (value instanceof Optional optional)
+      value = optional.orElse(null);
+
+    if (value instanceof Result result && result.isElement())
+      return result.getElement().get();
+    else if (database != null && value instanceof RID rid && !(value instanceof DatabaseRID))
+      // Egress wrap: a bare RID stored in a projection becomes user-visible, bind it to this result's database so shortcut methods like asVertex() route
+      // through the correct database even if the thread-local active database changes later.
+      return new DatabaseRID(database, rid.getBucketId(), rid.getPosition());
+    return value;
+  }
+
+  /**
    * The one rule every property getter of a row applies to a stored value, shared with {@link #copyBindings} so the
    * two can never diverge: an {@link Identifiable} that is not a loaded {@link Record} is answered as its identity.
    */
-  private static Object toPropertyValue(final Object value) {
+  static Object toPropertyValue(final Object value) {
     if (!(value instanceof Record) && value instanceof Identifiable identifiable && identifiable.getIdentity() != null)
       return identifiable.getIdentity();
     return value;
@@ -194,20 +212,10 @@ public class ResultInternal implements Result {
   }
 
   public ResultInternal setProperty(final String name, Object value) {
-    if (value instanceof Optional optional)
-      value = optional.orElse(null);
-
     if (content == null)
       throw new IllegalStateException("Impossible to mutate result set");
 
-    if (value instanceof Result result && result.isElement())
-      content.put(name, result.getElement().get());
-    else if (database != null && value instanceof RID rid && !(value instanceof DatabaseRID))
-      // Egress wrap: a bare RID stored in a projection becomes user-visible, bind it to this result's database so shortcut methods like asVertex() route
-      // through the correct database even if the thread-local active database changes later.
-      content.put(name, new DatabaseRID(database, rid.getBucketId(), rid.getPosition()));
-    else
-      content.put(name, value);
+    content.put(name, toStoredValue(database, value));
 
     // Re-setting a previously removed property lifts the tombstone.
     if (tombstones != null)
