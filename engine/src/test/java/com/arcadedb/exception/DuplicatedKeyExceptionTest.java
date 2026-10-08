@@ -84,6 +84,20 @@ class DuplicatedKeyExceptionTest {
     assertThat(dup.getCurrentIndexedRID()).isEqualTo(new RID(7, 1L));
   }
 
+  /**
+   * The format cannot carry the separator in both the index name and the keys. Pins the documented trade-off: the
+   * first separator wins, so the result is still typed with the right RID, and only the index/keys boundary moves.
+   */
+  @Test
+  void aSeparatorInTheIndexNameMovesOnlyTheIndexKeysBoundary() {
+    final DuplicatedKeyException dup = DuplicatedKeyException.fromExceptionArgs("Account[a|b]|[42]|#7:1");
+
+    assertThat(dup).isNotNull();
+    assertThat(dup.getIndexName()).isEqualTo("Account[a");
+    assertThat(dup.getKeys()).isEqualTo("b]|[42]");
+    assertThat(dup.getCurrentIndexedRID()).isEqualTo(new RID(7, 1L));
+  }
+
   @ParameterizedTest
   @ValueSource(strings = { "", "only-one-part", "index|keys", "index|keys|not-a-rid", "index|keys|#7", "index|keys|#a:b",
       "index|keys|", "|" })

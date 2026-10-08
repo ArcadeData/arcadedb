@@ -1218,9 +1218,9 @@ public class RemoteHttpComponent extends RWLockContext {
         return new QuorumNotReachedException(detail);
       } else if (exception.equals(DuplicatedKeyException.class.getName())
           && DuplicatedKeyException.fromExceptionArgs(exceptionArgs) instanceof final DuplicatedKeyException duplicatedKey) {
-        // MISSING OR MALFORMED exceptionArgs (FEWER THAN THREE PARTS, A LAST PART THAT IS NOT A RID) FALL THROUGH TO THE
-        // GENERIC MAPPING BELOW: THE CALLER STILL GETS THE SERVER'S FAILURE, JUST UNTYPED, INSTEAD OF AN
-        // ArrayIndexOutOfBoundsException OUT OF THIS METHOD (ISSUE #9473)
+        // Missing or malformed exceptionArgs (fewer than three parts, a last part that is not a RID) fall through to the
+        // generic mapping below: the caller still gets the server's failure, just untyped, instead of an
+        // ArrayIndexOutOfBoundsException out of this method (issue #9473)
         return duplicatedKey;
       } else if (exception.equals(ConcurrentModificationException.class.getName())) {
         return new ConcurrentModificationException(detail);

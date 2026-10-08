@@ -63,7 +63,8 @@ public class DuplicatedKeyException extends ArcadeDBException {
       try {
         rid = new RID(ridToken);
       } catch (final RuntimeException e) {
-        // NOT A RID ("#7", "#a:b", "garbage", ""): MALFORMED ARGS
+        // Not a RID, so malformed args. RuntimeException rather than IllegalArgumentException on purpose: "#7" throws
+        // IndexOutOfBoundsException from RID(String), "#a:b" NumberFormatException, "garbage" IllegalArgumentException
         return null;
       }
 
