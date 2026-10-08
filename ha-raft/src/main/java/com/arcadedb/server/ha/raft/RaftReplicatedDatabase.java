@@ -986,7 +986,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     final long releases = unpublishedReleasesSinceLog.getAndSet(0);
     LogManager.instance().log(this, Level.WARNING,
         "Commit on database '%s' is releasing entry %d unpublished: the local state machine is closed and none has "
-            + "replaced it yet (the latest of %d commit(s) released this way since the last report). The entries are applied by its "
+            + "replaced it yet (%d commit(s) released this way since the last report, this one included). The entries are applied by its "
             + "replacement or by the log replay on restart; check why the Raft server did not restart in place.",
         getName(), committedLogIndex, releases);
   }
