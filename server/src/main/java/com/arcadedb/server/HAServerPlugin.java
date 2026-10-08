@@ -19,6 +19,7 @@
 package com.arcadedb.server;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.IOException;
 import java.net.http.HttpClient;
@@ -106,6 +107,30 @@ public interface HAServerPlugin extends ServerPlugin {
    * and never take a lock.
    */
   default void onUnverifiedClosedCopyRefused(final String databaseName) {
+  }
+
+  /**
+   * The operator's override of issue #9449: lifts the quarantine (and the read floor that goes with it) standing on
+   * {@code databaseName}, accepting this node's copy as it is WITHOUT a resync, and records who did it. Shared by
+   * {@code POST /api/v1/cluster/accept-diverged/{database}} and the gRPC {@code AcceptDivergedDatabase} RPC, so the two
+   * transports cannot drift on what the override does. The caller authorizes (root only); this method does not.
+   * <p>
+   * Only a node that is the sole voter of its cluster may do it: anywhere else the quarantine is lifted by a resync from
+   * a peer, and lifting it by hand would leave this copy silently different from the others.
+   *
+   * @param acceptedBy who asked, for the audit line in the server log
+   *
+   * @return what was lifted: {@code database}, {@code localServer}, {@code appliedIndex}, and {@code divergenceCause}
+   * and {@code readFloor} when they stood
+   *
+   * @throws ServerControlPlane.NotFoundException              when no quarantine and no read floor stands on the database
+   * @throws ServerControlPlane.OperationNotAvailableException when this node is not the sole voter, or the HA
+   *                                                           implementation has no such override
+   * @throws IOException                                       when the change could not be persisted; nothing is lifted
+   */
+  default JSONObject acceptDivergedDatabase(final String databaseName, final String acceptedBy) throws IOException {
+    throw new ServerControlPlane.OperationNotAvailableException(
+        "This HA implementation cannot lift a database quarantine by hand");
   }
 
   String getLeaderName();

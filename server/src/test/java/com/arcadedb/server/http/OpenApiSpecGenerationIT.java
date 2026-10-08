@@ -492,7 +492,8 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
       "GET /api/v1/cluster", "POST /api/v1/cluster/peer", "DELETE /api/v1/cluster/peer/{peerId}",
       "POST /api/v1/cluster/leader", "POST /api/v1/cluster/stepdown", "POST /api/v1/cluster/leave",
       "POST /api/v1/cluster/verify/{database}", "POST /api/v1/cluster/resync/{database}",
-      "POST /api/v1/cluster/accept-copy/{database}", "POST /api/v1/cluster/bootstrap-state", "POST /api/v1/cluster/capabilities",
+      "POST /api/v1/cluster/accept-copy/{database}", "POST /api/v1/cluster/accept-diverged/{database}",
+      "POST /api/v1/cluster/bootstrap-state", "POST /api/v1/cluster/capabilities",
       "POST /api/v1/cluster/security-seed",
       "GET /api/v1/ha/snapshot/{database}", "GET /api/v1/ha/snapshot/{database}/checksums");
 
@@ -528,7 +529,7 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
     assertThat(EXPECTED_OPERATIONS)
         .as("the inventory itself must hold no duplicate")
         .doesNotHaveDuplicates()
-        .hasSize(94);
+        .hasSize(95);
 
     assertThat(declared)
         .as("operations missing from the specification")
@@ -595,7 +596,7 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
         .as("client generators derive a method name per operationId, so a collision breaks codegen")
         .doesNotHaveDuplicates()
         .doesNotContainNull()
-        .hasSize(94);
+        .hasSize(95);
   }
 
   @Test

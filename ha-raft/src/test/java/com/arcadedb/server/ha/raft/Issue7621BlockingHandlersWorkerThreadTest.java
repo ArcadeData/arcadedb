@@ -126,6 +126,8 @@ class Issue7621BlockingHandlersWorkerThreadTest {
     put("/api/v1/cluster/resync/", Dispatch.ALWAYS);     // downloads a full snapshot
     // Waits for a peer round in flight on the same database (up to 5s), then deletes a file (#8641).
     put(PostAcceptCopyHandler.ROUTE, Dispatch.ALWAYS);
+    // Rewrites the applied-index file under the lock the apply path takes (#9449).
+    put(PostAcceptDivergedHandler.ROUTE, Dispatch.ALWAYS);
     // SHA-256 over every database directory on this node, and it may open one left deliberately closed (#7861).
     put("/api/v1/cluster/bootstrap-state", Dispatch.ALWAYS);
     // Answers from constants, with no lock, no IO and no Raft round-trip: the counter-case that keeps the

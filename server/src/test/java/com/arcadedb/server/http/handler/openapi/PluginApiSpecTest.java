@@ -45,7 +45,7 @@ class PluginApiSpecTest {
   }
 
   @Test
-  void allFifteenPluginOperationsAreDeclared() {
+  void allSixteenPluginOperationsAreDeclared() {
     assertThat(openAPI.getPaths().keySet()).containsExactlyInAnyOrder(
         "/prometheus",
         "/api/v1/cluster",
@@ -57,6 +57,7 @@ class PluginApiSpecTest {
         "/api/v1/cluster/verify/{database}",
         "/api/v1/cluster/resync/{database}",
         "/api/v1/cluster/accept-copy/{database}",
+        "/api/v1/cluster/accept-diverged/{database}",
         "/api/v1/cluster/bootstrap-state",
         "/api/v1/cluster/capabilities",
         "/api/v1/cluster/security-seed",
@@ -65,7 +66,7 @@ class PluginApiSpecTest {
 
     final long operations = openAPI.getPaths().values().stream()
         .mapToLong(item -> item.readOperations().size()).sum();
-    assertThat(operations).isEqualTo(15);
+    assertThat(operations).isEqualTo(16);
   }
 
   @Test
@@ -344,6 +345,16 @@ class PluginApiSpecTest {
     assertThat(post.getResponses().keySet()).containsExactlyInAnyOrder("200", "400", "401", "403", "404", "500");
     assertThat(openAPI.getComponents().getSchemas().get("ClusterActionResponse").getProperties().keySet())
         .contains("database", "localServer", "appliedIndex", "overriddenRefusal");
+  }
+
+  /** Issue #9449: root-only override on a sole voter; 404 when nothing stands, 409 on a node with peers. */
+  @Test
+  void acceptDivergedDeclaresWhatTheHandlerAnswers() {
+    final Operation post = openAPI.getPaths().get("/api/v1/cluster/accept-diverged/{database}").getPost();
+    assertThat(post.getOperationId()).isEqualTo("acceptClusterDivergedDatabase");
+    assertThat(post.getResponses().keySet()).containsExactlyInAnyOrder("200", "400", "401", "403", "404", "409", "500");
+    assertThat(openAPI.getComponents().getSchemas().get("ClusterActionResponse").getProperties().keySet())
+        .contains("database", "localServer", "appliedIndex", "divergenceCause", "readFloor");
   }
 
   /**

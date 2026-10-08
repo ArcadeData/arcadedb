@@ -736,6 +736,20 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
   }
 
   /**
+   * Quarantines {@code databaseName} on a server as an apply error would, for a test outside this package that needs a
+   * quarantine standing (issue #9449, the gRPC override). The state machine's writer is package-private.
+   */
+  protected void quarantineDatabase(final int serverIndex, final String databaseName) {
+    getRaftPlugin(serverIndex).getRaftHAServer().getStateMachine()
+        .markStateDiverged(databaseName, DivergenceCause.APPLY_ERROR);
+  }
+
+  /** Whether {@code databaseName} is quarantined on a server; see {@link #quarantineDatabase(int, String)}. */
+  protected boolean isDatabaseQuarantined(final int serverIndex, final String databaseName) {
+    return getRaftPlugin(serverIndex).getRaftHAServer().getStateMachine().isDatabaseDiverged(databaseName);
+  }
+
+  /**
    * Ensures the replicas about to be compared have caught up, then compares them. The base {@code endTest()}
    * calls the comparison directly, without a Raft-aware wait.
    * <p>

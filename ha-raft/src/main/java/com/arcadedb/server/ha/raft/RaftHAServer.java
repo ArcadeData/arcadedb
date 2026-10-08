@@ -1064,8 +1064,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       return "This leader holds " + reason + ", which it cannot resync from itself, and it is the only voter of the Raft "
           + "configuration, so no peer can ever take over leadership or serve the resync: this state is terminal until an "
           + "operator acts (issue #9308). While it lasts the node reports not-ready (GET /api/v1/ready fails) and the Raft "
-          + "log is not checkpointed, so it grows until the volume fills. Restore the database from a backup, drop it, or "
-          + "add a peer so that leadership can move and this node can resync from it.";
+          + "log is not checkpointed, so it grows until the volume fills. Restore the database from a backup, drop it, add a "
+          + "peer so that leadership can move and this node can resync from it, or, only if this copy is known to be "
+          + "acceptable as it is, lift the quarantine with POST " + PostAcceptDivergedHandler.ROUTE + "{database} on this "
+          + "node (root only, issue #9449).";
     return "This leader holds " + reason + ", which it cannot resync from itself, and no peer is eligible to take over "
         + "leadership (none other is configured, or every other one is lagging, unreachable or a priority-0 replica) "
         + "(issue #8483). The handoff is retried as soon as a peer is eligible. With no other peer, restore the database "

@@ -1076,6 +1076,12 @@ service ArcadeDbAdminService {
   // the cluster instead of refusing unconditionally; a server whose HA implementation cannot change
   // membership at runtime, or that is not running HA at all, still answers FAILED_PRECONDITION.
   rpc ConnectCluster    (ConnectClusterRequest)    returns (ConnectClusterResponse);
+  // The operator's override of issue #9449, the RPC twin of POST /api/v1/cluster/accept-diverged/{database}:
+  // lifts the quarantine (and its read floor) standing on one database of a node that is the only voter of
+  // its cluster, accepting its copy as it is WITHOUT a resync. Root only. NOT_FOUND when nothing stands on
+  // the database, FAILED_PRECONDITION on a node that is not the sole voter (a resync from a peer is the way
+  // out there) or without HA, INVALID_ARGUMENT on a malformed database name.
+  rpc AcceptDivergedDatabase (AcceptDivergedDatabaseRequest) returns (AcceptDivergedDatabaseResponse);
 
   // Read-only administrative view of the server's open HTTP authentication sessions. gRPC has no
   // session of its own - every admin RPC authenticates from the credentials on the request body - so
@@ -1628,6 +1634,22 @@ message ConnectClusterRequest {
   string server_address = 2;
 }
 message ConnectClusterResponse {}
+
+message AcceptDivergedDatabaseRequest {
+  DatabaseCredentials credentials = 1;
+  string database = 2;
+}
+message AcceptDivergedDatabaseResponse {
+  string database = 1;
+  // The server that lifted the quarantine.
+  string local_server = 2;
+  // Last Raft index applied to the accepted copy, or -1 when none is recorded.
+  int64 applied_index = 3;
+  // Why the lifted quarantine had been raised (a DivergenceCause name), empty when only a read floor stood.
+  string divergence_cause = 4;
+  // The read floor lifted with the quarantine, or -1 when none stood.
+  int64 read_floor = 5;
+}
 
 // -----------------------------------------------------------------------------
 // Control plane: discovery (issue #7310)
