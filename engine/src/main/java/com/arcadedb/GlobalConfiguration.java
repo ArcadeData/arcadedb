@@ -425,8 +425,12 @@ public enum GlobalConfiguration {
       worth splitting into parallel ranges. Below this the fan-out (per-range cursor stacks, task \
       dispatch, result merge) costs more than the traversal it parallelises, so the query stays on \
       the caller thread. Counted as the summed document frequency of the query's dims, which is \
-      available from segment metadata without reading a page. Re-read on every query.""",
-      Long.class, 200_000L),
+      available from segment metadata without reading a page. On the default split (arcadedb.sparseVectorScoringMaxPartitions \
+      = 0) the number of ranges also follows this figure, one range per half of it, so a query just \
+      past the threshold is split in two instead of claiming the whole pool and the workers it leaves \
+      alone stay free for other queries. Raise it on a small or shared pool where the extra CPU of \
+      a split matters more than the latency. Re-read on every query.""",
+      Long.class, 50_000L),
 
   SPARSE_VECTOR_SCORING_TIMEOUT_SECONDS("arcadedb.sparseVectorScoringTimeoutSeconds", SCOPE.JVM,
       """
