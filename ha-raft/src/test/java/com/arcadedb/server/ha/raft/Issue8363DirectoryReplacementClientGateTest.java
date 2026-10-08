@@ -26,7 +26,7 @@ import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.utility.FileUtils;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
@@ -41,6 +41,7 @@ import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -84,8 +85,8 @@ class Issue8363DirectoryReplacementClientGateTest {
     localDb.getSchema().createDocumentType("Seed");
     localDb.transaction(() -> seedRid = localDb.newDocument("Seed").set("k", 1).save().getIdentity());
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(configuration());
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+    server.returns("getConfiguration", configuration());
     stateMachine = mock(ArcadeStateMachine.class);
     final RaftHAServer raft = mock(RaftHAServer.class);
     // The leader, so a read-only command executes here rather than being forwarded: the gate must hold on the
@@ -262,12 +263,12 @@ class Issue8363DirectoryReplacementClientGateTest {
    */
   @Test
   void anInstallDrivenFromAClientThreadRunsAsTheEngineAndHandsTheTagBack() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
     // Observed from inside the install, where it reads its retry settings - after it has registered the directory.
     final ContextConfiguration config = configuration();
     final List<String> protocolsInsideTheInstall = new CopyOnWriteArrayList<>();
     final List<Boolean> registeredInsideTheInstall = new CopyOnWriteArrayList<>();
-    when(server.getConfiguration()).thenAnswer(invocation -> {
+    server.on("getConfiguration", args -> {
       protocolsInsideTheInstall.add(ProtocolContext.get());
       registeredInsideTheInstall.add(SnapshotInstaller.isInstallInFlight(DB_PATH));
       return config;
@@ -298,15 +299,16 @@ class Issue8363DirectoryReplacementClientGateTest {
     final RaftHAServer raft = mock(RaftHAServer.class);
     when(raft.isLeader()).thenReturn(true);
     when(raft.getStateMachine()).thenReturn(realStateMachine);
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(configuration());
-    when(server.existsDatabase(DB_NAME)).thenReturn(true);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+    server.returns("getConfiguration", configuration());
+    server.on("existsDatabase", args -> Objects.equals(args[0], DB_NAME));
     final RaftReplicatedDatabase wrapper = new RaftReplicatedDatabase(server, localDb, raft);
-    when(server.getDatabase(DB_NAME)).thenReturn(new ServerDatabase(null, localDb));
+    final ServerDatabase servedDb = new ServerDatabase(null, localDb);
+    server.on("getDatabase", args -> Objects.equals(args[0], DB_NAME) ? servedDb : null);
 
     final AtomicReference<Throwable> clientOutcome = new AtomicReference<>();
     final AtomicReference<Throwable> installThreadOutcome = new AtomicReference<>();
-    when(server.getBackupCoordinator()).thenAnswer(invocation -> {
+    server.on("getBackupCoordinator", args -> {
       final Thread client = new Thread(() -> {
         ProtocolContext.set("postgres");
         try {
@@ -318,7 +320,11 @@ class Issue8363DirectoryReplacementClientGateTest {
         }
       });
       client.start();
-      client.join();
+      try {
+        client.join();
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
       try {
         close(wrapper.query("sql", "select from Seed"));
       } catch (final Throwable t) {

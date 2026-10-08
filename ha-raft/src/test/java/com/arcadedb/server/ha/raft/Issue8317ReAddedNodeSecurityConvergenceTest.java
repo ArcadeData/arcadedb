@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
 import com.arcadedb.server.security.ReplicatedUsersPersistenceException;
 import com.arcadedb.server.security.ServerSecurity;
 import org.apache.ratis.proto.RaftProtos.LogEntryProto;
@@ -249,13 +250,13 @@ class Issue8317ReAddedNodeSecurityConvergenceTest {
     sm.applyTransaction(TransactionContext.newBuilder().setStateMachine(sm).setLogEntry(logEntry).build());
   }
 
-  private static ArcadeDBServer serverWith(final ServerSecurity security, final Path databaseDirectory) {
+  private static FakeArcadeDBServer serverWith(final ServerSecurity security, final Path databaseDirectory) {
     final ContextConfiguration configuration = new ContextConfiguration();
     configuration.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, databaseDirectory.toString());
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getSecurity()).thenReturn(security);
-    when(server.getConfiguration()).thenReturn(configuration);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+    server.security(security);
+    server.returns("getConfiguration", configuration);
     return server;
   }
 

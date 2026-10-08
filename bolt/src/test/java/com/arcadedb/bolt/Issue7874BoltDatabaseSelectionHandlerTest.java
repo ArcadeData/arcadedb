@@ -21,15 +21,13 @@ package com.arcadedb.bolt;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.DatabaseNotFoundException;
-import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
 import org.junit.jupiter.api.Test;
 
-import java.util.Set;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -54,10 +52,9 @@ class Issue7874BoltDatabaseSelectionHandlerTest {
    */
   @Test
   void aServerWithNoDatabaseAtAllAnswersTransientlyUnavailable() throws Exception {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
     BoltHandlerProbe.withPassThroughSecurity(server);
-    when(server.getConfiguration()).thenReturn(new ContextConfiguration());
-    when(server.getDatabaseNames()).thenReturn(Set.of());
+    server.returns("getConfiguration", new ContextConfiguration());
 
     final Map<String, Object> failure = BoltHandlerProbe.databaseSelectionFailureOf(server, null);
 
@@ -76,10 +73,10 @@ class Issue7874BoltDatabaseSelectionHandlerTest {
     final ServerDatabase closed = mock(ServerDatabase.class);
     when(closed.isOpen()).thenReturn(false);
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
     BoltHandlerProbe.withPassThroughSecurity(server);
-    when(server.getConfiguration()).thenReturn(new ContextConfiguration());
-    when(server.getDatabase(anyString())).thenReturn(closed);
+    server.returns("getConfiguration", new ContextConfiguration());
+    server.returns("getDatabase", closed);
 
     final Map<String, Object> failure = BoltHandlerProbe.databaseSelectionFailureOf(server, "sales");
 
@@ -97,11 +94,10 @@ class Issue7874BoltDatabaseSelectionHandlerTest {
    */
   @Test
   void aNameTheServerThrowsForIsThePermanentClientError() throws Exception {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
     BoltHandlerProbe.withPassThroughSecurity(server);
-    when(server.getConfiguration()).thenReturn(new ContextConfiguration());
-    when(server.getDatabase(anyString()))
-        .thenThrow(new DatabaseNotFoundException("Database '/data/nosuchdb' does not exist"));
+    server.returns("getConfiguration", new ContextConfiguration());
+    server.fails("getDatabase", new DatabaseNotFoundException("Database '/data/nosuchdb' does not exist"));
 
     final Map<String, Object> failure = BoltHandlerProbe.databaseSelectionFailureOf(server, "nosuchdb");
 
@@ -119,11 +115,10 @@ class Issue7874BoltDatabaseSelectionHandlerTest {
     final ContextConfiguration configuration = new ContextConfiguration();
     configuration.setValue(GlobalConfiguration.BOLT_DEFAULT_DATABASE, "configured");
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
     BoltHandlerProbe.withPassThroughSecurity(server);
-    when(server.getConfiguration()).thenReturn(configuration);
-    when(server.getDatabase(anyString()))
-        .thenThrow(new DatabaseNotFoundException("Database '/data/configured' does not exist"));
+    server.returns("getConfiguration", configuration);
+    server.fails("getDatabase", new DatabaseNotFoundException("Database '/data/configured' does not exist"));
 
     final Map<String, Object> failure = BoltHandlerProbe.databaseSelectionFailureOf(server, "neo4j");
 

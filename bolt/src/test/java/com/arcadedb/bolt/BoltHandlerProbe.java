@@ -25,6 +25,7 @@ import com.arcadedb.bolt.packstream.PackStreamReader;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
 import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityUser;
 
@@ -67,10 +68,10 @@ final class BoltHandlerProbe {
    * Gives a server double the security service the executor now consults to re-resolve its user on every request,
    * answering the user it is handed: these tests drive handlers with a user already bound and are not about it.
    */
-  static void withPassThroughSecurity(final ArcadeDBServer server) {
+  static void withPassThroughSecurity(final FakeArcadeDBServer server) {
     final ServerSecurity security = mock(ServerSecurity.class);
     when(security.revalidate(any(ServerSecurityUser.class))).thenAnswer(invocation -> invocation.getArgument(0));
-    when(server.getSecurity()).thenReturn(security);
+    server.security(security);
   }
 
   private BoltHandlerProbe() {
@@ -93,9 +94,9 @@ final class BoltHandlerProbe {
   @SuppressWarnings("unchecked")
   static Map<String, Object> failureMetadataOf(final String handlerName, final String state,
       final RuntimeException failure) throws Exception {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
     withPassThroughSecurity(server);
-    when(server.getConfiguration()).thenReturn(new ContextConfiguration());
+    server.returns("getConfiguration", new ContextConfiguration());
 
     try (final Socket socket = new Socket()) {
       final BoltNetworkExecutor executor = new BoltNetworkExecutor(server, socket, null);

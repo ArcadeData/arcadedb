@@ -26,6 +26,7 @@ import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.http.handler.openapi.OpenApiContributor;
 import com.arcadedb.server.http.handler.openapi.PluginApiSpec;
@@ -45,16 +46,13 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNoException;
-import static org.mockito.Mockito.atLeastOnce;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
 /**
  * Regression tests for issue #8076, which groups the two halves of what the #7519 bootstrap readiness gate told an
@@ -106,21 +104,20 @@ class Issue8076BootstrapWindowStatusTest {
       localDb.close();
   }
 
-  private ArcadeDBServer stubbedServer() {
+  private FakeArcadeDBServer stubbedServer() {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, serverDir.toString());
     config.setValue(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRIES, 0);
     config.setValue(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRY_BASE_MS, 0L);
     config.setValue(GlobalConfiguration.NETWORK_USE_SSL, false);
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(config);
-    when(server.existsDatabase(REPLACED_DB)).thenReturn(true);
-    when(server.getDatabase(REPLACED_DB)).thenReturn(new ServerDatabase(null, localDb));
-    when(server.existsDatabase(MISSING_DB)).thenReturn(false);
-    when(server.existsDatabase(KEPT_DB)).thenReturn(false);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+    server.returns("getConfiguration", config);
+    server.on("existsDatabase", args -> Objects.equals(args[0], REPLACED_DB));
+    final ServerDatabase servedDb = new ServerDatabase(null, localDb);
+    server.on("getDatabase", args -> Objects.equals(args[0], REPLACED_DB) ? servedDb : null);
     // The single-bucket check walks the registry; nothing in it is what these tests are about.
-    when(server.getDatabaseNames()).thenReturn(Set.of());
+
     return server;
   }
 
@@ -181,10 +178,10 @@ class Issue8076BootstrapWindowStatusTest {
    */
   @Test
   void anInstallInFlightIsPublishedInTheStatusDocumentTheReadinessBodyPointsAt() throws Exception {
-    final ArcadeDBServer server = stubbedServer();
+    final FakeArcadeDBServer server = stubbedServer();
     final ArcadeStateMachine sm = stateMachineOn(server);
     final AtomicReference<StatusSample> inside = new AtomicReference<>();
-    when(server.getBackupCoordinator()).thenAnswer(invocation -> {
+    server.on("getBackupCoordinator", args -> {
       inside.set(sample(server, sm, null));
       return null;
     });
@@ -217,10 +214,10 @@ class Issue8076BootstrapWindowStatusTest {
    */
   @Test
   void aScopedCallerSeesTheInstallButNotTheName() throws Exception {
-    final ArcadeDBServer server = stubbedServer();
+    final FakeArcadeDBServer server = stubbedServer();
     final ArcadeStateMachine sm = stateMachineOn(server);
     final AtomicReference<StatusSample> inside = new AtomicReference<>();
-    when(server.getBackupCoordinator()).thenAnswer(invocation -> {
+    server.on("getBackupCoordinator", args -> {
       inside.set(sample(server, sm, Set.of()));
       return null;
     });
@@ -240,7 +237,7 @@ class Issue8076BootstrapWindowStatusTest {
   /** The quiet case: the member says "nothing" rather than going absent, and no alert is raised. */
   @Test
   void aNodeInstallingNothingSaysSoExplicitly() {
-    final ArcadeDBServer server = stubbedServer();
+    final FakeArcadeDBServer server = stubbedServer();
     final ArcadeStateMachine sm = stateMachineOn(server);
 
     final StatusSample status = sample(server, sm, null);
@@ -282,7 +279,7 @@ class Issue8076BootstrapWindowStatusTest {
    */
   @Test
   void aMissingDatabaseDoesNotTakeTheNodeOutOfTheService() {
-    final ArcadeDBServer server = stubbedServer();
+    final FakeArcadeDBServer server = stubbedServer();
     final ArcadeStateMachine sm = stateMachineOn(server);
     sm.markBootstrapUnreconciled(MISSING_DB);
 
@@ -305,7 +302,7 @@ class Issue8076BootstrapWindowStatusTest {
    */
   @Test
   void aKeptCopyNextToAMissingDatabaseIsCountedAlone() throws Exception {
-    final ArcadeDBServer server = stubbedServer();
+    final FakeArcadeDBServer server = stubbedServer();
     final ArcadeStateMachine sm = stateMachineOn(server);
     sm.markBootstrapUnreconciled(MISSING_DB);
     sm.markBootstrapUnreconciled(KEPT_DB);
@@ -332,12 +329,12 @@ class Issue8076BootstrapWindowStatusTest {
    */
   @Test
   void reinstallingAMissingDatabaseIsPublishedButDoesNotHoldReadiness() throws Exception {
-    final ArcadeDBServer server = stubbedServer();
+    final FakeArcadeDBServer server = stubbedServer();
     final ArcadeStateMachine sm = stateMachineOn(server);
     // A previous session applied this very entry, so the replay-skip arm finds the database gone and reinstalls.
     sm.writePersistedAppliedIndex(50L, MISSING_DB);
     final List<StatusSample> samples = new CopyOnWriteArrayList<>();
-    when(server.getBackupCoordinator()).thenAnswer(invocation -> {
+    server.on("getBackupCoordinator", args -> {
       samples.add(sample(server, sm, null));
       return null;
     });
@@ -363,7 +360,7 @@ class Issue8076BootstrapWindowStatusTest {
    */
   @Test
   void aFailedReinstallLeavesTheDatabaseMissingNotKept() throws Exception {
-    final ArcadeDBServer server = stubbedServer();
+    final FakeArcadeDBServer server = stubbedServer();
     final ArcadeStateMachine sm = stateMachineOn(server);
     sm.writePersistedAppliedIndex(50L, MISSING_DB);
 
@@ -393,14 +390,14 @@ class Issue8076BootstrapWindowStatusTest {
    */
   @Test
   void thePeriodicRetryStillRunsOverAnEmptyLeftoverDirectory() throws Exception {
-    final ArcadeDBServer server = stubbedServer();
+    final FakeArcadeDBServer server = stubbedServer();
     final ArcadeStateMachine sm = stateMachineOn(server);
     sm.markBootstrapUnreconciled(MISSING_DB);
     Files.createDirectories(serverDir.resolve(MISSING_DB));
 
     sm.reconcileBootstrapDivergence(Map.of(MISSING_DB, new ArcadeStateMachine.BootstrapBaseline("0".repeat(64), 7L)));
 
-    verify(server, atLeastOnce()).getBackupCoordinator();
+    assertThat(server.calls("getBackupCoordinator")).isNotEmpty();
     awaitInstallsSettled(sm);
   }
 }

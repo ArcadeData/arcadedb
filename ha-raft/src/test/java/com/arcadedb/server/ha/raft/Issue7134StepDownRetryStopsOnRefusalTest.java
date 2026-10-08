@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.junit.jupiter.api.Test;
 
@@ -79,13 +80,13 @@ class Issue7134StepDownRetryStopsOnRefusalTest {
 
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_STOP_SERVER_ON_REPLICATION_FAILURE, true);
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(config);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+    server.returns("getConfiguration", config);
 
     recover(databaseWith(raft, server));
 
     verify(raft, times(1)).stepDown();
-    verify(server, never()).stop();
+    assertThat(server.calls("stop")).isEmpty();
   }
 
   /**
@@ -100,8 +101,8 @@ class Issue7134StepDownRetryStopsOnRefusalTest {
 
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_STOP_SERVER_ON_REPLICATION_FAILURE, false);
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(config);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+    server.returns("getConfiguration", config);
 
     recover(databaseWith(raft, server));
 
@@ -118,8 +119,8 @@ class Issue7134StepDownRetryStopsOnRefusalTest {
   void stepDownAbortsWhenLeadershipMovesWhileCandidatesAreTried() {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_SERVER_LIST, "localhost:2434:2480,localhost:2435:2481,localhost:2436:2482");
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getServerName()).thenReturn("ArcadeDB_0");
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+    server.returns("getServerName", "ArcadeDB_0");
 
     // isLeader() is true (the entry guard passes) but every transfer refuses, as it does once leadership moved.
     final RaftHAServer raft = new RaftHAServer(server, config) {
@@ -157,7 +158,7 @@ class Issue7134StepDownRetryStopsOnRefusalTest {
     final RaftHAServer raft = mock(RaftHAServer.class);
     when(raft.isLeader()).thenReturn(false);
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
 
     recover(databaseWith(raft, server));
 

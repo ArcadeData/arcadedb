@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.CallLog;
 import com.arcadedb.server.TestServerHelper;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.protocol.RaftGroup;

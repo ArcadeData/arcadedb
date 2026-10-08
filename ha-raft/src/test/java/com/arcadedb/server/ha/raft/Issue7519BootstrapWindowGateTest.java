@@ -24,6 +24,7 @@ import com.arcadedb.database.BootstrapFingerprint;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.utility.FileUtils;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
@@ -33,13 +34,12 @@ import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNoException;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Regression tests for issue #7519: the peer half of the first-formation bootstrap window, which nothing gated a
@@ -98,12 +98,13 @@ class Issue7519BootstrapWindowGateTest {
     return config;
   }
 
-  private ArcadeDBServer stubbedServer(final ContextConfiguration config) {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(config);
-    when(server.existsDatabase(DB_NAME)).thenReturn(true);
+  private FakeArcadeDBServer stubbedServer(final ContextConfiguration config) {
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+    server.returns("getConfiguration", config);
+    server.on("existsDatabase", args -> Objects.equals(args[0], DB_NAME));
     // The server arg is null: the paths reached here dereference the wrapped localDb, not the server.
-    when(server.getDatabase(DB_NAME)).thenReturn(new ServerDatabase(null, localDb));
+    final ServerDatabase servedDb = new ServerDatabase(null, localDb);
+    server.on("getDatabase", args -> Objects.equals(args[0], DB_NAME) ? servedDb : null);
     return server;
   }
 
@@ -124,12 +125,12 @@ class Issue7519BootstrapWindowGateTest {
   @Test
   void theNodeLeavesTheServiceForTheWholeBootstrapReinstallNotJustTheFileSwap() {
     final ContextConfiguration config = configuration();
-    final ArcadeDBServer server = stubbedServer(config);
+    final FakeArcadeDBServer server = stubbedServer(config);
     final ArcadeStateMachine sm = new ArcadeStateMachine();
 
     final AtomicReference<String> reasonInsideTheInstall = new AtomicReference<>();
     final AtomicReference<List<String>> namesInsideTheInstall = new AtomicReference<>();
-    when(server.getBackupCoordinator()).thenAnswer(invocation -> {
+    server.on("getBackupCoordinator", args -> {
       reasonInsideTheInstall.set(sm.bootstrapWindowReason());
       namesInsideTheInstall.set(sm.getBootstrapInstallsInFlight());
       return null; // no coordinator: install() documents null as "no slot to take, and none to release"
@@ -199,11 +200,11 @@ class Issue7519BootstrapWindowGateTest {
    */
   @Test
   void bothHalvesOfTheWindowAreReportedWhenBothHold() {
-    final ArcadeDBServer server = stubbedServer(configuration());
+    final FakeArcadeDBServer server = stubbedServer(configuration());
     final ArcadeStateMachine sm = new ArcadeStateMachine();
 
     final AtomicReference<String> reasonInsideTheInstall = new AtomicReference<>();
-    when(server.getBackupCoordinator()).thenAnswer(invocation -> {
+    server.on("getBackupCoordinator", args -> {
       reasonInsideTheInstall.set(sm.bootstrapWindowReason());
       return null;
     });
@@ -212,7 +213,7 @@ class Issue7519BootstrapWindowGateTest {
     // A second database left unreconciled by an earlier pass, which no install in this test will clear. It has to
     // be a copy this node HOLDS: a marked database that is not here is the #7298 missing half, which does not hold
     // readiness at all (issue #8045).
-    when(server.existsDatabase("another-database")).thenReturn(true);
+    server.on("existsDatabase", args -> Objects.equals(args[0], DB_NAME) || Objects.equals(args[0], "another-database"));
     sm.markBootstrapUnreconciled("another-database");
 
     assertThatNoException().isThrownBy(
@@ -290,12 +291,12 @@ class Issue7519BootstrapWindowGateTest {
    */
   @Test
   void anOverlappingInstallOfTheSameDatabaseDoesNotReleaseTheGateEarly() throws Exception {
-    final ArcadeDBServer server = stubbedServer(configuration());
+    final FakeArcadeDBServer server = stubbedServer(configuration());
     final ArcadeStateMachine sm = new ArcadeStateMachine();
 
     final AtomicReference<List<String>> inFlightAfterTheInnerInstallReturned = new AtomicReference<>();
     final AtomicBoolean reentered = new AtomicBoolean();
-    when(server.getBackupCoordinator()).thenAnswer(invocation -> {
+    server.on("getBackupCoordinator", args -> {
       if (reentered.compareAndSet(false, true)) {
         // A second install of the SAME database, started and finished while this one is still in flight.
         sm.applyBootstrapFingerprintEntry(baselineOfAnotherCopy(Long.MAX_VALUE), 8L);
@@ -328,7 +329,7 @@ class Issue7519BootstrapWindowGateTest {
     // entirely: with a stacked second holder the entry would outlive the database it names.
     // Absent from the registry AND from disk: since issue #8451 a deregistered name whose directory is still there is
     // a closed database the drop has to delete, which is not the already-absent path this harness relies on.
-    when(server.existsDatabase(DB_NAME)).thenReturn(false);
+    server.returns("existsDatabase", false);
     localDb.close();
     FileUtils.deleteRecursively(new File(DB_PATH));
     sm.applyDropDatabaseEntry(RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeDropDatabaseEntry(DB_NAME)));

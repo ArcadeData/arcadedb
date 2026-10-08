@@ -22,7 +22,7 @@ import com.arcadedb.engine.OperationProgress;
 import com.arcadedb.engine.OperationProgressRegistry;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 
@@ -60,8 +60,8 @@ class GetProgressHandlerTest {
    */
   private HttpServer httpServer() {
     final HttpServer httpServer = mock(HttpServer.class);
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.existsDatabase(anyString())).thenReturn(false);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+    server.returns("existsDatabase", false);
     when(httpServer.getServer()).thenReturn(server);
     return httpServer;
   }

@@ -20,6 +20,7 @@ package com.arcadedb.server;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.server.backup.BackupCoordinator;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.monitor.ServerQueryProfiler;
 import com.arcadedb.server.security.ServerSecurity;
@@ -32,6 +33,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
+import java.util.function.Supplier;
 
 /**
  * A real, never-started {@link ArcadeDBServer} (see {@link TestServerHelper#unstartedServer(Path, ContextConfiguration)})
@@ -57,6 +60,12 @@ public class FakeArcadeDBServer extends ArcadeDBServer {
   private volatile ServerQueryProfiler         queryProfiler;
   private volatile SecurityConvergenceGate     securityConvergenceGate;
 
+  // Calls whose effect, or whose moment, a test observes: recorded, and answered by a function the test may set
+  private static final Set<String> RECORDED = Set.of("getBackupCoordinator", "getDatabase", "existsDatabase",
+      "getDatabaseNames", "removeDatabase", "stop", "getHA", "getConfiguration", "getServerName");
+  private volatile CallLog         log     = new CallLog();
+  private final    CallLog.Answers answers = new CallLog.Answers(RECORDED);
+
   private FakeArcadeDBServer(final ContextConfiguration configuration) {
     super(configuration);
   }
@@ -81,6 +90,51 @@ public class FakeArcadeDBServer extends ArcadeDBServer {
   /** A fake rooted at {@code rootPath}, on {@code configuration}. */
   public static FakeArcadeDBServer create(final Path rootPath, final ContextConfiguration configuration) {
     return new FakeArcadeDBServer(TestServerHelper.rooted(rootPath, configuration));
+  }
+
+  /** Records on {@code log} from now on, which other fakes may share. Call it before the fake is used. */
+  public FakeArcadeDBServer recordingOn(final CallLog log) {
+    this.log = log;
+    return this;
+  }
+
+  public CallLog log() {
+    return log;
+  }
+
+  /** The argument lists of every call to the recorded {@code method}, in arrival order. */
+  public List<List<Object>> calls(final String method) {
+    return log.argsOf(this, method);
+  }
+
+  /** The recorded {@code method} answers {@code value} from now on. */
+  public FakeArcadeDBServer returns(final String method, final Object value) {
+    return on(method, args -> value);
+  }
+
+  /** The recorded {@code method} throws {@code failure} from now on. */
+  public FakeArcadeDBServer fails(final String method, final RuntimeException failure) {
+    return on(method, args -> {
+      throw failure;
+    });
+  }
+
+  /**
+   * The recorded {@code method} runs {@code answer} on its arguments from now on. For a {@code void} method, such as
+   * {@code stop} or {@code removeDatabase}, the value the function returns is ignored.
+   */
+  public FakeArcadeDBServer on(final String method, final Function<Object[], Object> answer) {
+    answers.set(method, answer);
+    return this;
+  }
+
+  private Object call(final String method, final Supplier<Object> fallback, final Object... args) {
+    // The real constructor runs before this class's fields exist and may read these getters: it gets the real answer
+    if (log == null || answers == null)
+      return fallback.get();
+    log.record(this, method, args);
+    final Function<Object[], Object> answer = answers.get(method);
+    return answer != null ? answer.apply(args) : fallback.get();
   }
 
   /** A running server ({@code ONLINE}). */
@@ -170,18 +224,61 @@ public class FakeArcadeDBServer extends ArcadeDBServer {
 
   @Override
   public boolean existsDatabase(final String databaseName) {
-    return databases.containsKey(databaseName);
+    final Object answer = call("existsDatabase", () -> databases.containsKey(databaseName), databaseName);
+    if (!(answer instanceof Boolean exists))
+      throw new IllegalStateException("The answer set for 'existsDatabase' must be a Boolean, it gave " + answer);
+    return exists;
   }
 
   @Override
   public ServerDatabase getDatabase(final String databaseName) {
-    return databases.get(databaseName);
+    return (ServerDatabase) call("getDatabase", () -> databases.get(databaseName), databaseName);
+  }
+
+  /** Recorded, and forgets a database served here; the real registry of an unstarted server holds nothing. */
+  @Override
+  public void removeDatabase(final String databaseName) {
+    call("removeDatabase", () -> {
+      databases.remove(databaseName);
+      listedNames.remove(databaseName);
+      return null;
+    }, databaseName);
+  }
+
+  /** Recorded: there is nothing to stop on a server that never started. */
+  @Override
+  public void stop() {
+    call("stop", () -> null);
   }
 
   @Override
+  public BackupCoordinator getBackupCoordinator() {
+    return (BackupCoordinator) call("getBackupCoordinator", super::getBackupCoordinator);
+  }
+
+  @Override
+  public HAServerPlugin getHA() {
+    return (HAServerPlugin) call("getHA", super::getHA);
+  }
+
+  /** The name fixed at construction, unless a test answers another (a mock-era test that named the server late). */
+  @Override
+  public String getServerName() {
+    return (String) call("getServerName", super::getServerName);
+  }
+
+  @Override
+  public ContextConfiguration getConfiguration() {
+    return (ContextConfiguration) call("getConfiguration", super::getConfiguration);
+  }
+
+  @Override
+  @SuppressWarnings("unchecked")
   public Set<String> getDatabaseNames() {
-    final Set<String> names = new TreeSet<>(databases.keySet());
-    names.addAll(listedNames);
-    return Collections.unmodifiableSet(names);
+    return (Set<String>) call("getDatabaseNames", () -> {
+      final Set<String> names = new TreeSet<>(databases.keySet());
+      names.addAll(listedNames);
+      return Collections.unmodifiableSet(names);
+    });
   }
 }

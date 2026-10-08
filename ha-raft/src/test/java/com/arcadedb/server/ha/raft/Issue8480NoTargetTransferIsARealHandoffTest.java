@@ -24,6 +24,7 @@ import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.CallLog;
 import com.arcadedb.server.TestServerHelper;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.client.api.AdminApi;

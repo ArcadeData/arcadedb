@@ -318,13 +318,13 @@ class Issue7532SecurityConvergenceReadinessTest {
     return configuration;
   }
 
-  private static ArcadeDBServer onlineServerWith(final HAServerPlugin ha, final ServerSecurity security,
+  private static FakeArcadeDBServer onlineServerWith(final HAServerPlugin ha, final ServerSecurity security,
       final ContextConfiguration configuration) {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getStatus()).thenReturn(ArcadeDBServer.STATUS.ONLINE);
-    when(server.getConfiguration()).thenReturn(configuration);
-    when(server.getHA()).thenReturn(ha);
-    when(server.getSecurity()).thenReturn(security);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+    server.status(ArcadeDBServer.STATUS.ONLINE);
+    server.returns("getConfiguration", configuration);
+    server.setHA(ha);
+    server.security(security);
     return server;
   }
 }

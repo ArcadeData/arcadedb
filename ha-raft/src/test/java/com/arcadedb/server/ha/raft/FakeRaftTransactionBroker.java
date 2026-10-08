@@ -18,6 +18,8 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.server.CallLog;
+
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;

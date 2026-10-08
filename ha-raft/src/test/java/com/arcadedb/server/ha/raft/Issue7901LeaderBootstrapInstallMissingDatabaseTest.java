@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -33,14 +34,11 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNoException;
 import static org.awaitility.Awaitility.await;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
 /**
  * Regression test for issue #7901: {@code installFromLeaderForBootstrap}'s leader short-circuit was written for
@@ -91,7 +89,7 @@ class Issue7901LeaderBootstrapInstallMissingDatabaseTest {
     stateMachines.clear();
   }
 
-  private ArcadeDBServer mockServerWithDatabaseRegistered(final boolean registered) {
+  private FakeArcadeDBServer mockServerWithDatabaseRegistered(final boolean registered) {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, serverDir.toString());
     // 0 retries with no backoff: no leader is reachable from a unit test, so an install that IS attempted fails
@@ -100,9 +98,9 @@ class Issue7901LeaderBootstrapInstallMissingDatabaseTest {
     config.setValue(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRY_BASE_MS, 0L);
     config.setValue(GlobalConfiguration.NETWORK_USE_SSL, false);
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(config);
-    when(server.existsDatabase(DB_NAME)).thenReturn(registered);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+    server.returns("getConfiguration", config);
+    server.on("existsDatabase", args -> Objects.equals(args[0], DB_NAME) ? registered : false);
     return server;
   }
 
@@ -136,7 +134,7 @@ class Issue7901LeaderBootstrapInstallMissingDatabaseTest {
    */
   @Test
   void aMissingDatabaseIsRecordedEvenWhenThisNodeIsTheLeader() throws Exception {
-    final ArcadeDBServer server = mockServerWithDatabaseRegistered(false);
+    final FakeArcadeDBServer server = mockServerWithDatabaseRegistered(false);
     final ArcadeStateMachine sm = leaderStateMachineOn(server);
     sm.writePersistedAppliedIndex(ENTRY_INDEX, DB_NAME);
 
@@ -157,7 +155,7 @@ class Issue7901LeaderBootstrapInstallMissingDatabaseTest {
    */
   @Test
   void theLeadersMarkIsClassifiedAsMissingRatherThanAsAKeptCopy() throws Exception {
-    final ArcadeDBServer server = mockServerWithDatabaseRegistered(false);
+    final FakeArcadeDBServer server = mockServerWithDatabaseRegistered(false);
     final ArcadeStateMachine sm = leaderStateMachineOn(server);
     sm.writePersistedAppliedIndex(ENTRY_INDEX, DB_NAME);
 
@@ -181,7 +179,7 @@ class Issue7901LeaderBootstrapInstallMissingDatabaseTest {
    */
   @Test
   void aLeaderWhoseCopyIsMerelyClosedStaysOnTheShortCircuit() throws Exception {
-    final ArcadeDBServer server = mockServerWithDatabaseRegistered(false);
+    final FakeArcadeDBServer server = mockServerWithDatabaseRegistered(false);
     final ArcadeStateMachine sm = leaderStateMachineOn(server);
     sm.writePersistedAppliedIndex(ENTRY_INDEX, DB_NAME);
     // A closed database, files and all: an EMPTY directory is what a failed install leaves behind, and holds no
@@ -192,7 +190,7 @@ class Issue7901LeaderBootstrapInstallMissingDatabaseTest {
 
     // getBackupCoordinator is SnapshotInstaller.install's first call, so it is the proof the install was reached -
     // independent of the log lines, which is what the original guard got wrong in the first place.
-    verify(server, never()).getBackupCoordinator();
+    assertThat(server.calls("getBackupCoordinator")).isEmpty();
     assertThat(sm.getBootstrapUnreconciledDatabases())
         .as("a leader holding the copy has nothing to reconcile")
         .doesNotContain(DB_NAME);
@@ -241,7 +239,7 @@ class Issue7901LeaderBootstrapInstallMissingDatabaseTest {
    */
   @Test
   void thePeriodicRetryOnTheLeaderKeepsTheMarkInsteadOfClearingIt() {
-    final ArcadeDBServer server = mockServerWithDatabaseRegistered(false);
+    final FakeArcadeDBServer server = mockServerWithDatabaseRegistered(false);
     final ArcadeStateMachine sm = leaderStateMachineOn(server);
     sm.markBootstrapUnreconciled(DB_NAME);
 
