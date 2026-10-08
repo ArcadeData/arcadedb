@@ -91,6 +91,10 @@ public abstract class SQLAggregatedFunction extends SQLFunctionConfigurableAbstr
    * Feeds the arguments of one row to the cross-row state: what the aggregation of a query calls for every row, which
    * ignores the value {@link #execute} returns. A function whose return value costs something to build per row (a boxed
    * running total, a running average) overrides it to skip that (#9496).
+   * <p>
+   * A built-in aggregate must not keep {@code params} itself, only the values in it: the aggregation of a GROUP BY feeds
+   * a built-in aggregate the same array for every row (and no row: {@code self} is null), see
+   * {@code AggregateRowEvaluator}.
    *
    * @param self    the row, passed to {@link #execute} as its {@code self}
    * @param params  the values of the arguments for this row

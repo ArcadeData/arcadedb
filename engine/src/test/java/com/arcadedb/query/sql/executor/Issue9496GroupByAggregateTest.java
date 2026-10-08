@@ -23,7 +23,9 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.ImmutableDocument;
+import com.arcadedb.database.ImmutableEmbeddedDocument;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.Dictionary;
@@ -44,6 +46,7 @@ import java.util.Random;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
  * Issue #9496: a GROUP BY cost about 170 ns of CPU per aggregate per row. The aggregation now evaluates the projection
@@ -456,6 +459,50 @@ class Issue9496GroupByAggregateTest extends TestHelper {
     final Result cached = new PropertyCachingResult(database).of(new ResultInternal(damaged));
     assertThat(cached).isInstanceOf(PropertyCachingResult.class);
     assertThat(cached.getPropertyIfPresent("l_quantity", absent)).isSameAs(new ResultInternal(damaged).getPropertyIfPresent("l_quantity", absent));
+  }
+
+  /**
+   * A property read builds the modifier that tells an embedded document which record and property it lives in only for a
+   * value that can hold one - an embedded document, a list, a map, an external value - and an embedded document read from
+   * any of them, through the record or through the property cache, still knows its owner: it is never detached, and one
+   * held directly by a property is modified through its record.
+   */
+  @Test
+  void embeddedDocumentsReadThroughTheNewPathsKeepTheirOwner() {
+    database.getSchema().createDocumentType("Owner");
+    database.getSchema().createDocumentType("Part");
+    final RID[] rid = new RID[1];
+    database.transaction(() -> {
+      final MutableDocument owner = database.newDocument("Owner");
+      owner.newEmbeddedDocument("Part", "part").set("x", 1);
+      owner.set("parts", List.of(owner.newEmbeddedDocument("Part", "tmp").set("x", 2)));
+      owner.set("byName", Map.of("a", owner.newEmbeddedDocument("Part", "tmp2").set("x", 3)));
+      owner.remove("tmp");
+      owner.remove("tmp2");
+      rid[0] = owner.save().getIdentity();
+    });
+
+    database.transaction(() -> {
+      final ImmutableDocument owner = (ImmutableDocument) database.lookupByRID(rid[0], true);
+      final Result cached = new PropertyCachingResult(database).of(new ResultInternal(owner));
+      assertThat(cached).isInstanceOf(PropertyCachingResult.class);
+
+      final List<EmbeddedDocument> nested = new ArrayList<>();
+      nested.add((EmbeddedDocument) owner.get("part"));
+      nested.add((EmbeddedDocument) cached.getPropertyIfPresent("part", null));
+      nested.add((EmbeddedDocument) ((List<?>) owner.get("parts")).getFirst());
+      nested.add((EmbeddedDocument) ((List<?>) cached.getPropertyIfPresent("parts", null)).getFirst());
+      nested.add((EmbeddedDocument) ((Map<?, ?>) owner.get("byName")).get("a"));
+      nested.add((EmbeddedDocument) ((Map<?, ?>) cached.getPropertyIfPresent("byName", null)).get("a"));
+      for (final EmbeddedDocument document : nested) {
+        final Throwable error = catchThrowable(() -> ((ImmutableEmbeddedDocument) document).modify());
+        assertThat(error == null || !String.valueOf(error.getMessage()).contains("detached")).as("%s", document).isTrue();
+      }
+
+      ((ImmutableEmbeddedDocument) cached.getPropertyIfPresent("part", null)).modify().set("x", 10);
+      owner.modify().save();
+    });
+    assertThat(((EmbeddedDocument) database.lookupByRID(rid[0], true).asDocument().get("part")).getInteger("x")).isEqualTo(10);
   }
 
   /**

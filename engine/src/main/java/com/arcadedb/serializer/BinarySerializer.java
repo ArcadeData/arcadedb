@@ -575,7 +575,8 @@ public class BinarySerializer {
     final byte type = buffer.getByte();
 
     // ONLY A VALUE THAT CAN HOLD AN EMBEDDED DOCUMENT IS TOLD WHERE IT LIVES: FOR EVERY OTHER ONE THE MODIFIER WAS AN
-    // OBJECT PER PROPERTY READ THAT NOTHING USED
+    // OBJECT PER PROPERTY READ THAT NOTHING USED. THE LIST IS deserializeValue()'s: IT PASSES THE MODIFIER ON ONLY FOR
+    // TYPE_EMBEDDED AND, RECURSIVELY, TYPE_LIST AND TYPE_MAP, AND readExternalValue() HANDS IT TO deserializeValue()
     final EmbeddedModifierProperty propertyModifier = owner != null && (type == BinaryTypes.TYPE_EMBEDDED || type == BinaryTypes.TYPE_LIST
         || type == BinaryTypes.TYPE_MAP || isExternalType(type)) ? new EmbeddedModifierProperty(owner, fieldName) : null;
 
