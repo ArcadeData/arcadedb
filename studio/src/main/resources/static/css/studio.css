@@ -1196,6 +1196,22 @@ body.col-resizing * {
   border-radius: 3px;
 }
 
+/* A BUTTON INSIDE THE FIRST CELL OF A PROFILER ROW (ISSUE #9508) */
+.profiler-query-button {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
 /* CodeMirror Autocomplete Hints */
 .CodeMirror-hints {
   z-index: 10000;
@@ -1625,6 +1641,8 @@ body.col-resizing * {
 }
 
 .api-detail-tag-tryit {
+  border: 0;
+  font-family: inherit;
   background-color: var(--color-brand);
   color: #fff !important;
   cursor: pointer;
@@ -1879,7 +1897,18 @@ body.col-resizing * {
   padding: 8px 14px 4px;
 }
 
+/* A BUTTON (ISSUE #9508): width, border, background, font AND text-align STRIP THE NATIVE CHROME SO IT STILL LOOKS LIKE
+   THE FULL-WIDTH ROW IT REPLACED */
 .api-endpoint {
+  width: 100%;
+  margin: 0;
+  border: 0;
+  background: none;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  color: inherit;
+  text-align: left;
   display: flex;
   align-items: baseline;
   gap: 8px;
@@ -1891,6 +1920,16 @@ body.col-resizing * {
 
 .api-endpoint:hover {
   background-color: var(--color-brand-light);
+}
+
+.api-endpoint:focus-visible,
+.docs-toc-header:focus-visible,
+.api-playground-resp-headers-toggle:focus-visible,
+.api-detail-tag-tryit:focus-visible,
+.profiler-query-button:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: -2px;
+  border-radius: 3px;
 }
 
 .api-endpoint.active {
@@ -1949,7 +1988,15 @@ body.col-resizing * {
   border-bottom: 1px solid var(--border-light);
 }
 
+/* A BUTTON (ISSUE #9508) */
 .docs-toc-header {
+  width: 100%;
+  margin: 0;
+  border: 0;
+  background: none;
+  font-family: inherit;
+  line-height: inherit;
+  text-align: left;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -2217,7 +2264,12 @@ body.col-resizing * {
   margin-bottom: 8px;
 }
 
+/* A BUTTON (ISSUE #9508) */
 .api-playground-resp-headers-toggle {
+  border: 0;
+  background: none;
+  font-family: inherit;
+  text-align: left;
   font-size: 0.75rem;
   font-weight: 600;
   color: var(--text-muted);

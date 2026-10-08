@@ -12,10 +12,10 @@
       <div class="docs-sidebar-body">
         <!-- Getting Started -->
         <div class="docs-toc-section">
-          <div class="docs-toc-header" onclick="toggleTocSection(this)">
+          <button type="button" class="docs-toc-header" aria-expanded="true" onclick="toggleTocSection(this)">
             <span><i class="fa fa-rocket"></i> Getting Started</span>
             <i class="fa fa-chevron-right open"></i>
-          </div>
+          </button>
           <div class="docs-toc-body open">
             <a class="docs-toc-entry" href="https://docs.arcadedb.com/#what-is-arcadedb" target="_blank">What is ArcadeDB? <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
             <a class="docs-toc-entry" href="https://docs.arcadedb.com/#run-arcadedb" target="_blank">Run ArcadeDB <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
@@ -26,10 +26,10 @@
 
         <!-- Query Languages -->
         <div class="docs-toc-section">
-          <div class="docs-toc-header" onclick="toggleTocSection(this)">
+          <button type="button" class="docs-toc-header" aria-expanded="true" onclick="toggleTocSection(this)">
             <span><i class="fa fa-terminal"></i> Query Languages</span>
             <i class="fa fa-chevron-right open"></i>
-          </div>
+          </button>
           <div class="docs-toc-body open">
             <a class="docs-toc-entry" href="https://docs.arcadedb.com/#sql" target="_blank">SQL <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
             <a class="docs-toc-entry" href="https://docs.arcadedb.com/#cypher" target="_blank">Cypher <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
@@ -42,10 +42,10 @@
 
         <!-- Connectivity & Drivers -->
         <div class="docs-toc-section">
-          <div class="docs-toc-header" onclick="toggleTocSection(this)">
+          <button type="button" class="docs-toc-header" aria-expanded="false" onclick="toggleTocSection(this)">
             <span><i class="fa fa-plug"></i> Connectivity &amp; Drivers</span>
             <i class="fa fa-chevron-right"></i>
-          </div>
+          </button>
           <div class="docs-toc-body">
             <a class="docs-toc-entry" href="https://docs.arcadedb.com/#http-json-api" target="_blank">HTTP / JSON API <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
             <a class="docs-toc-entry" href="https://docs.arcadedb.com/#java-api-local" target="_blank">Java Embedded API <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
@@ -59,10 +59,10 @@
 
         <!-- Administration -->
         <div class="docs-toc-section">
-          <div class="docs-toc-header" onclick="toggleTocSection(this)">
+          <button type="button" class="docs-toc-header" aria-expanded="false" onclick="toggleTocSection(this)">
             <span><i class="fa fa-cogs"></i> Administration</span>
             <i class="fa fa-chevron-right"></i>
-          </div>
+          </button>
           <div class="docs-toc-body">
             <a class="docs-toc-entry" href="https://docs.arcadedb.com/#installation" target="_blank">Installation <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
             <a class="docs-toc-entry" href="https://docs.arcadedb.com/#docker" target="_blank">Docker <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
@@ -76,10 +76,10 @@
 
         <!-- Core Concepts -->
         <div class="docs-toc-section">
-          <div class="docs-toc-header" onclick="toggleTocSection(this)">
+          <button type="button" class="docs-toc-header" aria-expanded="false" onclick="toggleTocSection(this)">
             <span><i class="fa fa-lightbulb"></i> Core Concepts</span>
             <i class="fa fa-chevron-right"></i>
-          </div>
+          </button>
           <div class="docs-toc-body">
             <a class="docs-toc-entry" href="https://docs.arcadedb.com/#graph-model" target="_blank">Graph Database <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
             <a class="docs-toc-entry" href="https://docs.arcadedb.com/#schema" target="_blank">Schema <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
@@ -91,10 +91,10 @@
 
         <!-- Tools -->
         <div class="docs-toc-section">
-          <div class="docs-toc-header" onclick="toggleTocSection(this)">
+          <button type="button" class="docs-toc-header" aria-expanded="false" onclick="toggleTocSection(this)">
             <span><i class="fa fa-wrench"></i> Tools</span>
             <i class="fa fa-chevron-right"></i>
-          </div>
+          </button>
           <div class="docs-toc-body">
             <a class="docs-toc-entry" href="https://docs.arcadedb.com/#console-tutorial" target="_blank">Console <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
             <a class="docs-toc-entry" href="https://docs.arcadedb.com/#importer" target="_blank">Importer <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
@@ -103,10 +103,10 @@
 
         <!-- Community -->
         <div class="docs-toc-section">
-          <div class="docs-toc-header" onclick="toggleTocSection(this)">
+          <button type="button" class="docs-toc-header" aria-expanded="false" onclick="toggleTocSection(this)">
             <span><i class="fa fa-users"></i> Community</span>
             <i class="fa fa-chevron-right"></i>
-          </div>
+          </button>
           <div class="docs-toc-body">
             <a class="docs-toc-entry" href="https://github.com/ArcadeData/arcadedb" target="_blank"><i class="fab fa-github"></i> GitHub Repository <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
             <a class="docs-toc-entry" href="https://github.com/ArcadeData/arcadedb/issues" target="_blank"><i class="fa fa-bug"></i> Report an Issue <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
@@ -184,6 +184,7 @@ function toggleTocSection(header) {
   var chevron = header.querySelector(".fa-chevron-right");
   var body = header.nextElementSibling;
   chevron.classList.toggle("open");
-  body.classList.toggle("open");
+  var open = body.classList.toggle("open");
+  header.setAttribute("aria-expanded", open ? "true" : "false");
 }
 </script>
