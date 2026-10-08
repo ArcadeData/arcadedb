@@ -871,7 +871,9 @@ public class TimeSeriesEngine implements AutoCloseable {
    *                       a dictionary-coded TAG, at most {@link #MAX_GROUP_COLUMNS} of them
    * @param bucketIntervalMs the bucket width, {@code <= 0} for one bucket per group over the whole range
    * @param bucketCeiling  the largest number of result rows the caller will accept, {@code <= 0} for none; as in
-   *                       {@link #aggregateMulti}, the scan stops once the answer is past it
+   *                       {@link #aggregateMulti}, the scan stops once the answer is past it. The ceiling is a sum over every group, asked
+   *                       once per block on the sealed side and every 1024 rows on the mutable side, so the answer can overshoot it by
+   *                       about a block per shard before the scan stops
    */
   public GroupedAggregationResult aggregateGrouped(final long fromTs, final long toTs, final List<MultiColumnAggregationRequest> requests,
       final long bucketIntervalMs, final long bucketOffsetMs, final int[] groupColumns, final TagFilter tagFilter,

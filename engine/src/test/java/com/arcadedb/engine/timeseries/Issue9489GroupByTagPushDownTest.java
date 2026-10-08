@@ -195,6 +195,53 @@ class Issue9489GroupByTagPushDownTest extends TestHelper {
     });
   }
 
+  /**
+   * A TAG column stores a null as the empty string once it is sealed (its dictionary has no null), so a null tag reads back as
+   * {@code ""} after a compaction on every plan. The push-down spells it that way in the mutable buffer too, which makes its
+   * answer the same before and after the compaction; the document twin keeps the null, as a document type does.
+   */
+  @Test
+  void aNullTagIsOneGroupWhetherItIsStillInTheMutableBufferOrSealed() {
+    createTypes(1);
+    database.transaction(() -> {
+      for (int i = 0; i < 60; i++)
+        for (final String type : new String[] { "T", "D" }) {
+          final String host = i % 3 == 0 ? null : "host_" + i % 3;
+          database.command("sql", "INSERT INTO " + type + " SET ts = ?, host = ?, region = ?, uu = ?, ui = ?", T0 + i * 1_000L, host, "eu",
+              (double) i, (long) i);
+        }
+    });
+    final String sql = "SELECT host, count(*) AS c, sum(uu) AS s FROM T GROUP BY host";
+    assertThat(plan(sql)).contains("AGGREGATE FROM TIMESERIES");
+    final List<String> mutable = rows(sql);
+    database.command("sql", "COMPACT TIMESERIES TYPE T");
+    final List<String> sealed = rows(sql);
+
+    assertThat(mutable).isEqualTo(sealed).hasSize(3);
+    assertThat(sealed).contains("{c=20.000000, host=, s=570.000000}");
+    // and the twin differs only in spelling the missing tag null
+    assertThat(rows("SELECT host, count(*) AS c, sum(uu) AS s FROM D GROUP BY host")).contains("{c=20.000000, host=null, s=570.000000}");
+  }
+
+  @Test
+  void orderByAndAQuotedTagNameKeepTheirMeaning() {
+    forEachState(1, () -> {
+      for (final String type : new String[] { "T", "D" }) {
+        final String sql = "SELECT `host`, ts.timeBucket('1h', ts) AS h, count(*) AS c FROM " + type + RANGE
+            + " GROUP BY host, h ORDER BY host DESC, h";
+        final List<String> ordered = new ArrayList<>();
+        try (final ResultSet rs = database.query("sql", sql)) {
+          while (rs.hasNext()) {
+            final Result r = rs.next();
+            ordered.add(r.getProperty("host") + "/" + r.getProperty("c"));
+          }
+        }
+        assertThat(ordered).as(type).isNotEmpty().isSortedAccordingTo(java.util.Comparator.comparing((String s) -> s.split("/")[0]).reversed());
+      }
+      assertSameAsTheDocumentTwin("`host`, ts.timeBucket('1h', ts) AS h, count(*) AS c", "`host`, h", RANGE);
+    });
+  }
+
   @Test
   void fourTagsArePushedDownAndFiveAreNot() {
     database.command("sql", "CREATE TIMESERIES TYPE M TIMESTAMP ts TAGS (a STRING, b STRING, c STRING, d STRING, e STRING) FIELDS (v DOUBLE)");

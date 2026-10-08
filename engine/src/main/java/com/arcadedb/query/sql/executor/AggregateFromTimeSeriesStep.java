@@ -93,13 +93,13 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
    * What one column of a grouped answer is, in the order the query projected them (issue #9489).
    *
    * @param name  the property the row carries it under
-   * @param kind  {@link #BUCKET}, {@link #TAG} or {@link #AGGREGATE}
-   * @param index for a {@link #TAG}, the position in the grouping columns; for an {@link #AGGREGATE}, the position in the requests
+   * @param kind  what the column holds
+   * @param index for a {@link Kind#TAG}, the position in the grouping columns; for an {@link Kind#AGGREGATE}, the position in the requests
    */
-  public record OutputColumn(String name, int kind, int index) {
-    public static final int BUCKET    = 0;
-    public static final int TAG       = 1;
-    public static final int AGGREGATE = 2;
+  public record OutputColumn(String name, Kind kind, int index) {
+    public enum Kind {
+      BUCKET, TAG, AGGREGATE
+    }
   }
 
   /**
@@ -272,8 +272,8 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
           groupDefinitions[g] = column;
 
     return new Iterator<>() {
-      private int                group    = 0;
-      private Iterator<Long>     buckets  = results.isEmpty() ? null : results.getFirst().getBucketTimestamps().iterator();
+      private int            group   = 0;
+      private Iterator<Long> buckets = results.isEmpty() ? null : results.getFirst().getBucketTimestamps().iterator();
 
       @Override
       public boolean hasNext() {
@@ -296,10 +296,10 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
         final ResultInternal row = new ResultInternal(context.getDatabase());
         for (final OutputColumn output : outputs)
           switch (output.kind()) {
-          case OutputColumn.BUCKET ->
+          case BUCKET ->
               row.setProperty(output.name(), DateUtils.dateTime(context.getDatabase(), bucketTs, ChronoUnit.MILLIS, LocalDateTime.class, ChronoUnit.MILLIS));
-          case OutputColumn.TAG -> row.setProperty(output.name(), groupDefinitions[output.index()].boxString(tags[output.index()]));
-          default -> row.setProperty(output.name(), aggregateValue(aggResult, requests.get(output.index()), bucketTs, output.index()));
+          case TAG -> row.setProperty(output.name(), groupDefinitions[output.index()].boxString(tags[output.index()]));
+          case AGGREGATE -> row.setProperty(output.name(), aggregateValue(aggResult, requests.get(output.index()), bucketTs, output.index()));
           }
         rowCount++;
         return row;

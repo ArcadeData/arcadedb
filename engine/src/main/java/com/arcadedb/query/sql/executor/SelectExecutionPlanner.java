@@ -3589,7 +3589,7 @@ public class SelectExecutionPlanner {
         final String outputName = item.getProjectionAliasAsString();
         if (projectedTags.put(outputName, tagName) != null)
           return false; // two columns under one name
-        outputs.add(new AggregateFromTimeSeriesStep.OutputColumn(outputName, AggregateFromTimeSeriesStep.OutputColumn.TAG, -1));
+        outputs.add(new AggregateFromTimeSeriesStep.OutputColumn(outputName, AggregateFromTimeSeriesStep.OutputColumn.Kind.TAG, -1));
         continue;
       }
 
@@ -3600,7 +3600,7 @@ public class SelectExecutionPlanner {
         if (timeBucketAlias != null)
           return false; // duplicate timeBucket
         timeBucketAlias = item.getProjectionAliasAsString();
-        outputs.add(new AggregateFromTimeSeriesStep.OutputColumn(timeBucketAlias, AggregateFromTimeSeriesStep.OutputColumn.BUCKET, -1));
+        outputs.add(new AggregateFromTimeSeriesStep.OutputColumn(timeBucketAlias, AggregateFromTimeSeriesStep.OutputColumn.Kind.BUCKET, -1));
         // Extract interval from first parameter
         if (funcCall.getParams().size() < 2)
           return false;
@@ -3665,7 +3665,7 @@ public class SelectExecutionPlanner {
         }
 
         final String alias = item.getProjectionAliasAsString();
-        outputs.add(new AggregateFromTimeSeriesStep.OutputColumn(alias, AggregateFromTimeSeriesStep.OutputColumn.AGGREGATE, requests.size()));
+        outputs.add(new AggregateFromTimeSeriesStep.OutputColumn(alias, AggregateFromTimeSeriesStep.OutputColumn.Kind.AGGREGATE, requests.size()));
         // The factory turns the schema index into the ROW index the request carries, and gives a COUNT no
         // column at all - the two rules every producer of a request has to get right (issue #8140).
         requests.add(aggType == AggregationType.COUNT
@@ -3784,7 +3784,7 @@ public class SelectExecutionPlanner {
       // A projected tag points at its position among the grouping keys
       final List<AggregateFromTimeSeriesStep.OutputColumn> groupedOutputs = new ArrayList<>(outputs.size());
       for (final AggregateFromTimeSeriesStep.OutputColumn output : outputs)
-        groupedOutputs.add(output.kind() == AggregateFromTimeSeriesStep.OutputColumn.TAG ?
+        groupedOutputs.add(output.kind() == AggregateFromTimeSeriesStep.OutputColumn.Kind.TAG ?
             new AggregateFromTimeSeriesStep.OutputColumn(output.name(), output.kind(), groupTags.indexOf(projectedTags.get(output.name()))) :
             output);
       plan.chain(new AggregateFromTimeSeriesStep(tsType, fromTs, toTs, requests, bucketIntervalMs, bucketOffsetMs, timeBucketAlias,
