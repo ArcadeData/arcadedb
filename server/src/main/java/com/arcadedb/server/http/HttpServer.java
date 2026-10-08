@@ -153,7 +153,9 @@ public class HttpServer implements ServerPlugin {
   private volatile List<RouteRecordingRoutingHandler.RouteDescriptor> registeredRoutes = List.of();
   /**
    * Test-only: runs after the ports are probed and right before {@code Undertow.start()}, so a test can take a port in
-   * the window between the two (issue #9479). Always {@code null} in production.
+   * the window between the two (issue #9479). Always {@code null} in production. It is JVM-wide: every server started
+   * while it is set runs it, so a test that sets it relies on test classes running one at a time (the surefire setup
+   * today) and must reset it when done.
    */
   static volatile Runnable beforeUndertowStart;
 
