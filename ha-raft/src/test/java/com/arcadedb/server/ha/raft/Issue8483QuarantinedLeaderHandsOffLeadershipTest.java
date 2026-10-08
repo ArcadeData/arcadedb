@@ -48,11 +48,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyMap;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.contains;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -73,7 +68,7 @@ class Issue8483QuarantinedLeaderHandsOffLeadershipTest {
 
   @Test
   void anApplyErrorThatQuarantinesADatabaseOnTheLeaderHandsLeadershipOff() {
-    final RaftHAServer raft = raftMock(true);
+    final FakeRaftHAServer raft = raftMock(true);
     final ArcadeStateMachine sm = new ArcadeStateMachine();
     sm.setRaftHAServer(raft);
 
@@ -82,36 +77,36 @@ class Issue8483QuarantinedLeaderHandsOffLeadershipTest {
 
     assertThatThrownBy(future::join).hasMessageContaining("per-database snapshot resync in progress");
     assertThat(sm.isDatabaseDiverged("db-A")).isTrue();
-    verify(raft, times(1)).handOffLeadershipToResync(contains("'db-A'"));
+    assertThat(raft.calls("handOffLeadershipToResync")).singleElement().satisfies(args -> assertThat((String) args.get(0)).contains("'db-A'"));
   }
 
   @Test
   void aSecondErrorOnTheSameQuarantineDoesNotAskAgain() {
-    final RaftHAServer raft = raftMock(true);
+    final FakeRaftHAServer raft = raftMock(true);
     final ArcadeStateMachine sm = new ArcadeStateMachine();
     sm.setRaftHAServer(raft);
 
     assertThatThrownBy(() -> sm.applyTransaction(txEntry(sm, "db-A", new byte[0], 5L)).join());
     assertThatThrownBy(() -> sm.applyTransaction(txEntry(sm, "db-A", new byte[0], 6L)).join());
 
-    verify(raft, times(1)).handOffLeadershipToResync(anyString());
+    assertThat(raft.calls("handOffLeadershipToResync")).hasSize(1);
   }
 
   @Test
   void anApplyErrorOnAFollowerDoesNotTouchTheLeadership() {
-    final RaftHAServer raft = raftMock(false);
+    final FakeRaftHAServer raft = raftMock(false);
     final ArcadeStateMachine sm = new ArcadeStateMachine();
     sm.setRaftHAServer(raft);
 
     assertThatThrownBy(() -> sm.applyTransaction(txEntry(sm, "db-A", new byte[0], 5L)).join());
 
     assertThat(sm.isDatabaseDiverged("db-A")).isTrue();
-    verify(raft, never()).handOffLeadershipToResync(anyString());
+    assertThat(raft.calls("handOffLeadershipToResync")).isEmpty();
   }
 
   @Test
   void aWalVersionGapOnTheLeaderHandsLeadershipOff() {
-    final RaftHAServer raft = raftMock(true);
+    final FakeRaftHAServer raft = raftMock(true);
     final TransactionManager txManager = mock(TransactionManager.class);
     when(txManager.applyChanges(any(), anyMap(), anyBoolean())).thenThrow(new WALVersionGapException("gap"));
     final DatabaseInternal db = mock(DatabaseInternal.class);
@@ -128,7 +123,7 @@ class Issue8483QuarantinedLeaderHandsOffLeadershipTest {
 
     assertThatThrownBy(future::join);
     assertThat(sm.quarantineCause("db-A")).isEqualTo(DivergenceCause.WAL_VERSION_GAP);
-    verify(raft, times(1)).handOffLeadershipToResync(contains("'db-A'"));
+    assertThat(raft.calls("handOffLeadershipToResync")).singleElement().satisfies(args -> assertThat((String) args.get(0)).contains("'db-A'"));
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -137,17 +132,17 @@ class Issue8483QuarantinedLeaderHandsOffLeadershipTest {
 
   @Test
   void theHealthTickHandsLeadershipOffForAQuarantineTheLeaderAlreadyHeld(@TempDir final Path tempDir) throws Exception {
-    final RaftHAServer raft = raftMock(true);
+    final FakeRaftHAServer raft = raftMock(true);
     final ArcadeStateMachine sm = newStateMachine(tempDir);
     sm.setRaftHAServer(raft);
     try {
       // What a quarantine restored from disk looks like: recorded, with no apply path raising it in this JVM.
       sm.markStateDiverged("db-A", DivergenceCause.UNDECODABLE_LOG_ENTRY);
-      verify(raft, never()).handOffLeadershipToResync(anyString());
+      assertThat(raft.calls("handOffLeadershipToResync")).isEmpty();
 
       sm.retryUnfilledSnapshotGap();
 
-      verify(raft, times(1)).handOffLeadershipToResync(contains("db-A"));
+      assertThat(raft.calls("handOffLeadershipToResync")).singleElement().satisfies(args -> assertThat((String) args.get(0)).contains("db-A"));
     } finally {
       sm.close();
     }
@@ -159,7 +154,7 @@ class Issue8483QuarantinedLeaderHandsOffLeadershipTest {
    */
   @Test
   void theHealthTickHandsLeadershipOffForAReadFloorTheLeaderHolds(@TempDir final Path tempDir) throws Exception {
-    final RaftHAServer raft = raftMock(true);
+    final FakeRaftHAServer raft = raftMock(true);
     final ArcadeStateMachine sm = newStateMachine(tempDir);
     sm.setRaftHAServer(raft);
     try {
@@ -169,7 +164,7 @@ class Issue8483QuarantinedLeaderHandsOffLeadershipTest {
 
       sm.retryUnfilledSnapshotGap();
 
-      verify(raft, times(1)).handOffLeadershipToResync(contains("read floor at 42"));
+      assertThat(raft.calls("handOffLeadershipToResync")).singleElement().satisfies(args -> assertThat((String) args.get(0)).contains("read floor at 42"));
     } finally {
       sm.close();
     }
@@ -177,13 +172,13 @@ class Issue8483QuarantinedLeaderHandsOffLeadershipTest {
 
   @Test
   void theHealthTickLeavesAHealthyLeaderAlone(@TempDir final Path tempDir) throws Exception {
-    final RaftHAServer raft = raftMock(true);
+    final FakeRaftHAServer raft = raftMock(true);
     final ArcadeStateMachine sm = newStateMachine(tempDir);
     sm.setRaftHAServer(raft);
     try {
       sm.retryUnfilledSnapshotGap();
 
-      verify(raft, never()).handOffLeadershipToResync(anyString());
+      assertThat(raft.calls("handOffLeadershipToResync")).isEmpty();
     } finally {
       sm.close();
     }
@@ -191,14 +186,14 @@ class Issue8483QuarantinedLeaderHandsOffLeadershipTest {
 
   @Test
   void theHealthTickNeverHandsOffFromAFollower(@TempDir final Path tempDir) throws Exception {
-    final RaftHAServer raft = raftMock(false);
+    final FakeRaftHAServer raft = raftMock(false);
     final ArcadeStateMachine sm = newStateMachine(tempDir);
     sm.setRaftHAServer(raft);
     try {
       sm.markStateDiverged("db-A", DivergenceCause.APPLY_ERROR);
       sm.retryUnfilledSnapshotGap();
 
-      verify(raft, never()).handOffLeadershipToResync(anyString());
+      assertThat(raft.calls("handOffLeadershipToResync")).isEmpty();
     } finally {
       sm.close();
     }
@@ -294,13 +289,13 @@ class Issue8483QuarantinedLeaderHandsOffLeadershipTest {
     return RaftPeer.newBuilder().setId(RaftPeerId.valueOf(id)).setAddress(id + ":2434").setPriority(priority).build();
   }
 
-  private static RaftHAServer raftMock(final boolean leader) {
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.isLeader()).thenReturn(leader);
+  private static FakeRaftHAServer raftMock(final boolean leader) {
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.leader(leader);
     final RaftPeerId leaderId = RaftPeerId.valueOf(leader ? "self" : "peer-b");
-    when(raft.getLeaderId()).thenReturn(leaderId);
-    when(raft.getLocalPeerId()).thenReturn(RaftPeerId.valueOf("self"));
-    when(raft.getUnambiguousPeerHttpAddress(leaderId)).thenReturn("peer-b:2480");
+    raft.leaderId(leaderId);
+    raft.localPeerId(RaftPeerId.valueOf("self"));
+    raft.peerHttpAddress(leaderId, "peer-b:2480");
     return raft;
   }
 

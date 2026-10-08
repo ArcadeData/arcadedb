@@ -138,6 +138,9 @@ public class FunctionAggregationContext implements AggregationContext, HeapBuffe
   /**
    * Feeds the function arguments {@link #evaluateArguments} computed, possibly on another copy of the same expressions:
    * the second half of {@link #apply}, for a context that {@link #canMerge()} (no DISTINCT, nothing charged per value).
+   *
+   * @param next the row, or null when the arguments were evaluated on another worker, which does not hand its rows over:
+   *             a function whose partials merge folds its arguments alone
    */
   public void applyArguments(final Result next, final Object[] paramValues, final CommandContext context) {
     if (aggregatedFunction != null)
