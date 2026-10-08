@@ -94,9 +94,14 @@ final class GrpcClientErrorMapper {
    * non-retryable {@link TransactionException}: {@code transaction()} must not re-run a scope whose first run may
    * already be durable (issues #8711, #8525). The HTTP client draws the same line. An error the server itself
    * classified (a class-name trailer, e.g. a conflict or a refusal by a follower) was produced before anything was
-   * applied and keeps its type, and so does a failure to connect, which proves the request never left this client.
+   * applied and keeps its type, and so does a failure to connect, which proves the request never left this client. A
+   * client deadline that expired unanswered stays a {@link TimeoutException} but says the commit may have landed
+   * (issue #8822).
    */
   static RuntimeException toCommitException(final Throwable e) {
+    if (deadlineExpiredUnanswered(e))
+      return new TimeoutException("Error on transaction commit: the deadline expired before the server answered and the "
+          + "outcome is unknown, the transaction may have been committed (" + describe(e) + ")", e);
     if (!responseMayHaveBeenLost(e))
       return toException(e);
     return new TransactionException("Error on transaction commit: the connection was lost and the outcome is unknown, "
@@ -111,16 +116,67 @@ final class GrpcClientErrorMapper {
    * so it must not surface as a {@link NeedRetryException} - a caller honouring that type would apply the write a
    * second time and report success. It becomes a {@link RemoteException} saying the outcome is unknown, the message
    * the HTTP client raises for the same failure (issue #8136).
+   * <p>
+   * A client deadline that expired before any answer (a status-only {@code DEADLINE_EXCEEDED}) keeps its
+   * {@link TimeoutException} type, which nothing replays, but says the same thing: the server may have applied the
+   * write after the client stopped waiting (issue #8822). The admin writes of {@code RemoteGrpcServer} use this mapping
+   * too, since none of them is sent again either.
    *
    * @param operation the RPC name, for the message only
    */
   static RuntimeException toAutoCommitWriteException(final Throwable e, final String operation) {
+    if (deadlineExpiredUnanswered(e))
+      return new TimeoutException("Error on executing remote operation '" + operation
+          + "': the deadline expired before the server answered (" + describe(e)
+          + "), so the server may already have applied it", e);
     if (!responseMayHaveBeenLost(e))
       return toException(e);
     return new RemoteException("Error on executing remote operation '" + operation
         + "': the connection failed and the request may already have reached the server (" + describe(e)
         + "), so the server may already have applied it. It is not reported as retryable, because a replay could apply"
         + " it twice", e);
+  }
+
+  /**
+   * {@link #toAutoCommitWriteException} for a streaming write ({@code InsertStream}, {@code InsertBidirectional},
+   * {@code TimeSeriesWriteStream}, {@code GraphBatchLoad}) that is not a dry run (issue #8822). These commit as they go
+   * - per row, per batch or per chunk - so an answer lost mid-stream means that any part of the stream, from none of it
+   * to all of it, may already be durable, and the message says so. Same carve-outs: a class-name trailer and a failure
+   * to connect keep the plain mapping.
+   *
+   * @param operation the RPC name, for the message only
+   */
+  static RuntimeException toStreamingWriteException(final Throwable e, final String operation) {
+    if (deadlineExpiredUnanswered(e))
+      return new TimeoutException("Error on executing remote streaming operation '" + operation
+          + "': the deadline expired before the server answered (" + describe(e)
+          + "), so the server may already have applied some or all of it: the stream may be partially applied", e);
+    if (!responseMayHaveBeenLost(e))
+      return toException(e);
+    return new RemoteException("Error on executing remote streaming operation '" + operation
+        + "': the connection failed while the stream was open (" + describe(e)
+        + "), so the server may already have applied some or all of it: the stream commits as it goes and may be "
+        + "partially applied. It is not reported as retryable, because a replay could apply the applied part twice", e);
+  }
+
+  /**
+   * Whether {@code e} is a {@code DEADLINE_EXCEEDED} the server did not classify (no class-name trailer): the client's
+   * own deadline expired, and the server may still have applied the request. A trailer means the server raised the
+   * timeout itself, before it applied anything, and its own message is kept.
+   */
+  static boolean deadlineExpiredUnanswered(final Throwable e) {
+    if (Status.fromThrowable(e).getCode() != Status.Code.DEADLINE_EXCEEDED)
+      return false;
+    final Metadata trailers = Status.trailersFromThrowable(e);
+    return trailers == null || trailers.get(EXCEPTION_CLASS_KEY) == null;
+  }
+
+  /**
+   * Whether the outcome of a write that failed with {@code e} is unknown: a lost response or an expired client
+   * deadline, as {@link #toAutoCommitWriteException} draws the line.
+   */
+  static boolean outcomeUnknown(final Throwable e) {
+    return deadlineExpiredUnanswered(e) || responseMayHaveBeenLost(e);
   }
 
   /**

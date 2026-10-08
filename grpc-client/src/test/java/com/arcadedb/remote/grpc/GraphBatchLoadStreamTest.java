@@ -18,6 +18,7 @@
  */
 package com.arcadedb.remote.grpc;
 
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.remote.RemoteException;
 import com.arcadedb.server.grpc.GraphBatchChunk;
@@ -237,6 +238,33 @@ class GraphBatchLoadStreamTest {
         .hasMessageContaining("withTimeout()");
 
     assertThat(call.cancelled).as("a load given up on must release the server's batch slot").isTrue();
+  }
+
+  /** Issue #8822: the load commits as it goes, so giving up on it must not read as "nothing was written". */
+  @Test
+  void completeTimeoutSaysTheLoadMayBePartiallyCommitted() {
+    final GraphBatchLoadStream stream = open(new FakeCall(true), 300);
+
+    assertThatThrownBy(stream::complete)
+        .isInstanceOf(TimeoutException.class)
+        .hasMessageContaining("partially committed");
+  }
+
+  /**
+   * Issue #8822: a status-only UNAVAILABLE on a load may follow chunks the server already committed, so it must not
+   * surface as a NeedRetryException a caller would answer by sending the whole load again.
+   */
+  @Test
+  void aLostAnswerIsAPossiblyPartialLoadNotARetryableFailure() {
+    final FakeCall call = new FakeCall(true);
+    final GraphBatchLoadStream stream = open(call);
+
+    call.observer.onError(Status.UNAVAILABLE.withDescription("connection reset").asRuntimeException());
+
+    assertThatThrownBy(stream::complete)
+        .isInstanceOf(RemoteException.class)
+        .isNotInstanceOf(NeedRetryException.class)
+        .hasMessageContaining("partially applied");
   }
 
   private GraphBatchLoadStream open(final FakeCall call) {
