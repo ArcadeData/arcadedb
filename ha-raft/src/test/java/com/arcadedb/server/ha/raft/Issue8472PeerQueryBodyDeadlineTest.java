@@ -269,7 +269,7 @@ class Issue8472PeerQueryBodyDeadlineTest {
   private static FakeRaftHAServer raftDialling(final RaftPeerId peerId, final ArcadeDBServer server,
       final String httpAddress, final String httpsAddress, final TrustedHttpClientCache clients) {
     final FakeRaftHAServer raft = FakeRaftHAServer.detached(server);
-        raft.localPeerId(RaftPeerId.valueOf("self"));
+    raft.localPeerId(RaftPeerId.valueOf("self"));
     raft.localHttpAddress("127.0.0.1:2");
     raft.peerHttpAddress(peerId, httpAddress);
     raft.peerHttpsAddress(peerId, httpsAddress);

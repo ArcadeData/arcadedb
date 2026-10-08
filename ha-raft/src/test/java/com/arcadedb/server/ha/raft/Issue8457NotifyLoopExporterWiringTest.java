@@ -50,9 +50,9 @@ class Issue8457NotifyLoopExporterWiringTest {
     }
   }
 
-  private final AtomicLong now = new AtomicLong(0);
-  private FakeRaftHAServer     haServer;
-  private ClusterMonitor   monitor;
+  private final AtomicLong       now = new AtomicLong(0);
+  private       FakeRaftHAServer haServer;
+  private       ClusterMonitor   monitor;
 
   @BeforeEach
   void setUp() {

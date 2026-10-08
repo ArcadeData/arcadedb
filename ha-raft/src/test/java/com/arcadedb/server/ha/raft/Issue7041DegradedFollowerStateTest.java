@@ -64,8 +64,8 @@ class Issue7041DegradedFollowerStateTest {
     }
   }
 
-  private FakeRaftHAServer   haServer;
-  private ClusterMonitor clusterMonitor;
+  private FakeRaftHAServer haServer;
+  private ClusterMonitor   clusterMonitor;
 
   @BeforeEach
   void setUp() {

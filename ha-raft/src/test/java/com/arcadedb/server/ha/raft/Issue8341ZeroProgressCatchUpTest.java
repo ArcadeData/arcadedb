@@ -33,7 +33,6 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Issue #8341: a follower that is catching up with ZERO progress was classified as healthy catch-up on both
@@ -277,9 +276,7 @@ class Issue8341ZeroProgressCatchUpTest {
   private static FakeRaftHAServer followerWith(final ArcadeStateMachine sm, final long currentTerm, final long commitIndex,
       final long appliedIndex) throws Exception {
     final FakeRaftHAServer server = FakeRaftHAServer.detached().leader(false).leaderId(RaftPeerId.valueOf("leader"))
-        .currentTerm(currentTerm).commitIndex(commitIndex).lastAppliedIndex(appliedIndex);
-    // The checks read the state machine FIELD, not its getter
-    setField(server, "stateMachine", sm);
+        .currentTerm(currentTerm).commitIndex(commitIndex).lastAppliedIndex(appliedIndex).stateMachine(sm);
     // The checks read the Ratis server's presence; no division is ever asked for here
     setField(server, "raftServer", mock(RaftServer.class));
     setField(server, "shutdownRequested", false);

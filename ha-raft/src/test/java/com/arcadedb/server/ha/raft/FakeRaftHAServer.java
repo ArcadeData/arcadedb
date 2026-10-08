@@ -27,6 +27,7 @@ import org.apache.ratis.protocol.RaftGroup;
 import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
 
+import java.lang.reflect.Field;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
@@ -165,12 +166,19 @@ public class FakeRaftHAServer extends RaftHAServer {
 
   /**
    * The state machine {@link #getStateMachine()} answers instead of the detached server's own fresh one - which has
-   * never applied anything, so a test of a RUNNING cluster hands in one that has. Only callers of the getter see it:
-   * the server's own methods that read the {@code stateMachine} field directly (the lag and stuck-follower checks)
-   * still see the detached one, and a test of those sets the field itself.
+   * never applied anything, so a test of a RUNNING cluster hands in one that has. It is set on the getter AND on the
+   * {@code stateMachine} field, which the server's own lag and stuck-follower checks read directly.
    */
   public FakeRaftHAServer stateMachine(final ArcadeStateMachine stateMachine) {
     stateMachineSetting.set(stateMachine);
+    // Also the field the server's own checks read directly, so the getter and the field can never disagree
+    try {
+      final Field field = RaftHAServer.class.getDeclaredField("stateMachine");
+      field.setAccessible(true);
+      field.set(this, stateMachine);
+    } catch (final ReflectiveOperationException e) {
+      throw new IllegalStateException("RaftHAServer has no 'stateMachine' field to set", e);
+    }
     return this;
   }
 
@@ -437,18 +445,23 @@ public class FakeRaftHAServer extends RaftHAServer {
     return commitIndex.next();
   }
 
-  /** A value the test may set - possibly to {@code null} - else the real server's own answer. */
+  /**
+   * A value the test may set - possibly to {@code null} - else the real server's own answer. The value and its "set"
+   * mark travel together in one immutable holder, so a concurrent read never sees one without the other.
+   */
   private static final class Setting<T> {
-    private volatile boolean set;
-    private volatile T       value;
+    private record Held<T>(T value) {
+    }
+
+    private volatile Held<T> held;
 
     private void set(final T value) {
-      this.value = value;
-      this.set = true;
+      this.held = new Held<>(value);
     }
 
     private T orElse(final Supplier<T> real) {
-      return set ? value : real.get();
+      final Held<T> current = held;
+      return current != null ? current.value() : real.get();
     }
   }
 

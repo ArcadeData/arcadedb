@@ -32,6 +32,7 @@ import org.mockito.ArgumentCaptor;
 
 import java.util.HashMap;
 import java.util.List;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
@@ -62,6 +63,9 @@ import static org.mockito.Mockito.when;
  * @author Roberto Franchini (r.franchini@arcadedata.com)
  */
 class Issue7401JoinPriorityTest {
+  /** The membership the join is made into: committed and live alike. */
+  private static final Set<String> COMMITTED = Set.of("A", "B", "C");
+
 
   private static final int DEFAULT_RAFT_PORT = 2434;
 
@@ -86,8 +90,9 @@ class Issue7401JoinPriorityTest {
     when(client.admin()).thenReturn(admin);
     when(reply.isSuccess()).thenReturn(true);
     when(admin.setConfiguration(captor.capture())).thenReturn(reply);
-    server.livePeers(List.of(peer("A"), peer("B"), peer("C")));
-    server.committedPeers(List.of(peer("A"), peer("B"), peer("C")));
+    final List<RaftPeer> committed = COMMITTED.stream().map(Issue7401JoinPriorityTest::peer).toList();
+    server.livePeers(committed);
+    server.committedPeers(committed);
     server.httpAddresses(new HashMap<>());
     server.raftGroup(RaftGroup.valueOf(RaftGroupId.randomId()));
 
@@ -96,8 +101,8 @@ class Issue7401JoinPriorityTest {
 
     // The change carries the committed membership plus the new peer (it is built from the committed configuration)
     final List<RaftPeer> newConf = captor.getValue().getServersInNewConf();
-    assertThat(newConf).extracting(p -> p.getId().toString()).hasSize(4).contains("A", "B", "C");
-    return newConf.stream().filter(p -> !List.of("A", "B", "C").contains(p.getId().toString())).findFirst().orElseThrow();
+    assertThat(newConf).extracting(p -> p.getId().toString()).hasSize(COMMITTED.size() + 1).containsAll(COMMITTED);
+    return newConf.stream().filter(p -> !COMMITTED.contains(p.getId().toString())).findFirst().orElseThrow();
   }
 
   @Test
