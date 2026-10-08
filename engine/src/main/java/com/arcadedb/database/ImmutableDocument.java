@@ -136,7 +136,8 @@ public class ImmutableDocument extends BaseDocument {
    *
    * @return the content the positions refer to, to hand back to {@link #getPropertyAt}, or null when the properties
    * must be read one by one with {@link #getIfPresent}: the record was filtered away by an after-read event, or its
-   * header does not read
+   * header does not read. The positions are valid only while this record holds that content, and only for the thread
+   * that walked it - a record instance is not shared between threads
    */
   public Binary locateProperties(final int[] slotByNameId, final int[] positions, final int wanted) {
     checkForLazyLoading();
