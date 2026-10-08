@@ -32,6 +32,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * #9488: a merge of small sealed blocks keeps every row, yet a walk that had read some of the old blocks and met one
@@ -244,6 +245,23 @@ class Issue9488WalkAcrossMergeTest extends TestHelper {
 
     assertThat(failure.get()).isNull();
     assertThat(reads.get()).isPositive();
+  }
+
+  @Test
+  void aWalkThatAlsoCrossesADownsampleStillRaises() throws Exception {
+    database.command("sql", "CREATE TIMESERIES TYPE Slow TIMESTAMP ts TAGS (id STRING) FIELDS (v DOUBLE) SHARDS 1");
+    final TimeSeriesEngine engine = engine("Slow");
+    feedAndCompact(engine, 6, 20, 0, false);
+
+    final TimeSeriesSealedStore sealed = engine.getShard(0).getSealedStore();
+    final BlockDirectorySnapshot snapshot = sealed.snapshotBlockDirectory(Long.MIN_VALUE, Long.MAX_VALUE);
+
+    engine.mergeSmallBlocks();
+    // the merged block is then replaced by coarser rows: no hand-over can join the two resolutions
+    sealed.downsampleBlocks(T0 + 1_000_000L, 10 * 60_000L, 0, List.of(1), List.of(2));
+
+    assertThatThrownBy(() -> sealed.forEachRow(snapshot, Long.MIN_VALUE, Long.MAX_VALUE, null, null, new AggregationMetrics(), row -> true))
+        .isInstanceOf(TimeSeriesWalkCoarsenedException.class);
   }
 
   @Test

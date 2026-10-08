@@ -888,6 +888,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * fields are derived from the ledger chain on first need and cached for as long as the chain does not grow.
    */
   static final class WalkOrigin {
+    // Not synchronised: a walk (or the lazy iterator over one) is driven by a single thread, as every other piece of its state is
     final List<BlockEntry> allBlocks;
     final int              baseFirstIndex;
     final long             downsampleOnlyEpoch;
@@ -2175,10 +2176,14 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         final String[][] dictionaries = new String[groupCount][];
         for (int g = 0; g < groupCount; g++) {
           final byte[] encoded = sliceColumn(blockData, entry, groupSchema[g]);
-          dictionaries[g] = DictionaryCodec.decodeIndexed(encoded, groupIds[g]);
           if (DictionaryCodec.valueCount(encoded) != tsCount)
             throw new IOException("Sealed block at offset " + entry.blockStartOffset + " has " + tsCount + " timestamp(s) but column '"
                 + columns.get(groupSchema[g]).getName() + "' holds a different number of values");
+          dictionaries[g] = DictionaryCodec.decodeIndexed(encoded, groupIds[g]);
+          // The packed key below gives each dictionary index 16 bits. The format cannot hold more, so this only turns a damaged block into an error
+          if (dictionaries[g].length > 0xFFFF)
+            throw new IOException("Sealed block at offset " + entry.blockStartOffset + " has a dictionary of " + dictionaries[g].length
+                + " entries for column '" + columns.get(groupSchema[g]).getName() + "'");
         }
         if (metrics != null)
           metrics.addDecompVal(System.nanoTime() - t0);
@@ -2201,7 +2206,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         // indexed by the dictionary index. Several: a map keyed by the indices packed 16 bits apiece (a dictionary
         // holds at most 65535 entries), which is why the engine groups by at most four columns.
         final MultiColumnAggregationResult[] byIndex = groupCount == 1 ? new MultiColumnAggregationResult[dictionaries[0].length] : null;
-        final Map<Long, MultiColumnAggregationResult> byPackedIndex = groupCount > 1 ? new HashMap<>() : null;
+        final PackedGroupMap byPackedIndex = groupCount > 1 ? new PackedGroupMap() : null;
         for (int i = rangeStart; i < rangeEnd; i++) {
           if (needRowTagFilter && !matchesTagConditions(filterCols, filterConditions, i))
             continue;
@@ -2236,6 +2241,55 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       }
     } finally {
       directoryLock.readLock().unlock();
+    }
+  }
+
+  /**
+   * A map from a packed dictionary-index key to the group's result, with primitive keys so that routing a row to its group
+   * boxes nothing (issue #9489). Open addressing, grown at half load; a slot is free while its value is {@code null}. Local to
+   * one block of one scan, so single threaded.
+   */
+  private static final class PackedGroupMap {
+    private long[]                         keys   = new long[64];
+    private MultiColumnAggregationResult[] values = new MultiColumnAggregationResult[64];
+    private int                            size;
+
+    MultiColumnAggregationResult get(final long key) {
+      final int mask = keys.length - 1;
+      for (int i = slot(key, mask); values[i] != null; i = (i + 1) & mask)
+        if (keys[i] == key)
+          return values[i];
+      return null;
+    }
+
+    void put(final long key, final MultiColumnAggregationResult value) {
+      if (size * 2 >= keys.length)
+        grow();
+      final int mask = keys.length - 1;
+      int i = slot(key, mask);
+      while (values[i] != null && keys[i] != key)
+        i = (i + 1) & mask;
+      if (values[i] == null)
+        size++;
+      keys[i] = key;
+      values[i] = value;
+    }
+
+    private static int slot(final long key, final int mask) {
+      long h = key * 0x9E3779B97F4A7C15L;
+      h ^= h >>> 32;
+      return (int) h & mask;
+    }
+
+    private void grow() {
+      final long[] oldKeys = keys;
+      final MultiColumnAggregationResult[] oldValues = values;
+      keys = new long[oldKeys.length * 2];
+      values = new MultiColumnAggregationResult[oldValues.length * 2];
+      size = 0;
+      for (int i = 0; i < oldKeys.length; i++)
+        if (oldValues[i] != null)
+          put(oldKeys[i], oldValues[i]);
     }
   }
 

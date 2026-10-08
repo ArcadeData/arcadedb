@@ -710,9 +710,9 @@ public class TimeSeriesEngine implements AutoCloseable {
       final TagFilter tagFilter, final AggregationMetrics metrics, final int bucketCeiling) throws IOException {
     final int reqCount = requests.size();
 
-    final long[] window = bucketWindow(fromTs, toTs, bucketIntervalMs, bucketOffsetMs, bucketCeiling);
-    final long firstBucket = window[0];
-    final int maxBuckets = (int) window[1];
+    final BucketWindow window = bucketWindow(fromTs, toTs, bucketIntervalMs, bucketOffsetMs, bucketCeiling);
+    final long firstBucket = window.firstBucket();
+    final int maxBuckets = window.buckets();
 
     // Pre-extract column indices and types for mutable bucket iteration
     final int[] columnIndices = new int[reqCount];
@@ -880,9 +880,10 @@ public class TimeSeriesEngine implements AutoCloseable {
       throw new IllegalArgumentException("A grouped aggregation groups by 1 to " + MAX_GROUP_COLUMNS + " tag column(s), not " + groupColumns.length);
 
     final int reqCount = requests.size();
-    final long[] window = bucketIntervalMs > 0 ? bucketWindow(fromTs, toTs, bucketIntervalMs, bucketOffsetMs, bucketCeiling) : new long[] { 0, 0 };
-    final long firstBucket = window[0];
-    final int buckets = (int) Math.min(window[1], Integer.MAX_VALUE);
+    final BucketWindow window = bucketIntervalMs > 0 ? bucketWindow(fromTs, toTs, bucketIntervalMs, bucketOffsetMs, bucketCeiling)
+        : new BucketWindow(0, 0);
+    final long firstBucket = window.firstBucket();
+    final int buckets = window.buckets();
 
     final int[] columnIndices = new int[reqCount];
     final boolean[] isCount = new boolean[reqCount];
@@ -967,6 +968,8 @@ public class TimeSeriesEngine implements AutoCloseable {
       final AggregationMetrics metrics, final GroupedAggregationResult result) throws IOException {
     final int reqCount = requests.size();
     final double[] rowValues = new double[reqCount];
+    // One array for every row: groupFor only reads it, and copies it when the group is new
+    final String[] values = new String[groupRowIndices.length];
     final Iterator<Object[]> mutableIter = shard.getMutableBucket().iterateRange(fromTs, toTs, null, metrics);
     int sinceCeilingCheck = 0;
     while (mutableIter.hasNext()) {
@@ -978,7 +981,6 @@ public class TimeSeriesEngine implements AutoCloseable {
         continue;
 
       // The text a sealed block's dictionary holds for the value: null is stored as the empty string
-      final String[] values = new String[groupRowIndices.length];
       for (int g = 0; g < values.length; g++) {
         final Object tag = row[groupRowIndices[g]];
         values[g] = tag != null ? tag.toString() : "";
@@ -993,11 +995,10 @@ public class TimeSeriesEngine implements AutoCloseable {
   }
 
   /**
-   * The bucket window an aggregation sizes its flat arrays by: {@code [first bucket, number of buckets]}, the number being
-   * {@code 0} when the query is not bucketed by time or nothing is stored, and {@code MAX_FLAT_BUCKETS + 1} when the window is
-   * too wide for a flat array (the result then falls back to map mode).
+   * The bucket window an aggregation sizes its flat arrays by (see {@link BucketWindow}); a window too wide for a flat array makes
+   * the result fall back to map mode.
    */
-  private long[] bucketWindow(final long fromTs, final long toTs, final long bucketIntervalMs, final long bucketOffsetMs,
+  private BucketWindow bucketWindow(final long fromTs, final long toTs, final long bucketIntervalMs, final long bucketOffsetMs,
       final int bucketCeiling) throws IOException {
     // Determine actual data range to size flat arrays correctly.
     //
@@ -1059,7 +1060,14 @@ public class TimeSeriesEngine implements AutoCloseable {
       maxBuckets = 0;
     }
 
-    return new long[] { firstBucket, maxBuckets };
+    return new BucketWindow(firstBucket, maxBuckets);
+  }
+
+  /**
+   * @param buckets {@code 0} for an unbucketed query or an empty store, and {@code MAX_FLAT_BUCKETS + 1} for a window too wide for a
+   *                flat array
+   */
+  private record BucketWindow(long firstBucket, int buckets) {
   }
 
   /**
