@@ -242,19 +242,16 @@ class CypherLabelExpressionIssue8992Test {
   }
 
   @Test
-  void variableLengthRelationshipRefusesWhatItCannotEvaluate() {
-    // Refused with an error naming the expression rather than run with the operator dropped (#9117).
-    assertThatThrownBy(() -> column("MATCH ()-[:!R*1..2]->() RETURN 1 AS x", "x"))
-        .isInstanceOf(CommandParsingException.class).hasMessageContaining("!R");
-    assertThatThrownBy(() -> column("MATCH ()-[r:R&S*1..3]->() RETURN 1 AS x", "x"))
-        .isInstanceOf(CommandParsingException.class).hasMessageContaining("R&S");
-    assertThatThrownBy(() -> column("MATCH p = shortestPath((a {id: 1})-[:!R*]-(b {id: 4})) RETURN p", "p"))
-        .isInstanceOf(CommandParsingException.class).hasMessageContaining("!R");
+  void variableLengthRelationshipEvaluatesTheExpressionOnEveryHop() {
+    // Refused at parse time until #9117; CypherLabelExpressionVarLengthIssue9117Test covers every entry point.
+    assertThat(column("MATCH (a {id: 1})-[:!R*1..2]->(b) RETURN b.id AS id", "id")).containsExactly(3);
+    assertThat(column("MATCH (a {id: 1})-[r:R&S*1..3]->(b) RETURN b.id AS id", "id")).isEmpty();
+    assertThat(column("MATCH p = shortestPath((a {id: 1})-[:!R*]-(b {id: 4})) RETURN p", "p")).isEmpty();
   }
 
   @Test
   void variableLengthRelationshipStillAcceptsAPlainTypeDisjunction() {
-    // The guard above must not catch the forms the expansion has always handled.
+    // The forms the expansion has always handled on its type list alone.
     assertThat(column("MATCH (a {id: 1})-[:S|R*1..2]->(b) RETURN b.id AS id ORDER BY id", "id")).containsExactly(2, 3, 5);
     assertThat(column("MATCH (a {id: 1})-[:R*1..2]->(b) RETURN b.id AS id ORDER BY id", "id")).containsExactly(2);
   }

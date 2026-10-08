@@ -2628,8 +2628,7 @@ class CypherExpressionBuilder {
     BooleanExpression labelCheck = null;
     final LabelPredicate labelPredicate = ParserUtils.buildRelationshipTypePredicate(ctx.labelExpression());
     if (labelPredicate != null) {
-      if (ctx.pathLength() != null)
-        ParserUtils.rejectOnVariableLengthRelationship(ctx.labelExpression());
+      // Evaluated per hop on a variable-length relationship too, through the inline WHERE it is ANDed into (#9117).
       final List<String> required = labelPredicate.requiredLabels();
       types = required.isEmpty() ? null : required;
       if (variable == null)
