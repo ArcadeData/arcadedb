@@ -34,6 +34,10 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * <p>
  * Register it as a {@code static} field, which also serves the {@code static} helpers handler tests build their
  * handlers in: {@code @RegisterExtension static final UnstartedHttpServers HTTP_SERVERS = new UnstartedHttpServers();}
+ * <p>
+ * The static registration shares one list across a class's tests, so it is not safe under concurrent method execution
+ * ({@code junit.jupiter.execution.parallel.mode.default=concurrent}): one test's {@code afterEach} would stop a server
+ * another test is still using.
  */
 public final class UnstartedHttpServers implements AfterEachCallback {
   private final List<HttpServer> servers = new CopyOnWriteArrayList<>();
@@ -46,7 +50,7 @@ public final class UnstartedHttpServers implements AfterEachCallback {
   }
 
   /** How many servers are waiting to be stopped: zero after every test. */
-  public int pending() {
+  int pending() {
     return servers.size();
   }
 
