@@ -315,6 +315,14 @@ public class FakeRaftHAServer extends RaftHAServer {
     return answer != null ? answer.apply(args) : fallback.get();
   }
 
+  /** A boolean answer, refused with the method's name when a set answer is null or not a boolean. */
+  private static boolean bool(final String method, final Object answer) {
+    if (!(answer instanceof Boolean value))
+      throw new IllegalStateException("The answer set for '" + method + "' must be a Boolean, it gave "
+          + (answer == null ? "null" : answer.getClass().getSimpleName()));
+    return value;
+  }
+
   FakeRaftHAServer httpsClients(final TrustedHttpClientCache httpsClients) {
     this.httpsClients.set(httpsClients);
     return this;
@@ -374,7 +382,7 @@ public class FakeRaftHAServer extends RaftHAServer {
 
   @Override
   public boolean isLeader() {
-    return (Boolean) call("isLeader", leader::next);
+    return bool("isLeader", call("isLeader", leader::next));
   }
 
   @Override
@@ -554,17 +562,17 @@ public class FakeRaftHAServer extends RaftHAServer {
    */
   @Override
   public boolean isSoleVoter() {
-    return (Boolean) call("isSoleVoter", () -> false);
+    return bool("isSoleVoter", call("isSoleVoter", () -> false));
   }
 
   @Override
   public boolean transferLeadership(final long timeoutMs) {
-    return (Boolean) call("transferLeadership", () -> false, timeoutMs);
+    return bool("transferLeadership", call("transferLeadership", () -> false, timeoutMs));
   }
 
   @Override
   public boolean transferLeadership(final long timeoutMs, final boolean bareStepDownFallback) {
-    return (Boolean) call("transferLeadership", () -> false, timeoutMs, bareStepDownFallback);
+    return bool("transferLeadership", call("transferLeadership", () -> false, timeoutMs, bareStepDownFallback));
   }
 
   @Override

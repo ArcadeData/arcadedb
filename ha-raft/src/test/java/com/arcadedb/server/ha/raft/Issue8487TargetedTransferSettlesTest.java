@@ -188,7 +188,7 @@ class Issue8487TargetedTransferSettlesTest {
 
     assertThatCode(() -> manager().transferLeadership(B.toString(), 10_000)).doesNotThrowAnyException();
     verify(admin, times(1)).transferLeadership(eq(B), anyLong());
-    assertThat(raft.calls("getLeaderId")).hasSize(0);
+    assertThat(raft.calls("getLeaderId")).isEmpty();
   }
 
   private RaftClusterManager manager() {

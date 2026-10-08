@@ -72,7 +72,8 @@ public final class CallLog {
 
   /**
    * An answer giving {@code values} in order, one per call, then the last one on every call after: what Mockito's
-   * {@code thenReturn(a, b, c)} did, for a value that changes as the code under test polls it.
+   * {@code thenReturn(a, b, c)} did, for a value that changes as the code under test polls it. The answer keeps its own
+   * read counter: register a fresh one per method, since one instance shared by two would advance on the calls of both.
    */
   public static Function<Object[], Object> inOrder(final Object... values) {
     final AtomicInteger reads = new AtomicInteger();

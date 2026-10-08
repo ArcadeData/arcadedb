@@ -116,6 +116,12 @@ class FakeRaftHAServerTest {
   }
 
   @Test
+  void aBooleanAnswerThatIsNotABooleanIsRefusedByName() {
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached().returns("isLeader", null);
+    assertThatThrownBy(raft::isLeader).isInstanceOf(IllegalStateException.class).hasMessageContaining("isLeader");
+  }
+
+  @Test
   void anEmptySequenceIsRefused() {
     final FakeRaftHAServer raft = FakeRaftHAServer.detached();
 
