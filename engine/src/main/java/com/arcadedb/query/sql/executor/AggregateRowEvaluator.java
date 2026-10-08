@@ -226,13 +226,16 @@ final class AggregateRowEvaluator {
         oldCurrent = context.getVariable("current");
         context.setVariable("current", row);
       }
-      if (fused)
-        for (int i = 0; i < preItems.length; i++)
-          preValues[i] = preItems[i].execute(view, context);
-      else
-        input = preProjection.calculateSingle(context, view);
-      if (setsCurrent)
-        context.setVariable("current", oldCurrent);
+      try {
+        if (fused)
+          for (int i = 0; i < preItems.length; i++)
+            preValues[i] = preItems[i].execute(view, context);
+        else
+          input = preProjection.calculateSingle(context, view);
+      } finally {
+        if (setsCurrent)
+          context.setVariable("current", oldCurrent);
+      }
     } else
       input = view;
 
