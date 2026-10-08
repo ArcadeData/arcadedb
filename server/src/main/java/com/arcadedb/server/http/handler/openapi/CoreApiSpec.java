@@ -19,6 +19,7 @@
 package com.arcadedb.server.http.handler.openapi;
 
 import com.arcadedb.server.http.HttpSessionManager;
+import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
 import com.arcadedb.server.http.handler.DatabaseAbstractHandler;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.Operation;
@@ -59,6 +60,7 @@ public class CoreApiSpec implements OpenApiContributor {
   // Grafana and Prometheus operations too.
   private static final String SESSION_EXPIRED_HEADER = SpecBuilders.SESSION_EXPIRED_HEADER;
   private static final String COMMIT_INDEX_HEADER = "X-ArcadeDB-Commit-Index";
+  private static final String STREAMED_RETRY_AFTER = AbstractServerHttpHandler.STREAMED_RETRY_AFTER_MEMBER;
 
   // Issue #8062. Set by DatabaseAbstractHandler on any session-bound request whose transaction published a
   // commit while it ran - a statement with an explicit BATCH boundary. Declared on the three data-plane
@@ -903,18 +905,29 @@ public class CoreApiSpec implements OpenApiContributor {
     final Schema<Object> error = SpecBuilders.object("""
         A failure raised after the 200 had already been sent. The status code cannot be taken back at that \
         point, so the failure is reported in band and no 'stats' line follows.""");
-    error.addProperty("message", SpecBuilders.string("Why the stream failed"));
+    error.addProperty("message", SpecBuilders.string("""
+        Why the stream failed. Outside production mode the failure's own message; in production mode the \
+        classified label also carried in 'error', because the raw text can carry file paths and engine internals \
+        the buffered error body conceals for the same failure (issue #8899)."""));
     error.addProperty("status", SpecBuilders.integer("""
         HTTP status the buffered encoding would have answered the same failure with, decided by the same error \
         mapping: 503 for a retryable conflict, 409 for a duplicated key, 403 for a security refusal, 413 when \
         arcadedb.server.httpQueryMaxResultRows cut the result short, 500 for an unexpected failure (issue \
         #8235). Key on this rather than on 'message' to decide whether to retry."""));
+    error.addProperty("error", SpecBuilders.string("""
+        Classified label of the failure, the value the buffered error body carries in its 'error' member."""));
     error.addProperty("exception", SpecBuilders.string("""
         Class name of the reported exception, the value the buffered error body carries in its 'exception' \
         member."""));
     error.addProperty("exceptionArgs", SpecBuilders.string("""
         Structured arguments of the failure, as the buffered error body carries them: present only for a failure \
         that has any, e.g. 'index|keys|rid' for a duplicated key."""));
+    error.addProperty(STREAMED_RETRY_AFTER, streamedRetryAfterSchema());
+    error.addProperty("detail", SpecBuilders.string("""
+        Cause chain of the failure, as the buffered error body carries it. Absent in production mode."""));
+    error.addProperty("requestId", SpecBuilders.string("""
+        Correlation id echoing X-Request-Id, for cross-referencing the failure against the server log. Absent when \
+        the request carried no correlation id."""));
     error.setRequired(List.of("message", "status"));
     schema.addProperty("error", error);
     return schema;
@@ -1370,6 +1383,7 @@ public class CoreApiSpec implements OpenApiContributor {
     error.addProperty("exceptionArgs", SpecBuilders.string("""
         Structured arguments of the failure, as the buffered error body carries them: present only for a failure \
         that has any, e.g. 'index|keys|rid' for a duplicated key."""));
+    error.addProperty(STREAMED_RETRY_AFTER, streamedRetryAfterSchema());
     // Carried on a FAILED load too, and not by accident: a batch is not atomic, so a load that failed
     // mid-stream still committed the chunks before the failure, and a READ_YOUR_WRITES client has to be able
     // to read them back. That is the same rule the buffered encoding follows by emitting the header on its
@@ -1380,6 +1394,19 @@ public class CoreApiSpec implements OpenApiContributor {
             + "that were committed before the failure"));
     schema.addProperty("error", error);
     return schema;
+  }
+
+  /**
+   * The {@code retryAfter} member of a streamed error line (issue #8899): the back-off the buffered encoding sends as
+   * a {@code Retry-After} header, which a response that has already started can no longer carry. Declared once for
+   * both streams so the query and the batch line cannot describe it differently.
+   */
+  private static Schema<?> streamedRetryAfterSchema() {
+    return SpecBuilders.integer("""
+        Seconds to wait before retrying, the value the buffered encoding sends as a Retry-After header for the same \
+        failure: present only for a refusal that carries one - 503 when the node cannot execute the request yet \
+        (e.g. a snapshot install), 409 when an identical request is still in flight. A header cannot be added \
+        once the stream has started, so the back-off travels in band (issue #8899).""");
   }
 
   private Schema<?> createBatchErrorSchema() {

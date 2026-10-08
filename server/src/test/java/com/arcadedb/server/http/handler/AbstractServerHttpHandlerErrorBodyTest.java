@@ -21,6 +21,8 @@ package com.arcadedb.server.http.handler;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.http.handler.AbstractServerHttpHandler.ErrorClassification;
+import com.arcadedb.server.http.handler.AbstractServerHttpHandler.ErrorLogKind;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 import org.junit.jupiter.api.Test;
@@ -104,9 +106,40 @@ class AbstractServerHttpHandlerErrorBodyTest {
     assertThat(chain).isEqualTo("e-msg -> a-msg -> b-msg");
   }
 
+  /**
+   * Issue #8899: the streamed error line carries the classification's Retry-After as an integer {@code retryAfter},
+   * and a value that is not a number of seconds (HTTP also allows a date in the header) is left out rather than
+   * thrown, since a throw there would cut a stream whose 200 is already on the wire instead of reporting the failure.
+   */
+  @Test
+  void streamedErrorLineCarriesNumericRetryAfterAndSkipsANonNumericOne() {
+    final HttpServerExchange exchange = new HttpServerExchange(null);
+    final IllegalStateException failure = new IllegalStateException("busy");
+
+    final JSONObject numeric = handler.buildStreamedErrorLine(exchange,
+        new ErrorClassification(503, "Cannot execute command", failure, "7", ErrorLogKind.RETRYABLE, "7"));
+    assertThat(numeric.getInt("status")).isEqualTo(503);
+    assertThat(numeric.getLong("retryAfter")).isEqualTo(7L);
+
+    final JSONObject date = handler.buildStreamedErrorLine(exchange,
+        new ErrorClassification(503, "Cannot execute command", failure, null, ErrorLogKind.RETRYABLE,
+            "Wed, 21 Oct 2026 07:28:00 GMT"));
+    assertThat(date.getInt("status")).isEqualTo(503);
+    assertThat(date.has("retryAfter")).isFalse();
+
+    final JSONObject none = handler.buildStreamedErrorLine(exchange,
+        new ErrorClassification(500, "Internal error", failure, null, ErrorLogKind.INTERNAL_COMMAND));
+    assertThat(none.has("retryAfter")).isFalse();
+  }
+
   private static class TestHandler extends AbstractServerHttpHandler {
     TestHandler(final HttpServer httpServer) {
       super(httpServer);
+    }
+
+    @Override
+    protected boolean isProductionMode() {
+      return true;
     }
 
     @Override
