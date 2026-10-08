@@ -264,15 +264,28 @@ public final class PartitionedTriangleOp implements CountOp {
   private long loopTermOfPartition(final GraphTraversalProvider provider, final int u, final int[] sorted, final int from,
       final int to, final int[] personPartition, final int country) {
     final long loops = loopsOf(provider, u);
-    long term = loops * (loops - 1) * (loops - 2);
+    long term = orderedLoopTriples(loops);
     for (int i = from; i < to; ) {
       final int y = sorted[i];
       final int run = runEnd(sorted, i, to) - i;
       if (y != u && personPartition[y] == country)
-        term += 3L * loops * run * (run - 1);
+        term = Math.addExact(term, repeatedPairTriples(loops, run));
       i += run;
     }
     return term;
+  }
+
+  /** Ordered triples of distinct loops among {@code loops}: loops * (loops - 1) * (loops - 2), exact. */
+  private static long orderedLoopTriples(final long loops) {
+    return loops < 3 ? 0L : Math.multiplyExact(Math.multiplyExact(loops, loops - 1), loops - 2);
+  }
+
+  /**
+   * Triples with one loop and an ordered pair of distinct edges among the {@code run} between the loop's vertex and another
+   * one, in each of the three positions the repeated vertex can take: 3 * loops * run * (run - 1), exact.
+   */
+  private static long repeatedPairTriples(final long loops, final long run) {
+    return run < 2 ? 0L : Math.multiplyExact(Math.multiplyExact(3L * loops, run), run - 1);
   }
 
   /** The self loops of {@code node}: each one is listed once in its out adjacency, unlike the undirected one that lists it twice. */
@@ -470,7 +483,7 @@ public final class PartitionedTriangleOp implements CountOp {
       if (Arrays.binarySearch(uNeighbors, u) >= 0) {
         // the triangles over a self loop of u: see loopTermOfPartition
         final long loops = loopsOf(provider, u);
-        final long allLoops = loops * (loops - 1) * (loops - 2);
+        final long allLoops = orderedLoopTriples(loops);
         if (allLoops != 0L)
           total = Math.addExact(total, Math.multiplyExact(allLoops,
               sharedWeight(countries[u], weights[u], countries[u], weights[u], countries[u], weights[u])));
@@ -478,7 +491,7 @@ public final class PartitionedTriangleOp implements CountOp {
           final int y = uNeighbors[i];
           final int run = runEnd(uNeighbors, i, uNeighbors.length) - i;
           if (y != u && countries[y] != null && run > 1)
-            total = Math.addExact(total, Math.multiplyExact(3L * loops * run * (run - 1),
+            total = Math.addExact(total, Math.multiplyExact(repeatedPairTriples(loops, run),
                 sharedWeight(countries[u], weights[u], countries[u], weights[u], countries[y], weights[y])));
           i += run;
         }
@@ -757,14 +770,14 @@ public final class PartitionedTriangleOp implements CountOp {
       if (Arrays.binarySearch(uAdjacent, u) >= 0) {
         // the triangles over a self loop of u: see loopTermOfPartition
         final long loops = loopsOfOLTP(db, gavProvider, persons.get(u));
-        final long allLoops = loops * (loops - 1) * (loops - 2);
+        final long allLoops = orderedLoopTriples(loops);
         if (allLoops != 0L)
           total = Math.addExact(total, Math.multiplyExact(allLoops, sharedWeight(partitions[u], partitions[u], partitions[u])));
         for (int i = 0; i < uAdjacent.length; ) {
           final int y = uAdjacent[i];
           final int run = runLength(uAdjacent, i);
           if (y != u && run > 1)
-            total = Math.addExact(total, Math.multiplyExact(3L * loops * run * (run - 1),
+            total = Math.addExact(total, Math.multiplyExact(repeatedPairTriples(loops, run),
                 sharedWeight(partitions[u], partitions[u], partitions[y])));
           i += run;
         }
