@@ -228,7 +228,7 @@ public final class QueryAdmissionGate {
       if (slot == null || !closed.compareAndSet(false, true))
         return;
       if (slot.tickets.decrementAndGet() == 0) {
-        if (gate.currentSlot.get() == slot)
+        if (slot.equals(gate.currentSlot.get()))
           gate.currentSlot.remove();
         if (slot.released.compareAndSet(false, true))
           gate.release();
@@ -288,7 +288,7 @@ public final class QueryAdmissionGate {
     boolean admittedNow = false;
     try {
       while (true) {
-        final boolean head = queue.peekFirst() == turn;
+        final boolean head = turn.equals(queue.peekFirst());
         if (head) {
           // RE-READ: A SETTING CHANGED WHILE WAITING APPLIES TO THE QUERIES ALREADY IN THE QUEUE TOO
           final int maxConcurrent = GlobalConfiguration.QUERY_MAX_CONCURRENT.getValueAsInteger();
