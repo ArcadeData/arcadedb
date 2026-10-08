@@ -122,7 +122,8 @@ public final class TestServerHelper {
 
   /**
    * {@link #unstartedServer(Path, ContextConfiguration)} with no disk, named {@code serverName} (written into
-   * {@code configuration}, where {@link ArcadeDBServer#getServerName()} reads it) unless that is null.
+   * {@code configuration}, where {@link ArcadeDBServer#getServerName()} reads it) unless that is null. Do not share one
+   * configuration between servers that need different names: the last name written wins for all of them.
    */
   public static ArcadeDBServer unstartedServer(final String serverName, final ContextConfiguration configuration) {
     if (serverName != null)
