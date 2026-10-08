@@ -27,6 +27,7 @@ import com.arcadedb.security.SecurityDatabaseUser.DATABASE_ACCESS;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
@@ -36,7 +37,7 @@ import org.junit.jupiter.api.Test;
 import java.io.File;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Set;
+import java.util.Objects;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -87,15 +88,15 @@ class Issue7510ReplicatedGroupRefreshTest {
     // refresh: ServerSecurity resolves the principal's permissions through server.getSecurity(), and the refresh
     // walks server.getDatabaseNames() / getDatabase(name). getHA() answers null, so this node is not itself
     // submitting Raft entries - exactly the peer applying someone else's entry.
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getDatabaseNames()).thenReturn(Set.of(DATABASE));
-    when(server.getDatabase(DATABASE)).thenReturn(database);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+    server.databaseNames(DATABASE);
+    server.on("getDatabase", args -> Objects.equals(args[0], DATABASE) ? database : null);
 
     final ContextConfiguration configuration = new ContextConfiguration();
     configuration.setValue(GlobalConfiguration.SERVER_SECURITY_RELOAD_EVERY, RELOAD_EVERY_MS);
 
     security = new ServerSecurity(server, configuration, CONFIG_PATH);
-    when(server.getSecurity()).thenReturn(security);
+    server.security(security);
   }
 
   @AfterEach
@@ -198,9 +199,9 @@ class Issue7510ReplicatedGroupRefreshTest {
     final AtomicInteger inside = new AtomicInteger();
     final AtomicInteger peak = new AtomicInteger();
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getDatabaseNames()).thenReturn(Set.of(DATABASE));
-    when(server.getDatabase(DATABASE)).thenReturn(database);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+    server.databaseNames(DATABASE);
+    server.on("getDatabase", args -> Objects.equals(args[0], DATABASE) ? database : null);
 
     final ServerSecurity counting = new ServerSecurity(server, new ContextConfiguration(), path) {
       @Override
@@ -217,7 +218,7 @@ class Issue7510ReplicatedGroupRefreshTest {
         }
       }
     };
-    when(server.getSecurity()).thenReturn(counting);
+    server.security(counting);
 
     final int threads = 4;
     final CountDownLatch start = new CountDownLatch(1);
@@ -282,19 +283,21 @@ class Issue7510ReplicatedGroupRefreshTest {
     assertThat(dir.mkdirs()).isTrue();
 
     final ServerDatabase healthy = mockDatabase();
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
     // A LinkedHashSet so the broken name is iterated FIRST: with the guard around the loop instead of inside it,
     // the healthy database that follows would never be reached.
-    when(server.getDatabaseNames()).thenReturn(new LinkedHashSet<>(List.of("dropped-under-the-sweep", DATABASE)));
-    when(server.getDatabase("dropped-under-the-sweep"))
-        .thenThrow(new DatabaseNotAvailableException("Database 'dropped-under-the-sweep' is not available"));
-    when(server.getDatabase(DATABASE)).thenReturn(healthy);
+    server.returns("getDatabaseNames", new LinkedHashSet<>(List.of("dropped-under-the-sweep", DATABASE)));
+    server.on("getDatabase", args -> {
+      if (Objects.equals(args[0], "dropped-under-the-sweep"))
+        throw new DatabaseNotAvailableException("Database 'dropped-under-the-sweep' is not available");
+      return Objects.equals(args[0], DATABASE) ? healthy : null;
+    });
 
     final ContextConfiguration configuration = new ContextConfiguration();
     configuration.setValue(GlobalConfiguration.SERVER_SECURITY_RELOAD_EVERY, RELOAD_EVERY_MS);
 
     final ServerSecurity mixed = new ServerSecurity(server, configuration, healthyPath);
-    when(server.getSecurity()).thenReturn(mixed);
+    server.security(mixed);
     try {
       mixed.applyReplicatedGroups(documentGranting(new JSONArray().put("updateSchema")));
 

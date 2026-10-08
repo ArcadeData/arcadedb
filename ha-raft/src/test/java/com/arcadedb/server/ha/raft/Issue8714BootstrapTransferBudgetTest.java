@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.server.CallLog;
 import com.arcadedb.server.TestServerHelper;
 import org.junit.jupiter.api.Test;
 

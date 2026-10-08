@@ -23,10 +23,12 @@ import com.arcadedb.engine.MaintenanceCoordinator.Operation;
 import com.arcadedb.server.backup.BackupCoordinator;
 import org.junit.jupiter.api.Test;
 
+import java.util.Arrays;
+import java.util.Objects;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -50,8 +52,8 @@ class Issue7469CloseDatabaseSlotTest {
   @Test
   void closeDatabaseIsRefusedWhileABackupIsRunning() {
     final BackupCoordinator coordinator = new BackupCoordinator();
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getBackupCoordinator()).thenReturn(coordinator);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+    server.returns("getBackupCoordinator", coordinator);
 
     assertThat(coordinator.begin(DB_NAME, Operation.BACKUP)).isNull();
     try {
@@ -63,8 +65,8 @@ class Issue7469CloseDatabaseSlotTest {
           .hasMessageContaining(DB_NAME);
 
       // NOT EVEN LOOKED UP: THE REFUSAL HAPPENS BEFORE ANYTHING IS TOUCHED
-      verify(server, never()).getDatabase(DB_NAME);
-      verify(server, never()).removeDatabase(DB_NAME);
+      assertThat(server.calls("getDatabase")).doesNotContain(Arrays.asList(DB_NAME));
+      assertThat(server.calls("removeDatabase")).doesNotContain(Arrays.asList(DB_NAME));
     } finally {
       coordinator.end(DB_NAME, Operation.BACKUP);
     }
@@ -74,8 +76,8 @@ class Issue7469CloseDatabaseSlotTest {
   void closeDatabaseIsRefusedWhileAnExportOrAnImportIsRunning() {
     for (final Operation running : new Operation[] { Operation.EXPORT, Operation.IMPORT, Operation.RESTORE }) {
       final BackupCoordinator coordinator = new BackupCoordinator();
-      final ArcadeDBServer server = mock(ArcadeDBServer.class);
-      when(server.getBackupCoordinator()).thenReturn(coordinator);
+      final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+      server.returns("getBackupCoordinator", coordinator);
 
       assertThat(coordinator.begin(DB_NAME, running)).isNull();
       try {
@@ -109,19 +111,19 @@ class Issue7469CloseDatabaseSlotTest {
   @Test
   void closeDatabaseSucceedsAndReleasesItsSlotAfterwards() {
     final BackupCoordinator coordinator = new BackupCoordinator();
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
     final ServerDatabase database = mock(ServerDatabase.class);
     final DatabaseInternal embedded = mock(DatabaseInternal.class);
 
-    when(server.getBackupCoordinator()).thenReturn(coordinator);
-    when(server.getDatabase(DB_NAME)).thenReturn(database);
+    server.returns("getBackupCoordinator", coordinator);
+    server.on("getDatabase", args -> Objects.equals(args[0], DB_NAME) ? database : null);
     when(database.getEmbedded()).thenReturn(embedded);
     when(database.getName()).thenReturn(DB_NAME);
 
     new ServerControlPlane(server).closeDatabase(DB_NAME);
 
     verify(embedded).close();
-    verify(server).removeDatabase(DB_NAME);
+    assertThat(server.calls("removeDatabase")).containsOnlyOnce(Arrays.asList(DB_NAME));
 
     assertThat(coordinator.begin(DB_NAME, Operation.BACKUP)).isNull();
     coordinator.end(DB_NAME, Operation.BACKUP);
@@ -136,10 +138,14 @@ class Issue7469CloseDatabaseSlotTest {
   @Test
   void aFailedCloseStillReleasesItsSlot() {
     final BackupCoordinator coordinator = new BackupCoordinator();
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
 
-    when(server.getBackupCoordinator()).thenReturn(coordinator);
-    when(server.getDatabase(DB_NAME)).thenThrow(new IllegalArgumentException("Database '" + DB_NAME + "' not found"));
+    server.returns("getBackupCoordinator", coordinator);
+    server.on("getDatabase", args -> {
+      if (Objects.equals(args[0], DB_NAME))
+        throw new IllegalArgumentException("Database '" + DB_NAME + "' not found");
+      return null;
+    });
 
     assertThatThrownBy(() -> new ServerControlPlane(server).closeDatabase(DB_NAME))
         .isInstanceOf(IllegalArgumentException.class);

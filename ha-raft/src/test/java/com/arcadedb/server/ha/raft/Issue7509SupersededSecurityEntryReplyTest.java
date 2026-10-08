@@ -19,12 +19,11 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
-import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
 import com.arcadedb.server.security.ServerSecurity;
 import org.apache.ratis.proto.RaftProtos.LogEntryProto;
 import org.apache.ratis.proto.RaftProtos.StateMachineLogEntryProto;
 import org.apache.ratis.protocol.Message;
-import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.statemachine.TransactionContext;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import org.junit.jupiter.api.Test;
@@ -135,9 +134,9 @@ class Issue7509SupersededSecurityEntryReplyTest {
   }
 
   private static ArcadeStateMachine stateMachine(final ServerSecurity security) {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getSecurity()).thenReturn(security);
-    when(server.getConfiguration()).thenReturn(new ContextConfiguration());
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+    server.security(security);
+    server.returns("getConfiguration", new ContextConfiguration());
 
     final ArcadeStateMachine sm = new ArcadeStateMachine();
     sm.setServer(server);

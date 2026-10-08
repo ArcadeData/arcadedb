@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.CallLog;
 import com.arcadedb.server.TestServerHelper;
 import org.junit.jupiter.api.Test;
 

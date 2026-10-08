@@ -16,7 +16,7 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.server.ha.raft;
+package com.arcadedb.server;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -44,7 +44,7 @@ public final class CallLog {
 
   private final List<Call> calls = new CopyOnWriteArrayList<>();
 
-  void record(final Object target, final String method, final Object... args) {
+  public void record(final Object target, final String method, final Object... args) {
     calls.add(new Call(target, method, Collections.unmodifiableList(Arrays.asList(args))));
   }
 
@@ -85,15 +85,15 @@ public final class CallLog {
    * against the methods the fake overrides, so a typo fails where it is written instead of silently answering the
    * default.
    */
-  static final class Answers {
+  public static final class Answers {
     private final Set<String>                                  methods;
     private final Map<String, Function<Object[], Object>>      answers = new HashMap<>();
 
-    Answers(final Set<String> methods) {
+    public Answers(final Set<String> methods) {
       this.methods = methods;
     }
 
-    void set(final String method, final Function<Object[], Object> answer) {
+    public void set(final String method, final Function<Object[], Object> answer) {
       if (!methods.contains(method))
         throw new IllegalArgumentException("No recorded method '" + method + "', expected one of " + methods);
       synchronized (answers) {
@@ -101,7 +101,7 @@ public final class CallLog {
       }
     }
 
-    Function<Object[], Object> get(final String method) {
+    public Function<Object[], Object> get(final String method) {
       synchronized (answers) {
         return answers.get(method);
       }

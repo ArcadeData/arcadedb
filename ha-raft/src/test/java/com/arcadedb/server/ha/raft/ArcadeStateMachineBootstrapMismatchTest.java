@@ -23,7 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.BootstrapFingerprint;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.LocalDatabase;
-import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.utility.FileUtils;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
@@ -32,15 +32,12 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.util.Arrays;
+import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNoException;
-import static org.mockito.Mockito.doAnswer;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
 /**
  * Unit tests for the error-recovery path in
@@ -94,18 +91,19 @@ class ArcadeStateMachineBootstrapMismatchTest {
 
     // Track database registration: should NOT be removed, since the download fails before the swap.
     final AtomicBoolean dbRegistered = new AtomicBoolean(true);
-    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
-    when(mockServer.getConfiguration()).thenReturn(config);
-    when(mockServer.existsDatabase(DB_NAME)).thenAnswer(inv -> dbRegistered.get());
+    final FakeArcadeDBServer mockServer = FakeArcadeDBServer.create();
+    mockServer.returns("getConfiguration", config);
+    mockServer.on("existsDatabase", args -> Objects.equals(args[0], DB_NAME) ? dbRegistered.get() : false);
 
     // The server arg is null: the only path exercised here is getEmbedded().close() (via
     // closeLocalDatabaseIfOpen), which dereferences the wrapped localDb, not the server, so null is safe.
     final ServerDatabase serverDb = new ServerDatabase(null, localDb);
-    when(mockServer.getDatabase(DB_NAME)).thenReturn(serverDb);
-    doAnswer(inv -> {
-      dbRegistered.set(false);
+    mockServer.on("getDatabase", args -> Objects.equals(args[0], DB_NAME) ? serverDb : null);
+    mockServer.on("removeDatabase", args -> {
+      if (Objects.equals(args[0], DB_NAME))
+        dbRegistered.set(false);
       return null;
-    }).when(mockServer).removeDatabase(DB_NAME);
+    });
 
     // raftHAServer stays null so the leader-address suppliers inside installFromLeaderForBootstrap()
     // return null. SnapshotInstaller exhausts its (zero) retries, throws IOException during the
@@ -139,14 +137,14 @@ class ArcadeStateMachineBootstrapMismatchTest {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, "./target/databases");
 
-    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
-    when(mockServer.getConfiguration()).thenReturn(config);
-    when(mockServer.existsDatabase(DB_NAME)).thenReturn(true);
+    final FakeArcadeDBServer mockServer = FakeArcadeDBServer.create();
+    mockServer.returns("getConfiguration", config);
+    mockServer.on("existsDatabase", args -> Objects.equals(args[0], DB_NAME));
 
     // The server arg is null: the only path exercised here is getEmbedded().close() (via
     // closeLocalDatabaseIfOpen), which dereferences the wrapped localDb, not the server, so null is safe.
     final ServerDatabase serverDb = new ServerDatabase(null, localDb);
-    when(mockServer.getDatabase(DB_NAME)).thenReturn(serverDb);
+    mockServer.on("getDatabase", args -> Objects.equals(args[0], DB_NAME) ? serverDb : null);
 
     final ArcadeStateMachine sm = new ArcadeStateMachine();
     sm.setServer(mockServer);
@@ -168,6 +166,6 @@ class ArcadeStateMachineBootstrapMismatchTest {
     assertThat(baseline.lastTxId()).isEqualTo(realLastTxId);
 
     // No snapshot install: removeDatabase must never be called.
-    verify(mockServer, never()).removeDatabase(DB_NAME);
+    assertThat(mockServer.calls("removeDatabase")).doesNotContain(Arrays.asList(DB_NAME));
   }
 }

@@ -25,7 +25,7 @@ import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
@@ -35,7 +35,7 @@ import org.junit.jupiter.api.Test;
 import java.io.File;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Set;
+import java.util.Objects;
 import java.util.function.BooleanSupplier;
 
 import static com.arcadedb.utility.SubclassMocks.mock;
@@ -78,15 +78,15 @@ class Issue7529PermissionRefreshVisibilityTest {
 
     database = mockDatabase(DATABASE);
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getDatabaseNames()).thenReturn(Set.of(DATABASE));
-    when(server.getDatabase(DATABASE)).thenReturn(database);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+    server.databaseNames(DATABASE);
+    server.on("getDatabase", args -> Objects.equals(args[0], DATABASE) ? database : null);
 
     final ContextConfiguration configuration = new ContextConfiguration();
     configuration.setValue(GlobalConfiguration.SERVER_SECURITY_RELOAD_EVERY, RELOAD_EVERY_MS);
 
     security = new ServerSecurity(server, configuration, CONFIG_PATH);
-    when(server.getSecurity()).thenReturn(security);
+    server.security(security);
   }
 
   @AfterEach
@@ -162,17 +162,19 @@ class Issue7529PermissionRefreshVisibilityTest {
     // inside another when()'s argument list.
     final ServerDatabase healthy = mockDatabase(DATABASE);
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getDatabaseNames()).thenReturn(new LinkedHashSet<>(List.of("dropped-under-the-sweep", DATABASE)));
-    when(server.getDatabase("dropped-under-the-sweep"))
-        .thenThrow(new DatabaseNotAvailableException("Database 'dropped-under-the-sweep' is not available"));
-    when(server.getDatabase(DATABASE)).thenReturn(healthy);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+    server.returns("getDatabaseNames", new LinkedHashSet<>(List.of("dropped-under-the-sweep", DATABASE)));
+    server.on("getDatabase", args -> {
+      if (Objects.equals(args[0], "dropped-under-the-sweep"))
+        throw new DatabaseNotAvailableException("Database 'dropped-under-the-sweep' is not available");
+      return Objects.equals(args[0], DATABASE) ? healthy : null;
+    });
 
     final ContextConfiguration configuration = new ContextConfiguration();
     configuration.setValue(GlobalConfiguration.SERVER_SECURITY_RELOAD_EVERY, RELOAD_EVERY_MS);
 
     final ServerSecurity mixed = new ServerSecurity(server, configuration, path);
-    when(server.getSecurity()).thenReturn(mixed);
+    server.security(mixed);
     try {
       mixed.refreshAllDatabasePermissions();
 

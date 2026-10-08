@@ -24,7 +24,7 @@ import com.arcadedb.engine.FileManager;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.utility.DedicatedThreadPool.PoolStats;
 import com.arcadedb.utility.FileUtils;
@@ -34,6 +34,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -72,22 +73,26 @@ class Issue7856PermissionsRefreshPoolStatsTest {
     assertThat(dir.mkdirs()).isTrue();
 
     final ServerDatabase database = mockDatabase();
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getDatabaseNames()).thenAnswer(invocation -> {
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+    server.on("getDatabaseNames", args -> {
       // Only the worker is held: any other caller of the name list must not be parked by the test.
       if (WORKER_NAME.equals(Thread.currentThread().getName())) {
         sweepStarted.countDown();
-        releaseSweep.await(TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        try {
+          releaseSweep.await(TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
       }
       return Set.of(DATABASE);
     });
-    when(server.getDatabase(DATABASE)).thenReturn(database);
+    server.on("getDatabase", args -> Objects.equals(args[0], DATABASE) ? database : null);
 
     final ContextConfiguration configuration = new ContextConfiguration();
     configuration.setValue(GlobalConfiguration.SERVER_SECURITY_RELOAD_EVERY, 600_000);
 
     security = new ServerSecurity(server, configuration, CONFIG_PATH);
-    when(server.getSecurity()).thenReturn(security);
+    server.security(security);
   }
 
   @AfterEach
