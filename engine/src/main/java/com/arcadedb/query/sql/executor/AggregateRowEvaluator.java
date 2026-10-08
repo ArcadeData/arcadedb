@@ -335,6 +335,11 @@ final class AggregateRowEvaluator {
    * Whether evaluating {@code fragment} on the caching view can never hand the view out, so the view can serve the next
    * row: no {@code *}, which answers the row itself, no function call, which gets the row, no nested projection and no
    * sub-query.
+   * <p>
+   * THE CONTRACT OF {@link PropertyCachingResult}: a node that can answer, or keep, the row it is evaluated on must be
+   * refused here. Every other node reads values off the row or computes on values; {@code @this} answers the record, not
+   * the row, and {@code $current} is the row the scan set, not the view. A new node type that can answer the row it gets
+   * belongs in this list.
    */
   private static boolean isSafeOnView(final Object fragment) {
     return SqlAstInspector.allNodesMatch(fragment, AggregateRowEvaluator::isSafeNodeOnView);
