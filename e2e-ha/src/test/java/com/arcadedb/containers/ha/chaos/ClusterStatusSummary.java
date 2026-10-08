@@ -40,11 +40,17 @@ final class ClusterStatusSummary {
    * zero is what lets a long-pause step pass, so it must come from the server.
    */
   static NodeControl.InPlaceRestarts inPlaceRestarts(final JSONObject cluster, final int node) {
-    final JSONObject restarts = cluster.has("localInPlaceRestarts") ? cluster.getJSONObject("localInPlaceRestarts") : null;
-    if (restarts == null || !restarts.has("recovered") || !restarts.has("reformatted"))
+    if (!cluster.has("localInPlaceRestarts"))
       throw new ChaosFailure(ResultKind.HARNESS, "Node " + node + " does not report localInPlaceRestarts in GET /api/v1/cluster"
           + " (a server older than issue #9429?), so a Raft-storage reformat cannot be ruled out");
-    return new NodeControl.InPlaceRestarts(restarts.getInt("recovered"), restarts.getInt("reformatted"));
+    // A member of the wrong shape or type throws from the JSON getters: still a harness failure, never zero
+    try {
+      final JSONObject restarts = cluster.getJSONObject("localInPlaceRestarts");
+      return new NodeControl.InPlaceRestarts(restarts.getInt("recovered"), restarts.getInt("reformatted"));
+    } catch (final RuntimeException e) {
+      throw new ChaosFailure(ResultKind.HARNESS, "Node " + node + " reports unreadable localInPlaceRestarts "
+          + cluster.get("localInPlaceRestarts") + ", so a Raft-storage reformat cannot be ruled out: " + e.getMessage());
+    }
   }
 
   static String describe(final JSONObject cluster) {

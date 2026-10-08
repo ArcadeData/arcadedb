@@ -30,6 +30,7 @@ import com.arcadedb.server.monitor.HAReplicationStatsProvider.UnreferencedFilesS
 import com.arcadedb.server.security.PermissionRefreshMetrics;
 import com.arcadedb.server.security.ServerSecurity;
 
+import io.micrometer.core.instrument.FunctionCounter;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.MultiGauge;
@@ -106,7 +107,7 @@ public final class HAReplicationMetrics implements MeterBinder, Closeable {
 
     bindPendingPhase2Gauges(registry);
     bindSecurityRefreshGauges(registry);
-    bindInPlaceRestartGauges(registry);
+    bindInPlaceRestartCounters(registry);
 
     // One scheduler for every re-registering MultiGauge on this binder, rather than one each: they all refresh at
     // the same cadence and none of them blocks, so a second thread would buy nothing.
@@ -117,18 +118,23 @@ public final class HAReplicationMetrics implements MeterBinder, Closeable {
    * Registers this node's in-place Raft restart counts (issue #9429). They were reachable only through the INFO line
    * the restart logs, so anything that wanted them - the HA chaos harness first of all - had to scrape the log for an
    * exact wording and would count zero the day that wording changed. Meaningful on every node, leader or follower.
+   * <p>
+   * Counters rather than gauges: both are monotonic totals that restart from zero with the process, which is exactly
+   * the reset a counter's {@code rate()} / {@code increase()} handle. The server is the observed object because a
+   * function counter holds it weakly, and the server outlives this binder.
    */
-  private void bindInPlaceRestartGauges(final MeterRegistry registry) {
-    Gauge.builder("arcadedb.ha.in_place_restarts.recovered", () -> inPlaceRestarts().recovered())
+  private void bindInPlaceRestartCounters(final MeterRegistry registry) {
+    FunctionCounter.builder("arcadedb.ha.in_place_restarts.recovered", server, s -> inPlaceRestarts().recovered())
         .description("Times this node restarted its Raft layer in place keeping its log, since the process started: the "
             + "health monitor's recovery of a CLOSED or EXCEPTION division, e.g. after a long JVM pause. Each is "
-            + "survivable, but a count that keeps climbing is a node that keeps losing its division.")
+            + "survivable, but a count that keeps climbing is a node that keeps losing its division. Restarts from 0 "
+            + "with the process: alert on increase(), not on the value.")
         .register(registry);
 
-    Gauge.builder("arcadedb.ha.in_place_restarts.reformatted", () -> inPlaceRestarts().reformatted())
+    FunctionCounter.builder("arcadedb.ha.in_place_restarts.reformatted", server, s -> inPlaceRestarts().reformatted())
         .description("Times this node restarted its Raft layer in place after DISCARDING its Raft storage, since the "
             + "process started: the divergence reformat, after which the node is refilled from a leader snapshot. Any "
-            + "increase outside a known divergence is worth investigating.")
+            + "increase() outside a known divergence is worth investigating. Restarts from 0 with the process.")
         .register(registry);
   }
 

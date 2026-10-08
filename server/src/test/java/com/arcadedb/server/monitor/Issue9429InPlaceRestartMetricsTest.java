@@ -38,7 +38,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Issue #9429: the in-place Ratis restart counters (kept vs reformatted Raft storage) were reachable only through the
  * INFO line the restart logs, so the HA chaos harness scraped container logs for it and would have counted zero, and
- * passed, the day that line was reworded. {@link HAReplicationMetrics} publishes them as
+ * passed, the day that line was reworded. {@link HAReplicationMetrics} publishes them as the counters
  * {@code arcadedb.ha.in_place_restarts.recovered} and {@code arcadedb.ha.in_place_restarts.reformatted}.
  */
 class Issue9429InPlaceRestartMetricsTest {
@@ -81,30 +81,30 @@ class Issue9429InPlaceRestartMetricsTest {
   }
 
   @Test
-  void gaugesFollowTheProvidersCountsOnEveryScrape() {
+  void countersFollowTheProvidersCountsOnEveryScrape() {
     final FakeHAPlugin plugin = new FakeHAPlugin();
     final SimpleMeterRegistry registry = new SimpleMeterRegistry();
     try (final HAReplicationMetrics metrics = new HAReplicationMetrics(serverWith(List.of(plugin)))) {
       metrics.bindTo(registry);
 
-      assertThat(registry.find(RECOVERED).gauge().value()).isZero();
-      assertThat(registry.find(REFORMATTED).gauge().value()).isZero();
+      assertThat(registry.find(RECOVERED).functionCounter().count()).isZero();
+      assertThat(registry.find(REFORMATTED).functionCounter().count()).isZero();
 
       // Read live, not captured at bind time: a restart after the binder was registered must show up on the next scrape
       plugin.restarts.set(new InPlaceRestartStats(3, 1));
-      assertThat(registry.find(RECOVERED).gauge().value()).isEqualTo(3.0);
-      assertThat(registry.find(REFORMATTED).gauge().value()).isEqualTo(1.0);
+      assertThat(registry.find(RECOVERED).functionCounter().count()).isEqualTo(3.0);
+      assertThat(registry.find(REFORMATTED).functionCounter().count()).isEqualTo(1.0);
     }
   }
 
   @Test
-  void gaugesReadZeroWhenHAIsDisabled() {
+  void countersReadZeroWhenHAIsDisabled() {
     final SimpleMeterRegistry registry = new SimpleMeterRegistry();
     try (final HAReplicationMetrics metrics = new HAReplicationMetrics(serverWith(List.of()))) {
       metrics.bindTo(registry);
 
-      assertThat(registry.find(RECOVERED).gauge().value()).isZero();
-      assertThat(registry.find(REFORMATTED).gauge().value()).isZero();
+      assertThat(registry.find(RECOVERED).functionCounter().count()).isZero();
+      assertThat(registry.find(REFORMATTED).functionCounter().count()).isZero();
     }
   }
 

@@ -73,6 +73,10 @@ class ClusterStatusSummaryTest {
     assertThatThrownBy(() -> ClusterStatusSummary.inPlaceRestarts(
         new JSONObject().put("localInPlaceRestarts", new JSONObject().put("recovered", 0)), 0))
         .isInstanceOf(ChaosFailure.class);
+    assertThatThrownBy(() -> ClusterStatusSummary.inPlaceRestarts(
+        new JSONObject().put("localInPlaceRestarts", new JSONObject().put("recovered", "x").put("reformatted", 0)), 1))
+        .isInstanceOfSatisfying(ChaosFailure.class, e -> assertThat(e.kind()).isEqualTo(ResultKind.HARNESS))
+        .hasMessageContaining("unreadable");
   }
 
   @Test
