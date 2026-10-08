@@ -131,7 +131,12 @@ ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue8658LeaderFacingBootstrap
 ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue8665PeerServiceGapHandOffTargetTest.java RaftHAServer
 ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue8702SnapshotInstallKeepsUnreplacedBootstrapStateTest.java ArcadeDBServer,RaftHAServer
 ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue8714BootstrapTransferBudgetTest.java ArcadeDBServer,RaftHAServer
+ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue8784ReplicatedCommitFiresAfterCommitCallbacksTest.java RaftHAServer,RaftTransactionBroker
+ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue8843BootstrapStateInFlightPagesTest.java ArcadeDBServer,RaftHAServer
+ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue8856HAExecutorPoolStatsTest.java ArcadeDBServer,ArcadeStateMachine
 ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue8900RestartAbandonedOnShutdownTest.java ArcadeDBServer,RaftTransactionBroker
+ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue9308SoleVoterApplyErrorTest.java RaftHAServer
+ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue9399ReplicationPathStateTest.java ArcadeDBServer,ArcadeStateMachine
 ha-raft/src/test/java/com/arcadedb/server/ha/raft/PostStepDownHandlerFailureTest.java RaftHAPlugin,RaftHAServer,ServerSecurityUser
 ha-raft/src/test/java/com/arcadedb/server/ha/raft/RaftAtomicMembershipTest.java RaftHAServer
 ha-raft/src/test/java/com/arcadedb/server/ha/raft/SnapshotThrottleTest.java ArcadeDBServer,HttpServer
@@ -159,6 +164,7 @@ server/src/test/java/com/arcadedb/server/http/handler/Issue8393UndeterminedForwa
 server/src/test/java/com/arcadedb/server/http/handler/Issue8486ForwardersHoldUnnamedLeaderRefusalTest.java ArcadeDBServer,HttpServer,ServerSecurityUser
 server/src/test/java/com/arcadedb/server/http/handler/Issue8674StreamedRelayBodyCapTerminalLineTest.java ArcadeDBServer,HttpServer
 server/src/test/java/com/arcadedb/server/http/handler/Issue8719StreamedForwardUploadDeadlineTest.java ArcadeDBServer,HttpServer,ServerSecurityUser
+server/src/test/java/com/arcadedb/server/http/handler/Issue9216StreamedForwardIncrementalAcksTest.java ArcadeDBServer,HttpServer,ServerSecurityUser
 server/src/test/java/com/arcadedb/server/http/HttpAuthSessionManagerConcurrencyTest.java ServerSecurityUser
 server/src/test/java/com/arcadedb/server/http/HttpAuthSessionManagerTest.java ServerSecurityUser
 server/src/test/java/com/arcadedb/server/http/ws/Issue6762WebSocketEventBusTest.java ArcadeDBServer,ServerSecurity,ServerSecurityUser
