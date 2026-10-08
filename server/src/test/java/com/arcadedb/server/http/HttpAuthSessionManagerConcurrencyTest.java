@@ -18,17 +18,15 @@
  */
 package com.arcadedb.server.http;
 
+import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.server.security.ServerSecurityUser;
 import org.junit.jupiter.api.Test;
 
-import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Concurrency regression for issue #5033: the authenticated-session map must only be read and mutated
@@ -38,18 +36,15 @@ import static org.mockito.Mockito.when;
  */
 class HttpAuthSessionManagerConcurrencyTest {
 
-  private ServerSecurityUser createMockUser(final String username) {
-    final ServerSecurityUser user = mock(ServerSecurityUser.class);
-    when(user.getName()).thenReturn(username);
-    when(user.getAuthorizedDatabases()).thenReturn(Set.of());
-    return user;
+  private ServerSecurityUser createUser(final String username) {
+    return TestServerHelper.securityUser(username);
   }
 
   @Test
   void concurrentReadsAndWritesDoNotThrow() throws Exception {
     final HttpAuthSessionManager manager = new HttpAuthSessionManager(30_000L);
     try {
-      final ServerSecurityUser user = createMockUser("stress");
+      final ServerSecurityUser user = createUser("stress");
 
       final int writers = 8;
       final int readers = 8;

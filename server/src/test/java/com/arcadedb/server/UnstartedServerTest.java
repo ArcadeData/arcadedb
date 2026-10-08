@@ -20,6 +20,7 @@ package com.arcadedb.server;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.server.security.ServerSecurityUser;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -93,6 +94,17 @@ class UnstartedServerTest {
         .doesNotExist();
     assertThat(TestServerHelper.unstartedServer((String) null, new ContextConfiguration()).getServerName())
         .isEqualTo(GlobalConfiguration.SERVER_NAME.getDefValue());
+  }
+
+  @Test
+  void aSecurityUserCarriesItsNameAndDatabases() {
+    final ServerSecurityUser user = TestServerHelper.securityUser("alice", "db1", "db2");
+    assertThat(user.getName()).isEqualTo("alice");
+    assertThat(user.getAuthorizedDatabases()).containsExactlyInAnyOrder("db1", "db2");
+    assertThat(user.canAccessToDatabase("db1")).isTrue();
+    assertThat(user.canAccessToDatabase("other")).isFalse();
+
+    assertThat(TestServerHelper.securityUser("bob").getAuthorizedDatabases()).isEmpty();
   }
 
   @Test
