@@ -27,11 +27,7 @@ import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
 
-import static org.mockito.Mockito.anyBoolean;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Regression test for issue #4837: on a K8s pod shutdown {@link RaftHAPlugin#stopService()} used to
@@ -51,7 +47,7 @@ class Issue4837DoubleLeaveTest {
   @Test
   void stopServiceDoesNotLeaveClusterItselfInK8s() throws Exception {
     final ArcadeDBServer server = TestServerHelper.unstartedServer();
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
 
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_K8S, true);
@@ -64,15 +60,15 @@ class Issue4837DoubleLeaveTest {
 
     // stop() is the single owner of the graceful leave; stopService() must delegate to it exactly once
     // and must NOT issue its own leaveCluster() (which caused the double-leave of issue #4837).
-    verify(raft, times(1)).stop();
-    verify(raft, never()).leaveCluster();
-    verify(raft, never()).leaveCluster(anyBoolean());
+    assertThat(raft.calls("stop")).hasSize(1);
+    assertThat(raft.calls("leaveCluster")).isEmpty();
+    assertThat(raft.calls("leaveCluster")).isEmpty();
   }
 
   @Test
   void stopServiceDoesNotLeaveClusterItselfWhenNotK8s() throws Exception {
     final ArcadeDBServer server = TestServerHelper.unstartedServer();
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
 
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_K8S, false);
@@ -83,9 +79,9 @@ class Issue4837DoubleLeaveTest {
 
     plugin.stopService();
 
-    verify(raft, times(1)).stop();
-    verify(raft, never()).leaveCluster();
-    verify(raft, never()).leaveCluster(anyBoolean());
+    assertThat(raft.calls("stop")).hasSize(1);
+    assertThat(raft.calls("leaveCluster")).isEmpty();
+    assertThat(raft.calls("leaveCluster")).isEmpty();
   }
 
   private static void injectRaftHAServer(final RaftHAPlugin plugin, final RaftHAServer raft) throws Exception {

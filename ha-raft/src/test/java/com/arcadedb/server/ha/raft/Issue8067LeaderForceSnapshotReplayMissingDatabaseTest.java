@@ -49,12 +49,6 @@ import java.util.zip.ZipOutputStream;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.contains;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
 /**
  * Regression tests for issue #8067: {@code applyInstallDatabaseEntry}'s leader skip returned, at TRACE, BEFORE the
@@ -86,7 +80,7 @@ class Issue8067LeaderForceSnapshotReplayMissingDatabaseTest {
 
   private ArcadeDBServer      server;
   private ArcadeStateMachine  sm;
-  private RaftHAServer        raft;
+  private FakeRaftHAServer        raft;
   private HttpServer          otherPeer;
   private String              otherPeerAddress;
   private final AtomicBoolean leading   = new AtomicBoolean(true);
@@ -101,15 +95,15 @@ class Issue8067LeaderForceSnapshotReplayMissingDatabaseTest {
     otherPeer.start();
     otherPeerAddress = "localhost:" + otherPeer.getAddress().getPort();
 
-    raft = mock(RaftHAServer.class);
-    when(raft.isLeader()).thenAnswer(inv -> leading.get());
-    when(raft.getLocalPeerId()).thenReturn(LOCAL);
-    when(raft.getLocalHttpAddress()).thenReturn("local-host:2480");
-    when(raft.getClusterToken()).thenReturn(null);
+    raft = FakeRaftHAServer.detached();
+    raft.on("isLeader", args -> leading.get());
+    raft.localPeerId(LOCAL);
+    raft.localHttpAddress("local-host:2480");
+    raft.clusterToken(null);
     // Whoever leads, the snapshot source is the other peer: while this node leads, resolveSnapshotSource refuses on
     // the role before it ever looks at an address.
-    when(raft.getLeaderId()).thenReturn(OTHER);
-    when(raft.getUnambiguousPeerHttpAddress(OTHER)).thenReturn(otherPeerAddress);
+    raft.leaderId(OTHER);
+    raft.peerHttpAddress(OTHER, otherPeerAddress);
 
     sm = newStateMachine();
   }
@@ -147,7 +141,7 @@ class Issue8067LeaderForceSnapshotReplayMissingDatabaseTest {
 
     assertThat(sm.isDatabaseDiverged(DB_NAME)).as("the missing database is quarantined").isTrue();
     assertThat(sm.quarantineCause(DB_NAME)).isEqualTo(DivergenceCause.APPLY_ERROR);
-    verify(raft).handOffLeadershipToResync(contains("'" + DB_NAME + "'"));
+    assertThat(raft.calls("handOffLeadershipToResync")).singleElement().satisfies(args -> assertThat((String) args.get(0)).contains("'" + DB_NAME + "'"));
     sm.awaitLifecycleTasksForTesting(60_000);
     assertThat(downloads.get()).as("nothing is pulled while this node still leads").isZero();
 
@@ -186,7 +180,7 @@ class Issue8067LeaderForceSnapshotReplayMissingDatabaseTest {
    */
   @Test
   void aSoleVoterMissingTheDatabaseIsNotQuarantined() {
-    when(raft.isSoleVoter()).thenReturn(true);
+    raft.returns("isSoleVoter", true);
     sm.writePersistedAppliedIndex(ENTRY_INDEX + 8, DB_NAME);
     wipeTheLocalCopy();
 
@@ -194,7 +188,7 @@ class Issue8067LeaderForceSnapshotReplayMissingDatabaseTest {
 
     assertThat(sm.isDatabaseDiverged(DB_NAME)).isFalse();
     assertThat(sm.isResyncInProgress()).isFalse();
-    verify(raft, never()).handOffLeadershipToResync(anyString());
+    assertThat(raft.calls("handOffLeadershipToResync")).isEmpty();
   }
 
   /** The counter-case: a leader that holds the database takes no action, exactly as before. */
@@ -205,7 +199,7 @@ class Issue8067LeaderForceSnapshotReplayMissingDatabaseTest {
     assertThatCode(this::applyTheReplayedEntry).doesNotThrowAnyException();
 
     assertThat(sm.isDatabaseDiverged(DB_NAME)).isFalse();
-    verify(raft, never()).handOffLeadershipToResync(anyString());
+    assertThat(raft.calls("handOffLeadershipToResync")).isEmpty();
   }
 
   /**
@@ -223,7 +217,7 @@ class Issue8067LeaderForceSnapshotReplayMissingDatabaseTest {
     assertThatCode(this::applyTheReplayedEntry).doesNotThrowAnyException();
 
     assertThat(sm.isDatabaseDiverged(DB_NAME)).isFalse();
-    verify(raft, never()).handOffLeadershipToResync(anyString());
+    assertThat(raft.calls("handOffLeadershipToResync")).isEmpty();
   }
 
   /**
@@ -239,7 +233,7 @@ class Issue8067LeaderForceSnapshotReplayMissingDatabaseTest {
     assertThatCode(this::applyTheReplayedEntry).doesNotThrowAnyException();
 
     assertThat(sm.isDatabaseDiverged(DB_NAME)).isFalse();
-    verify(raft, never()).handOffLeadershipToResync(anyString());
+    assertThat(raft.calls("handOffLeadershipToResync")).isEmpty();
   }
 
   // ------------------------------------------------------------------------------------------------------------

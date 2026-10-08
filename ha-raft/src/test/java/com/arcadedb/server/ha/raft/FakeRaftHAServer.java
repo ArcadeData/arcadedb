@@ -91,7 +91,14 @@ public class FakeRaftHAServer extends RaftHAServer {
 
   // Calls whose effect is the call itself: recorded, answered by the test, else by what an unstubbed mock answered
   private static final Set<String> RECORDED = Set.of("peersMissingCapability", "peersMissingCapabilityNow",
-      "waitForAppliedIndex");
+      "waitForAppliedIndex",
+      // Leadership and lifecycle: the effect is the request itself, which a detached server could not carry out
+      "transferLeadership", "stepDown", "handOffLeadershipToResync", "notifyApplied", "leaveCluster", "stop",
+      "newMembershipClient",
+      // Getters a test answers from a function of the moment (a leader that changes once a transfer is asked for);
+      // each still answers the value set with its setter when no function is set
+      "getLeaderId", "isLeader", "getLivePeers", "getCommittedPeersOrNull", "getUnambiguousPeerHttpAddress",
+      "isSoleVoter", "getClient", "followerContactPeers", "handoffReachablePeers", "getClusterMonitor");
   private volatile CallLog         log     = new CallLog();
   private final    CallLog.Answers answers = new CallLog.Answers(RECORDED);
 
@@ -308,6 +315,14 @@ public class FakeRaftHAServer extends RaftHAServer {
     return answer != null ? answer.apply(args) : fallback.get();
   }
 
+  /** A boolean answer, refused with the method's name when a set answer is null or not a boolean. */
+  private static boolean bool(final String method, final Object answer) {
+    if (!(answer instanceof Boolean value))
+      throw new IllegalStateException("The answer set for '" + method + "' must be a Boolean, it gave "
+          + (answer == null ? "null" : answer.getClass().getSimpleName()));
+    return value;
+  }
+
   FakeRaftHAServer httpsClients(final TrustedHttpClientCache httpsClients) {
     this.httpsClients.set(httpsClients);
     return this;
@@ -367,7 +382,7 @@ public class FakeRaftHAServer extends RaftHAServer {
 
   @Override
   public boolean isLeader() {
-    return leader.next();
+    return bool("isLeader", call("isLeader", leader::next));
   }
 
   @Override
@@ -378,7 +393,7 @@ public class FakeRaftHAServer extends RaftHAServer {
 
   @Override
   public RaftPeerId getLeaderId() {
-    return leaderId;
+    return (RaftPeerId) call("getLeaderId", () -> leaderId);
   }
 
   @Override
@@ -398,18 +413,20 @@ public class FakeRaftHAServer extends RaftHAServer {
 
   @Override
   public String getPeerHttpAddress(final RaftPeerId peerId) {
+    if (peerId == null)
+      return null;
     final Answers<String> answers = peerHttpAddresses.get(peerId);
     return answers != null ? answers.next() : null;
   }
 
   @Override
   public String getUnambiguousPeerHttpAddress(final RaftPeerId peerId) {
-    return getPeerHttpAddress(peerId);
+    return (String) call("getUnambiguousPeerHttpAddress", () -> getPeerHttpAddress(peerId), peerId);
   }
 
   @Override
   public String getPeerHttpsAddress(final RaftPeerId peerId) {
-    return peerHttpsAddresses.get(peerId);
+    return peerId == null ? null : peerHttpsAddresses.get(peerId);
   }
 
   @Override
@@ -440,7 +457,7 @@ public class FakeRaftHAServer extends RaftHAServer {
 
   @Override
   public RaftClient getClient() {
-    return client.orElse(super::getClient);
+    return (RaftClient) call("getClient", () -> client.orElse(super::getClient));
   }
 
   @Override
@@ -454,13 +471,15 @@ public class FakeRaftHAServer extends RaftHAServer {
   }
 
   @Override
+  @SuppressWarnings("unchecked")
   public Collection<RaftPeer> getLivePeers() {
-    return livePeers.orElse(super::getLivePeers);
+    return (Collection<RaftPeer>) call("getLivePeers", () -> livePeers.orElse(super::getLivePeers));
   }
 
   @Override
+  @SuppressWarnings("unchecked")
   public Collection<RaftPeer> getCommittedPeersOrNull() {
-    return committedPeers.orElse(super::getCommittedPeersOrNull);
+    return (Collection<RaftPeer>) call("getCommittedPeersOrNull", () -> committedPeers.orElse(super::getCommittedPeersOrNull));
   }
 
   @Override
@@ -518,6 +537,83 @@ public class FakeRaftHAServer extends RaftHAServer {
   @Override
   public void waitForAppliedIndex(final String databaseName, final long targetIndex, final boolean throwOnTimeout) {
     call("waitForAppliedIndex", () -> null, databaseName, targetIndex, throwOnTimeout);
+  }
+
+  @Override
+  @SuppressWarnings("unchecked")
+  Set<String> followerContactPeers() {
+    return (Set<String>) call("followerContactPeers", super::followerContactPeers);
+  }
+
+  @Override
+  @SuppressWarnings("unchecked")
+  Set<String> handoffReachablePeers() {
+    return (Set<String>) call("handoffReachablePeers", super::handoffReachablePeers);
+  }
+
+  @Override
+  public ClusterMonitor getClusterMonitor() {
+    return (ClusterMonitor) call("getClusterMonitor", super::getClusterMonitor);
+  }
+
+  /**
+   * Not a sole voter unless a test says so. The detached server's own answer would be "yes" - its server list holds this
+   * node alone - and a sole voter takes paths (#9308) a member of a real cluster never does.
+   */
+  @Override
+  public boolean isSoleVoter() {
+    return bool("isSoleVoter", call("isSoleVoter", () -> false));
+  }
+
+  @Override
+  public boolean transferLeadership(final long timeoutMs) {
+    return bool("transferLeadership", call("transferLeadership", () -> false, timeoutMs));
+  }
+
+  @Override
+  public boolean transferLeadership(final long timeoutMs, final boolean bareStepDownFallback) {
+    return bool("transferLeadership", call("transferLeadership", () -> false, timeoutMs, bareStepDownFallback));
+  }
+
+  @Override
+  public void transferLeadership(final String targetPeerId, final long timeoutMs) {
+    call("transferLeadership", () -> null, targetPeerId, timeoutMs);
+  }
+
+  @Override
+  public void stepDown() {
+    call("stepDown", () -> null);
+  }
+
+  @Override
+  void handOffLeadershipToResync(final String reason) {
+    call("handOffLeadershipToResync", () -> null, reason);
+  }
+
+  @Override
+  public void notifyApplied() {
+    call("notifyApplied", () -> null);
+  }
+
+  @Override
+  public void leaveCluster() {
+    call("leaveCluster", () -> null);
+  }
+
+  @Override
+  public void leaveCluster(final boolean force) {
+    call("leaveCluster", () -> null, force);
+  }
+
+  /** Recorded and answered like the rest: a detached server has nothing to stop, and a test may count the calls. */
+  @Override
+  public void stop() {
+    call("stop", () -> null);
+  }
+
+  @Override
+  RaftClient newMembershipClient() {
+    return (RaftClient) call("newMembershipClient", () -> null);
   }
 
   @Override

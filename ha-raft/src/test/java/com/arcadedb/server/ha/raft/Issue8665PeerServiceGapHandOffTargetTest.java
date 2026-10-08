@@ -31,7 +31,6 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyLong;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -150,12 +149,12 @@ class Issue8665PeerServiceGapHandOffTargetTest {
     final AdminApi admin = mock(AdminApi.class);
     final RaftClient client = mock(RaftClient.class);
     when(client.admin()).thenReturn(admin);
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.getClient()).thenReturn(client);
-    when(raft.getLocalPeerId()).thenReturn(SELF);
-    when(raft.isLeader()).thenReturn(true);
-    when(raft.getLivePeers()).thenReturn(peers());
-    when(raft.handoffReachablePeers()).thenReturn(Set.of()); // both peers report the gap this leader has
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.returns("getClient", client);
+    raft.localPeerId(SELF);
+    raft.leader(true);
+    raft.returns("getLivePeers", peers());
+    raft.returns("handoffReachablePeers", Set.of()); // both peers report the gap this leader has
     final RaftClusterManager manager = new RaftClusterManager(raft);
 
     assertThat(manager.transferLeadership(10_000L, false)).isFalse();
@@ -166,16 +165,18 @@ class Issue8665PeerServiceGapHandOffTargetTest {
 
   @Test
   void theGapHandOffAsksForNoBareStepDown() throws Exception {
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.isLeader()).thenReturn(true);
-    when(raft.transferLeadership(anyLong(), eq(false))).thenReturn(false);
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.leader(true);
+    raft.returns("transferLeadership", false);
     final ArcadeStateMachine sm = new ArcadeStateMachine();
     sm.setRaftHAServer(raft);
 
     sm.runUnderInstallGate("db", () -> assertThat(sm.handOffLeadershipWhileReplacingDatabase()).isFalse());
 
-    verify(raft).transferLeadership(anyLong(), eq(false));
-    verify(raft, never()).transferLeadership(anyLong());
+    // The (timeout, bareStepDownFallback) overload, asked once with no bare step-down; the 1-argument overload never
+    assertThat(raft.calls("transferLeadership")).filteredOn(args -> args.size() == 2 && Boolean.FALSE.equals(args.get(1)))
+        .hasSize(1);
+    assertThat(raft.calls("transferLeadership")).noneMatch(args -> args.size() == 1);
   }
 
   private static List<RaftPeer> peers() {

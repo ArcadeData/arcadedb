@@ -25,7 +25,6 @@ import org.apache.ratis.protocol.RaftPeerId;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -44,13 +43,12 @@ import static org.mockito.Mockito.when;
  */
 class PostStepDownHandlerFailureTest {
 
-  private final RaftHAServer raftHAServer = mock(RaftHAServer.class);
+  private final FakeRaftHAServer raftHAServer = FakeRaftHAServer.detached();
   private final PostStepDownHandler handler = new PostStepDownHandler(null, pluginReturning(raftHAServer));
 
   @Test
   void exhaustedTransfersAnswer503RatherThanTheGeneric500() {
-    doThrow(new ReplicationException("Cannot step down: no other peer available for leadership transfer"))
-        .when(raftHAServer).stepDown();
+    raftHAServer.fails("stepDown", new ReplicationException("Cannot step down: no other peer available for leadership transfer"));
 
     final ExecutionResponse response = handler.execute(null, rootUser(), new JSONObject());
 
@@ -63,8 +61,7 @@ class PostStepDownHandlerFailureTest {
 
   @Test
   void aRefusalStillAnswers409() {
-    doThrow(new NotTheLeaderRefusalException("Refusing to step down", RaftPeerId.valueOf("ArcadeDB_1")))
-        .when(raftHAServer).stepDown();
+    raftHAServer.fails("stepDown", new NotTheLeaderRefusalException("Refusing to step down", RaftPeerId.valueOf("ArcadeDB_1")));
 
     final ExecutionResponse response = handler.execute(null, rootUser(), new JSONObject());
 
