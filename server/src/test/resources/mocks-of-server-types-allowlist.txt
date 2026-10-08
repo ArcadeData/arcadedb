@@ -22,7 +22,6 @@ ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue7221ForceSnapshotGuardMis
 ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue7227SecurityEntryAppliedPositionMovesPastFailureTest.java ArcadeDBServer,ServerSecurity
 ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue7252SecurityEntryReplayAfterRestartTest.java ArcadeDBServer,ServerSecurity
 ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue7253SnapshotInstallReadsHAServerOnceTest.java ArcadeDBServer,RaftHAServer
-ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue7256SharedAddressCapabilityProbeTest.java HttpServer
 ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue7298BootstrapReplaySkipMissingDatabaseTest.java ArcadeDBServer
 ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue7401JoinPriorityTest.java RaftHAServer
 ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue7509SupersededSecurityEntryReplyTest.java ArcadeDBServer,ServerSecurity
@@ -34,7 +33,6 @@ ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue7561MembershipChangeBudge
 ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue7641DropInReplicasWaitsForLocalApplyTest.java RaftHAServer,RaftTransactionBroker
 ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue7802ConcurrentAddSameAddressTest.java RaftHAServer
 ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue7901LeaderBootstrapInstallMissingDatabaseTest.java ArcadeDBServer
-ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue8033BootstrapElectionPeerProbeUrlTest.java HttpServer
 ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue8053RollbackOnlyRefusedOnTheReplicatedCommitPathTest.java RaftHAServer,RaftTransactionBroker
 ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue8067LeaderForceSnapshotReplayMissingDatabaseTest.java RaftHAServer
 ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue8076BootstrapWindowStatusTest.java ArcadeDBServer
@@ -42,7 +40,6 @@ ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue8109PreconditionProbeOffS
 ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue8149SchemaCommitArmRollsBackRefusedPhase1Test.java RaftHAServer,RaftTransactionBroker
 ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue8182StateMachineCloseAwaitsLifecycleTasksTest.java ArcadeDBServer,RaftHAServer
 ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue8317ReAddedNodeSecurityConvergenceTest.java ArcadeDBServer,ServerSecurity
-ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue8325LeaderBodyDeadlineTest.java RaftHAPlugin
 ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue8330DeclaredHttpAddressTest.java RaftHAServer
 ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue8341ZeroProgressCatchUpTest.java ArcadeStateMachine,RaftHAServer
 ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue8356NullTransactionBrokerAfterHaStopTest.java RaftHAServer
@@ -61,9 +58,7 @@ ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue8529LeaderServiceGapHandO
 ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue8556HandOffTargetReachabilityTest.java RaftHAServer
 ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue8557ConcurrentLeadershipHandOffsTest.java ArcadeStateMachine,RaftHAServer
 ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue8592LeaveClusterHandOffTargetTest.java ClusterMonitor,RaftHAServer
-ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue8605UnverifiedClosedCopyCheckTest.java HttpServer,RaftHAPlugin,RaftHAServer,ServerSecurityUser
 ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue8606UnverifiedClosedCopyReverifyTest.java HttpServer,RaftHAPlugin,RaftHAServer,ServerSecurityUser
-ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue8641AcceptUnverifiedClosedCopyTest.java HttpServer,RaftHAPlugin,RaftHAServer,ServerSecurityUser
 ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue8665PeerServiceGapHandOffTargetTest.java RaftHAServer
 ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue8714BootstrapTransferBudgetTest.java RaftHAServer
 ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue8784ReplicatedCommitFiresAfterCommitCallbacksTest.java RaftHAServer,RaftTransactionBroker
@@ -73,7 +68,6 @@ ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue9308SoleVoterApplyErrorTe
 ha-raft/src/test/java/com/arcadedb/server/ha/raft/PostStepDownHandlerFailureTest.java RaftHAPlugin,RaftHAServer,ServerSecurityUser
 ha-raft/src/test/java/com/arcadedb/server/ha/raft/RaftAtomicMembershipTest.java RaftHAServer
 server/src/test/java/com/arcadedb/server/http/ClusterAuthSessionResolverTest.java ArcadeDBServer,ServerSecurity,ServerSecurityUser
-server/src/test/java/com/arcadedb/server/http/GetHealthHandlerTest.java HttpServer
 server/src/test/java/com/arcadedb/server/http/handler/GetProgressHandlerTest.java ArcadeDBServer,HttpServer,ServerSecurityUser
 server/src/test/java/com/arcadedb/server/http/handler/InternalErrorStackTraceLoggingTest.java ArcadeDBServer,HttpServer
 server/src/test/java/com/arcadedb/server/http/handler/Issue5064CommittedRemotelyHttpStatusTest.java ArcadeDBServer,HttpServer
@@ -94,8 +88,6 @@ server/src/test/java/com/arcadedb/server/Issue7641DropDatabaseSlotTest.java Arca
 server/src/test/java/com/arcadedb/server/Issue7872ReadinessCriticalHaltTest.java ArcadeDBServer
 server/src/test/java/com/arcadedb/server/Issue8077ConnectClusterConsumesPluginSeedReportTest.java ArcadeDBServer,ServerSecurity
 server/src/test/java/com/arcadedb/server/Issue8446SharedSecurityConvergenceWindowTest.java ArcadeDBServer,ServerSecurity
-server/src/test/java/com/arcadedb/server/security/Issue6806GroupPermissionRefreshTest.java ServerSecurity
 server/src/test/java/com/arcadedb/server/security/Issue7510ReplicatedGroupRefreshTest.java ArcadeDBServer,ServerDatabase
 server/src/test/java/com/arcadedb/server/security/Issue7529PermissionRefreshVisibilityTest.java ArcadeDBServer,ServerDatabase
 server/src/test/java/com/arcadedb/server/security/Issue7856PermissionsRefreshPoolStatsTest.java ArcadeDBServer,ServerDatabase
-server/src/test/java/com/arcadedb/server/ServerControlPlaneProgressAndSessionsTest.java HttpServer,ServerSecurityUser

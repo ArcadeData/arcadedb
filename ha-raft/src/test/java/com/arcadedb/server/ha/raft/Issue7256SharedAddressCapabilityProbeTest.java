@@ -21,9 +21,11 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.FakeArcadeDBServer;
+import com.arcadedb.server.UnstartedHttpServers;
 import com.arcadedb.server.http.HttpServer;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
 import java.io.IOException;
 import java.net.SocketTimeoutException;
@@ -34,8 +36,6 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Issue #7256: a cluster whose peers all derive onto one HTTP address could never negotiate capabilities, so
@@ -55,6 +55,9 @@ import static org.mockito.Mockito.when;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue7256SharedAddressCapabilityProbeTest {
+  @RegisterExtension
+  static final UnstartedHttpServers HTTP_SERVERS = new UnstartedHttpServers();
+
 
   /** Local node first, then two peers that both derive onto {@code localhost:2490}. */
   private static final String COLLAPSED_LIST = "localhost:2434:2480,localhost:2435:2490,localhost:2436:2490";
@@ -341,13 +344,12 @@ class Issue7256SharedAddressCapabilityProbeTest {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_SERVER_LIST, serverList);
 
-    final FakeArcadeDBServer mockServer = FakeArcadeDBServer.create("ArcadeDB_0", new ContextConfiguration());
+    final FakeArcadeDBServer arcadeServer = FakeArcadeDBServer.create("ArcadeDB_0", new ContextConfiguration());
     if (localHttpPort > 0) {
-      final HttpServer httpServer = mock(HttpServer.class);
-      when(httpServer.getPort()).thenReturn(localHttpPort);
-      mockServer.httpServer(httpServer);
+      final HttpServer httpServer = HTTP_SERVERS.listeningOn(arcadeServer, localHttpPort);
+      arcadeServer.httpServer(httpServer);
     }
 
-    return new RaftHAServer(mockServer, config);
+    return new RaftHAServer(arcadeServer, config);
   }
 }

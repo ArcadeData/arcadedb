@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.security;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.schema.Schema;
@@ -25,8 +26,14 @@ import com.arcadedb.security.SecurityDatabaseUser.DATABASE_ACCESS;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.FakeArcadeDBServer;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
@@ -50,6 +57,15 @@ import static org.mockito.Mockito.when;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue6806GroupPermissionRefreshTest {
+  /** Reading the group file starts its watcher; every security a test builds is stopped after it. */
+  private static final List<ServerSecurity> SECURITIES = new ArrayList<>();
+
+  @AfterEach
+  void stopSecurities() {
+    SECURITIES.forEach(ServerSecurity::stopService);
+    SECURITIES.clear();
+  }
+
 
   private static final String DATABASE = "issue6806db";
   private static final String GROUP    = "editor";
@@ -197,10 +213,19 @@ class Issue6806GroupPermissionRefreshTest {
   }
 
   private static ServerSecurityUser newUser(final DatabaseInternal database, final JSONObject groupConfiguration) {
-    final ServerSecurity security = mock(ServerSecurity.class);
-    when(security.getDatabaseGroupsConfiguration(DATABASE)).thenReturn(groupConfiguration);
-
+    // A real security reading the group configuration from its file, as on a node
     final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+    final Path configPath = Path.of(server.getConfigPath());
+    try {
+      Files.createDirectories(configPath);
+      Files.writeString(configPath.resolve(SecurityGroupFileRepository.FILE_NAME), new JSONObject()
+          .put("version", ServerSecurity.LATEST_VERSION)
+          .put("databases", new JSONObject().put(DATABASE, new JSONObject().put("groups", groupConfiguration))).toString());
+    } catch (final IOException e) {
+      throw new UncheckedIOException(e);
+    }
+    final ServerSecurity security = new ServerSecurity(server, new ContextConfiguration(), configPath.toString());
+    SECURITIES.add(security);
     server.security(security);
 
     final JSONObject userConfiguration = new JSONObject()
