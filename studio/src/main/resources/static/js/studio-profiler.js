@@ -381,22 +381,7 @@ function profilerRenderQueryTable() {
   var queries = profilerData.queries || [];
   for (var i = 0; i < queries.length; i++) {
     var q = queries[i];
-    var truncated = q.queryText.length > 80 ? q.queryText.substring(0, 80) + "..." : q.queryText;
-    jQuery("#profilerQueryTable tbody").append(
-      '<tr style="cursor: pointer;" onclick="profilerShowDetail(' + i + ')">' +
-      '<td title="' + escapeHtml(q.queryText) + '">' + escapeHtml(truncated) + '</td>' +
-      '<td>' + escapeHtml(q.language) + '</td>' +
-      '<td>' + escapeHtml(q.database) + '</td>' +
-      '<td>' + q.executionCount + '</td>' +
-      '<td>' + q.totalTimeMs + '</td>' +
-      '<td>' + q.avgTimeMs + '</td>' +
-      '<td>' + q.maxTimeMs + '</td>' +
-      '<td>' + q.p99TimeMs + '</td>' +
-      '<td>' + (q.deserializationTotalTimeMs || 0) + '</td>' +
-      '<td>' + (q.engineTotalTimeMs || 0) + '</td>' +
-      '<td>' + (q.serializationTotalTimeMs || 0) + '</td>' +
-      '</tr>'
-    );
+    jQuery("#profilerQueryTable tbody").append(profilerRenderQueryRow(q, i));
   }
 
   profilerQueryDT = jQuery("#profilerQueryTable").DataTable({
@@ -438,6 +423,27 @@ function profilerStepMeasuredCell(step) {
     return '' + measured;
   return '<span class="text-warning" title="Total, Avg, Max and P99 are drawn from these ' + measured +
     ' timed occurrences, not from all ' + step.executionCount + '.">' + measured + '</span>';
+}
+
+// THE QUERY TEXT CELL HOLDS A REAL BUTTON SO THE ROW IS REACHABLE WITH TAB AND TRIGGERED WITH ENTER/SPACE (ISSUE #9508).
+// A TABLE ROW CANNOT BE A BUTTON; THE ROW KEEPS ITS CLICK FOR THE MOUSE BUT IGNORES CLICKS BUBBLING UP FROM THE BUTTON,
+// SO THE DETAIL OPENS ONCE
+function profilerRenderQueryRow(q, i) {
+  var truncated = q.queryText.length > 80 ? q.queryText.substring(0, 80) + "..." : q.queryText;
+  return '<tr style="cursor: pointer;" onclick="if (event.target.closest(\'button\') === null) profilerShowDetail(' + i + ')">' +
+    '<td><button type="button" class="profiler-query-button" title="' + escapeHtml(q.queryText) + '" onclick="profilerShowDetail(' + i + ')">' +
+    escapeHtml(truncated) + '</button></td>' +
+    '<td>' + escapeHtml(q.language) + '</td>' +
+    '<td>' + escapeHtml(q.database) + '</td>' +
+    '<td>' + q.executionCount + '</td>' +
+    '<td>' + q.totalTimeMs + '</td>' +
+    '<td>' + q.avgTimeMs + '</td>' +
+    '<td>' + q.maxTimeMs + '</td>' +
+    '<td>' + q.p99TimeMs + '</td>' +
+    '<td>' + (q.deserializationTotalTimeMs || 0) + '</td>' +
+    '<td>' + (q.engineTotalTimeMs || 0) + '</td>' +
+    '<td>' + (q.serializationTotalTimeMs || 0) + '</td>' +
+    '</tr>';
 }
 
 function profilerShowDetail(index) {
