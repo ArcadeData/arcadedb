@@ -22,6 +22,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.function.StatelessFunction;
@@ -423,7 +424,8 @@ public class CallStep extends AbstractExecutionStep {
         context.getDatabase().commit();
 
       return result;
-    } catch (final CommandParsingException clientError) {
+    } catch (final CommandParsingException | NeedRetryException clientError) {
+      // A conflict is not "no rows" either: it is retryable and has to keep its type for the retry loop (#9487).
       // OPTIONAL suppresses "no rows", not "your call is malformed": a wrong argument count or a bad argument type is
       // the same mistake inside OPTIONAL CALL as outside it, and answering null there would hide it behind a result
       // that looks legitimately empty. Matches Neo4j, where OPTIONAL CALL is about cardinality (issue #5602).
@@ -466,6 +468,8 @@ public class CallStep extends AbstractExecutionStep {
       // the same mistake inside OPTIONAL CALL as outside it, and answering null there would hide it behind a result
       // that looks legitimately empty. Matches Neo4j, where OPTIONAL CALL is about cardinality (issue #5602).
       throw clientError;
+    } catch (final NeedRetryException retryable) {
+      throw retryable;
     } catch (final Exception e) {
       if (callClause.isOptional())
         return null;
@@ -510,6 +514,8 @@ public class CallStep extends AbstractExecutionStep {
       }
 
       return result;
+    } catch (final NeedRetryException retryable) {
+      throw retryable;
     } catch (final Exception e) {
       if (callClause.isOptional())
         return null;
