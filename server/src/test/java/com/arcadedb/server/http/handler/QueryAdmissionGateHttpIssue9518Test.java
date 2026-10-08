@@ -202,13 +202,72 @@ class QueryAdmissionGateHttpIssue9518Test extends BaseGraphServerTest {
   }
 
   @Test
-  void aGetQueryLeavesTheIoThreadWhileTheGateIsEnabled() {
-    final GetQueryHandler handler = new GetQueryHandler(null);
+  void everyDatabaseRequestLeavesTheIoThreadWhileTheGateIsEnabled() {
+    final GetQueryHandler query = new GetQueryHandler(null);
     final HttpServerExchange exchange = new HttpServerExchange(null);
-    assertThat(handler.mustExecuteOnWorkerThread(exchange)).as("gate disabled: the IO thread answers, as before").isFalse();
+    assertThat(query.mustExecuteOnWorkerThread(exchange)).as("a session-less buffered GET is still short enough").isFalse();
+
+    GlobalConfiguration.QUERY_MAX_CONCURRENT.setValue(0);
+    assertThat(query.mayWaitForAdmission()).as("gate disabled: the IO thread answers, as before").isFalse();
 
     GlobalConfiguration.QUERY_MAX_CONCURRENT.setValue(4);
-    assertThat(handler.mustExecuteOnWorkerThread(exchange)).as("gate enabled: the query may wait, never on an IO thread").isTrue();
+    assertThat(query.mayWaitForAdmission()).as("gate enabled: the query may wait, never on an IO thread").isTrue();
+    assertThat(new PostVectorSearchHandler(null).mayWaitForAdmission()).isTrue();
+    assertThat(new GetPromQLQueryHandler(null).mayWaitForAdmission()).isTrue();
+
+    // NEVER HELD BEHIND THE QUERIES: SESSION MANAGEMENT AND THE HEALTH PROBE
+    assertThat(new PostBeginHandler(null).mayWaitForAdmission()).isFalse();
+    assertThat(new PostRollbackHandler(null).mayWaitForAdmission()).isFalse();
+    assertThat(new GetGrafanaHealthHandler(null).mayWaitForAdmission()).isFalse();
+  }
+
+  /** A session's rollback, which releases what its queries hold, is never queued behind them. */
+  @Test
+  void aSessionIsRolledBackWhileEverySlotIsTaken() throws Exception {
+    GlobalConfiguration.QUERY_MAX_CONCURRENT.setValue(1);
+    GlobalConfiguration.QUERY_QUEUE_TIMEOUT.setValue(0L);
+
+    final HttpResponse<String> begin = HTTP.send(HttpRequest.newBuilder(URI.create(getServerHttpUrl(0, "/api/v1/begin/" + getDatabaseName())))
+        .header("Authorization", basicAuth()).POST(HttpRequest.BodyPublishers.noBody()).build(), HttpResponse.BodyHandlers.ofString());
+    assertThat(begin.statusCode()).as(begin.body()).isEqualTo(204);
+    final String sessionId = begin.headers().firstValue("arcadedb-session-id").orElseThrow();
+
+    try (final QueryAdmissionGate.Ticket ignored = gate.admit()) {
+      final HttpResponse<String> query = HTTP.send(HttpRequest.newBuilder(request("POST /query", QUERY), (n, v) -> true)
+          .header("arcadedb-session-id", sessionId).build(), HttpResponse.BodyHandlers.ofString());
+      assertThat(query.statusCode()).as("the session's query waits for a slot like any other: " + query.body()).isEqualTo(503);
+
+      final HttpResponse<String> rollback = HTTP.send(
+          HttpRequest.newBuilder(URI.create(getServerHttpUrl(0, "/api/v1/rollback/" + getDatabaseName())))
+              .header("Authorization", basicAuth()).header("arcadedb-session-id", sessionId)
+              .POST(HttpRequest.BodyPublishers.noBody()).build(), HttpResponse.BodyHandlers.ofString());
+      assertThat(rollback.statusCode()).as(rollback.body()).isEqualTo(204);
+    }
+  }
+
+  /** A bulk load is work like a command: it waits for the gate too, and gives its slot back when it is done. */
+  @Test
+  void aBatchLoadGoesThroughTheGate() throws Exception {
+    getServerDatabase(0, getDatabaseName()).getSchema().getOrCreateVertexType("Batch9518");
+    GlobalConfiguration.QUERY_MAX_CONCURRENT.setValue(1);
+    GlobalConfiguration.QUERY_QUEUE_TIMEOUT.setValue(0L);
+
+    final HttpRequest load = HttpRequest.newBuilder(URI.create(getServerHttpUrl(0, "/api/v1/batch/" + getDatabaseName())))
+        .header("Authorization", basicAuth()).header("Content-Type", "application/x-ndjson")
+        .POST(HttpRequest.BodyPublishers.ofString("{\"@type\":\"vertex\",\"@class\":\"Batch9518\",\"name\":\"a\"}\n")).build();
+
+    try (final QueryAdmissionGate.Ticket ignored = gate.admit()) {
+      final HttpResponse<String> refused = HTTP.send(load, HttpResponse.BodyHandlers.ofString());
+      assertThat(refused.statusCode()).as(refused.body()).isEqualTo(503);
+    }
+    assertThat(getServerDatabase(0, getDatabaseName()).countType("Batch9518", false)).isZero();
+
+    for (int i = 0; i < 2; i++) {
+      final HttpResponse<String> loaded = HTTP.send(load, HttpResponse.BodyHandlers.ofString());
+      assertThat(loaded.statusCode()).as(loaded.body()).isEqualTo(200);
+    }
+    assertThat(getServerDatabase(0, getDatabaseName()).countType("Batch9518", false)).isEqualTo(2);
+    assertThat(gate.getRunning()).isZero();
   }
 
   private HttpRequest request(final String endpoint, final String command) {

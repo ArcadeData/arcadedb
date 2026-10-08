@@ -74,6 +74,10 @@ public class GremlinPrincipalPropagatingExecutorService extends AbstractExecutor
       try {
         command.run();
       } finally {
+        // A request whose evaluation ended without reporting its end to ArcadeGraphManager must not keep its admission
+        // slot (issue #9518): the pool's threads are reused, and a slot left on one would also be taken for the slot of an
+        // enclosing query by the next request it runs
+        ArcadeGraphManager.releaseAdmission();
         ProtocolContext.clear();
         unbindPrincipal(bound);
       }

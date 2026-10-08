@@ -26,6 +26,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ForwardedRequestIdContext;
@@ -252,18 +253,11 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
       if (activeSession != null) {
         // EXECUTE THE CODE LOCKING THE CURRENT SESSION. THIS AVOIDS USING THE SAME SESSION FROM MULTIPLE THREADS AT THE SAME TIME
         activeSession.execute(user, () -> {
-          if (finalAtomicTransaction)
-            executeInTransaction(exchange, user, database, payload, response, retries);
-          else
-            response.set(execute(exchange, user, database, payload));
+          executeAdmitted(exchange, user, database, payload, response, finalAtomicTransaction, retries);
           return null;
         }, participatesInSessionTransaction(), endsSession());
-      } else {
-        if (finalAtomicTransaction)
-          executeInTransaction(exchange, user, database, payload, response, retries);
-        else
-          response.set(execute(exchange, user, database, payload));
-      }
+      } else
+        executeAdmitted(exchange, user, database, payload, response, finalAtomicTransaction, retries);
 
       if (database != null && atomicTransaction && database.isTransactionActive())
         // STARTED ATOMIC TRANSACTION, COMMIT
@@ -444,6 +438,51 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
    */
   protected boolean participatesInSessionTransaction() {
     return true;
+  }
+
+  /**
+   * Runs the request once the query admission gate (issue #9518) lets it start: in arrival order, when a slot is free and
+   * the running queries leave enough of the heap budget. The ticket is held until the request is done, result set
+   * included, so the next request starts only once this one has given back the heap its buffers reserved.
+   * <p>
+   * Taken INSIDE the session lock, never around it: a request holding a slot while it waits for a session lock that a
+   * queued request of the same session holds would be a cycle. Here a request waits for its slot holding nothing the
+   * running ones need. A request that reached this point on an IO thread - the gate was enabled after it was dispatched -
+   * does not wait there: it is refused if it cannot start at once.
+   */
+  private void executeAdmitted(final HttpServerExchange exchange, final ServerSecurityUser user, final DatabaseInternal database,
+      final JSONObject payload, final AtomicReference<ExecutionResponse> response, final boolean atomicTransaction,
+      final int retries) throws Exception {
+    final QueryAdmissionGate.Ticket admission;
+    if (goesThroughAdmissionGate()) {
+      final QueryAdmissionGate gate = QueryAdmissionGate.getInstance();
+      admission = exchange.isInIoThread() ? gate.admit(0) : gate.admit();
+    } else
+      admission = null;
+
+    try {
+      if (atomicTransaction)
+        executeInTransaction(exchange, user, database, payload, response, retries);
+      else
+        response.set(execute(exchange, user, database, payload));
+    } finally {
+      if (admission != null)
+        admission.close();
+    }
+  }
+
+  /**
+   * Whether the requests of this handler wait for the query admission gate (issue #9518). True for every request that runs
+   * work in a database; a handler that only manages a session or answers a health probe answers false, because it must
+   * never be held behind the queries it would release or report on.
+   */
+  protected boolean goesThroughAdmissionGate() {
+    return true;
+  }
+
+  @Override
+  protected boolean mayWaitForAdmission() {
+    return goesThroughAdmissionGate() && QueryAdmissionGate.getInstance().isEnabled();
   }
 
   protected boolean requiresDatabase() {

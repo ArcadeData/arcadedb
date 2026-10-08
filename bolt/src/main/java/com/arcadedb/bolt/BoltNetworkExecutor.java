@@ -50,6 +50,7 @@ import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.InvalidPropertyTypeException;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.QueryAdmissionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
@@ -57,6 +58,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.query.opencypher.query.ShowCommandTail;
 import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.ExecutionStep;
+import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -872,6 +874,11 @@ public class BoltNetworkExecutor extends Thread {
       final String upperQuery = trimmedQuery.toUpperCase(Locale.ROOT);
       final boolean explainMode = upperQuery.startsWith("EXPLAIN ");
       final boolean profileMode = !explainMode && upperQuery.startsWith("PROFILE ");
+
+      // Waits for the query admission gate (issue #9518). The slot belongs to the stream and goes back when the stream is closed -
+      // drained by PULL, discarded, reset or dropped with the connection - so the rows still to send keep it, as they keep the
+      // heap their buffers reserved. A second stream of the same transaction runs on this connection's thread and shares it
+      stream.admission = QueryAdmissionGate.getInstance().admit();
 
       // Use command() for writes, query() for reads
       if (stream.writeOperation) {
@@ -2190,11 +2197,12 @@ public class BoltNetworkExecutor extends Thread {
 
   /**
    * Whether the error (or any wrapped cause) is one of ArcadeDB's optimistic-concurrency conflicts
-   * ({@link NeedRetryException}). Such conflicts are expected under contention and auto-retried by the
-   * driver, so callers both classify them as transient and log them at a lower level.
+   * ({@link NeedRetryException}), or a query the admission gate did not start because the server is busy
+   * ({@link QueryAdmissionException}, issue #9518). Both are expected under load and retried by the driver, so callers
+   * both classify them as transient and log them at a lower level: a busy server must not flood its own log.
    */
   static boolean isRetryableConflict(final Throwable error) {
-    return CauseChain.contains(error, NeedRetryException.class);
+    return CauseChain.contains(error, NeedRetryException.class) || CauseChain.contains(error, QueryAdmissionException.class);
   }
 
   /**

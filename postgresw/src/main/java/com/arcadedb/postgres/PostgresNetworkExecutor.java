@@ -45,6 +45,7 @@ import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.CommandTimeoutOverride;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
+import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -572,7 +573,6 @@ public class PostgresNetworkExecutor extends Thread {
         // Execute(s) depend on this same fullResultSet being run exactly once.
         try {
           beginImplicitTransactionBlock(portal);
-          final ResultSet resultSet = runPortalQuery(portal);
           // Materializes the whole result now (issue #6458): Describe needs every row's columns, not just the
           // first, to catch a property that only shows up on a later row (documents can be sparse) - and the
           // portal keeps this list so the Execute(s) that follow slice it by their own row-limit instead of
@@ -580,7 +580,7 @@ public class PostgresNetworkExecutor extends Thread {
           // the simple-query path (issue #7034): the portal's row limit bounds what each Execute SENDS, not
           // what is held here. Marked executed only once the rows are held, so a refused portal is not left
           // looking like a drained one.
-          portal.fullResultSet = browseAndCacheBoundedResultSet(resultSet);
+          portal.fullResultSet = runAndCachePortalQuery(portal);
           portal.executed = true;
           resolvePortalColumns(portal, true);
           answerWithColumns(portal);
@@ -691,6 +691,16 @@ public class PostgresNetworkExecutor extends Thread {
    */
   private void answerWithColumns(final PostgresPortal portal) {
     writeRowDescription(portal.columns, portal.resultFormats);
+  }
+
+  /**
+   * Runs the portal's query once the query admission gate lets it start (issue #9518) and holds its rows. The slot goes
+   * back once the rows are materialized, before any of them is written to the client, so a slow client does not hold it.
+   */
+  private List<Result> runAndCachePortalQuery(final PostgresPortal portal) {
+    try (final QueryAdmissionGate.Ticket ignored = QueryAdmissionGate.getInstance().admit()) {
+      return browseAndCacheBoundedResultSet(runPortalQuery(portal));
+    }
   }
 
   /**
@@ -864,7 +874,6 @@ public class PostgresNetworkExecutor extends Thread {
           portal.fullResultSet = showResultSet(portal.showName);
         if (!portal.executed) {
           final long engineStart = System.nanoTime();
-          final ResultSet resultSet = runPortalQuery(portal);
           if (portal.isExpectingResult) {
             // Materializes the whole result now (issue #6458), the same way Describe('P') does: a client that
             // never Described this portal first (it already knows the row shape) reaches this branch instead,
@@ -872,7 +881,7 @@ public class PostgresNetworkExecutor extends Thread {
             // own row-limit below rather than re-running the statement. Bounded by the same cap as the
             // simple-query path (issue #7034): the Execute's own row limit bounds what is SENT, not what is
             // held here.
-            portal.fullResultSet = browseAndCacheBoundedResultSet(resultSet);
+            portal.fullResultSet = runAndCachePortalQuery(portal);
             portal.executed = true;
             profile.addEngineNanos(System.nanoTime() - engineStart);
             // Execute never answers with a RowDescription (issue #8244): PostgreSQL's protocol reserves it for
@@ -889,6 +898,9 @@ public class PostgresNetworkExecutor extends Thread {
               profile.addSerializationNanos(System.nanoTime() - serStart);
             }
           } else {
+            try (final QueryAdmissionGate.Ticket ignored = QueryAdmissionGate.getInstance().admit()) {
+              runPortalQuery(portal);
+            }
             portal.executed = true;
             profile.addEngineNanos(System.nanoTime() - engineStart);
           }
@@ -1069,6 +1081,8 @@ public class PostgresNetworkExecutor extends Thread {
     Query query = null;
     String queryText = null;
     CatalogAnswer catalogAnswer = null;
+    // HELD FROM THE MOMENT THE STATEMENT STARTS UNTIL ITS ROWS ARE MATERIALIZED, NOT WHILE THEY ARE WRITTEN (ISSUE #9518)
+    QueryAdmissionGate.Ticket admission = null;
     try {
       final long deserStart = System.nanoTime();
       queryText = normalizeStatementText(readString());
@@ -1207,11 +1221,15 @@ public class PostgresNetworkExecutor extends Thread {
             commandTag = transactionControl.name();
             answersNoRows = true;
             resultSet = new IteratorResultSet(Collections.emptyIterator());
-          } else
+          } else {
+            admission = QueryAdmissionGate.getInstance().admit();
             resultSet = database.command(query.language, query.query, server.getConfiguration());
+          }
         }
       }
       final List<Result> cachedResultSet = browseAndCacheBoundedResultSet(resultSet);
+      if (admission != null)
+        admission.close();
       // Committed before anything is written back, so a commit that fails is answered with an ErrorResponse rather
       // than after a RowDescription and a CommandComplete that already told the client the statement succeeded
       commitSimpleQueryTransaction();
@@ -1246,6 +1264,8 @@ public class PostgresNetworkExecutor extends Thread {
     } catch (final Exception e) {
       failSimpleQuery(clientMessage("Error on executing query: " + e.getMessage(), e), sqlStateFor(e));
     } finally {
+      if (admission != null)
+        admission.close();
       CommandTimeoutOverride.clear();
       if (!explicitTransactionStarted)
         // A simple Query outside an explicit block is a transaction of its own, and the portals bound before it
@@ -2654,6 +2674,14 @@ public class PostgresNetworkExecutor extends Thread {
    * @return the number of rows sent
    */
   private int copyOut(final PostgresCopyStatement copy, final String language, final Object[] parameters,
+      final Statement parsed, final QueryProfile profile) throws IOException {
+    // THE ROWS ARE STREAMED AS THE QUERY PRODUCES THEM, SO THE ADMISSION SLOT (ISSUE #9518) IS HELD UNTIL THE LAST ONE IS WRITTEN
+    try (final QueryAdmissionGate.Ticket ignored = QueryAdmissionGate.getInstance().admit()) {
+      return copyOutAdmitted(copy, language, parameters, parsed, profile);
+    }
+  }
+
+  private int copyOutAdmitted(final PostgresCopyStatement copy, final String language, final Object[] parameters,
       final Statement parsed, final QueryProfile profile) throws IOException {
     final String queryText = copy.getQuery();
     final long engineStart = System.nanoTime();

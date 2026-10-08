@@ -19,6 +19,7 @@
 package com.arcadedb.bolt;
 
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
@@ -68,6 +69,9 @@ final class BoltQueryStream {
   Map<String, Object> planMetadata;
   String              planMetadataKey;
 
+  /** The query admission slot this stream holds (issue #9518), given back by {@link #close}. Null for a synthetic stream. */
+  QueryAdmissionGate.Ticket admission;
+
   BoltQueryStream(final long qid) {
     this.qid = qid;
   }
@@ -101,5 +105,10 @@ final class BoltQueryStream {
     syntheticResults = null;
     planMetadata = null;
     planMetadataKey = null;
+    if (admission != null) {
+      // AFTER THE RESULT SET: THE NEXT QUERY STARTS ONCE THIS ONE HAS GIVEN BACK THE HEAP ITS BUFFERS RESERVED
+      admission.close();
+      admission = null;
+    }
   }
 }
