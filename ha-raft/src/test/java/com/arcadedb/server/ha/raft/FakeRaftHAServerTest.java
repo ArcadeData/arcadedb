@@ -21,6 +21,8 @@ package com.arcadedb.server.ha.raft;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -85,6 +87,32 @@ class FakeRaftHAServerTest {
     assertThat(plugin.getLeaderAddress()).isEqualTo("peer-b:2480");
     raft.leader(true);
     assertThat(plugin.isLeader()).isTrue();
+  }
+
+  @Test
+  void leadershipRequestsAreRecordedPerOverloadAndAnswerTheMockDefaults() {
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+
+    assertThat(raft.transferLeadership(1_000L)).isFalse();
+    assertThat(raft.transferLeadership(1_000L, false)).isFalse();
+    raft.transferLeadership("peer-b", 2_000L);
+    raft.stepDown();
+
+    assertThat(raft.calls("transferLeadership")).containsExactly(List.of(1_000L), List.of(1_000L, false), List.of("peer-b", 2_000L));
+    assertThat(raft.calls("stepDown")).hasSize(1);
+    assertThat(raft.isSoleVoter()).as("a member of a real cluster, unless a test says otherwise").isFalse();
+  }
+
+  @Test
+  void aGetterAnswersAFunctionOfTheMomentWhenOneIsSet() {
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached().leaderId(LEADER);
+    assertThat(raft.getLeaderId()).as("the value set, while no function is").isEqualTo(LEADER);
+
+    raft.on("getLeaderId", CallLog.inOrder(null, null, LEADER));
+    assertThat(raft.getLeaderId()).isNull();
+    assertThat(raft.getLeaderId()).isNull();
+    assertThat(raft.getLeaderId()).isEqualTo(LEADER);
+    assertThat(raft.getLeaderId()).as("the last value sticks").isEqualTo(LEADER);
   }
 
   @Test

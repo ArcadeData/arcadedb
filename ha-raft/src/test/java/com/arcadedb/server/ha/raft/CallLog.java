@@ -26,6 +26,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 
 /**
@@ -67,6 +68,15 @@ public final class CallLog {
     for (final Call call : calls)
       result.add(call.method());
     return result;
+  }
+
+  /**
+   * An answer giving {@code values} in order, one per call, then the last one on every call after: what Mockito's
+   * {@code thenReturn(a, b, c)} did, for a value that changes as the code under test polls it.
+   */
+  public static Function<Object[], Object> inOrder(final Object... values) {
+    final AtomicInteger reads = new AtomicInteger();
+    return args -> values[Math.min(reads.getAndIncrement(), values.length - 1)];
   }
 
   /**
