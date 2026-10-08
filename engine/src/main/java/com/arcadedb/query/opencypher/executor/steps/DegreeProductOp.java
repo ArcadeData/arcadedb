@@ -20,19 +20,14 @@ package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.database.RID;
-import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.WorkGuard;
-import com.arcadedb.schema.Schema;
 import com.arcadedb.utility.IntHashSet;
 
 import java.util.Arrays;
-import java.util.HashMap;
 import java.util.Iterator;
-import java.util.Map;
 
 /**
  * Count operator for star-join patterns (Q4, Q7).
@@ -380,119 +375,10 @@ public final class DegreeProductOp implements CountOp {
 
   @Override
   public long executeOLTP(final Database db, final WorkGuard guard) {
-    // Build degree maps by iterating edge types instead of vertex edge lists.
-    // This is O(total_edges_across_all_arms) instead of O(messages × arms × avg_edges_per_list).
-    // For Q4: ~13M edge iterations vs 3.8M × 4 edge-list scans × ~10 edges = 152M reads.
-    //
-    // For each arm: iterate all edges of that type and count per central vertex.
-    // Then do a single pass over the central type to compute degree products.
-
-    // Check if all arms are single-hop (common case for star joins)
-    boolean allSingleHop = true;
-    for (final Arm arm : arms)
-      if (arm.edgeTypes.length != 1) { allSingleHop = false; break; }
-
-    if (allSingleHop)
-      return executeOLTPDegreeMap(db, guard);
-
-    // Fallback for multi-hop arms
+    // The degree of each arm is read from the edge lists of the central vertices, never from the records of the edge
+    // type: an edge may keep no record at all (light edges, declared LIGHTWEIGHT or not, alone or mixed with record
+    // edges in one type), and a degree built by iterating the type's records answers 0 for them (#9484).
     return executeOLTPPerVertex(db, guard);
-  }
-
-  /**
-   * Degree-map approach: iterate edges to build per-vertex degree maps, then compute products.
-   * Each edge type is iterated once. The degree product is computed on the intersection.
-   */
-  @SuppressWarnings("unchecked")
-  private long executeOLTPDegreeMap(final Database db, final WorkGuard guard) {
-    final HashMap<RID, int[]> degreesPerVertex = new HashMap<>();
-    final IntHashSet[][] armBuckets = new IntHashSet[arms.length][];
-    for (int a = 0; a < arms.length; a++)
-      armBuckets[a] = arms[a].endpointBuckets(db);
-
-    // For each arm, iterate all edges of that type and count per central vertex
-    for (int a = 0; a < arms.length; a++) {
-      final String edgeType = arms[a].edgeTypes[0];
-      final Vertex.DIRECTION dir = arms[a].directions[0];
-
-      // An undeclared edge type has no edges by definition. db.iterateType() resolves the type
-      // via Schema#getType() and throws for a name the schema does not know, unlike the vertex-local
-      // edge-list filtering the ordinary pipeline uses (EdgeLinkedList#count, fixed for issue #4199).
-      // A mandatory arm over an undeclared type is already short-circuited to a constant 0 before
-      // this operator is even built (see mandatoryPatternElementIsEmpty()), but an OPTIONAL MATCH
-      // arm reaches here and must simply contribute degree 0 to every central vertex rather than
-      // throw (issue #5790).
-      if (!db.getSchema().existsType(edgeType))
-        continue;
-
-      int edgesSeen = 0;
-      for (final Iterator<? extends Identifiable> it = db.iterateType(edgeType, true); it.hasNext(); ) {
-        guard.checkPeriodically(edgesSeen++);
-        final Edge edge = it.next().asEdge();
-        // The central vertex is the vertex on the "source" side of the arm direction:
-        // If arm direction is OUT, the central vertex is the OUT vertex of the edge.
-        // If arm direction is IN, the central vertex is the IN vertex of the edge.
-        // If BOTH, count from both vertices.
-        // The far end has to be of the arm's endpoint label when it has one (#6337).
-        final IntHashSet farBuckets = armBuckets[a] == null ? null : armBuckets[a][0];
-        final RID centralRid;
-        if (dir == Vertex.DIRECTION.OUT) {
-          centralRid = edge.getOut();
-          if (farBuckets != null && !farBuckets.contains(edge.getIn().getBucketId()))
-            continue;
-        } else if (dir == Vertex.DIRECTION.IN) {
-          centralRid = edge.getIn();
-          if (farBuckets != null && !farBuckets.contains(edge.getOut().getBucketId()))
-            continue;
-        } else {
-          // BOTH: count for both vertices, each one taking the other as its far end
-          if (farBuckets == null || farBuckets.contains(edge.getIn().getBucketId()))
-            incrementDegree(degreesPerVertex, edge.getOut(), a);
-          if (farBuckets == null || farBuckets.contains(edge.getOut().getBucketId()))
-            incrementDegree(degreesPerVertex, edge.getIn(), a);
-          continue;
-        }
-        incrementDegree(degreesPerVertex, centralRid, a);
-      }
-    }
-
-    // Compute degree products: only vertices with non-zero mandatory arm degrees contribute.
-    // The map is keyed by edge endpoints, so it can contain vertices that are not of the central
-    // type: filter them out via a cheap bucket-to-type lookup (no record load). See issue #5094.
-    final Schema schema = db.getSchema();
-    long total = 0;
-    long centralSeen = 0;
-    int vertexSeen = 0;
-    for (final Map.Entry<RID, int[]> entry : degreesPerVertex.entrySet()) {
-      guard.checkPeriodically(vertexSeen++);
-      if (!schema.getTypeByBucketId(entry.getKey().getBucketId()).instanceOf(centralLabel))
-        continue;
-      centralSeen++;
-      final int[] degrees = entry.getValue();
-      long product = 1;
-      boolean skip = false;
-      for (int a = 0; a < arms.length; a++) {
-        final int degree = degrees[a];
-        if (arms[a].optional) {
-          product *= Math.max(1, degree);
-        } else {
-          if (degree == 0) {
-            skip = true;
-            break;
-          }
-          product *= degree;
-        }
-      }
-      if (!skip)
-        total += product;
-    }
-
-    // With no mandatory arm, central vertices without any edge never enter the map but still
-    // produce one null-preserving row each (OPTIONAL MATCH keeps the left-hand row). See issue #5094.
-    if (!hasMandatoryArm())
-      total += db.countType(centralLabel, true) - centralSeen;
-
-    return total;
   }
 
   private boolean hasMandatoryArm() {
@@ -502,17 +388,9 @@ public final class DegreeProductOp implements CountOp {
     return false;
   }
 
-  private void incrementDegree(final HashMap<RID, int[]> map, final RID vertex, final int armIndex) {
-    int[] degrees = map.get(vertex);
-    if (degrees == null) {
-      degrees = new int[arms.length];
-      map.put(vertex, degrees);
-    }
-    degrees[armIndex]++;
-  }
-
   /**
-   * Fallback for multi-hop arms: per-vertex iteration.
+   * Per-vertex iteration: every arm is counted on the edge lists of the central vertex, so light edges and record edges
+   * weigh the same.
    */
   private long executeOLTPPerVertex(final Database db, final WorkGuard guard) {
     final IntHashSet[][] armBuckets = new IntHashSet[arms.length][];
