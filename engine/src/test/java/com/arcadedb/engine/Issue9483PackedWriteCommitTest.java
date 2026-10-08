@@ -140,6 +140,34 @@ class Issue9483PackedWriteCommitTest extends BucketPageLayoutTestSupport {
     checkDatabase();
   }
 
+  /** What the commit asks of every page: a page of hole-free writes is skipped, one with a hole goes through the full compression. */
+  @Test
+  void theCommitSkipsAPackedPageAndCompressesAPageWithAHole() {
+    final RID[] rids = insertRecords();
+    final LocalBucket bucket = bucketOf(TYPE);
+
+    database.begin();
+    database.newDocument(TYPE).set("v", value(RECORDS)).save();
+    assertThat(commitCompressionSkipped(bucket, rids[0])).as("an appended page is skipped").isTrue();
+    database.rollback();
+
+    database.begin();
+    rids[4].asDocument(true).delete();
+    assertThat(commitCompressionSkipped(bucket, rids[0])).as("a page with a hole is compressed").isFalse();
+    assertPacked(rids[0]);
+    database.rollback();
+  }
+
+  private boolean commitCompressionSkipped(final LocalBucket bucket, final RID rid) {
+    final boolean[] result = new boolean[1];
+    onSlot(rid, page -> {
+      result[0] = bucket.compressPageAtCommit(page);
+      return 0L;
+    });
+    return result[0];
+  }
+
+
   /** Writes the record now, where {@code save()} would defer it to the commit, so the page can be looked at after it. */
   private void updateNow(final RID rid, final String value) {
     final MutableDocument document = rid.asDocument(true).modify();

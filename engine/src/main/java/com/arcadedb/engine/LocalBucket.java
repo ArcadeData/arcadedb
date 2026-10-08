@@ -2735,6 +2735,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // #9483: a record that fits is appended at the end of the page's content, which leaves no hole. The multi-page
       // branch writes through paths that do not make that promise, so only the plain append is declared.
       final boolean packedAppend = spaceNeeded <= spaceAvailableInCurrentPage;
+      // (the previous declaration is only read back, and only restored, when this one was made)
       final boolean previousPackedWrite = packedAppend && selectedPage.beginPackedWrite();
       final short recordCountInPage;
       try {
@@ -4088,11 +4089,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // #9483: an overwrite of the same footprint moves nothing and frees nothing, so it cannot leave a hole. A
         // shorter one does, and stays undeclared. The declaration spans exactly the two writes below - the size marker
         // and the content - and nothing that could move bytes may ever be added between begin and end.
-        final boolean packedOverwrite =
-            bufferSize + Binary.getNumberSpace(isPlaceHolder ? -1L * bufferSize : bufferSize) == footprintBefore;
+        final long sizeMarker = isPlaceHolder ? -1L * bufferSize : bufferSize;
+        final boolean packedOverwrite = bufferSize + Binary.getNumberSpace(sizeMarker) == footprintBefore;
+        // (the previous declaration is only read back, and only restored, when this one was made)
         final boolean previousPackedWrite = packedOverwrite && page.beginPackedWrite();
         try {
-          recordSize[1] = page.writeNumber(recordPositionInPage, isPlaceHolder ? -1L * bufferSize : bufferSize);
+          recordSize[1] = page.writeNumber(recordPositionInPage, sizeMarker);
           final int recordContentPositionInPage = (int) (recordPositionInPage + recordSize[1]);
           page.writeByteArray(recordContentPositionInPage, buffer.getContent(), buffer.getContentBeginOffset(), bufferSize);
         } finally {
@@ -4651,20 +4653,23 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * <p>
    * Under assertions (surefire's default) the skip is held to its word: the proof is run anyway and a page it cannot
    * vouch for takes the full path, so the free-space claim check keeps confronting every write with the page.
+   *
+   * @return true when the full compression was skipped, which is the same answer with and without assertions.
    */
-  public void compressPageAtCommit(final MutablePage page) throws IOException {
+  public boolean compressPageAtCommit(final MutablePage page) throws IOException {
     if (page.hasOnlyPackedWrites()) {
       if (!CHECK_FREE_SPACE_CLAIMS)
-        return;
+        return true;
 
       final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
       final int contentEndInPage = packedContentEnd(page, recordCountInPage);
       if (contentEndInPage > 0) {
         verifyFreeSpaceClaim(page, page.getMaxContentSize() - contentEndInPage, recordCountInPage);
-        return;
+        return true;
       }
     }
     compressPage(page, false);
+    return false;
   }
 
   private void compressPageInternal(final MutablePage page, final boolean forceWipeOut) throws IOException {
