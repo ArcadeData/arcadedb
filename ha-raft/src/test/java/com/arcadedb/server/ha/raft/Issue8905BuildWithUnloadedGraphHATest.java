@@ -113,10 +113,11 @@ class Issue8905BuildWithUnloadedGraphHATest extends BaseRaftHATest {
     // NO SEARCH AND NO FURTHER WRITE HERE, UNLIKE Issue8291WalDisabledTransactionHATest. A build over a populated index
     // appends a second entry for every record, and what a node makes of them afterwards is not this issue's: a graph
     // build from pages keeps one entry per record in memory, so a node that searched reports half the entries of one
-    // that did not; an insert on the leader reuses a vector id the replica allocated; a delete leaves the nodes
-    // disagreeing on how many duplicates are live (issue #9428). That this build commits nothing outside the wrapper -
-    // the defect - is pinned by Issue8905VectorBuildCommitsReachTheWrapperTest, which also searches the index after a
-    // build that skipped PHASE 3. Before the fix THIS build already failed, above.
+    // that did not; a delete leaves the nodes disagreeing on how many duplicates are live (issue #9506). An insert on
+    // the leader no longer reuses a vector id the replica allocated (issue #9428, Issue9428FollowerVectorInsertHATest).
+    // That this build commits nothing outside the wrapper - the defect - is pinned by
+    // Issue8905VectorBuildCommitsReachTheWrapperTest, which also searches the index after a build that skipped PHASE 3.
+    // Before the fix THIS build already failed, above.
   }
 
   private Database leaderDatabase() {
