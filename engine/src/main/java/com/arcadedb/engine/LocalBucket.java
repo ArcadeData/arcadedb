@@ -4086,7 +4086,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                 (edgeAppendReplayable ? MutablePage.COVERAGE_EDGE_APPEND_MERGE : 0));
         final long footprintBefore = recordSize[0] + recordSize[1];
         // #9483: an overwrite of the same footprint moves nothing and frees nothing, so it cannot leave a hole. A
-        // shorter one does, and stays undeclared.
+        // shorter one does, and stays undeclared. The declaration spans exactly the two writes below - the size marker
+        // and the content - and nothing that could move bytes may ever be added between begin and end.
         final boolean packedOverwrite =
             bufferSize + Binary.getNumberSpace(isPlaceHolder ? -1L * bufferSize : bufferSize) == footprintBefore;
         final boolean previousPackedWrite = packedOverwrite && page.beginPackedWrite();
