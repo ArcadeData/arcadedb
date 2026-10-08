@@ -50,17 +50,21 @@ class Issue9483PackedWriteCommitTest extends BucketPageLayoutTestSupport {
       database.newDocument(TYPE).set("v", value(RECORDS)).save();
       assertThat(onlyPackedWrites(rids[0])).isTrue();
     });
+    database.transaction(() -> assertPacked(rids[0]));
     checkDatabase();
   }
 
   @Test
   void aBrandNewPageFilledByAppendsIsSkippable() {
+    final RID[] firstOfNewPage = new RID[1];
     database.transaction(() -> {
       final RID first = database.newDocument(TYPE).set("v", value(0)).save().getIdentity();
       for (int i = 1; i < RECORDS; i++)
         database.newDocument(TYPE).set("v", value(i)).save();
       assertThat(onlyPackedWrites(first)).isTrue();
+      firstOfNewPage[0] = first;
     });
+    database.transaction(() -> assertPacked(firstOfNewPage[0]));
     checkDatabase();
   }
 
@@ -73,7 +77,10 @@ class Issue9483PackedWriteCommitTest extends BucketPageLayoutTestSupport {
       assertThat(onlyPackedWrites(rids[7])).isTrue();
     });
 
-    database.transaction(() -> assertThat(rids[7].asDocument(true).getString("v")).isEqualTo(value(7).replace('x', 'y')));
+    database.transaction(() -> {
+      assertThat(rids[7].asDocument(true).getString("v")).isEqualTo(value(7).replace('x', 'y'));
+      assertPacked(rids[7]);
+    });
     checkDatabase();
   }
 
@@ -138,6 +145,56 @@ class Issue9483PackedWriteCommitTest extends BucketPageLayoutTestSupport {
     final MutableDocument document = rid.asDocument(true).modify();
     document.set("v", value);
     bucketOf(TYPE).updateRecord(document, false);
+  }
+
+  /** An overwrite of the same footprint and an append in one transaction are both hole-free, so the page stays skippable. */
+  @Test
+  void anOverwriteAndAnAppendInOneTransactionKeepThePageSkippable() {
+    final RID[] rids = insertRecords();
+
+    database.transaction(() -> {
+      updateNow(rids[2], value(2).replace('x', 'z'));
+      database.newDocument(TYPE).set("v", value(RECORDS)).save();
+      assertThat(onlyPackedWrites(rids[2])).isTrue();
+    });
+
+    database.transaction(() -> assertPacked(rids[0]));
+    checkDatabase();
+  }
+
+  /** A record too big for the page becomes a chunk chain through paths that make no hole-free promise: never skipped. */
+  @Test
+  void aMultiPageRecordWithdrawsThePageFromTheShortcut() {
+    final RID[] rids = insertRecords();
+    final String huge = "h".repeat(bucketOf(TYPE).getPageSize() * 2);
+
+    database.transaction(() -> {
+      database.newDocument(TYPE).set("v", huge).save();
+      assertThat(onlyPackedWrites(rids[0])).isFalse();
+    });
+
+    database.transaction(() -> assertPacked(rids[0]));
+    checkDatabase();
+  }
+
+  /**
+   * The flag belongs to the transaction's own image of the page: a commit that loses the page version race is merged
+   * onto the newer committed page, which is compressed in full, and both transactions' records survive on a packed page.
+   */
+  @Test
+  void aTransactionRebasedOntoAConcurrentCommitLeavesThePagePacked() {
+    final RID[] rids = insertRecords();
+
+    database.begin();
+    database.newDocument(TYPE).set("v", value(RECORDS)).save();
+    inAnotherThread(() -> database.transaction(() -> database.newDocument(TYPE).set("v", value(RECORDS + 1)).save()));
+    database.commit();
+
+    database.transaction(() -> {
+      assertPacked(rids[0]);
+      assertThat(database.countType(TYPE, true)).isEqualTo(RECORDS + 2);
+    });
+    checkDatabase();
   }
 
   private boolean onlyPackedWrites(final RID rid) {

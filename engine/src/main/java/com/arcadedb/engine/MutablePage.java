@@ -446,6 +446,8 @@ public class MutablePage extends BasePage implements TrackableContent {
 
     // Whatever the current writer did NOT declare can no longer re-derive this page (issue #5596).
     uncoveredMechanisms |= COVERAGE_ALL_MERGES & ~declaredCoverage;
+    // Every mutation of a page MUST pass through here (the WAL ships only what is tracked), which is the invariant the
+    // hole-free shortcut of #9483 stands on: a write path that bypassed this method would be taken for hole-free.
     if (!packedWriteInProgress)
       unpackedWrite = true;
 
