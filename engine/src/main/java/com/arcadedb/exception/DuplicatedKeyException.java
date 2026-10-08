@@ -37,6 +37,10 @@ public class DuplicatedKeyException extends ArcadeDBException {
    * inverse of how the HTTP error mapper writes it. The index name is the first segment and the RID the last, so a key
    * VALUE that contains the separator itself (customer data, nothing stops it) stays whole in the keys. The RID segment
    * {@code null} is how the server writes a missing current RID, and rebuilds as a null RID.
+   * <p>
+   * The format cannot carry a separator in BOTH the index name and the keys, so the index name is assumed not to contain
+   * one. If it ever does, the split point moves inside the index name: the result is still typed and carries the right
+   * RID, but the index name and keys are cut in the wrong place.
    *
    * @return the rebuilt exception, or null when the string is null, has fewer than three segments or its last segment
    * is not a RID: the caller then falls back to its generic mapping instead of failing to report the server's failure

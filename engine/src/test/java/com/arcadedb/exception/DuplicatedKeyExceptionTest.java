@@ -73,6 +73,17 @@ class DuplicatedKeyExceptionTest {
     assertThat(dup.getKeys()).isEqualTo("[concealed]");
   }
 
+  /** Empty index name and keys are still three segments with a valid RID: well-formed, not malformed. */
+  @Test
+  void emptyIndexNameAndKeysRebuildWithEmptyStrings() {
+    final DuplicatedKeyException dup = DuplicatedKeyException.fromExceptionArgs("||#7:1");
+
+    assertThat(dup).isNotNull();
+    assertThat(dup.getIndexName()).isEmpty();
+    assertThat(dup.getKeys()).isEmpty();
+    assertThat(dup.getCurrentIndexedRID()).isEqualTo(new RID(7, 1L));
+  }
+
   @ParameterizedTest
   @ValueSource(strings = { "", "only-one-part", "index|keys", "index|keys|not-a-rid", "index|keys|#7", "index|keys|#a:b",
       "index|keys|", "|" })
