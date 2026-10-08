@@ -50,6 +50,7 @@ import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.InvalidPropertyTypeException;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.QueryAdmissionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
@@ -57,6 +58,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.query.opencypher.query.ShowCommandTail;
 import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.ExecutionStep;
+import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -873,6 +875,11 @@ public class BoltNetworkExecutor extends Thread {
       final boolean explainMode = upperQuery.startsWith("EXPLAIN ");
       final boolean profileMode = !explainMode && upperQuery.startsWith("PROFILE ");
 
+      // Waits for the query admission gate (issue #9518). The slot belongs to the stream and goes back when the stream is closed -
+      // drained by PULL, discarded, reset or dropped with the connection - so the rows still to send keep it, as they keep the
+      // heap their buffers reserved. A second stream of the same transaction runs on this connection's thread and shares it
+      stream.admission = QueryAdmissionGate.getInstance().admit();
+
       // Use command() for writes, query() for reads
       if (stream.writeOperation) {
         stream.resultSet = database.command("opencypher", query, params);
@@ -1029,6 +1036,9 @@ public class BoltNetworkExecutor extends Thread {
       LogManager.instance().log(this, isRetryableConflict(e) ? Level.FINE : Level.WARNING, "BOLT PULL error", e);
       final String errorMsg = e.getMessage() != null ? e.getMessage() : "Error fetching records";
       sendFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR), errorMsg);
+      // The failed stream can neither be pulled nor discarded any more: released now, with its admission slot (issue #9518),
+      // rather than held until the client RESETs or disconnects
+      closeStream(stream, "PULL failure");
       state = State.FAILED;
     }
   }
@@ -1058,8 +1068,13 @@ public class BoltNetworkExecutor extends Thread {
       // Statistics are computed eagerly when the write is materialized in the query plan, so they
       // are valid to read before draining/closing the result set.
       stats = stream.resultSet.getStatistics();
-      while (stream.resultSet.hasNext()) {
-        stream.resultSet.next();
+      try {
+        while (stream.resultSet.hasNext())
+          stream.resultSet.next();
+      } catch (final RuntimeException e) {
+        // AS FOR A FAILED PULL: THE STREAM AND ITS ADMISSION SLOT (ISSUE #9518) GO NOW, NOT AT THE CLIENT'S RESET
+        closeStream(stream, "DISCARD failure");
+        throw e;
       }
     }
 
@@ -2190,11 +2205,12 @@ public class BoltNetworkExecutor extends Thread {
 
   /**
    * Whether the error (or any wrapped cause) is one of ArcadeDB's optimistic-concurrency conflicts
-   * ({@link NeedRetryException}). Such conflicts are expected under contention and auto-retried by the
-   * driver, so callers both classify them as transient and log them at a lower level.
+   * ({@link NeedRetryException}), or a query the admission gate did not start because the server is busy
+   * ({@link QueryAdmissionException}, issue #9518). Both are expected under load and retried by the driver, so callers
+   * both classify them as transient and log them at a lower level: a busy server must not flood its own log.
    */
   static boolean isRetryableConflict(final Throwable error) {
-    return CauseChain.contains(error, NeedRetryException.class);
+    return CauseChain.contains(error, NeedRetryException.class) || CauseChain.contains(error, QueryAdmissionException.class);
   }
 
   /**

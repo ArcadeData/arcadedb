@@ -20,6 +20,8 @@ package com.arcadedb.mongo;
 
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.exception.QueryAdmissionException;
+import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -41,6 +43,8 @@ public class MongoDBBackend extends AbstractMongoBackend {
   // MongoDB error codes (see https://github.com/mongodb/mongo/blob/master/src/mongo/base/error_codes.yml)
   private static final int    AUTHENTICATION_FAILED = 18;
   private static final int    UNAUTHORIZED          = 13;
+  // THE RETRYABLE CODE THE DRIVERS RETRY READS AND WRITES ON: THE CLOSEST TO "BUSY, TRY AGAIN" THE PROTOCOL HAS (ISSUE #9518)
+  private static final int    EXCEEDED_TIME_LIMIT   = 262;
   private static final int    MECHANISM_UNAVAILABLE = 334;
 
   // The only SASL mechanism ArcadeDB can support: ArcadeDB stores passwords as one-way PBKDF2 hashes, so
@@ -117,13 +121,31 @@ public class MongoDBBackend extends AbstractMongoBackend {
    */
   private Document handleAuthorizedCommand(final Channel channel, final String databaseName, final String command,
       final Document query, final ServerSecurityUser user) {
-    final DatabaseInternal database = (DatabaseInternal) server.getDatabase(databaseName);
-    final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.init(database);
-    ctx.setCurrentUser(user.getDatabaseUser(database));
+    // The query admission gate (issue #9518), WITHOUT waiting: this runs on the Netty channel thread, which also serves the
+    // other connections assigned to it, so it must never park. A command that cannot start at once is refused with a code
+    // the drivers retry. A cursor continuation is not gated: it only serves the rows its find already read, and refusing
+    // it would break a cursor the client cannot resume
+    final QueryAdmissionGate.Ticket admission;
     try {
-      return super.handleCommand(channel, databaseName, command, query);
+      admission = "getMore".equalsIgnoreCase(command) || "killCursors".equalsIgnoreCase(command) ?
+          null :
+          QueryAdmissionGate.getInstance().admit(0);
+    } catch (final QueryAdmissionException e) {
+      throw new MongoServerError(EXCEEDED_TIME_LIMIT, "ExceededTimeLimit", e.getMessage());
+    }
+
+    try {
+      final DatabaseInternal database = (DatabaseInternal) server.getDatabase(databaseName);
+      final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.init(database);
+      ctx.setCurrentUser(user.getDatabaseUser(database));
+      try {
+        return super.handleCommand(channel, databaseName, command, query);
+      } finally {
+        ctx.setCurrentUser(null);
+      }
     } finally {
-      ctx.setCurrentUser(null);
+      if (admission != null)
+        admission.close();
     }
   }
 

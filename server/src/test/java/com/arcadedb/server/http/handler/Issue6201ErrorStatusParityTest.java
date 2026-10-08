@@ -30,6 +30,7 @@ import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.exception.DatabaseOperationInProgressException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.InvalidPropertyTypeException;
+import com.arcadedb.exception.QueryAdmissionException;
 import com.arcadedb.exception.QueryHeapBudgetExceededException;
 import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.RecordNotFoundException;
@@ -124,6 +125,10 @@ class Issue6201ErrorStatusParityTest {
       // CommandExecutionException, whose generic arm answers 500.
       new MappedFailure("QueryHeapBudgetExceededException", 503,
           () -> new QueryHeapBudgetExceededException("Query heap budget exceeded: the running queries hold it")),
+      // A query the admission gate did not start because it waited too long or found the queue full (issue #9518): nothing
+      // of it ran, so the same request re-issued later can succeed. It extends CommandExecutionException too.
+      new MappedFailure("QueryAdmissionException", 503,
+          () -> new QueryAdmissionException("Query not started because it waited 30000ms in the queue")),
       // A permanent DROP/CLOSE DATABASE race (not the transient resync above) that lost the retry-then-reresolve
       // round trip: allowLoad=false found no open handle for the name. An accurate 404, not the generic 500 the
       // un-typed DatabaseOperationException used to fall through to (issue #6778, #6770 follow-up).

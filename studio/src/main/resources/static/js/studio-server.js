@@ -340,13 +340,16 @@ function displayMetrics() {
   // (security_refresh, and on an HA node security_seed and security_catch_up) add tasks.coalesced (#7856). The
   // other HA per-instance pools (#8856) add tasks.rejected where they refuse work (snapshot_install,
   // channel_recovery) and tasks.coalesced where they skip work already queued (channel_recovery).
+  // "query_admission" is not a pool but the gate HTTP queries wait at (#9518): Active / Size are the running queries and
+  // arcadedb.queryMaxConcurrent, Queue Depth the waiting ones, Rejected the ones refused with a 503.
   var ex = serverData.metrics.executors || {};
   var executorRowLabels = { "query": "Query Parallelism", "sparse_vector": "Sparse Vector Scoring",
       "parallel_scan": "Parallel Scan Producers", "async_command": "Async DDL Commands",
       "security_refresh": "Security Permission Refresh", "security_seed": "HA Security Seed",
       "security_catch_up": "HA Security Catch-Up", "snapshot_install": "HA Snapshot Install",
       "sm_lifecycle": "HA State Machine Lifecycle", "database_deleter": "HA Dropped Database Deleter",
-      "channel_recovery": "HA Channel Recovery", "stalled_resync": "HA Stalled Replica Resync" };
+      "channel_recovery": "HA Channel Recovery", "stalled_resync": "HA Stalled Replica Resync",
+      "query_admission": "Query Admission Gate" };
   var executorPoolNames = Object.keys(ex).sort();
   var executorsHtml = "";
   for (var i = 0; i < executorPoolNames.length; i++) {

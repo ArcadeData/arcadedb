@@ -391,7 +391,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
 
   @Override
   public void handleRequest(final HttpServerExchange exchange) {
-    if (mustExecuteOnWorkerThread(exchange) && exchange.isInIoThread()) {
+    if ((mustExecuteOnWorkerThread(exchange) || mayWaitForAdmission()) && exchange.isInIoThread()) {
       exchange.dispatch(this);
       return;
     }
@@ -1117,6 +1117,14 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     final QueryHeapBudgetExceededException heapBudget = firstOf(e, cause, QueryHeapBudgetExceededException.class);
     if (heapBudget != null) {
       return retryable(heapBudget);
+    }
+
+    // 503: the query admission gate did not start the query, because it waited in the queue too long or found the queue
+    // full (issue #9518). Nothing of it ran, so the identical request re-issued later can succeed. Ahead of the generic
+    // CommandExecutionException arm below for the same reason as the arm above.
+    final QueryAdmissionException admission = firstOf(e, cause, QueryAdmissionException.class);
+    if (admission != null) {
+      return retryable(admission);
     }
 
     // 503: an HA snapshot-reinstall resync (issue #5977 pattern) closed and reinstalled the database out from
@@ -2095,6 +2103,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    */
   protected boolean mustExecuteOnWorkerThread(final HttpServerExchange exchange) {
     return mustExecuteOnWorkerThread();
+  }
+
+  /**
+   * Whether this handler may park its thread in the query admission gate (issue #9518), which an Undertow IO thread must
+   * never do: it serves every other connection multiplexed onto it. A handler that answers true is always dispatched to a
+   * worker thread. Deciding per request whether the gate would make it wait cannot be exact - a slot taken between the
+   * check and the admission leaves the request waiting anyway - so the answer is per handler.
+   */
+  protected boolean mayWaitForAdmission() {
+    return false;
   }
 
   /**
