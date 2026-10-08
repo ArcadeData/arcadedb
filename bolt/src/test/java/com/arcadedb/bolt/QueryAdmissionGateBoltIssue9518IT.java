@@ -19,6 +19,7 @@
 package com.arcadedb.bolt;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.bolt.message.BoltMessage;
 import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -32,8 +33,11 @@ import org.neo4j.driver.SessionConfig;
 import org.neo4j.driver.Transaction;
 import org.neo4j.driver.exceptions.TransientException;
 
+import java.time.Duration;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.awaitility.Awaitility.await;
 
 /**
  * Issue #9518 over BOLT: a query the admission gate does not start is refused with a transient error, the class drivers
@@ -135,6 +139,32 @@ public class QueryAdmissionGateBoltIssue9518IT extends BaseBoltServerTest {
       assertThat(gate.getAdmitted()).as("admitted on its own, not on the abandoned stream's slot").isEqualTo(admittedBefore + 1);
     }
     assertThat(gate.getRunning()).isZero();
+  }
+
+  /**
+   * A client that drops its connection in the middle of a stream - no GOODBYE, no ROLLBACK - does not leak the stream's
+   * slot: the connection thread closes every open stream on its way out.
+   */
+  @Test
+  void aConnectionDroppedMidStreamGivesItsSlotBack() throws Exception {
+    GlobalConfiguration.QUERY_MAX_CONCURRENT.setValue(1);
+    GlobalConfiguration.QUERY_QUEUE_TIMEOUT.setValue(0L);
+
+    final BoltWireConnection wire = new BoltWireConnection(getServerBoltPort(), getDatabaseName());
+    wire.begin(getDatabaseName());
+    wire.run("UNWIND range(1, 10) AS x RETURN x");
+    assertThat(wire.readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
+    wire.pull(1, -1);
+    assertThat(wire.readSummary().records()).hasSize(1);
+    assertThat(gate.getRunning()).as("the open stream holds the slot").isEqualTo(1);
+
+    wire.close();
+    await().atMost(Duration.ofSeconds(30)).until(() -> gate.getRunning() == 0);
+
+    // THE SLOT IS FREE FOR THE NEXT CLIENT
+    try (final Driver driver = driver(1000); final Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+      assertThat(session.run("RETURN 1 AS one").single().get("one").asInt()).isEqualTo(1);
+    }
   }
 
   private Driver driver(final int fetchSize) {
