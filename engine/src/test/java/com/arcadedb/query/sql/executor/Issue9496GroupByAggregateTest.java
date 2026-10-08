@@ -20,8 +20,13 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
+import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
+import com.arcadedb.engine.Dictionary;
 import com.arcadedb.function.sql.math.SQLFunctionAverage;
 import com.arcadedb.function.sql.math.SQLFunctionSum;
 import com.arcadedb.schema.DocumentType;
@@ -31,6 +36,7 @@ import org.junit.jupiter.api.Test;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -264,6 +270,69 @@ class Issue9496GroupByAggregateTest extends TestHelper {
     doubles.aggregate(null, 0.5, null);
     doubles.aggregate(null, 2L, null);
     assertThat(doubles.getResult()).isEqualTo(5.5);
+  }
+
+  /**
+   * The positions a header walk found belong to the content it walked: once the record is reloaded with another content -
+   * here a concurrent update that added a property before the ones located - a read with them looks the property up again
+   * and answers the new content, never bytes of the old layout.
+   */
+  @Test
+  void aPropertyLocatedBeforeAReloadIsReadFromTheReloadedContent() {
+    final RID[] rid = new RID[1];
+    database.transaction(() -> rid[0] = database.newDocument("LineItem").set("l_quantity", 1.0, "l_returnflag", "A").save().getIdentity());
+
+    final ImmutableDocument document = (ImmutableDocument) database.lookupByRID(rid[0], true);
+    final Dictionary dictionary = database.getSchema().getDictionary();
+    final int quantityId = dictionary.getIdByName("l_quantity", false);
+    final int flagId = dictionary.getIdByName("l_returnflag", false);
+    final int[] slotByNameId = new int[Math.max(quantityId, flagId) + 1];
+    Arrays.fill(slotByNameId, -1);
+    slotByNameId[quantityId] = 0;
+    slotByNameId[flagId] = 1;
+    final int[] positions = new int[2];
+
+    final Binary located = document.locateProperties(slotByNameId, positions, 2);
+    assertThat(located).isNotNull();
+    assertThat(document.getPropertyAt(located, "l_quantity", positions[0], null)).isEqualTo(1.0);
+
+    database.transaction(() -> database.lookupByRID(rid[0], true).asDocument().modify().set("l_partkey", 7L, "l_quantity", 2.0).save());
+    document.reload();
+
+    assertThat(document.getPropertyAt(located, "l_quantity", positions[0], null)).isEqualTo(2.0);
+    assertThat(document.getPropertyAt(located, "l_returnflag", positions[1], null)).isEqualTo("A");
+  }
+
+  /** A record whose header does not read answers through the cache exactly what it answers through its row. */
+  @Test
+  void aDamagedRecordAnswersThroughTheCacheAsThroughItsRow() {
+    // A HEADER END OFFSET PAST THE END OF THE CONTENT
+    final Binary header = new Binary(new byte[] { 0x7F, (byte) 0xFF, (byte) 0xFF, (byte) 0xFF, 0x01 });
+    assertThat(((DatabaseInternal) database).getSerializer().locateProperties(header, new int[] { 0 }, new int[1], 1)).isFalse();
+
+    final Binary content = new Binary(new byte[] { Document.RECORD_TYPE, 0x7F, (byte) 0xFF, (byte) 0xFF, (byte) 0xFF, 0x01, 0x02 });
+    final ImmutableDocument damaged = (ImmutableDocument) ((DatabaseInternal) database).getRecordFactory()
+        .newImmutableRecord(database, database.getSchema().getType("LineItem"), new RID(1, 0L), content, null);
+    final Object absent = new Object();
+    final Result cached = new PropertyCachingResult(database).of(new ResultInternal(damaged));
+    assertThat(cached).isInstanceOf(PropertyCachingResult.class);
+    assertThat(cached.getPropertyIfPresent("l_quantity", absent)).isSameAs(new ResultInternal(damaged).getPropertyIfPresent("l_quantity", absent));
+  }
+
+  /**
+   * The partition of a group in a parallel aggregation is taken from the top bits of its spread hash, for any number of
+   * workers: every partition is in range and they share the keys evenly, also with as many workers as no power of two.
+   */
+  @Test
+  void parallelGroupsSpreadEvenlyOverAnyNumberOfPartitions() {
+    for (final int partitions : new int[] { 1, 2, 3, 5, 6, 7, 12 }) {
+      final int[] counts = new int[partitions];
+      for (long key = 0; key < 120_000; key++)
+        counts[AggregateProjectionCalculationStep.partitionOf(Arrays.hashCode(new Object[] { key }), partitions)]++;
+      for (final int count : counts)
+        assertThat(count).as("%d partitions: %s", partitions, Arrays.toString(counts)).isBetween(120_000 / partitions * 9 / 10,
+            120_000 / partitions * 11 / 10);
+    }
   }
 
   /**

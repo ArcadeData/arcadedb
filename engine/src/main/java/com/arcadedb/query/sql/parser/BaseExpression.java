@@ -58,6 +58,9 @@ public class BaseExpression extends MathExpression {
    * @see #rendersParentheses()
    */
   public boolean        parenthesized = false;
+  // A STRING LITERAL WAS CUT OUT OF ITS QUOTES AND UN-ESCAPED ON EVERY EVALUATION: ONCE PER ROW IN A WHERE (ISSUE #9496).
+  // ONE RECORD OF FINAL FIELDS, SO A THREAD THAT SEES THE REFERENCE SEES BOTH OF THEM
+  private transient DecodedLiteral decodedLiteral;
 
   public BaseExpression() {
   }
@@ -345,14 +348,10 @@ public class BaseExpression extends MathExpression {
   private record DecodedLiteral(String source, String value) {
   }
 
-  // A STRING LITERAL WAS CUT OUT OF ITS QUOTES AND UN-ESCAPED ON EVERY EVALUATION: ONCE PER ROW IN A WHERE (ISSUE #9496).
-  // ONE RECORD OF FINAL FIELDS, SO A THREAD THAT SEES THE REFERENCE SEES BOTH OF THEM
-  private transient DecodedLiteral decodedLiteral;
-
   private String decodedString() {
     final String source = string;
     final DecodedLiteral cached = decodedLiteral;
-    if (cached != null && cached.source() == source)
+    if (cached != null && cached.source().equals(source))
       return cached.value();
     final String value = decode(source.substring(1, source.length() - 1));
     decodedLiteral = new DecodedLiteral(source, value);
