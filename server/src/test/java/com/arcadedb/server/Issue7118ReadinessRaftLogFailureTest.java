@@ -46,7 +46,7 @@ import static org.mockito.Mockito.when;
 class Issue7118ReadinessRaftLogFailureTest {
 
   private static ArcadeDBServer onlineServerWith(final HAServerPlugin ha, final ContextConfiguration configuration) {
-    final FakeArcadeDBServer server = FakeArcadeDBServer.create((String) null, configuration);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create(configuration);
     server.online();
     server.setHA(ha);
     return server;

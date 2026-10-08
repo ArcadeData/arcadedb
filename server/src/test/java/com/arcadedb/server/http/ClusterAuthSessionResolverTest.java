@@ -18,7 +18,6 @@
  */
 package com.arcadedb.server.http;
 
-import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.FakeArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.TestServerHelper;
@@ -31,7 +30,6 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;

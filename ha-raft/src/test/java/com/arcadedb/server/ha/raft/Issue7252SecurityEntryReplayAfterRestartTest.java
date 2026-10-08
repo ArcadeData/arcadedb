@@ -245,7 +245,7 @@ class Issue7252SecurityEntryReplayAfterRestartTest {
     final ContextConfiguration configuration = new ContextConfiguration();
     configuration.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, databaseDirectory.toString());
 
-    final FakeArcadeDBServer server = FakeArcadeDBServer.create((String) null, configuration);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create(configuration);
     server.security(security);
     return server;
   }
