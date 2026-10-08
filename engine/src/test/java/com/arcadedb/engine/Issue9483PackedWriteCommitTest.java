@@ -23,6 +23,9 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+import java.util.function.Consumer;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -167,6 +170,35 @@ class Issue9483PackedWriteCommitTest extends BucketPageLayoutTestSupport {
     return result[0];
   }
 
+  /**
+   * The shortcut stands on every mutation of a page passing through its modified-range tracking: a freshly formatted
+   * page starts out hole-free, and each public writer, used outside a hole-free declaration, withdraws it - while
+   * the same writer inside one does not.
+   */
+  @Test
+  void everyPublicWriterOfAPageWithdrawsItUnlessDeclaredHoleFree() {
+    final int fileId = bucketOf(TYPE).getFileId();
+    final List<Consumer<MutablePage>> writers = List.of(//
+        page -> page.writeNumber(100, 7L), page -> page.writeLong(100, 7L), page -> page.writeInt(100, 7),
+        page -> page.writeUnsignedInt(100, 7L), page -> page.writeShort(100, (short) 7), page -> page.writeUnsignedShort(100, 7),
+        page -> page.writeFloat(100, 1f), page -> page.writeDouble(100, 1d), page -> page.writeByte(100, (byte) 7),
+        page -> page.writeBytes(100, new byte[] { 1, 2 }), page -> page.writeByteArray(100, new byte[] { 1, 2 }),
+        page -> page.writeByteArray(100, new byte[] { 1, 2 }, 0, 2), page -> page.writeZeros(100, 4),
+        page -> page.writeString(100, "x"), page -> page.move(100, 200, 4));
+
+    for (int i = 0; i < writers.size(); i++) {
+      final MutablePage page = new MutablePage(new PageId(database, fileId, 1_000 + i), bucketOf(TYPE).getPageSize());
+      assertThat(page.hasOnlyPackedWrites()).as("a new page holds no record, so no hole").isTrue();
+
+      final boolean previous = page.beginPackedWrite();
+      writers.get(i).accept(page);
+      page.endPackedWrite(previous);
+      assertThat(page.hasOnlyPackedWrites()).as("writer #" + i + " inside a declaration").isTrue();
+
+      writers.get(i).accept(page);
+      assertThat(page.hasOnlyPackedWrites()).as("writer #" + i + " outside a declaration").isFalse();
+    }
+  }
 
   /** Writes the record now, where {@code save()} would defer it to the commit, so the page can be looked at after it. */
   private void updateNow(final RID rid, final String value) {
