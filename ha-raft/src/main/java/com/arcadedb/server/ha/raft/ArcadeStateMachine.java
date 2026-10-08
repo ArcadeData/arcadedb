@@ -8383,6 +8383,68 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
+   * What {@link #acceptDivergedDatabase} lifted: the quarantine's cause ({@code null} when only a read floor stood), the
+   * read floor ({@code -1} when none stood) and the database's last applied index ({@code -1} when none is recorded).
+   */
+  record DivergedAcceptance(DivergenceCause cause, long readFloor, long appliedIndex) {
+  }
+
+  /**
+   * The operator's override of issue #9449: lifts the quarantine of {@code dbName} and its read floor WITHOUT a resync,
+   * accepting this node's copy as it is, and persists the change in the same write the quarantine was persisted with.
+   * <p>
+   * Every other way out of a quarantine is a resync from a peer ({@link #clearDivergedDatabase}) or a DROP
+   * ({@link #clearDroppedDatabaseQuarantine}). A sole voter has no peer, and since #9308 it no longer RAISES a quarantine,
+   * but one restored from disk (#7735) or raised while the node still had peers keeps it not-ready and its log
+   * un-checkpointed for good. Lifting it gives up the guarantee that the skipped entry stays replayable, which is why it
+   * is an operator decision and is logged at WARNING with who made it, at which applied index, over which cause.
+   * <p>
+   * The persistence is NOT best-effort here, unlike the quarantine's own write: an override that does not survive a
+   * restart would bring the quarantine back from disk, so on a failed write the in-memory state is put back and the
+   * caller is told.
+   *
+   * @return what was lifted, or {@code null} when {@code dbName} carried neither a quarantine nor a read floor
+   *
+   * @throws IOException when the change could not be written to the applied-index file; nothing is lifted then
+   */
+  DivergedAcceptance acceptDivergedDatabase(final String dbName, final String acceptedBy) throws IOException {
+    if (dbName == null || dbName.isEmpty())
+      return null;
+    final DivergedAcceptance acceptance;
+    synchronized (appliedIndexFileLock) {
+      ensureAppliedIndexLoaded();
+      final DivergenceCause cause = divergedDatabases.remove(dbName);
+      final Long floor = staleDatabaseAppliedFloors.remove(dbName);
+      if (cause == null && floor == null)
+        return null;
+      if (!persistAppliedIndexFile()) {
+        if (cause != null)
+          divergedDatabases.put(dbName, cause);
+        if (floor != null)
+          staleDatabaseAppliedFloors.put(dbName, floor);
+        throw new IOException("the change could not be written to " + getAppliedIndexFile()
+            + ", so the quarantine would come back at the next restart: check that the .raft directory is writable and "
+            + "has free space");
+      }
+      final Long applied = appliedIndexByDb.get(dbName);
+      acceptance = new DivergedAcceptance(cause, floor != null ? floor : -1L, applied != null ? applied : -1L);
+    }
+    lastDivergedResyncLogByDb.remove(dbName);
+    if (divergedDatabases.isEmpty())
+      divergedSwallowedErrors.set(0);
+
+    LogManager.instance().log(this, Level.WARNING,
+        "Database '%s': %s lifted its quarantine WITHOUT a resync, accepting this node's copy as it is (applied index %d, "
+            + "cause: %s, read floor: %s). The entry the quarantine skipped is not replayed: if the copy is missing it, it "
+            + "stays missing. Check the database (CHECK DATABASE) and restore it from a backup if it is damaged "
+            + "(issue #9449)",
+        dbName, acceptedBy, acceptance.appliedIndex(),
+        acceptance.cause() != null ? acceptance.cause().getDescription() : "none, only a read floor stood",
+        acceptance.readFloor() >= 0 ? String.valueOf(acceptance.readFloor()) : "none");
+    return acceptance;
+  }
+
+  /**
    * Returns {@code true} at most once per {@link #DIVERGED_RESYNC_LOG_THROTTLE_MS} window per database.
    * Used to rate-limit the "snapshot resync in progress" notice that would otherwise be emitted once per
    * committed entry while a database is quarantined after a WAL version gap, flooding the log and

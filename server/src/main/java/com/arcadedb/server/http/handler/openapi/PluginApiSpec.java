@@ -68,7 +68,8 @@ public class PluginApiSpec implements OpenApiContributor {
       "/api/v1/cluster", "/api/v1/cluster/peer", "/api/v1/cluster/peer/{peerId}",
       "/api/v1/cluster/leader", "/api/v1/cluster/stepdown", "/api/v1/cluster/leave",
       "/api/v1/cluster/verify/{database}", "/api/v1/cluster/resync/{database}",
-      "/api/v1/cluster/accept-copy/{database}", "/api/v1/cluster/bootstrap-state", "/api/v1/cluster/capabilities",
+      "/api/v1/cluster/accept-copy/{database}", "/api/v1/cluster/accept-diverged/{database}",
+      "/api/v1/cluster/bootstrap-state", "/api/v1/cluster/capabilities",
       "/api/v1/cluster/security-seed",
       "/api/v1/ha/snapshot/{database}", "/api/v1/ha/snapshot/{database}/checksums");
 
@@ -96,6 +97,7 @@ public class PluginApiSpec implements OpenApiContributor {
     openAPI.getPaths().addPathItem("/api/v1/cluster/verify/{database}", createVerifyPath());
     openAPI.getPaths().addPathItem("/api/v1/cluster/resync/{database}", createResyncPath());
     openAPI.getPaths().addPathItem("/api/v1/cluster/accept-copy/{database}", createAcceptCopyPath());
+    openAPI.getPaths().addPathItem("/api/v1/cluster/accept-diverged/{database}", createAcceptDivergedPath());
     openAPI.getPaths().addPathItem("/api/v1/cluster/bootstrap-state", createBootstrapStatePath());
     openAPI.getPaths().addPathItem("/api/v1/cluster/capabilities", createCapabilitiesPath());
     openAPI.getPaths().addPathItem("/api/v1/cluster/security-seed", createSecuritySeedPath());
@@ -335,6 +337,29 @@ public class PluginApiSpec implements OpenApiContributor {
     post.setResponses(SpecBuilders.standardResponses("200",
         SpecBuilders.jsonResponse("Copy accepted", "ClusterActionResponse"),
         "400", "401", "403", "404", "500"));
+
+    final PathItem pathItem = new PathItem();
+    pathItem.setPost(post);
+    return pathItem;
+  }
+
+  private PathItem createAcceptDivergedPath() {
+    final Operation post = SpecBuilders.operation("acceptClusterDivergedDatabase", "Cluster",
+        "Lift a database quarantine on a sole voter",
+        """
+            Lifts the quarantine standing on one database, and the read floor that goes with it, accepting this \
+            node's copy as it is without a resync. A quarantined database keeps the node not-ready and its Raft \
+            log un-checkpointed until a resync from a peer restores it; a node that is the only voter of its \
+            cluster has no peer, so a quarantine restored from disk, or raised while the cluster still had peers, \
+            never lifts there. The entry the quarantine skipped is NOT replayed: if the copy is missing it, it \
+            stays missing. The change is persisted and logged with who made it, at which applied index, over \
+            which cause. Root only. Answers 404 when no quarantine and no read floor stands on the database, and \
+            409 on a node that is not the sole voter, where the resync is the way out. The body is ignored. \
+            """ + RAFT_REQUIRED);
+    post.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
+    post.setResponses(SpecBuilders.standardResponses("200",
+        SpecBuilders.jsonResponse("Quarantine lifted", "ClusterActionResponse"),
+        "400", "401", "403", "404", "409", "500"));
 
     final PathItem pathItem = new PathItem();
     pathItem.setPost(post);
@@ -952,13 +977,19 @@ public class PluginApiSpec implements OpenApiContributor {
     schema.addProperty("leaderId", SpecBuilders.string(
         "Leader after the action. Present on leadership transfer."));
     schema.addProperty("database", SpecBuilders.string(
-        "Database the action applied to. Present on resync and accept-copy."));
+        "Database the action applied to. Present on resync, accept-copy and accept-diverged."));
     schema.addProperty("localServer", SpecBuilders.string(
-        "Server that performed the action. Present on resync and accept-copy."));
+        "Server that performed the action. Present on resync, accept-copy and accept-diverged."));
     schema.addProperty("appliedIndex", SpecBuilders.integer(
-        "Last Raft index applied to the accepted copy, or -1 when none is recorded. Present on accept-copy."));
+        "Last Raft index applied to the accepted copy, or -1 when none is recorded. Present on accept-copy and "
+            + "accept-diverged."));
     schema.addProperty("overriddenRefusal", SpecBuilders.string(
         "Why the leader had refused to reopen the copy, when a refusal was standing. Present on accept-copy."));
+    schema.addProperty("divergenceCause", SpecBuilders.string(
+        "Why the lifted quarantine had been raised (WAL_VERSION_GAP, UNDECODABLE_LOG_ENTRY, APPLY_ERROR, "
+            + "SNAPSHOT_INSTALL_INCOMPLETE), when one stood. Present on accept-diverged."));
+    schema.addProperty("readFloor", SpecBuilders.integer(
+        "The read floor that was lifted with the quarantine, when one stood. Present on accept-diverged."));
     // 'result' is the one member every one of these routes writes; the others say in their own
     // descriptions which action produces them (issue #7578).
     schema.setRequired(List.of("result"));
