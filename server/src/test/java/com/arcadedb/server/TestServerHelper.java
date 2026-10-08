@@ -90,11 +90,16 @@ public final class TestServerHelper {
    * writes a file. It replaces a Mockito mock of {@link ArcadeDBServer} that only stubbed those getters (issue #9464).
    * <p>
    * It sets {@code SERVER_ROOT_PATH} and {@code SERVER_DATABASE_DIRECTORY} on {@code configuration} itself, so that
-   * {@code getConfiguration()} stays the caller's instance: do not share one configuration between two servers. Like any
+   * {@code getConfiguration()} stays the caller's instance; a configuration already rooted elsewhere is refused. Like any
    * {@link ArcadeDBServer}, the constructor registers a JVM shutdown hook, which is a no-op for a server never started.
    */
   public static ArcadeDBServer unstartedServer(final Path rootPath, final ContextConfiguration configuration) {
-    configuration.setValue(GlobalConfiguration.SERVER_ROOT_PATH, rootPath.toString());
+    final String root = rootPath.toString();
+    if (configuration.getContextKeys().contains(GlobalConfiguration.SERVER_ROOT_PATH.getKey())
+        && !root.equals(configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PATH)))
+      throw new IllegalArgumentException("The configuration already belongs to a server rooted at '"
+          + configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PATH) + "': use a new ContextConfiguration per root");
+    configuration.setValue(GlobalConfiguration.SERVER_ROOT_PATH, root);
     configuration.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, rootPath.resolve("databases").toString());
     return new ArcadeDBServer(configuration);
   }

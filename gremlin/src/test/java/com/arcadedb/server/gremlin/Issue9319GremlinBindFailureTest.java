@@ -47,10 +47,11 @@ class Issue9319GremlinBindFailureTest {
   Path root;
 
   private GremlinServerPlugin newPlugin(final int port) {
-    final ArcadeDBServer server = TestServerHelper.unstartedServer(root, new ContextConfiguration());
+    // One configuration, as on a live node: the plugin is configured with the server's own
     final ContextConfiguration configuration = new ContextConfiguration();
     configuration.setValue("gremlin.host", "127.0.0.1");
     configuration.setValue("gremlin.port", String.valueOf(port));
+    final ArcadeDBServer server = TestServerHelper.unstartedServer(root, configuration);
     final GremlinServerPlugin plugin = new GremlinServerPlugin();
     plugin.configure(server, configuration);
     return plugin;

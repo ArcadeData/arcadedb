@@ -29,6 +29,7 @@ import java.nio.file.Path;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #9464: {@link TestServerHelper#unstartedServer} is what replaces a Mockito mock of {@link ArcadeDBServer} that
@@ -54,6 +55,27 @@ class UnstartedServerTest {
     try (final Stream<Path> files = Files.list(root)) {
       assertThat(files).as("construction must not create the log, config or database directories").isEmpty();
     }
+  }
+
+  @Test
+  void twoRootsGiveTwoIndependentServers(@TempDir final Path other) {
+    final ArcadeDBServer first = TestServerHelper.unstartedServer(root, new ContextConfiguration());
+    final ArcadeDBServer second = TestServerHelper.unstartedServer(other, new ContextConfiguration());
+
+    assertThat(first.getRootPath()).isEqualTo(root.toString());
+    assertThat(second.getRootPath()).isEqualTo(other.toString());
+    assertThat(first.getConfiguration()).isNotSameAs(second.getConfiguration());
+  }
+
+  @Test
+  void aConfigurationRootedElsewhereIsRefused(@TempDir final Path other) {
+    final ContextConfiguration configuration = new ContextConfiguration();
+    TestServerHelper.unstartedServer(root, configuration);
+
+    assertThatThrownBy(() -> TestServerHelper.unstartedServer(other, configuration))
+        .isInstanceOf(IllegalArgumentException.class).hasMessageContaining(root.toString());
+    assertThat(configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PATH)).as("the refusal leaves the first server's root")
+        .isEqualTo(root.toString());
   }
 
   @Test
