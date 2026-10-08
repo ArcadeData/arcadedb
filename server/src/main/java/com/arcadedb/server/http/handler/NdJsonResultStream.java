@@ -35,10 +35,13 @@ import java.util.concurrent.locks.ReentrantLock;
  *     {@code result} array of the buffered {@code application/json} response;</li>
  * <li>{@code {"stats": {"limit": n, "returned": n, "truncated": b}}} - the trailer, carrying the same three
  *     numbers the buffered response reports at top level. Always the last line of a successful stream;</li>
- * <li>{@code {"error": {"message": "...", "status": n, "exception": "...", "exceptionArgs": "..."}}} - the stream
- *     failed after the response had already begun. {@code status} is the code the buffered encoding would have
- *     answered the same failure with, {@code exception} the class it would have reported and {@code exceptionArgs}
- *     its structured arguments, present only when the failure has any (issue #8235).</li>
+ * <li>{@code {"error": {"message": "...", "status": n, "exception": "...", "exceptionArgs": "...", "retryAfter": n}}}
+ *     - the stream failed after the response had already begun. {@code status} is the code the buffered encoding
+ *     would have answered the same failure with, {@code exception} the class it would have reported,
+ *     {@code exceptionArgs} its structured arguments, present only when the failure has any (issue #8235), and
+ *     {@code retryAfter} the seconds its {@code Retry-After} header would have carried, present only for a
+ *     retryable refusal (issue #8899). The line also carries the rest of the buffered error body: the classified
+ *     label in {@code error}, {@code requestId}, and the cause chain in {@code detail} outside production mode.</li>
  * </ul>
  * The envelope is what makes the stream self-delimiting. Emitting bare rows and then a bare trailer would leave
  * a consumer unable to tell the trailer from a row that happens to carry the same property names, and a stream
@@ -131,22 +134,14 @@ public final class NdJsonResultStream implements AutoCloseable {
    * taken back at that point, so the only way to tell the client the result is incomplete is in-band - and it is
    * distinguishable from a complete stream because no {@code stats} line follows.
    * <p>
-   * The line carries what the buffered encoding would have answered with (issue #8235): the status, the reported
-   * exception class and its structured arguments, so a client can tell a retryable conflict from a security refusal
-   * or a server fault without parsing {@code message}. {@code status} and {@code exception} are the members to key on:
-   * {@code message} is the raw failure text, not concealed in production mode (issue #8875).
+   * The body is what the buffered encoding would have answered with, built by the handler from its classifier
+   * (issues #8235, #8899): {@code status}, {@code exception}, {@code exceptionArgs} and {@code retryAfter} are the
+   * members to key on, so a client can tell a retryable conflict from a security refusal or a server fault, and knows
+   * how long to back off, without parsing {@code message}.
    *
-   * @param status        the HTTP status the buffered encoding would have sent for the same failure
-   * @param exception     the class name of the reported exception, or null to leave the member out
-   * @param exceptionArgs the structured arguments of the failure, or null when it has none
+   * @param error the body of the error line, carrying at least {@code message} and {@code status}
    */
-  public void writeError(final String message, final int status, final String exception, final String exceptionArgs)
-      throws IOException {
-    final JSONObject error = new JSONObject().put("message", message).put("status", status);
-    if (exception != null)
-      error.put("exception", exception);
-    if (exceptionArgs != null)
-      error.put("exceptionArgs", exceptionArgs);
+  public void writeError(final JSONObject error) throws IOException {
     writeLine(new JSONObject().put("error", error), true);
   }
 

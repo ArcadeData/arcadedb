@@ -958,10 +958,8 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
         // through), 'exceptionArgs' carries the duplicate's index|keys|rid or the leader address, and the message
         // chain travels in 'detail' - which production mode conceals here exactly as it does there, instead of
         // the raw message this line used to carry in every mode (issue #8236, PR #8237 review).
-        final ErrorClassification classification = classifyError(reported);
-        final JSONObject error = new JSONObject(buildErrorBody(!isProductionMode(), classification.message(),
-            classification.reported(), classification.exceptionArgs(), getCorrelationId(exchange)))
-            .put("status", classification.status());
+        // 'retryAfter' carries the back-off the buffered encoding sends as a Retry-After header (issue #8899).
+        final JSONObject error = buildStreamedErrorLine(exchange, classifyError(reported));
         // What a client reconciles with, and what the buffered encoding still delivers for this same failure:
         // its counters travel in the error body, and its bookmark is emitted by the finally in execute(). Both
         // were dropped here, which is the one place this encoding was worse than the one it extends
@@ -2405,10 +2403,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    */
   private void writeRelayedCapRefusal(final HttpServerExchange exchange, final String databaseName,
       final OutputStream out, final RequestTooBigException tooBig, final long[] lastProgress) {
-    final ErrorClassification classification = classifyError(tooBig);
-    final JSONObject error = new JSONObject(buildErrorBody(!isProductionMode(), classification.message(),
-        classification.reported(), classification.exceptionArgs(), getCorrelationId(exchange)))
-        .put("status", classification.status());
+    final JSONObject error = buildStreamedErrorLine(exchange, classifyError(tooBig));
     final long vertices = lastProgress[0];
     final long edges = lastProgress[1];
     error.put("verticesCreated", vertices);

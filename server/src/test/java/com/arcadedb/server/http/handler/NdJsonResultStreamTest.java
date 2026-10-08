@@ -118,7 +118,7 @@ class NdJsonResultStreamTest {
     final FlushRecordingStream out = new FlushRecordingStream();
     try (final NdJsonResultStream stream = new NdJsonResultStream(out)) {
       stream.writeRecord(new JSONObject().put("name", "a"));
-      stream.writeError("index rebuild in progress", 503, "com.arcadedb.exception.ConcurrentModificationException", null);
+      stream.writeError(new JSONObject().put("message", "index rebuild in progress").put("status", 503));
     }
 
     final List<String> lines = out.lines();
@@ -129,40 +129,21 @@ class NdJsonResultStreamTest {
   }
 
   /**
-   * Issue #8235: the error line carries the status the buffered encoding would have sent, and the reported exception
-   * class, so a client can tell a retryable conflict from a server fault without parsing the message. The structured
-   * arguments travel only when the failure has any - an absent member, not a JSON null.
+   * Issues #8235, #8899: the body the handler built from its classifier travels unchanged under the {@code error}
+   * envelope - the stream adds nothing and drops nothing, so what members a line carries is decided in one place.
    */
   @Test
-  void anErrorLineCarriesStatusExceptionAndArguments() throws IOException {
+  void anErrorLineCarriesTheBodyItIsGivenVerbatim() throws IOException {
     final FlushRecordingStream out = new FlushRecordingStream();
+    final JSONObject body = new JSONObject().put("message", "Cannot execute command").put("status", 503)
+        .put("exception", "com.arcadedb.server.http.RetryLaterException").put("exceptionArgs", "7").put("retryAfter", 7L);
     try (final NdJsonResultStream stream = new NdJsonResultStream(out)) {
-      stream.writeError("duplicated", 409, "com.arcadedb.exception.DuplicatedKeyException", "idx|[1]|#1:0");
-      stream.writeError("conflict", 503, "com.arcadedb.exception.ConcurrentModificationException", null);
+      stream.writeError(body);
     }
 
-    final JSONObject duplicated = new JSONObject(out.lines().get(0)).getJSONObject("error");
-    assertThat(duplicated.getString("message")).isEqualTo("duplicated");
-    assertThat(duplicated.getInt("status")).isEqualTo(409);
-    assertThat(duplicated.getString("exception")).isEqualTo("com.arcadedb.exception.DuplicatedKeyException");
-    assertThat(duplicated.getString("exceptionArgs")).isEqualTo("idx|[1]|#1:0");
-
-    final JSONObject conflict = new JSONObject(out.lines().get(1)).getJSONObject("error");
-    assertThat(conflict.getInt("status")).isEqualTo(503);
-    assertThat(conflict.has("exceptionArgs")).isFalse();
-  }
-
-  @Test
-  void anErrorLineWithNoExceptionLeavesTheMemberOut() throws IOException {
-    final FlushRecordingStream out = new FlushRecordingStream();
-    try (final NdJsonResultStream stream = new NdJsonResultStream(out)) {
-      stream.writeError("failed", 500, null, null);
-    }
-
-    final JSONObject error = new JSONObject(out.lines().getFirst()).getJSONObject("error");
-    assertThat(error.getInt("status")).isEqualTo(500);
-    assertThat(error.has("exception")).isFalse();
-    assertThat(error.has("exceptionArgs")).isFalse();
+    final JSONObject line = new JSONObject(out.lines().getFirst());
+    assertThat(line.keySet()).containsExactly("error");
+    assertThat(line.getJSONObject("error").toString()).isEqualTo(body.toString());
   }
 
   /**
