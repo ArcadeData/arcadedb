@@ -38,9 +38,20 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
   // the merge to the pool
   private static final int PARALLEL_MERGE_MIN_GROUPS = 16_384;
 
+  // #9496: A WORKER THAT HAS CREATED THIS MANY GROUPS STOPS CREATING MORE: THE ROWS OF THE KEYS IT DOES NOT HOLD GO TO THE
+  // EXCHANGE, WHERE EACH KEY IS AGGREGATED ONCE INSTEAD OF ONCE PER WORKER THAT MEETS IT. A GROUP BY WITH FEWER KEYS
+  // NEVER GETS THERE AND AGGREGATES IN THE WORKERS ONLY, AS BEFORE
+  private static final int EXCHANGE_MIN_GROUPS            = 4_096;
+  // ROWS A WORKER GATHERS FOR ONE PARTITION OF THE EXCHANGE BEFORE IT TAKES THAT PARTITION'S LOCK TO AGGREGATE THEM
+  private static final int EXCHANGE_BATCH                 = 64;
+  // MORE PARTITIONS THAN WORKERS WHEN THE EXCHANGE MAY RUN, SO TWO WORKERS RARELY WANT THE SAME PARTITION AT ONCE
+  private static final int EXCHANGE_PARTITIONS_PER_WORKER = 4;
+
   // #8523: set when the aggregation ran in the workers of a parallel scan, for the plan printout
   private int parallelWorkers = 0;
   private int parallelUnits   = 0;
+  // #9496: THE GROUPS THE EXCHANGE CREATED IN THE LAST EXECUTION, FOR THE PLAN PRINTOUT
+  private int exchangedGroups = 0;
 
   private final GroupBy                   groupBy;
   private final long                      timeoutMillis;
@@ -58,6 +69,11 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
   private final    Object              sharedGroupsLock = new Object();
   private volatile PartialAggregation  sharedGroups;
   private final    AtomicInteger       sharedGroupCount = new AtomicInteger();
+  // #9496: THE GROUPS OF THE EXCHANGE, FOR THE LIMIT OF GROUPS
+  private final    AtomicInteger       exchangeGroupCount = new AtomicInteger();
+  // #9496: THE GROUPS OF THE KEYS THE WORKERS DO NOT HOLD THEMSELVES, ONE LOCK PER PARTITION; NULL WHEN AN AGGREGATE CANNOT
+  // TAKE ARGUMENTS EVALUATED ON ANOTHER WORKER
+  private volatile PartialAggregation  exchange;
 
   //the key is the GROUP BY key, the value is the (partially) aggregated group
   private final Map<GroupByKey, Group> aggregateResults = new LinkedHashMap<>();
@@ -251,13 +267,23 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
           sendTimeout();
         }
       };
+      final boolean exchangeable = groupBy != null && canExchange(context);
       // ONE PARTITION PER WORKER, SO THE MERGE CAN RUN IN PARALLEL TOO; WITHOUT A GROUP BY THERE IS ONE GROUP TO MERGE.
       // SET BY THE FIRST ROUND FOR ALL OF THEM: A PARTIAL KEEPS ITS PARTITIONS FROM ROUND TO ROUND
-      final int partitions = groupBy == null ? 1 : firstScan.getWorkerCount();
+      final int partitions = groupBy == null ? 1 : firstScan.getWorkerCount() * (exchangeable ? EXCHANGE_PARTITIONS_PER_WORKER : 1);
       final int groupOverhead = groupOverheadBytes(projection);
 
       sharedGroups = null;
       sharedGroupCount.set(0);
+      exchange = null;
+      exchangeGroupCount.set(0);
+      if (exchangeable) {
+        final PartialAggregation target = new PartialAggregation(input.types().toArray(new String[0]), new WhereClause[0], null,
+            partitions, OperationHeapLimit.of(context, "groups", "GROUP BY"), groupOverhead);
+        target.initExchange(projection, context);
+        workerPartials.add(target);
+        exchange = target;
+      }
       // A QUARTER OF THE BUDGET SPLIT BETWEEN THE WORKERS: THE REST IS LEFT TO THE MERGED GROUPS AND THE OTHER QUERIES
       workerFlushBytes = groupBy != null && groupsLimit.isCharging() ?
           Math.max(MIN_WORKER_FLUSH_BYTES, QueryHeapBudget.getLimitBytes() / (4L * Math.max(1, firstScan.getWorkerCount()))) :
@@ -295,20 +321,37 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
       parallelWorkers = workers;
       parallelUnits = (int) Math.min(Integer.MAX_VALUE, units);
 
+      // #9496: THE ROWS THE WORKERS GATHERED FOR THE EXCHANGE AND DID NOT HAND OVER YET JOIN IT FIRST (AT MOST A BATCH PER
+      // WORKER AND PARTITION), THEN THE EXCHANGE IS THE TARGET OF THE MERGE: IT HOLDS MOST OF THE GROUPS WHEN IT RAN
+      final PartialAggregation exchanged = exchange;
+      if (exchanged != null)
+        for (final PartialAggregation partial : partials)
+          partial.handOverExchangeRows(exchanged, context);
+      exchangedGroups = exchangeGroupCount.get();
+
       // PARTITION p OF EVERY WORKER HOLDS THE SAME KEYS, AND NO OTHER PARTITION DOES: EACH ONE IS MERGED ON ITS OWN, IN
       // PARALLEL WHEN THERE ARE ENOUGH GROUPS FOR IT TO PAY
       // #9402: THE GROUPS THE WORKERS FLUSHED ARE MERGED ALREADY: THE REMAINING PARTIALS JOIN THEM. WITHOUT A FLUSH THE FIRST
       // PARTIAL IS THE TARGET, AS IT ALWAYS WAS
       final PartialAggregation shared = sharedGroups;
-      final PartialAggregation merged = shared != null ? shared : partials.getFirst();
-      long partialGroups = shared != null ? sharedGroupCount.get() : 0;
-      for (final PartialAggregation partial : partials)
-        partialGroups += partial.groupCount;
+      final List<PartialAggregation> sources = new ArrayList<>(partials);
+      final PartialAggregation merged;
+      if (exchanged != null) {
+        merged = exchanged;
+        if (shared != null)
+          sources.add(shared);
+      } else
+        merged = shared != null ? shared : partials.getFirst();
+      long partialGroups = shared != null && merged == shared ? sharedGroupCount.get() : 0;
+      if (exchanged != null)
+        partialGroups += exchanged.groupsHeld();
+      for (final PartialAggregation partial : sources)
+        partialGroups += partial == shared ? sharedGroupCount.get() : partial.groupCount;
       final List<Runnable> merges = new ArrayList<>(partitions);
       for (int p = 0; p < partitions; p++) {
         final int partition = p;
         merges.add(() -> {
-          for (final PartialAggregation partial : partials)
+          for (final PartialAggregation partial : sources)
             if (partial != merged)
               merged.mergeFrom(partial, partition);
         });
@@ -347,6 +390,8 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
         partial.handOverHeap(groupsLimit);
       if (shared != null)
         shared.handOverHeap(groupsLimit);
+      if (exchanged != null)
+        exchanged.handOverHeap(groupsLimit);
       long kept = 0L;
       for (int i = 0; i < size; i++)
         kept += HeapEstimator.estimate(groups.get(i).keyValues) + groupOverhead;
@@ -361,9 +406,22 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
       for (final PartialAggregation partial : workerPartials)
         partial.releaseHeap();
       workerPartials.clear();
+      exchange = null;
       if (context.isProfiling())
         cost += System.nanoTime() - begin;
     }
+  }
+
+  /**
+   * #9496: whether the rows of a group can be aggregated by another worker than the one that read them: every aggregate is
+   * a built-in function call, whose arguments the reading worker evaluates and the owning worker feeds to the function
+   * without the row.
+   */
+  private boolean canExchange(final CommandContext context) {
+    for (final ProjectionItem proj : projection.getItems())
+      if (proj.isAggregate(context) && !AggregateRowEvaluator.feedsWithoutRow(proj.getAggregationContext(context)))
+        return false;
+    return true;
   }
 
   /**
@@ -431,6 +489,30 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
     return input != null && input.source().wouldRunInParallel(context);
   }
 
+  /** #9496: rows a worker queues for one partition of the exchange: what their groups need, never the rows themselves. */
+  private static final class ExchangeRows {
+    final GroupByKey[] keys         = new GroupByKey[EXCHANGE_BATCH];
+    final long[]       positions    = new long[EXCHANGE_BATCH];
+    final Object[][]   columnValues = new Object[EXCHANGE_BATCH][];
+    final Object[][][] arguments    = new Object[EXCHANGE_BATCH][][];
+    int                size;
+
+    void add(final GroupByKey key, final long position, final Object[] rowColumnValues, final Object[][] rowArguments) {
+      keys[size] = key;
+      positions[size] = position;
+      columnValues[size] = rowColumnValues;
+      arguments[size] = rowArguments;
+      ++size;
+    }
+
+    void clear() {
+      Arrays.fill(keys, 0, size, null);
+      Arrays.fill(columnValues, 0, size, null);
+      Arrays.fill(arguments, 0, size, null);
+      size = 0;
+    }
+  }
+
   /**
    * One worker's partial aggregation, on the worker's own copies of the expressions. Its groups are spread over
    * partitions by the hash of their key, the same way in every worker, so partition {@code p} of every worker can be
@@ -447,6 +529,16 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
     private       int                          groupCount;
     // GUARDED BY this: SET BY THE CALLER, WHICH RELEASES THE HEAP OF A WORKER A FAILURE CANCELLED WHILE IT MAY STILL RUN
     private       boolean                      heapReleased;
+
+    // #9496, A WORKER: THE GROUPS IT EVER CREATED (A #9402 FLUSH RESETS groupCount, NOT THIS), AND WHETHER IT SENDS THE ROWS
+    // OF THE KEYS IT DOES NOT HOLD TO THE EXCHANGE, GATHERED PER PARTITION OF THE EXCHANGE OF THIS EXECUTION
+    private       int                          createdGroups;
+    private       boolean                      exchanging;
+    private       ExchangeRows[]               outbox;
+    private       PartialAggregation           exchangeTarget;
+    // #9496, THE EXCHANGE: THE AGGREGATE ITEMS OF A COPY OF THE PROJECTION PER PARTITION, USED ONLY UNDER THAT PARTITION'S
+    // LOCK TO CREATE THE AGGREGATION CONTEXTS OF ITS GROUPS
+    private       ProjectionItem[][]           partitionAggregateItems;
 
     @SuppressWarnings("unchecked")
     PartialAggregation(final String[] types, final WhereClause[] conditions, final AggregateRowEvaluator evaluator,
@@ -482,9 +574,14 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
       if (!matches(evaluator.begin(row), context))
         return;
       final GroupByKey key = evaluator.evaluate(context);
-      final HashMap<GroupByKey, Group> partition = partitions[partitionOf(key.hashCode(), partitions.length)];
+      final int partitionIndex = partitionOf(key.hashCode(), partitions.length);
+      final HashMap<GroupByKey, Group> partition = partitions[partitionIndex];
       Group group = partition.get(key);
       boolean flush = false;
+      if (group == null && exchanging) {
+        sendToExchange(partitionIndex, key, position, context);
+        return;
+      }
       if (group == null) {
         checkGroupCount(groupCount);
         // NO OPERATION FOR THE AGGREGATES: ONLY THE ONES THAT MERGE PARTIALS RUN IN THE WORKERS (count, sum, avg, min, max),
@@ -493,6 +590,8 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
         chargeNewGroup(group.keyValues, context);
         partition.put(group, group);
         ++groupCount;
+        if (++createdGroups >= EXCHANGE_MIN_GROUPS && !exchanging)
+          startExchanging();
         // CHECKED WHEN A GROUP IS CREATED ONLY: THE CHARGE GROWS ONLY THEN
         flush = workerFlushBytes > 0 && heapLimit.getChargedBytes() >= workerFlushBytes;
       }
@@ -533,6 +632,94 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
     /** Whether the row passes the filters between the source and the aggregation, as their steps would decide. */
     private boolean matches(final Result row, final CommandContext context) {
       return ParallelRowPipeline.matches(types, conditions, row, context);
+    }
+
+    /** #9496: from now on the rows of the keys this worker does not hold go to the exchange, when there is one. */
+    private void startExchanging() {
+      exchangeTarget = exchange;
+      if (exchangeTarget == null || !evaluator.exchangeable)
+        return;
+      outbox = new ExchangeRows[partitions.length];
+      for (int p = 0; p < outbox.length; p++)
+        outbox[p] = new ExchangeRows();
+      exchanging = true;
+    }
+
+    /**
+     * #9496: evaluates on this worker, with its own copies of the expressions, everything the group of the row needs - the
+     * values of the non-aggregate projections and the arguments of each aggregate - and queues it for the exchange, which
+     * aggregates a batch at a time under the lock of the partition. Nothing of the row itself is queued: it may be the
+     * evaluator's view, which serves the next row.
+     */
+    private void sendToExchange(final int partition, final GroupByKey key, final long position, final CommandContext context) {
+      final ExchangeRows rows = outbox[partition];
+      rows.add(key.copy(), position, evaluator.columnValues(context), evaluator.argumentValues(context));
+      if (rows.size == EXCHANGE_BATCH) {
+        exchangeTarget.aggregateExchanged(partition, rows, context);
+        rows.clear();
+      }
+    }
+
+    /** #9496: hands the rows still queued for the exchange over to it, once the workers are done. */
+    void handOverExchangeRows(final PartialAggregation target, final CommandContext context) {
+      if (outbox == null)
+        return;
+      for (int p = 0; p < outbox.length; p++)
+        if (outbox[p].size > 0) {
+          target.aggregateExchanged(p, outbox[p], context);
+          outbox[p].clear();
+        }
+    }
+
+    /** #9496, the exchange: the aggregate items of a copy of the projection per partition. */
+    void initExchange(final Projection stepProjection, final CommandContext context) {
+      partitionAggregateItems = new ProjectionItem[partitions.length][];
+      for (int p = 0; p < partitionAggregateItems.length; p++)
+        partitionAggregateItems[p] = AggregateRowEvaluator.aggregateItemsOf(stepProjection.copy(), context);
+    }
+
+    /** The groups this partial holds, over all its partitions. */
+    int groupsHeld() {
+      int count = 0;
+      for (final HashMap<GroupByKey, Group> partition : partitions)
+        count += partition.size();
+      return count;
+    }
+
+    /**
+     * #9496, the exchange: aggregates a batch of rows of one partition, under its lock. A group keeps the non-aggregate
+     * values of its earliest row, as the sequential aggregation does, whatever the order the workers send the rows in.
+     */
+    void aggregateExchanged(final int partition, final ExchangeRows rows, final CommandContext context) {
+      final HashMap<GroupByKey, Group> groups = partitions[partition];
+      synchronized (groups) {
+        for (int r = 0; r < rows.size; r++) {
+          final GroupByKey key = rows.keys[r];
+          final long position = rows.positions[r];
+          Group group = groups.get(key);
+          if (group == null) {
+            checkGroupCount(exchangeGroupCount.get());
+            final ProjectionItem[] items = partitionAggregateItems[partition];
+            final AggregationContext[] states = new AggregationContext[items.length];
+            for (int i = 0; i < states.length; i++)
+              states[i] = items[i].getAggregationContext(context);
+            group = new Group(key.keyValues, key, rows.columnValues[r], states, position);
+            synchronized (this) {
+              if (!heapReleased)
+                heapLimit.chargeElement(key.keyValues, groupOverhead);
+            }
+            groups.put(group, group);
+            exchangeGroupCount.incrementAndGet();
+          } else if (position < group.firstSeen) {
+            group.firstSeen = position;
+            group.columnValues = rows.columnValues[r];
+          }
+          final Object[][] arguments = rows.arguments[r];
+          for (int i = 0; i < arguments.length; i++)
+            // A BUILT-IN AGGREGATE (canExchange()), WHICH READS NOTHING OF THE ROW
+            ((FunctionAggregationContext) group.aggregates[i]).applyArguments(null, arguments[i], context);
+        }
+      }
     }
 
     /** Folds one partition of another worker's groups into this one: the aggregations merge, the earliest first row wins. */
@@ -626,7 +813,8 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     String result = spaces + "+ CALCULATE AGGREGATE PROJECTIONS";
     if (parallelWorkers > 0)
-      result += " (parallel: " + parallelWorkers + " workers, " + parallelUnits + " units)";
+      result += " (parallel: " + parallelWorkers + " workers, " + parallelUnits + " units" + (exchangedGroups > 0 ?
+          ", " + exchangedGroups + " groups by key exchange" : "") + ")";
     else if (finalResults == null && wouldAggregateInParallel())
       result += " (parallel)";
     if (context.isProfiling())

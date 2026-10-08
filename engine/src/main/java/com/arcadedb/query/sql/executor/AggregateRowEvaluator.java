@@ -96,6 +96,12 @@ final class AggregateRowEvaluator {
   final         String[]         aggregateAliases;
   // THE COLUMN EACH SINGLE-ARGUMENT AGGREGATE READS, STAR_SLOT FOR count(*), NO_SLOT WHEN apply() EVALUATES IT ON THE ROW
   private final int[]            argumentSlots;
+  // ONE ARRAY PER BOUND AGGREGATE, REFILLED FOR EVERY ROW: A BUILT-IN AGGREGATE DOES NOT KEEP THE ARRAY IT IS FED
+  private final Object[][]       argumentBuffers;
+  // AN AGGREGATION CONTEXT PER AGGREGATE, TO EVALUATE THE ARGUMENTS OF A ROW SENT TO THE EXCHANGE; NULL WHEN NOT A FUNCTION CALL
+  private final FunctionAggregationContext[] argumentEvaluators;
+  // WHETHER EVERY AGGREGATE IS A BUILT-IN FUNCTION CALL, WHICH CAN BE FED THE ARGUMENTS ANOTHER WORKER EVALUATED
+  final         boolean                      exchangeable;
 
   private final Expression[] keys;
   private final int[]        keySlots;
@@ -146,18 +152,24 @@ final class AggregateRowEvaluator {
     }
 
     boolean aggregatesSafe = true;
+    boolean allFedWithoutRow = true;
     aggregateItems = aggregates.toArray(new ProjectionItem[0]);
     aggregateAliases = new String[aggregateItems.length];
     argumentSlots = new int[aggregateItems.length];
+    argumentBuffers = new Object[aggregateItems.length][];
+    argumentEvaluators = new FunctionAggregationContext[aggregateItems.length];
     for (int i = 0; i < aggregateItems.length; i++) {
       final ProjectionItem item = aggregateItems[i];
       aggregateAliases[i] = item.getProjectionAliasAsString();
       argumentSlots[i] = NO_SLOT;
       final AggregationContext prototype = item.getAggregationContext(context);
-      if (!(prototype instanceof FunctionAggregationContext function) || !isBuiltIn(function.getFunction())) {
+      if (!feedsWithoutRow(prototype)) {
         aggregatesSafe = false;
+        allFedWithoutRow = false;
         continue;
       }
+      final FunctionAggregationContext function = (FunctionAggregationContext) prototype;
+      argumentEvaluators[i] = function;
       final List<Expression> params = function.getParams();
       for (final Expression param : params)
         aggregatesSafe &= isSafeOnView(param);
@@ -167,8 +179,11 @@ final class AggregateRowEvaluator {
           argumentSlots[i] = function.getFunction() instanceof SQLFunctionCount && !function.isDistinct() ? STAR_SLOT : NO_SLOT;
         else
           argumentSlots[i] = slotOf(param, slotByAlias);
+        if (argumentSlots[i] != NO_SLOT)
+          argumentBuffers[i] = new Object[1];
       }
     }
+    exchangeable = allFedWithoutRow;
 
     if (groupBy == null || groupBy.getItems() == null || groupBy.getItems().isEmpty()) {
       keys = new Expression[0];
@@ -251,17 +266,40 @@ final class AggregateRowEvaluator {
 
   /** A new group for the row just evaluated, whose key is {@code key}: a copy of it, the key being reused for the next row. */
   Group newGroup(final GroupByKey key, final long firstSeen, final CommandContext context, final OperationHeapLimit heapLimit) {
+    final AggregationContext[] states = new AggregationContext[aggregateItems.length];
+    for (int i = 0; i < states.length; i++)
+      states[i] = HeapBufferingFunction.adopt(aggregateItems[i].getAggregationContext(context), heapLimit);
+
+    return new Group(key.keyValues.clone(), key, columnValues(context), states, firstSeen);
+  }
+
+  /** The values of the non-aggregate projections for the row just evaluated: what a new group of it keeps. */
+  Object[] columnValues(final CommandContext context) {
     final Object[] values = new Object[valueItems.length];
     for (int i = 0; i < values.length; i++)
       values[i] = valueSlots[i] >= 0 ?
           valueItems[i].convert(slotValue(valueSlots[i])) :
           valueItems[i].execute(input(context), context);
+    return values;
+  }
 
-    final AggregationContext[] states = new AggregationContext[aggregateItems.length];
-    for (int i = 0; i < states.length; i++)
-      states[i] = HeapBufferingFunction.adopt(aggregateItems[i].getAggregationContext(context), heapLimit);
-
-    return new Group(key, values, states, firstSeen);
+  /**
+   * The arguments of every aggregate for the row just evaluated, in arrays of their own: the row is sent to the exchange,
+   * which feeds them to the aggregates of its group later, on another thread (#9496). Only for an {@link #exchangeable}
+   * evaluator.
+   */
+  Object[][] argumentValues(final CommandContext context) {
+    final Object[][] arguments = new Object[aggregateItems.length][];
+    for (int i = 0; i < arguments.length; i++) {
+      final int slot = argumentSlots[i];
+      if (slot >= 0)
+        arguments[i] = new Object[] { slotValue(slot) };
+      else if (slot == STAR_SLOT)
+        arguments[i] = new Object[] { Boolean.TRUE };
+      else
+        arguments[i] = argumentEvaluators[i].evaluateArguments(input(context), context);
+    }
+    return arguments;
   }
 
   /** Feeds the row just evaluated to the aggregates of {@code group}. */
@@ -269,13 +307,32 @@ final class AggregateRowEvaluator {
     final AggregationContext[] states = group.aggregates;
     for (int i = 0; i < states.length; i++) {
       final int slot = argumentSlots[i];
-      if (slot >= 0)
-        ((FunctionAggregationContext) states[i]).applyValue(slotValue(slot), null, context);
-      else if (slot == STAR_SLOT)
-        ((FunctionAggregationContext) states[i]).applyValue(Boolean.TRUE, null, context);
-      else
+      if (slot == NO_SLOT)
         states[i].apply(input(context), context);
+      else {
+        // A BOUND ARGUMENT FEEDS A BUILT-IN AGGREGATE, WHICH NEITHER READS THE ROW NOR KEEPS THE ARRAY
+        final Object[] arguments = argumentBuffers[i];
+        arguments[0] = slot == STAR_SLOT ? Boolean.TRUE : slotValue(slot);
+        ((FunctionAggregationContext) states[i]).applyEvaluated(null, arguments, context);
+      }
     }
+  }
+
+  /** The aggregate items of {@code projection}, in the order the groups of an evaluator of it keep their states in. */
+  static ProjectionItem[] aggregateItemsOf(final Projection projection, final CommandContext context) {
+    final List<ProjectionItem> aggregates = new ArrayList<>();
+    for (final ProjectionItem item : projection.getItems())
+      if (item.isAggregate(context))
+        aggregates.add(item);
+    return aggregates.toArray(new ProjectionItem[0]);
+  }
+
+  /**
+   * Whether an aggregation is a built-in SQL aggregate, which reads nothing of the row it is fed but its arguments: it can
+   * be fed arguments evaluated already, without the row, and on another thread than the one that read the row.
+   */
+  static boolean feedsWithoutRow(final AggregationContext aggregation) {
+    return aggregation instanceof FunctionAggregationContext function && isBuiltIn(function.getFunction());
   }
 
   /** The row of a group whose aggregation is over: its non-aggregate values, and the result of every aggregate. */
@@ -362,8 +419,10 @@ final class AggregateRowEvaluator {
     final AggregationContext[] aggregates;
     long                       firstSeen;
 
-    Group(final GroupByKey key, final Object[] columnValues, final AggregationContext[] aggregates, final long firstSeen) {
-      super(key.keyValues.clone(), key);
+    /** A group whose key is {@code keyValues}, already normalized and hashed as {@code key}, and owned by the group. */
+    Group(final Object[] keyValues, final GroupByKey key, final Object[] columnValues, final AggregationContext[] aggregates,
+        final long firstSeen) {
+      super(keyValues, key);
       this.columnValues = columnValues;
       this.aggregates = aggregates;
       this.firstSeen = firstSeen;
@@ -405,6 +464,11 @@ final class AggregateRowEvaluator {
       this.hashCode = key.hashCode;
       this.longKeyed = key.longKeyed;
       this.longKey = key.longKey;
+    }
+
+    /** A key of its own with the values of this one: a key that outlives the row, the probe being reused for the next. */
+    GroupByKey copy() {
+      return new GroupByKey(keyValues.clone(), this);
     }
 
     /** Normalizes the values just written into {@link #keyValues}, and hashes them. */

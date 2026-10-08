@@ -66,12 +66,6 @@ public class SQLFunctionCount extends SQLAggregatedFunction {
     return counted ? 1L : 0L;
   }
 
-  @Override
-  public void aggregate(final Object self, final Object value, final CommandContext context) {
-    if (value != null)
-      total++;
-  }
-
   public boolean aggregateResults() {
     return true;
   }

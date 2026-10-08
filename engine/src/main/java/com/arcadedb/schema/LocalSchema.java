@@ -369,6 +369,13 @@ public class LocalSchema implements Schema {
   protected final     Map<String, JSONObject>               extensions                    = new LinkedHashMap<>();
   private final       Map<String, TriggerListenerAdapter> triggerAdapters = new HashMap<>();
   /**
+   * The TimeSeries types whose engine waits for the WAL replay of the open in progress, {@code null} when engines are
+   * built as their types are read. See {@link #openDeferredTimeSeriesEngines()}.
+   */
+  // Written by load() and openDeferredTimeSeriesEngines(), both on the single thread that opens the database, and by close();
+  // volatile for the close() that can come from another thread
+  private volatile    List<LocalTimeSeriesType>             timeSeriesEnginesAwaitingReplay;
+  /**
    * The schema members that live beside {@code "types"} (triggers, materialized views, continuous aggregates,
    * function libraries, extensions) as a load in flight has restored them, or {@code null} when nothing is staging.
    * Published by {@link #publishStagedMembers()} at the same barrier as the type graph and discarded by
@@ -503,6 +510,16 @@ public class LocalSchema implements Schema {
   }
 
   public void load(final ComponentFile.MODE mode, final boolean initialize) throws IOException {
+    load(mode, initialize, false);
+  }
+
+  /**
+   * @param deferTimeSeriesEngines registers the TimeSeries types without building their engines, for an open that
+   *                               replays the WAL after this load (issue #9452). The caller MUST then call
+   *                               {@link #openDeferredTimeSeriesEngines()} once the replay is over
+   */
+  public void load(final ComponentFile.MODE mode, final boolean initialize, final boolean deferTimeSeriesEngines)
+      throws IOException {
     // Claim the staging window FIRST. beginStagedPublication() refuses a load that overlaps another, and a refusal
     // has to leave the schema exactly as it found it.
     // stageFileIds=true: the previous generation keeps its file-id slots until the barrier, which is what keeps the
@@ -515,6 +532,7 @@ public class LocalSchema implements Schema {
     final Dictionary previousDictionary = dictionary;
     boolean published = false;
     try {
+      timeSeriesEnginesAwaitingReplay = deferTimeSeriesEngines ? new ArrayList<>() : null;
       // NOTHING is cleared (issue #7963). The previous generation - type graph (issue #7961), by-name maps and
       // file-id array alike - stays published, whole, until the new one replaces it at the barrier below, so a query
       // running on a live HA follower while this rebuild runs keeps resolving its buckets and indexes instead of
@@ -583,8 +601,12 @@ public class LocalSchema implements Schema {
 
       updateSecurity();
     } finally {
-      if (!published && previousDictionary != null)
-        dictionary = previousDictionary;
+      if (!published) {
+        if (previousDictionary != null)
+          dictionary = previousDictionary;
+        // Engines left waiting by a load that did not publish must not leak into the next one
+        timeSeriesEnginesAwaitingReplay = null;
+      }
       endStagedPublication();
     }
   }
@@ -2443,6 +2465,8 @@ public class LocalSchema implements Schema {
   }
 
   public void close() {
+    // An open that failed before the replay finished leaves the engines it deferred behind
+    timeSeriesEnginesAwaitingReplay = null;
     // Save dirty configuration before clearing everything
     if (dirtyGeneration.get() > savedGeneration) {
       try {
@@ -2994,6 +3018,77 @@ public class LocalSchema implements Schema {
   }
 
   /**
+   * Builds the storage engine of a TimeSeries type read from the schema and schedules its maintenance. A failure leaves
+   * the type registered without an engine rather than dropping it from the schema (issue #6356).
+   */
+  private void openTimeSeriesEngine(final LocalTimeSeriesType tsType) {
+    try {
+      tsType.initEngine();
+    } catch (final IOException e) {
+      // Register the type anyway rather than letting it vanish from the schema (issue #6356): the
+      // exception this catches means one derived file (a .ts.sealed most commonly, rebuildable under HA
+      // by recompacting the replicated mutable pages) failed to open, not that the type or its mutable
+      // data is gone. Registering it keeps the type VISIBLE - CHECK DATABASE already has a branch for
+      // exactly this (DatabaseChecker#checkTimeSeries: "the storage engine is not initialised") that a
+      // type missing from the schema map could never reach - and every read/write against it now fails
+      // loudly through LocalTimeSeriesType#requireEngine() instead of the type silently reappearing empty
+      // on the next write. Not registering it here is what issue #6356 reported: the database opened
+      // cleanly with the type simply gone and nothing said why.
+      tsType.markEngineUnavailable(e.getMessage());
+      LogManager.instance().log(this, Level.SEVERE,
+          "Error initializing TimeSeries engine for type '%s', the type is registered but its storage is "
+              + "unavailable until this is resolved: %s", e, tsType.getName(), e.getMessage());
+    }
+    // Schedule automatic retention/downsampling if policies are defined. Kept OUTSIDE the try above and
+    // behind its own catch: this can only run once the engine is actually available, and a scheduling
+    // failure (the executor rejecting the task, e.g. mid-shutdown) is unrelated to whether the engine
+    // itself works - it must not be mistaken for one and must not escape to the outer catch in this
+    // method, which would abort every type the load has not reached yet for a reason that has nothing to
+    // do with any of them.
+    if (tsType.isEngineAvailable()) {
+      try {
+        getTimeSeriesMaintenanceScheduler().schedule(database, tsType);
+      } catch (final RejectedExecutionException e) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Could not schedule automatic TimeSeries maintenance for type '%s': %s", e, tsType.getName(), e.getMessage());
+      }
+    }
+  }
+
+  /**
+   * Forgets the engines a {@link #load(ComponentFile.MODE, boolean, boolean)} deferred, for an open whose WAL replay failed: they
+   * must not be built over a replay that did not finish (issue #9452).
+   */
+  public void discardDeferredTimeSeriesEngines() {
+    timeSeriesEnginesAwaitingReplay = null;
+  }
+
+  /**
+   * Builds the engines of the TimeSeries types a {@link #load(ComponentFile.MODE, boolean, boolean)} deferred, once the
+   * WAL replay of the open is over (issue #9452). Before the replay the pages of a crashed database are whatever the
+   * dead process had flushed, and an engine built on them acts on a past that the WAL is about to overwrite: the shard
+   * repair took a compaction whose last step was committed but not flushed for an interrupted one and truncated its
+   * sealed blocks, which the replay then followed by clearing the mutable pages that still held the same rows; the tag
+   * dictionary loaded a map without the values interned since the last flush, and interned them again under new ids.
+   */
+  public void openDeferredTimeSeriesEngines() {
+    final List<LocalTimeSeriesType> pending = timeSeriesEnginesAwaitingReplay;
+    timeSeriesEnginesAwaitingReplay = null;
+    if (pending != null)
+      for (final LocalTimeSeriesType tsType : pending)
+        try {
+          openTimeSeriesEngine(tsType);
+        } catch (final RuntimeException e) {
+          // One type must not leave the ones after it without an engine: it stays registered and fails loudly, as a type whose
+          // engine could not be opened does (issue #6356)
+          tsType.markEngineUnavailable(e.toString());
+          LogManager.instance().log(this, Level.SEVERE,
+              "Error initializing TimeSeries engine for type '%s' after the recovery, the type is registered but its storage is "
+                  + "unavailable until this is resolved: %s", e, tsType.getName(), e.getMessage());
+        }
+  }
+
+  /**
    * Rebuilds the logical schema from {@code schema.json}.
    *
    * @return {@code false} when the file could not be read into a schema (issue #8230). The failure is logged and the
@@ -3093,37 +3188,11 @@ public class LocalSchema implements Schema {
           case "t" -> {
             final LocalTimeSeriesType tsType = new LocalTimeSeriesType(this, typeName);
             tsType.fromJSON(schemaType);
-            try {
-              tsType.initEngine();
-            } catch (final IOException e) {
-              // Register the type anyway rather than letting it vanish from the schema (issue #6356): the
-              // exception this catches means one derived file (a .ts.sealed most commonly, rebuildable under HA
-              // by recompacting the replicated mutable pages) failed to open, not that the type or its mutable
-              // data is gone. Registering it keeps the type VISIBLE - CHECK DATABASE already has a branch for
-              // exactly this (DatabaseChecker#checkTimeSeries: "the storage engine is not initialised") that a
-              // type missing from the schema map could never reach - and every read/write against it now fails
-              // loudly through LocalTimeSeriesType#requireEngine() instead of the type silently reappearing empty
-              // on the next write. Not registering it here is what issue #6356 reported: the database opened
-              // cleanly with the type simply gone and nothing said why.
-              tsType.markEngineUnavailable(e.getMessage());
-              LogManager.instance().log(this, Level.SEVERE,
-                  "Error initializing TimeSeries engine for type '%s', the type is registered but its storage is "
-                      + "unavailable until this is resolved: %s", e, typeName, e.getMessage());
-            }
-            // Schedule automatic retention/downsampling if policies are defined. Kept OUTSIDE the try above and
-            // behind its own catch: this can only run once the engine is actually available, and a scheduling
-            // failure (the executor rejecting the task, e.g. mid-shutdown) is unrelated to whether the engine
-            // itself works - it must not be mistaken for one and must not escape to the outer catch in this
-            // method, which would abort every type the load has not reached yet for a reason that has nothing to
-            // do with any of them.
-            if (tsType.isEngineAvailable()) {
-              try {
-                getTimeSeriesMaintenanceScheduler().schedule(database, tsType);
-              } catch (final RejectedExecutionException e) {
-                LogManager.instance().log(this, Level.WARNING,
-                    "Could not schedule automatic TimeSeries maintenance for type '%s': %s", e, typeName, e.getMessage());
-              }
-            }
+            // Not built here when the open has a WAL to replay (issue #9452): see openDeferredTimeSeriesEngines()
+            if (timeSeriesEnginesAwaitingReplay != null)
+              timeSeriesEnginesAwaitingReplay.add(tsType);
+            else
+              openTimeSeriesEngine(tsType);
             yield tsType;
           }
           case null, default -> throw new ConfigurationException("Type '" + kind + "' is not supported");

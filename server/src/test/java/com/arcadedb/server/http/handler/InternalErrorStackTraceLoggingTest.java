@@ -26,10 +26,12 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.log.Logger;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.TestServerHelper;
+import com.arcadedb.server.UnstartedHttpServers;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
-import io.micrometer.observation.ObservationRegistry;
 import io.undertow.io.Sender;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HeaderMap;
@@ -65,6 +67,8 @@ import static org.mockito.Mockito.when;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class InternalErrorStackTraceLoggingTest {
+  @RegisterExtension
+  static final UnstartedHttpServers HTTP_SERVERS = new UnstartedHttpServers();
 
   @Test
   void internalErrorDuringCommandLogsFullStackTrace() {
@@ -200,15 +204,11 @@ class InternalErrorStackTraceLoggingTest {
 
   /** Runs the real catch chain against a handler whose execute() throws, capturing status and body. */
   private HandledResponse handle(final RuntimeException toThrow, final String serverMode) {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getObservationRegistry()).thenReturn(ObservationRegistry.create());
     final ContextConfiguration configuration = new ContextConfiguration();
     configuration.setValue(GlobalConfiguration.SERVER_MODE, serverMode);
-    when(server.getConfiguration()).thenReturn(configuration);
-    when(server.getServerName()).thenReturn("test");
+    final ArcadeDBServer server = TestServerHelper.unstartedServer("test", configuration);
 
-    final HttpServer httpServer = mock(HttpServer.class);
-    when(httpServer.getServer()).thenReturn(server);
+    final HttpServer httpServer = HTTP_SERVERS.of(server);
 
     final Sender sender = mock(Sender.class);
     final HttpServerExchange exchange = mock(HttpServerExchange.class);

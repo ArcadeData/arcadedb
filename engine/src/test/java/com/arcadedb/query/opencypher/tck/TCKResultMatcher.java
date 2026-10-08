@@ -23,11 +23,16 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
+import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.OffsetDateTime;
+import java.time.OffsetTime;
+import java.time.ZonedDateTime;
 
 import java.util.*;
 
@@ -378,6 +383,10 @@ public class TCKResultMatcher {
       return value.toString();
     if (value instanceof LocalDateTime)
       return value.toString();
+    // Time, local time and zoned datetime are stored natively (issue #8572), so a node property or a list element comes
+    // back as the java.time value; the expected side is the Cypher text of that value
+    if (value instanceof LocalTime || value instanceof OffsetTime || value instanceof ZonedDateTime || value instanceof OffsetDateTime)
+      return TemporalUtil.fromCoreJavaType(value).toString();
     if (value instanceof Result) {
       final Result r = (Result) value;
       if (r.isElement())

@@ -73,20 +73,6 @@ public abstract class SQLAggregatedFunction extends SQLFunctionConfigurableAbstr
   }
 
   /**
-   * Feeds the only argument of one row to the cross-row state: what {@link #execute} does for a single-argument call in
-   * an aggregation, without the per-row answer it also returns, which an aggregation never reads (issue #9496). That
-   * answer is the running result for some functions - a running {@code sum()} or {@code avg()} would have to box a new
-   * number on every row to give it - and the argument array is one more object per row. A function on the hot path of a
-   * GROUP BY overrides this; any other gets {@link #execute} as before.
-   *
-   * @param self  what {@link #execute} receives as its first argument: the row being aggregated
-   * @param value the value of the function's argument on that row
-   */
-  public void aggregate(final Object self, final Object value, final CommandContext context) {
-    execute(self, null, null, new Object[] { value }, context);
-  }
-
-  /**
    * Determines whether this function should aggregate results across multiple records.
    * <p>
    * Default behavior: aggregate when called with a single parameter.
@@ -99,6 +85,19 @@ public abstract class SQLAggregatedFunction extends SQLFunctionConfigurableAbstr
   @Override
   public boolean aggregateResults() {
     return configuredParameters.length == 1;
+  }
+
+  /**
+   * Feeds the arguments of one row to the cross-row state: what the aggregation of a query calls for every row, which
+   * ignores the value {@link #execute} returns. A function whose return value costs something to build per row (a boxed
+   * running total, a running average) overrides it to skip that (#9496).
+   *
+   * @param self    the row, passed to {@link #execute} as its {@code self}
+   * @param params  the values of the arguments for this row
+   * @param context the command context
+   */
+  public void aggregate(final Object self, final Object[] params, final CommandContext context) {
+    execute(self, null, null, params, context);
   }
 
   /**

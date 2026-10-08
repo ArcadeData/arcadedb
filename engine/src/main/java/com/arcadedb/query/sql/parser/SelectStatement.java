@@ -28,6 +28,8 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.index.IndexException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalExecutionPlan;
@@ -36,8 +38,13 @@ import com.arcadedb.query.sql.executor.SelectExecutionPlanner;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.function.Function;
+import java.util.logging.Level;
 
 public class SelectStatement extends Statement {
+  /** How many attempts in all a SELECT gets when the index its plan reads is gone by the time it starts (issue #9331). */
+  private static final int STALE_INDEX_PLAN_MAX_ATTEMPTS = 3;
+
   public FromClause  target;
   public Projection  projection;
   public WhereClause whereClause;
@@ -190,8 +197,7 @@ public class SelectStatement extends Statement {
 
     context.setInputParameters(params);
 
-    final InternalExecutionPlan executionPlan = createExecutionPlan(context);
-    return new LocalResultSet(executionPlan);
+    return openResultSet(context, this::createExecutionPlan);
   }
 
   @Override
@@ -206,9 +212,41 @@ public class SelectStatement extends Statement {
     setProfilingConstraints((DatabaseInternal) db);
     context.setInputParameters(params);
 
-    final InternalExecutionPlan executionPlan = usePlanCache ? createExecutionPlan(context) :
-        createExecutionPlanNoCache(context);
-    return new LocalResultSet(executionPlan);
+    return openResultSet(context, usePlanCache ? this::createExecutionPlan : this::createExecutionPlanNoCache);
+  }
+
+  /**
+   * Plans the statement and runs the first batch of its plan; when an index the planner or a step reads has been dropped or
+   * rebuilt meanwhile (issue #9331) it plans the statement again. The planner validates an index, picks it, and reads it again
+   * a few calls later; the steps read it once more when they start. A concurrent {@code DROP INDEX} in any of those gaps left
+   * a plan that no longer matches the schema, and the {@link IndexException} reached the caller of a read-only query.
+   * <p>
+   * Only the planning and the first batch are covered: an index dropped after the first rows were returned surfaces as the
+   * {@link IndexException} of {@code FetchFromIndexStep}, which beats a silently short answer. Before the first row nothing has
+   * been returned, so running the statement again is safe (a function with side effects, such as {@code sequence.next()},
+   * would run twice, but the exception comes from the index, before the first row). Every attempt after the first plans
+   * without the cache, which may still hold the stale plan.
+   */
+  private ResultSet openResultSet(final CommandContext context, final Function<CommandContext, InternalExecutionPlan> firstPlanner) {
+    for (int attempt = 1; ; attempt++) {
+      InternalExecutionPlan plan = null;
+      try {
+        plan = attempt == 1 ? firstPlanner.apply(context) : createExecutionPlanNoCache(context);
+        return new LocalResultSet(plan);
+      } catch (final IndexException e) {
+        if (attempt >= STALE_INDEX_PLAN_MAX_ATTEMPTS)
+          throw e;
+        LogManager.instance().log(this, Level.INFO, "Planning the statement again after attempt %d, its index was dropped or "
+            + "rebuilt: %s", null, attempt, e.getMessage());
+        if (plan != null)
+          try {
+            plan.close();
+          } catch (final RuntimeException closeFailure) {
+            // The stale index is the reason for the retry, not the close of the plan it spoiled
+            e.addSuppressed(closeFailure);
+          }
+      }
+    }
   }
 
   public InternalExecutionPlan createExecutionPlan(final CommandContext context) {

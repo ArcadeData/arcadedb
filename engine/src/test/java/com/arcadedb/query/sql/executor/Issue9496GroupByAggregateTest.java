@@ -346,9 +346,9 @@ class Issue9496GroupByAggregateTest extends TestHelper {
       Number foldedSecond = null;
       for (int i = 0; i < values.size(); i++) {
         final Number value = values.get(i);
-        sum.aggregate(null, value, null);
-        avg.aggregate(null, value, null);
-        (i < size / 2 ? firstHalf : secondHalf).aggregate(null, value, null);
+        sum.aggregate(null, new Object[] { value }, null);
+        avg.aggregate(null, new Object[] { value }, null);
+        (i < size / 2 ? firstHalf : secondHalf).aggregate(null, new Object[] { value }, null);
         if (value != null) {
           folded = folded == null ? value : Type.increment(folded, value);
           if (i < size / 2)
@@ -378,20 +378,20 @@ class Issue9496GroupByAggregateTest extends TestHelper {
   @Test
   void integralSumsWidenAsBefore() {
     final SQLFunctionSum sum = new SQLFunctionSum();
-    sum.aggregate(null, Integer.MAX_VALUE - 1, null);
-    sum.aggregate(null, 1, null);
+    sum.aggregate(null, new Object[] { Integer.MAX_VALUE - 1 }, null);
+    sum.aggregate(null, new Object[] { 1 }, null);
     assertThat(sum.getResult()).isEqualTo(Integer.MAX_VALUE);
-    sum.aggregate(null, 1, null);
+    sum.aggregate(null, new Object[] { 1 }, null);
     assertThat(sum.getResult()).isEqualTo((long) Integer.MAX_VALUE + 1);
-    sum.aggregate(null, Long.MAX_VALUE, null);
+    sum.aggregate(null, new Object[] { Long.MAX_VALUE }, null);
     assertThat(sum.getResult()).isEqualTo(BigDecimal.valueOf(Long.MAX_VALUE).add(BigDecimal.valueOf((long) Integer.MAX_VALUE + 1)));
-    sum.aggregate(null, 0.5, null);
+    sum.aggregate(null, new Object[] { 0.5 }, null);
     assertThat(sum.getResult()).isInstanceOf(BigDecimal.class);
 
     final SQLFunctionSum doubles = new SQLFunctionSum();
-    doubles.aggregate(null, 3, null);
-    doubles.aggregate(null, 0.5, null);
-    doubles.aggregate(null, 2L, null);
+    doubles.aggregate(null, new Object[] { 3 }, null);
+    doubles.aggregate(null, new Object[] { 0.5 }, null);
+    doubles.aggregate(null, new Object[] { 2L }, null);
     assertThat(doubles.getResult()).isEqualTo(5.5);
 
     // A DOUBLE MEETING A DECIMAL AND A FLOAT: THE BOXED SUM CARRIES ON AS Type.increment() DOES
@@ -399,15 +399,15 @@ class Issue9496GroupByAggregateTest extends TestHelper {
     final Number[] values = { 0.5, new BigDecimal("0.25"), 0.25f, 2, (short) 1, 3L };
     Number folded = null;
     for (final Number value : values) {
-      mixed.aggregate(null, value, null);
+      mixed.aggregate(null, new Object[] { value }, null);
       folded = folded == null ? value : Type.increment(folded, value);
     }
     assertThat(mixed.getResult()).isInstanceOf(BigDecimal.class).isEqualTo(folded);
 
     final SQLFunctionSum floats = new SQLFunctionSum();
-    floats.aggregate(null, 2, null);
-    floats.aggregate(null, 0.25f, null);
-    floats.aggregate(null, (short) 3, null);
+    floats.aggregate(null, new Object[] { 2 }, null);
+    floats.aggregate(null, new Object[] { 0.25f }, null);
+    floats.aggregate(null, new Object[] { (short) 3 }, null);
     assertThat(floats.getResult()).isInstanceOf(Float.class).isEqualTo(Type.increment(Type.increment(2, 0.25f), (short) 3));
   }
 

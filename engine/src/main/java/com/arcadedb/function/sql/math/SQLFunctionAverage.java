@@ -33,7 +33,7 @@ import java.math.RoundingMode;
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
-public class SQLFunctionAverage extends SQLFunctionRunningSumAbstract {
+public class SQLFunctionAverage extends SQLAggregatedFunction {
   public static final String NAME = "avg";
 
   /**
@@ -42,9 +42,11 @@ public class SQLFunctionAverage extends SQLFunctionRunningSumAbstract {
    */
   private static final int BIG_DECIMAL_SCALE = 10;
 
-  private int     total        = 0;
+  // THE CROSS-ROW TOTAL, UNBOXED WHILE THE INPUTS ARE Double, Long OR Integer (#9496)
+  private final NumericSum sum          = new NumericSum();
+  private       int        total        = 0;
   // TRUE WHEN AN INPUT WAS A BigDecimal, FALSE WHEN A BigDecimal SUM IS ONLY THE WIDENED RESULT OF A long OVERFLOW (#8974)
-  private boolean decimalInput = false;
+  private       boolean    decimalInput = false;
 
   public SQLFunctionAverage() {
     super(NAME);
@@ -53,7 +55,7 @@ public class SQLFunctionAverage extends SQLFunctionRunningSumAbstract {
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
     if (params.length == 1) {
-      aggregate(self, params[0], context);
+      accumulateNumeric(params[0], this::sum);
       return getResult();
     }
 
@@ -71,23 +73,27 @@ public class SQLFunctionAverage extends SQLFunctionRunningSumAbstract {
     return computeAverage(rowSum, rowTotal, rowSum instanceof BigDecimal && anyDecimal(params));
   }
 
-  @Override
-  public void aggregate(final Object self, final Object value, final CommandContext context) {
-    accumulate(value);
-  }
-
-  @Override
-  protected void accept(final Number value) {
-    sum(value);
-  }
-
   protected void sum(final Number value) {
     if (value != null) {
       total++;
       if (value instanceof BigDecimal)
         decimalInput = true;
-      addToSum(value);
+      sum.add(value);
     }
+  }
+
+  /**
+   * The per-row call of the aggregation: the cross-row form adds the value without computing the running average that
+   * {@link #execute} would return (#9496).
+   */
+  @Override
+  public void aggregate(final Object self, final Object[] params, final CommandContext context) {
+    if (params.length == 1 && params[0] instanceof Number number)
+      sum(number);
+    else if (params.length == 1)
+      accumulateNumeric(params[0], this::sum);
+    else
+      execute(self, null, null, params, context);
   }
 
   public String getSyntax() {
@@ -96,7 +102,12 @@ public class SQLFunctionAverage extends SQLFunctionRunningSumAbstract {
 
   @Override
   public Object getResult() {
-    return computeAverage(getSum(), total, decimalInput);
+    if (total == 0)
+      return null;
+    // NOT A BigDecimal: THE MEAN IS THE double TOTAL OVER THE COUNT, WITHOUT BOXING THE TOTAL FIRST
+    if (!sum.isDecimal())
+      return sum.doubleValue() / total;
+    return computeAverage(sum.get(), total, decimalInput);
   }
 
   @Override
@@ -112,9 +123,10 @@ public class SQLFunctionAverage extends SQLFunctionRunningSumAbstract {
   @Override
   public void mergePartial(final SQLAggregatedFunction other) {
     final SQLFunctionAverage partial = (SQLFunctionAverage) other;
-    if (partial.total == 0)
+    final Number partialSum = partial.sum.get();
+    if (partialSum == null)
       return;
-    addToSum(partial);
+    sum.add(partialSum);
     total += partial.total;
     decimalInput |= partial.decimalInput;
   }

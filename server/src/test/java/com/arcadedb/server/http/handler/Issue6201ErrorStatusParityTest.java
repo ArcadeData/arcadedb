@@ -41,6 +41,8 @@ import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ClusterCapabilityNotReadyException;
+import com.arcadedb.server.TestServerHelper;
+import com.arcadedb.server.UnstartedHttpServers;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.HttpSessionException;
 import com.arcadedb.server.http.RequestBodyTooLargeException;
@@ -49,8 +51,8 @@ import com.arcadedb.server.http.ResultSetTooLargeException;
 import com.arcadedb.server.http.RetryLaterException;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
-import io.micrometer.observation.ObservationRegistry;
 import io.undertow.io.Sender;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.server.RequestTooBigException;
@@ -93,6 +95,8 @@ import static org.mockito.Mockito.when;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue6201ErrorStatusParityTest {
+  @RegisterExtension
+  static final UnstartedHttpServers HTTP_SERVERS = new UnstartedHttpServers();
 
   /** One mapped failure: how to build it, and the status the contract says it is answered with. */
   private record MappedFailure(String name, int expectedStatus, Supplier<RuntimeException> factory) {
@@ -485,13 +489,9 @@ class Issue6201ErrorStatusParityTest {
   }
 
   private ThrowingHandler handler(final RuntimeException toThrow) {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getObservationRegistry()).thenReturn(ObservationRegistry.create());
-    when(server.getConfiguration()).thenReturn(new ContextConfiguration());
-    when(server.getServerName()).thenReturn("test");
+    final ArcadeDBServer server = TestServerHelper.unstartedServer("test", new ContextConfiguration());
 
-    final HttpServer httpServer = mock(HttpServer.class);
-    when(httpServer.getServer()).thenReturn(server);
+    final HttpServer httpServer = HTTP_SERVERS.of(server);
     return new ThrowingHandler(httpServer, toThrow);
   }
 
