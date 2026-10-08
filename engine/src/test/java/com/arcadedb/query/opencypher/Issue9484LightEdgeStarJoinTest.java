@@ -112,6 +112,29 @@ class Issue9484LightEdgeStarJoinTest extends TestHelper {
     assertThat(count(WITH)).isEqualTo(6L);
   }
 
+  @Test
+  void aMultiHopArmOverLightEdges() {
+    database.command("sql", "CREATE VERTEX TYPE W");
+    database.command("sql", "CREATE EDGE TYPE E1 LIGHTWEIGHT");
+    database.command("sql", "CREATE EDGE TYPE E3 LIGHTWEIGHT");
+    database.command("sql", "CREATE EDGE TYPE E2");
+    database.transaction(() -> {
+      final MutableVertex s = database.newVertex("S").save();
+      // 2 paths s -> t -> w on the first arm (one t with 2 w, one t with 1 w) and 2 edges on the second arm
+      final MutableVertex t1 = database.newVertex("T").save();
+      final MutableVertex t2 = database.newVertex("T").save();
+      s.newLightEdge("E1", t1);
+      s.newLightEdge("E1", t2);
+      t1.newLightEdge("E3", database.newVertex("W").save());
+      t1.newLightEdge("E3", database.newVertex("W").save());
+      t2.newLightEdge("E3", database.newVertex("W").save());
+      s.newEdge("E2", database.newVertex("U").save());
+      s.newEdge("E2", database.newVertex("U").save());
+    });
+    assertThat(count("MATCH (s:S)-[:E1]->(t:T)-[:E3]->(w:W), (s)-[:E2]->(u:U) RETURN count(*) AS n")).isEqualTo(6L);
+    assertThat(count("MATCH (s:S)-[:E1]->(t:T)-[:E3]->(w:W) WITH s, t, w MATCH (s)-[:E2]->(u:U) RETURN count(*) AS n")).isEqualTo(6L);
+  }
+
   private void build(final String e1Modifier, final Kind kind) {
     database.command("sql", "CREATE EDGE TYPE E1" + e1Modifier);
     database.command("sql", "CREATE EDGE TYPE E2");

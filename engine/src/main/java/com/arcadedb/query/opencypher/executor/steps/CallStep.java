@@ -469,6 +469,7 @@ public class CallStep extends AbstractExecutionStep {
       // that looks legitimately empty. Matches Neo4j, where OPTIONAL CALL is about cardinality (issue #5602).
       throw clientError;
     } catch (final NeedRetryException retryable) {
+      // a conflict keeps its type, OPTIONAL or not: Database.transaction(..., retries) retries on it (#9487)
       throw retryable;
     } catch (final Exception e) {
       if (callClause.isOptional())
@@ -515,6 +516,7 @@ public class CallStep extends AbstractExecutionStep {
 
       return result;
     } catch (final NeedRetryException retryable) {
+      // a conflict keeps its type, OPTIONAL or not: Database.transaction(..., retries) retries on it (#9487)
       throw retryable;
     } catch (final Exception e) {
       if (callClause.isOptional())

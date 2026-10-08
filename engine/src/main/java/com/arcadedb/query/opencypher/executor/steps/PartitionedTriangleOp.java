@@ -260,6 +260,9 @@ public final class PartitionedTriangleOp implements CountOp {
    * {@code u}, the third at another person {@code y}: one loop, and two of the {@code m} edges between {@code u} and {@code y},
    * in order) or sits at {@code u} entirely (three distinct loops). The three positions that can hold the repeated {@code u}
    * make the factor 3. Triangles of three distinct persons use no loop and are counted by the intersection.
+   * <p>
+   * {@code sorted} is the neighbour range of {@code u}, ascending like every range the intersection merges, so equal values form
+   * one run and {@code Arrays.binarySearch} finds the loop.
    */
   private long loopTermOfPartition(final GraphTraversalProvider provider, final int u, final int[] sorted, final int from,
       final int to, final int[] personPartition, final int country) {
