@@ -46,10 +46,9 @@ import static org.mockito.Mockito.when;
 class Issue7118ReadinessRaftLogFailureTest {
 
   private static ArcadeDBServer onlineServerWith(final HAServerPlugin ha, final ContextConfiguration configuration) {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getStatus()).thenReturn(ArcadeDBServer.STATUS.ONLINE);
-    when(server.getConfiguration()).thenReturn(configuration);
-    when(server.getHA()).thenReturn(ha);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create((String) null, configuration);
+    server.online();
+    server.setHA(ha);
     return server;
   }
 
@@ -122,9 +121,9 @@ class Issue7118ReadinessRaftLogFailureTest {
   void aServerStillStartingReportsItsStatusNotTheLogFailure() {
     final HAServerPlugin ha = mock(HAServerPlugin.class);
     when(ha.getRaftLogFailure()).thenReturn("at index 1: boom");
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getStatus()).thenReturn(ArcadeDBServer.STATUS.STARTING);
-    when(server.getHA()).thenReturn(ha);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+    server.status(ArcadeDBServer.STATUS.STARTING);
+    server.setHA(ha);
 
     assertThat(new ServerControlPlane(server).notReadyReason()).isEqualTo("Server not started yet");
   }

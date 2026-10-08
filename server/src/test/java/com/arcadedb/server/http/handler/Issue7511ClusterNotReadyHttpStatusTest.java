@@ -25,14 +25,16 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ClusterCapabilityNotReadyException;
 import com.arcadedb.server.ServerControlPlane;
+import com.arcadedb.server.TestServerHelper;
+import com.arcadedb.server.UnstartedHttpServers;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
-import io.micrometer.observation.ObservationRegistry;
 import io.undertow.io.Sender;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HeaderMap;
 import io.undertow.util.Methods;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
 import org.mockito.ArgumentCaptor;
 
 import java.util.List;
@@ -60,6 +62,8 @@ import static org.mockito.Mockito.when;
  * @author Roberto Franchini (r.franchini@arcadedata.com)
  */
 class Issue7511ClusterNotReadyHttpStatusTest {
+  @RegisterExtension
+  static final UnstartedHttpServers HTTP_SERVERS = new UnstartedHttpServers();
 
   private static final String CAPABILITY = "security-groups-entry";
   private static final String LAGGING    = "arcadedb2";
@@ -164,13 +168,9 @@ class Issue7511ClusterNotReadyHttpStatusTest {
     final ContextConfiguration configuration = new ContextConfiguration();
     configuration.setValue(GlobalConfiguration.SERVER_MODE, serverMode);
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getObservationRegistry()).thenReturn(ObservationRegistry.create());
-    when(server.getConfiguration()).thenReturn(configuration);
-    when(server.getServerName()).thenReturn("test");
+    final ArcadeDBServer server = TestServerHelper.unstartedServer("test", configuration);
 
-    final HttpServer httpServer = mock(HttpServer.class);
-    when(httpServer.getServer()).thenReturn(server);
+    final HttpServer httpServer = HTTP_SERVERS.of(server);
 
     final Sender sender = mock(Sender.class);
     final HttpServerExchange exchange = mock(HttpServerExchange.class);

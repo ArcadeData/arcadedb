@@ -51,10 +51,9 @@ class Issue7519ReadinessBootstrapWindowTest {
       "The cluster's first-formation bootstrap is replacing 1 database(s) on this node from the leader's snapshot";
 
   private static ArcadeDBServer onlineServerWith(final HAServerPlugin ha, final ContextConfiguration configuration) {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getStatus()).thenReturn(ArcadeDBServer.STATUS.ONLINE);
-    when(server.getConfiguration()).thenReturn(configuration);
-    when(server.getHA()).thenReturn(ha);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create((String) null, configuration);
+    server.online();
+    server.setHA(ha);
     return server;
   }
 
@@ -153,9 +152,9 @@ class Issue7519ReadinessBootstrapWindowTest {
   void aServerStillStartingReportsItsStatusNotTheBootstrapWindow() {
     final HAServerPlugin ha = mock(HAServerPlugin.class);
     when(ha.getBootstrapWindowReason()).thenReturn(INSTALLING);
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getStatus()).thenReturn(ArcadeDBServer.STATUS.STARTING);
-    when(server.getHA()).thenReturn(ha);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+    server.status(ArcadeDBServer.STATUS.STARTING);
+    server.setHA(ha);
 
     assertThat(new ServerControlPlane(server).notReadyReason()).isEqualTo("Server not started yet");
   }
