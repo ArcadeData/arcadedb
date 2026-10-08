@@ -1,0 +1,359 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.query.sql.executor;
+
+import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.MutableDocument;
+import com.arcadedb.function.sql.math.SQLFunctionAverage;
+import com.arcadedb.function.sql.math.SQLFunctionSum;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Type;
+import org.junit.jupiter.api.Test;
+
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Random;
+import java.util.concurrent.atomic.AtomicLong;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * Issue #9496: a GROUP BY cost about 170 ns of CPU per aggregate per row. The aggregation now evaluates the projection
+ * computing the aggregates' arguments into an array bound to the aggregates once per query, reads every property of a
+ * record once per row, keeps the running sums of {@code sum()} and {@code avg()} unboxed, keys an integral GROUP BY value
+ * as a Long rather than a BigDecimal, and no longer asks the command context about the columns the planner generates. These
+ * tests pin that every one of those changes answers what the code before them answered - in the parallel aggregation and
+ * in the sequential one - and the bug found on the way: a database global variable named like a generated column
+ * shadowed it.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+class Issue9496GroupByAggregateTest extends TestHelper {
+  private static final int      ROWS  = 20_000;
+  private static final String[] FLAGS = { "A", "N", "R" };
+
+  // EVERY VALUE IS A MULTIPLE OF 1/4 WELL UNDER 2^40, SO EVERY SUM IS EXACT IN WHATEVER ORDER THE WORKERS ADD
+  private static final String Q1 =
+      "SELECT l_returnflag, l_linestatus, sum(l_quantity) AS sum_qty, sum(l_extendedprice) AS sum_base, "
+          + "sum(l_extendedprice * (1 - l_discount)) AS sum_disc, sum(l_extendedprice * (1 - l_discount) * (1 + l_tax)) AS sum_charge, "
+          + "avg(l_quantity) AS avg_qty, avg(l_extendedprice) AS avg_price, avg(l_discount) AS avg_disc, count(*) AS n "
+          + "FROM LineItem WHERE l_shipdate <= '1998-09-02' GROUP BY l_returnflag, l_linestatus ORDER BY l_returnflag, l_linestatus";
+
+  @Override
+  protected void beginTest() {
+    // SMALL UNITS, SO THE FIXTURE'S FEW HUNDRED PAGES ARE CUT IN MANY OF THEM AND THE AGGREGATION RUNS IN THE WORKERS
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN_PAGES_PER_UNIT, 2);
+
+    final DocumentType type = database.getSchema().buildDocumentType().withName("LineItem").withTotalBuckets(3).create();
+    type.createProperty("l_partkey", Type.LONG);
+    type.createProperty("l_quantity", Type.DOUBLE);
+    type.createProperty("l_extendedprice", Type.DOUBLE);
+    type.createProperty("l_discount", Type.DOUBLE);
+    type.createProperty("l_tax", Type.DOUBLE);
+    type.createProperty("l_count", Type.INTEGER);
+    type.createProperty("l_returnflag", Type.STRING);
+    type.createProperty("l_linestatus", Type.STRING);
+    type.createProperty("l_shipdate", Type.STRING);
+
+    final Random rnd = new Random(9496);
+    database.transaction(() -> {
+      for (int i = 0; i < ROWS; i++) {
+        final MutableDocument doc = database.newDocument("LineItem").set("l_partkey", (long) (1 + rnd.nextInt(700)),
+            "l_quantity", (double) (1 + rnd.nextInt(50)), "l_extendedprice", rnd.nextInt(400_000) / 4.0,
+            "l_discount", rnd.nextInt(4) / 4.0, "l_tax", rnd.nextInt(2) / 2.0, "l_count", rnd.nextInt(1000),
+            "l_returnflag", FLAGS[rnd.nextInt(FLAGS.length)], "l_linestatus", rnd.nextBoolean() ? "O" : "F",
+            "l_shipdate", String.format("199%d-%02d-%02d", 2 + rnd.nextInt(7), 1 + rnd.nextInt(12), 1 + rnd.nextInt(28)));
+        // ONE ROW IN TEN HAS NO DISCOUNT AT ALL, ONE IN TEN A NULL TAX: THE AGGREGATES SKIP NULLS, THE ARITHMETIC PROPAGATES THEM
+        if (i % 10 == 3)
+          doc.remove("l_discount");
+        if (i % 10 == 7)
+          doc.set("l_tax", null);
+        doc.save();
+      }
+    });
+  }
+
+  /** TPC-H Q1 as in the issue: every group checked against sums computed here, in the parallel and the sequential path. */
+  @Test
+  void q1MatchesTheExpectedAggregatesInBothPaths() {
+    final Map<String, double[]> expected = new HashMap<>();
+    try (final ResultSet rs = database.query("sql", "SELECT FROM LineItem")) {
+      while (rs.hasNext()) {
+        final Result row = rs.next();
+        if (row.<String>getProperty("l_shipdate").compareTo("1998-09-02") > 0)
+          continue;
+        final String key = row.getProperty("l_returnflag") + "|" + row.getProperty("l_linestatus");
+        final double[] acc = expected.computeIfAbsent(key, k -> new double[9]);
+        final double quantity = row.getProperty("l_quantity");
+        final double price = row.getProperty("l_extendedprice");
+        final Double discount = row.getProperty("l_discount");
+        final Double tax = row.getProperty("l_tax");
+        // IN ARCADEDB SQL A NULL OPERAND OF + AND - IS IGNORED: 1 - null IS 1
+        final double discounted = discount == null ? 1 : 1 - discount;
+        final double taxed = tax == null ? 1 : 1 + tax;
+        acc[0] += quantity;
+        acc[1] += price;
+        acc[2] += price * discounted;
+        acc[3] += price * discounted * taxed;
+        if (discount != null) {
+          acc[6] += discount;
+          acc[7]++;
+        }
+        acc[4]++;
+      }
+    }
+
+    for (final boolean parallel : new boolean[] { true, false }) {
+      final List<Result> rows = query(Q1, parallel);
+      assertThat(rows).hasSize(expected.size());
+      for (final Result row : rows) {
+        final double[] acc = expected.get(row.getProperty("l_returnflag") + "|" + row.getProperty("l_linestatus"));
+        assertThat(acc).isNotNull();
+        assertThat(row.<Double>getProperty("sum_qty")).isEqualTo(acc[0]);
+        assertThat(row.<Double>getProperty("sum_base")).isEqualTo(acc[1]);
+        assertThat(row.<Double>getProperty("sum_disc")).isEqualTo(acc[2]);
+        assertThat(row.<Double>getProperty("sum_charge")).isEqualTo(acc[3]);
+        assertThat(row.<Long>getProperty("n")).isEqualTo((long) acc[4]);
+        assertThat(row.<Double>getProperty("avg_qty")).isEqualTo(acc[0] / acc[4]);
+        assertThat(row.<Double>getProperty("avg_price")).isEqualTo(acc[1] / acc[4]);
+        assertThat(row.<Double>getProperty("avg_disc")).isEqualTo(acc[6] / acc[7]);
+      }
+    }
+  }
+
+  /** The shapes the evaluator binds to columns and the ones it evaluates on the row: the paths agree on every one. */
+  @Test
+  void everyAggregationShapeAnswersTheSameInBothPaths() {
+    final String[] queries = {
+        "SELECT l_partkey, sum(l_extendedprice * (1 - l_discount)) AS rev FROM LineItem GROUP BY l_partkey ORDER BY rev DESC, l_partkey LIMIT 10",
+        "SELECT l_returnflag, sum(l_count) AS s, avg(l_count) AS a, min(l_count) AS mi, max(l_count) AS ma, count(l_discount) AS c "
+            + "FROM LineItem GROUP BY l_returnflag ORDER BY l_returnflag",
+        "SELECT l_partkey % 7 AS pk7, count(*) AS n, sum(l_quantity) AS q FROM LineItem GROUP BY l_partkey % 7 ORDER BY pk7",
+        "SELECT sum(l_quantity) AS q, count(*) AS n, avg(l_tax) AS t FROM LineItem WHERE l_discount > 0.25",
+        "SELECT l_linestatus, sum($current.l_quantity) AS q, count(*) AS n FROM LineItem GROUP BY l_linestatus ORDER BY l_linestatus",
+        "SELECT l_returnflag, l_returnflag AS again, max(l_shipdate) AS last, min(l_extendedprice) AS cheapest FROM LineItem "
+            + "GROUP BY l_returnflag ORDER BY l_returnflag",
+        "SELECT l_returnflag, sum(l_quantity) + count(*) AS mixed FROM LineItem GROUP BY l_returnflag ORDER BY mixed",
+        "SELECT l_returnflag, count(*) AS n FROM LineItem GROUP BY l_returnflag ORDER BY count(*) DESC, l_returnflag",
+        "SELECT l_linestatus, count(DISTINCT l_returnflag) AS flags, sum(DISTINCT l_tax) AS taxes FROM LineItem "
+            + "GROUP BY l_linestatus ORDER BY l_linestatus",
+        "SELECT l_returnflag, l_linestatus, count(*) AS n FROM LineItem GROUP BY l_returnflag, l_linestatus LIMIT 3",
+        "SELECT l_returnflag, sum(missing) AS nothing, count(missing) AS none, avg(missing) AS noavg FROM LineItem "
+            + "GROUP BY l_returnflag ORDER BY l_returnflag" };
+    for (final String query : queries)
+      assertThat(render(query(query, true))).as(query).isNotEmpty().isEqualTo(render(query(query, false)));
+  }
+
+  /** An aggregate that keeps every value, which only the sequential path runs, still sees every row. */
+  @Test
+  void aggregatesThatKeepEveryValueStillSeeEveryRow() {
+    final List<Result> rows = query(
+        "SELECT l_returnflag, list(l_count).size() AS listed, count(*) AS n FROM LineItem GROUP BY l_returnflag", true);
+    assertThat(rows).hasSize(FLAGS.length);
+    for (final Result row : rows)
+      assertThat(row.<Number>getProperty("listed").longValue()).isEqualTo(row.<Long>getProperty("n"));
+  }
+
+  /**
+   * The planner names the columns an aggregate is split across {@code _$$$OALIAS$$$_n}, and the aggregate read them
+   * back through the context first, down to the database's global variables: a global variable of that name answered
+   * for the column on every row.
+   */
+  @Test
+  void aGlobalVariableNamedLikeAGeneratedColumnDoesNotShadowIt() {
+    final String query = "SELECT l_returnflag, sum(l_count) AS s FROM LineItem GROUP BY l_returnflag ORDER BY l_returnflag";
+    final List<String> before = render(query(query, false));
+
+    // sum(l_count) IS SPLIT INTO l_count AS _$$$OALIAS$$$_1 AND sum(_$$$OALIAS$$$_1) AS _$$$OALIAS$$$_0
+    ((DatabaseInternal) database).setGlobalVariable("_$$$OALIAS$$$_1", 1_000_000);
+    ((DatabaseInternal) database).setGlobalVariable("_$$$OALIAS$$$_0", -1);
+    try {
+      assertThat(render(query(query, false))).isEqualTo(before);
+      assertThat(render(query(query, true))).isEqualTo(before);
+    } finally {
+      ((DatabaseInternal) database).setGlobalVariable("_$$$OALIAS$$$_1", null);
+      ((DatabaseInternal) database).setGlobalVariable("_$$$OALIAS$$$_0", null);
+    }
+  }
+
+  /** The running sum of sum() and avg() answers what Type.increment() folded over the same values answers, type included. */
+  @Test
+  void runningSumsAnswerWhatTypeIncrementAnswers() {
+    final Random rnd = new Random(42);
+    for (int round = 0; round < 2_000; round++) {
+      final List<Number> values = new ArrayList<>();
+      final int size = rnd.nextInt(12);
+      for (int i = 0; i < size; i++)
+        values.add(randomNumber(rnd));
+
+      final SQLFunctionSum sum = new SQLFunctionSum();
+      final SQLFunctionSum firstHalf = new SQLFunctionSum();
+      final SQLFunctionSum secondHalf = new SQLFunctionSum();
+      final SQLFunctionAverage avg = new SQLFunctionAverage();
+      Number folded = null;
+      Number foldedFirst = null;
+      Number foldedSecond = null;
+      for (int i = 0; i < values.size(); i++) {
+        final Number value = values.get(i);
+        sum.aggregate(null, value, null);
+        avg.aggregate(null, value, null);
+        (i < size / 2 ? firstHalf : secondHalf).aggregate(null, value, null);
+        if (value != null) {
+          folded = folded == null ? value : Type.increment(folded, value);
+          if (i < size / 2)
+            foldedFirst = foldedFirst == null ? value : Type.increment(foldedFirst, value);
+          else
+            foldedSecond = foldedSecond == null ? value : Type.increment(foldedSecond, value);
+        }
+      }
+      assertThat(sum.getResult()).as("sum of %s", values).isEqualTo(folded);
+      if (folded != null)
+        assertThat(sum.getResult().getClass()).as("type of the sum of %s", values).isEqualTo(folded.getClass());
+
+      // A MERGE OF TWO PARTIAL SUMS IS THEIR Type.increment(), AS IT ALWAYS WAS
+      firstHalf.mergePartial(secondHalf);
+      final Number merged = foldedFirst == null ? foldedSecond : foldedSecond == null ? foldedFirst : Type.increment(foldedFirst, foldedSecond);
+      assertThat(firstHalf.getResult()).as("merged sum of %s", values).isEqualTo(merged);
+
+      final long count = values.stream().filter(v -> v != null).count();
+      if (count == 0)
+        assertThat(avg.getResult()).isNull();
+      else if (!(folded instanceof BigDecimal))
+        assertThat(avg.getResult()).as("avg of %s", values).isEqualTo(folded.doubleValue() / count);
+    }
+  }
+
+  /** Integers sum to an Integer, then to a Long past the int range, then to a BigDecimal past the long one. */
+  @Test
+  void integralSumsWidenAsBefore() {
+    final SQLFunctionSum sum = new SQLFunctionSum();
+    sum.aggregate(null, Integer.MAX_VALUE - 1, null);
+    sum.aggregate(null, 1, null);
+    assertThat(sum.getResult()).isEqualTo(Integer.MAX_VALUE);
+    sum.aggregate(null, 1, null);
+    assertThat(sum.getResult()).isEqualTo((long) Integer.MAX_VALUE + 1);
+    sum.aggregate(null, Long.MAX_VALUE, null);
+    assertThat(sum.getResult()).isEqualTo(BigDecimal.valueOf(Long.MAX_VALUE).add(BigDecimal.valueOf((long) Integer.MAX_VALUE + 1)));
+    sum.aggregate(null, 0.5, null);
+    assertThat(sum.getResult()).isInstanceOf(BigDecimal.class);
+
+    final SQLFunctionSum doubles = new SQLFunctionSum();
+    doubles.aggregate(null, 3, null);
+    doubles.aggregate(null, 0.5, null);
+    doubles.aggregate(null, 2L, null);
+    assertThat(doubles.getResult()).isEqualTo(5.5);
+  }
+
+  /**
+   * A numeric GROUP BY / DISTINCT key is a Long for an integer in the long range instead of a stripped BigDecimal, which cost
+   * a BigDecimal and its divisions on every row: two numbers must still share a key exactly when their stripped
+   * BigDecimals - the key before - are equal, with equal hashes.
+   */
+  @Test
+  void numericKeysMeetExactlyWhenTheirDecimalFormsDo() {
+    final List<Number> values = new ArrayList<>(List.of(0, 0L, -0.0, 0.0f, 1, 1L, (short) 1, (byte) 1, 1.0, 1.0f, new BigDecimal("1.00"),
+        BigInteger.ONE, 100, 100.0, new BigDecimal("1E+2"), 0.5, 0.05f, 0.05, new BigDecimal("0.050"), Long.MAX_VALUE, Long.MIN_VALUE,
+        (double) Long.MAX_VALUE, 9007199254740992.0, 9007199254740994.0, -9007199254740992.0, 1152921504606846976.0,
+        1152921504606846980L, 1152921504606846976L, new BigDecimal("9223372036854775808"), new BigInteger("9223372036854775808"),
+        new BigDecimal("-9223372036854775809"), 1e20, -1e20, 123456789.0, 123456789L, 1.5e15, 1500000000000000L, Double.NaN,
+        Double.POSITIVE_INFINITY, Float.NEGATIVE_INFINITY, new AtomicLong(42), 42));
+    final Random rnd = new Random(9496);
+    for (int i = 0; i < 300; i++) {
+      final long l = rnd.nextInt(5) == 0 ? rnd.nextLong() : rnd.nextInt(2_000) - 1_000;
+      values.add(l);
+      values.add((double) l);
+      values.add(BigDecimal.valueOf(l, rnd.nextInt(3)));
+      values.add(rnd.nextInt(2_000) / 8.0);
+    }
+
+    for (final Number a : values)
+      for (final Number b : values) {
+        final boolean before = decimalKey(a).equals(decimalKey(b));
+        final Object keyA = Type.normalizeNumberForKey(a);
+        final Object keyB = Type.normalizeNumberForKey(b);
+        assertThat(keyA.equals(keyB)).as("%s (%s) and %s (%s)", a, a.getClass().getSimpleName(), b, b.getClass().getSimpleName())
+            .isEqualTo(before);
+        if (before)
+          assertThat(keyA.hashCode()).isEqualTo(keyB.hashCode());
+      }
+  }
+
+  /** The key of a number before issue #9496: its stripped BigDecimal, or the value itself when it has none. */
+  private static Object decimalKey(final Number value) {
+    if (value instanceof BigDecimal decimal)
+      return decimal.stripTrailingZeros();
+    if (value instanceof BigInteger integer)
+      return new BigDecimal(integer).stripTrailingZeros();
+    if (value instanceof Double || value instanceof Float) {
+      final double d = value instanceof Float f ? Type.widenFloat(f) : value.doubleValue();
+      if (Double.isNaN(d) || Double.isInfinite(d))
+        return value;
+      return BigDecimal.valueOf(d).stripTrailingZeros();
+    }
+    return BigDecimal.valueOf(value.longValue()).stripTrailingZeros();
+  }
+
+  private static Number randomNumber(final Random rnd) {
+    return switch (rnd.nextInt(9)) {
+      case 0 -> null;
+      case 1 -> rnd.nextInt();
+      case 2 -> rnd.nextInt(100);
+      case 3 -> rnd.nextLong();
+      case 4 -> (long) rnd.nextInt(100);
+      case 5 -> rnd.nextInt(1000) / 8.0;
+      case 6 -> (short) rnd.nextInt(100);
+      case 7 -> rnd.nextInt(100) / 4f;
+      default -> BigDecimal.valueOf(rnd.nextInt(1000), 2);
+    };
+  }
+
+  private List<Result> query(final String query, final boolean parallel) {
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN, parallel);
+    try (final ResultSet rs = database.query("sql", query)) {
+      final List<Result> rows = new ArrayList<>();
+      while (rs.hasNext())
+        rows.add(rs.next());
+      final String plan = rs.getExecutionPlan().orElseThrow().prettyPrint(0, 2);
+      if (!parallel)
+        assertThat(plan).as(query).doesNotContain("(parallel");
+      return rows;
+    } finally {
+      database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN, true);
+    }
+  }
+
+  private static List<String> render(final List<Result> rows) {
+    final List<String> rendered = new ArrayList<>();
+    for (final Result row : rows) {
+      final StringBuilder sb = new StringBuilder();
+      for (final String p : row.getPropertyNames()) {
+        final Object value = row.getProperty(p);
+        sb.append(p).append('=').append(value instanceof Double d ? String.format("%.6f", d) : String.valueOf(value)).append(';');
+      }
+      rendered.add(sb.toString());
+    }
+    return rendered;
+  }
+}

@@ -2246,9 +2246,15 @@ public enum Type {
    * {@code BigDecimal("1").equals(BigDecimal("1.0"))} is {@code false} (different scale). When the same logical value
    * reaches a grouping step represented with different numeric types (e.g. an Integer from an index scan and a
    * BigDecimal from arithmetic), this would split a single logical group into several. To avoid that, every finite
-   * {@link Number} is normalised to a {@link BigDecimal} with trailing zeros stripped, so numerically-equal values
-   * share the same {@code equals}/{@code hashCode}. Non-finite floating point values (NaN, +/-Infinity) cannot be
+   * {@link Number} is normalised to one representation of its value, so numerically-equal values share the same
+   * {@code equals}/{@code hashCode}: a {@link Long} for an integer within the {@code long} range, a {@link BigDecimal}
+   * with trailing zeros stripped for any other value. Non-finite floating point values (NaN, +/-Infinity) cannot be
    * represented as BigDecimal and are returned unchanged; all non-numeric values are returned unchanged.
+   * <p>
+   * The value is the one the stripped BigDecimal of {@link BigDecimal#valueOf(double)} - the decimal form - holds, as it
+   * always was: the {@code Long} only stands in for the BigDecimal of an integer, so two numbers share a key exactly when
+   * their stripped BigDecimals are equal. It spares the integral keys - the most common numeric GROUP BY key - a
+   * BigDecimal and the divisions that strip it on every row (issue #9496).
    *
    * @param value the value to normalise (may be {@code null})
    *
@@ -2256,12 +2262,16 @@ public enum Type {
    */
   public static Object normalizeNumberForKey(final Object value) {
     if (value instanceof Number) {
+      if (value instanceof Long)
+        return value;
+      if (value instanceof Integer || value instanceof Short || value instanceof Byte)
+        return ((Number) value).longValue();
       if (value instanceof BigDecimal bigDecimal)
-        return bigDecimal.stripTrailingZeros();
+        return integralAsLong(bigDecimal.stripTrailingZeros());
       if (value instanceof BigInteger bigInteger)
         // Stripped like every other arm, so a BigInteger 100 keys the same as an Integer 100 or a Double 100.0
         // (issue #7623) rather than landing at scale 0 while the decimal paths land at scale -2.
-        return new BigDecimal(bigInteger).stripTrailingZeros();
+        return integralAsLong(new BigDecimal(bigInteger).stripTrailingZeros());
       if (value instanceof Double || value instanceof Float) {
         // A Float reaches its key through the decimal form, as it does everywhere else a Float meets a wider type:
         // .doubleValue() would key 0.05f as 0.05000000074505806 while the Double 0.05 keys as 0.05, splitting one
@@ -2269,15 +2279,33 @@ public enum Type {
         final double d = value instanceof Float float1 ? widenFloat(float1) : ((Number) value).doubleValue();
         if (Double.isNaN(d) || Double.isInfinite(d))
           return value;
-        return BigDecimal.valueOf(d).stripTrailingZeros();
+        // AN INTEGRAL DOUBLE UP TO 2^53 IS AN INTEGER ITS DECIMAL FORM WRITES EXACTLY (THE SHORTEST DIGITS THAT TELL IT FROM
+        // ITS NEIGHBOURS, WHICH ARE AT MOST 1 APART): BigDecimal.valueOf(d) WOULD HOLD THAT INTEGER, KEYED AS ITS Long
+        if (d == Math.rint(d) && Math.abs(d) <= MAX_EXACT_INTEGRAL_DOUBLE)
+          return (long) d;
+        return integralAsLong(BigDecimal.valueOf(d).stripTrailingZeros());
       }
-      // Integer/Long/Short/Byte/AtomicInteger/AtomicLong and other integral numbers. Stripped like the decimal
-      // paths above, so an Integer 100 and a Double 100.0 land on the same scale -2 key instead of disagreeing
-      // (unscaled 100 at scale 0 vs unscaled 1 at scale -2) and splitting one GROUP BY/DISTINCT group in two
-      // (issue #7623).
-      return BigDecimal.valueOf(((Number) value).longValue()).stripTrailingZeros();
+      // Integer/Long/Short/Byte/AtomicInteger/AtomicLong and other integral numbers: an Integer 100 and a Double 100.0
+      // land on the same key instead of splitting one GROUP BY/DISTINCT group in two (issue #7623).
+      return ((Number) value).longValue();
     }
     return value;
+  }
+
+  // 2^53: EVERY INTEGER UP TO IT IS A DOUBLE, AND NO TWO DOUBLES BELOW IT ARE MORE THAN 1 APART
+  private static final double MAX_EXACT_INTEGRAL_DOUBLE = 9007199254740992.0;
+
+  /** A stripped BigDecimal holding an integer within the {@code long} range as that {@link Long}, any other as it is. */
+  private static Object integralAsLong(final BigDecimal stripped) {
+    // STRIPPED, AN INTEGER HAS A SCALE OF 0 OR LESS; ITS DIGITS BEFORE THE POINT ARE precision - scale, 19 AT MOST FOR A long
+    if (stripped.scale() <= 0 && stripped.precision() - stripped.scale() <= 19) {
+      try {
+        return stripped.longValueExact();
+      } catch (final ArithmeticException e) {
+        // PAST THE long RANGE: KEPT AS A BigDecimal
+      }
+    }
+    return stripped;
   }
 
   /**

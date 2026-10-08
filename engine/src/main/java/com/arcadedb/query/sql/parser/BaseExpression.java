@@ -231,7 +231,7 @@ public class BaseExpression extends MathExpression {
     } else if (expression != null)
       result = expression.execute(currentRecord != null ? currentRecord.getRecord() : null, context);
     else if (string != null && string.length() > 1)
-      result = decode(string.substring(1, string.length() - 1));
+      result = decodedString();
     else if (inputParam != null)
       result = inputParam.getValue(context.getInputParameters());
 
@@ -271,7 +271,7 @@ public class BaseExpression extends MathExpression {
         // POSTGRES PARAMETERS JDBC DRIVER START FROM 1
         result = positionalKey != null ? params.get(positionalKey) : identifier.execute(currentRecord, context);
       } else if (string != null && string.length() > 1) {
-        result = decode(string.substring(1, string.length() - 1));
+        result = decodedString();
       } else if (inputParam != null) {
         result = inputParam.getValue(params);
       }
@@ -340,6 +340,24 @@ public class BaseExpression extends MathExpression {
 
   private transient FunctionCall cachedNamespacedCall;
   private static final FunctionCall NAMESPACED_CALL_NONE = new FunctionCall();
+
+  /** A string literal without its quotes and un-escaped, and the {@link #string} it was decoded from. */
+  private record DecodedLiteral(String source, String value) {
+  }
+
+  // A STRING LITERAL WAS CUT OUT OF ITS QUOTES AND UN-ESCAPED ON EVERY EVALUATION: ONCE PER ROW IN A WHERE (ISSUE #9496).
+  // ONE RECORD OF FINAL FIELDS, SO A THREAD THAT SEES THE REFERENCE SEES BOTH OF THEM
+  private transient DecodedLiteral decodedLiteral;
+
+  private String decodedString() {
+    final String source = string;
+    final DecodedLiteral cached = decodedLiteral;
+    if (cached != null && cached.source() == source)
+      return cached.value();
+    final String value = decode(source.substring(1, source.length() - 1));
+    decodedLiteral = new DecodedLiteral(source, value);
+    return value;
+  }
 
   @Override
   public boolean isIndexedFunctionCall(final CommandContext context) {
