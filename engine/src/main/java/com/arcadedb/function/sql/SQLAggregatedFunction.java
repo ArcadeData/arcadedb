@@ -90,9 +90,12 @@ public abstract class SQLAggregatedFunction extends SQLFunctionConfigurableAbstr
   /**
    * Feeds the arguments of one row to the cross-row state: what the aggregation of a query calls for every row, which
    * ignores the value {@link #execute} returns. A function whose return value costs something to build per row (a boxed
-   * running total, a running average) overrides it to skip that (#9496).
+   * running total, a running average) overrides it to skip that (#9496). Like every call the aggregation makes,
+   * {@link #execute} gets no current record nor current result (both null), and an override must not need them.
    *
-   * @param self    the row, passed to {@link #execute} as its {@code self}
+   * @param self    the row, passed to {@link #execute} as its {@code self}; null when the row was read by another worker of
+   *                a parallel GROUP BY, which hands over only the arguments (the key exchange, #9496): a function whose
+   *                partials merge must fold its arguments alone
    * @param params  the values of the arguments for this row
    * @param context the command context
    */
