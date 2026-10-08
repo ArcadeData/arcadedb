@@ -191,6 +191,26 @@ class Issue9488WalkAcrossMergeTest extends TestHelper {
   }
 
   @Test
+  void aSqlResultSetPulledHalfWayWhenTheMergeLandsIsWhole() throws Exception {
+    database.command("sql", "CREATE TIMESERIES TYPE Slow TIMESTAMP ts TAGS (id STRING) FIELDS (v DOUBLE) SHARDS 1");
+    final TimeSeriesEngine engine = engine("Slow");
+    feedAndCompact(engine, 6, 20, 0, false);
+
+    // Deterministic: the merge lands between two pulls of the same statement
+    final List<Double> seen = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", "SELECT FROM Slow")) {
+      for (int i = 0; i < 45; i++)
+        seen.add((Double) rs.next().getProperty("v"));
+      engine.mergeSmallBlocks();
+      assertThat(engine.getShard(0).getSealedStore().getBlockCount()).isEqualTo(1);
+      while (rs.hasNext())
+        seen.add((Double) rs.next().getProperty("v"));
+    }
+    seen.sort(null);
+    assertThat(seen).isEqualTo(expected(120));
+  }
+
+  @Test
   void sqlReadsRacingWithTheMaintenanceNeverFail() throws Exception {
     database.command("sql", "CREATE TIMESERIES TYPE Slow TIMESTAMP ts TAGS (id STRING) FIELDS (v DOUBLE) SHARDS 1");
     final TimeSeriesEngine engine = engine("Slow");

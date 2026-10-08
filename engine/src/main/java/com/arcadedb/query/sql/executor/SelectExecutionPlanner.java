@@ -3682,7 +3682,10 @@ public class SelectExecutionPlanner {
     // Every GROUP BY key is the time bucket (by its alias) or a TAG column (by its projected name, or its own name when it is not projected)
     boolean groupsByBucket = false;
     final List<String> groupTags = new ArrayList<>();
-    for (final Object groupByItem : info.groupBy.getItems()) {
+    // The keys as the query wrote them: info.groupBy has already swapped a key the projection does not show for a generated alias
+    final GroupBy writtenGroupBy = statement.getGroupBy() != null && statement.getGroupBy().getItems() != null
+        && statement.getGroupBy().getItems().size() == info.groupBy.getItems().size() ? statement.getGroupBy() : info.groupBy;
+    for (final Object groupByItem : writtenGroupBy.getItems()) {
       final String key = groupByItem.toString().trim();
       final String tagName;
       if (timeBucketAlias != null && key.equals(timeBucketAlias)) {
