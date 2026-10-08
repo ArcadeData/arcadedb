@@ -46,7 +46,8 @@ public abstract class SQLFunctionRunningSumAbstract extends SQLAggregatedFunctio
   private static final byte LONG    = 2;
   // A Double MET Integer/Long/Double VALUES ONLY: Type.increment() ANSWERS A Double
   private static final byte DOUBLE  = 3;
-  // ANY OTHER COMBINATION: THE SUM IS boxedSum, AND EVERY VALUE GOES THROUGH Type.increment()
+  // ANY OTHER COMBINATION: THE SUM IS boxedSum, AND EVERY VALUE GOES THROUGH Type.increment(). A SUM NEVER LEAVES THIS MODE,
+  // SO longSum AND doubleSum ARE NOT READ AGAIN ONCE IT IS ENTERED
   private static final byte BOXED   = 4;
 
   private byte   sumMode = EMPTY;
