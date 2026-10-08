@@ -18,6 +18,8 @@
  */
 package com.arcadedb.server.monitor;
 
+import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.utility.DedicatedThreadPool.PoolStats;
 
 import io.micrometer.core.instrument.Meter;
@@ -105,6 +107,46 @@ class PoolMetricsTest {
           .as("split-decision gauge '%s' must be registered for the sparse-vector pool", gaugeName).isNotNull();
       assertThat(registry.find(gaugeName).tag("pool", "query").meter())
           .as("split-decision gauge '%s' must NOT be registered for pools that never split", gaugeName).isNull();
+    }
+  }
+
+  /**
+   * Issue #9518: the query admission gate is published on the pool row shape, so the Studio "Executor Pools" card shows
+   * it without a card of its own: slots and running queries, queue depth and room, admitted and refused queries. The
+   * pool-only gauges are absent, so the card renders a dash there rather than a zero.
+   */
+  @Test
+  void theQueryAdmissionGateIsPublishedOnThePoolRowShape() {
+    final SimpleMeterRegistry registry = new SimpleMeterRegistry();
+    new PoolMetrics().bindTo(registry);
+
+    GlobalConfiguration.QUERY_MAX_CONCURRENT.setValue(3);
+    try {
+      final QueryAdmissionGate gate = QueryAdmissionGate.getInstance();
+      final double runningBefore = registry.find("arcadedb.executor.pool.active").tag("pool", "query_admission").gauge().value();
+      final double admittedBefore = registry.find("arcadedb.executor.tasks.completed").tag("pool", "query_admission").gauge().value();
+      try (final QueryAdmissionGate.Ticket ignored = gate.admit()) {
+        assertThat(registry.find("arcadedb.executor.pool.size").tag("pool", "query_admission").gauge().value()).isEqualTo(3.0);
+        assertThat(registry.find("arcadedb.executor.pool.active").tag("pool", "query_admission").gauge().value())
+            .isEqualTo(runningBefore + 1);
+        assertThat(registry.find("arcadedb.executor.tasks.completed").tag("pool", "query_admission").gauge().value())
+            .isEqualTo(admittedBefore + 1);
+      }
+
+      for (final String gaugeName : new String[] { "arcadedb.executor.queue.depth", "arcadedb.executor.queue.capacity_remaining",
+          PoolMetrics.REJECTED_GAUGE })
+        assertThat(registry.find(gaugeName).tag("pool", "query_admission").gauge()).as(gaugeName).isNotNull();
+      for (final String gaugeName : new String[] { "arcadedb.executor.tasks.caller_run_fallbacks", "arcadedb.executor.tasks.reclaimed" })
+        assertThat(registry.find(gaugeName).tag("pool", "query_admission").gauge()).as("a gate has no " + gaugeName).isNull();
+      for (final String counterName : new String[] { "arcadedb.query.admission.waited", "arcadedb.query.admission.wait_time",
+          "arcadedb.query.admission.heap_deferrals" })
+        assertThat(registry.find(counterName).functionCounter()).as(counterName).isNotNull();
+
+      final JSONObject row = GetServerHandler.buildExecutorsJSON(registry).getJSONObject("query_admission");
+      assertThat(row.getDouble("pool.size")).isEqualTo(3.0);
+      assertThat(row.has("tasks.rejected")).isTrue();
+    } finally {
+      GlobalConfiguration.QUERY_MAX_CONCURRENT.reset();
     }
   }
 

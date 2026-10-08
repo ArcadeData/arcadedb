@@ -97,4 +97,19 @@ class ProfilerTest {
     Profiler.INSTANCE.dumpMetrics(new PrintStream(out));
     assertThat(out.toString()).contains("recountPublishesRefused=");
   }
+
+  /** #9518: the query admission gate's queue and counters leave the process with the other query metrics. */
+  @Test
+  void queryAdmissionGateIsExposed() {
+    final JSONObject json = Profiler.INSTANCE.toJSON();
+    for (final String gauge : new String[] { "queryAdmissionRunning", "queryAdmissionQueued" })
+      assertThat(json.getJSONObject(gauge).getLong("value", -1L)).as(gauge).isGreaterThanOrEqualTo(0L);
+    for (final String counter : new String[] { "queryAdmissionAdmitted", "queryAdmissionAdmittedAfterWaiting", "queryAdmissionRefused",
+        "queryAdmissionHeapDeferrals", "queryAdmissionWaitTime" })
+      assertThat(json.getJSONObject(counter).getLong("count", -1L)).as(counter).isGreaterThanOrEqualTo(0L);
+
+    final ByteArrayOutputStream out = new ByteArrayOutputStream();
+    Profiler.INSTANCE.dumpMetrics(new PrintStream(out));
+    assertThat(out.toString()).contains("QUERY-ADMISSION running=");
+  }
 }

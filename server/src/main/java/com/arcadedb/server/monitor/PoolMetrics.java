@@ -18,12 +18,14 @@
  */
 package com.arcadedb.server.monitor;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.async.AsyncCommandPool;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.index.sparsevector.SparseVectorScoringPool;
 import com.arcadedb.query.ParallelScanProducerPool;
 import com.arcadedb.query.QueryEngineManager;
+import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.utility.DedicatedThreadPool.PoolStats;
 
 import io.micrometer.core.instrument.FunctionCounter;
@@ -106,6 +108,8 @@ public final class PoolMetrics implements MeterBinder {
     bindPool(registry, "async_command", "AsyncCommandPool asynchronously dispatched command/query pool",
         acp::getPoolStats);
 
+    bindQueryAdmissionGate(registry, QueryAdmissionGate.getInstance());
+
     // Not a pool, but a graph data-integrity signal surfaced the same way. A monotonic FunctionCounter
     // (not a gauge) so dashboards can compute a rate() and alert on a sudden spike of corruption,
     // complementing the throttled WARNING already emitted by GhostEdgeReporter.
@@ -153,6 +157,51 @@ public final class PoolMetrics implements MeterBinder {
             + "where some queries claim a wide split and others get none. A distribution of granted partition counts is the "
             + "gauge that would show it; this one cannot.")
         .tags(tags).register(registry);
+  }
+
+  /**
+   * The query admission gate (issue #9518) on the same row shape as the pools, under {@code pool=query_admission}. It
+   * is not a pool - the queries run on the threads that asked to be admitted - but what an operator reads from it is
+   * what a pool row says: how many slots there are and how many are taken, how many queries wait and how much room the
+   * queue has left, how many went through and how many were refused. Only the gauges that mean something for a gate
+   * are registered, so the Studio row shows "-" for the rest rather than a zero that would read as a measurement.
+   * <p>
+   * Three counters have no pool column and go under their own names: the queries that started after waiting, the total
+   * time they waited, and how often the head of the queue had a slot but found the heap above the watermark, which says
+   * whether the heap or the number of slots is what holds queries back.
+   */
+  private static void bindQueryAdmissionGate(final MeterRegistry registry, final QueryAdmissionGate gate) {
+    final Tags tags = Tags.of(Tag.of("pool", "query_admission"));
+    final String description = "Query admission gate";
+    Gauge.builder(POOL_SIZE_GAUGE, () -> Math.max(0, GlobalConfiguration.QUERY_MAX_CONCURRENT.getValueAsInteger()))
+        .description(description + ": queries that may run at once (arcadedb.queryMaxConcurrent), 0 when the gate is disabled")
+        .tags(tags).register(registry);
+    Gauge.builder("arcadedb.executor.pool.active", gate::getRunning)
+        .description(description + ": admitted queries running right now").tags(tags).register(registry);
+    Gauge.builder("arcadedb.executor.queue.depth", gate::getQueued)
+        .description(description + ": queries waiting to start").tags(tags).register(registry);
+    Gauge.builder("arcadedb.executor.queue.capacity_remaining",
+            () -> Math.max(0, GlobalConfiguration.QUERY_QUEUE_MAX_SIZE.getValueAsInteger() - gate.getQueued()))
+        .description(description + ": queue slots free before an arriving query is refused (arcadedb.queryQueueMaxSize)")
+        .tags(tags).register(registry);
+    Gauge.builder("arcadedb.executor.tasks.completed", gate::getAdmitted)
+        .description(description + ": cumulative queries admitted, at once or after waiting").tags(tags).register(registry);
+    Gauge.builder(REJECTED_GAUGE, gate::getRefused)
+        .description(description + ": cumulative queries refused with a 503 because they waited longer than "
+            + "arcadedb.queryQueueTimeout or found the queue full. Sustained growth means the server is undersized for the load, "
+            + "or the gate is set too tight for it")
+        .tags(tags).register(registry);
+
+    FunctionCounter.builder("arcadedb.query.admission.waited", gate, QueryAdmissionGate::getAdmittedAfterWaiting)
+        .description("Cumulative queries the admission gate started after they waited in its queue").register(registry);
+    FunctionCounter.builder("arcadedb.query.admission.wait_time", gate, g -> g.getTotalWaitNanos() / 1_000_000_000d)
+        .baseUnit("seconds").description("Cumulative time the queries the admission gate started spent waiting in its queue")
+        .register(registry);
+    FunctionCounter.builder("arcadedb.query.admission.heap_deferrals", gate, QueryAdmissionGate::getHeapDeferrals)
+        .description("Cumulative times the head of the admission queue had a free slot but found the heap the running queries "
+            + "hold above arcadedb.queryAdmissionHeapWatermark. Growing while queries wait means the heap, not the number of "
+            + "slots, holds them back")
+        .register(registry);
   }
 
   private static List<Meter> bindPool(final MeterRegistry registry, final String poolTag, final String description,

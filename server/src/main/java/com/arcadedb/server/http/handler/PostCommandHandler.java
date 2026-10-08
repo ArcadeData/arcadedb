@@ -26,6 +26,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
+import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -320,24 +321,27 @@ public class PostCommandHandler extends AbstractQueryHandler {
 
       final boolean detailedProfile = "detailed".equalsIgnoreCase(profileExecution);
 
-      final long engineStart = System.nanoTime();
-      // The statement run as the whole request, and the body it came in: a follower that forwards exactly this statement
-      // posts that body to the leader, which answers it in the rendering this request asks for (issue #8359).
-      ForwardedRequestIdContext.declareWholeRequestCommand(language, command, exchange.getAttachment(RAW_PAYLOAD));
-      ResultSet qResult = executeCommand(database, language, command, paramMap);
-
-      // The leader answered this request's own body: that answer, not what this node would render again from the rows
-      // it parsed back out of it, is the one the client asked for, and the one a retry sent straight to the leader is
-      // replayed from. Sent as it is.
-      final String leaderAnswer = ForwardedRequestIdContext.takeWholeRequestAnswer();
-      if (leaderAnswer != null) {
-        if (qResult != null)
-          qResult.close();
-        Metrics.counter("http.command").increment();
-        return new ExecutionResponse(200, leaderAnswer);
-      }
-
+      // Waits, in arrival order, for a free slot and for the heap the running queries leave (issue #9518). Taken once the
+      // request is known to be valid, so a malformed one is refused without queueing, and held until the result set is
+      // closed, so the next query starts only once this one has given back the heap its buffers reserved.
+      final QueryAdmissionGate.Ticket admission = QueryAdmissionGate.getInstance().admit();
+      ResultSet qResult = null;
       try {
+        final long engineStart = System.nanoTime();
+        // The statement run as the whole request, and the body it came in: a follower that forwards exactly this statement
+        // posts that body to the leader, which answers it in the rendering this request asks for (issue #8359).
+        ForwardedRequestIdContext.declareWholeRequestCommand(language, command, exchange.getAttachment(RAW_PAYLOAD));
+        qResult = executeCommand(database, language, command, paramMap);
+
+        // The leader answered this request's own body: that answer, not what this node would render again from the rows
+        // it parsed back out of it, is the one the client asked for, and the one a retry sent straight to the leader is
+        // replayed from. Sent as it is.
+        final String leaderAnswer = ForwardedRequestIdContext.takeWholeRequestAnswer();
+        if (leaderAnswer != null) {
+          Metrics.counter("http.command").increment();
+          return new ExecutionResponse(200, leaderAnswer);
+        }
+
         final JSONObject response = new JSONObject();
         response.put("user", user != null ? user.getName() : null);
 
@@ -429,8 +433,12 @@ public class PostCommandHandler extends AbstractQueryHandler {
 
         return new ExecutionResponse(200, response.toString());
       } finally {
-        if (qResult != null)
-          qResult.close();
+        try {
+          if (qResult != null)
+            qResult.close();
+        } finally {
+          admission.close();
+        }
       }
     }
 
