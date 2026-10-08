@@ -555,10 +555,6 @@ def normalize_rows(vectors: np.ndarray) -> np.ndarray:
     return vectors / norms
 
 
-def vector_to_arcadedb_literal(vec: np.ndarray) -> str:
-    return "[" + ", ".join(f"{float(x):.7g}" for x in vec.tolist()) + "]"
-
-
 def search_arcadedb(
     index,
     queries: np.ndarray,

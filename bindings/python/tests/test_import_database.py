@@ -80,17 +80,6 @@ def _import_result_ok(result_set):
     return row
 
 
-def _exception_chain_text(exc: BaseException) -> str:
-    parts = []
-    current = exc
-    seen = set()
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        parts.append(str(current))
-        current = current.__cause__ or current.__context__
-    return "\n".join(parts).lower()
-
-
 def test_import_database_csv_documents(temp_db_path, sample_csv_path):
     with arcadedb.create_database(temp_db_path) as db:
         result = db.command("sql", f"IMPORT DATABASE {_file_url(sample_csv_path)}")
@@ -123,8 +112,7 @@ def test_import_database_csv_documents_with_quoted_parallel_setting(
 def test_import_database_csv_graph_vertices_and_edges(temp_db_path):
     vertices_csv = _resource_path("importer-vertices.csv")
     edges_csv = _resource_path("importer-edges.csv")
-    if not vertices_csv.exists() or not edges_csv.exists():
-        pytest.skip("Graph CSV fixtures not available")
+    assert vertices_csv.exists() and edges_csv.exists()
 
     with arcadedb.create_database(temp_db_path) as db:
         v_res = db.command(
@@ -169,8 +157,7 @@ def test_import_database_csv_graph_vertices_and_edges_with_quoted_parallel(
 ):
     vertices_csv = _resource_path("importer-vertices.csv")
     edges_csv = _resource_path("importer-edges.csv")
-    if not vertices_csv.exists() or not edges_csv.exists():
-        pytest.skip("Graph CSV fixtures not available")
+    assert vertices_csv.exists() and edges_csv.exists()
 
     with arcadedb.create_database(temp_db_path) as db:
         result = db.command(
@@ -203,29 +190,13 @@ def test_import_database_csv_graph_vertices_and_edges_with_quoted_parallel(
 
 def test_import_database_xml_vertices(temp_db_path, sample_xml_path):
     with arcadedb.create_database(temp_db_path) as db:
-        try:
-            result = db.command(
-                "sql",
-                (
-                    f"IMPORT DATABASE {_file_url(sample_xml_path)} "
-                    "WITH objectNestLevel = 1, entityType = 'VERTEX'"
-                ),
-            )
-        except arcadedb.ArcadeDBError as e:
-            message = _exception_chain_text(e)
-            if os.name == "nt" and (
-                "arrayindexoutofboundsexception" in message
-                or "index 1 out of bounds for length 1" in message
-                or (
-                    "error on importing database" in message
-                    and "error on parsing source" in message
-                )
-            ):
-                pytest.skip(
-                    "XML import path currently fails on Windows runtime "
-                    f"(engine-side): {e}"
-                )
-            raise
+        result = db.command(
+            "sql",
+            (
+                f"IMPORT DATABASE {_file_url(sample_xml_path)} "
+                "WITH objectNestLevel = 1, entityType = 'VERTEX'"
+            ),
+        )
         _import_result_ok(result)
 
         count = db.query("sql", "SELECT count(*) as c FROM v_user").one().get("c")
@@ -234,23 +205,17 @@ def test_import_database_xml_vertices(temp_db_path, sample_xml_path):
 
 def test_import_database_neo4j_fixture(temp_db_path):
     neo4j_file = _resource_path("neo4j-export-mini.jsonl")
-    if not neo4j_file.exists():
-        pytest.skip("Neo4j fixture not available")
+    assert neo4j_file.exists()
 
     with arcadedb.create_database(temp_db_path) as db:
-        try:
-            result = db.command(
-                "sql",
-                (
-                    "IMPORT DATABASE WITH "
-                    f"documents = '{_file_url(str(neo4j_file))}', "
-                    "documentsFileType = 'neo4j'"
-                ),
-            )
-        except arcadedb.ArcadeDBError as e:
-            if "neo4j" in str(e).lower() or "unknown" in str(e).lower():
-                pytest.skip(f"Neo4j import not available in current runtime: {e}")
-            raise
+        result = db.command(
+            "sql",
+            (
+                "IMPORT DATABASE WITH "
+                f"documents = '{_file_url(str(neo4j_file))}', "
+                "documentsFileType = 'neo4j'"
+            ),
+        )
 
         _import_result_ok(result)
         # Neo4j import should create at least one type
@@ -259,27 +224,21 @@ def test_import_database_neo4j_fixture(temp_db_path):
 
 def test_import_database_word2vec_vectors(temp_db_path):
     word2vec_file = _resource_path("importer-word2vec.txt")
-    if not word2vec_file.exists():
-        pytest.skip("Word2Vec fixture not available")
+    assert word2vec_file.exists()
 
     with arcadedb.create_database(temp_db_path) as db:
-        try:
-            result = db.command(
-                "sql",
-                (
-                    f"IMPORT DATABASE {_file_url(str(word2vec_file))} WITH "
-                    "distanceFunction = cosine, "
-                    "m = 16, "
-                    "beamWidth = 100, "
-                    "vertexType = Word, "
-                    "vectorProperty = vector, "
-                    "idProperty = name"
-                ),
-            )
-        except arcadedb.ArcadeDBError as e:
-            if "vector" in str(e).lower() or "word2vec" in str(e).lower():
-                pytest.skip(f"Vector import not available in current runtime: {e}")
-            raise
+        result = db.command(
+            "sql",
+            (
+                f"IMPORT DATABASE {_file_url(str(word2vec_file))} WITH "
+                "distanceFunction = cosine, "
+                "m = 16, "
+                "beamWidth = 100, "
+                "vertexType = Word, "
+                "vectorProperty = vector, "
+                "idProperty = name"
+            ),
+        )
 
         _import_result_ok(result)
         count = db.query("sql", "SELECT count(*) as c FROM Word").one().get("c")
@@ -288,30 +247,10 @@ def test_import_database_word2vec_vectors(temp_db_path):
 
 def test_import_database_rdf_fixture(temp_db_path):
     rdf_source = _resource_path("importer-rdf.xml")
-    if not rdf_source.exists():
-        pytest.skip("RDF fixture not available")
+    assert rdf_source.exists()
 
     with arcadedb.create_database(temp_db_path) as db:
-        try:
-            result = db.command("sql", f"IMPORT DATABASE {_file_url(str(rdf_source))}")
-        except arcadedb.ArcadeDBError as e:
-            message = _exception_chain_text(e)
-            if "rdf" in message or "cannot determine the file type" in message:
-                pytest.skip(f"RDF import not available in current runtime: {e}")
-            if os.name == "nt" and (
-                "arrayindexoutofboundsexception" in message
-                or "index 1 out of bounds for length 1" in message
-                or (
-                    "error on importing database" in message
-                    and "error on parsing source" in message
-                )
-            ):
-                pytest.skip(
-                    "RDF import path currently fails on Windows runtime "
-                    f"(engine-side): {e}"
-                )
-            raise
-
+        result = db.command("sql", f"IMPORT DATABASE {_file_url(str(rdf_source))}")
         _import_result_ok(result)
 
         # RDF import should create at least one imported record/type.
@@ -323,15 +262,10 @@ def test_import_database_rdf_fixture(temp_db_path):
 
 def test_import_database_into_timeseries_type(temp_db_path, sample_timeseries_csv_path):
     with arcadedb.create_database(temp_db_path) as db:
-        try:
-            db.command(
-                "sql",
-                "CREATE TIMESERIES TYPE Telemetry TIMESTAMP ts TAGS (id INTEGER) FIELDS (value DOUBLE)",
-            )
-        except arcadedb.ArcadeDBError as e:
-            if "timeseries" in str(e).lower() or "syntax" in str(e).lower():
-                pytest.skip(f"Timeseries not available in current runtime: {e}")
-            raise
+        db.command(
+            "sql",
+            "CREATE TIMESERIES TYPE Telemetry TIMESTAMP ts TAGS (id INTEGER) FIELDS (value DOUBLE)",
+        )
 
         # IMPORT DATABASE cannot target a TIMESERIES type, and this asserts that
         # rather than skipping past it.

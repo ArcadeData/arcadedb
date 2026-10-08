@@ -87,7 +87,7 @@ class TestVectorParams:
                 # Try getter
                 val = metadata.isStoreVectorsInGraph()
             except Exception:
-                pass  # nosec B110
+                val = None  # neither accessor: the string fallback below decides
 
         if val is None:
             # Try inspecting the string representation as a fallback for verification
@@ -103,24 +103,15 @@ class TestVectorParams:
         test_db.command("sql", "CREATE VERTEX TYPE EncodingDoc")
         test_db.command("sql", "CREATE PROPERTY EncodingDoc.embedding BINARY")
 
-        try:
-            index = test_db.create_vector_index(
-                "EncodingDoc",
-                "embedding",
-                dimensions=4,
-                quantization="NONE",
-                encoding="INT8",
-            )
-        except arcadedb.ArcadeDBError as exc:
-            if "does not support vector encoding" in str(exc):
-                pytest.skip("Current embedded engine build does not support encoding")
-            raise
+        index = test_db.create_vector_index(
+            "EncodingDoc",
+            "embedding",
+            dimensions=4,
+            quantization="NONE",
+            encoding="INT8",
+        )
 
         metadata = self._get_primary_metadata(index)
-        if not hasattr(metadata, "encoding"):
-            pytest.skip(
-                "Current embedded engine build does not expose encoding metadata"
-            )
         assert str(metadata.encoding) == "INT8"
         assert str(metadata.quantizationType) == "NONE"
 

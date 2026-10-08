@@ -1,13 +1,6 @@
 """Graph algorithm SQL coverage for Python bindings."""
 
 import arcadedb_embedded as arcadedb
-import pytest
-
-_GRAPH_ALGO_UNAVAILABLE_TOKENS = (
-    "Unknown method name: shortestPath",
-    "Unknown method name: dijkstra",
-    "Unknown method name: astar",
-)
 
 
 def _setup_weighted_graph(db):
@@ -34,31 +27,23 @@ def _setup_weighted_graph(db):
     }
 
 
-def _path_query_or_skip(db, select_statement):
+def _path_query(db, select_statement):
     script = f"""
     LET $src = (SELECT FROM Node WHERE name = 'A' LIMIT 1);
     LET $dst = (SELECT FROM Node WHERE name = 'D' LIMIT 1);
     {select_statement}
     """  # nosec B608
 
-    try:
-        result = db.command("sqlscript", script)
-        path = None
-        for row in result:
-            if "path" in row.property_names:
-                path = row.get("path")
+    result = db.command("sqlscript", script)
+    path = None
+    for row in result:
+        if "path" in row.property_names:
+            path = row.get("path")
 
-        if path is None:
-            raise AssertionError("Graph algorithm query did not return a 'path' column")
+    if path is None:
+        raise AssertionError("Graph algorithm query did not return a 'path' column")
 
-        return path
-    except Exception as e:
-        message = str(e)
-        if any(token in message for token in _GRAPH_ALGO_UNAVAILABLE_TOKENS):
-            pytest.skip(
-                "Graph algorithm SQL functions are not available in this packaged runtime"
-            )
-        raise
+    return path
 
 
 def test_graph_shortest_path_sql_unweighted_path_shape(temp_db_path):
@@ -66,7 +51,7 @@ def test_graph_shortest_path_sql_unweighted_path_shape(temp_db_path):
     with arcadedb.create_database(temp_db_path) as db:
         rids = _setup_weighted_graph(db)
 
-        path = _path_query_or_skip(
+        path = _path_query(
             db,
             "SELECT shortestPath($src.@rid, $dst.@rid) AS path FROM Node LIMIT 1",
         )
@@ -82,7 +67,7 @@ def test_graph_dijkstra_sql_weighted_path_shape(temp_db_path):
     with arcadedb.create_database(temp_db_path) as db:
         rids = _setup_weighted_graph(db)
 
-        path = _path_query_or_skip(
+        path = _path_query(
             db,
             "SELECT dijkstra($src, $dst, 'distance') AS path FROM Node LIMIT 1",
         )
@@ -97,7 +82,7 @@ def test_graph_astar_sql_weighted_path_shape(temp_db_path):
     with arcadedb.create_database(temp_db_path) as db:
         rids = _setup_weighted_graph(db)
 
-        path = _path_query_or_skip(
+        path = _path_query(
             db,
             "SELECT astar($src, $dst, 'distance') AS path FROM Node LIMIT 1",
         )
@@ -112,7 +97,7 @@ def test_graph_dijkstra_sql_accepts_rid_variables(temp_db_path):
     with arcadedb.create_database(temp_db_path) as db:
         rids = _setup_weighted_graph(db)
 
-        path = _path_query_or_skip(
+        path = _path_query(
             db,
             "SELECT dijkstra($src.@rid, $dst.@rid, 'distance') AS path FROM Node LIMIT 1",
         )
@@ -132,7 +117,7 @@ def test_graph_shortest_path_sql_no_path_returns_empty_or_null(temp_db_path):
             db.new_vertex("Node").set("name", "X").save()
             db.new_vertex("Node").set("name", "Y").save()
 
-        path = _path_query_or_skip(
+        path = _path_query(
             db,
             "SELECT shortestPath((SELECT FROM Node WHERE name='X' LIMIT 1), (SELECT FROM Node WHERE name='Y' LIMIT 1)) AS path FROM Node LIMIT 1",
         )

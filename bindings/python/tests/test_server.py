@@ -16,11 +16,10 @@ import time
 
 import pytest
 from arcadedb_embedded import ArcadeDBServer
-from tests.conftest import TEST_PASSWORD, has_server_support
+from tests.conftest import TEST_PASSWORD
 
 
 @pytest.mark.server
-@pytest.mark.skipif(not has_server_support(), reason="Requires server support")
 def test_server_creation(temp_server_root):
     """Test creating and starting a server."""
     server = ArcadeDBServer(
@@ -46,7 +45,6 @@ def test_server_creation(temp_server_root):
 
 
 @pytest.mark.server
-@pytest.mark.skipif(not has_server_support(), reason="Requires server support")
 def test_server_database_operations(temp_server_root):
     """
     Test database operations through server using Java API.
@@ -67,7 +65,7 @@ def test_server_database_operations(temp_server_root):
         assert db.is_open()
 
         # Use database
-        # Schema operations are auto-transactional
+        # Schema statements apply immediately (no transaction needed)
         db.command("sql", "CREATE DOCUMENT TYPE Person")
 
         with db.transaction():
@@ -84,7 +82,6 @@ def test_server_database_operations(temp_server_root):
 
 
 @pytest.mark.server
-@pytest.mark.skipif(not has_server_support(), reason="Requires server support")
 def test_server_custom_config(temp_server_root):
     """Test server with custom configuration."""
     config = {"http_port": 8080, "host": "127.0.0.1", "mode": "production"}
@@ -101,7 +98,6 @@ def test_server_custom_config(temp_server_root):
 
 
 @pytest.mark.server
-@pytest.mark.skipif(not has_server_support(), reason="Requires server support")
 def test_server_context_manager(temp_server_root):
     """Test server context manager."""
     with ArcadeDBServer(
@@ -133,3 +129,50 @@ def test_default_host_is_localhost(temp_server_root):
         root_password=TEST_PASSWORD,
     )
     assert server.get_studio_url().startswith("http://localhost:")
+
+
+@pytest.mark.server
+def test_failed_server_start_does_not_hang_process_exit(tmp_path):
+    """A server.start() that fails part-way must not leave the process unable to exit.
+
+    Regression: when a plugin fails to start, the engine has already started
+    non-daemon threads (the HTTP idempotency cleaner, the security and session
+    timers) and only the Java stop() ends them. The wrapper's stop() returned
+    early because the start never completed, so the process hung at exit (a CI
+    job ran 28 minutes past its tests on 2026-10-02). The failure is forced with
+    a Postgres port out of range, which fails on every OS; a busy port does not
+    (macOS lets the engine's listener bind a port another socket holds).
+    """
+    import subprocess  # nosec B404 - fixed argv, no shell
+    import sys
+
+    code = (
+        "import socket\n"
+        "from arcadedb_embedded import create_server\n"
+        "def free():\n"
+        "    with socket.socket() as s:\n"
+        "        s.bind(('127.0.0.1', 0))\n"
+        "        return s.getsockname()[1]\n"
+        "server = create_server(\n"
+        f"    root_path={str(tmp_path / 'databases')!r},\n"
+        f"    root_password={TEST_PASSWORD!r},\n"
+        "    config={\n"
+        "        'http_port': free(),\n"
+        "        'server_plugins': 'Redis:com.arcadedb.redis.RedisProtocolPlugin,'\n"
+        "                          'Postgres:com.arcadedb.postgres.PostgresProtocolPlugin',\n"
+        "        'redis_port': free(),\n"
+        "        'postgres_port': 70000,\n"
+        "    },\n"
+        ")\n"
+        "try:\n"
+        "    server.start()\n"
+        "    print('started')\n"
+        "    server.stop()\n"
+        "except Exception:\n"
+        "    print('start failed')\n"
+    )
+    proc = subprocess.run(  # nosec B603 - interpreter + inline snippet, no shell
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=120
+    )
+    assert "start failed" in proc.stdout, proc.stdout + proc.stderr
+    assert proc.returncode == 0

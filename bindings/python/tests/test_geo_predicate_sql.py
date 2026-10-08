@@ -1,25 +1,17 @@
 """Geo predicate SQL coverage for Python bindings."""
 
 import arcadedb_embedded as arcadedb
-import pytest
 
 
 def test_geo_predicate_sql_within_and_intersects(temp_db_path):
     """Validate geo.within and geo.intersects boolean semantics through SQL."""
     with arcadedb.create_database(temp_db_path) as db:
-        try:
-            within_inside = next(
-                db.query(
-                    "sql",
-                    "select geo.within('POINT (5 5)', 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v",
-                )
+        within_inside = next(
+            db.query(
+                "sql",
+                "select geo.within('POINT (5 5)', 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v",
             )
-        except Exception as e:
-            if "Unknown method name: within" in str(e):
-                pytest.skip(
-                    "Geo SQL functions are not available in this packaged runtime"
-                )
-            raise
+        )
         within_outside = next(
             db.query(
                 "sql",
@@ -55,19 +47,12 @@ def test_geo_predicate_sql_within_and_intersects(temp_db_path):
 def test_geo_predicate_sql_boundary_and_repeatability(temp_db_path):
     """Geo predicates should remain stable across repeated calls and boundary points."""
     with arcadedb.create_database(temp_db_path) as db:
-        try:
-            boundary = next(
-                db.query(
-                    "sql",
-                    "select geo.within('POINT (0 0)', 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v",
-                )
+        boundary = next(
+            db.query(
+                "sql",
+                "select geo.within('POINT (0 0)', 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v",
             )
-        except Exception as e:
-            if "Unknown method name: within" in str(e):
-                pytest.skip(
-                    "Geo SQL functions are not available in this packaged runtime"
-                )
-            raise
+        )
 
         inside_first = next(
             db.query(

@@ -14,11 +14,11 @@ def test_count_type(temp_db_path):
         with db.transaction():
             # Insert users
             for i in range(10):
-                db.command("sql", f"INSERT INTO User SET name = 'User{i}'")
+                db.command("sql", "INSERT INTO User SET name = ?", f"User{i}")
 
             # Insert products
             for i in range(5):
-                db.command("sql", f"INSERT INTO Product SET name = 'Product{i}'")
+                db.command("sql", "INSERT INTO Product SET name = ?", f"Product{i}")
 
         # Test count_type for User
         user_count = db.count_type("User")

@@ -618,20 +618,21 @@ def insert_batch(db, table_name: str, batch: List[Dict[str, Any]]):
             )
 
 
-def configure_arcadedb_async_loader(db, batch_size: int, parallelism: int = 1):
+def configure_arcadedb_bulk_loader(db):
+    """Put the database into bulk-load mode for the preload phase.
+
+    This preload used to submit one INSERT per row through
+    `async_executor().command(...)`. That path silently discarded records above
+    parallel level 1 before 26.10.1 (ArcadeData/arcadedb#7615, fixed in #7625),
+    so the rows now go through
+    `db.insert_many(...)`, which loops Java-side inside one transaction per
+    batch and returns the number written.
+    """
     db.set_read_your_writes(False)
-    async_exec = db.async_executor()
-    async_exec.set_parallel_level(max(1, parallelism))
-    async_exec.set_commit_every(batch_size)
-    async_exec.set_transaction_use_wal(False)
-    return async_exec
 
 
-def reset_arcadedb_async_loader(db, async_exec):
-    async_exec.wait_completion()
-    async_exec.close()
+def reset_arcadedb_bulk_loader(db):
     db.set_read_your_writes(True)
-    async_exec.set_transaction_use_wal(True)
 
 
 def sqlite_type(field_type: str) -> str:
@@ -768,39 +769,57 @@ def copy_csv_into_duckdb(conn, table_name: str, columns: List[str], csv_path: Pa
     )
 
 
-def load_table_arcadedb_async(
-    async_exec,
-    errors: List[Exception],
+def load_table_arcadedb_bulk(
+    db,
     xml_path: Path,
     table_def: Dict[str, Any],
+    batch_size: int,
 ) -> Tuple[int, float]:
-    total = 0
+    """Preload one table through `db.insert_many(...)`.
+
+    `insert_many` returns how many rows it wrote, so a short load raises here
+    instead of being reported as a fast one.
+    """
+    submitted = 0
+    written = 0
     fields: List[FieldDef] = table_def["fields"]
-    columns = [field_name for field_name, _, _ in fields]
+    table_name = table_def["name"]
     start = time.time()
 
-    assignment_sql = ", ".join(f"{col} = ?" for col in columns)
-    sql = f"INSERT INTO {table_def['name']} SET {assignment_sql}"
-    initial_error_count = len(errors)
+    pending: List[Dict[str, Any]] = []
+
+    def flush() -> None:
+        nonlocal written, pending
+        if not pending:
+            return
+        n = db.insert_many(table_name, pending, commit_every=batch_size)
+        if n != len(pending):
+            raise RuntimeError(
+                f"insert_many wrote {n} of {len(pending)} rows for {table_name}"
+            )
+        written += n
+        pending = []
 
     for attrs in iter_xml_rows(xml_path):
-        payload: List[Any] = []
+        row: Dict[str, Any] = {}
         for field_name, field_type, parser in fields:
             value = parser(attrs.get(field_name))
             if field_type == "BOOLEAN" and value is not None:
                 value = 1 if value else 0
-            payload.append(to_arcadedb_sql_value(value))
-        async_exec.command("sql", sql, args=payload)
-        total += 1
+            row[field_name] = to_arcadedb_sql_value(value)
+        pending.append(row)
+        submitted += 1
+        if len(pending) >= batch_size:
+            flush()
 
-    async_exec.wait_completion()
-    if len(errors) > initial_error_count:
+    flush()
+
+    if written != submitted:
         raise RuntimeError(
-            f"Async preload failed for {table_def['name']} "
-            f"(first error: {errors[initial_error_count]})"
+            f"Preload wrote {written} of {submitted} rows for {table_name}"
         )
 
-    return total, time.time() - start
+    return written, time.time() - start
 
 
 def load_table(
@@ -1558,13 +1577,7 @@ def run_olap_arcadedb(
     print("Loading XML tables...")
     load_stats = []
     load_start = time.time()
-    async_exec = configure_arcadedb_async_loader(db, batch_size, parallelism=1)
-    errors: List[Exception] = []
-
-    def on_error(exc: Exception):
-        errors.append(exc)
-
-    async_exec.on_error(on_error)
+    configure_arcadedb_bulk_loader(db)
 
     try:
         for table in TABLE_DEFS:
@@ -1572,11 +1585,11 @@ def run_olap_arcadedb(
             if not xml_path.exists():
                 raise FileNotFoundError(f"Missing XML file: {xml_path}")
             print(f"  -> {table['name']} ({xml_path.name})")
-            count, elapsed = load_table_arcadedb_async(
-                async_exec,
-                errors,
+            count, elapsed = load_table_arcadedb_bulk(
+                db,
                 xml_path,
                 table,
+                batch_size,
             )
             load_stats.append(
                 {
@@ -1588,7 +1601,7 @@ def run_olap_arcadedb(
             print(f"     {count:,} rows in {elapsed:.2f}s")
         load_total = time.time() - load_start
     finally:
-        reset_arcadedb_async_loader(db, async_exec)
+        reset_arcadedb_bulk_loader(db)
 
     load_counts_start = time.time()
     table_counts_after_load = count_table_rows_arcadedb(db)

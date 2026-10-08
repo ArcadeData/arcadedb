@@ -10,6 +10,85 @@ def _count(db, type_name):
     return int(db.query("sql", q).to_list()[0]["n"])
 
 
+class TestRecommendedBulkPathsLandEveryRow:
+    """A bulk load through each recommended path, counted against what it was given.
+
+    ArcadeData/arcadedb#7615 went unnoticed because no test compared rows
+    submitted with rows stored at a size where the loss shows. Before 26.10.1
+    (fixed in #7625) the async command path dropped roughly three quarters of a
+    9,742-row load at parallel level 4 while raising nothing, logging nothing,
+    and returning normally from `wait_completion()`, so only a count caught it.
+    These are the counts, on
+    the paths the documentation now recommends instead.
+    """
+
+    # Sizes from the original report: 9,742 documents, and the 20,000/40,000
+    # graph that was measured landing every row through GraphBatch.
+    DOCUMENTS = 9_742
+    VERTICES = 20_000
+    EDGES = 40_000
+
+    def test_insert_many_lands_every_document(self, temp_db):
+        temp_db.command("sql", "CREATE DOCUMENT TYPE BulkDoc")
+        rows = [{"id": i, "name": f"row_{i}"} for i in range(self.DOCUMENTS)]
+
+        written = temp_db.insert_many("BulkDoc", rows, commit_every=1_000)
+
+        assert written == self.DOCUMENTS
+        assert _count(temp_db, "BulkDoc") == self.DOCUMENTS
+        # the rows are the ones submitted, not merely the right number of rows
+        agg = temp_db.query(
+            "sql", "SELECT min(id) AS lo, max(id) AS hi, sum(id) AS total FROM BulkDoc"
+        ).to_list()[0]
+        assert int(agg["lo"]) == 0
+        assert int(agg["hi"]) == self.DOCUMENTS - 1
+        assert int(agg["total"]) == self.DOCUMENTS * (self.DOCUMENTS - 1) // 2
+
+    def test_insert_many_parallel_lands_every_document(self, temp_db):
+        """insert_many(parallel=True) routes through the executor's createRecord.
+
+        That is a different submission path from `command`, and it is measured
+        unaffected by #7615. This test is what keeps that true.
+        """
+        temp_db.command("sql", "CREATE DOCUMENT TYPE BulkPar")
+        rows = [{"id": i} for i in range(self.DOCUMENTS)]
+
+        written = temp_db.insert_many("BulkPar", rows, parallel=True)
+
+        assert written == self.DOCUMENTS
+        assert _count(temp_db, "BulkPar") == self.DOCUMENTS
+
+    @pytest.mark.parametrize("parallel_flush", [False, True])
+    def test_graph_batch_lands_every_vertex_and_edge(self, temp_db, parallel_flush):
+        """GraphBatch flushes edges through the same async executor.
+
+        It is the recommended bulk graph path precisely because it stays exact
+        while the SQL command path does not, so the flush runs both ways here.
+        """
+        temp_db.schema.create_vertex_type("BulkV")
+        temp_db.schema.create_edge_type("BulkE")
+
+        # a parallel level the command path would lose records at, to show the
+        # executor is busy on more than one worker during the edge flush
+        temp_db.async_executor().set_parallel_level(4)
+
+        with temp_db.graph_batch(parallel_flush=parallel_flush) as batch:
+            rids = batch.create_vertices(
+                "BulkV", [{"k": i} for i in range(self.VERTICES)]
+            )
+            assert len(rids) == self.VERTICES
+
+            sources = [rids[i % self.VERTICES] for i in range(self.EDGES)]
+            targets = [rids[(i * 7 + 1) % self.VERTICES] for i in range(self.EDGES)]
+            batch.new_edges(sources, "BulkE", targets)
+            batch.flush()
+
+        temp_db.async_executor().wait_completion()
+
+        assert _count(temp_db, "BulkV") == self.VERTICES
+        assert _count(temp_db, "BulkE") == self.EDGES
+
+
 class TestInsertMany:
     def test_basic_roundtrip(self, temp_db):
         temp_db.command("sql", "CREATE DOCUMENT TYPE Item")
@@ -65,6 +144,39 @@ class TestInsertMany:
         temp_db.insert_many("Tx", [{"k": 1}, {"k": 2}], commit_every=0)
         temp_db.commit()
         assert _count(temp_db, "Tx") == 2
+
+
+class TestInsertManyParallelReportsFailures:
+    """A record the parallel writers fail to store must fail the call.
+
+    The maintainers' advice for an async bulk load (ArcadeData/arcadedb#8478)
+    is to register an error callback "so a failed record can't pass silently".
+    The parallel mode submitted every record with no callback and returned the
+    row count it was given, so a rejected record (here a duplicate key under a
+    unique index) was dropped while insert_many reported success.
+    """
+
+    def test_duplicate_key_raises_instead_of_dropping(self, temp_db):
+        import arcadedb_embedded as arcadedb
+
+        temp_db.command("sql", "CREATE DOCUMENT TYPE ParDup BUCKETS 4")
+        temp_db.command("sql", "CREATE PROPERTY ParDup.id INTEGER")
+        temp_db.command("sql", "CREATE INDEX ON ParDup (id) UNIQUE")
+        rows = [{"id": i % 500} for i in range(1_000)]  # every key twice
+
+        with pytest.raises(arcadedb.ArcadeDBError, match="failed"):
+            temp_db.insert_many("ParDup", rows, parallel=True)
+
+        assert _count(temp_db, "ParDup") <= 500
+
+    def test_clean_load_still_returns_the_count(self, temp_db):
+        temp_db.command("sql", "CREATE DOCUMENT TYPE ParOk BUCKETS 4")
+        temp_db.command("sql", "CREATE PROPERTY ParOk.id INTEGER")
+        temp_db.command("sql", "CREATE INDEX ON ParOk (id) UNIQUE")
+        rows = [{"id": i} for i in range(1_000)]
+
+        assert temp_db.insert_many("ParOk", rows, parallel=True) == 1_000
+        assert _count(temp_db, "ParOk") == 1_000
 
 
 class _Unsettable:
@@ -157,6 +269,148 @@ class TestInsertManyTransactionHygiene:
         # as the per-row fallback already did: rolling back the caller's
         # transaction must discard every row.
         assert _count(temp_db, "FastNoCommit") == 0
+
+
+class TestInsertManyStreams:
+    """insert_many reads its rows a chunk at a time (#294).
+
+    It used to read the whole iterable into a list and send it as one JSON
+    text, which the engine parsed into one JSON array, so a load held about
+    1.5 KB per row at once (Python list, JSON text, parsed rows): a generator
+    of 26 million time-series points could not load under 32 GB. Each test
+    here fails on that version.
+    """
+
+    def _point_type(self, db, name):
+        db.command("sql", f"CREATE DOCUMENT TYPE {name}")
+        db.command("sql", f"CREATE PROPERTY {name}.k LONG")
+        db.command("sql", f"CREATE INDEX ON {name} (k) UNIQUE")
+
+    def test_rows_are_written_while_the_iterable_is_read(self, temp_db):
+        from arcadedb_embedded import core
+
+        self._point_type(temp_db, "Stream")
+        chunk = core._INSERT_MANY_CHUNK
+        seen = {}
+
+        def rows():
+            for i in range(3 * chunk):
+                if i == 2 * chunk + 1:
+                    # what the database holds while row 2*chunk+1 is produced
+                    seen["stored"] = _count(temp_db, "Stream")
+                yield {"k": i}
+
+        assert temp_db.insert_many("Stream", rows(), commit_every=chunk) == 3 * chunk
+        # At most one chunk is pending: the old code had stored nothing yet.
+        assert seen["stored"] >= chunk
+        assert _count(temp_db, "Stream") == 3 * chunk
+
+    def test_python_memory_does_not_grow_with_the_row_count(self, temp_db):
+        import tracemalloc
+
+        self._point_type(temp_db, "StreamMem")
+        n = 60_000
+
+        def rows():
+            for i in range(n):
+                yield {"k": i, "host": f"host_{i % 100}", "v": i * 0.5}
+
+        tracemalloc.start()
+        try:
+            temp_db.insert_many("StreamMem", rows(), commit_every=10_000)
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        # The old code held about 25 MB here (60,000 dicts plus their JSON
+        # text, about 410 bytes a row) and grew linearly with n; streaming
+        # holds one 10,000-row chunk, about 4 MB, whatever n is.
+        assert peak < 12 * 2**20, f"peak Python allocation {peak / 2**20:.1f} MB"
+        assert _count(temp_db, "StreamMem") == n
+
+    def test_commit_every_counts_across_chunks(self, temp_db):
+        from arcadedb_embedded import ArcadeDBError, core
+
+        self._point_type(temp_db, "StreamBatch")
+        chunk = core._INSERT_MANY_CHUNK
+        every = chunk + chunk // 2  # not a multiple of the chunk
+        rows = [{"k": i} for i in range(2 * every + 10)]
+        rows.append({"k": 0})  # a duplicate key in the third batch
+        with pytest.raises(ArcadeDBError):
+            temp_db.insert_many("StreamBatch", rows, commit_every=every)
+        assert temp_db.is_transaction_active() is False
+        # exactly the two committed batches survive
+        assert _count(temp_db, "StreamBatch") == 2 * every
+
+    def test_commit_every_zero_is_one_transaction(self, temp_db):
+        from arcadedb_embedded import ArcadeDBError, core
+
+        self._point_type(temp_db, "StreamOne")
+        rows = [{"k": i} for i in range(2 * core._INSERT_MANY_CHUNK + 5)]
+        rows.append({"k": 0})
+        with pytest.raises(ArcadeDBError):
+            temp_db.insert_many("StreamOne", rows, commit_every=0)
+        assert temp_db.is_transaction_active() is False
+        assert _count(temp_db, "StreamOne") == 0
+
+    def test_an_error_from_the_iterable_keeps_committed_batches(self, temp_db):
+        from arcadedb_embedded import core
+
+        self._point_type(temp_db, "StreamGenErr")
+        chunk = core._INSERT_MANY_CHUNK
+
+        def rows():
+            for i in range(chunk + 7):
+                yield {"k": i}
+            raise ValueError("source failed")
+
+        with pytest.raises(ValueError, match="source failed"):
+            temp_db.insert_many("StreamGenErr", rows(), commit_every=chunk)
+        assert temp_db.is_transaction_active() is False
+        assert _count(temp_db, "StreamGenErr") == chunk
+
+    def test_a_chunk_off_the_json_path_does_not_change_the_others(self, temp_db):
+        from arcadedb_embedded import core
+
+        chunk = core._INSERT_MANY_CHUNK
+        temp_db.command("sql", "CREATE DOCUMENT TYPE StreamMixed")
+        rows = [{"k": i} for i in range(2 * chunk)]
+        rows[chunk + 3] = {"k": chunk + 3, "when": datetime.datetime(2026, 1, 1)}
+        assert temp_db.insert_many("StreamMixed", iter(rows)) == 2 * chunk
+        assert _count(temp_db, "StreamMixed") == 2 * chunk
+
+    @pytest.mark.parametrize("with_fallback_chunk", [False, True])
+    def test_parallel_streams_every_row(self, temp_db, with_fallback_chunk):
+        from arcadedb_embedded import core
+
+        chunk = core._INSERT_MANY_CHUNK
+        temp_db.command("sql", "CREATE DOCUMENT TYPE StreamPar BUCKETS 4")
+        temp_db.command("sql", "CREATE PROPERTY StreamPar.k LONG")
+        temp_db.command("sql", "CREATE INDEX ON StreamPar (k) UNIQUE")
+        n = 2 * chunk + 11
+
+        def rows():
+            for i in range(n):
+                if with_fallback_chunk and i == chunk + 1:
+                    yield {"k": i, "when": datetime.datetime(2026, 1, 1)}
+                else:
+                    yield {"k": i}
+
+        assert temp_db.insert_many("StreamPar", rows(), parallel=True) == n
+        assert _count(temp_db, "StreamPar") == n
+
+    def test_parallel_duplicate_in_a_later_chunk_raises(self, temp_db):
+        from arcadedb_embedded import ArcadeDBError, core
+
+        chunk = core._INSERT_MANY_CHUNK
+        temp_db.command("sql", "CREATE DOCUMENT TYPE StreamParDup BUCKETS 4")
+        temp_db.command("sql", "CREATE PROPERTY StreamParDup.k LONG")
+        temp_db.command("sql", "CREATE INDEX ON StreamParDup (k) UNIQUE")
+        rows = [{"k": i} for i in range(chunk + 5)] + [{"k": 1}]
+        # The failure in the last chunk reaches the call; a failed writer batch
+        # abandons the records buffered with it, so fewer rows may be stored.
+        with pytest.raises(ArcadeDBError, match="failed record"):
+            temp_db.insert_many("StreamParDup", rows, parallel=True)
+        assert _count(temp_db, "StreamParDup") <= chunk + 5
 
 
 class TestAsyncCreateRecord:
@@ -358,3 +612,38 @@ class TestVectorColumnsDataFrame:
         df = temp_db.query("sql", "SELECT v FROM EmbDf").to_dataframe()
         assert len(df) == 10
         assert len(df["v"].iloc[3]) == 2
+
+
+class TestInsertManyInsideACallersTransaction:
+    """insert_many inside an open transaction belongs to that transaction.
+
+    The documented contract is that `commit_every` is ignored when a
+    transaction is already open, so the caller's commit or rollback decides
+    the whole batch. The Java fast path (DocumentBatcher.insertManyJson)
+    committed and reopened the caller's transaction every `commit_every` rows
+    regardless, so a rollback left every completed chunk behind (found
+    2026-09-26 by a docs audit; the Python fallback path already guarded it).
+    """
+
+    def test_rollback_after_insert_many_leaves_nothing(self, temp_db):
+        temp_db.command("sql", "CREATE DOCUMENT TYPE TxBatch")
+        rows = [{"id": i} for i in range(25)]
+
+        class Boom(Exception):
+            pass
+
+        with pytest.raises(Boom):
+            with temp_db.transaction():
+                temp_db.insert_many("TxBatch", rows, commit_every=10)
+                raise Boom()
+
+        assert _count(temp_db, "TxBatch") == 0
+
+    def test_commit_after_insert_many_keeps_every_row(self, temp_db):
+        temp_db.command("sql", "CREATE DOCUMENT TYPE TxBatchOk")
+        rows = [{"id": i} for i in range(25)]
+
+        with temp_db.transaction():
+            assert temp_db.insert_many("TxBatchOk", rows, commit_every=10) == 25
+
+        assert _count(temp_db, "TxBatchOk") == 25

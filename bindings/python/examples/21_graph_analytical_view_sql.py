@@ -356,7 +356,8 @@ def create_schema(db) -> None:
     db.command("sql", "CREATE PROPERTY City.tier INTEGER")
     db.command("sql", "CREATE PROPERTY City.zone STRING")
     db.command("sql", "CREATE PROPERTY City.demand_index INTEGER")
-    db.command("sql", "CREATE INDEX ON City (code) UNIQUE")
+    # code is only looked up by equality, so a hash index (ArcadeData/arcadedb#9169)
+    db.command("sql", "CREATE INDEX ON City (code) UNIQUE_HASH")
 
     db.command("sql", "CREATE EDGE TYPE ROAD")
     db.command("sql", "CREATE PROPERTY ROAD.distance INTEGER")

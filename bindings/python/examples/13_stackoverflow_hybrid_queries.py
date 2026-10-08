@@ -505,56 +505,69 @@ def to_arcadedb_sql_value(value: Any) -> Any:
     return value
 
 
-def configure_arcadedb_async_loader(db, batch_size: int, parallelism: int = 1):
+def configure_arcadedb_bulk_loader(db):
+    """Put the database into bulk-load mode for the Phase 1 preload.
+
+    Phase 1 used to submit one INSERT per row through
+    `async_executor().command(...)`. That path silently discarded records above
+    parallel level 1 before 26.10.1 (ArcadeData/arcadedb#7615, fixed in #7625),
+    so the rows now go through
+    `db.insert_many(...)`, which loops Java-side inside one transaction per
+    batch and returns the number written.
+    """
     db.set_read_your_writes(False)
-    async_exec = db.async_executor()
-    async_exec.set_parallel_level(max(1, parallelism))
-    async_exec.set_commit_every(batch_size)
-    async_exec.set_transaction_use_wal(False)
-    return async_exec
 
 
-def reset_arcadedb_async_loader(db, async_exec):
-    async_exec.wait_completion()
-    async_exec.close()
+def reset_arcadedb_bulk_loader(db):
     db.set_read_your_writes(True)
-    async_exec.set_transaction_use_wal(True)
 
 
-def load_table_arcadedb_async(
-    async_exec,
-    errors: List[Exception],
+def load_table_arcadedb_bulk(
+    db,
     xml_path: Path,
     table_def: Dict[str, Any],
+    batch_size: int,
 ) -> Dict[str, Any]:
     fields: List[FieldDef] = table_def["fields"]
-    total = 0
+    table_name = table_def["name"]
+    submitted = 0
+    written = 0
     start = time.time()
-    columns = [field_name for field_name, _, _ in fields]
-    assignment_sql = ", ".join(f"{col} = ?" for col in columns)
-    sql = f"INSERT INTO {table_def['name']} SET {assignment_sql}"
-    initial_error_count = len(errors)
+    pending: List[Dict[str, Any]] = []
+
+    def flush() -> None:
+        nonlocal written, pending
+        if not pending:
+            return
+        n = db.insert_many(table_name, pending, commit_every=batch_size)
+        if n != len(pending):
+            raise RuntimeError(
+                f"insert_many wrote {n} of {len(pending)} rows for {table_name}"
+            )
+        written += n
+        pending = []
 
     for attrs in iter_xml_rows(xml_path):
-        payload: List[Any] = []
+        row: Dict[str, Any] = {}
         for field_name, field_type, parser in fields:
             value = parser(attrs.get(field_name))
             if field_type == "BOOLEAN" and value is not None:
                 value = 1 if value else 0
-            payload.append(to_arcadedb_sql_value(value))
-        async_exec.command("sql", sql, args=payload)
-        total += 1
+            row[field_name] = to_arcadedb_sql_value(value)
+        pending.append(row)
+        submitted += 1
+        if len(pending) >= batch_size:
+            flush()
 
-    async_exec.wait_completion()
-    if len(errors) > initial_error_count:
+    flush()
+    if written != submitted:
         raise RuntimeError(
-            f"Async preload failed for {table_def['name']} "
-            f"(first error: {errors[initial_error_count]})"
+            f"Preload wrote {written} of {submitted} rows for {table_name}"
         )
 
     return {
-        "table": table_def["name"],
-        "rows": total,
+        "table": table_name,
+        "rows": written,
         "elapsed_s": time.time() - start,
     }
 
@@ -646,10 +659,13 @@ def create_graph_indexes(db) -> None:
 def insert_vertices(db, vertex_type: str, rows: List[Dict[str, Any]]) -> None:
     if not rows:
         return
+    # WAL off (use_wal=False, GraphBatch's default): this example rebuilds its database from
+    # the source files, so a crash mid-import costs a re-run. An import that must survive a
+    # crash passes use_wal=True (ArcadeDB's recommendation, ArcadeData/arcadedb#8287).
     with db.graph_batch(
         batch_size=max(1, len(rows)),
         expected_edge_count=0,
-        bidirectional=False,
+        bidirectional=True,
         commit_every=max(1, len(rows)),
         use_wal=False,
     ) as batch:
@@ -660,7 +676,7 @@ def build_rid_lookup(db, vertex_type: str) -> Dict[int, str]:
     rows = db.query(
         "sql",
         f"SELECT Id AS id, @rid AS rid FROM {vertex_type} WHERE Id IS NOT NULL",
-    ).to_json_list()
+    ).to_list()
     lookup: Dict[int, str] = {}
     for row in rows:
         entity_id = row.get("id")
@@ -680,9 +696,15 @@ def insert_edges(
     if not rows:
         return
 
+    # WAL off (use_wal=False, GraphBatch's default): this example rebuilds its database from
+    # the source files, so a crash mid-import costs a re-run. An import that must survive a
+    # crash passes use_wal=True (ArcadeDB's recommendation, ArcadeData/arcadedb#8287).
     with db.graph_batch(
         batch_size=max(1, len(rows)),
         expected_edge_count=max(1, len(rows)),
+        # Two-way edges, as the schema declares them: a query the planner walks
+        # from the target end reads the incoming pointers, and a one-way load
+        # returned 0 rows there with no error (ArcadeData/arcadedb#8625).
         bidirectional=True,
         commit_every=max(1, len(rows)),
         use_wal=False,
@@ -1339,12 +1361,6 @@ def create_sql_vector_index(db, vertex_type: str) -> float:
     return time.time() - start
 
 
-def to_sql_vector_literal(vector: Any) -> str:
-    if hasattr(vector, "tolist"):
-        vector = vector.tolist()
-    return "[" + ", ".join(str(float(value)) for value in vector) + "]"
-
-
 def normalize_value(value: Any) -> Any:
     if isinstance(value, float):
         return round(value, 7)
@@ -1362,17 +1378,18 @@ def hash_rows(rows: List[Dict[str, Any]]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def run_sql(db, query: str) -> List[Dict[str, Any]]:
-    return list(db.query("sql", query))
+def run_sql(db, query: str, *args: Any) -> List[Dict[str, Any]]:
+    # Values are bound as parameters, never pasted into the query text: a new
+    # text per call is parsed again every time (ArcadeDB #8286).
+    return list(db.query("sql", query, *args))
 
 
-def run_cypher(db, query: str) -> List[Dict[str, Any]]:
+def run_cypher(
+    db, query: str, params: Optional[Dict[str, Any]] = None
+) -> List[Dict[str, Any]]:
+    if params:
+        return list(db.query("opencypher", query, params))
     return list(db.query("opencypher", query))
-
-
-def quote_cypher_string(value: str) -> str:
-    escaped = value.replace("\\", "\\\\").replace("'", "\\'")
-    return f"'{escaped}'"
 
 
 def timed_step(name: str, fn: Callable[[], Any]) -> Dict[str, Any]:
@@ -1524,17 +1541,15 @@ def build_activity_timeseries(db, top_tag_limit: int) -> Dict[str, Any]:
     )
 
     if top_tags:
-        cypher_tags = (
-            "[" + ", ".join(quote_cypher_string(tag) for tag in top_tags) + "]"
-        )
         source_events["question_tagged"] = accumulate_daily_series(
             db.query(
                 "opencypher",
-                f"""
+                """
                 MATCH (q:Question)-[:TAGGED_WITH]->(t:Tag)
-                WHERE q.CreationDate IS NOT NULL AND t.TagName IN {cypher_tags}
+                WHERE q.CreationDate IS NOT NULL AND t.TagName IN $tags
                 RETURN q.CreationDate AS ts, q.Score AS score, t.TagName AS tag
                 """,
+                {"tags": top_tags},
             ),
             series,
             event_type="question",
@@ -1627,6 +1642,9 @@ def run_hybrid_queries(
     min_reputation: int,
 ) -> List[Dict[str, Any]]:
     results: List[Dict[str, Any]] = []
+    # Query vectors are bound as Java float arrays, not pasted into the SQL text
+    # as a 384-number literal (a new query text per search, parsed every time).
+    to_java_float_array = get_arcadedb_module().to_java_float_array
 
     # Q1: SQL -> Vector
     steps = []
@@ -1650,7 +1668,7 @@ def run_hybrid_queries(
     allowed_rids = [
         str(row.get("rid")) for row in step["result"] if row.get("rid") is not None
     ]
-    query_vector_sql = to_sql_vector_literal(
+    query_vector = to_java_float_array(
         model.encode(
             ["How do I parse JSON in Python?"],
             show_progress_bar=False,
@@ -1666,13 +1684,15 @@ def run_hybrid_queries(
             SELECT Id AS question_id, Title AS title, Score AS score, distance
             FROM (
                             SELECT expand(vectorNeighbors(
-                'Question[embedding]', {query_vector_sql}, {max(candidate_limit, top_k)}
+                'Question[embedding]', ?, ?
               ))
             )
             WHERE @rid IN {allowed_rids_sql}
             ORDER BY distance ASC, question_id ASC
             LIMIT {top_k}
             """,
+            query_vector,
+            max(candidate_limit, top_k),
         ),
     )
     steps.append(step2)
@@ -1718,10 +1738,6 @@ def run_hybrid_queries(
     tags = [
         str(row.get("TagName")) for row in top_tags_step["result"] if row.get("TagName")
     ]
-    if tags:
-        cypher_tags = "[" + ", ".join(quote_cypher_string(tag) for tag in tags) + "]"
-    else:
-        cypher_tags = "[]"
     step = timed_step(
         "cypher_expand",
         lambda: run_cypher(
@@ -1729,12 +1745,13 @@ def run_hybrid_queries(
             f"""
             MATCH (q:Question)-[:TAGGED_WITH]->(t:Tag)
             MATCH (u:User)-[:ASKED]->(q)
-            WHERE t.TagName IN {cypher_tags}
+            WHERE t.TagName IN $tags
                  RETURN t.TagName AS tag, u.Id AS user_id,
                      u.DisplayName AS name, count(q) AS questions
             ORDER BY questions DESC, user_id ASC
             LIMIT {top_k}
             """,
+            {"tags": tags},
         ),
     )
     steps.append(step)
@@ -1780,7 +1797,6 @@ def run_hybrid_queries(
         if row.get("user_id") is not None
     ]
     if user_ids:
-        ids_sql = ",".join(str(v) for v in user_ids)
         step2 = timed_step(
             "sql_profile_rank",
             lambda: run_sql(
@@ -1788,10 +1804,11 @@ def run_hybrid_queries(
                 f"""
                 SELECT Id, DisplayName, Reputation
                 FROM User
-                WHERE Id IN [{ids_sql}]
+                WHERE Id IN :ids
                 ORDER BY Reputation DESC, Id ASC
                 LIMIT {top_k}
                 """,
+                {"ids": list(user_ids)},
             ),
         )
         steps.append(step2)
@@ -1819,7 +1836,7 @@ def run_hybrid_queries(
 
     # Q4: Vector -> Cypher
     steps = []
-    seed_query_sql = to_sql_vector_literal(
+    seed_query_vector = to_java_float_array(
         model.encode(
             ["database indexing best practices for performance"],
             show_progress_bar=False,
@@ -1830,15 +1847,17 @@ def run_hybrid_queries(
         "vector_seed",
         lambda: run_sql(
             db,
-            f"""
+            """
             SELECT Id AS question_id, Title AS title, distance
             FROM (
                             SELECT expand(vectorNeighbors(
-                'Question[embedding]', {seed_query_sql}, {top_k}
+                'Question[embedding]', ?, ?
               ))
             )
             ORDER BY distance ASC, question_id ASC
             """,
+            seed_query_vector,
+            top_k,
         ),
     )
     steps.append(step)
@@ -1848,7 +1867,6 @@ def run_hybrid_queries(
         if row.get("question_id") is not None
     ]
     if seed_ids:
-        cypher_ids = "[" + ", ".join(str(v) for v in seed_ids) + "]"
         step2 = timed_step(
             "cypher_expand",
             lambda: run_cypher(
@@ -1856,12 +1874,13 @@ def run_hybrid_queries(
                 f"""
                 MATCH (u:User)-[:ASKED]->(q:Question)
                 OPTIONAL MATCH (q)-[:HAS_ANSWER]->(a:Answer)
-                WHERE q.Id IN {cypher_ids}
+                WHERE q.Id IN $ids
                   RETURN q.Id AS question_id, q.Title AS title,
                       u.Id AS asker_id, count(a) AS answer_count
                 ORDER BY answer_count DESC, question_id ASC
                 LIMIT {top_k}
                 """,
+                {"ids": seed_ids},
             ),
         )
         steps.append(step2)
@@ -1890,7 +1909,7 @@ def run_hybrid_queries(
 
     # Q5: Vector -> Cypher -> SQL
     steps = []
-    q5_query_sql = to_sql_vector_literal(
+    q5_query_vector = to_java_float_array(
         model.encode(
             ["concurrency control and transaction isolation"],
             show_progress_bar=False,
@@ -1901,15 +1920,17 @@ def run_hybrid_queries(
         "vector_seed",
         lambda: run_sql(
             db,
-            f"""
+            """
             SELECT Id AS question_id, distance
             FROM (
                             SELECT expand(vectorNeighbors(
-                'Question[embedding]', {q5_query_sql}, {top_k}
+                'Question[embedding]', ?, ?
               ))
             )
             ORDER BY distance ASC, question_id ASC
             """,
+            q5_query_vector,
+            top_k,
         ),
     )
     steps.append(step)
@@ -1919,17 +1940,17 @@ def run_hybrid_queries(
         if row.get("question_id") is not None
     ]
     if qids:
-        cypher_ids = "[" + ", ".join(str(v) for v in qids) + "]"
         step2 = timed_step(
             "cypher_expand_users",
             lambda: run_cypher(
                 db,
                 f"""
                 MATCH (q:Question)-[:HAS_ANSWER]->(a:Answer)<-[:ANSWERED]-(u:User)
-                WHERE q.Id IN {cypher_ids}
+                WHERE q.Id IN $ids
                 RETURN DISTINCT u.Id AS user_id
                 LIMIT 200
                 """,
+                {"ids": qids},
             ),
         )
         steps.append(step2)
@@ -1939,7 +1960,6 @@ def run_hybrid_queries(
             if row.get("user_id") is not None
         ]
         if user_ids:
-            ids_sql = ",".join(str(v) for v in user_ids)
             step3 = timed_step(
                 "sql_post_filter",
                 lambda: run_sql(
@@ -1947,12 +1967,13 @@ def run_hybrid_queries(
                     f"""
                     SELECT Id, DisplayName, Reputation, Views
                     FROM User
-                                        WHERE Id IN [{ids_sql}]
-                                            AND Reputation IS NOT NULL
-                                            AND Reputation >= {int(min_reputation)}
+                    WHERE Id IN :ids
+                      AND Reputation IS NOT NULL
+                      AND Reputation >= :min_rep
                     ORDER BY Reputation DESC, Views DESC, Id ASC
                     LIMIT {top_k}
                     """,
+                    {"ids": list(user_ids), "min_rep": int(min_reputation)},
                 ),
             )
             steps.append(step3)
@@ -2010,29 +2031,23 @@ def phase1_tables(
         schema_time = time.time() - schema_start
 
         load_start = time.time()
-        async_exec = configure_arcadedb_async_loader(db, batch_size, parallelism=1)
-        errors: List[Exception] = []
-
-        def on_error(exc: Exception):
-            errors.append(exc)
-
-        async_exec.on_error(on_error)
+        configure_arcadedb_bulk_loader(db)
 
         try:
             table_stats = []
             for table in table_defs:
                 xml_path = data_dir / table["xml"]
                 table_stats.append(
-                    load_table_arcadedb_async(
-                        async_exec,
-                        errors,
+                    load_table_arcadedb_bulk(
+                        db,
                         xml_path,
                         table,
+                        batch_size,
                     )
                 )
             load_time = time.time() - load_start
         finally:
-            reset_arcadedb_async_loader(db, async_exec)
+            reset_arcadedb_bulk_loader(db)
 
         index_time = create_indexes_with_retry(
             db,

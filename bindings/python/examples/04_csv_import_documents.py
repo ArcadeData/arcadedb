@@ -14,8 +14,8 @@ We use the MovieLens dataset with four CSV files:
 Key Concepts:
 - Bulk INSERT ingest using Python CSV parsing
 - Explicit schema mapping for document types
-- Batch processing with commitEvery parameter
-- WAL disabled during ingest, then re-enabled
+- Batch processing with --batch-size (transaction size for the CSV ingest)
+- Read-your-writes disabled during ingest, then re-enabled
 - Creating indexes AFTER import for performance
 - **Full-text search** with Lucene for text fields
 - Query performance comparison with/without indexes
@@ -50,12 +50,10 @@ Usage:
    python 04_csv_import_documents.py
 2. Run with small dataset:
    python 04_csv_import_documents.py --dataset movielens-small
-3. Run with large dataset and custom parallel threads:
-   python 04_csv_import_documents.py --dataset movielens-large --parallel 8
-4. Run with custom batch size:
+3. Run with custom batch size:
    python 04_csv_import_documents.py --batch-size 10000
-5. Run with custom JVM heap, parallel threads, and batch size:
-    python 04_csv_import_documents.py --dataset movielens-large --parallel 8 --batch-size 10000 --heap-size 8g
+4. Run with custom JVM heap and batch size:
+    python 04_csv_import_documents.py --dataset movielens-large --batch-size 10000 --heap-size 8g
 
 The script will automatically download the dataset if it doesn't exist.
 
@@ -591,7 +589,8 @@ def create_indexes(db, indexes, verbose=True):
     Args:
         db: Database instance
         indexes: List of (table, column, uniqueness) tuples
-            uniqueness can be: "UNIQUE", "NOTUNIQUE", "FULL_TEXT"
+            uniqueness can be: "UNIQUE", "UNIQUE_HASH", "NOTUNIQUE",
+            "NOTUNIQUE_HASH", "FULL_TEXT"
         verbose: If True, print progress messages
 
     Returns:
@@ -909,9 +908,7 @@ Examples:
   python 04_csv_import_documents.py                             # Use large dataset (default)
   python 04_csv_import_documents.py --dataset movielens-small   # Use small dataset
   python 04_csv_import_documents.py --dataset movielens-large   # Use large dataset
-  python 04_csv_import_documents.py --parallel 8                # Use 8 parallel threads
   python 04_csv_import_documents.py --batch-size 10000          # Use larger batch size
-  python 04_csv_import_documents.py --dataset movielens-small --parallel 4 --batch-size 1000
   python 04_csv_import_documents.py --export                    # Export database after import
   python 04_csv_import_documents.py --export --export-path my_backup.jsonl.tgz
 
@@ -919,13 +916,16 @@ Dataset sizes:
   large - movielens-large (~33M ratings, ~86K movies, ~265 MB) - DEFAULT
   small - movielens-small (~100K ratings, ~9K movies, ~1 MB)
 
-Parallel threads:
-  Default: auto-detect (CPU cores / 2 - 1, minimum 1)
-  Recommendation: 4-8 threads for best performance
-  Higher values don't always help due to lock contention
+Parallel (--parallel):
+  Passed as `parallel` to the IMPORT DATABASE of the --export round trip, and
+  used nowhere else. The CSV ingest runs single-threaded in batched
+  transactions, and the engine's JSONL importer does not read `parallel`.
+  Default: not passed.
 
-Batch size (commitEvery):
-  Default: 5000 records per commit
+Batch size (--batch-size):
+  Default: 5000 records per commit. Sets the transaction size for the CSV
+  ingest. It is also passed as commitEvery to the round-trip IMPORT DATABASE,
+  which the JSONL importer does not read.
   Larger batches = faster imports, more memory usage
   Smaller batches = slower imports, less memory usage
 
@@ -947,7 +947,11 @@ parser.add_argument(
     "--parallel",
     type=int,
     default=None,
-    help="Number of parallel threads for import (default: auto-detect based on CPU cores)",
+    help=(
+        "Passed as `parallel` to the IMPORT DATABASE of the --export round trip "
+        "and used nowhere else: the CSV ingest is single-threaded, and the JSONL "
+        "importer does not read it (default: not passed)"
+    ),
 )
 parser.add_argument(
     "--batch-size",
@@ -989,10 +993,13 @@ print("=" * 70)
 print()
 print(f"📊 Dataset: {args.dataset}")
 if args.parallel:
-    print(f"🔧 Parallel threads: {args.parallel}")
-else:
-    print("🔧 Parallel threads: auto-detect (CPU cores / 2 - 1, min 1)")
-print(f"🔧 Batch size (commitEvery): {args.batch_size}")
+    # The CSV ingest below is single-threaded; --parallel only reaches the
+    # WITH clause of the --export round trip's IMPORT DATABASE.
+    print(
+        f"🔧 --parallel {args.parallel}: passed to the round-trip "
+        "IMPORT DATABASE (only with --export)"
+    )
+print(f"🔧 Batch size: {args.batch_size}")
 if args.export:
     # Determine export filename for display
     if args.export_path:
@@ -1189,15 +1196,18 @@ print()
 print("Step 2: Importing movies.csv → Movie documents...")
 print("   💡 Using bulk insert mode:")
 print("      • Schema is created explicitly before ingest")
-print("      • Batch inserts run with WAL disabled for faster load")
-print("      • WAL is re-enabled after ingest")
+print("      • Reads do not have to see this session's own uncommitted writes")
 print()
 step_start = time.time()
 
+# This ingest runs in batched transactions (import_csv_documents_via_sql), not
+# through the async executor. Until 2026-09-15 these lines also configured
+# db.async_executor() with commitEvery and WAL off, which read as if the load
+# were async when it never was: those settings only apply to work submitted to
+# the executor. They are gone rather than made real, because the executor's SQL
+# command path silently discarded records above parallel level 1 before 26.10.1
+# (ArcadeData/arcadedb#7615, fixed in #7625).
 db.set_read_your_writes(False)
-async_exec = db.async_executor()
-async_exec.set_commit_every(args.batch_size)
-async_exec.set_transaction_use_wal(False)
 
 movies_csv = str(data_dir / "movies.csv")
 stats = import_csv_documents_via_sql(db, movies_csv, "Movie")
@@ -1289,8 +1299,7 @@ if null_timestamps > 0:
 print()
 
 db.set_read_your_writes(True)
-async_exec.set_transaction_use_wal(True)
-print("   ✅ Ingest mode reset: WAL re-enabled")
+print("   ✅ Ingest mode reset: read-your-writes re-enabled")
 print()
 
 # -----------------------------------------------------------------------------
@@ -1444,11 +1453,13 @@ wait_for_compaction(db, max_wait_seconds=600, verbose=True)
 
 # Define indexes to create
 indexes = [
+    # Ordered LSM_TREE: the test queries ORDER BY movieId. An id read only by
+    # equality would be UNIQUE_HASH (ArcadeData/arcadedb#9169), as Link.movieId is.
     ("Movie", "movieId", "UNIQUE"),
     ("Movie", "genres", "FULL_TEXT"),  # Full-text search for genre queries
     ("Rating", "userId", "NOTUNIQUE"),
     ("Rating", "movieId", "NOTUNIQUE"),
-    ("Link", "movieId", "UNIQUE"),
+    ("Link", "movieId", "UNIQUE_HASH"),  # never read by range or order
     ("Tag", "movieId", "NOTUNIQUE"),
 ]
 
@@ -1742,7 +1753,8 @@ genre_searches = ["Action", "Comedy", "Drama", "Sci-Fi", "Horror"]
 print("   🔍 Testing text search on genres:")
 for genre in genre_searches:
     step_start = time.time()
-    # Query using LIKE - ArcadeDB should optimize this with the FULL_TEXT index
+    # A substring LIKE ('%x%') scans the type: no index serves it (only a prefix
+    # LIKE 'x%' reads an ordered index); the FULL_TEXT index answers SEARCH_FIELDS
     result = list(
         db.query(
             "sql",
@@ -2020,12 +2032,6 @@ if args.export:
         abs_path = os.path.abspath(export_filename)
         print(f"      db.command('sql', 'IMPORT DATABASE file://{abs_path}')")
         print()
-        print("      # Import with performance tuning")
-        print(
-            f"      db.command('sql', 'IMPORT DATABASE file://{abs_path} "
-            f"WITH commitEvery = {args.batch_size}, parallel = {args.parallel}')"
-        )
-        print()
 
     except Exception as e:
         print(f"   ❌ Export failed: {e}")
@@ -2079,7 +2085,9 @@ if args.export and export_filename:
     print(f"   📥 Importing from: {actual_export_path}")
     print("   ⏳ This may take a while...")
 
-    # Build import parameters - use larger batches for faster import
+    # WITH settings for the import. The engine's JSONL importer reads neither
+    # commitEvery nor parallel (it commits on a fixed interval), so these are
+    # passed through as given and do not change how the import runs.
     import_params = f"commitEvery = {args.batch_size}"
     if args.parallel:
         import_params += f", parallel = {args.parallel}"
@@ -2400,8 +2408,8 @@ print()
 print("📚 What you learned:")
 print("   • Importing real-world CSV data into ArcadeDB")
 print("   • Bulk INSERT ingest from CSV with explicit schema")
-print("   • WAL-off ingest mode for faster loading")
-print("   • Batch processing with commitEvery parameter")
+print("   • Batched-transaction ingest mode for faster loading")
+print("   • Batch processing with --batch-size (CSV ingest transaction size)")
 print("   • Creating indexes AFTER import for performance")
 print("   • Full-text search indexes with Lucene")
 print("   • Aggregation queries (count, avg, min, max, group by)")
@@ -2417,20 +2425,18 @@ print("   • Automatic type conversion - Java types → Python types")
 if args.export:
     print("   • export_database() - Export to JSONL/GraphML/GraphSON")
     print("   • IMPORT DATABASE SQL command - Import from JSONL exports")
-    print("   • Import performance tuning with commitEvery and parallel parameters")
 print()
 print("💡 Key insights:")
 print("   • Explicit schema maps integer-like fields to LONG")
 print("   • Explicit schema maps decimal fields to DOUBLE")
 print("   • Empty CSV cells → SQL NULL (proper NULL handling)")
 print("   • Indexes should be created AFTER bulk import")
-print("   • commitEvery controls batch size (larger = faster)")
-print("   • parallel controls concurrent threads (CSV import and JSONL import)")
+print("   • The JSONL importer reads neither commitEvery nor parallel")
 print("   • FULL_TEXT indexes use Lucene for tokenization and search")
 print("   • Text search may use LIKE queries optimized by FULL_TEXT indexes")
 print()
 print("💡 Next steps:")
-print("   • Try modifying commitEvery values to see performance impact")
+print("   • Try modifying --batch-size to see performance impact")
 print("   • Add more complex queries")
 print("   • Explore query performance with different index strategies")
 print("   • Experiment with full-text search on other text fields")

@@ -22,6 +22,11 @@ def _quote_identifier(identifier: str) -> str:
     return "`" + identifier.replace("`", "``") + "`"
 
 
+# float[] class, built on first use (it needs the JVM): jtypes.JArray(jtypes.JFloat)
+# costs about 0.6 us a call, as much as the buffer copy it is followed by.
+_FLOAT_ARRAY = None
+
+
 def to_java_float_array(vector):
     """
     Convert a Python array-like object to a Java float array.
@@ -37,16 +42,63 @@ def to_java_float_array(vector):
     Returns:
         Java float array compatible with ArcadeDB vector indexes
     """
+    global _FLOAT_ARRAY
+    float_array = _FLOAT_ARRAY
+    if float_array is None:
+        float_array = _FLOAT_ARRAY = jtypes.JArray(jtypes.JFloat)
+
     # Handle NumPy arrays
     if _np is not None and isinstance(vector, _np.ndarray):
-        return jtypes.JArray(jtypes.JFloat)(vector)
+        return float_array(vector)
 
     # Convert to Python list if needed
     if not isinstance(vector, list):
         vector = list(vector)
 
     # Create Java float array
-    return jtypes.JArray(jtypes.JFloat)(vector)
+    return float_array(vector)
+
+
+def to_java_int_array(vector):
+    """
+    Convert a Python array-like object to a Java int array.
+
+    Accepts:
+    - Python lists: [3, 17, 4096]
+    - NumPy arrays of any integer dtype: np.array([3, 17], dtype=np.int32)
+    - Any array-like object with __iter__
+
+    The natural use is the token-index side of a sparse vector, whose weights
+    go through :func:`to_java_float_array`.
+
+    Prefer passing a NumPy array. JPype copies one through the buffer protocol
+    in a single crossing, while a Python list is marshalled element by element:
+    measured at 150 non-zeros, 2.6 us from an array against 6.7 us from a list,
+    2.6x, and the gap widens with length. The array's dtype does not matter --
+    int64, NumPy's default, converts as fast as int32 -- so there is no reason
+    to cast before calling this.
+
+    Args:
+        vector: Array-like object containing integer values
+
+    Returns:
+        Java int array
+    """
+    if _np is not None and isinstance(vector, _np.ndarray):
+        if vector.dtype.kind in "iu" and vector.size:
+            bounds = _np.iinfo(_np.int32)
+            if vector.min() < bounds.min or vector.max() > bounds.max:
+                # A list raises this from JPype; an int64 array used to wrap
+                # silently (2**31 became -2**31).
+                raise OverflowError(
+                    "Cannot convert value to Java int: an element does not fit in 32 bits"
+                )
+        return jtypes.JArray(jtypes.JInt)(vector)
+
+    if not isinstance(vector, list):
+        vector = list(vector)
+
+    return jtypes.JArray(jtypes.JInt)(vector)
 
 
 def to_java_byte_array(vector):
@@ -143,7 +195,9 @@ class VectorIndex:
     Distance Calculation:
         The metric used depends on the `distance_function` parameter during index creation:
 
-        1. **EUCLIDEAN** (Default):
+        ``create_vector_index`` defaults to COSINE.
+
+        1. **EUCLIDEAN**:
            - Returns **Squared Euclidean Distance** (Lower is better).
            - Formula: $d^2$ where $d$ is the Euclidean distance.
            - Range: [0.0, +inf)
@@ -159,9 +213,10 @@ class VectorIndex:
             - 2.0: Opposite vectors (angle 180)
 
         3. **DOT_PRODUCT**:
-           - Returns **Negative Dot Product** (Lower is better).
-           - Formula: $- (A \\cdot B)$
-           - Range: (-inf, +inf)
+           - Returns **-(1 + A.B) / 2** (Lower is better).
+           - Formula: $-(1 + A \\cdot B) / 2$
+           - Range: [-1.0, 0.0] for unit-length vectors, which the engine
+             expects (it logs a warning when sampled vectors are not).
            - Lower values indicate higher similarity (larger positive dot product).
 
     Quantization:
@@ -348,6 +403,25 @@ class VectorIndex:
         return record
 
     def _wrap_pair_results(self, pairs):
+        from .core import _wrap_java_record
+        from .graph import _graph_calls
+
+        calls = _graph_calls()
+        if calls is not None:
+            # every hit's record and score in one crossing instead of
+            # getFirst, getSecond, and the record lookup each
+            hits = calls.hits(self._database._java_db, pairs)
+            records, scores = hits[0], hits[1]
+            wrapped = []
+            for i, record in enumerate(records):
+                if record is None:
+                    # name the hit exactly as the per-hit path does
+                    self._lookup_record_by_rid(list(pairs)[i].getFirst())
+                wrapped.append(
+                    (_wrap_java_record(record, self._database), float(scores[i]))
+                )
+            return wrapped
+
         wrapped_results = []
         for pair in pairs:
             rid = pair.getFirst()
@@ -657,6 +731,40 @@ class VectorIndex:
             return "NONE"
         except Exception:
             return "NONE"
+
+    def warm_up(self):
+        """
+        Load the vector graph now instead of on the first search.
+
+        After a database is opened, the index loads its persisted graph lazily,
+        on the first search, and that search pays the load (ArcadeData/arcadedb#8852:
+        about 1 s at 1M 64-dimension vectors on 26.10.1, growing with the index, and
+        more on an index with deletions since its graph was saved, which still
+        re-reads every vector's document). Calling this right after
+        opening the database pays it before the first query arrives, which is
+        what a service that restarts wants. It loads the existing graph and does
+        not rebuild it; a no-op when the graph is already in memory, and safe to
+        call while other threads search. For TypeIndex wrappers, warms every
+        underlying LSMVectorIndex.
+
+        The alternative on engines before 26.10.1 is one throwaway search.
+
+        Raises:
+            ArcadeDBError: the index cannot be warmed, including on an engine
+                older than 26.10.1, which has no ``warmUp()``.
+        """
+        try:
+            warmed_any = False
+            for index in self._iter_lsm_indexes():
+                index.warmUp()
+                warmed_any = True
+            if warmed_any:
+                return
+            raise ArcadeDBError("Underlying index is not an LSM vector index")
+        except ArcadeDBError:
+            raise
+        except Exception as e:
+            raise ArcadeDBError(f"Failed to warm up vector index: {e}") from e
 
     def build_graph_now(self):
         """

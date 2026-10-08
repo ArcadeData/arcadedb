@@ -4,9 +4,14 @@ ArcadeDB Python Bindings - Core Database Classes
 Database and DatabaseFactory classes for embedded database access.
 """
 
+import itertools
 from collections.abc import Mapping
+from datetime import date
+from decimal import Decimal
 from os import PathLike
 from typing import Any, List, Optional
+
+import jpype
 
 from .exceptions import ArcadeDBError
 from .graph import Document, Edge, Vertex
@@ -16,7 +21,7 @@ from .importer import import_documents as run_document_import
 from .jvm import start_jvm
 from .results import ResultSet
 from .transactions import TransactionContext
-from .type_conversion import convert_python_to_java
+from .type_conversion import _is_numpy_bool, convert_python_to_java, json_bulk_dumps
 from .vector import to_java_float_array
 
 try:  # optional; hoisted to module scope to keep it out of per-call hot paths
@@ -27,6 +32,103 @@ except ImportError:  # pragma: no cover - numpy is an optional dependency
 # Java class handles resolved once per process (jpype.JClass lookups are not
 # free and used to run per record in wrapper dispatch).
 _JAVA_CLASSES = {}
+
+# rows per JSON text in insert_many: bounds the memory a load holds (#294)
+_INSERT_MANY_CHUNK = 10_000
+
+# Parameter values that cross as they are (exact types, not subclasses): see
+# Database._java_parameters.
+_SCALAR_PARAM_TYPES = frozenset((int, float, str, bool, type(None)))
+
+
+_JArray = jpype.JArray
+
+# Resolved on first use, once the JVM is up (see _db_calls and _object_array).
+_DB_CALLS = None
+_OBJECT_ARRAY = None
+
+
+def _is_plain_param(value):
+    """A parameter value JPype passes as it is: an exact scalar type, or a value that is already a Java array."""
+    return type(value) in _SCALAR_PARAM_TYPES or isinstance(value, _JArray)
+
+
+def _db_calls():
+    """``com.arcadedb.python.DbCalls`` from the bridge jar; None (the bridge's usual
+    one warning) when the jar is missing, which sends the caller down the plain path."""
+    global _DB_CALLS
+    if _DB_CALLS is None:
+        from .results import _bridge_class
+
+        _DB_CALLS = _bridge_class("DbCalls") or False
+    return _DB_CALLS or None
+
+
+_STRING_ARRAY = None
+
+
+def _string_array(values):
+    """``String[]`` of ``values``, with the array class built once per process."""
+    global _STRING_ARRAY
+    if _STRING_ARRAY is None:
+        _STRING_ARRAY = jpype.JArray(jpype.JString)
+    return _STRING_ARRAY(values)
+
+
+def _object_array(values):
+    """``Object[]`` of ``values``, with the array class built once per process (building it
+    costs about 0.6 us a call)."""
+    global _OBJECT_ARRAY
+    if _OBJECT_ARRAY is None:
+        _OBJECT_ARRAY = jpype.JArray(jpype.JObject)
+    return _OBJECT_ARRAY(values)
+
+
+_NO_GLUE = object()
+
+
+def _through_bridge(name, java_db, language, command, args):
+    """Run ``name`` ("command" or "query") through ``DbCalls``, or return ``_NO_GLUE``.
+
+    ``DbCalls`` takes the parameters as the varargs of one non-overloaded static
+    method, so the call is one crossing where the plain path takes a map or an
+    array to build, a cast, an overload resolution, and the call itself. Only
+    parameters that cross as they are take it: a lone dict of str keys (named),
+    or positional values, each an exact scalar type or a Java array (the same
+    test as the short path of :meth:`Database._java_parameters`). Anything else,
+    and a lone ``None`` or lone Java array (which JPype would read as the varargs
+    array itself), takes the plain path.
+    """
+    calls = _db_calls()
+    if calls is None:
+        return _NO_GLUE
+    scalar = _SCALAR_PARAM_TYPES
+    if len(args) == 1:
+        first = args[0]
+        if type(first) is dict:
+            flat = []
+            for key, value in first.items():
+                if type(key) is not str or not (
+                    type(value) in scalar or isinstance(value, _JArray)
+                ):
+                    return _NO_GLUE
+                flat.append(key)
+                flat.append(value)
+            call = calls.commandNamed if name == "command" else calls.queryNamed
+            return call(java_db, language, command, *flat)
+        values = first if isinstance(first, (list, tuple)) else args
+    else:
+        values = args
+    count = len(values)
+    if count == 0 or (
+        count == 1 and (values[0] is None or isinstance(values[0], _JArray))
+    ):
+        return _NO_GLUE
+    for value in values:
+        if type(value) not in scalar and not isinstance(value, _JArray):
+            return _NO_GLUE
+    call = calls.commandPositional if name == "command" else calls.queryPositional
+    return call(java_db, language, command, *values)
 
 
 def _java_class(name):
@@ -39,16 +141,91 @@ def _java_class(name):
     return cls
 
 
-def _wrap_java_record(java_record):
+def _column_to_java(name, values):
+    """One column of ``Database.insert_columns`` as ``(java array, length)``.
+
+    A numpy array of an integer, float, or bool kind crosses as ONE buffer copy
+    into a ``long[]``, ``double[]``, or ``boolean[]``; a string or object array
+    and any other sequence convert per element into an ``Object[]`` (a ``str``
+    reuses one Java String per distinct value, ``None`` is a null). A pandas
+    ``Series`` is read through ``to_numpy``, with a nullable dtype's ``<NA>``
+    as ``None``. Kinds that do not cross natively raise ``TypeError`` rather
+    than being stored as something else.
+    """
+    if hasattr(values, "to_numpy") and not isinstance(values, (list, tuple)):
+        dtype = getattr(values, "dtype", None)
+        if _np is not None and isinstance(dtype, _np.dtype):
+            values = values.to_numpy()
+        else:  # a pandas extension dtype (Int64, string, boolean, category): its <NA> is a null
+            values = values.to_numpy(dtype=object, na_value=None)
+    if _np is not None and isinstance(values, _np.ndarray):
+        if values.ndim != 1:
+            raise ValueError(
+                f"column {name!r} is {values.ndim}-dimensional; a column is one-dimensional"
+            )
+        kind = values.dtype.kind
+        if kind in "iu":
+            if (
+                kind == "u"
+                and values.size
+                and int(values.max()) > _np.iinfo(_np.int64).max
+            ):
+                raise ValueError(
+                    f"column {name!r} holds a value beyond the 64-bit signed range"
+                )
+            return (
+                jpype.JArray(jpype.JLong)(
+                    _np.ascontiguousarray(values, dtype=_np.int64)
+                ),
+                int(values.shape[0]),
+            )
+        if kind == "f":
+            return (
+                jpype.JArray(jpype.JDouble)(
+                    _np.ascontiguousarray(values, dtype=_np.float64)
+                ),
+                int(values.shape[0]),
+            )
+        if kind == "b":
+            return (
+                jpype.JArray(jpype.JBoolean)(
+                    _np.ascontiguousarray(values, dtype=_np.bool_)
+                ),
+                int(values.shape[0]),
+            )
+        if kind in "MmcV":
+            raise TypeError(
+                f"column {name!r} has dtype {values.dtype}, which does not cross natively; "
+                "convert it to Python values or use insert_many"
+            )
+        # a string, bytes, or object array: its elements are Python objects (str, None, ...), converted one by one below
+        values = list(values.astype(object, copy=False))
+    elif not isinstance(values, (list, tuple)):
+        values = list(values)
+    converted = []
+    seen = {}
+    for value in values:
+        if type(value) is str:
+            java = seen.get(value)
+            if java is None:
+                java = convert_python_to_java(value)
+                seen[value] = java
+            converted.append(java)
+        else:
+            converted.append(convert_python_to_java(value))
+    return jpype.JArray(jpype.JObject)(converted), len(converted)
+
+
+def _wrap_java_record(java_record, database=None):
     """Wrap a Java record in the matching Python class (Vertex/Edge/Document)."""
     if java_record is None:
         return None
     if isinstance(java_record, _java_class("com.arcadedb.graph.Vertex")):
-        return Vertex(java_record)
+        return Vertex(java_record, database)
     if isinstance(java_record, _java_class("com.arcadedb.graph.Edge")):
-        return Edge(java_record)
+        return Edge(java_record, database)
     if isinstance(java_record, _java_class("com.arcadedb.database.Document")):
-        return Document(java_record)
+        return Document(java_record, database)
     return java_record
 
 
@@ -87,42 +264,120 @@ class Database:
         for arg in args:
             if _np is not None and isinstance(arg, _np.ndarray):
                 converted_args.append(to_java_float_array(arg))
-            elif isinstance(arg, (Mapping, list, tuple, set)):
+            elif isinstance(arg, (Mapping, list, tuple, set, bytes, bytearray)):
                 # A collection AMONG multiple args is a single collection-typed
                 # parameter (e.g. a query vector). Plain Python collections
                 # don't participate in JPype's varargs overload resolution, so
                 # convert them to java.util collections explicitly.
                 converted_args.append(convert_python_to_java(arg))
+            elif isinstance(arg, (Decimal, date)):
+                # Left to JPype, a Decimal reached the engine as a Double (38
+                # digits stored as 1.2345678901234567E+19), and a datetime or a
+                # date matched no overload at all (#58). datetime is a date.
+                converted_args.append(convert_python_to_java(arg))
+            elif _is_numpy_bool(arg):
+                # Not a bool subclass: left to JPype it is stored as the Double
+                # 1.0 or 0.0, and `WHERE ok = true` stops matching it.
+                converted_args.append(bool(arg))
             else:
                 converted_args.append(arg)
 
         return converted_args
 
+    @staticmethod
+    def _java_parameters(args):
+        """The one Java argument that carries the parameters of query()/command().
+
+        A lone mapping is the named-parameter map and goes to the ``Map``
+        overload; anything else is the positional list and goes to the
+        ``Object...`` overload as an explicit ``Object[]``. Splatting the
+        values instead left the choice of overload to JPype, which cannot make
+        it for a lone ``None``: ``command(str, str, None)`` matches
+        ``Object...``, ``Map``, and ``ContextConfiguration, Object...`` alike
+        and raised "Ambiguous overloads" (#172), and so did ``(None, 1)``.
+
+        A mapping alone in a lone list or tuple (``[{...}]``) is still the
+        named map, as JPype chose before; SQL reads an ``Object[]`` holding
+        only a map that way too, but openCypher would refuse it.
+        """
+        values = (
+            args[0] if len(args) == 1 and isinstance(args[0], (list, tuple)) else args
+        )
+        # THE COMMON CASE, WITHOUT THE GENERAL MACHINERY: parameters that are all
+        # plain scalars (a dict of str keys, or positional values) need no
+        # per-value conversion, and JPype boxes them exactly as the general path's
+        # unchanged values are boxed. The general path costs 6.5 to 9 us a call on
+        # the laptop, the fast one 4.3 to 5.7 us, on a statement that is 15 to
+        # 60 us in all. Exact types only: a bool is a bool, and a numpy scalar, a
+        # Decimal, or a date is anything else and takes the general path. A value
+        # that is already a Java array (a vector from to_java_float_array) passes
+        # too: the general path returns it unchanged, after about 11 us of work a
+        # call on the dense insert (#276).
+        plain = _is_plain_param
+        if len(values) == 1:
+            first = values[0]
+            if type(first) is dict and all(
+                type(k) is str and plain(v) for k, v in first.items()
+            ):
+                params = _java_class("java.util.HashMap")()
+                for key, item in first.items():
+                    params.put(key, item)
+                return jpype.JObject(params, _java_class("java.util.Map"))
+        if all(plain(a) for a in values):
+            return _object_array(values)
+        if len(values) == 1 and isinstance(values[0], Mapping):
+            java_map = _java_class("java.util.Map")
+            params = values[0]
+            if not isinstance(params, java_map):
+                params = convert_python_to_java(
+                    params if isinstance(params, dict) else dict(params)
+                )
+            return jpype.JObject(params, java_map)
+        return _object_array(Database._convert_args(args))
+
     def query(self, language: str, command: str, *args) -> ResultSet:
-        """Execute a query and return results."""
+        """Execute a query and return results.
+
+        Parameters bind positionally (``?``) from the extra arguments, or by
+        name (``:name``, ``$name``) from a single dict. A single list or tuple
+        is the positional list itself; ``None`` binds as null.
+        """
         self._check_not_closed()
         try:
             if args:
-                converted_args = self._convert_args(args)
-                java_result = self._java_db.query(language, command, *converted_args)
+                java_result = _through_bridge(
+                    "query", self._java_db, language, command, args
+                )
+                if java_result is _NO_GLUE:
+                    java_result = self._java_db.query(
+                        language, command, self._java_parameters(args)
+                    )
             else:
                 java_result = self._java_db.query(language, command)
-            return ResultSet(java_result)
+            return ResultSet(java_result, self)
         except Exception as e:
             raise ArcadeDBError(f"Query failed: {e}") from e
 
     def command(self, language: str, command: str, *args) -> Optional[ResultSet]:
-        """Execute a command (non-idempotent operation)."""
+        """Execute a command (non-idempotent operation).
+
+        Parameters bind as in :meth:`query`.
+        """
         self._check_not_closed()
         try:
             if args:
-                converted_args = self._convert_args(args)
-                java_result = self._java_db.command(language, command, *converted_args)
+                java_result = _through_bridge(
+                    "command", self._java_db, language, command, args
+                )
+                if java_result is _NO_GLUE:
+                    java_result = self._java_db.command(
+                        language, command, self._java_parameters(args)
+                    )
             else:
                 java_result = self._java_db.command(language, command)
 
             if java_result is not None:
-                return ResultSet(java_result)
+                return ResultSet(java_result, self)
             return None
         except Exception as e:
             raise ArcadeDBError(f"Command failed: {e}") from e
@@ -211,7 +466,7 @@ class Database:
         """Create a new vertex."""
         self._check_not_closed()
         try:
-            return Vertex(self._java_db.newVertex(type_name))
+            return Vertex(self._java_db.newVertex(type_name), self)
         except Exception as e:
             raise ArcadeDBError(
                 f"Failed to create vertex of type '{type_name}': {e}"
@@ -221,11 +476,29 @@ class Database:
         """Create a new document."""
         self._check_not_closed()
         try:
-            return Document(self._java_db.newDocument(type_name))
+            return Document(self._java_db.newDocument(type_name), self)
         except Exception as e:
             raise ArcadeDBError(
                 f"Failed to create document of type '{type_name}': {e}"
             ) from e
+
+    def _parallel_load_failed(self, type_name, error):
+        """The error for a parallel load that failed while handing rows to the writers.
+
+        The rows handed over before the failure are already queued, and the async writers commit
+        them whatever this call does. So wait for the queue to drain before raising: the caller then
+        sees a final state that does not change behind its back, and the message says that those
+        rows may have been stored, rather than implying a rollback that cannot happen.
+        """
+        try:
+            self._java_db.async_().waitCompletion()
+        except Exception:  # nosec B110 - the original error is the one to report
+            pass
+        return ArcadeDBError(
+            f"Failed to bulk-insert into '{type_name}': {error}; the rows handed to the "
+            f"parallel writers before the failure may have been stored (the call waited "
+            f"for them before raising)"
+        )
 
     def insert_many(
         self,
@@ -234,83 +507,360 @@ class Database:
         commit_every: int = 10_000,
         parallel: bool = False,
     ) -> int:
-        """Bulk-insert documents with one FFI crossing per batch.
+        """Bulk-insert documents with one FFI crossing per chunk of rows.
 
-        Rows are serialized to a single JSON string and looped Java-side
-        (``DocumentBatcher``), avoiding the per-row JNI cost that caps
-        ``new_document``-loop ingest. Values must be JSON-representable
-        (str/int/float/bool/None and nested lists/dicts); rows containing
-        other types (e.g. datetime, bytes) fall back transparently to the
-        per-row path.
+        The iterable is read 10,000 rows at a time; each chunk is serialized
+        to one JSON string and looped Java-side (``DocumentBatcher``),
+        avoiding the per-row JNI cost that caps ``new_document``-loop ingest.
+        Memory stays bounded by the chunk whatever the row count, so a
+        generator of any length can be loaded (#294). Values must be
+        JSON-representable (str/int/float/bool/None and nested lists/dicts);
+        a chunk containing other types (e.g. datetime, bytes) falls back
+        transparently to the per-row path.
 
         Args:
             type_name: Target document type (must exist).
-            rows: Iterable of dicts, one per document.
+            rows: Iterable of dicts, one per document. Read lazily, one
+                chunk at a time.
             commit_every: Transaction batch size for the synchronous mode.
             parallel: If True, route rows through the async executor's
                 parallel bucket writers and wait for completion before
-                returning (higher throughput, out-of-order writes).
+                returning (out-of-order writes). The maintainers' rule
+                (ArcadeData/arcadedb#8478): a bucket count equal to, or a
+                multiple of, the executor's parallel level
+                (``async_executor().get_parallel_level()``, default
+                cores - 1), set when the type is created
+                (``CREATE DOCUMENT TYPE T BUCKETS n``). Measured on a laptop
+                (4 performance cores, parallel level 3, 1,000,000 rows,
+                6 runs per arm, engine ``b22b5e9954``, 2026-10-04): 1.11x to
+                1.14x faster than the synchronous mode at 1, 3, 4, and 8
+                buckets alike (8 buckets no faster than 1). Each writer
+                commits every ``arcadedb.asyncTxBatchSize`` records (default
+                10,240); ``commit_every`` does not apply to this mode.
 
         Returns:
             Number of documents inserted.
+
+        Raises:
+            Exception: An exception raised by ``rows`` itself propagates
+                unchanged; the open batch is rolled back and the batches
+                committed before it stay (in the parallel mode, rows already
+                handed to the writers are waited for and may be stored).
+            ArcadeDBError: If the load fails; in the parallel mode also when
+                the writers report any record they could not store (a
+                duplicate key, a failed batch commit), after the load
+                completes. Records other than the failed ones may have been
+                stored. In the parallel mode nothing is rolled back: rows
+                handed to the writers before a failure may be stored, and the
+                call waits for them before raising.
         """
         self._check_not_closed()
-        import json as _json
-
-        rows = list(rows)
-        if not rows:
+        # Rows are read from the iterable one chunk at a time and each chunk
+        # crosses as its own JSON text, so the memory a load holds is bounded
+        # by the chunk, not by the input. Reading the whole input into a list
+        # and one JSON text (which the engine then parsed into one JSON array)
+        # held about 1.5 KB per row at once, Python and Java together: a
+        # 26-million-row generator could not load under 32 GB (#294).
+        chunk_rows = _INSERT_MANY_CHUNK
+        commit_every = int(commit_every)
+        rows = iter(rows)
+        first = list(itertools.islice(rows, chunk_rows))
+        if not first:
             return 0
+        if parallel:
+            return self._insert_many_parallel(type_name, first, rows)
+        # This call owns the transactions it opens: it commits every
+        # commit_every rows, counted across chunks, and on any failure rolls
+        # back the one still open (earlier batches stay committed, as they
+        # always did). A caller's own transaction is the caller's to commit or
+        # roll back (#7882).
+        was_active = self.is_transaction_active()
+        n = 0
         try:
-            payload = _json.dumps(rows)
-        except (TypeError, ValueError):
-            # Non-JSON-representable values (note: numpy integer scalars land
-            # here too, since json.dumps rejects np.int64): per-row fallback,
-            # honoring commit_every batches like the fast path.
-            n = 0
-            was_active = self.is_transaction_active()
-            try:
-                # begin() inside the try: a ^C landing right after it must
-                # still reach the rollback below.
-                if not was_active:
-                    self.begin()
-                for row in rows:
-                    doc = self.new_document(type_name)
-                    for k, v in row.items():
-                        doc.set(k, v)
-                    doc.save()
-                    n += 1
-                    if not was_active and commit_every > 0 and n % commit_every == 0:
-                        self.commit()
-                        self.begin()
-                if not was_active:
+            # begin() inside the try: a ^C landing right after it must still
+            # reach the rollback below.
+            if not was_active:
+                self.begin()
+            chunk = first
+            while chunk:
+                if not was_active and commit_every > 0:
+                    # never let a chunk straddle a commit boundary
+                    room = commit_every - n % commit_every
+                    if len(chunk) > room:
+                        rest = chunk[room:]
+                        chunk = chunk[:room]
+                    else:
+                        rest = None
+                else:
+                    rest = None
+                self._insert_many_chunk(type_name, chunk)
+                n += len(chunk)
+                if not was_active and commit_every > 0 and n % commit_every == 0:
                     self.commit()
-                return n
-            except BaseException:
-                # Any exit other than the final commit must roll back the
-                # transaction this method opened, as run_in_transaction does
-                # (#7108, #7882): this branch runs precisely for values the
-                # fast path could not serialise, the likeliest to make set()
-                # raise. BaseException so ^C/SystemExit cannot leak it either.
-                # A caller's own transaction (was_active) is left to the caller.
-                if not was_active:
-                    try:
-                        if self.is_transaction_active():
-                            self.rollback()
-                    except Exception:  # nosec B110 - best-effort rollback
-                        pass
-                raise
+                    self.begin()
+                if rest:
+                    chunk = rest
+                else:
+                    size = chunk_rows
+                    if not was_active and commit_every > 0:
+                        size = min(size, commit_every - n % commit_every)
+                    chunk = list(itertools.islice(rows, size))
+            if not was_active:
+                self.commit()
+            return n
+        except BaseException:
+            # Any exit other than the final commit rolls back the transaction
+            # this method opened, as run_in_transaction does (#7108, #7882).
+            # BaseException so ^C/SystemExit cannot leak it either.
+            if not was_active:
+                try:
+                    if self.is_transaction_active():
+                        self.rollback()
+                except Exception:  # nosec B110 - best-effort rollback
+                    pass
+            raise
+
+    def _insert_many_chunk(self, type_name, chunk):
+        """Insert one chunk of insert_many rows inside the open transaction."""
         try:
-            batcher = _java_class("com.arcadedb.python.DocumentBatcher")
-            count = int(
-                batcher.insertManyJson(
-                    self._java_db, type_name, payload, int(commit_every), bool(parallel)
-                )
+            payload = json_bulk_dumps(chunk)
+        except (TypeError, ValueError):
+            # Values the JSON text cannot carry unchanged (numpy integer
+            # scalars, which json.dumps rejects; an integer beyond 64 bits,
+            # NaN or Infinity, a non-str dict key, a lone surrogate, which the
+            # engine's JSON parser would store as a different value): this
+            # chunk goes row by row.
+            for row in chunk:
+                doc = self.new_document(type_name)
+                for k, v in row.items():
+                    doc.set(k, v)
+                doc.save()
+            return
+        try:
+            # commitEvery 0 inside a transaction that is already open: the
+            # helper only inserts, and the transaction stays with insert_many.
+            _java_class("com.arcadedb.python.DocumentBatcher").insertManyJson(
+                self._java_db, type_name, payload, 0, False
             )
-            if parallel:
-                self._java_db.async_().waitCompletion()
-            return count
         except Exception as e:
             raise ArcadeDBError(f"Failed to bulk-insert into '{type_name}': {e}") from e
+
+    def _insert_many_parallel(self, type_name, first, rows):
+        """insert_many(parallel=True): hand each chunk to the async writers."""
+        batcher = _java_class("com.arcadedb.python.DocumentBatcher")
+        n = 0
+        chunk_failures = []
+        chunk = first
+        try:
+            while chunk:
+                try:
+                    payload = json_bulk_dumps(chunk)
+                except (TypeError, ValueError):
+                    payload = None
+                if payload is None:
+                    # A chunk the JSON text cannot carry unchanged is written
+                    # synchronously, row by row, in its own transaction, after
+                    # the writers have drained, as the whole load used to be.
+                    self._java_db.async_().waitCompletion()
+                    was_active = self.is_transaction_active()
+                    try:
+                        if not was_active:
+                            self.begin()
+                        self._insert_many_chunk(type_name, chunk)
+                        if not was_active:
+                            self.commit()
+                    except BaseException:
+                        if not was_active:
+                            try:
+                                if self.is_transaction_active():
+                                    self.rollback()
+                            except Exception:  # nosec B110 - best-effort rollback
+                                pass
+                        raise
+                else:
+                    try:
+                        failures = batcher.insertManyJsonParallel(
+                            self._java_db, type_name, payload
+                        )
+                    except Exception as e:
+                        raise self._parallel_load_failed(type_name, e) from e
+                    # The writers report a rejected record only through its
+                    # error callback (and the executor's global one, which by
+                    # default just logs), so the count is read rather than
+                    # assumed (ArcadeData/arcadedb#8478). Read after the final
+                    # waitCompletion, when every writer is done.
+                    chunk_failures.append(failures)
+                n += len(chunk)
+                chunk = list(itertools.islice(rows, _INSERT_MANY_CHUNK))
+        except ArcadeDBError:
+            raise
+        except BaseException:
+            # An error from the rows iterable, or ^C: the rows already queued
+            # are written whatever happens here, so wait for them and the
+            # caller sees a final state (as _parallel_load_failed does).
+            try:
+                self._java_db.async_().waitCompletion()
+            except Exception:  # nosec B110 - the original error is the one to report
+                pass
+            raise
+        try:
+            self._java_db.async_().waitCompletion()
+        except Exception as e:
+            raise ArcadeDBError(f"Failed to bulk-insert into '{type_name}': {e}") from e
+        n_failed = 0
+        first_failure = None
+        for failures in chunk_failures:
+            count = int(failures.getCount())
+            if count and first_failure is None:
+                first_failure = failures.getFirstMessage()
+            n_failed += count
+        if n_failed:
+            raise ArcadeDBError(
+                f"Failed to bulk-insert into '{type_name}': the parallel writers "
+                f"reported {n_failed} failed record(s) of {n}; the rest "
+                f"may have been stored (first failure: {first_failure})"
+            )
+        return n
+
+    def insert_columns(
+        self,
+        type_name: str,
+        columns,
+        commit_every: int = 10_000,
+        parallel: bool = False,
+    ) -> int:
+        """Bulk-insert documents from whole columns, the recommended path for column data.
+
+        Each column crosses the Python/Java bridge ONCE, as one typed array,
+        and the documents are built Java-side (``DocumentBatcher.insertColumns``),
+        instead of one JSON text per batch that the engine parses and copies
+        key by key. Measured on a laptop (first 2,000,000 TPC-H SF1 line items,
+        nine typed properties, commit every 10,000, same rows, cores, and
+        engine): 8.2 s against 18.4 s for ``insert_many`` (2.24x); every arm
+        stored the same sums and count. Use it whenever the data already lives
+        in columns (a pandas ``DataFrame``, a parquet batch, numpy arrays);
+        ``insert_many`` stays the path for a list of dicts.
+
+        Args:
+            type_name: Target document type (must exist).
+            columns: ``{property name: column}``, or a pandas ``DataFrame``.
+                Every column has the same length. A column is a numpy array
+                (integer kinds cross as ``long[]``, float kinds as ``double[]``,
+                bool as ``boolean[]``, one buffer copy each) or any sequence of
+                Python values (``str``, ``int``, ``float``, ``bool``, ``None``,
+                and the types ``insert_many``'s per-row fallback accepts), which
+                converts per element. ``None`` is a null; a float ``NaN`` in a
+                numpy float column is stored as NaN, not as null (use a
+                sequence with ``None`` for nulls). A pandas nullable column
+                (``Int64``, ``string``) converts with its ``<NA>`` as null.
+            commit_every: Transaction batch size for the synchronous mode.
+            parallel: If True, hand the documents to the async executor's
+                parallel bucket writers and wait for completion before
+                returning, exactly as ``insert_many(parallel=True)`` does (the
+                same bucket-count rule, the same out-of-order writes;
+                ``commit_every`` does not apply). Only the transport differs:
+                columns instead of one JSON text per batch.
+
+        Returns:
+            Number of documents inserted.
+
+        Raises:
+            ValueError: If ``columns`` is empty, a column has a different
+                length from the others, a name is not a string, or an unsigned
+                column holds a value beyond the 64-bit signed range. Raised
+                before anything is written.
+            TypeError: If a numpy column has a dtype that does not cross
+                natively (datetime64, timedelta64, complex): convert it to
+                Python values, or use ``insert_many``.
+                Also if a column is a ``str``, ``bytes``, or ``bytearray``
+                (one value, not a column), which would otherwise be split into
+                one row per character.
+            ArcadeDBError: If the load fails (a duplicate key, a value the
+                declared property type refuses): the transaction this call
+                opened is rolled back, as for ``insert_many``. In the parallel
+                mode also when the writers report any record they could not
+                store, after the load completes; the parallel mode rolls
+                nothing back: rows handed to the writers before a failure, or
+                other than the failed ones, may have been stored, and the call
+                waits for them before raising. A transaction the caller opened
+                is left to the caller.
+
+        Example:
+            >>> db.insert_columns("Reading", {
+            ...     "id": np.arange(1_000_000, dtype=np.int64),
+            ...     "value": np.random.random(1_000_000),
+            ...     "label": ["a", "b"] * 500_000,
+            ... })
+        """
+        self._check_not_closed()
+        items = list(columns.items()) if hasattr(columns, "items") else None
+        if not items:
+            raise ValueError("insert_columns needs at least one column")
+        names = []
+        for name, values in items:
+            if not isinstance(name, str):
+                raise ValueError(f"column names must be strings, got {name!r}")
+            # A str or bytes value is one value, not a column: list() would split it into
+            # characters and store one row per character without an error.
+            if isinstance(values, (str, bytes, bytearray)):
+                raise TypeError(
+                    f"column {name!r} is a {type(values).__name__}, not a sequence of values; "
+                    f"wrap a single value in a list"
+                )
+            names.append(name)
+        # Compare the lengths that are known without converting first, so ragged columns are refused
+        # before a large one is copied across the JVM bridge; a plain iterable is measured after.
+        known = {
+            name: len(values) for name, values in items if hasattr(values, "__len__")
+        }
+        if len(set(known.values())) > 1:
+            raise ValueError(f"columns differ in length: {known}")
+        java_columns = [_column_to_java(name, values) for name, values in items]
+        lengths = {name: n for name, (_arr, n) in zip(names, java_columns)}
+        if len(set(lengths.values())) != 1:
+            raise ValueError(f"columns differ in length: {lengths}")
+        n = next(iter(lengths.values()))
+        if n == 0:
+            return 0
+        try:
+            batcher = _java_class("com.arcadedb.python.DocumentBatcher")
+            string_array = jpype.JArray(jpype.JString)(names)
+            object_array = jpype.JArray(jpype.JObject)(
+                [arr for arr, _n in java_columns]
+            )
+            if not parallel:
+                return int(
+                    batcher.insertColumns(
+                        self._java_db,
+                        type_name,
+                        string_array,
+                        object_array,
+                        n,
+                        int(commit_every),
+                    )
+                )
+            try:
+                failures = batcher.insertColumnsParallel(
+                    self._java_db, type_name, string_array, object_array, n
+                )
+            except Exception as e:
+                raise self._parallel_load_failed(type_name, e) from e
+            self._java_db.async_().waitCompletion()
+            n_failed = int(failures.getCount())
+            first_failure = failures.getFirstMessage()
+        except ArcadeDBError:
+            raise
+        except Exception as e:
+            raise ArcadeDBError(f"Failed to bulk-insert into '{type_name}': {e}") from e
+        # As insert_many does: the writers report a rejected record only through
+        # its error callback, so the count is read here rather than assumed.
+        if n_failed:
+            raise ArcadeDBError(
+                f"Failed to bulk-insert into '{type_name}': the parallel writers "
+                f"reported {n_failed} failed record(s) of {n}; the rest may have "
+                f"been stored (first failure: {first_failure})"
+            )
+        return n
 
     def close(self):
         """Close the database."""
@@ -360,7 +910,8 @@ class Database:
 
     def lookup_by_key(self, type_name: str, keys: List[str], values: List[Any]):
         """
-        Lookup records by indexed key (O(1) index-based lookup).
+        Lookup records by indexed key (index-based: O(1) for a hash index, O(log n)
+        for an LSM_TREE index).
 
         Args:
             type_name: Type name
@@ -377,18 +928,25 @@ class Database:
         """
         self._check_not_closed()
         try:
-            import jpype
+            # Converted like every other parameter: a datetime or a date key
+            # matched no Java type at all, and a numpy bool was read as a number.
+            keys_array = _string_array(keys)
+            values_array = _object_array([convert_python_to_java(v) for v in values])
 
-            # Convert to Java arrays
-            keys_array = jpype.JArray(jpype.JString)(keys)
-            values_array = jpype.JArray(jpype.JObject)(values)
+            calls = _db_calls()
+            if calls is not None:
+                # lookup, hasNext(), next(), and getRecord() in ONE crossing
+                java_record = calls.lookupFirst(
+                    self._java_db, type_name, keys_array, values_array
+                )
+                return None if java_record is None else Document.wrap(java_record, self)
 
             cursor = self._java_db.lookupByKey(type_name, keys_array, values_array)
 
             # Return first result wrapped, or None
             if cursor.hasNext():
                 java_record = cursor.next().getRecord()
-                return Document.wrap(java_record)
+                return Document.wrap(java_record, self)
             return None
         except Exception as e:
             raise ArcadeDBError(f"Failed to lookup by key in '{type_name}': {e}") from e
@@ -401,12 +959,17 @@ class Database:
             rid: Record ID string (e.g. "#10:5")
 
         Returns:
-            Record object (Vertex, Document, or Edge) or None if not found
+            Record object (Vertex, Document, or Edge)
+
+        Raises:
+            ArcadeDBError: If no record has that RID (RecordNotFoundException)
 
         Example:
-            >>> record = db.lookup_by_rid("#10:5")
-            >>> if record:
+            >>> try:
+            ...     record = db.lookup_by_rid("#10:5")
             ...     print(record.get("name"))
+            ... except ArcadeDBError:
+            ...     print("no record with that RID")
         """
         self._check_not_closed()
         try:
@@ -418,7 +981,7 @@ class Database:
     def _lookup_by_java_rid(self, java_rid) -> Any:
         """Lookup by an already-Java RID, skipping string parsing (hot path)."""
         java_record = self._java_db.lookupByRID(java_rid, True)
-        return _wrap_java_record(java_record)
+        return _wrap_java_record(java_record, self)
 
     def to_java_rid(self, value):
         self._check_not_closed()
@@ -473,7 +1036,7 @@ class Database:
             dimensions: Vector dimensionality (e.g., 768 for BERT)
             id_property: Optional property used for key-based vector lookup.
                 Defaults to the engine default (usually "id") when omitted.
-            distance_function: "cosine", "euclidean", or "inner_product"
+            distance_function: "cosine", "euclidean", or "dot_product"
             max_connections: Per-layer graph degree (default: 32, matching the
                 engine default since #5352). Maps to `maxConnections` in
                 JVector, which is a Vamana per-layer degree and is NOT doubled
@@ -499,14 +1062,14 @@ class Database:
                 and from countEntries(). Size the heap instead. The parameter is
                 kept only so that upgrading callers get this explanation rather
                 than an unexplained TypeError.
-            graph_build_cache_size: Per-index override for graph build cache size
-                (maps to Java metadata key "graphBuildCacheSize"; uses
-                GlobalConfiguration default if None). Typical ranges (higher = faster
-                build, more RAM):
-                - ~100K: 10k–30k
-                - ~1M: 30k–75k
-                - ~10M: 75k–150k
-                - ~100M: 150k–250k (only if heap allows)
+            graph_build_cache_size: Per-index override for the number of vectors
+                cached while the graph is built (maps to Java metadata key
+                "graphBuildCacheSize"; uses GlobalConfiguration default if None).
+                Leave it unset: the default is automatic, sized from the heap the
+                engine has free, and caches the whole corpus when it fits. A count
+                below the corpus makes the build re-read vectors from the
+                documents. Set an absolute count only to bound a build on a
+                deliberately small heap.
             mutations_before_rebuild: Per-index override for mutations threshold
                 before triggering a graph rebuild (maps to Java metadata key
                 "mutationsBeforeRebuild"; uses GlobalConfiguration default if None).
@@ -713,23 +1276,29 @@ class Database:
 
     def set_wal_flush(self, mode: str):
         """
-        Configure Write-Ahead Log (WAL) flush strategy.
+        Configure the Write-Ahead Log (WAL) flush at commit for this database.
 
-        Controls how aggressively changes are flushed to disk. This affects the
-        durability/performance trade-off for transactions.
+        The setting applies to the transactions of every thread that commits on
+        this database (ArcadeData/arcadedb#8352, fixed in #8397 for 26.10.1; on
+        engines before that fix it changed only the calling thread). It does not
+        reach other databases in the process: for a default that covers every
+        database, start the JVM with
+        ``jvm_kwargs={"jvm_args": "-Darcadedb.txWalFlush=1"}``, or run the server
+        with ``config={"mode": "production"}``, which sets it to 1.
 
         Args:
             mode: WAL flush mode, one of:
-                - 'no': No flush, maximum performance (default)
-                - 'yes_nometadata': Flush data but not metadata
-                - 'yes_full': Flush everything, maximum durability
+                - 'no': no flush at commit (the default); a commit survives a
+                  process crash but not a power cut
+                - 'yes_nometadata': flush the data at commit (fdatasync)
+                - 'yes_full': flush data and metadata at commit (fsync)
 
         Raises:
             ValueError: If mode is not valid
 
         Example:
-            >>> db.set_wal_flush('yes_full')  # Maximum durability
-            >>> db.set_wal_flush('no')  # Maximum performance
+            >>> db.set_wal_flush('yes_nometadata')  # every commit survives a power cut
+            >>> db.set_wal_flush('no')  # commits do not wait for the disk
         """
         self._check_not_closed()
         import jpype
@@ -784,18 +1353,19 @@ class Database:
         """
         Enable or disable automatic transaction management.
 
-        When enabled, ArcadeDB automatically begins a transaction for operations
-        that require one. When disabled, you must manually call begin_transaction().
+        Off by default: a write outside a transaction raises ``ArcadeDBError``
+        ("Transaction not begun"), so wrap writes in ``with db.transaction():``
+        or call begin() yourself. When enabled, each statement outside a
+        transaction runs in its own committed transaction. The setting is not
+        persisted: a reopened database starts with it off again.
 
         Args:
             enabled: True to enable auto-transaction, False to disable
 
         Example:
-            >>> db.set_auto_transaction(False)  # Manual transaction control
-            >>> db.begin_transaction()
-            >>> # ... do work ...
-            >>> db.commit()
-            >>> db.set_auto_transaction(True)  # Restore default
+            >>> db.set_auto_transaction(True)   # each bare write commits alone
+            >>> db.command("sql", "INSERT INTO T SET a = 1")
+            >>> db.set_auto_transaction(False)  # back to the default
         """
         self._check_not_closed()
         try:
@@ -807,24 +1377,33 @@ class Database:
         """
         Get async executor for parallel operations.
 
-        The engine's parallel bulk-write path; insert_many(parallel=True) routes through it.
-
-        Returns async executor that enables:
-        - Parallel record creation (3-5x faster bulk inserts)
+        Returns the database's single async executor, which provides:
+        - Parallel record creation
         - Automatic transaction batching
         - Optimized WAL configuration
-        - 50,000-200,000 records/sec throughput
+
+        Note that this is one executor per database, not a new one per
+        call, so ``close()`` on the returned object shuts it down for
+        every other caller too.
+
+        Not the recommended bulk-write path:
+            ``AsyncExecutor.command`` silently discarded records above
+            parallel level 1 before 26.10.1 (ArcadeData/arcadedb#7615, fixed
+            in #7625; the measurement is in the ``async_executor`` module
+            docstring). Bulk graph loads
+            belong in ``graph_batch()``; bulk document loads belong in
+            ``insert_many()`` or a batched transaction. ``create_record``,
+            ``append_samples``, and ``insert_many(parallel=True)`` do run
+            through this executor and are measured unaffected.
 
         Returns:
             AsyncExecutor instance configured for this database
 
         Example:
-            >>> # Configure async executor
+            >>> # create_record: the executor's own record path, unaffected
             >>> async_exec = db.async_executor()
-            >>> async_exec.set_parallel_level(8)  # 8 worker threads
             >>> async_exec.set_commit_every(5000)  # Auto-commit every 5K
             >>>
-            >>> # Create 100K records in parallel
             >>> for i in range(100000):
             ...     vertex = db.new_vertex("User")
             ...     vertex.set("id", i)
@@ -832,11 +1411,6 @@ class Database:
             >>>
             >>> # Wait for completion
             >>> async_exec.wait_completion()
-
-        Note:
-            The async executor is most beneficial for bulk operations.
-            For small batches (<1000 records), regular transactions
-            may be simpler and sufficient.
         """
         self._check_not_closed()
         from .async_executor import AsyncExecutor
@@ -871,14 +1445,33 @@ class Database:
         workloads that need to create many vertices and buffered edges more efficiently
         than per-edge transactional writes.
 
+        This is the recommended path for bulk graph loading, and the reason is
+        not only throughput: the alternative of submitting per-record SQL
+        through ``async_executor().command(...)`` lost records above parallel
+        level 1 before 26.10.1 (ArcadeData/arcadedb#7615, fixed in #7625).
+        ``graph_batch`` dispatches its edge
+        flush through the same executor and is measured exact, 20,000 vertices
+        and 40,000 edges with and without ``parallel_flush``.
+
         Args:
             batch_size: Maximum buffered edges before auto-flush.
             expected_edge_count: Hint for auto-tuning batch size when not set.
             edge_list_initial_size: Initial edge-segment size in bytes.
-            light_edges: Create property-less edges as light edges when True.
-            bidirectional: Connect incoming edges as well as outgoing edges.
+            light_edges: Create property-less edges as light edges when True. From engine
+                26.11.1 ``new_edge`` raises ArcadeDBError for an edge type that is not declared
+                LIGHTWEIGHT; declare the type or leave this unset. On 26.10.1 and earlier the load
+                succeeds, but an openCypher one-hop ``count(*)`` over those edges answers 0
+                (ArcadeData/arcadedb#9378, fixed in 26.11.1), and a graph loaded that way stays
+                wrong.
+            bidirectional: Connect incoming edges as well as outgoing edges (the
+                default). Pass False only for an edge type declared UNIDIRECTIONAL. From
+                26.10.1 a one-way edge in a two-way type is refused: ``new_edge`` raises
+                ArcadeDBError naming the type. Before 26.10.1 it was accepted, and any
+                query the planner walked from the target end returned 0 rows
+                (ArcadeData/arcadedb#8625).
             commit_every: Commit cadence within a flush. `0` means one commit per flush.
-            use_wal: Enable WAL during import for higher durability.
+            use_wal: Write-ahead log during the import. Off by default, so a crash mid-import can lose its
+                tail; pass True for a crash-safe import (ArcadeData/arcadedb#8287).
             wal_flush: WAL flush mode: `"no"`, `"yes_nometadata"`, `"yes_full"`.
             pre_allocate_edge_chunks: Pre-allocate edge chunks during `create_vertex()`.
             parallel_flush: Parallelize flush/close connectivity work across buckets.
@@ -1023,8 +1616,8 @@ class Database:
             >>> db.schema.create_property("User", "name", PropertyType.STRING)
             >>> db.schema.create_property("User", "age", PropertyType.INTEGER)
             >>>
-            >>> # Create an index
-            >>> db.schema.create_index("User", ["name"], unique=True)
+            >>> # Create an index (HASH: "name" is only looked up by equality)
+            >>> db.schema.create_index("User", ["name"], unique=True, index_type="HASH")
             >>>
             >>> # Create edge type
             >>> db.schema.create_edge_type("Follows")
@@ -1051,12 +1644,12 @@ class Database:
         """
         Export database to file.
 
-        Supports JSONL (recommended for backup/restore), GraphML (graph visualization),
-        and GraphSON (TinkerPop compatibility) formats.
+        Writes JSONL, which ``IMPORT DATABASE file://...`` reads back. GraphML and GraphSON need the engine's optional arcadedb-gremlin
+        module, which this package does not bundle, so they raise ArcadeDBError.
 
         Args:
             file_path: Output file path
-            format: Export format - "jsonl", "graphml", or "graphson"
+            format: "jsonl" ("graphml" and "graphson" raise, see above)
             overwrite: Overwrite existing file if True
             include_types: List of types to export (None = all)
             exclude_types: List of types to exclude (None = none)
@@ -1069,9 +1662,6 @@ class Database:
             >>> # Export entire database to JSONL
             >>> stats = db.export_database("backup.jsonl.tgz", overwrite=True)
             >>> print(f"Exported {stats['totalRecords']} records")
-
-            >>> # Export to GraphML for visualization
-            >>> db.export_database("graph.graphml.tgz", format="graphml")
 
             >>> # Export specific types only
             >>> db.export_database(
@@ -1102,17 +1692,21 @@ class Database:
             query: SQL query to execute
             file_path: Output CSV file path
             language: Query language (default: "sql")
-            fieldnames: Column names (auto-detected if None)
+            fieldnames: Header and column order (auto-detected if None). It
+                cannot rename: it must name every column the query returns, or
+                the export raises after writing the header. Alias columns in
+                the query to rename them.
 
         Example:
             >>> # Export all movies to CSV
             >>> db.export_to_csv("SELECT * FROM Movie", "movies.csv")
 
-            >>> # Export with specific columns
+            >>> # Renamed columns, in a chosen order
             >>> db.export_to_csv(
-            ...     "SELECT userId, movieId, rating FROM Rating WHERE rating >= 4.5",
+            ...     "SELECT userId AS user, movieId AS movie, rating AS score "
+            ...     "FROM Rating WHERE rating >= 4.5",
             ...     "high_ratings.csv",
-            ...     fieldnames=["user", "movie", "score"]
+            ...     fieldnames=["score", "user", "movie"]
             ... )
         """
         self._check_not_closed()

@@ -18,6 +18,7 @@ anything the day the default changed.
 
 import socket
 import time
+from urllib.parse import quote
 
 import pytest
 
@@ -39,6 +40,23 @@ def _free_port():
         return s.getsockname()[1]
 
 
+def _free_ports(*names):
+    """Distinct free ports, one per name. Each socket stays bound until all are
+    chosen, so the OS cannot hand the same port out twice (one port per call,
+    closed before the next, let the Postgres plugin find its port taken on a
+    macOS runner on 2026-10-02)."""
+    socks = []
+    try:
+        for _ in names:
+            s = socket.socket()
+            s.bind(("127.0.0.1", 0))
+            socks.append(s)
+        return {n: s.getsockname()[1] for n, s in zip(names, socks)}
+    finally:
+        for s in socks:
+            s.close()
+
+
 def _wait(port, timeout=60.0):
     """Wait for a listener, then give the plugin a moment to finish binding."""
     deadline = time.time() + timeout
@@ -56,7 +74,7 @@ def wire_server(tmp_path):
     """A server with all three bundled wire plugins enabled."""
     from arcadedb_embedded import create_server
 
-    ports = {k: _free_port() for k in ("http", "postgres", "redis", "bolt")}
+    ports = _free_ports("http", "postgres", "redis", "bolt")
     server = create_server(
         root_path=str(tmp_path / "databases"),
         root_password=ROOT_PASSWORD,
@@ -133,6 +151,94 @@ def test_postgres_wire_answers_a_query(wire_server):
             cur.execute("SELECT name FROM Item")
             rows = cur.fetchall()
     assert any("alpha" in str(r) for r in rows), rows
+
+
+def test_postgres_wire_runs_cypher_with_a_bound_parameter(wire_server):
+    """The `{cypher}` prefix and a bound parameter work over the Postgres wire.
+
+    docs/guide/server.md ("Choosing a Protocol from Python") recommends this as
+    the fastest route for single-row openCypher from Python, so the claim that
+    the route exists and returns the right row is pinned here, not only written
+    down. psycopg writes its placeholder as `%s` and sends it as `$1`.
+    """
+    psycopg = pytest.importorskip("psycopg")
+    _, ports = wire_server
+    assert _wait(ports["postgres"]), "postgres plugin never bound its port"
+
+    with psycopg.connect(
+        host="127.0.0.1",
+        port=ports["postgres"],
+        dbname="wiretest",
+        user="root",
+        password=ROOT_PASSWORD,
+        connect_timeout=15,
+        autocommit=True,
+    ) as conn:
+        with conn.cursor() as cur:
+            cur.execute("{cypher}MATCH (i:Item) WHERE i.id = %s RETURN i.name", (1,))
+            hit = cur.fetchall()
+            cur.execute("{cypher}MATCH (i:Item) WHERE i.id = %s RETURN i.name", (2,))
+            miss = cur.fetchall()
+    assert [str(r[0]) for r in hit] == ["alpha"], hit
+    assert miss == [], miss
+
+
+def test_postgres_wire_answers_arrow_adbc(wire_server):
+    """Arrow's native PostgreSQL ADBC driver connects and fetches typed columns.
+
+    Needs 26.10.1: on 26.9.1 the driver cannot connect at all ("Expected 5 or 6
+    columns from type resolver pg_type query but got 0", ArcadeDB #7178).
+
+    Declared schema properties arrive as their Arrow types, and so does a
+    COMPUTED column (count(*) as int64): until 2026-09-24 the server described a
+    prepared statement's computed columns as varchar before execution, and the
+    driver builds its Arrow schema from that describe, so they arrived as
+    strings (ArcadeDB #8285, fixed for 26.10.1). The last assertion pins the
+    fixed behaviour; docs/guide/server.md states it.
+    """
+    pytest.importorskip(
+        "pyarrow"
+    )  # fetch_arrow_table needs it; the driver alone imports fine
+    dbapi = pytest.importorskip("adbc_driver_postgresql.dbapi")
+    server, ports = wire_server
+    assert _wait(ports["postgres"]), "postgres plugin never bound its port"
+
+    db = server.get_database("wiretest")
+    db.command("sql", "CREATE DOCUMENT TYPE Typed")
+    for name, kind in (
+        ("n", "LONG"),
+        ("s", "STRING"),
+        ("x", "DOUBLE"),
+        ("b", "BOOLEAN"),
+    ):
+        db.command("sql", f"CREATE PROPERTY Typed.{name} {kind}")
+    rows = [{"n": i, "s": f"v{i}", "x": i * 0.5, "b": i % 2 == 0} for i in range(3)]
+    db.insert_many("Typed", rows)
+
+    uri = (
+        f"postgresql://root:{quote(ROOT_PASSWORD, safe='')}"
+        f"@127.0.0.1:{ports['postgres']}/wiretest"
+    )
+    with dbapi.connect(uri) as conn, conn.cursor() as cur:
+        cur.execute("SELECT n, s, x, b FROM Typed ORDER BY n")
+        table = cur.fetch_arrow_table()
+        assert [str(f.type) for f in table.schema] == [
+            "int64",
+            "string",
+            "double",
+            "bool",
+        ]
+        assert table.to_pylist() == rows
+
+        cur.execute("SELECT s FROM Typed WHERE n = $1", parameters=(2,))
+        assert cur.fetchone()[0] == "v2"
+
+        cur.execute("SELECT count(*) AS c FROM Typed")
+        table = cur.fetch_arrow_table()
+        assert (str(table.schema.field(0).type), table.column(0)[0].as_py()) == (
+            "int64",
+            3,
+        ), "a computed column no longer arrives typed over ADBC (#8285): update docs/guide/server.md"
 
 
 def test_redis_port_setting_is_honored(wire_server):

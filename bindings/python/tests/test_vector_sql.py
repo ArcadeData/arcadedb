@@ -383,9 +383,9 @@ class TestVectorSQL:
 
         vertex = neighbors[0]
         vec_data = arcadedb.to_python_array(vertex.get("vec"))
-        # Check content: The first dimension should be dominant
-        # Note: Currently returns nan in test environment, but search works (found the record).
-        # We relax the check to ensure the overflow bug is fixed.
+        # The returned vector's values are not checked: the content assert
+        # below is disabled, so this test asserts only that the INT8 index
+        # answers with one neighbour.
         # assert vec_data[0] > 0.9
 
     def test_create_index_with_quantization_binary_sql(self, test_db):
@@ -464,10 +464,6 @@ class TestVectorSQL:
         metadata = self._get_primary_sql_vector_index(
             test_db, "SqlNativeInt8Doc[vec]"
         ).getMetadata()
-        if not hasattr(metadata, "encoding"):
-            pytest.skip(
-                "Current embedded engine build does not expose encoding metadata"
-            )
         assert str(metadata.encoding) == "INT8"
         assert str(metadata.quantizationType) == "NONE"
 
@@ -490,33 +486,25 @@ class TestVectorSQL:
             """,
         )
 
-        try:
-            with test_db.transaction():
-                test_db.command(
-                    "sql",
-                    "INSERT INTO SqlNativeInt8SearchDoc SET id = ?, vec = ?",
-                    "doc_a",
-                    arcadedb.to_java_byte_array([127, 0, 0, 0]),
-                )
-                test_db.command(
-                    "sql",
-                    "INSERT INTO SqlNativeInt8SearchDoc SET id = ?, vec = ?",
-                    "doc_b",
-                    arcadedb.to_java_byte_array([120, 10, 0, 0]),
-                )
-                test_db.command(
-                    "sql",
-                    "INSERT INTO SqlNativeInt8SearchDoc SET id = ?, vec = ?",
-                    "doc_c",
-                    arcadedb.to_java_byte_array([0, 127, 0, 0]),
-                )
-        except arcadedb.ArcadeDBError as exc:
-            if "Expected float array or ComparableVector as key" in str(exc):
-                pytest.skip(
-                    "Current embedded engine build does not support byte[] ingest "
-                    "for INT8-encoded vectors"
-                )
-            raise
+        with test_db.transaction():
+            test_db.command(
+                "sql",
+                "INSERT INTO SqlNativeInt8SearchDoc SET id = ?, vec = ?",
+                "doc_a",
+                arcadedb.to_java_byte_array([127, 0, 0, 0]),
+            )
+            test_db.command(
+                "sql",
+                "INSERT INTO SqlNativeInt8SearchDoc SET id = ?, vec = ?",
+                "doc_b",
+                arcadedb.to_java_byte_array([120, 10, 0, 0]),
+            )
+            test_db.command(
+                "sql",
+                "INSERT INTO SqlNativeInt8SearchDoc SET id = ?, vec = ?",
+                "doc_c",
+                arcadedb.to_java_byte_array([0, 127, 0, 0]),
+            )
 
         rows = test_db.query(
             "sql",
@@ -537,23 +525,16 @@ class TestVectorSQL:
         test_db.command("sql", "CREATE PROPERTY SparseDoc.id STRING")
         test_db.command("sql", "CREATE PROPERTY SparseDoc.tokens ARRAY_OF_INTEGERS")
         test_db.command("sql", "CREATE PROPERTY SparseDoc.weights ARRAY_OF_FLOATS")
-        try:
-            test_db.command(
-                "sql",
-                """
-                CREATE INDEX ON SparseDoc (tokens, weights)
-                LSM_SPARSE_VECTOR
-                METADATA {
-                    "dimensions": 128
-                }
-                """,
-            )
-        except arcadedb.ArcadeDBError as exc:
-            if "LSM_SPARSE_VECTOR' is not supported" in str(exc):
-                pytest.skip(
-                    "Current embedded engine build does not support LSM_SPARSE_VECTOR"
-                )
-            raise
+        test_db.command(
+            "sql",
+            """
+            CREATE INDEX ON SparseDoc (tokens, weights)
+            LSM_SPARSE_VECTOR
+            METADATA {
+                "dimensions": 128
+            }
+            """,
+        )
 
         with test_db.transaction():
             test_db.command(
@@ -684,12 +665,7 @@ class TestVectorSQL:
     def test_vector_neighbors_by_key_opencypher(self, test_db):
         """OpenCypher should expose vector.neighbors with key-based lookup."""
 
-        try:
-            _ = list(test_db.query("opencypher", "RETURN 1 AS one"))
-        except Exception as exc:
-            if "Query engine 'opencypher' was not found" in str(exc):
-                pytest.skip("OpenCypher not available")
-            raise
+        _ = list(test_db.query("opencypher", "RETURN 1 AS one"))
 
         test_db.command("sql", "CREATE VERTEX TYPE Doc")
         test_db.command("sql", "CREATE PROPERTY Doc.name STRING")
@@ -819,16 +795,17 @@ class TestVectorSQL:
 
         query_vec = [0.9, 0.1]
 
-        # Try using index name
-        try:
-            rs = test_db.query(
-                "sql", f"SELECT vectorNeighbors('{index_name}', {query_vec}, 1) as res"
-            )
-            res = next(rs).get("res")
-            # Should return list of RIDs or similar
-            assert len(res) > 0
-        except Exception:
-            pass  # nosec B110
+        # schema:indexes lists both the logical index (Item[vec]) and its
+        # internal component (Item_0_<id>), in no fixed order, and only the
+        # logical name is a vector index to vectorNeighbors. This query used to
+        # take indexes[0] inside `try: ... except Exception: pass`, so it was
+        # both silent and order-dependent (2026-09-07).
+        assert any(n == "Item[vec]" for n in indexes), indexes
+        rs = test_db.query(
+            "sql", f"SELECT vectorNeighbors('Item[vec]', {query_vec}, 1) as res"
+        )
+        res = next(rs).get("res")
+        assert len(res) == 1
 
     def test_vector_neighbors_accepts_parameterized_index_and_vector(self, test_db):
         """SQL vectorNeighbors should accept bound index and vector parameters."""
