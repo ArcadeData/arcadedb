@@ -57,7 +57,7 @@ class RaftAtomicMembershipTest {
 
   @Test
   void addPeerUsesCompareAndSetMode() throws Exception {
-    final RaftHAServer server = mock(RaftHAServer.class);
+    final FakeRaftHAServer server = FakeRaftHAServer.detached();
     final RaftClient client = mock(RaftClient.class);
     final AdminApi admin = mock(AdminApi.class);
     final RaftClientReply reply = mock(RaftClientReply.class);
@@ -65,14 +65,14 @@ class RaftAtomicMembershipTest {
     final ArgumentCaptor<SetConfigurationRequest.Arguments> captor =
         ArgumentCaptor.forClass(SetConfigurationRequest.Arguments.class);
 
-    when(server.getClient()).thenReturn(client);
+    server.client(client);
     when(client.admin()).thenReturn(admin);
     when(reply.isSuccess()).thenReturn(true);
     when(admin.setConfiguration(captor.capture())).thenReturn(reply);
-    when(server.getLivePeers()).thenReturn(List.of(peer("A"), peer("B"), peer("C")));
-    when(server.getCommittedPeersOrNull()).thenReturn(List.of(peer("A"), peer("B"), peer("C")));
-    when(server.getHttpAddresses()).thenReturn(new HashMap<>());
-    when(server.getRaftGroup()).thenReturn(RaftGroup.valueOf(RaftGroupId.randomId()));
+    server.livePeers(List.of(peer("A"), peer("B"), peer("C")));
+    server.committedPeers(List.of(peer("A"), peer("B"), peer("C")));
+    server.httpAddresses(new HashMap<>());
+    server.raftGroup(RaftGroup.valueOf(RaftGroupId.randomId()));
 
     new RaftClusterManager(server).addPeer("D", "localhost:2447");
 
@@ -87,7 +87,7 @@ class RaftAtomicMembershipTest {
 
   @Test
   void removePeerUsesCompareAndSetMode() throws Exception {
-    final RaftHAServer server = mock(RaftHAServer.class);
+    final FakeRaftHAServer server = FakeRaftHAServer.detached();
     final RaftClient client = mock(RaftClient.class);
     final AdminApi admin = mock(AdminApi.class);
     final RaftClientReply reply = mock(RaftClientReply.class);
@@ -95,13 +95,13 @@ class RaftAtomicMembershipTest {
     final ArgumentCaptor<SetConfigurationRequest.Arguments> captor =
         ArgumentCaptor.forClass(SetConfigurationRequest.Arguments.class);
 
-    when(server.getClient()).thenReturn(client);
+    server.client(client);
     when(client.admin()).thenReturn(admin);
     when(reply.isSuccess()).thenReturn(true);
     when(admin.setConfiguration(captor.capture())).thenReturn(reply);
-    when(server.getLivePeers()).thenReturn(List.of(peer("A"), peer("B"), peer("C")));
-    when(server.getCommittedPeersOrNull()).thenReturn(List.of(peer("A"), peer("B"), peer("C")));
-    when(server.getHttpAddresses()).thenReturn(new HashMap<>());
+    server.livePeers(List.of(peer("A"), peer("B"), peer("C")));
+    server.committedPeers(List.of(peer("A"), peer("B"), peer("C")));
+    server.httpAddresses(new HashMap<>());
 
     new RaftClusterManager(server).removePeer("C");
 

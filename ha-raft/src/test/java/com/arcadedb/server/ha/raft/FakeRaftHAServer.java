@@ -22,14 +22,20 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.TestServerHelper;
+import org.apache.ratis.client.RaftClient;
+import org.apache.ratis.protocol.RaftGroup;
+import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
 
+import java.lang.reflect.Field;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 
 /**
  * A real {@link RaftHAServer}, built detached (never started, no Ratis), whose view of the cluster - leadership, the
@@ -62,8 +68,21 @@ public class FakeRaftHAServer extends RaftHAServer {
   private volatile String                           localHttpsAddress;
   private volatile String                           leaderHttpAddress;
   private volatile String                           clusterToken;
-  private volatile ArcadeStateMachine               stateMachine;
   private volatile UnverifiedClosedCopyCheck        unverifiedClosedCopyCheck;
+
+  // The cluster-membership view: each answers the real detached server's own view until the test sets it
+  private final Setting<ArcadeStateMachine>               stateMachineSetting  = new Setting<>();
+  private final Setting<RaftClient>                       client               = new Setting<>();
+  private final Setting<RaftGroup>                        raftGroup            = new Setting<>();
+  private final Setting<Map<RaftPeerId, String>>          httpAddresses        = new Setting<>();
+  private final Setting<Collection<RaftPeer>>             livePeers            = new Setting<>();
+  private final Setting<Collection<RaftPeer>>             committedPeers       = new Setting<>();
+  private final Setting<Integer>                          configuredServers    = new Setting<>();
+  private final Setting<Map<String, ReplicationLatency>>  replicationLatencies = new Setting<>();
+  private final Setting<List<Map<String, Object>>>        followerStates       = new Setting<>();
+  private final Setting<Long>                             raftLogStartIndex    = new Setting<>();
+  private final Setting<TrustedHttpClientCache>           httpsClients         = new Setting<>();
+  private final Setting<Long>                             lastAppliedIndex     = new Setting<>();
 
   private FakeRaftHAServer(final ArcadeDBServer server, final ContextConfiguration configuration) {
     super(server, configuration);
@@ -75,6 +94,13 @@ public class FakeRaftHAServer extends RaftHAServer {
     final ContextConfiguration configuration = new ContextConfiguration();
     configuration.setValue(GlobalConfiguration.HA_SERVER_LIST, "localhost:2434:2480");
     return new FakeRaftHAServer(TestServerHelper.unstartedServer("localhost"), configuration);
+  }
+
+  /** A detached fake owned by {@code server}, which {@link #getServer()} then answers. */
+  public static FakeRaftHAServer detached(final ArcadeDBServer server) {
+    final ContextConfiguration configuration = new ContextConfiguration();
+    configuration.setValue(GlobalConfiguration.HA_SERVER_LIST, "localhost:2434:2480");
+    return new FakeRaftHAServer(server, configuration);
   }
 
   /** A follower of {@code leaderPeerId}, whose HTTP address is {@code leaderHttpAddress}. */
@@ -140,10 +166,81 @@ public class FakeRaftHAServer extends RaftHAServer {
 
   /**
    * The state machine {@link #getStateMachine()} answers instead of the detached server's own fresh one - which has
-   * never applied anything, so a test of a RUNNING cluster hands in one that has.
+   * never applied anything, so a test of a RUNNING cluster hands in one that has. It is set on the getter AND on the
+   * {@code stateMachine} field, which the server's own lag and stuck-follower checks read directly.
    */
   public FakeRaftHAServer stateMachine(final ArcadeStateMachine stateMachine) {
-    this.stateMachine = stateMachine;
+    stateMachineSetting.set(stateMachine);
+    // Also the field the server's own checks read directly, so the getter and the field can never disagree
+    try {
+      final Field field = RaftHAServer.class.getDeclaredField("stateMachine");
+      field.setAccessible(true);
+      field.set(this, stateMachine);
+    } catch (final ReflectiveOperationException e) {
+      throw new IllegalStateException("RaftHAServer has no 'stateMachine' field to set", e);
+    }
+    return this;
+  }
+
+  /** No state machine at all, as before the Raft server has created one. */
+  public FakeRaftHAServer noStateMachine() {
+    return stateMachine(null);
+  }
+
+  public FakeRaftHAServer client(final RaftClient client) {
+    this.client.set(client);
+    return this;
+  }
+
+  public FakeRaftHAServer raftGroup(final RaftGroup raftGroup) {
+    this.raftGroup.set(raftGroup);
+    return this;
+  }
+
+  public FakeRaftHAServer httpAddresses(final Map<RaftPeerId, String> httpAddresses) {
+    this.httpAddresses.set(httpAddresses);
+    return this;
+  }
+
+  public FakeRaftHAServer livePeers(final Collection<RaftPeer> livePeers) {
+    this.livePeers.set(livePeers);
+    return this;
+  }
+
+  /** The committed membership; {@code null} is "no information this tick", as {@code getCommittedPeersOrNull} defines. */
+  public FakeRaftHAServer committedPeers(final Collection<RaftPeer> committedPeers) {
+    this.committedPeers.set(committedPeers);
+    return this;
+  }
+
+  public FakeRaftHAServer configuredServers(final int configuredServers) {
+    this.configuredServers.set(configuredServers);
+    return this;
+  }
+
+  public FakeRaftHAServer replicationLatencies(final Map<String, ReplicationLatency> replicationLatencies) {
+    this.replicationLatencies.set(replicationLatencies);
+    return this;
+  }
+
+  public FakeRaftHAServer followerStates(final List<Map<String, Object>> followerStates) {
+    this.followerStates.set(followerStates);
+    return this;
+  }
+
+  public FakeRaftHAServer raftLogStartIndex(final long raftLogStartIndex) {
+    this.raftLogStartIndex.set(raftLogStartIndex);
+    return this;
+  }
+
+  /** The applied index Ratis reports; set it again to model the follower applying entries between two reads. */
+  public FakeRaftHAServer lastAppliedIndex(final long lastAppliedIndex) {
+    this.lastAppliedIndex.set(lastAppliedIndex);
+    return this;
+  }
+
+  FakeRaftHAServer httpsClients(final TrustedHttpClientCache httpsClients) {
+    this.httpsClients.set(httpsClients);
     return this;
   }
 
@@ -269,8 +366,62 @@ public class FakeRaftHAServer extends RaftHAServer {
 
   @Override
   public ArcadeStateMachine getStateMachine() {
-    final ArcadeStateMachine set = stateMachine;
-    return set != null ? set : super.getStateMachine();
+    return stateMachineSetting.orElse(super::getStateMachine);
+  }
+
+  @Override
+  public RaftClient getClient() {
+    return client.orElse(super::getClient);
+  }
+
+  @Override
+  public RaftGroup getRaftGroup() {
+    return raftGroup.orElse(super::getRaftGroup);
+  }
+
+  @Override
+  public Map<RaftPeerId, String> getHttpAddresses() {
+    return httpAddresses.orElse(super::getHttpAddresses);
+  }
+
+  @Override
+  public Collection<RaftPeer> getLivePeers() {
+    return livePeers.orElse(super::getLivePeers);
+  }
+
+  @Override
+  public Collection<RaftPeer> getCommittedPeersOrNull() {
+    return committedPeers.orElse(super::getCommittedPeersOrNull);
+  }
+
+  @Override
+  public int getConfiguredServers() {
+    return configuredServers.orElse(super::getConfiguredServers);
+  }
+
+  @Override
+  public Map<String, ReplicationLatency> getReplicationLatencies() {
+    return replicationLatencies.orElse(super::getReplicationLatencies);
+  }
+
+  @Override
+  public List<Map<String, Object>> getFollowerStates() {
+    return followerStates.orElse(super::getFollowerStates);
+  }
+
+  @Override
+  public long getRaftLogStartIndex() {
+    return raftLogStartIndex.orElse(super::getRaftLogStartIndex);
+  }
+
+  @Override
+  public long getLastAppliedIndex() {
+    return lastAppliedIndex.orElse(super::getLastAppliedIndex);
+  }
+
+  @Override
+  TrustedHttpClientCache getHttpsClients() {
+    return httpsClients.orElse(super::getHttpsClients);
   }
 
   @Override
@@ -292,6 +443,26 @@ public class FakeRaftHAServer extends RaftHAServer {
   @Override
   public long getCommitIndex() {
     return commitIndex.next();
+  }
+
+  /**
+   * A value the test may set - possibly to {@code null} - else the real server's own answer. The value and its "set"
+   * mark travel together in one immutable holder, so a concurrent read never sees one without the other.
+   */
+  private static final class Setting<T> {
+    private record Held<T>(T value) {
+    }
+
+    private volatile Held<T> held;
+
+    private void set(final T value) {
+      this.held = new Held<>(value);
+    }
+
+    private T orElse(final Supplier<T> real) {
+      final Held<T> current = held;
+      return current != null ? current.value() : real.get();
+    }
   }
 
   /**
