@@ -26,6 +26,7 @@ import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.LeaderForwardContext;
 import com.arcadedb.server.StaticBaseServerTest;
 import com.arcadedb.server.TestServerHelper;
+import com.arcadedb.server.UnstartedHttpServers;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.Undertow;
@@ -35,6 +36,7 @@ import io.undertow.server.handlers.BlockingHandler;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
 import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
@@ -75,7 +77,6 @@ import static org.mockito.Mockito.when;
  * the leader started answering is reached on the live forward rather than only by a scripted one.
  */
 class Issue9216StreamedForwardIncrementalAcksTest {
-
   private static final long   BUDGET_MS      = 10_000L;
   private static final int    CLIENT_READ_MS = 30_000;
   /** How long the upload waits for the client to see the leader's first line before it gives up waiting and ends. */
@@ -84,6 +85,9 @@ class Issue9216StreamedForwardIncrementalAcksTest {
   private static final String RECORD         = "{\"@type\":\"vertex\",\"type\":\"V\"}\n";
   private static final String PROGRESS_LINE  = "{\"progress\":{\"phase\":\"vertices\",\"verticesCreated\":1,\"edgesCreated\":0}}";
   private static final String SUMMARY_LINE   = "{\"summary\":{\"verticesCreated\":2}}";
+
+  @RegisterExtension
+  static final UnstartedHttpServers HTTP_SERVERS = new UnstartedHttpServers();
 
   private Undertow follower;
 
@@ -274,8 +278,7 @@ class Issue9216StreamedForwardIncrementalAcksTest {
 
   private static PostBatchHandler handlerWith(final ContextConfiguration cfg) {
     final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, cfg);
-    final HttpServer httpServer = mock(HttpServer.class);
-    when(httpServer.getServer()).thenReturn(server);
+    final HttpServer httpServer = HTTP_SERVERS.of(server);
     return new PostBatchHandler(httpServer);
   }
 
@@ -287,9 +290,7 @@ class Issue9216StreamedForwardIncrementalAcksTest {
   }
 
   private static ServerSecurityUser rootUser() {
-    final ServerSecurityUser user = mock(ServerSecurityUser.class);
-    when(user.getName()).thenReturn("root");
-    return user;
+    return TestServerHelper.securityUser("root");
   }
 
   /** A follower whose forward relays the body {@code bodyFor} builds, on the streaming encoding. */

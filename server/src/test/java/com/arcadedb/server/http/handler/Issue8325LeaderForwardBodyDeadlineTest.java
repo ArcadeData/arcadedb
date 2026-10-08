@@ -24,6 +24,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.TestServerHelper;
+import com.arcadedb.server.UnstartedHttpServers;
 import com.arcadedb.server.http.FakeLeader;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -33,6 +34,7 @@ import io.undertow.server.HttpServerExchange;
 import io.undertow.server.handlers.BlockingHandler;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
 import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
@@ -84,7 +86,6 @@ import static org.mockito.Mockito.when;
  * @author Roberto Franchini (r.franchini@arcadedata.com)
  */
 class Issue8325LeaderForwardBodyDeadlineTest {
-
   private static final long   BUDGET_MS        = 1_000L;
   /** The tripwire between "the deadline fired" and "the forward is unbounded" (forever, without the fix). */
   private static final long   GAVE_UP_BOUND_MS = 15_000L;
@@ -94,6 +95,9 @@ class Issue8325LeaderForwardBodyDeadlineTest {
   /** Headers promising 100 bytes, then five of them, then silence. */
   private static final String STALLED_BODY     =
       "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{\"res";
+
+  @RegisterExtension
+  static final UnstartedHttpServers HTTP_SERVERS = new UnstartedHttpServers();
 
   private Undertow follower;
 
@@ -277,8 +281,7 @@ class Issue8325LeaderForwardBodyDeadlineTest {
 
   private static PostBatchHandler handlerWith(final ContextConfiguration cfg) {
     final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, cfg);
-    final HttpServer httpServer = mock(HttpServer.class);
-    when(httpServer.getServer()).thenReturn(server);
+    final HttpServer httpServer = HTTP_SERVERS.of(server);
     return new PostBatchHandler(httpServer);
   }
 
@@ -290,9 +293,7 @@ class Issue8325LeaderForwardBodyDeadlineTest {
   }
 
   private static ServerSecurityUser rootUser() {
-    final ServerSecurityUser user = mock(ServerSecurityUser.class);
-    when(user.getName()).thenReturn("root");
-    return user;
+    return TestServerHelper.securityUser("root");
   }
 
   private static PostBatchHandler.CountingInputStream emptyBody() {

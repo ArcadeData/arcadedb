@@ -24,6 +24,7 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.LeaderForwardContext;
 import com.arcadedb.server.TestServerHelper;
+import com.arcadedb.server.UnstartedHttpServers;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.PostBatchHandler.CountingInputStream;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -34,6 +35,7 @@ import io.undertow.util.Methods;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -57,6 +59,8 @@ import static org.mockito.Mockito.when;
  * The leader is a real loopback HTTP listener, so the headers asserted are the ones that crossed a socket.
  */
 class Issue8343RetryAfterRelayTest {
+  @RegisterExtension
+  static final UnstartedHttpServers HTTP_SERVERS = new UnstartedHttpServers();
 
   private StubLeader leader;
 
@@ -207,8 +211,7 @@ class Issue8343RetryAfterRelayTest {
   private static HttpServer httpServerWith(final HAServerPlugin ha, final ContextConfiguration configuration) {
     final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, configuration);
     server.setHA(ha);
-    final HttpServer httpServer = mock(HttpServer.class);
-    when(httpServer.getServer()).thenReturn(server);
+    final HttpServer httpServer = HTTP_SERVERS.of(server);
     return httpServer;
   }
 
@@ -227,9 +230,7 @@ class Issue8343RetryAfterRelayTest {
   }
 
   private static ServerSecurityUser user(final String name) {
-    final ServerSecurityUser user = mock(ServerSecurityUser.class);
-    when(user.getName()).thenReturn(name);
-    return user;
+    return TestServerHelper.securityUser(name);
   }
 
   /** The leader: a loopback HTTP listener that answers every request with the status, body and headers set last. */

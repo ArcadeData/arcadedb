@@ -26,6 +26,7 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.LeaderForwardContext;
 import com.arcadedb.server.TestServerHelper;
+import com.arcadedb.server.UnstartedHttpServers;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.PostBatchHandler.CountingInputStream;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -34,6 +35,7 @@ import io.undertow.util.HttpString;
 import io.undertow.util.Methods;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
@@ -55,9 +57,11 @@ import static org.mockito.Mockito.when;
  * end to end by {@code Issue7603LeaderForwardHopIT}.
  */
 class Issue8393UndeterminedForwardRefusalTest {
-
   private static final String LOCAL_PEER  = "peer-follower";
   private static final String LEADER_PEER = "peer-leader";
+
+  @RegisterExtension
+  static final UnstartedHttpServers HTTP_SERVERS = new UnstartedHttpServers();
 
   @AfterEach
   void clear() {
@@ -191,8 +195,7 @@ class Issue8393UndeterminedForwardRefusalTest {
     final ContextConfiguration cfg = new ContextConfiguration();
     final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, cfg);
     server.setHA(ha);
-    final HttpServer httpServer = mock(HttpServer.class);
-    when(httpServer.getServer()).thenReturn(server);
+    final HttpServer httpServer = HTTP_SERVERS.of(server);
     return httpServer;
   }
 
@@ -206,8 +209,6 @@ class Issue8393UndeterminedForwardRefusalTest {
   }
 
   private static ServerSecurityUser user() {
-    final ServerSecurityUser user = mock(ServerSecurityUser.class);
-    when(user.getName()).thenReturn("root");
-    return user;
+    return TestServerHelper.securityUser("root");
   }
 }

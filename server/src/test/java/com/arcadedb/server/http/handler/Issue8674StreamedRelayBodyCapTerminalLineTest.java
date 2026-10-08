@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.TestServerHelper;
+import com.arcadedb.server.UnstartedHttpServers;
 import com.arcadedb.server.http.FakeLeader;
 import com.arcadedb.server.http.HttpServer;
 import io.undertow.Undertow;
@@ -31,6 +32,7 @@ import io.undertow.server.handlers.BlockingHandler;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
 import javax.net.ssl.SSLSession;
 import java.io.BufferedReader;
@@ -60,8 +62,6 @@ import java.util.concurrent.TimeoutException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowable;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Regression test for issue #8674, the streaming sub-path #8161 left open: a chunked {@code /api/v1/batch} upload sent
@@ -81,13 +81,15 @@ import static org.mockito.Mockito.when;
  * writes through the exchange's own output stream.
  */
 class Issue8674StreamedRelayBodyCapTerminalLineTest {
-
   private static final long   CAP_BYTES      = 1_024L;
   private static final long   BUDGET_MS      = 10_000L;
   private static final int    CLIENT_READ_MS = 30_000;
   /** Written by the leader's own writer, so a change to its format breaks this test rather than the relay's reading. */
   private static final String PROGRESS_LINE  = leaderLine("progress",
       new JSONObject().put("phase", "vertices").put("verticesCreated", 7L).put("edgesCreated", 0L));
+
+  @RegisterExtension
+  static final UnstartedHttpServers HTTP_SERVERS = new UnstartedHttpServers();
 
   private Undertow follower;
 
@@ -301,8 +303,7 @@ class Issue8674StreamedRelayBodyCapTerminalLineTest {
     cfg.setValue(GlobalConfiguration.HA_PROXY_BATCH_READ_TIMEOUT, BUDGET_MS);
     cfg.setValue(GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE, CAP_BYTES);
     final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, cfg);
-    final HttpServer httpServer = mock(HttpServer.class);
-    when(httpServer.getServer()).thenReturn(server);
+    final HttpServer httpServer = HTTP_SERVERS.of(server);
     final PostBatchHandler handler = new PostBatchHandler(httpServer);
 
     final byte[] scripted = leaderLines.getBytes(StandardCharsets.UTF_8);

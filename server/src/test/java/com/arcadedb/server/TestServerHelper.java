@@ -25,6 +25,9 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.CallableNoReturn;
 import com.arcadedb.utility.CallableParameterNoReturn;
 import com.arcadedb.utility.FileUtils;
@@ -129,6 +132,23 @@ public final class TestServerHelper {
     if (serverName != null)
       configuration.setValue(GlobalConfiguration.SERVER_NAME, serverName);
     return unstartedServer(UNSTARTED_SERVER_ROOT, configuration);
+  }
+
+  /**
+   * A real server user named {@code name}, with access to {@code databases} (none when empty), for code that reads only
+   * the user's name and authorized databases. It is bound to no server, so {@code getDatabaseUser()} is out of reach:
+   * a test that needs it builds the user against a real server instead (issue #9464). Every database is granted with the
+   * {@code admin} group: do not use it to test group permissions.
+   */
+  public static ServerSecurityUser securityUser(final String name, final String... databases) {
+    final JSONObject configuration = new JSONObject().put("name", name);
+    if (databases.length > 0) {
+      final JSONObject access = new JSONObject();
+      for (final String database : databases)
+        access.put(database, new JSONArray().put("admin"));
+      configuration.put("databases", access);
+    }
+    return new ServerSecurityUser(null, configuration);
   }
 
   public static void stopServers(final ArcadeDBServer[] servers) {
