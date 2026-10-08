@@ -19,6 +19,7 @@
 package com.arcadedb.function.sql.math;
 
 import com.arcadedb.function.sql.SQLAggregatedFunction;
+import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.schema.Type;
 
 /**
@@ -58,6 +59,24 @@ public abstract class SQLFunctionRunningSumAbstract extends SQLAggregatedFunctio
   protected SQLFunctionRunningSumAbstract(final String name) {
     super(name);
   }
+
+  /**
+   * Feeds the argument of one row to {@link #accept}: a number as it is, a collection number by number, a null is skipped
+   * by {@link #accept}, and anything else is a client-facing type error rather than a silently dropped value (#5799,
+   * #6390). The triage of {@code accumulateNumeric}, without its bound method reference: one object less per row.
+   */
+  protected void accumulate(final Object value) {
+    if (value instanceof Number number)
+      accept(number);
+    else if (MultiValue.isMultiValue(value))
+      for (final Object item : MultiValue.getMultiValueIterable(value))
+        accept(requireNumericOrNull(item));
+    else
+      accept(requireNumericOrNull(value));
+  }
+
+  /** Takes one value of the argument into the function's state; a null is the function's to ignore. */
+  protected abstract void accept(Number value);
 
   /** Adds {@code value} to the running sum. A null is ignored. */
   protected void addToSum(final Number value) {

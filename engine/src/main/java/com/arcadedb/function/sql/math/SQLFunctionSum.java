@@ -20,7 +20,6 @@ package com.arcadedb.function.sql.math;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.function.sql.SQLAggregatedFunction;
 import com.arcadedb.schema.Type;
 
@@ -72,16 +71,12 @@ public class SQLFunctionSum extends SQLFunctionRunningSumAbstract {
 
   @Override
   public void aggregate(final Object self, final Object value, final CommandContext context) {
-    if (value instanceof Number number)
-      addToSum(number);
-    else if (MultiValue.isMultiValue(value))
-      for (final Object n : MultiValue.getMultiValueIterable(value))
-        addToSum(requireNumericOrNull(n));
-    else
-      // A NON-NUMERIC, NON-NULL, NON-LIST VALUE MUST BE A CLIENT-FACING TYPE ERROR RATHER THAN BEING SILENTLY
-      // DROPPED, WHICH USED TO LEAVE THE ACCUMULATOR UNCHANGED AND MAKE AN ALL-INVALID INPUT INDISTINGUISHABLE
-      // FROM AN ALL-NULL ONE (ISSUE #5799). requireNumericOrNull() itself is a no-op for null.
-      addToSum(requireNumericOrNull(value));
+    accumulate(value);
+  }
+
+  @Override
+  protected void accept(final Number value) {
+    addToSum(value);
   }
 
   public String getSyntax() {

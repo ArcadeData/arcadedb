@@ -329,6 +329,8 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
           finisher = partial.evaluator;
           break;
         }
+      if (finisher == null)
+        throw new IllegalStateException("Parallel aggregation ended without the partial aggregation of any worker");
       final List<ResultInternal> result = new ArrayList<>(size);
       for (int i = 0; i < size; i++) {
         onWait.run();
