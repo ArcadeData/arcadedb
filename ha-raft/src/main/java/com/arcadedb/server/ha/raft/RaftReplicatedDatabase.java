@@ -131,6 +131,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.Callable;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -265,7 +266,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * Throttle window for the "releasing entry unpublished" warning (issue #9411): during a prolonged in-place restart
    * every in-flight commit reaches it, so it is said once per window, with the count of the commits it stood for.
    */
-  static final         long                                              UNPUBLISHED_RELEASE_LOG_THROTTLE_MS = 60_000L;
+  static final         long                                              UNPUBLISHED_RELEASE_LOG_THROTTLE_NS = TimeUnit.MINUTES.toNanos(1);
   private final        AtomicLong                                        lastUnpublishedReleaseLog = new AtomicLong(Long.MIN_VALUE);
   private final        AtomicLong                                        unpublishedReleasesSinceLog = new AtomicLong();
 
@@ -968,20 +969,21 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
   /**
    * Warns that a committed entry is released unpublished because the local state machine is closed (#8785), at most
-   * once per {@link #UNPUBLISHED_RELEASE_LOG_THROTTLE_MS} per database (issue #9411): during a prolonged in-place restart
+   * once per {@link #UNPUBLISHED_RELEASE_LOG_THROTTLE_NS} per database (issue #9411): during a prolonged in-place restart
    * every commit in flight reaches here, and one line per commit buries the line that says why. The line that is logged
    * carries how many releases it stands for.
    */
   private void logUnpublishedRelease(final long committedLogIndex) {
-    final long releases = unpublishedReleasesSinceLog.incrementAndGet();
-    final long now = System.currentTimeMillis();
+    unpublishedReleasesSinceLog.incrementAndGet();
+    // Monotonic: a wall-clock jump must neither silence the warning nor let it through early.
+    final long now = System.nanoTime();
     final long last = lastUnpublishedReleaseLog.get();
-    if (last != Long.MIN_VALUE && now - last < UNPUBLISHED_RELEASE_LOG_THROTTLE_MS)
+    if (last != Long.MIN_VALUE && now - last < UNPUBLISHED_RELEASE_LOG_THROTTLE_NS)
       return;
     // One winner per window when several committers reach the end of their wait together.
     if (!lastUnpublishedReleaseLog.compareAndSet(last, now))
       return;
-    unpublishedReleasesSinceLog.addAndGet(-releases);
+    final long releases = unpublishedReleasesSinceLog.getAndSet(0);
     LogManager.instance().log(this, Level.WARNING,
         "Commit on database '%s' is releasing entry %d unpublished: the local state machine is closed and none has "
             + "replaced it yet (%d commit(s) released this way since the last report). The entries are applied by its "
