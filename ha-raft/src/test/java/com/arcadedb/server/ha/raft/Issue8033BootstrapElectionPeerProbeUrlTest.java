@@ -21,15 +21,15 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.FakeArcadeDBServer;
+import com.arcadedb.server.UnstartedHttpServers;
 import com.arcadedb.server.http.HttpServer;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Regression test for issue #8033: the bootstrap election's peer fan-out - both the state collection and the
@@ -44,6 +44,9 @@ import static org.mockito.Mockito.when;
  * the real resolution rather than a stubbed answer.
  */
 class Issue8033BootstrapElectionPeerProbeUrlTest {
+  @RegisterExtension
+  static final UnstartedHttpServers HTTP_SERVERS = new UnstartedHttpServers();
+
 
   private static final int LOCAL_HTTP_PORT  = 2480;
   private static final int LOCAL_HTTPS_PORT = 2490;
@@ -179,12 +182,10 @@ class Issue8033BootstrapElectionPeerProbeUrlTest {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_SERVER_LIST, serverList);
 
-    final FakeArcadeDBServer mockServer = FakeArcadeDBServer.create("ArcadeDB_0", config);
-    final HttpServer httpServer = mock(HttpServer.class);
-    when(httpServer.getPort()).thenReturn(LOCAL_HTTP_PORT);
-    when(httpServer.getHttpsPort()).thenReturn(LOCAL_HTTPS_PORT);
-    mockServer.httpServer(httpServer);
+    final FakeArcadeDBServer arcadeServer = FakeArcadeDBServer.create("ArcadeDB_0", config);
+    final HttpServer httpServer = HTTP_SERVERS.listeningOn(arcadeServer, LOCAL_HTTP_PORT, LOCAL_HTTPS_PORT);
+    arcadeServer.httpServer(httpServer);
 
-    return new BootstrapElection(new RaftHAServer(mockServer, config), mockServer);
+    return new BootstrapElection(new RaftHAServer(arcadeServer, config), arcadeServer);
   }
 }

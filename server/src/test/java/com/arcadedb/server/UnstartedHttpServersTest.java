@@ -54,6 +54,18 @@ class UnstartedHttpServersTest {
   }
 
   @Test
+  @Order(4)
+  void aListeningServerReportsItsPortsWithoutBinding() {
+    final ArcadeDBServer server = TestServerHelper.unstartedServer();
+    assertThat(HTTP_SERVERS.of(server).getPort()).as("an unstarted server listens on nothing").isZero();
+
+    final HttpServer plain = HTTP_SERVERS.listeningOn(server, 41234);
+    assertThat(plain.getPort()).isEqualTo(41234);
+    assertThat(plain.getHttpsPort()).isEqualTo(-1);
+    assertThat(HTTP_SERVERS.listeningOn(server, 41234, 41235).getHttpsPort()).isEqualTo(41235);
+  }
+
+  @Test
   @Order(3)
   void everyServerIsStoppedEvenWhenOneWasAlreadyStopped() {
     final long before = liveCleanupTimers();

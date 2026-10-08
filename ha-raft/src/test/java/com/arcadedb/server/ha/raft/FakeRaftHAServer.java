@@ -63,6 +63,7 @@ public class FakeRaftHAServer extends RaftHAServer {
   private volatile String                           leaderHttpAddress;
   private volatile String                           clusterToken;
   private volatile ArcadeStateMachine               stateMachine;
+  private volatile UnverifiedClosedCopyCheck        unverifiedClosedCopyCheck;
 
   private FakeRaftHAServer(final ArcadeDBServer server, final ContextConfiguration configuration) {
     super(server, configuration);
@@ -144,6 +145,22 @@ public class FakeRaftHAServer extends RaftHAServer {
   public FakeRaftHAServer stateMachine(final ArcadeStateMachine stateMachine) {
     this.stateMachine = stateMachine;
     return this;
+  }
+
+  /** The check {@link #getUnverifiedClosedCopyCheck()} answers instead of the one built against the detached server. */
+  public FakeRaftHAServer unverifiedClosedCopyCheck(final UnverifiedClosedCopyCheck check) {
+    this.unverifiedClosedCopyCheck = check;
+    return this;
+  }
+
+  /**
+   * A real {@link RaftHAPlugin} that delegates to this server (through its test seam), so {@code isLeader()},
+   * {@code getLeaderAddress()} and {@code getRaftHAServer()} answer from the values set here.
+   */
+  public RaftHAPlugin plugin() {
+    final RaftHAPlugin plugin = new RaftHAPlugin();
+    plugin.setRaftHAServer(this);
+    return plugin;
   }
 
   /**
@@ -254,6 +271,12 @@ public class FakeRaftHAServer extends RaftHAServer {
   public ArcadeStateMachine getStateMachine() {
     final ArcadeStateMachine set = stateMachine;
     return set != null ? set : super.getStateMachine();
+  }
+
+  @Override
+  public UnverifiedClosedCopyCheck getUnverifiedClosedCopyCheck() {
+    final UnverifiedClosedCopyCheck set = unverifiedClosedCopyCheck;
+    return set != null ? set : super.getUnverifiedClosedCopyCheck();
   }
 
   @Override

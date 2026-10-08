@@ -122,10 +122,8 @@ class Issue8325LeaderBodyDeadlineTest {
       final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, cfg);
       final FakeRaftHAServer raft = FakeRaftHAServer.detached();
       raft.clusterToken("test-token");
-      final RaftHAPlugin plugin = mock(RaftHAPlugin.class);
-      when(plugin.getRaftHAServer()).thenReturn(raft);
-      when(plugin.isLeader()).thenReturn(false);
-      when(plugin.getLeaderAddress()).thenReturn(leader.address());
+      raft.leader(false).leaderHttpAddress(leader.address());
+      final RaftHAPlugin plugin = raft.plugin();
 
       final StallAwareStopwatch watch = StallAwareStopwatch.start();
       // The first attempt meets the stall; the leader then stops listening, so the retries fail at once and the

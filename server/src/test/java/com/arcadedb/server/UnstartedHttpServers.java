@@ -49,6 +49,31 @@ public final class UnstartedHttpServers implements AfterEachCallback {
     return httpServer;
   }
 
+  /**
+   * A real HTTP server for {@code server}, never started, that reports listening on {@code httpPort} - what a running
+   * one advertises - without binding anything. HTTPS stays as on a server that has none ({@code -1}).
+   */
+  public HttpServer listeningOn(final ArcadeDBServer server, final int httpPort) {
+    return listeningOn(server, httpPort, -1);
+  }
+
+  /** As {@link #listeningOn(ArcadeDBServer, int)}, also reporting HTTPS on {@code httpsPort}. */
+  public HttpServer listeningOn(final ArcadeDBServer server, final int httpPort, final int httpsPort) {
+    final HttpServer httpServer = new HttpServer(server) {
+      @Override
+      public int getPort() {
+        return httpPort;
+      }
+
+      @Override
+      public int getHttpsPort() {
+        return httpsPort;
+      }
+    };
+    servers.add(httpServer);
+    return httpServer;
+  }
+
   /** How many servers are waiting to be stopped: zero after every test. */
   int pending() {
     return servers.size();
