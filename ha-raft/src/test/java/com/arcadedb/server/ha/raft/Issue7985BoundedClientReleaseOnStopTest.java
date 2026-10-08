@@ -22,6 +22,7 @@ import com.arcadedb.network.HttpClientLifecycle;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.server.http.SilentPeer;
 import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Test;
@@ -38,8 +39,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Issue #7985, the half reported as #7739: {@link RaftHAServer#stop()} released its HTTP clients with
@@ -81,10 +80,9 @@ class Issue7985BoundedClientReleaseOnStopTest {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_SERVER_LIST, "localhost:2434:2480");
 
-    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
-    when(mockServer.getServerName()).thenReturn("localhost");
+    final ArcadeDBServer arcadeServer = TestServerHelper.unstartedServer("localhost");
 
-    final RaftHAServer raft = new RaftHAServer(mockServer, config);
+    final RaftHAServer raft = new RaftHAServer(arcadeServer, config);
     final HttpClient forwardClient = raft.getForwardHttpClient();
 
     try (final SilentPeer peer = SilentPeer.start()) {
@@ -115,11 +113,10 @@ class Issue7985BoundedClientReleaseOnStopTest {
   @Timeout(value = 180, unit = TimeUnit.SECONDS)
   void closingTheTrustedClientCacheDoesNotWaitOutAnInFlightRequest() throws Exception {
     final ContextConfiguration config = new ContextConfiguration();
-    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
-    when(mockServer.getConfiguration()).thenReturn(config);
+    final ArcadeDBServer arcadeServer = TestServerHelper.unstartedServer((String) null, config);
 
     final TrustedHttpClientCache cache = new TrustedHttpClientCache();
-    final HttpClient cached = cache.clientFor(mockServer);
+    final HttpClient cached = cache.clientFor(arcadeServer);
 
     try (final SilentPeer peer = SilentPeer.start()) {
       final List<CompletableFuture<HttpResponse<String>>> parked = parkForwards(cached, peer);

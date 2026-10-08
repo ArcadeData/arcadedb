@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.TestServerHelper;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.util.LifeCycle;
@@ -135,9 +136,8 @@ class Issue8900RestartAbandonedOnShutdownTest {
   private static RaftHAServer detachedServer() {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_SERVER_LIST, SERVER_LIST);
-    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
-    when(mockServer.getServerName()).thenReturn("ArcadeDB_0");
-    return new RaftHAServer(mockServer, config);
+    final ArcadeDBServer arcadeServer = TestServerHelper.unstartedServer("ArcadeDB_0");
+    return new RaftHAServer(arcadeServer, config);
   }
 
   private static void setField(final Object target, final String name, final Object value) throws Exception {

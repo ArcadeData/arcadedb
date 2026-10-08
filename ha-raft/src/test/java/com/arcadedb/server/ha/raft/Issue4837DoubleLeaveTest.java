@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.TestServerHelper;
 
 import org.junit.jupiter.api.Test;
 
@@ -49,7 +50,7 @@ class Issue4837DoubleLeaveTest {
 
   @Test
   void stopServiceDoesNotLeaveClusterItselfInK8s() throws Exception {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = TestServerHelper.unstartedServer();
     final RaftHAServer raft = mock(RaftHAServer.class);
 
     final ContextConfiguration config = new ContextConfiguration();
@@ -70,7 +71,7 @@ class Issue4837DoubleLeaveTest {
 
   @Test
   void stopServiceDoesNotLeaveClusterItselfWhenNotK8s() throws Exception {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = TestServerHelper.unstartedServer();
     final RaftHAServer raft = mock(RaftHAServer.class);
 
     final ContextConfiguration config = new ContextConfiguration();

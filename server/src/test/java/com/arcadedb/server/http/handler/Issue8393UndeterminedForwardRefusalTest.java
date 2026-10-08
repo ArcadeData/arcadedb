@@ -25,6 +25,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.LeaderForwardContext;
+import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.PostBatchHandler.CountingInputStream;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -188,9 +189,8 @@ class Issue8393UndeterminedForwardRefusalTest {
 
   private static HttpServer httpServerWith(final HAServerPlugin ha) {
     final ContextConfiguration cfg = new ContextConfiguration();
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getHA()).thenReturn(ha);
-    when(server.getConfiguration()).thenReturn(cfg);
+    final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, cfg);
+    server.setHA(ha);
     final HttpServer httpServer = mock(HttpServer.class);
     when(httpServer.getServer()).thenReturn(server);
     return httpServer;

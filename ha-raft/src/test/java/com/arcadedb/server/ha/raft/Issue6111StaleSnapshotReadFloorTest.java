@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.TestServerHelper;
 import org.apache.ratis.protocol.RaftGroupId;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.server.DivisionInfo;
@@ -727,10 +728,9 @@ class Issue6111StaleSnapshotReadFloorTest {
     config.setValue(GlobalConfiguration.HA_SERVER_LIST, "localhost:2434:2480");
     config.setValue(GlobalConfiguration.HA_QUORUM_TIMEOUT, quorumTimeoutMs);
 
-    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
-    when(mockServer.getServerName()).thenReturn("localhost");
+    final ArcadeDBServer arcadeServer = TestServerHelper.unstartedServer("localhost");
 
-    final RaftHAServer raft = new RaftHAServer(mockServer, config);
+    final RaftHAServer raft = new RaftHAServer(arcadeServer, config);
 
     final DivisionInfo mockInfo = mock(DivisionInfo.class);
     when(mockInfo.getLastAppliedIndex()).thenAnswer(inv -> appliedIndex.get());

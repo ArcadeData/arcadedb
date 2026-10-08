@@ -20,6 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.ExecutionResponse;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -378,8 +379,7 @@ class Issue8490StaleForcedResyncTest {
       final RaftHAPlugin plugin = mock(RaftHAPlugin.class);
       when(plugin.getRaftHAServer()).thenReturn(raft);
       final HttpServer httpServer = mock(HttpServer.class);
-      final ArcadeDBServer server = mock(ArcadeDBServer.class);
-      when(server.getServerName()).thenReturn("arcadedb-1");
+      final ArcadeDBServer server = TestServerHelper.unstartedServer("arcadedb-1");
       when(httpServer.getServer()).thenReturn(server);
       return new PostResyncDatabaseHandler(httpServer, plugin);
     }

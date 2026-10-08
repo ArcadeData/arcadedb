@@ -25,6 +25,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ForwardedRequestIdContext;
+import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.server.http.IdempotencyCache;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
@@ -167,9 +168,7 @@ class Issue8323SqlForwardRequestIdTest {
   static RaftReplicatedDatabase database(final RecordingLeader leader, final boolean localIsLeader,
       final String clusterToken, final LocalDatabase proxied) {
     final ContextConfiguration cfg = config();
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(cfg);
-    when(server.getHA()).thenReturn(null); // plain HTTP forward, no HTTPS dial to resolve
+    final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, cfg);
     final RaftHAServer raft = mock(RaftHAServer.class);
     when(raft.getLeaderHttpAddress()).thenReturn(leader.address());
     when(raft.getClusterToken()).thenReturn(clusterToken);

@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.TestServerHelper;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -30,8 +31,6 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Issue #8414 (#8382): the security-convergence readiness window is per join, and what tells the gate a new join
@@ -98,8 +97,7 @@ class Issue8414RuntimeJoinIndexSignalTest {
     config.setValue(GlobalConfiguration.HA_SERVER_LIST, "arcadedb-0:2434:2480");
     config.setValue(GlobalConfiguration.HA_RAFT_STORAGE_DIRECTORY, tempDir.getAbsolutePath());
     config.setValue(GlobalConfiguration.HA_RAFT_PERSIST_STORAGE, false);
-    final ArcadeDBServer arcadeServer = mock(ArcadeDBServer.class);
-    when(arcadeServer.getServerName()).thenReturn("arcadedb-0");
+    final ArcadeDBServer arcadeServer = TestServerHelper.unstartedServer("arcadedb-0");
     return new RaftHAServer(arcadeServer, config);
   }
 

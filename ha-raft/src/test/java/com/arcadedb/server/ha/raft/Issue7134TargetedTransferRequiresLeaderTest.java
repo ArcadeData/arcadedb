@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.ExecutionResponse;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -238,9 +239,8 @@ class Issue7134TargetedTransferRequiresLeaderTest {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_SERVER_LIST, "localhost:2434:2480,localhost:2435:2481,localhost:2436:2482");
 
-    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
-    when(mockServer.getServerName()).thenReturn("ArcadeDB_0");
+    final ArcadeDBServer arcadeServer = TestServerHelper.unstartedServer("ArcadeDB_0");
 
-    return new RaftHAServer(mockServer, config);
+    return new RaftHAServer(arcadeServer, config);
   }
 }

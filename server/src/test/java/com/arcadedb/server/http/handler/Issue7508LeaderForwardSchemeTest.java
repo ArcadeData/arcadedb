@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
+import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.PostBatchHandler.CountingInputStream;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -294,9 +295,8 @@ class Issue7508LeaderForwardSchemeTest {
   // ---------------------------------------------------------------------------------------------------------------
 
   private static HttpServer httpServerWith(final HAServerPlugin ha) {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getHA()).thenReturn(ha);
-    when(server.getConfiguration()).thenReturn(new ContextConfiguration());
+    final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, new ContextConfiguration());
+    server.setHA(ha);
     final HttpServer httpServer = mock(HttpServer.class);
     when(httpServer.getServer()).thenReturn(server);
     return httpServer;

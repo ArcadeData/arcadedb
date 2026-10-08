@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.TestServerHelper;
 
 import org.apache.ratis.protocol.RaftPeerId;
 import org.junit.jupiter.api.AfterEach;
@@ -30,8 +31,6 @@ import org.junit.jupiter.api.Test;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * A withheld peer-to-peer endpoint says so, once (issue #6267).
@@ -172,9 +171,8 @@ class Issue6267AmbiguousPeerAddressWarningTest {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_SERVER_LIST, serverList);
 
-    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
-    when(mockServer.getServerName()).thenReturn("ArcadeDB_0");
+    final ArcadeDBServer arcadeServer = TestServerHelper.unstartedServer("ArcadeDB_0");
 
-    return new RaftHAServer(mockServer, config);
+    return new RaftHAServer(arcadeServer, config);
   }
 }

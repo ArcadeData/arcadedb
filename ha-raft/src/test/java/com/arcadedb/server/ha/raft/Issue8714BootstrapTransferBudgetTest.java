@@ -19,6 +19,7 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.TestServerHelper;
 import org.junit.jupiter.api.Test;
 
 import java.util.Set;
@@ -45,7 +46,7 @@ class Issue8714BootstrapTransferBudgetTest {
   void transferIsCappedToACandidateSlice() {
     final RaftHAServer ha = mock(RaftHAServer.class);
     when(ha.followerContactPeers()).thenReturn(Set.of("peer-b"));
-    final BootstrapElection election = new BootstrapElection(ha, mock(ArcadeDBServer.class));
+    final BootstrapElection election = new BootstrapElection(ha, TestServerHelper.unstartedServer());
 
     election.transferToElectedSource("peer-b", 120_000L);
 
@@ -56,7 +57,7 @@ class Issue8714BootstrapTransferBudgetTest {
   void aSourceThatBecomesReachableAfterAFewPollsIsTransferredTo() {
     final RaftHAServer ha = mock(RaftHAServer.class);
     when(ha.followerContactPeers()).thenReturn(Set.of(), Set.of(), Set.of("peer-b"));
-    final BootstrapElection election = new BootstrapElection(ha, mock(ArcadeDBServer.class));
+    final BootstrapElection election = new BootstrapElection(ha, TestServerHelper.unstartedServer());
 
     election.transferToElectedSource("peer-b", 120_000L, 5_000L);
 
@@ -67,7 +68,7 @@ class Issue8714BootstrapTransferBudgetTest {
   void unreachableSourceIsNeverTransferredTo() {
     final RaftHAServer ha = mock(RaftHAServer.class);
     when(ha.followerContactPeers()).thenReturn(Set.of("peer-c"));
-    final BootstrapElection election = new BootstrapElection(ha, mock(ArcadeDBServer.class));
+    final BootstrapElection election = new BootstrapElection(ha, TestServerHelper.unstartedServer());
 
     final AtomicBoolean announced = new AtomicBoolean();
     assertThatThrownBy(() -> election.transferToElectedSource("peer-b", 120_000L, 150L, () -> announced.set(true)))

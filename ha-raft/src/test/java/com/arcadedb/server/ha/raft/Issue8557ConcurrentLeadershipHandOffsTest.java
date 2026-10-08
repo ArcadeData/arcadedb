@@ -22,9 +22,10 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.TestServerHelper;
 import org.apache.ratis.client.RaftClient;
-import org.apache.ratis.client.impl.ClientProtoUtils;
 import org.apache.ratis.client.api.AdminApi;
+import org.apache.ratis.client.impl.ClientProtoUtils;
 import org.apache.ratis.protocol.ClientId;
 import org.apache.ratis.protocol.RaftClientReply;
 import org.apache.ratis.protocol.RaftGroupId;
@@ -490,8 +491,7 @@ class Issue8557ConcurrentLeadershipHandOffsTest {
   }
 
   private static ArcadeDBServer detachedServer() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getServerName()).thenReturn("ArcadeDB_0");
+    final ArcadeDBServer server = TestServerHelper.unstartedServer("ArcadeDB_0");
     return server;
   }
 

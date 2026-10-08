@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.TestServerHelper;
 import org.junit.jupiter.api.Test;
 import org.mockito.InOrder;
 
@@ -62,7 +63,7 @@ class Issue7641DropInReplicasWaitsForLocalApplyTest {
   private static RaftReplicatedDatabase databaseWith(final RaftHAServer raft) {
     final LocalDatabase proxied = mock(LocalDatabase.class);
     when(proxied.getName()).thenReturn(DB_NAME);
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final ArcadeDBServer server = TestServerHelper.unstartedServer();
     return new RaftReplicatedDatabase(server, proxied, raft);
   }
 

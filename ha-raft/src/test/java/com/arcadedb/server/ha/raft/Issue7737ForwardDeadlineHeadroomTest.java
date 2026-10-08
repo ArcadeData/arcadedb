@@ -27,6 +27,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.StallAwareStopwatch;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.Test;
@@ -180,9 +181,7 @@ class Issue7737ForwardDeadlineHeadroomTest {
   }
 
   private static ArcadeDBServer serverWith(final ContextConfiguration cfg) {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(cfg);
-    when(server.getHA()).thenReturn(null); // plain HTTP forward, no HTTPS dial to resolve
+    final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, cfg);
     return server;
   }
 

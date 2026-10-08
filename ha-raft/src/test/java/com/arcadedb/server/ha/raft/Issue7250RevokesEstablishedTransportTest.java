@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.TestServerHelper;
 import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.thirdparty.io.grpc.Attributes;
@@ -42,8 +43,6 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Regression tests for issue #7250, a follow-up to #7225.
@@ -385,8 +384,7 @@ class Issue7250RevokesEstablishedTransportTest {
     config.setValue(GlobalConfiguration.HA_SERVER_LIST, "127.0.0.1:2434:2480");
     config.setValue(GlobalConfiguration.HA_PEER_ALLOWLIST_STARTUP_GRACE_MS, 0L);
 
-    final ArcadeDBServer arcadeServer = mock(ArcadeDBServer.class);
-    when(arcadeServer.getServerName()).thenReturn("arcadedb-0");
+    final ArcadeDBServer arcadeServer = TestServerHelper.unstartedServer("arcadedb-0");
     final RaftHAServer server = new RaftHAServer(arcadeServer, config);
     server.buildParameters(config);
 
@@ -415,8 +413,7 @@ class Issue7250RevokesEstablishedTransportTest {
     config.setValue(GlobalConfiguration.HA_SERVER_LIST, "127.0.0.1:2434:2480");
     config.setValue(GlobalConfiguration.HA_PEER_ALLOWLIST_ENABLED, false);
 
-    final ArcadeDBServer arcadeServer = mock(ArcadeDBServer.class);
-    when(arcadeServer.getServerName()).thenReturn("arcadedb-0");
+    final ArcadeDBServer arcadeServer = TestServerHelper.unstartedServer("arcadedb-0");
     final RaftHAServer server = new RaftHAServer(arcadeServer, config);
     server.buildParameters(config);
 
