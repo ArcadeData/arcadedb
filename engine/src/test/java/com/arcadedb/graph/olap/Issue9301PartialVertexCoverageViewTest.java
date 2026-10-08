@@ -19,6 +19,9 @@
 package com.arcadedb.graph.olap;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.RID;
+import com.arcadedb.engine.Bucket;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.MutableVertex;
 import org.junit.jupiter.api.Test;
@@ -103,17 +106,52 @@ class Issue9301PartialVertexCoverageViewTest extends TestHelper {
   }
 
   @Test
-  void newVertexTypeMakesTheViewPartial() throws Exception {
+  void aVertexOfANewTypeMakesTheViewPartial() throws Exception {
     database.command("sql", "CREATE GRAPH ANALYTICAL VIEW g9301 VERTEX TYPES (A, B, C) EDGE TYPES (E) UPDATE MODE OFF");
     try {
       final GraphAnalyticalView view = GraphAnalyticalViewRegistry.get(database, "g9301");
       assertThat(view.awaitReady(60, TimeUnit.SECONDS)).isTrue();
       assertThat(view.coversVertexType(null)).isTrue();
       database.getSchema().createVertexType("D");
-      assertThat(view.coversVertexType(null)).as("a vertex type the view does not hold appeared").isFalse();
+      assertThat(view.coversVertexType(null)).as("a vertex type the view does not hold appeared, with no vertex yet").isTrue();
+      database.transaction(() -> database.newVertex("D").set("id", 41).save());
+      assertThat(view.coversVertexType(null)).as("a vertex the view does not hold appeared").isFalse();
       assertThat(GraphTraversalProviderRegistry.findProvider(database, "E")).isNull();
       database.getSchema().dropType("D");
       assertThat(view.coversVertexType(null)).as("the uncovered vertex type is gone").isTrue();
+    } finally {
+      database.command("sql", "DROP GRAPH ANALYTICAL VIEW g9301");
+    }
+  }
+
+  @Test
+  void anEmptyVertexTypeTheViewDoesNotListKeepsItFull() throws Exception {
+    // the LSQB shape: Post and Comment extend Message, which holds no vertex of its own, and the view lists the concrete
+    // types only. No walk can reach a vertex of a type that has none, so the view still answers for every vertex
+    database.getSchema().createVertexType("M");
+    database.getSchema().getType("C").addSuperType("M");
+    database.getSchema().createVertexType("Unused");
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW g9301 VERTEX TYPES (A, B, C) EDGE TYPES (E) UPDATE MODE OFF");
+    try {
+      final GraphAnalyticalView view = GraphAnalyticalViewRegistry.get(database, "g9301");
+      assertThat(view.awaitReady(60, TimeUnit.SECONDS)).isTrue();
+      assertThat(view.coversVertexType(null)).as("the unlisted types hold no vertex").isTrue();
+      assertThat(GraphTraversalProviderRegistry.findProvider(database, "E")).isSameAs(view);
+      assertSameAnswers("view (A, B, C) with M and Unused empty");
+      assertThat(count("opencypher", "MATCH (b:B)-[:E]->(m:M) RETURN count(*) AS n")).isEqualTo(2);
+
+      // a counter not known yet (fresh open with no statistics, unclean shutdown) still reads a bucket never written as empty
+      for (final Bucket bucket : database.getSchema().getType("Unused").getBuckets(false))
+        ((LocalBucket) bucket).setCachedRecordCount(-1);
+      assertThat(view.coversVertexType(null)).as("unknown counter, no page written").isTrue();
+
+      // a vertex of an unlisted type makes the view partial again, with no schema change to notice it
+      final RID[] m1 = new RID[1];
+      database.transaction(() -> m1[0] = database.newVertex("M").set("id", 31).save().getIdentity());
+      assertThat(view.coversVertexType(null)).as("M holds a vertex").isFalse();
+      assertThat(GraphTraversalProviderRegistry.findProvider(database, "E")).isNull();
+      database.transaction(() -> m1[0].asVertex().delete());
+      assertThat(view.coversVertexType(null)).as("M is empty again").isTrue();
     } finally {
       database.command("sql", "DROP GRAPH ANALYTICAL VIEW g9301");
     }
