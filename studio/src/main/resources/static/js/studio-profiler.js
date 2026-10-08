@@ -431,7 +431,7 @@ function profilerStepMeasuredCell(step) {
 function profilerRenderQueryRow(q, i) {
   var truncated = q.queryText.length > 80 ? q.queryText.substring(0, 80) + "..." : q.queryText;
   return '<tr style="cursor: pointer;" onclick="if (event.target.closest(\'button\') === null) profilerShowDetail(' + i + ')">' +
-    '<td title="' + escapeHtml(q.queryText) + '"><button type="button" class="profiler-query-button" onclick="profilerShowDetail(' + i + ')">' +
+    '<td><button type="button" class="profiler-query-button" title="' + escapeHtml(q.queryText) + '" onclick="profilerShowDetail(' + i + ')">' +
     escapeHtml(truncated) + '</button></td>' +
     '<td>' + escapeHtml(q.language) + '</td>' +
     '<td>' + escapeHtml(q.database) + '</td>' +
