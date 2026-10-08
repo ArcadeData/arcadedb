@@ -172,6 +172,48 @@ class Issue9496GroupByAggregateTest extends TestHelper {
       assertThat(render(query(query, true))).as(query).isNotEmpty().isEqualTo(render(query(query, false)));
   }
 
+  /**
+   * Schema-less records whose values change type from row to row inside one group - Integer, Long, Double and Short - plus
+   * a list and an embedded document: the running sums widen the way Type.increment does, the cache decodes the list and
+   * the embedded document again on every read, and both paths agree. The doubles are halves and every value differs from
+   * every other, so no sum depends on the order the workers add it in and no min() or max() picks between equal values.
+   */
+  @Test
+  void schemaLessValuesOfMixedTypesListsAndEmbeddedDocumentsAggregateAlikeInBothPaths() {
+    database.getSchema().createDocumentType("Mixed", 2);
+    database.getSchema().createDocumentType("Emb");
+    final Map<String, Double> expectedSums = new HashMap<>();
+    database.transaction(() -> {
+      for (int i = 0; i < 5_000; i++) {
+        final Number v = switch (i % 4) {
+          case 0 -> i;
+          case 1 -> (long) i;
+          case 2 -> i + 0.5;
+          default -> (short) i;
+        };
+        final String k = "g" + (i % 5);
+        expectedSums.merge(k, v.doubleValue(), Double::sum);
+        final MutableDocument doc = database.newDocument("Mixed").set("k", k, "v", v, "tags", List.of(i % 3, i % 7));
+        doc.newEmbeddedDocument("Emb", "emb").set("x", i % 11);
+        doc.save();
+      }
+    });
+
+    for (final boolean parallel : new boolean[] { true, false })
+      for (final Result row : query("SELECT k, sum(v) AS s FROM Mixed GROUP BY k ORDER BY k", parallel))
+        assertThat(row.<Number>getProperty("s").doubleValue()).isEqualTo(expectedSums.get(row.<String>getProperty("k")));
+
+    final String[] queries = {
+        "SELECT k, sum(v) AS s, avg(v) AS a, min(v) AS mi, max(v) AS ma, count(v) AS c FROM Mixed GROUP BY k ORDER BY k",
+        "SELECT k, sum(tags) AS st, max(emb.x) AS mx, sum(emb.x) AS sx, count(DISTINCT emb.x) AS dx FROM Mixed GROUP BY k ORDER BY k",
+        "SELECT k, list(ifnull(v, 0)).size() AS n, sum(ifnull(v, 0)) AS s FROM Mixed GROUP BY k ORDER BY k",
+        "SELECT tags.size() AS sz, count(*) AS n FROM Mixed GROUP BY tags.size() ORDER BY sz",
+        "SELECT emb.x AS x, sum(v) AS s, count(*) AS n FROM Mixed GROUP BY emb.x ORDER BY x",
+        "SELECT v % 3 AS r, count(*) AS n, sum(v) AS s FROM Mixed GROUP BY v % 3 ORDER BY r" };
+    for (final String query : queries)
+      assertThat(render(query(query, true))).as(query).isNotEmpty().isEqualTo(render(query(query, false)));
+  }
+
   /** An aggregate that keeps every value, which only the sequential path runs, still sees every row. */
   @Test
   void aggregatesThatKeepEveryValueStillSeeEveryRow() {

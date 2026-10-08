@@ -386,7 +386,8 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
       final WhereClause[] workerConditions = new WhereClause[conditions.size()];
       for (int i = 0; i < workerConditions.length; i++)
         workerConditions[i] = conditions.get(i).copy();
-      // THE WORKER'S SCAN SETS $current TO EVERY ROW ALREADY
+      // ONE EVALUATOR PER WORKER, ON ITS OWN COPIES: IT HOLDS THE STATE OF THE ROW IT EVALUATES. THE WORKER'S SCAN SETS
+      // $current TO EVERY ROW ALREADY
       final AggregateRowEvaluator evaluator = new AggregateRowEvaluator(preProjection == null ? null : preProjection.copy(),
           step.projection.copy(), step.groupBy == null ? null : step.groupBy.copy(), false, workerConditions, workerContext);
       return step.new PartialAggregation(types.toArray(new String[0]), workerConditions, evaluator, partitions, heapLimit,
