@@ -44,7 +44,6 @@ class Issue7233GrpcReadsServerConfigurationTest {
   @TempDir
   Path root;
 
-
   @Test
   void theSettingsResolveAgainstTheServersOwnConfiguration() {
     final ContextConfiguration configuration = new ContextConfiguration();

@@ -55,4 +55,9 @@ class UnstartedServerTest {
       assertThat(files).as("construction must not create the log, config or database directories").isEmpty();
     }
   }
+
+  @Test
+  void theDefaultModeIsNotProduction() {
+    assertThat(TestServerHelper.unstartedServer(root, new ContextConfiguration()).isProductionMode()).isFalse();
+  }
 }

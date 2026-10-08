@@ -52,7 +52,6 @@ class Issue7511GrpcClusterNotReadyStatusTest {
   @TempDir
   Path root;
 
-
   @Test
   void aClusterNotReadyRefusalIsAPreconditionFailureRatherThanAnInternalError() {
     final StatusException mapped = adminService().toStatus("saveGroup", new ClusterCapabilityNotReadyException(

@@ -21,6 +21,7 @@ package com.arcadedb.server.grpc;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.network.binary.QuorumNotReachedException;
+import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerControlPlane;
 import com.arcadedb.server.TestServerHelper;
@@ -54,7 +55,6 @@ class Issue7532ConnectClusterSeedFailureStatusTest {
   @TempDir
   Path root;
 
-
   @Test
   void aQuorumThatCouldNotBeReachedIsRetryableRatherThanAnInternalError() {
     final StatusException mapped = adminService().toStatus("createUser",
@@ -85,7 +85,7 @@ class Issue7532ConnectClusterSeedFailureStatusTest {
   void theNotLeaderRefusalKeepsItsOwnArmDespiteExtendingTheSupertype() {
     final StatusException mapped = adminService()
         .toStatus("createDatabase",
-            new com.arcadedb.network.binary.ServerIsNotTheLeaderException("Not the leader", "db2:2480"));
+            new ServerIsNotTheLeaderException("Not the leader", "db2:2480"));
 
     assertThat(mapped.getStatus().getCode())
         .as("routed through GrpcErrorMapper, not through the new NeedRetryException arm")
