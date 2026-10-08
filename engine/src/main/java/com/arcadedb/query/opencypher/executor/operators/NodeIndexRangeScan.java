@@ -30,18 +30,21 @@ import com.arcadedb.index.RangeIndex;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.optimizer.RangePredicate;
+import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.PhysicalOrderRidFetcher;
 import com.arcadedb.query.sql.executor.QueryHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.SelectExecutionPlanner;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 
 import java.time.temporal.Temporal;
+import java.time.temporal.TemporalAmount;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.Iterator;
@@ -453,7 +456,7 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
         inheritedIndex = Labels.isInheritedIndex(typeIndex, label);
 
         // Resolve bounds from predicates (may involve parameter resolution)
-        final boolean foldedKeys = typeIndex.getMetadata() != null && typeIndex.getMetadata().hasAnyCaseInsensitive();
+        final boolean foldedKeys = SelectExecutionPlanner.holdsFoldedKeys(typeIndex);
         // No bound is a range of a case-insensitive index, whose keys are case-folded (issues #8666, #8699), and the scan
         // does not re-check what it consumes: the planner never anchors on one, so this plan predates the index
         if (foldedKeys && !predicates.isEmpty())
@@ -663,6 +666,11 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
   private static boolean boundMatchesIndexKey(final Type indexKeyType, final Object bound) {
     if (bound == null || indexKeyType == null)
       return true;
+    // A duration is stored as its ISO-8601 text and the index holds that text, so its keys order lexically (P10D before
+    // P2D) where durations compare component by component: no range of keys is the range of durations (issue #9348). The
+    // enclosing filter compares the real values
+    if (bound instanceof CypherDuration || bound instanceof TemporalAmount)
+      return false;
     final int keyCategory = categoryOf(indexKeyType);
     final int boundCategory = categoryOfBound(bound);
     if (keyCategory == 0 || boundCategory == 0)

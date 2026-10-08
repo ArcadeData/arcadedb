@@ -26,6 +26,7 @@ import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.opencypher.Labels;
+import com.arcadedb.query.sql.executor.SelectExecutionPlanner;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Schema;
@@ -131,7 +132,7 @@ public class StatisticsProvider {
             propertyNames,
             index.isUnique(),
             index.getName(),
-            index.getMetadata() != null && index.getMetadata().hasAnyCaseInsensitive(),
+            SelectExecutionPlanner.holdsFoldedKeys(index),
             index.supportsOrderedIterations()
         ));
       } catch (final IndexException e) {

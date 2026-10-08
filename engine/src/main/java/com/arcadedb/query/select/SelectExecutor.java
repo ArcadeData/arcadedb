@@ -24,12 +24,14 @@ import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
+import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.IntegralKeyBound;
 import com.arcadedb.index.MultiIndexCursor;
 import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.vector.LSMVectorIndex;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.SelectExecutionPlanner;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.MultiIterator;
@@ -38,6 +40,7 @@ import com.arcadedb.utility.Pair;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.LongSupplier;
+import java.util.logging.Level;
 
 /**
  * Native Query engine is a simple query engine that covers most of the classic use cases, such as the retrieval of records
@@ -54,6 +57,10 @@ public class SelectExecutor {
   // FOR THE NESTED PER-VALUE CURSOR IT BUILDS FOR AN in_op LEAF, SO NEITHER PLACE HANDS A RAW select.limit (MISSING
   // skip) TO A MultiIndexCursor
   int             indexCandidateLimit = -1;
+  // THE INDEX lookForIndexes() IS BUILDING A CURSOR ON, TO TELL A DROPPED ONE FROM AN ARGUMENT THE CALLER GOT WRONG (#9331).
+  // ONE EXECUTOR RUNS ONE QUERY ON ONE THREAD. ONLY THE PHASES THAT READ INDEX PAGES (get/range) SET IT: THE PHASES BEFORE THEM
+  // READ THE SCHEMA, WHICH A DROPPED INDEX ANSWERS WITH AN IndexException
+  private TypeIndex indexBeingRead;
 
   // #6815: THE ABSOLUTE DEADLINE FOR THIS EXECUTION, OWNED BY THE CONSUMER INSTEAD OF BY THE SOURCE ITERATOR.
   // buildIterator() CAN RETURN FOUR DIFFERENT SOURCES AND ONLY ONE OF THEM (MultiIterator) CARRIES A TIMEOUT OF ITS
@@ -366,45 +373,75 @@ public class SelectExecutor {
   MultiIndexCursor lookForIndexes() {
     if (select.fromType != null && select.rootTreeElement != null) {
       final List<IndexCursor> cursors = new ArrayList<>();
+      indexBeingRead = null;
+      try {
+        // #6592: A COMPOSITE (MULTI-PROPERTY) INDEX IS REGISTERED UNDER ITS FULL PROPERTY LIST (SEE
+        // LocalDocumentType.indexesByProperties), NOT UNDER ANY SUBSET OF IT - SO A PLAIN AND-CONJUNCTION OF EQUALITY
+        // LEAVES THAT ONLY COVERS THE LEADING PROPERTIES OF SUCH AN INDEX CAN NEVER BE FOUND BY THE PER-LEAF,
+        // SINGLE-PROPERTY LOOKUP BELOW (isTheNodeFullyIndexed()). TRY A PREFIX MATCH AGAINST EVERY COMPOSITE INDEX ON
+        // THE TYPE FIRST; ONLY FALL BACK TO THE SINGLE-PROPERTY PATH WHEN NO SUCH INDEX COVERS ANY LEADING PROPERTY.
+        final boolean compositeIndexUsed = matchCompositeIndex(cursors);
 
-      // #6592: A COMPOSITE (MULTI-PROPERTY) INDEX IS REGISTERED UNDER ITS FULL PROPERTY LIST (SEE
-      // LocalDocumentType.indexesByProperties), NOT UNDER ANY SUBSET OF IT - SO A PLAIN AND-CONJUNCTION OF EQUALITY
-      // LEAVES THAT ONLY COVERS THE LEADING PROPERTIES OF SUCH AN INDEX CAN NEVER BE FOUND BY THE PER-LEAF,
-      // SINGLE-PROPERTY LOOKUP BELOW (isTheNodeFullyIndexed()). TRY A PREFIX MATCH AGAINST EVERY COMPOSITE INDEX ON
-      // THE TYPE FIRST; ONLY FALL BACK TO THE SINGLE-PROPERTY PATH WHEN NO SUCH INDEX COVERS ANY LEADING PROPERTY.
-      final boolean compositeIndexUsed = matchCompositeIndex(cursors);
+        if (!compositeIndexUsed) {
+          // FIND AVAILABLE INDEXES AND ASSIGN node.index ON EVERY INDEXED LEAF: filterWithIndexesFinalNode() RELIES ON THAT
+          // SIDE EFFECT TO KNOW WHICH LEAVES CAN BECOME A CURSOR
+          isTheNodeFullyIndexed(select.rootTreeElement);
 
-      if (!compositeIndexUsed) {
-        // FIND AVAILABLE INDEXES AND ASSIGN node.index ON EVERY INDEXED LEAF: filterWithIndexesFinalNode() RELIES ON THAT
-        // SIDE EFFECT TO KNOW WHICH LEAVES CAN BECOME A CURSOR
-        isTheNodeFullyIndexed(select.rootTreeElement);
+          // #6565: A CANDIDATE CAP IS SAFE ONLY WHEN THE INDEX SCAN EXACTLY REPRODUCES THE WHERE-TREE'S RESULT SET AND
+          // THE ORDER BY (IF ANY) IS ALREADY SATISFIED BY IT - evaluateWhere(), skip AND fetchResultInCaseOfOrderBy()'s
+          // FULL-DRAIN SORT ALL REDUCE THE STREAM FURTHER OTHERWISE, SO THE SCAN MUST RUN UNCAPPED TO SURVIVE THAT.
+          // MUST RUN BEFORE filterWithIndexes() BELOW, SINCE soleExactLeaf() READS node.index BEFORE
+          // filterWithIndexesFinalNode() PRUNES AN 'and' SIBLING'S - HARMLESS TODAY ONLY BECAUSE 'and' IS ALREADY
+          // UNCONDITIONALLY DISQUALIFIED
+          final SelectTreeNode exactLeaf = soleExactLeaf(select.rootTreeElement);
+          indexCandidateLimit = exactLeaf != null && isOrderBySafeForCap(exactLeaf) ? computeExactCandidateLimit() : -1;
 
-        // #6565: A CANDIDATE CAP IS SAFE ONLY WHEN THE INDEX SCAN EXACTLY REPRODUCES THE WHERE-TREE'S RESULT SET AND
-        // THE ORDER BY (IF ANY) IS ALREADY SATISFIED BY IT - evaluateWhere(), skip AND fetchResultInCaseOfOrderBy()'s
-        // FULL-DRAIN SORT ALL REDUCE THE STREAM FURTHER OTHERWISE, SO THE SCAN MUST RUN UNCAPPED TO SURVIVE THAT.
-        // MUST RUN BEFORE filterWithIndexes() BELOW, SINCE soleExactLeaf() READS node.index BEFORE
-        // filterWithIndexesFinalNode() PRUNES AN 'and' SIBLING'S - HARMLESS TODAY ONLY BECAUSE 'and' IS ALREADY
-        // UNCONDITIONALLY DISQUALIFIED
-        final SelectTreeNode exactLeaf = soleExactLeaf(select.rootTreeElement);
-        indexCandidateLimit = exactLeaf != null && isOrderBySafeForCap(exactLeaf) ? computeExactCandidateLimit() : -1;
+          filterWithIndexes(select.rootTreeElement, cursors);
+        }
 
-        filterWithIndexes(select.rootTreeElement, cursors);
+        // #8153: A PLAIN UNION, NOT A KEY-ORDERED MERGE. THE LEAVES OF AN or CAN BE ANSWERED BY DIFFERENT INDEXES, WHOSE KEYS
+        // ARE NOT COMPARABLE (AN INTEGER id AGAINST A STRING name), AND THE MERGED ORDER IS NEVER RELIED UPON WHEN MORE THAN
+        // ONE LEAF CONTRIBUTED: SelectIterator ONLY SKIPS ITS IN-MEMORY SORT WHEN usedIndexes.size() == 1. A NESTED in_op
+        // CURSOR SCANS ONE INDEX AND STAYS KEY-ORDERED
+        if (!cursors.isEmpty())
+          return new MultiIndexCursor(cursors, indexCandidateLimit, true, false);
+
+        // NO CURSOR WAS ACTUALLY BUILT (E.G. A BARE is_null/is_not_null/neq/like/ilike LEAF, WHICH isTheNodeFullyIndexed()
+        // CORRECTLY REFUSES TO TREAT AS INDEXED - SEE #6577 - SO node.index STAYS null AND filterWithIndexesFinalNode()
+        // NEVER RUNS), SO NO CAP WAS EVER APPLIED EITHER: RESET THE TEST-VISIBLE FIELD RATHER THAN LEAVE IT HOLDING A
+        // MISLEADING FINITE VALUE
+        indexCandidateLimit = -1;
+      } catch (final IllegalArgumentException e) {
+        // An IllegalArgumentException is the index's only when the index it was reading is gone ("File with id n was not found"
+        // once its file is deleted under the lookup): any other one (a key that does not convert, a bad parameter) is the
+        // caller's and must not turn into a silent scan
+        if (indexBeingRead == null || indexBeingRead.isValid() || !TypeIndex.isFileNotFound(e))
+          throw e;
+        fallBackToScan(cursors, e);
+      } catch (final IndexException e) {
+        // Not narrowed by isValid(): TypeIndex#drop() drops the sub-indexes first and only then clears the flag, so an index
+        // that is going away still reads valid while it raises this. The scan answers the same rows
+        fallBackToScan(cursors, e);
       }
-
-      // #8153: A PLAIN UNION, NOT A KEY-ORDERED MERGE. THE LEAVES OF AN or CAN BE ANSWERED BY DIFFERENT INDEXES, WHOSE KEYS
-      // ARE NOT COMPARABLE (AN INTEGER id AGAINST A STRING name), AND THE MERGED ORDER IS NEVER RELIED UPON WHEN MORE THAN
-      // ONE LEAF CONTRIBUTED: SelectIterator ONLY SKIPS ITS IN-MEMORY SORT WHEN usedIndexes.size() == 1. A NESTED in_op
-      // CURSOR SCANS ONE INDEX AND STAYS KEY-ORDERED
-      if (!cursors.isEmpty())
-        return new MultiIndexCursor(cursors, indexCandidateLimit, true, false);
-
-      // NO CURSOR WAS ACTUALLY BUILT (E.G. A BARE is_null/is_not_null/neq/like/ilike LEAF, WHICH isTheNodeFullyIndexed()
-      // CORRECTLY REFUSES TO TREAT AS INDEXED - SEE #6577 - SO node.index STAYS null AND filterWithIndexesFinalNode()
-      // NEVER RUNS), SO NO CAP WAS EVER APPLIED EITHER: RESET THE TEST-VISIBLE FIELD RATHER THAN LEAVE IT HOLDING A
-      // MISLEADING FINITE VALUE
-      indexCandidateLimit = -1;
     }
     return null;
+  }
+
+  /**
+   * #9331: AN INDEX DROPPED OR REBUILT BY A CONCURRENT DDL WHILE THE CURSORS WERE BEING BUILT. THE SCAN ANSWERS THE SAME ROWS
+   * WITHOUT IT, SINCE evaluateWhere() RUNS THE WHOLE WHERE-TREE ON EVERY RECORD EITHER WAY
+   */
+  private void fallBackToScan(final List<IndexCursor> cursors, final RuntimeException cause) {
+    LogManager.instance().log(this, Level.FINE, "Index dropped or rebuilt while the query was starting, scanning instead: %s",
+        null, cause.getMessage());
+    for (final IndexCursor cursor : cursors)
+      try {
+        cursor.close();
+      } catch (final RuntimeException ignore) {
+        // KEEP CLOSING THE OTHERS
+      }
+    usedIndexes = null;
+    indexCandidateLimit = -1;
   }
 
   /**
@@ -435,8 +472,10 @@ public class SelectExecutor {
     // RATHER THAN ONLY GUARDING THE range() CALL BELOW, ALSO AVOIDS get() DOING A RAW EQUALITY LOOKUP ON A
     // FULL-KEY-MATCHED FULL_TEXT INDEX INSTEAD OF A TOKENIZED SEARCH - A TYPE WITH ONLY SUCH INDEXES SIMPLY FALLS
     // BACK TO THE PRE-EXISTING isTheNodeFullyIndexed()/filterWithIndexes() PATH, EXACTLY AS BEFORE THIS METHOD EXISTED
+    // ONLY THE INDEXES READY FOR QUERIES: ONE A CONCURRENT DDL IS CREATING HAS NO SUB-INDEX YET, AND ONE IT IS DROPPING
+    // THROWS ON ITS METADATA (#9331). A DROP CAN STILL LAND AFTER THE FILTER: lookForIndexes() FALLS BACK TO THE SCAN
     final List<TypeIndex> candidates = new ArrayList<>();
-    for (final TypeIndex candidate : select.fromType.getAllIndexes(true))
+    for (final TypeIndex candidate : TypeIndex.filterReadyForQueries(select.fromType.getAllIndexes(true)))
       if (candidate.getPropertyNames().size() >= 2 && candidate.supportsOrderedIterations())
         candidates.add(candidate);
 
@@ -525,6 +564,7 @@ public class SelectExecutor {
     // THROUGH range() WITH EQUAL (INCLUSIVE) BEGIN/END BOUNDS INSTEAD - SEE LSMTreeIndexCompacted's "PARTIAL KEY
     // COMPARISON...MATCHES BY PREFIX" (PURPOSE=2).
     final boolean ascendingOrder = orderByElided ? select.orderBy.getFirst().getSecond() : true;
+    indexBeingRead = bestIndex;
     final IndexCursor cursor = fullKeyMatch ? bestIndex.get(keys) : bestIndex.range(ascendingOrder, keys, true, keys, true);
 
     if (cursor == null)
@@ -724,6 +764,7 @@ public class SelectExecutor {
     // DESCENDING INDEX SCAN WITH AN OPEN (null) BOUND IS NOT A SUPPORTED CURSOR SHAPE HERE AND USED TO RETURN AN EMPTY RESULT.
     final boolean ascendingOrder = true;
 
+    indexBeingRead = node.index;
     final IndexCursor cursor;
     if (node.operator == SelectOperator.eq)
       cursor = node.index.get(new Object[] { rightValue });
@@ -858,7 +899,9 @@ public class SelectExecutor {
         final TypeIndex found = select.fromType.getPolymorphicIndexByProperties(
             ((SelectPropertyValue) node.left).propertyName);
         // A FULL_TEXT index answers by token and misses a value with none: the cursor must hold every match (#8439)
-        TypeIndex propertyIndex = found != null && found.getType().isExactKeyLookup() ? found : null;
+        // getPropertyNamesIfExactKeyLookup() AND NOT getType(): THE TYPE OF AN INDEX A CONCURRENT DDL IS CREATING OR
+        // DROPPING IS NULL (#9331)
+        TypeIndex propertyIndex = found != null && found.getPropertyNamesIfExactKeyLookup() != null ? found : null;
         // A COLLATE ci index holds lower-cased keys: a range over it is not the case sensitive range the leaf asks for and
         // loses rows no residual filter can bring back, so the scan answers it (#9302)
         if (propertyIndex != null && RANGE_OPERATORS.contains(node.operator) && SelectExecutionPlanner.holdsFoldedKeys(propertyIndex))

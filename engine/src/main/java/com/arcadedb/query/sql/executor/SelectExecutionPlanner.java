@@ -5482,11 +5482,22 @@ public class SelectExecutionPlanner {
    * folded column: it is refused even when the ORDER BY only reads a column that is not folded.
    */
   public static boolean holdsFoldedKeys(final Index index) {
-    return index instanceof IndexInternal internal && internal.getMetadata() != null && internal.getMetadata().hasAnyCaseInsensitive();
+    if (!(index instanceof IndexInternal internal))
+      return false;
+    // Read once: a TypeIndex with no metadata of its own asks its first sub-index, which a concurrent DROP INDEX can take
+    // away between two calls, so a null check and a second read can disagree (issue #9332)
+    final IndexMetadata metadata = internal.getMetadata();
+    return metadata != null && metadata.hasAnyCaseInsensitive();
   }
 
-  private static boolean isIndexCaseInsensitive(final Index index, final int propertyIndex) {
-    final IndexMetadata metadata = ((IndexInternal) index).getMetadata();
+  /**
+   * Whether the key at {@code propertyIndex} of {@code index} is stored case-folded (COLLATE ci). False for an index whose
+   * metadata is gone, see {@link #holdsFoldedKeys(Index)}.
+   */
+  public static boolean isIndexCaseInsensitive(final Index index, final int propertyIndex) {
+    if (!(index instanceof IndexInternal internal))
+      return false;
+    final IndexMetadata metadata = internal.getMetadata();
     return metadata != null && metadata.isCaseInsensitive(propertyIndex);
   }
 

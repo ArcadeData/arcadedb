@@ -26,9 +26,11 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
+import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.IntegralKeyBound;
 import com.arcadedb.index.RangeIndex;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.parser.AndBlock;
@@ -115,7 +117,11 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     // context variables (e.g. subquery results) before init() evaluates the condition.
     pullPrevious(context, nRecords);
 
-    init(context.getDatabase());
+    try {
+      init(context.getDatabase());
+    } catch (final IllegalArgumentException e) {
+      throw staleIndexOr(e);
+    }
 
     // A blocking consumer (aggregation, ORDER BY, DISTINCT) with no WHERE to guard can otherwise drain
     // the whole index past arcadedb.command.timeout without anything ever checking it (issue #6465).
@@ -243,6 +249,17 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     return index != null && index.isUnique();
   }
 
+  /**
+   * The file of an index dropped under a lookup or an open cursor is gone for the page manager: "File with id n was not found",
+   * an {@link IllegalArgumentException}. When the index is dropped that is what it means, and it is reported as the
+   * {@link IndexException} that makes the statement be planned again (issue #9331); otherwise the exception is the caller's own.
+   */
+  private RuntimeException staleIndexOr(final IllegalArgumentException e) {
+    if (index instanceof TypeIndex typeIndex && !typeIndex.isValid() && TypeIndex.isFileNotFound(e))
+      return new IndexException("Index '" + indexName + "' was dropped or rebuilt while it was being read", e);
+    return e;
+  }
+
   private void fetchNextEntry() {
     nextEntry = null;
     // Defensive loop guard: each iteration either returns, drops one element from
@@ -266,21 +283,31 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
             nextEntryScore = 0;
           }
 
-          if (nextEntry == null)
+          if (nextEntry == null) {
+            // The entries of an index dropped or rebuilt while the cursors were open run out early, with no error of their own: an
+            // answer that looks complete and is not (issue #9331). Raised so the statement is planned again, see SelectStatement.
+            // A drop landing after the last row but before this read raises it for an answer that was complete: the window is a
+            // few instructions wide, and a statement planned again answers the same rows
+            if (index instanceof TypeIndex typeIndex && !typeIndex.isValid())
+              throw new IndexException("Index '" + indexName + "' was dropped or rebuilt while it was being read");
             updateIndexStats();
-          else
+          } else
             count++;
 
           return;
         }
         cursor = nextCursors.removeFirst();
       }
-      if (cursor.hasNext()) {
-        final Object value = cursor.next();
-        nextEntry = new Pair(cursor.getKeys(), value);
-        nextEntryScore = cursor.getFloatScore();
-        count++;
-        return;
+      try {
+        if (cursor.hasNext()) {
+          final Object value = cursor.next();
+          nextEntry = new Pair(cursor.getKeys(), value);
+          nextEntryScore = cursor.getFloatScore();
+          count++;
+          return;
+        }
+      } catch (final IllegalArgumentException e) {
+        throw staleIndexOr(e);
       }
 
       cursor = null;
