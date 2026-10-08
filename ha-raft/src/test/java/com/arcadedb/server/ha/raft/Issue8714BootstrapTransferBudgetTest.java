@@ -18,10 +18,11 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.server.CallLog;
 import com.arcadedb.server.TestServerHelper;
 import org.junit.jupiter.api.Test;
 
-import java.util.Arrays;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -44,7 +45,7 @@ class Issue8714BootstrapTransferBudgetTest {
 
     election.transferToElectedSource("peer-b", 120_000L);
 
-    assertThat(ha.calls("transferLeadership")).containsOnlyOnce(Arrays.asList("peer-b", RaftClusterManager.candidateTransferBudgetMs(120_000L, 120_000L)));
+    assertThat(ha.calls("transferLeadership")).containsOnlyOnce(List.of("peer-b", RaftClusterManager.candidateTransferBudgetMs(120_000L, 120_000L)));
   }
 
   @Test
@@ -55,7 +56,7 @@ class Issue8714BootstrapTransferBudgetTest {
 
     election.transferToElectedSource("peer-b", 120_000L, 5_000L);
 
-    assertThat(ha.calls("transferLeadership")).containsOnlyOnce(Arrays.asList("peer-b", RaftClusterManager.candidateTransferBudgetMs(120_000L, 120_000L)));
+    assertThat(ha.calls("transferLeadership")).containsOnlyOnce(List.of("peer-b", RaftClusterManager.candidateTransferBudgetMs(120_000L, 120_000L)));
   }
 
   @Test

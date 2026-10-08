@@ -19,6 +19,7 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.network.binary.QuorumNotReachedException;
+import com.arcadedb.server.CallLog;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;

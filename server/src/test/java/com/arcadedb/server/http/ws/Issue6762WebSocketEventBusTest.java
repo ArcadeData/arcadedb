@@ -24,7 +24,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
-import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
 import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -270,9 +270,9 @@ class Issue6762WebSocketEventBusTest {
     final ServerSecurity security = mock(ServerSecurity.class);
     when(security.revalidate(revoked)).thenReturn(revoked);
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(new ContextConfiguration());
-    when(server.getSecurity()).thenReturn(security);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+    server.returns("getConfiguration", new ContextConfiguration());
+    server.security(security);
 
     final WebSocketChannel channel = mock(WebSocketChannel.class);
     final UUID channelId = UUID.randomUUID();
@@ -303,9 +303,9 @@ class Issue6762WebSocketEventBusTest {
     final ServerSecurity security = mock(ServerSecurity.class);
     when(security.revalidate(allowed)).thenReturn(allowed);
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(new ContextConfiguration());
-    when(server.getSecurity()).thenReturn(security);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+    server.returns("getConfiguration", new ContextConfiguration());
+    server.security(security);
 
     final WebSocketChannel channel = mock(WebSocketChannel.class);
     final UUID channelId = UUID.randomUUID();
@@ -337,9 +337,9 @@ class Issue6762WebSocketEventBusTest {
     final ServerSecurity security = mock(ServerSecurity.class);
     when(security.revalidate(captured)).thenThrow(new ServerSecurityException("User 'gone' no longer exists")); // ...but the principal no longer exists
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(new ContextConfiguration());
-    when(server.getSecurity()).thenReturn(security);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+    server.returns("getConfiguration", new ContextConfiguration());
+    server.security(security);
 
     final WebSocketChannel channel = mock(WebSocketChannel.class);
     final UUID channelId = UUID.randomUUID();

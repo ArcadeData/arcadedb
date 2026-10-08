@@ -183,13 +183,13 @@ class Issue7532ConnectClusterReportsSeedFailureTest extends StaticBaseServerTest
     // production catch is there for is a security store that is not installed, which a started ArcadeDBServer
     // always has. seedSecurityStateClusterWide collects its per-document failures itself, so what is exercised
     // here is everything around them.
-    final ArcadeDBServer unstartedServer = mock(ArcadeDBServer.class);
-    when(unstartedServer.getHA()).thenReturn(new SeedingHAPlugin());
-    when(unstartedServer.getConfiguration()).thenReturn(new ContextConfiguration());
+    final FakeArcadeDBServer unstartedServer = FakeArcadeDBServer.create();
+    unstartedServer.setHA(new SeedingHAPlugin());
+    unstartedServer.returns("getConfiguration", new ContextConfiguration());
     final ServerSecurity security = mock(ServerSecurity.class);
     when(security.seedSecurityStateClusterWide(anyLong()))
         .thenThrow(new IllegalStateException("security store not installed"));
-    when(unstartedServer.getSecurity()).thenReturn(security);
+    unstartedServer.security(security);
 
     assertThat(new ServerControlPlane(unstartedServer).connectCluster(PEER_ADDRESS).failedSeeds())
         .containsExactly("users", "groups", "API tokens");

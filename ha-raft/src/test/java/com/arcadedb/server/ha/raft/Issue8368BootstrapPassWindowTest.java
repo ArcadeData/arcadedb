@@ -27,6 +27,7 @@ import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.utility.FileUtils;
 import org.apache.ratis.protocol.RaftPeer;
@@ -41,6 +42,7 @@ import java.io.File;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 
@@ -108,11 +110,12 @@ class Issue8368BootstrapPassWindowTest {
     return config;
   }
 
-  private ArcadeDBServer stubbedServer() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(configuration());
-    when(server.existsDatabase(DB_NAME)).thenReturn(true);
-    when(server.getDatabase(DB_NAME)).thenReturn(new ServerDatabase(null, localDb));
+  private FakeArcadeDBServer stubbedServer() {
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+    server.returns("getConfiguration", configuration());
+    server.on("existsDatabase", args -> Objects.equals(args[0], DB_NAME));
+    final ServerDatabase servedDb = new ServerDatabase(null, localDb);
+    server.on("getDatabase", args -> Objects.equals(args[0], DB_NAME) ? servedDb : null);
     return server;
   }
 
@@ -268,8 +271,8 @@ class Issue8368BootstrapPassWindowTest {
     final RaftHAServer raft = mock(RaftHAServer.class);
     when(raft.isLeader()).thenReturn(true);
     when(raft.getStateMachine()).thenReturn(sm);
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(configuration());
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+    server.returns("getConfiguration", configuration());
     final RaftReplicatedDatabase replicated = new RaftReplicatedDatabase(server, localDb, raft);
     localDb.setAutoTransaction(true);
 
@@ -442,7 +445,7 @@ class Issue8368BootstrapPassWindowTest {
     final ArcadeStateMachine sm = spy(stateMachine());
     final RaftHAServer ha = leaderOfAPassThatElects(sm);
     // Listed when the pass starts, gone by the time the local states are computed: no peer reports it.
-    when(passServer.getDatabaseNames()).thenReturn(Set.of(DB_NAME, "gone-8477"));
+    passServer.returns("getDatabaseNames", Set.of(DB_NAME, "gone-8477"));
     final BootstrapElection election = electionWhereTheRemotePeerIsFresher(ha);
     final Collection<String>[] boundedAtTransfer = new Collection[1];
     doAnswer(invocation -> {
@@ -475,7 +478,7 @@ class Issue8368BootstrapPassWindowTest {
   }
 
   private static final RaftPeerId LOCAL_PEER  = RaftPeerId.valueOf("local-8368");
-  private ArcadeDBServer          passServer;
+  private FakeArcadeDBServer          passServer;
   private static final RaftPeerId REMOTE_PEER = RaftPeerId.valueOf("remote-8368");
 
   /** A first-formation leader over {@code sm}, with one remote peer whose HTTP port refuses at once. */
@@ -483,9 +486,9 @@ class Issue8368BootstrapPassWindowTest {
     final ContextConfiguration config = configuration();
     config.setValue(GlobalConfiguration.HA_BOOTSTRAP_FROM_LOCAL_DATABASE, true);
     config.setValue(GlobalConfiguration.HA_BOOTSTRAP_TIMEOUT_MS, 1_000L);
-    final ArcadeDBServer server = stubbedServer();
-    when(server.getConfiguration()).thenReturn(config);
-    when(server.getDatabaseNames()).thenReturn(Set.of(DB_NAME));
+    final FakeArcadeDBServer server = stubbedServer();
+    server.returns("getConfiguration", config);
+    server.databaseNames(DB_NAME);
     sm.setServer(server);
     passServer = server;
 

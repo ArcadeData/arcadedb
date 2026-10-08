@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
 import com.arcadedb.utility.StallAwareStopwatch;
 import org.apache.ratis.proto.RaftProtos;
 import org.apache.ratis.protocol.RaftGroupId;
@@ -36,7 +37,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.lang.reflect.Proxy;
 import java.nio.file.Path;
-import java.util.Set;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
@@ -94,7 +95,7 @@ class Issue8182StateMachineCloseAwaitsLifecycleTasksTest {
     return serverWhoseRetryRuns(serverDir, onLifecycleThread);
   }
 
-  private static ArcadeDBServer serverWhoseRetryRuns(final Path databaseDirectory, final Runnable onLifecycleThread) {
+  private static FakeArcadeDBServer serverWhoseRetryRuns(final Path databaseDirectory, final Runnable onLifecycleThread) {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, databaseDirectory.toString());
     config.setValue(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRIES, 0);
@@ -102,13 +103,12 @@ class Issue8182StateMachineCloseAwaitsLifecycleTasksTest {
     config.setValue(GlobalConfiguration.HA_AUTO_ACQUIRE_DATABASES, false);
     config.setValue(GlobalConfiguration.NETWORK_USE_SSL, false);
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(config);
-    when(server.existsDatabase(DB_NAME)).thenReturn(false);
-    when(server.getDatabaseNames()).thenReturn(Set.of());
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+    server.returns("getConfiguration", config);
+
     // SnapshotInstaller.install asks for the backup coordinator before it touches the filesystem, so this is the
     // first thing the retry does. A null coordinator is tolerated there (no maintenance slot to take).
-    when(server.getBackupCoordinator()).thenAnswer(invocation -> {
+    server.on("getBackupCoordinator", args -> {
       if (Thread.currentThread().getName().equals(ArcadeStateMachine.LIFECYCLE_THREAD_NAME))
         onLifecycleThread.run();
       return null;

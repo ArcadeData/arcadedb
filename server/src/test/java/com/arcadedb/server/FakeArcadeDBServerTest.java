@@ -25,8 +25,11 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Issue #9464: {@link FakeArcadeDBServer} starts where an unstarted server does and answers what the test set. */
 class FakeArcadeDBServerTest {
@@ -72,5 +75,53 @@ class FakeArcadeDBServerTest {
     } finally {
       database.drop();
     }
+  }
+
+  @Test
+  void lifecycleCallsAreRecordedAndDoNothingUnlessAnswered() {
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create().databaseNames("listed");
+
+    server.removeDatabase("listed");
+    server.stop();
+
+    assertThat(server.calls("removeDatabase")).containsExactly(List.of("listed"));
+    assertThat(server.calls("stop")).hasSize(1);
+    assertThat(server.getDatabaseNames()).as("a removed database is no longer listed").isEmpty();
+    assertThat(server.getStatus()).as("stop on a server that never started changes nothing")
+        .isEqualTo(ArcadeDBServer.STATUS.OFFLINE);
+  }
+
+  @Test
+  void aRecordedGetterAnswersWhatTheTestSetsAndFailsOnDemand() {
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+    final AtomicInteger stops = new AtomicInteger();
+
+    server.on("existsDatabase", args -> "present".equals(args[0]));
+    server.fails("getDatabase", new IllegalStateException("closing"));
+    server.on("stop", args -> stops.incrementAndGet());
+    server.returns("getServerName", "renamed");
+
+    assertThat(server.existsDatabase("present")).isTrue();
+    assertThat(server.existsDatabase("other")).isFalse();
+    assertThatThrownBy(() -> server.getDatabase("present")).isInstanceOf(IllegalStateException.class).hasMessage("closing");
+    server.stop();
+    assertThat(stops.get()).isEqualTo(1);
+    assertThat(server.getServerName()).isEqualTo("renamed");
+    assertThat(server.calls("existsDatabase")).containsExactly(List.of("present"), List.of("other"));
+    assertThat(server.calls("getDatabase")).as("a refused call is still recorded, so a never-called assertion cannot pass vacuously")
+        .containsExactly(List.of("present"));
+  }
+
+  @Test
+  void aNonBooleanExistenceAnswerIsRefusedByName() {
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create().returns("existsDatabase", null);
+    assertThatThrownBy(() -> server.existsDatabase("db")).isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("existsDatabase");
+  }
+
+  @Test
+  void anUnknownMethodNameIsRefused() {
+    assertThatThrownBy(() -> FakeArcadeDBServer.create().returns("getDatabse", null))
+        .isInstanceOf(IllegalArgumentException.class);
   }
 }

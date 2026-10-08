@@ -20,7 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -31,6 +31,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -324,9 +325,9 @@ class Issue8529LeaderServiceGapHandOffTest {
   private static RaftHAServer tickServer(final boolean isLeader) {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_SERVER_LIST, "localhost:2434:2480,localhost:2435:2481,localhost:2436:2482");
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getServerName()).thenReturn("ArcadeDB_0");
-    when(server.getConfiguration()).thenReturn(config);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+    server.returns("getServerName", "ArcadeDB_0");
+    server.returns("getConfiguration", config);
     return new RaftHAServer(server, config) {
       @Override
       public boolean isLeader() {
@@ -345,10 +346,8 @@ class Issue8529LeaderServiceGapHandOffTest {
   private ArcadeStateMachine stateMachine(final RaftHAServer raft) {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, serverDir.toString());
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(config);
-    when(server.existsDatabase(MISSING_DB)).thenReturn(false);
-    when(server.existsDatabase(KEPT_DB)).thenReturn(false);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+    server.returns("getConfiguration", config);
 
     final ArcadeStateMachine sm = new ArcadeStateMachine();
     sm.setServer(server);

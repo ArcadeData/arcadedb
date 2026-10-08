@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
 import org.apache.ratis.proto.RaftProtos;
 import org.apache.ratis.protocol.RaftGroupId;
 import org.apache.ratis.protocol.RaftPeerId;
@@ -33,12 +34,9 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.lang.reflect.Proxy;
 import java.nio.file.Path;
-import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Issue #7253: {@code installSnapshotFromLeader} must read the volatile {@code raftHAServer} field ONCE and use
@@ -77,7 +75,7 @@ class Issue7253SnapshotInstallReadsHAServerOnceTest {
         .setOption(RaftStorage.StartupOption.FORMAT)
         .build();
     try {
-      final ArcadeDBServer server = followerServer(databaseDirectory);
+      final FakeArcadeDBServer server = followerServer(databaseDirectory);
       sm.setServer(server);
       sm.initialize(stubServer(), RaftGroupId.valueOf(UUID.randomUUID()), storage);
       // The install reads the leader's snapshot marker even with auto-acquire off (issue #8374); answer it locally.
@@ -127,14 +125,14 @@ class Issue7253SnapshotInstallReadsHAServerOnceTest {
    * A follower holding no databases, with auto-acquire off so the reconciler takes the refresh-existing path and,
    * with the marker read stubbed, completes without dialling anything: this test is about which field read happens, not about the download.
    */
-  private static ArcadeDBServer followerServer(final Path databaseDirectory) {
+  private static FakeArcadeDBServer followerServer(final Path databaseDirectory) {
     final ContextConfiguration configuration = new ContextConfiguration();
     configuration.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, databaseDirectory.toString());
     configuration.setValue(GlobalConfiguration.HA_AUTO_ACQUIRE_DATABASES, false);
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(configuration);
-    when(server.getDatabaseNames()).thenReturn(Set.of());
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+    server.returns("getConfiguration", configuration);
+
     return server;
   }
 
