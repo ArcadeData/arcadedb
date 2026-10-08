@@ -76,7 +76,11 @@ public class FakeRaftHAServer extends RaftHAServer {
     return detached().leader(false).leaderId(leaderPeer).peerHttpAddress(leaderPeer, leaderHttpAddress);
   }
 
-  /** Whether this node leads; several values are answered in order, then the last one sticks (a leadership change). */
+  /**
+   * Whether this node leads; several values are answered in order, then the last one sticks (a leadership change). Every
+   * read advances the sequence, as Mockito's {@code thenReturn(a, b)} did: {@link #isLeader()},
+   * {@link #getLeadershipState()} and {@link #isLeaderReady()} (which reads the latter) each take one value.
+   */
   public FakeRaftHAServer leader(final boolean... leader) {
     final Boolean[] boxed = new Boolean[leader.length];
     for (int i = 0; i < leader.length; i++)
@@ -108,7 +112,8 @@ public class FakeRaftHAServer extends RaftHAServer {
   /**
    * The HTTP address of {@code peerId}, as both {@code getPeerHttpAddress} and the unambiguous variant answer it. Given
    * several, the reads answer them in order and then keep answering the last one - what a peer's address looks like
-   * across a leadership change.
+   * across a leadership change. Both getters and {@link #getLeaderHttpAddress()} share the one sequence, so each read
+   * through any of them advances it.
    */
   public FakeRaftHAServer peerHttpAddress(final RaftPeerId peerId, final String... addresses) {
     final Answers<String> answers = new Answers<>(null);
@@ -134,7 +139,11 @@ public class FakeRaftHAServer extends RaftHAServer {
     return this;
   }
 
-  /** A state machine that reports having applied application entries, as on a cluster already serving data. */
+  /**
+   * A state machine that reports having applied application entries, as on a cluster already serving data. That is the
+   * signal {@code BootstrapElection.isFirstFormation} reads to tell a positive commit index made only of Ratis-internal
+   * entries (a first formation after a leadership transfer, #5099) from a cluster that has committed data.
+   */
   public static ArcadeStateMachine stateMachineOfARunningCluster() {
     return new ArcadeStateMachine() {
       @Override
