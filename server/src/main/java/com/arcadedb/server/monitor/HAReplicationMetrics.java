@@ -120,8 +120,10 @@ public final class HAReplicationMetrics implements MeterBinder, Closeable {
    * exact wording and would count zero the day that wording changed. Meaningful on every node, leader or follower.
    * <p>
    * Counters rather than gauges: both are monotonic totals that restart from zero with the process, which is exactly
-   * the reset a counter's {@code rate()} / {@code increase()} handle. The server is the observed object because a
-   * function counter holds it weakly, and the server outlives this binder.
+   * the reset a counter's {@code rate()} / {@code increase()} handle (Prometheus exports them with a {@code _total}
+   * suffix). A function counter holds its observed object weakly, so the server - which outlives this binder - is
+   * passed only to keep the counter alive; the function ignores it and reads through this binder, which the registered
+   * function itself keeps reachable.
    */
   private void bindInPlaceRestartCounters(final MeterRegistry registry) {
     FunctionCounter.builder("arcadedb.ha.in_place_restarts.recovered", server, s -> inPlaceRestarts().recovered())
