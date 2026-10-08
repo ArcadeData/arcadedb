@@ -305,4 +305,23 @@ class RaftReplicatedDatabaseTest {
 
     assertThat(result).isInstanceOf(TransactionException.class);
   }
+
+  /**
+   * Issue #9473: a key value containing the '|' separator. Splitting into three parts put "b]|#7:1" in the RID slot,
+   * the RID failed to parse, and the forwarded duplicate lost its type on the follower.
+   */
+  @Test
+  void reconstructLeaderExceptionDuplicatedKeyWithAPipeInTheKeys() {
+    final String body = "{\"error\":\"Found duplicate key in index\","
+        + "\"exception\":\"com.arcadedb.exception.DuplicatedKeyException\","
+        + "\"exceptionArgs\":\"Account_name|[a|b]|#7:1\"}";
+
+    final RuntimeException result = RaftReplicatedDatabase.reconstructLeaderException(409, body);
+
+    assertThat(result).isInstanceOf(DuplicatedKeyException.class);
+    final DuplicatedKeyException dup = (DuplicatedKeyException) result;
+    assertThat(dup.getIndexName()).isEqualTo("Account_name");
+    assertThat(dup.getKeys()).isEqualTo("[a|b]");
+    assertThat(dup.getCurrentIndexedRID()).isEqualTo(new RID(7, 1L));
+  }
 }
