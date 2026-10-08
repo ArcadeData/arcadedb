@@ -621,13 +621,19 @@ function buildDatasetCardHtml(ds, fromModal) {
   if (ds.edges != null) parts.push(formatNumber(ds.edges) + " edges");
   if (ds.fileSizeMB != null) parts.push(ds.fileSizeMB < 1 ? (ds.fileSizeMB * 1000).toFixed(0) + " KB" : ds.fileSizeMB.toFixed(1) + " MB");
   var stats = parts.length > 0 ? '<div class="text-muted" style="font-size: 0.75rem; margin-top: 4px;">' + parts.join(" &middot; ") + '</div>' : "";
-  var infoLink = ds.url ? ' <a href="' + escapeHtml(ds.url) + '" target="_blank" onclick="event.stopPropagation();" title="More info" style="color: #aaa; font-size: 0.8rem;"><i class="fa fa-circle-info"></i></a>' : "";
+  var infoLink = ds.url ? ' <a class="quick-start-card-info" href="' + escapeHtml(ds.url) + '" target="_blank" onclick="event.stopPropagation();" title="More info" aria-label="More info about ' + escapeHtml(ds.name) + '" style="color: #aaa; font-size: 0.8rem;"><i class="fa fa-circle-info" aria-hidden="true"></i></a>' : "";
   var onclick = "importSampleDatabase('" + escapeHtml(ds.name) + "', '" + escapeHtml(ds.path) + "', '" + escapeHtml(ds.format) + "'" + (fromModal ? ", true" : "") + ")";
+  // THE IMPORT IS A REAL BUTTON SO THE CARD IS REACHABLE WITH TAB AND TRIGGERED WITH ENTER/SPACE (ISSUE #9375). IT WRAPS
+  // THE NAME ONLY, BECAUSE A BUTTON CANNOT HOLD THE INFO LINK: ITS ::after STRETCHES OVER THE CARD SO A CLICK ANYWHERE ON
+  // THE CARD STILL IMPORTS, AND THE INFO LINK IS LIFTED ABOVE THAT LAYER (SEE studio.css)
   return '<div class="col-md-4">' +
-    '<div class="card quick-start-card" onclick="' + onclick + '">' +
+    '<div class="card quick-start-card">' +
       '<div class="card-body text-center" style="padding: 20px 16px;">' +
-        '<i class="fa ' + escapeHtml(ds.icon) + '" style="font-size: 2rem; color: #00aeee; margin-bottom: 10px; display: block;"></i>' +
-        '<div style="font-weight: 600; font-size: 0.95rem; margin-bottom: 4px;">' + escapeHtml(ds.name) + infoLink + '</div>' +
+        '<i class="fa ' + escapeHtml(ds.icon) + '" aria-hidden="true" style="font-size: 2rem; color: #00aeee; margin-bottom: 10px; display: block;"></i>' +
+        '<div style="font-weight: 600; font-size: 0.95rem; margin-bottom: 4px;">' +
+          '<button type="button" class="quick-start-card-button" onclick="' + onclick + '" aria-label="Import sample database ' + escapeHtml(ds.name) + '">' + escapeHtml(ds.name) + '</button>' +
+          infoLink +
+        '</div>' +
         '<div class="text-muted" style="font-size: 0.8rem;">' + escapeHtml(ds.description) + '</div>' +
         stats +
       '</div>' +
@@ -2874,15 +2880,17 @@ function populateReferencePanel() {
   for (let s = 0; s < sections.length; s++) {
     let sec = sections[s];
     html += "<div class='reference-section'>";
-    html += "<div class='reference-section-header' onclick='toggleReferenceSection(this)'><span>" + sec.title + "</span><i class='fa fa-chevron-right'></i></div>";
+    // HEADERS, EXAMPLES AND FUNCTION ENTRIES ARE REAL BUTTONS SO THEY ARE REACHABLE WITH TAB AND TRIGGERED WITH ENTER/SPACE.
+    // A BUTTON ONLY ADMITS PHRASING CONTENT; A HEADER REPORTS ITS OPEN STATE THROUGH aria-expanded (ISSUE #9375)
+    html += "<button type='button' class='reference-section-header' aria-expanded='false' onclick='toggleReferenceSection(this)'><span>" + sec.title + "</span><i class='fa fa-chevron-right' aria-hidden='true'></i></button>";
     html += "<div class='reference-section-body'>";
     for (let e = 0; e < sec.examples.length; e++) {
       let ex = sec.examples[e];
       let escapedCode = escapeHtml(ex.code).replace(/'/g, "&#39;");
-      html += "<div class='reference-example' title='" + escapeHtml(ex.label) + "' onclick='pasteReferenceExample(\"" + escapedCode.replace(/"/g, "&quot;") + "\", \"" + sec.lang + "\")'>";
+      html += "<button type='button' class='reference-example' title='" + escapeHtml(ex.label) + "' onclick='pasteReferenceExample(\"" + escapedCode.replace(/"/g, "&quot;") + "\", \"" + sec.lang + "\")'>";
       html += "<small style='color:#999;font-family:inherit;'>" + escapeHtml(ex.label) + "</small><br>";
       html += escapeHtml(ex.code);
-      html += "</div>";
+      html += "</button>";
     }
     html += "</div></div>";
   }
@@ -2896,7 +2904,7 @@ function populateReferencePanel() {
     var cats = globalFunctionReference.categories;
     for (var section in cats) {
       html += "<div class='reference-section fn-ref-section'>";
-      html += "<div class='reference-section-header' onclick='toggleReferenceSection(this)'><span>" + escapeHtml(section) + "</span><i class='fa fa-chevron-right'></i></div>";
+      html += "<button type='button' class='reference-section-header' aria-expanded='false' onclick='toggleReferenceSection(this)'><span>" + escapeHtml(section) + "</span><i class='fa fa-chevron-right' aria-hidden='true'></i></button>";
       html += "<div class='reference-section-body'>";
       var subcats = cats[section];
       for (var cat in subcats) {
@@ -2908,11 +2916,11 @@ function populateReferencePanel() {
           var syntax = escapeHtml(fn.syntax);
           var desc = fn.description ? escapeHtml(fn.description) : "";
           var title = desc ? desc : syntax;
-          html += "<div class='reference-example fn-ref-item' data-name='" + escapeHtml(fn.name) + "' title='" + title + "' onclick='insertFunctionSyntax(\"" + syntax.replace(/"/g, "&quot;") + "\")'>";
+          html += "<button type='button' class='reference-example fn-ref-item' data-name='" + escapeHtml(fn.name) + "' title='" + title + "' onclick='insertFunctionSyntax(\"" + syntax.replace(/"/g, "&quot;") + "\")'>";
           html += "<code style='font-size:0.72rem;'>" + syntax + "</code>";
           if (desc)
             html += "<br><small style='color:#888;font-size:0.65rem;'>" + desc + "</small>";
-          html += "</div>";
+          html += "</button>";
         }
         html += "</div>";
       }
@@ -2945,6 +2953,7 @@ function filterFunctionReference(query) {
   if (lowerQuery.length > 0) {
     $(".fn-ref-section .reference-section-body").addClass("open");
     $(".fn-ref-section .reference-section-header i").addClass("open");
+    $(".fn-ref-section .reference-section-header").attr("aria-expanded", "true");
   }
 }
 
@@ -2962,6 +2971,7 @@ function toggleReferenceSection(header) {
   let icon = $(header).find("i.fa-chevron-right");
   body.toggleClass("open");
   icon.toggleClass("open");
+  $(header).attr("aria-expanded", body.hasClass("open") ? "true" : "false");
 }
 
 function pasteReferenceExample(code, lang) {
