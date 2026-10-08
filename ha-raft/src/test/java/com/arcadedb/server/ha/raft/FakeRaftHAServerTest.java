@@ -76,6 +76,18 @@ class FakeRaftHAServerTest {
   }
 
   @Test
+  void thePluginDelegatesToTheFake() {
+    final FakeRaftHAServer raft = FakeRaftHAServer.followerOf("peer-b", "peer-b:2480");
+    final RaftHAPlugin plugin = raft.plugin();
+
+    assertThat(plugin.getRaftHAServer()).isSameAs(raft);
+    assertThat(plugin.isLeader()).isFalse();
+    assertThat(plugin.getLeaderAddress()).isEqualTo("peer-b:2480");
+    raft.leader(true);
+    assertThat(plugin.isLeader()).isTrue();
+  }
+
+  @Test
   void anEmptySequenceIsRefused() {
     final FakeRaftHAServer raft = FakeRaftHAServer.detached();
 
