@@ -91,7 +91,7 @@ class Issue6168UnreferencedFilesGaugeWiringTest {
     when(proxied.getFileManager()).thenReturn(fileManager);
     when(proxied.getSchema()).thenReturn(schema);
 
-    database = new RaftReplicatedDatabase(null, proxied, mock(RaftHAServer.class));
+    database = new RaftReplicatedDatabase(null, proxied, FakeRaftHAServer.detached());
   }
 
   @AfterEach
