@@ -141,6 +141,19 @@ public final class SnapshotInstaller {
     return SNAPSHOT_MACHINERY_FILES.contains(name);
   }
 
+  /** The directories the snapshot install keeps in a database directory: the staging, the retained backup and the orphans. */
+  private static final Set<String> SNAPSHOT_MACHINERY_DIRS = Set.of(SNAPSHOT_NEW_DIR, SNAPSHOT_BACKUP_DIR, SNAPSHOT_ORPHANS_DIR);
+
+  /**
+   * Whether {@code name} is an entry the snapshot install keeps in a database directory, file or directory, rather than
+   * part of the database. The swap, the rollback and the legacy recovery classification use it to leave the installer's
+   * own state where it is. Exact names, not the {@code .snapshot} prefix (issue #9446): a bucket may legally be named
+   * {@code .snapshot...}, and its component files are data the swap must back up, clear and restore like any other.
+   */
+  static boolean isSnapshotMachineryEntryName(final String name) {
+    return SNAPSHOT_MACHINERY_FILES.contains(name) || SNAPSHOT_MACHINERY_DIRS.contains(name);
+  }
+
   private enum SwapPhase {
     BACKING_UP, INSTALLING, INSTALLED,
     /**
@@ -1257,7 +1270,8 @@ public final class SnapshotInstaller {
   }
 
   /**
-   * Deletes every non-{@code .snapshot*} entry in the live database directory. Used before restoring
+   * Deletes every entry of the live database directory that is not snapshot machinery
+   * ({@link #isSnapshotMachineryEntryName}). Used before restoring
    * a backup so files that exist only in a failed snapshot are not left behind. Not transactional: a
    * crash partway leaves dbPath partially cleared, but the caller keeps the {@code .snapshot-pending}
    * marker on failure so {@link #recoverPendingSnapshotSwaps} restores the backup on the next startup.
@@ -1265,7 +1279,7 @@ public final class SnapshotInstaller {
   private static void clearLiveDatabaseFiles(final Path dbPath) throws IOException {
     try (final DirectoryStream<Path> stream = Files.newDirectoryStream(dbPath)) {
       for (final Path entry : stream) {
-        if (entry.getFileName().toString().startsWith(".snapshot"))
+        if (isSnapshotMachineryEntryName(entry.getFileName().toString()))
           continue;
         if (Files.isDirectory(entry))
           FileUtils.deleteRecursively(entry.toFile());
@@ -1896,7 +1910,7 @@ public final class SnapshotInstaller {
 
   /** Whether an entry of the database directory belongs to the database, rather than to the snapshot machinery. */
   private static boolean isLiveDatabaseEntry(final Path entry) {
-    return !entry.getFileName().toString().startsWith(".snapshot");
+    return !isSnapshotMachineryEntryName(entry.getFileName().toString());
   }
 
   /**
@@ -2702,7 +2716,7 @@ public final class SnapshotInstaller {
         // Only BACKING_UP may move originals. INSTALLING's live files belong to the new snapshot.
         try (final DirectoryStream<Path> stream = Files.newDirectoryStream(dbDir)) {
           for (final Path entry : stream) {
-            if (entry.getFileName().toString().startsWith(".snapshot"))
+            if (isSnapshotMachineryEntryName(entry.getFileName().toString()))
               continue;
             Files.move(entry, backupDir.resolve(entry.getFileName().toString()), StandardCopyOption.REPLACE_EXISTING);
             snapshotSwapProgress("BACKING_UP:" + entry.getFileName());
