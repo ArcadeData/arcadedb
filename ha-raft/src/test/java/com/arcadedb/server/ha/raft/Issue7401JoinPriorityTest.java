@@ -74,7 +74,7 @@ class Issue7401JoinPriorityTest {
    * {@code entry}.
    */
   private static RaftPeer addedPeerFor(final String entry) throws Exception {
-    final RaftHAServer server = mock(RaftHAServer.class);
+    final FakeRaftHAServer server = FakeRaftHAServer.detached();
     final RaftClient client = mock(RaftClient.class);
     final AdminApi admin = mock(AdminApi.class);
     final RaftClientReply reply = mock(RaftClientReply.class);
@@ -82,19 +82,22 @@ class Issue7401JoinPriorityTest {
     final ArgumentCaptor<SetConfigurationRequest.Arguments> captor =
         ArgumentCaptor.forClass(SetConfigurationRequest.Arguments.class);
 
-    when(server.getClient()).thenReturn(client);
+    server.client(client);
     when(client.admin()).thenReturn(admin);
     when(reply.isSuccess()).thenReturn(true);
     when(admin.setConfiguration(captor.capture())).thenReturn(reply);
-    when(server.getLivePeers()).thenReturn(List.of(peer("A"), peer("B"), peer("C")));
-    when(server.getHttpAddresses()).thenReturn(new HashMap<>());
-    when(server.getRaftGroup()).thenReturn(RaftGroup.valueOf(RaftGroupId.randomId()));
+    server.livePeers(List.of(peer("A"), peer("B"), peer("C")));
+    server.committedPeers(List.of(peer("A"), peer("B"), peer("C")));
+    server.httpAddresses(new HashMap<>());
+    server.raftGroup(RaftGroup.valueOf(RaftGroupId.randomId()));
 
     final JoinTarget target = RaftPeerAddressResolver.parseJoinTarget(entry, DEFAULT_RAFT_PORT, "");
     new RaftClusterManager(server).addPeer(target.peer(), target.name());
 
-    assertThat(captor.getValue().getServersInNewConf()).hasSize(1);
-    return captor.getValue().getServersInNewConf().getFirst();
+    // The change carries the committed membership plus the new peer (it is built from the committed configuration)
+    final List<RaftPeer> newConf = captor.getValue().getServersInNewConf();
+    assertThat(newConf).extracting(p -> p.getId().toString()).hasSize(4).contains("A", "B", "C");
+    return newConf.stream().filter(p -> !List.of("A", "B", "C").contains(p.getId().toString())).findFirst().orElseThrow();
   }
 
   @Test

@@ -29,8 +29,6 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Regression test for issue #7041 (follow-up to #4842).
@@ -66,25 +64,25 @@ class Issue7041DegradedFollowerStateTest {
     }
   }
 
-  private RaftHAServer   haServer;
+  private FakeRaftHAServer   haServer;
   private ClusterMonitor clusterMonitor;
 
   @BeforeEach
   void setUp() {
-    haServer = mock(RaftHAServer.class);
+    haServer = FakeRaftHAServer.detached();
     clusterMonitor = new ClusterMonitor(10L);
 
-    when(haServer.isLeader()).thenReturn(true);
-    when(haServer.getLeaderId()).thenReturn(LEADER);
-    when(haServer.getCurrentTerm()).thenReturn(7L);
-    when(haServer.getCommitIndex()).thenReturn(100L);
-    when(haServer.getConfiguredServers()).thenReturn(3);
-    when(haServer.getReplicationLatencies()).thenReturn(Map.of());
-    when(haServer.getStateMachine()).thenReturn(null);
-    when(haServer.getLivePeers()).thenReturn(List.of(peer(LEADER), peer(DEGRADED), peer(HEALTHY)));
+    haServer.leader(true);
+    haServer.leaderId(LEADER);
+    haServer.currentTerm(7L);
+    haServer.commitIndex(100L);
+    haServer.configuredServers(3);
+    haServer.replicationLatencies(Map.of());
+    haServer.noStateMachine();
+    haServer.livePeers(List.of(peer(LEADER), peer(DEGRADED), peer(HEALTHY)));
 
     // The degraded entry comes first so the old raw cast aborted the loop BEFORE the healthy peer was read.
-    when(haServer.getFollowerStates()).thenReturn(List.of(degradedState(DEGRADED, 12L), completeState(HEALTHY, 100L, 3L)));
+    haServer.followerStates(List.of(degradedState(DEGRADED, 12L), completeState(HEALTHY, 100L, 3L)));
   }
 
   @Test

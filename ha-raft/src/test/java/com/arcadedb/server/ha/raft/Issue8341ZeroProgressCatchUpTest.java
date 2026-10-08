@@ -233,13 +233,10 @@ class Issue8341ZeroProgressCatchUpTest {
    */
   @Test
   void staleCatchUpFlagNoLongerHidesTheStuckAtStaleTermSignature() throws Exception {
-    final ArcadeStateMachine sm = mock(ArcadeStateMachine.class);
-    when(sm.isCatchingUp()).thenReturn(true); // set by an earlier gap, never cleared
-    when(sm.isSnapshotDownloadPending()).thenReturn(false);
-    when(sm.getLastAppliedTermIndex()).thenReturn(TermIndex.valueOf(8, 228_631));
+    // catchingUp: set by an earlier gap, never cleared
+    final ArcadeStateMachine sm = new FakeArcadeStateMachine().catchingUp(true).lastAppliedTermIndex(TermIndex.valueOf(8, 228_631));
 
     final RaftHAServer server = followerWith(sm, 9, 228_631, 228_631);
-    when(server.isFollowerStuckDiverged()).thenCallRealMethod();
 
     assertThat(server.isFollowerStuckDiverged()).isTrue();
   }
@@ -250,12 +247,9 @@ class Issue8341ZeroProgressCatchUpTest {
    */
   @Test
   void stalledCatchUpIsReportedLaggingOnTheSecondTick() throws Exception {
-    final ArcadeStateMachine sm = mock(ArcadeStateMachine.class);
-    when(sm.isCatchingUp()).thenReturn(true);
-    when(sm.isSnapshotDownloadPending()).thenReturn(false);
+    final ArcadeStateMachine sm = new FakeArcadeStateMachine().catchingUp(true);
 
-    final RaftHAServer server = followerWith(sm, 9, 250_000, 228_631);
-    when(server.isFollowerLaggingBeyond(1000L)).thenCallRealMethod();
+    final FakeRaftHAServer server = followerWith(sm, 9, 250_000, 228_631);
     setField(server, "lastLagCheckAppliedIndex", -1L);
 
     assertThat(server.isFollowerLaggingBeyond(1000L)).as("first tick only records the baseline").isFalse();
@@ -264,35 +258,33 @@ class Issue8341ZeroProgressCatchUpTest {
 
   @Test
   void progressingCatchUpIsStillExemptFromTheLagCheck() throws Exception {
-    final ArcadeStateMachine sm = mock(ArcadeStateMachine.class);
-    when(sm.isCatchingUp()).thenReturn(true);
-    when(sm.isSnapshotDownloadPending()).thenReturn(false);
+    final ArcadeStateMachine sm = new FakeArcadeStateMachine().catchingUp(true);
 
-    final RaftHAServer server = followerWith(sm, 9, 250_000, 228_631);
-    when(server.isFollowerLaggingBeyond(1000L)).thenCallRealMethod();
+    final FakeRaftHAServer server = followerWith(sm, 9, 250_000, 228_631);
     setField(server, "lastLagCheckAppliedIndex", -1L);
 
     assertThat(server.isFollowerLaggingBeyond(1000L)).isFalse();
-    when(server.getLastAppliedIndex()).thenReturn(230_000L);
+    server.lastAppliedIndex(230_000L);
     assertThat(server.isFollowerLaggingBeyond(1000L)).isFalse();
-    when(server.getLastAppliedIndex()).thenReturn(231_000L);
+    server.lastAppliedIndex(231_000L);
     assertThat(server.isFollowerLaggingBeyond(1000L)).isFalse();
   }
 
-  private static RaftHAServer followerWith(final ArcadeStateMachine sm, final long currentTerm, final long commitIndex,
+  /**
+   * A follower whose Raft view is set by the test; the checks under test - isFollowerStuckDiverged,
+   * isFollowerLaggingBeyond, getFollowerCommitIndex - are the real server's own.
+   */
+  private static FakeRaftHAServer followerWith(final ArcadeStateMachine sm, final long currentTerm, final long commitIndex,
       final long appliedIndex) throws Exception {
-    final RaftHAServer server = mock(RaftHAServer.class);
-    setField(server, "raftServer", mock(RaftServer.class));
+    final FakeRaftHAServer server = FakeRaftHAServer.detached().leader(false).leaderId(RaftPeerId.valueOf("leader"))
+        .currentTerm(currentTerm).commitIndex(commitIndex).lastAppliedIndex(appliedIndex);
+    // The checks read the state machine FIELD, not its getter
     setField(server, "stateMachine", sm);
+    // The checks read the Ratis server's presence; no division is ever asked for here
+    setField(server, "raftServer", mock(RaftServer.class));
     setField(server, "shutdownRequested", false);
-    when(server.isLeader()).thenReturn(false);
-    when(server.getLeaderId()).thenReturn(RaftPeerId.valueOf("leader"));
-    when(server.getCurrentTerm()).thenReturn(currentTerm);
-    when(server.getCommitIndex()).thenReturn(commitIndex);
-    // The lag check reads the commit index through this (issue #8321); no leader figure is learned on this mock.
+    // The lag check reads the commit index through getFollowerCommitIndex (issue #8321); no leader figure is learned.
     setField(server, "leaderReportedCommitIndex", -1L);
-    when(server.getFollowerCommitIndex()).thenCallRealMethod();
-    when(server.getLastAppliedIndex()).thenReturn(appliedIndex);
     return server;
   }
 

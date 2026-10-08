@@ -47,8 +47,6 @@ import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Regression test for issue #8472, the peer-to-peer queries #8325 left out: each one bounded the peer with the JDK
@@ -84,7 +82,7 @@ class Issue8472PeerQueryBodyDeadlineTest {
   void anAuthSessionQueryWhoseIssuerStallsInsideItsBodyIsGivenUpOn() throws Exception {
     try (final StallingBodyPeer issuer = new StallingBodyPeer()) {
       final RaftPeerId issuerId = RaftPeerId.valueOf("issuer");
-      final RaftHAServer raft = raftDialling(issuerId, plainServer(), issuer.address(), null, null);
+      final FakeRaftHAServer raft = raftDialling(issuerId, plainServer(), issuer.address(), null, null);
       assertGivenUpOn(issuer, () -> PeerAuthSessionQuery.validate(raft, issuerId, "session-token", TIMEOUT_MS));
     }
   }
@@ -95,7 +93,7 @@ class Issue8472PeerQueryBodyDeadlineTest {
     try (final StallingBodyPeer issuer = new StallingBodyPeer(tls())) {
       final RaftPeerId issuerId = RaftPeerId.valueOf("issuer");
       // The plain address is never dialled: SSL is on and the issuer has an HTTPS endpoint of its own.
-      final RaftHAServer raft = raftDialling(issuerId, tlsServer(), "127.0.0.1:1", issuer.address(), clients);
+      final FakeRaftHAServer raft = raftDialling(issuerId, tlsServer(), "127.0.0.1:1", issuer.address(), clients);
       assertGivenUpOn(issuer, () -> PeerAuthSessionQuery.validate(raft, issuerId, "session-token", TIMEOUT_MS));
     } finally {
       clients.close();
@@ -111,9 +109,8 @@ class Issue8472PeerQueryBodyDeadlineTest {
   void aRevocationWhosePeerStallsInsideItsBodyReleasesTheConnection() throws Exception {
     try (final StallingBodyPeer peer = new StallingBodyPeer()) {
       final RaftPeerId peerId = RaftPeerId.valueOf("peer-1");
-      final RaftHAServer raft = raftDialling(peerId, plainServer(), peer.address(), null, null);
-      when(raft.getRaftGroup()).thenReturn(
-          RaftGroup.valueOf(RaftGroupId.randomId(), RaftPeer.newBuilder().setId(peerId).build()));
+      final FakeRaftHAServer raft = raftDialling(peerId, plainServer(), peer.address(), null, null);
+      raft.raftGroup(RaftGroup.valueOf(RaftGroupId.randomId(), RaftPeer.newBuilder().setId(peerId).build()));
 
       final StallAwareStopwatch watch = StallAwareStopwatch.start();
       peer.callWithin(() -> {
@@ -199,13 +196,13 @@ class Issue8472PeerQueryBodyDeadlineTest {
   void aPassConclusionWhosePeerStallsInsideItsBodyOverTlsIsGivenUpOn() throws Exception {
     try (final StallingBodyPeer peer = new StallingBodyPeer(tls())) {
       final RaftPeerId peerId = RaftPeerId.valueOf("peer-1");
-      final RaftHAServer raft = mock(RaftHAServer.class);
-      when(raft.getLocalPeerId()).thenReturn(RaftPeerId.valueOf("self"));
-      when(raft.getLivePeers()).thenReturn(List.of(RaftPeer.newBuilder().setId(peerId).build()));
-      when(raft.getHttpAddresses()).thenReturn(Map.of(peerId, "127.0.0.1:1"));
+      final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+      raft.localPeerId(RaftPeerId.valueOf("self"));
+      raft.livePeers(List.of(RaftPeer.newBuilder().setId(peerId).build()));
+      raft.httpAddresses(Map.of(peerId, "127.0.0.1:1"));
       // The fan-out reads the guarded accessor, not the raw resolver (issue #8033).
-      when(raft.getUnambiguousPeerHttpsAddress(peerId)).thenReturn(peer.address());
-      when(raft.getClusterToken()).thenReturn("test-token");
+      raft.peerHttpsAddress(peerId, peer.address());
+      raft.clusterToken("test-token");
       final BootstrapElection election = new BootstrapElection(raft, tlsServer());
       election.probeAttemptTimeoutMs = TIMEOUT_MS;
 
@@ -269,16 +266,15 @@ class Issue8472PeerQueryBodyDeadlineTest {
     return server;
   }
 
-  private static RaftHAServer raftDialling(final RaftPeerId peerId, final ArcadeDBServer server,
+  private static FakeRaftHAServer raftDialling(final RaftPeerId peerId, final ArcadeDBServer server,
       final String httpAddress, final String httpsAddress, final TrustedHttpClientCache clients) {
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.getServer()).thenReturn(server);
-    when(raft.getLocalPeerId()).thenReturn(RaftPeerId.valueOf("self"));
-    when(raft.getLocalHttpAddress()).thenReturn("127.0.0.1:2");
-    when(raft.getUnambiguousPeerHttpAddress(peerId)).thenReturn(httpAddress);
-    when(raft.getUnambiguousPeerHttpsAddress(peerId)).thenReturn(httpsAddress);
-    when(raft.getHttpsClients()).thenReturn(clients);
-    when(raft.getClusterToken()).thenReturn("test-token");
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached(server);
+        raft.localPeerId(RaftPeerId.valueOf("self"));
+    raft.localHttpAddress("127.0.0.1:2");
+    raft.peerHttpAddress(peerId, httpAddress);
+    raft.peerHttpsAddress(peerId, httpsAddress);
+    raft.httpsClients(clients);
+    raft.clusterToken("test-token");
     return raft;
   }
 
