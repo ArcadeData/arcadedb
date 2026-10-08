@@ -28,6 +28,8 @@ import com.arcadedb.engine.Dictionary;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.time.temporal.TemporalAccessor;
 import java.util.Arrays;
 import java.util.Map;
@@ -199,8 +201,12 @@ final class PropertyCachingResult implements Result {
 
   /** Whether {@code value} cannot be changed by whoever reads it, so one decoded instance can serve the whole row. */
   private static boolean isImmutable(final Object value) {
-    return value == null || value == ABSENT || value instanceof String || value instanceof Number || value instanceof Boolean
-        || value instanceof RID || value instanceof TemporalAccessor || value instanceof UUID || value instanceof Character;
+    // THE VALUE TYPES THE RECORD DESERIALIZER PRODUCES THAT NOBODY CAN CHANGE: THE BOXED PRIMITIVES, THE DECIMALS, THE DATES
+    // OF java.time, A RID AND A UUID - NOT ANY Number, WHICH AN ATOMIC ONE IS TOO
+    return value == null || value == ABSENT || value instanceof String || value instanceof Integer || value instanceof Long
+        || value instanceof Double || value instanceof Float || value instanceof Short || value instanceof Byte
+        || value instanceof BigDecimal || value instanceof BigInteger || value instanceof Boolean || value instanceof Character
+        || value instanceof RID || value instanceof UUID || value instanceof TemporalAccessor;
   }
 
   // EVERYTHING ELSE IS THE ROW'S

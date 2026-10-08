@@ -565,6 +565,13 @@ class Issue9496GroupByAggregateTest extends TestHelper {
    */
   @Test
   void numericKeysMeetExactlyWhenTheirDecimalFormsDo() {
+    // THE INTEGRAL KEYS ARE Longs, A NEGATIVE ZERO INCLUDED, AS ITS STRIPPED BigDecimal WAS ZERO
+    assertThat(Type.normalizeNumberForKey(-0.0)).isEqualTo(0L);
+    assertThat(Type.normalizeNumberForKey(-0.0f)).isEqualTo(0L);
+    assertThat(Type.normalizeNumberForKey(7)).isEqualTo(7L);
+    assertThat(Type.normalizeNumberForKey(new BigDecimal("7.000"))).isEqualTo(7L);
+    assertThat(Type.normalizeNumberForKey(0.5)).isEqualTo(new BigDecimal("0.5"));
+
     final List<Number> values = new ArrayList<>(List.of(0, 0L, -0.0, 0.0f, 1, 1L, (short) 1, (byte) 1, 1.0, 1.0f, new BigDecimal("1.00"),
         BigInteger.ONE, 100, 100.0, new BigDecimal("1E+2"), 0.5, 0.05f, 0.05, new BigDecimal("0.050"), Long.MAX_VALUE, Long.MIN_VALUE,
         (double) Long.MAX_VALUE, 9007199254740992.0, 9007199254740994.0, -9007199254740992.0, 1152921504606846976.0,
