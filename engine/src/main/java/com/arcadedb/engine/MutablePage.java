@@ -91,6 +91,12 @@ public class MutablePage extends BasePage implements TrackableContent {
   // which nothing may write to it again, so the read cache can share its array instead of copying the whole page.
   // Written before the hand-off (a concurrent map/queue insertion) and read only after it, which orders the two.
   private              boolean published                  = false;
+  // #9483: whether EVERY write this transaction made to the page was a hole-free one (see beginPackedWrite), so the
+  // commit may skip the proof that the page has no hole. Same single-owner contract as the fields above. The sticky
+  // flag is the dangerous direction, which is why it is opt-IN: a write is presumed to be able to leave a hole until its
+  // writer says otherwise, and a forgotten declaration costs the proof it was always paying, never a skipped one.
+  private              boolean packedWriteInProgress      = false;
+  private              boolean unpackedWrite              = false;
   // AtomicReference so the WAL ack can be taken EXACTLY ONCE (#4928 review): the success path, the
   // file-dropped flush branch and the dropped-file batch purge can race on the same page (the flush loop
   // does not remove pages from the batch list), and a double notifyPageFlushed would steal another page's
@@ -103,7 +109,13 @@ public class MutablePage extends BasePage implements TrackableContent {
 
   public MutablePage(final PageId pageId, final int size) {
     this(pageId, size, new byte[size], 0, 0);
-    updateModifiedRange(0, size - 1);
+    // A zero-filled page holds no record, so it has no hole: formatting it is not a write that could leave one.
+    final boolean previous = beginPackedWrite();
+    try {
+      updateModifiedRange(0, size - 1);
+    } finally {
+      endPackedWrite(previous);
+    }
   }
 
   public MutablePage(final PageId pageId, final int size, final byte[] array, final int version, final int contentSize) {
@@ -390,6 +402,33 @@ public class MutablePage extends BasePage implements TrackableContent {
   }
 
   /**
+   * Declares the writes that follow, until {@link #endPackedWrite(boolean)}, as ones that cannot leave a hole in a
+   * bucket page that had none: a record appended at the end of the page's content, or one overwritten in place by
+   * a value of the same footprint (#9483). A page whose every write was declared so (see {@link #hasOnlyPackedWrites()})
+   * needs no proof at commit that it is still packed. Any write outside such a declaration - a delete, a shrinking
+   * update, a record that grew, moved or spilled - permanently withdraws the page from that shortcut.
+   *
+   * @return the previous declaration, to be handed to {@link #endPackedWrite(boolean)} from a {@code finally} block.
+   */
+  public boolean beginPackedWrite() {
+    final boolean previous = packedWriteInProgress;
+    packedWriteInProgress = true;
+    return previous;
+  }
+
+  public void endPackedWrite(final boolean previous) {
+    packedWriteInProgress = previous;
+  }
+
+  /**
+   * Whether every write this transaction made to the page was declared hole-free with {@link #beginPackedWrite()}.
+   * A page nothing wrote to is trivially such a page.
+   */
+  public boolean hasOnlyPackedWrites() {
+    return !unpackedWrite;
+  }
+
+  /**
    * Tells whether EVERY modification this transaction made to this page was declared (see
    * {@link #beginCoveredWrite(int)}) as re-derivable by {@code mechanism}, so a commit-time conflict on the page can
    * be resolved by replaying that mechanism's tracked writes instead of failing the transaction.
@@ -407,6 +446,8 @@ public class MutablePage extends BasePage implements TrackableContent {
 
     // Whatever the current writer did NOT declare can no longer re-derive this page (issue #5596).
     uncoveredMechanisms |= COVERAGE_ALL_MERGES & ~declaredCoverage;
+    if (!packedWriteInProgress)
+      unpackedWrite = true;
 
     if (modifiedRangeCount == 0) {
       modifiedRanges[0] = start;
