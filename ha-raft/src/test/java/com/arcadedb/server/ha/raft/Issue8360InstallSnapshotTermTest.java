@@ -39,8 +39,6 @@ import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Regression tests for issue #8360: a follower installing a leader-driven Raft snapshot registered the term of the
@@ -193,14 +191,14 @@ class Issue8360InstallSnapshotTermTest {
   }
 
   private static RaftHAServer followerRaftHAServer() {
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.isLeader()).thenReturn(false);
-    when(raft.getLeaderId()).thenReturn(RaftPeerId.valueOf(LEADER_PEER_ID));
-    when(raft.getUnambiguousPeerHttpAddress(RaftPeerId.valueOf(LEADER_PEER_ID))).thenReturn("peer-b:2480");
-    when(raft.getLocalHttpAddress()).thenReturn(LOCAL_HTTP);
-    when(raft.getUnambiguousPeerHttpsAddress(RaftPeerId.valueOf(LEADER_PEER_ID))).thenReturn(null);
-    when(raft.getLocalHttpsAddress()).thenReturn(null);
-    when(raft.getClusterToken()).thenReturn(null);
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.leader(false);
+    raft.leaderId(RaftPeerId.valueOf(LEADER_PEER_ID));
+    raft.peerHttpAddress(RaftPeerId.valueOf(LEADER_PEER_ID), "peer-b:2480");
+    raft.localHttpAddress(LOCAL_HTTP);
+    raft.peerHttpsAddress(RaftPeerId.valueOf(LEADER_PEER_ID), null);
+    raft.localHttpsAddress(null);
+    raft.clusterToken(null);
     return raft;
   }
 

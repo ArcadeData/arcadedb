@@ -51,8 +51,6 @@ import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Regression test for issue #6202: {@code notifyInstallSnapshotFromLeader} - the Ratis-initiated resync, the one
@@ -91,10 +89,10 @@ class Issue6202SnapshotInstallGuardTest {
    */
   @Test
   void anInstallFromThisNodesOwnAddressIsRefused(@TempDir final Path tempDir) throws Exception {
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.isLeader()).thenReturn(false);
-    when(raft.getUnambiguousPeerHttpAddress(RaftPeerId.valueOf(LEADER_PEER_ID))).thenReturn(LOCAL_HTTP);
-    when(raft.getLocalHttpAddress()).thenReturn(LOCAL_HTTP);
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.leader(false);
+    raft.peerHttpAddress(RaftPeerId.valueOf(LEADER_PEER_ID), LOCAL_HTTP);
+    raft.localHttpAddress(LOCAL_HTTP);
 
     assertRefused(tempDir, raft, "is this node's own");
   }
@@ -106,9 +104,9 @@ class Issue6202SnapshotInstallGuardTest {
    */
   @Test
   void anInstallOnANodeThatBelievesItIsTheLeaderIsRefused(@TempDir final Path tempDir) throws Exception {
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.isLeader()).thenReturn(true);
-    when(raft.getUnambiguousPeerHttpAddress(RaftPeerId.valueOf(LEADER_PEER_ID))).thenReturn("peer-b:2480");
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.leader(true);
+    raft.peerHttpAddress(RaftPeerId.valueOf(LEADER_PEER_ID), "peer-b:2480");
 
     assertRefused(tempDir, raft, "this node is the leader");
   }
@@ -119,11 +117,11 @@ class Issue6202SnapshotInstallGuardTest {
    */
   @Test
   void anInstallFromAnAddressThatIdentifiesNoSinglePeerIsRefused(@TempDir final Path tempDir) throws Exception {
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.isLeader()).thenReturn(false);
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.leader(false);
     // The resolver withheld the address: it is claimed by more than one peer, or resolves to nothing.
-    when(raft.getUnambiguousPeerHttpAddress(RaftPeerId.valueOf(LEADER_PEER_ID))).thenReturn(null);
-    when(raft.getLocalHttpAddress()).thenReturn(LOCAL_HTTP);
+    raft.peerHttpAddress(RaftPeerId.valueOf(LEADER_PEER_ID), null);
+    raft.localHttpAddress(LOCAL_HTTP);
 
     assertRefused(tempDir, raft, "identifies leader");
   }
@@ -134,10 +132,10 @@ class Issue6202SnapshotInstallGuardTest {
    */
   @Test
   void aGenuinePeerLeaderIsStillInstalledFrom(@TempDir final Path tempDir) throws Exception {
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.isLeader()).thenReturn(false);
-    when(raft.getUnambiguousPeerHttpAddress(RaftPeerId.valueOf(LEADER_PEER_ID))).thenReturn("peer-b:2480");
-    when(raft.getLocalHttpAddress()).thenReturn(LOCAL_HTTP);
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.leader(false);
+    raft.peerHttpAddress(RaftPeerId.valueOf(LEADER_PEER_ID), "peer-b:2480");
+    raft.localHttpAddress(LOCAL_HTTP);
 
     final ArcadeStateMachine sm = newInitializedStateMachine(tempDir);
     sm.setRaftHAServer(raft);
@@ -168,10 +166,10 @@ class Issue6202SnapshotInstallGuardTest {
    */
   @Test
   void aRefusalIsLoggedAsAWarningAndNotAsAFault(@TempDir final Path tempDir) throws Exception {
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.isLeader()).thenReturn(false);
-    when(raft.getUnambiguousPeerHttpAddress(RaftPeerId.valueOf(LEADER_PEER_ID))).thenReturn(LOCAL_HTTP);
-    when(raft.getLocalHttpAddress()).thenReturn(LOCAL_HTTP);
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.leader(false);
+    raft.peerHttpAddress(RaftPeerId.valueOf(LEADER_PEER_ID), LOCAL_HTTP);
+    raft.localHttpAddress(LOCAL_HTTP);
 
     final List<LoggedLine> logged = new CopyOnWriteArrayList<>();
     final Logger previous = installCapturingLogger(logged);
@@ -219,14 +217,14 @@ class Issue6202SnapshotInstallGuardTest {
    */
   @Test
   void aWithheldHttpsEndpointDoesNotReachTheReconciler(@TempDir final Path tempDir) throws Exception {
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.isLeader()).thenReturn(false);
-    when(raft.getUnambiguousPeerHttpAddress(RaftPeerId.valueOf(LEADER_PEER_ID))).thenReturn("peer-b:2480");
-    when(raft.getLocalHttpAddress()).thenReturn(LOCAL_HTTP);
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.leader(false);
+    raft.peerHttpAddress(RaftPeerId.valueOf(LEADER_PEER_ID), "peer-b:2480");
+    raft.localHttpAddress(LOCAL_HTTP);
     // The best-effort resolver still hands one out - it is what an unguarded caller would dial...
-    when(raft.getPeerHttpsAddress(RaftPeerId.valueOf(LEADER_PEER_ID))).thenReturn("localhost:2443");
+    raft.peerHttpsAddress(RaftPeerId.valueOf(LEADER_PEER_ID), "localhost:2443");
     // ...and the guard withholds it, because it identifies no single peer (or is this node's own).
-    when(raft.getUnambiguousPeerHttpsAddress(RaftPeerId.valueOf(LEADER_PEER_ID))).thenReturn(null);
+    raft.peerHttpsAddress(RaftPeerId.valueOf(LEADER_PEER_ID), null);
 
     final CapturingReconciler reconciler = new CapturingReconciler();
     final ArcadeStateMachine sm = newInitializedStateMachine(tempDir);
@@ -248,12 +246,12 @@ class Issue6202SnapshotInstallGuardTest {
   /** Control: an encrypted endpoint that passes the guard is still used, so the guard costs SSL nothing. */
   @Test
   void aGuardedHttpsEndpointIsStillHandedToTheReconciler(@TempDir final Path tempDir) throws Exception {
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.isLeader()).thenReturn(false);
-    when(raft.getUnambiguousPeerHttpAddress(RaftPeerId.valueOf(LEADER_PEER_ID))).thenReturn("peer-b:2480");
-    when(raft.getLocalHttpAddress()).thenReturn(LOCAL_HTTP);
-    when(raft.getUnambiguousPeerHttpsAddress(RaftPeerId.valueOf(LEADER_PEER_ID))).thenReturn("peer-b:2443");
-    when(raft.getLocalHttpsAddress()).thenReturn("localhost:2443");
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.leader(false);
+    raft.peerHttpAddress(RaftPeerId.valueOf(LEADER_PEER_ID), "peer-b:2480");
+    raft.localHttpAddress(LOCAL_HTTP);
+    raft.peerHttpsAddress(RaftPeerId.valueOf(LEADER_PEER_ID), "peer-b:2443");
+    raft.localHttpsAddress("localhost:2443");
 
     final CapturingReconciler reconciler = new CapturingReconciler();
     final ArcadeStateMachine sm = newInitializedStateMachine(tempDir);
@@ -307,13 +305,12 @@ class Issue6202SnapshotInstallGuardTest {
    */
   @Test
   void everyDownloadAttemptOfAnOperatorResyncIsReGuarded(@TempDir final Path tempDir) throws Exception {
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.isLeader()).thenReturn(false);
-    when(raft.getLeaderId()).thenReturn(RaftPeerId.valueOf(LEADER_PEER_ID));
-    when(raft.getLocalHttpAddress()).thenReturn(LOCAL_HTTP);
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.leader(false);
+    raft.leaderId(RaftPeerId.valueOf(LEADER_PEER_ID));
+    raft.localHttpAddress(LOCAL_HTTP);
     // First call: a genuine peer, so the up-front refusal does not fire. Every call after it: this node itself.
-    when(raft.getUnambiguousPeerHttpAddress(RaftPeerId.valueOf(LEADER_PEER_ID)))
-        .thenReturn("peer-b:2480", LOCAL_HTTP);
+    raft.peerHttpAddress(RaftPeerId.valueOf(LEADER_PEER_ID), "peer-b:2480", LOCAL_HTTP);
 
     final List<LoggedLine> logged = new CopyOnWriteArrayList<>();
     final Logger previous = installCapturingLogger(logged);
@@ -348,10 +345,10 @@ class Issue6202SnapshotInstallGuardTest {
   @Test
   void closingTheStateMachineUnwindsAnInstallParkedBehindAnInFlightResync(@TempDir final Path tempDir)
       throws Exception {
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.isLeader()).thenReturn(false);
-    when(raft.getUnambiguousPeerHttpAddress(RaftPeerId.valueOf(LEADER_PEER_ID))).thenReturn("peer-b:2480");
-    when(raft.getLocalHttpAddress()).thenReturn(LOCAL_HTTP);
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.leader(false);
+    raft.peerHttpAddress(RaftPeerId.valueOf(LEADER_PEER_ID), "peer-b:2480");
+    raft.localHttpAddress(LOCAL_HTTP);
 
     final ArcadeStateMachine sm = newInitializedStateMachine(tempDir);
     sm.setRaftHAServer(raft);

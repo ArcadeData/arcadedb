@@ -113,8 +113,8 @@ class Issue7901LeaderBootstrapInstallMissingDatabaseTest {
   private ArcadeStateMachine leaderStateMachineOn(final ArcadeDBServer server) {
     final ArcadeStateMachine sm = new ArcadeStateMachine();
     sm.setServer(server);
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.isLeader()).thenReturn(true);
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.leader(true);
     sm.setRaftHAServer(raft);
     stateMachines.add(sm);
     return sm;

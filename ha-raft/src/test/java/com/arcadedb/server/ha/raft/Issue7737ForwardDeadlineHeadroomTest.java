@@ -186,9 +186,9 @@ class Issue7737ForwardDeadlineHeadroomTest {
   }
 
   private static RaftHAServer raftPointingAt(final String leaderHttpAddress) {
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.getLeaderHttpAddress()).thenReturn(leaderHttpAddress);
-    when(raft.getClusterToken()).thenReturn("test-token");
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.leaderHttpAddress(leaderHttpAddress);
+    raft.clusterToken("test-token");
     return raft;
   }
 

@@ -79,11 +79,11 @@ class BootstrapElectionGateTest {
     // correctly-gated run never reaches it) so we can assert below that it is NEVER invoked.
     lenient().when(mockServer.getDatabaseNames()).thenReturn(Set.of("beta", "alpha"));
 
-    final RaftHAServer mockHa = mock(RaftHAServer.class);
-    when(mockHa.isLeader()).thenReturn(true);
-    when(mockHa.getCommitIndex()).thenReturn(-1L); // persistent IOException / division never ready
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.leader(true);
+    raft.commitIndex(-1L); // persistent IOException / division never ready
 
-    final BootstrapElection election = new BootstrapElection(mockHa, mockServer);
+    final BootstrapElection election = new BootstrapElection(raft, mockServer);
     election.commitIndexReadinessTimeoutMs = 0L; // a persistent -1 must skip without a real wait
     final BootstrapElection.Outcome outcome = election.runIfEligible();
 
@@ -108,12 +108,12 @@ class BootstrapElectionGateTest {
     when(mockServer.getConfiguration()).thenReturn(config);
     when(mockServer.getDatabaseNames()).thenReturn(Set.of());
 
-    final RaftHAServer mockHa = mock(RaftHAServer.class);
-    when(mockHa.isLeader()).thenReturn(true);
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.leader(true);
     // -1 (division not ready) on the first read, then the real first-formation index 0.
-    when(mockHa.getCommitIndex()).thenReturn(-1L, -1L, 0L);
+    raft.commitIndex(-1L, -1L, 0L);
 
-    final BootstrapElection election = new BootstrapElection(mockHa, mockServer);
+    final BootstrapElection election = new BootstrapElection(raft, mockServer);
     election.commitIndexReadinessPollMs = 0L; // spin without sleeping
     final BootstrapElection.Outcome outcome = election.runIfEligible();
 
@@ -136,12 +136,12 @@ class BootstrapElectionGateTest {
     when(mockServer.getConfiguration()).thenReturn(config);
     lenient().when(mockServer.getDatabaseNames()).thenReturn(Set.of("alpha"));
 
-    final RaftHAServer mockHa = mock(RaftHAServer.class);
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
     // Leader at the entry guard and on the first loop check, then leadership is lost.
-    when(mockHa.isLeader()).thenReturn(true, true, false);
-    when(mockHa.getCommitIndex()).thenReturn(-1L); // never resolves
+    raft.leader(true, true, false);
+    raft.commitIndex(-1L); // never resolves
 
-    final BootstrapElection election = new BootstrapElection(mockHa, mockServer);
+    final BootstrapElection election = new BootstrapElection(raft, mockServer);
     election.commitIndexReadinessPollMs = 0L; // spin without sleeping
 
     assertThat(election.runIfEligible()).isEqualTo(BootstrapElection.Outcome.SKIPPED_NOT_FIRST_FORMATION);
@@ -162,11 +162,11 @@ class BootstrapElectionGateTest {
     when(mockServer.getConfiguration()).thenReturn(config);
     when(mockServer.getDatabaseNames()).thenReturn(Set.of());
 
-    final RaftHAServer mockHa = mock(RaftHAServer.class);
-    when(mockHa.isLeader()).thenReturn(true);
-    when(mockHa.getCommitIndex()).thenReturn(0L);
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.leader(true);
+    raft.commitIndex(0L);
 
-    final BootstrapElection election = new BootstrapElection(mockHa, mockServer);
+    final BootstrapElection election = new BootstrapElection(raft, mockServer);
     final BootstrapElection.Outcome outcome = election.runIfEligible();
 
     // Past the gate: it tried to collect databases and found none.
@@ -187,11 +187,14 @@ class BootstrapElectionGateTest {
     when(mockServer.getConfiguration()).thenReturn(config);
     lenient().when(mockServer.getDatabaseNames()).thenReturn(Set.of("alpha"));
 
-    final RaftHAServer mockHa = mock(RaftHAServer.class);
-    when(mockHa.isLeader()).thenReturn(true);
-    when(mockHa.getCommitIndex()).thenReturn(42L);
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.leader(true);
+    raft.commitIndex(42L);
+    // A running cluster: the state machine has applied application entries, so a positive commit index is not the
+    // internal-entries-only first formation of #5099
+    raft.stateMachine(FakeRaftHAServer.stateMachineOfARunningCluster());
 
-    final BootstrapElection election = new BootstrapElection(mockHa, mockServer);
+    final BootstrapElection election = new BootstrapElection(raft, mockServer);
 
     assertThat(election.runIfEligible()).isEqualTo(BootstrapElection.Outcome.SKIPPED_NOT_FIRST_FORMATION);
     verify(mockServer, never()).getDatabaseNames();

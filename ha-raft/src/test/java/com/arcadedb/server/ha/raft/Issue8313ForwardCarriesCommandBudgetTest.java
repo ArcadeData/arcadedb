@@ -130,9 +130,9 @@ class Issue8313ForwardCarriesCommandBudgetTest {
   private RaftReplicatedDatabase database(final ContextConfiguration serverConfig, final ContextConfiguration databaseConfig,
       final String clusterToken) {
     final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, serverConfig);
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.getLeaderHttpAddress()).thenReturn(leader.address());
-    when(raft.getClusterToken()).thenReturn(clusterToken);
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.leaderHttpAddress(leader.address());
+    raft.clusterToken(clusterToken);
     final LocalDatabase local = mock(LocalDatabase.class);
     when(local.getConfiguration()).thenReturn(databaseConfig);
     return new RaftReplicatedDatabase(server, local, raft);
