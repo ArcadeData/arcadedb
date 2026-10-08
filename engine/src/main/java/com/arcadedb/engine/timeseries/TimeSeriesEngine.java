@@ -710,65 +710,9 @@ public class TimeSeriesEngine implements AutoCloseable {
       final TagFilter tagFilter, final AggregationMetrics metrics, final int bucketCeiling) throws IOException {
     final int reqCount = requests.size();
 
-    // Determine actual data range to size flat arrays correctly.
-    //
-    // This scan runs WITHOUT the per-shard compaction read locks on purpose - they are acquired further
-    // down, around the reads that actually produce the numbers. A compaction, or a fresh append, can
-    // therefore slip in between the estimate and the reads. That is deliberate and safe: the estimate
-    // only decides how wide the flat window is, and MultiColumnAggregationResult parks anything landing
-    // outside it in its overflow map rather than dropping it (issue #6937). Taking the locks here would
-    // hold them across the whole aggregation for no correctness gain, just contention with the writers.
-    long actualMin = Long.MAX_VALUE;
-    long actualMax = Long.MIN_VALUE;
-    final boolean useFlatMode = bucketIntervalMs > 0;
-    if (useFlatMode) {
-      for (final TimeSeriesShard shard : shards) {
-        final TimeSeriesSealedStore ss = shard.getSealedStore();
-        if (ss.getBlockCount() > 0) {
-          if (ss.getGlobalMinTimestamp() < actualMin)
-            actualMin = ss.getGlobalMinTimestamp();
-          if (ss.getGlobalMaxTimestamp() > actualMax)
-            actualMax = ss.getGlobalMaxTimestamp();
-        }
-
-        // The mutable bucket carries everything appended since the last compaction and is NOT bounded
-        // by the sealed range - compaction is driven by the maintenance scheduler, not by sample
-        // timestamps, so the un-sealed tail can span an arbitrary number of buckets. Sizing the flat
-        // array from the sealed stores alone made every sample past that range resolve to an
-        // out-of-range index and vanish without an error (issue #6937).
-        // One header-page read for the pair, so the two bounds are a consistent snapshot.
-        final long[] mutableRange = shard.getMutableBucket().getMinMaxTimestamps();
-        // Empty markers are Long.MAX_VALUE / Long.MIN_VALUE, so an empty bucket never widens anything.
-        if (mutableRange[0] <= mutableRange[1]) {
-          if (mutableRange[0] < actualMin)
-            actualMin = mutableRange[0];
-          if (mutableRange[1] > actualMax)
-            actualMax = mutableRange[1];
-        }
-      }
-      // Clamp to query range
-      if (fromTs != Long.MIN_VALUE && fromTs > actualMin)
-        actualMin = fromTs;
-      if (toTs != Long.MAX_VALUE && toTs < actualMax)
-        actualMax = toTs;
-    }
-
-    final long firstBucket;
-    final int maxBuckets;
-    if (useFlatMode && actualMin <= actualMax) {
-      firstBucket = TimeBucketGrid.bucketStart(actualMin, bucketIntervalMs, bucketOffsetMs);
-      final long computedBuckets = Math.floorDiv(actualMax - firstBucket, bucketIntervalMs) + 2;
-      // #7476: a window far wider than the ceiling holds only a sparse answer, which the map mode keeps for what it has
-      if (computedBuckets > MultiColumnAggregationResult.MAX_FLAT_BUCKETS
-          || (bucketCeiling > 0 && computedBuckets > FLAT_WINDOW_PER_CEILING * bucketCeiling))
-        // Will trigger map-mode fallback in MultiColumnAggregationResult constructor
-        maxBuckets = MultiColumnAggregationResult.MAX_FLAT_BUCKETS + 1;
-      else
-        maxBuckets = (int) computedBuckets;
-    } else {
-      firstBucket = 0;
-      maxBuckets = 0;
-    }
+    final BucketWindow window = bucketWindow(fromTs, toTs, bucketIntervalMs, bucketOffsetMs, bucketCeiling);
+    final long firstBucket = window.firstBucket();
+    final int maxBuckets = window.buckets();
 
     // Pre-extract column indices and types for mutable bucket iteration
     final int[] columnIndices = new int[reqCount];
@@ -913,6 +857,219 @@ public class TimeSeriesEngine implements AutoCloseable {
         metrics.addOverflowBuckets(result.getOverflowBucketCount());
       return result;
     }
+  }
+
+  /** How many tag columns one grouped aggregation may group by: the sealed layer packs their dictionary indices 16 bits apiece into a long. */
+  public static final int MAX_GROUP_COLUMNS = 4;
+
+  /**
+   * {@link #aggregateMulti} grouped by the values of one or more TAG columns, one group per distinct tag combination
+   * (issue #9489). Each group is bucketed by time exactly as {@code aggregateMulti} would bucket the samples of that
+   * combination alone, in a single pass over the data: a block is decoded once however many series it interleaves.
+   *
+   * @param groupColumns   the grouping columns as NON-timestamp column indices (the numbering {@link TagFilter} uses); each must be
+   *                       a dictionary-coded TAG, at most {@link #MAX_GROUP_COLUMNS} of them
+   * @param bucketIntervalMs the bucket width, {@code <= 0} for one bucket per group over the whole range
+   * @param bucketCeiling  the largest number of result rows the caller will accept, {@code <= 0} for none; as in
+   *                       {@link #aggregateMulti}, the scan stops once the answer is past it. The ceiling is a sum over every group, asked
+   *                       once per block on the sealed side and every 1024 rows on the mutable side, so the answer can overshoot it by
+   *                       about a block per shard before the scan stops
+   */
+  public GroupedAggregationResult aggregateGrouped(final long fromTs, final long toTs, final List<MultiColumnAggregationRequest> requests,
+      final long bucketIntervalMs, final long bucketOffsetMs, final int[] groupColumns, final TagFilter tagFilter,
+      final AggregationMetrics metrics, final int bucketCeiling) throws IOException {
+    if (groupColumns.length == 0 || groupColumns.length > MAX_GROUP_COLUMNS)
+      throw new IllegalArgumentException("A grouped aggregation groups by 1 to " + MAX_GROUP_COLUMNS + " tag column(s), not " + groupColumns.length);
+
+    final int reqCount = requests.size();
+    final BucketWindow window = bucketIntervalMs > 0 ? bucketWindow(fromTs, toTs, bucketIntervalMs, bucketOffsetMs, bucketCeiling)
+        : new BucketWindow(0, 0);
+    final long firstBucket = window.firstBucket();
+    final int buckets = window.buckets();
+
+    final int[] columnIndices = new int[reqCount];
+    final boolean[] isCount = new boolean[reqCount];
+    for (int r = 0; r < reqCount; r++) {
+      columnIndices[r] = requests.get(r).columnIndex();
+      isCount[r] = requests.get(r).type() == AggregationType.COUNT;
+    }
+
+    // Row position of each grouping column: a mutable row is the timestamp followed by every other column in schema order
+    final int[] groupRowIndices = new int[groupColumns.length];
+    for (int g = 0; g < groupColumns.length; g++)
+      groupRowIndices[g] = groupColumns[g] + 1;
+
+    final long singleBucketTs = singleBucketAnchor(fromTs);
+
+    final GroupedAggregationResult result;
+    for (int s = 0; s < shardCount; s++)
+      shards[s].getCompactionLock().readLock().lock();
+    try {
+      if (shardCount > 1) {
+        // Sealed stores are read in parallel, one partial answer per shard; the mutable buckets follow on the calling thread, which holds
+        // every compaction read lock so no compaction can seal the rows they hold in the meantime (see aggregateMulti)
+        @SuppressWarnings("unchecked")
+        final CompletableFuture<GroupedAggregationResult>[] futures = new CompletableFuture[shardCount];
+        final AggregationMetrics[] shardMetrics = metrics != null ? new AggregationMetrics[shardCount] : null;
+        for (int s = 0; s < shardCount; s++) {
+          final TimeSeriesShard shard = shards[s];
+          final AggregationMetrics shardMetric = metrics != null ? new AggregationMetrics() : null;
+          if (shardMetrics != null)
+            shardMetrics[s] = shardMetric;
+          futures[s] = CompletableFuture.supplyAsync(() -> {
+            try {
+              final GroupedAggregationResult shardResult = new GroupedAggregationResult(requests, firstBucket, bucketIntervalMs, buckets);
+              shardResult.setBucketCeiling(bucketCeiling);
+              shard.getSealedStore()
+                  .aggregateGroupedBlocks(fromTs, toTs, requests, bucketIntervalMs, bucketOffsetMs, groupColumns, shardResult, shardMetric, tagFilter);
+              return shardResult;
+            } catch (final IOException e) {
+              throw new CompletionException(e);
+            }
+          }, shardExecutor);
+        }
+        try {
+          CompletableFuture.allOf(futures).join();
+        } catch (final CompletionException e) {
+          throw unwrapShardFailure(e, "Parallel shard aggregation failed");
+        }
+        if (shardMetrics != null)
+          for (final AggregationMetrics sm : shardMetrics)
+            metrics.mergeFrom(sm);
+
+        result = futures[0].join();
+        for (int s = 1; s < shardCount; s++)
+          result.mergeFrom(futures[s].join());
+        for (final TimeSeriesShard shard : shards)
+          if (!result.isOverBucketCeiling())
+            accumulateMutableGroups(shard, fromTs, toTs, requests, columnIndices, isCount, bucketIntervalMs, bucketOffsetMs, singleBucketTs,
+                groupRowIndices, tagFilter, metrics, result);
+      } else {
+        result = new GroupedAggregationResult(requests, firstBucket, bucketIntervalMs, buckets);
+        result.setBucketCeiling(bucketCeiling);
+        final TimeSeriesShard shard = shards[0];
+        shard.getSealedStore()
+            .aggregateGroupedBlocks(fromTs, toTs, requests, bucketIntervalMs, bucketOffsetMs, groupColumns, result, metrics, tagFilter);
+        if (!result.isOverBucketCeiling())
+          accumulateMutableGroups(shard, fromTs, toTs, requests, columnIndices, isCount, bucketIntervalMs, bucketOffsetMs, singleBucketTs,
+              groupRowIndices, tagFilter, metrics, result);
+      }
+    } finally {
+      for (int s = 0; s < shardCount; s++)
+        shards[s].getCompactionLock().readLock().unlock();
+    }
+
+    result.finalizeAvg();
+    return result;
+  }
+
+  /** Folds the rows still in a shard's mutable bucket into a grouped aggregation. */
+  private void accumulateMutableGroups(final TimeSeriesShard shard, final long fromTs, final long toTs,
+      final List<MultiColumnAggregationRequest> requests, final int[] columnIndices, final boolean[] isCount, final long bucketIntervalMs,
+      final long bucketOffsetMs, final long singleBucketTs, final int[] groupRowIndices, final TagFilter tagFilter,
+      final AggregationMetrics metrics, final GroupedAggregationResult result) throws IOException {
+    final int reqCount = requests.size();
+    final double[] rowValues = new double[reqCount];
+    // One array for every row: groupFor only reads it, and copies it when the group is new
+    final String[] values = new String[groupRowIndices.length];
+    final Iterator<Object[]> mutableIter = shard.getMutableBucket().iterateRange(fromTs, toTs, null, metrics);
+    int sinceCeilingCheck = 0;
+    while (mutableIter.hasNext()) {
+      // The ceiling is a sum over every group, so it is asked every so many rows rather than for each one
+      if ((++sinceCeilingCheck & 1023) == 0 && result.isOverBucketCeiling())
+        break;
+      final Object[] row = mutableIter.next();
+      if (tagFilter != null && !tagFilter.matches(row))
+        continue;
+
+      // The text a sealed block's dictionary holds for the value: null is stored as the empty string
+      for (int g = 0; g < values.length; g++) {
+        final Object tag = row[groupRowIndices[g]];
+        values[g] = tag != null ? tag.toString() : "";
+      }
+
+      for (int r = 0; r < reqCount; r++)
+        rowValues[r] = mutableSample(row, columnIndices[r], isCount[r]);
+      final long ts = (long) row[0];
+      result.groupFor(values).accumulateRow(bucketIntervalMs > 0 ? TimeBucketGrid.bucketStart(ts, bucketIntervalMs, bucketOffsetMs) : singleBucketTs,
+          rowValues);
+    }
+  }
+
+  /**
+   * The bucket window an aggregation sizes its flat arrays by (see {@link BucketWindow}); a window too wide for a flat array makes
+   * the result fall back to map mode.
+   */
+  private BucketWindow bucketWindow(final long fromTs, final long toTs, final long bucketIntervalMs, final long bucketOffsetMs,
+      final int bucketCeiling) throws IOException {
+    // Determine actual data range to size flat arrays correctly.
+    //
+    // This scan runs WITHOUT the per-shard compaction read locks on purpose - they are acquired further
+    // down, around the reads that actually produce the numbers. A compaction, or a fresh append, can
+    // therefore slip in between the estimate and the reads. That is deliberate and safe: the estimate
+    // only decides how wide the flat window is, and MultiColumnAggregationResult parks anything landing
+    // outside it in its overflow map rather than dropping it (issue #6937). Taking the locks here would
+    // hold them across the whole aggregation for no correctness gain, just contention with the writers.
+    long actualMin = Long.MAX_VALUE;
+    long actualMax = Long.MIN_VALUE;
+    final boolean useFlatMode = bucketIntervalMs > 0;
+    if (useFlatMode) {
+      for (final TimeSeriesShard shard : shards) {
+        final TimeSeriesSealedStore ss = shard.getSealedStore();
+        if (ss.getBlockCount() > 0) {
+          if (ss.getGlobalMinTimestamp() < actualMin)
+            actualMin = ss.getGlobalMinTimestamp();
+          if (ss.getGlobalMaxTimestamp() > actualMax)
+            actualMax = ss.getGlobalMaxTimestamp();
+        }
+
+        // The mutable bucket carries everything appended since the last compaction and is NOT bounded
+        // by the sealed range - compaction is driven by the maintenance scheduler, not by sample
+        // timestamps, so the un-sealed tail can span an arbitrary number of buckets. Sizing the flat
+        // array from the sealed stores alone made every sample past that range resolve to an
+        // out-of-range index and vanish without an error (issue #6937).
+        // One header-page read for the pair, so the two bounds are a consistent snapshot.
+        final long[] mutableRange = shard.getMutableBucket().getMinMaxTimestamps();
+        // Empty markers are Long.MAX_VALUE / Long.MIN_VALUE, so an empty bucket never widens anything.
+        if (mutableRange[0] <= mutableRange[1]) {
+          if (mutableRange[0] < actualMin)
+            actualMin = mutableRange[0];
+          if (mutableRange[1] > actualMax)
+            actualMax = mutableRange[1];
+        }
+      }
+      // Clamp to query range
+      if (fromTs != Long.MIN_VALUE && fromTs > actualMin)
+        actualMin = fromTs;
+      if (toTs != Long.MAX_VALUE && toTs < actualMax)
+        actualMax = toTs;
+    }
+
+    final long firstBucket;
+    final int maxBuckets;
+    if (useFlatMode && actualMin <= actualMax) {
+      firstBucket = TimeBucketGrid.bucketStart(actualMin, bucketIntervalMs, bucketOffsetMs);
+      final long computedBuckets = Math.floorDiv(actualMax - firstBucket, bucketIntervalMs) + 2;
+      // #7476: a window far wider than the ceiling holds only a sparse answer, which the map mode keeps for what it has
+      if (computedBuckets > MultiColumnAggregationResult.MAX_FLAT_BUCKETS
+          || (bucketCeiling > 0 && computedBuckets > FLAT_WINDOW_PER_CEILING * bucketCeiling))
+        // Will trigger map-mode fallback in MultiColumnAggregationResult constructor
+        maxBuckets = MultiColumnAggregationResult.MAX_FLAT_BUCKETS + 1;
+      else
+        maxBuckets = (int) computedBuckets;
+    } else {
+      firstBucket = 0;
+      maxBuckets = 0;
+    }
+
+    return new BucketWindow(firstBucket, maxBuckets);
+  }
+
+  /**
+   * @param buckets {@code 0} for an unbucketed query or an empty store, and {@code MAX_FLAT_BUCKETS + 1} for a window too wide for a
+   *                flat array
+   */
+  private record BucketWindow(long firstBucket, int buckets) {
   }
 
   /**
