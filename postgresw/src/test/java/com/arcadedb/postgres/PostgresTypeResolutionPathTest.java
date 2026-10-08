@@ -19,6 +19,7 @@
 package com.arcadedb.postgres;
 
 import com.arcadedb.database.RID;
+import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
@@ -26,6 +27,9 @@ import org.junit.jupiter.api.Test;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.OffsetTime;
+import java.time.ZonedDateTime;
 import java.util.Date;
 import java.util.EnumMap;
 import java.util.EnumSet;
@@ -77,6 +81,11 @@ class PostgresTypeResolutionPathTest {
     SAMPLE_VALUES.put(Type.ARRAY_OF_LONGS, new long[] { 1L, 2L });
     SAMPLE_VALUES.put(Type.ARRAY_OF_FLOATS, new float[] { 1.5f, 2.5f });
     SAMPLE_VALUES.put(Type.ARRAY_OF_DOUBLES, new double[] { 1.5d, 2.5d });
+    // The Cypher temporal types (issue #8572) have no PostgreSQL counterpart this protocol maps: both paths carry them as text
+    SAMPLE_VALUES.put(Type.OFFSET_TIME, OffsetTime.now());
+    SAMPLE_VALUES.put(Type.LOCAL_TIME, LocalTime.now());
+    SAMPLE_VALUES.put(Type.ZONED_DATETIME, ZonedDateTime.now());
+    SAMPLE_VALUES.put(Type.DURATION, CypherDuration.parse("P1D"));
   }
 
   @Test
