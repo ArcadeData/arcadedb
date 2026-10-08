@@ -64,9 +64,9 @@ class Issue8325LeaderBodyDeadlineTest {
       cfg.setValue(GlobalConfiguration.HA_PROXY_COMMAND_TIMEOUT, 1_000L);
 
       final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, cfg);
-      final RaftHAServer raft = mock(RaftHAServer.class);
-      when(raft.getLeaderHttpAddress()).thenReturn(leader.address());
-      when(raft.getClusterToken()).thenReturn("test-token");
+      final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+      raft.leaderHttpAddress(leader.address());
+      raft.clusterToken("test-token");
       final LocalDatabase local = mock(LocalDatabase.class);
       when(local.getConfiguration()).thenReturn(cfg);
       final RaftReplicatedDatabase db = new RaftReplicatedDatabase(server, local, raft);
@@ -120,8 +120,8 @@ class Issue8325LeaderBodyDeadlineTest {
       final long deadlineMs = ClusterSecuritySeedQuery.reportTimeoutMs(cfg);
 
       final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, cfg);
-      final RaftHAServer raft = mock(RaftHAServer.class);
-      when(raft.getClusterToken()).thenReturn("test-token");
+      final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+      raft.clusterToken("test-token");
       final RaftHAPlugin plugin = mock(RaftHAPlugin.class);
       when(plugin.getRaftHAServer()).thenReturn(raft);
       when(plugin.isLeader()).thenReturn(false);

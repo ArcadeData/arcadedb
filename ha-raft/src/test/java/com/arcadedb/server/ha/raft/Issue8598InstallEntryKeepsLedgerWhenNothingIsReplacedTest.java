@@ -38,8 +38,6 @@ import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Issue #8598: applying an {@code INSTALL_DATABASE_ENTRY} clears the database's page-version ledger only when the apply
@@ -97,8 +95,8 @@ class Issue8598InstallEntryKeepsLedgerWhenNothingIsReplacedTest {
 
   @Test
   void theLeaderSkippingItsOwnForcedReinstallKeepsTheReservations() {
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.isLeader()).thenReturn(true);
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.leader(true);
     stateMachine.setRaftHAServer(raft);
 
     assertReservationsSurvive(RaftLogEntryCodec.encodeInstallDatabaseEntry(DB, true));
