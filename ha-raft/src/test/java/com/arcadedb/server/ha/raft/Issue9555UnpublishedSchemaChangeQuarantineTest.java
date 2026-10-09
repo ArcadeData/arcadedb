@@ -31,6 +31,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -183,6 +184,56 @@ class Issue9555UnpublishedSchemaChangeQuarantineTest {
 
     assertThat(broker.calls("replicateSchemaInstalment")).as("the refusal came from an instalment").isNotEmpty();
     assertThat(stateMachine.quarantineCause(db.getName())).isEqualTo(DivergenceCause.UNPUBLISHED_SCHEMA_CHANGE);
+  }
+
+  /**
+   * The refused instalment's files were folded into what the session considers shipped, so a callback that swallows the
+   * refusal must not be allowed to publish a final entry that leaves them out: the session fails and is quarantined.
+   */
+  @Test
+  void aSchemaChangeThatSwallowsARefusedInstalmentIsNotPublished() {
+    final FakeRaftTransactionBroker broker = new FakeRaftTransactionBroker() {
+      @Override
+      long walChunkBudget() {
+        return 1L;
+      }
+    }.fails("replicateSchemaInstalment",
+        new NeedRetryException("Refused a schema change on database 'issue9555' allocated in Raft term 7"));
+    db.getSchema().createDocumentType("Filled", 1);
+    final RaftReplicatedDatabase replicated = replicated(leader(broker));
+
+    assertThatThrownBy(() -> replicated.recordFileChanges(() -> {
+      try {
+        replicated.transaction(() -> replicated.newDocument("Filled").set("value", 1L).save());
+      } catch (final RuntimeException swallowed) {
+        // the callback carries on as if the instalment had gone out
+      }
+      return null;
+    })).isInstanceOf(NeedRetryException.class);
+
+    assertThat(broker.calls("replicateSchemaInstalment")).isNotEmpty();
+    // Only the compensating retirement may go out: no schema document and nothing to create
+    assertThat(broker.calls("replicateSchema")).allSatisfy(args -> {
+      assertThat(args.get(1)).isEqualTo("");
+      assertThat((Map<?, ?>) args.get(2)).isEmpty();
+    });
+    assertThat(stateMachine.quarantineCause(db.getName())).isEqualTo(DivergenceCause.UNPUBLISHED_SCHEMA_CHANGE);
+  }
+
+  /** A proposer that is no longer the leader is quarantined and resynced, and has no leadership to hand off. */
+  @Test
+  void aProposerThatIsNoLongerTheLeaderIsQuarantinedWithoutAHandOff() {
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached().stateMachine(stateMachine).leader(false).currentTerm(7L)
+        .transactionBroker(new FakeRaftTransactionBroker());
+    stateMachine.setRaftHAServer(raft);
+
+    assertThat(stateMachine.quarantineUnpublishedSchemaChange(db.getName(), "compaction",
+        new NeedRetryException("Refused a schema change on database 'issue9555' proposed by another node"))).isTrue();
+
+    assertThat(stateMachine.quarantineCause(db.getName())).isEqualTo(DivergenceCause.UNPUBLISHED_SCHEMA_CHANGE);
+    assertThat(raft.calls("handOffLeadershipToResync")).isEmpty();
+    assertThat(stateMachine.quarantineUnpublishedSchemaChange(db.getName(), "compaction", null))
+        .as("a second refusal finds the quarantine already standing").isFalse();
   }
 
   /** A refusal before the callback ran (the leader was not ready) changed nothing here, so there is nothing to resync. */

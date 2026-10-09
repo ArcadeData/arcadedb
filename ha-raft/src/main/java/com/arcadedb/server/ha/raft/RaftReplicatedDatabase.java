@@ -337,6 +337,15 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
      * it, so the change the callback already made here will never reach another node. Recorded where the entry is
      * submitted, because the exception itself may reach the session wrapped by the engine code it unwinds through.
      * Never an indeterminate failure ({@link ReplicationDispatchedTimeoutException}), whose entry may still commit.
+     * <p>
+     * Why a {@code NeedRetryException} from the broker is definite: {@code RaftGroupCommitter} raises one only for an
+     * entry the leader refused before appending ({@code refusedBeforeAppend}), one that never left its queue
+     * ({@code QuorumNotReachedException} from {@code dispatchAware} on a PENDING or CANCELLED entry, from {@code stop()}
+     * draining the queue, or from a send Ratis rejected synchronously) and one it never queued
+     * ({@code ReplicationQueueFullException}). A dispatched entry with no answer is a {@code ReplicationDispatchedTimeoutException}.
+     * <p>
+     * Sticky: once set, the session cannot publish any more (see {@code recordFileChanges}), even if the callback
+     * swallowed the exception. A plain field, because a session and its instalments run on the one thread that owns it.
      */
     private NeedRetryException         refusal;
   }
@@ -2446,6 +2455,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       exclusiveOn = beginLeaderExclusive();
       final RET result = proxied.recordFileChanges(callback);
 
+      // Issue #9555: an instalment of this session was definitely refused, and the callback went on as if it had not (it
+      // swallowed the exception, or a caller between it and the instalment did). That instalment's files were already
+      // folded into shippedFiles, so the final entry below would leave them out and publish a change the followers
+      // cannot apply. The session is failed instead, which sends the finally block into the quarantine.
+      if (instalmentState.refusal != null)
+        throw instalmentState.refusal;
+
       // Capture file changes
       final List<FileManager.FileChange> fileChanges = proxied.getFileManager().getRecordedChanges();
       final boolean schemaChanged = proxied.getSchema().getEmbedded().isDirty() ||
@@ -2568,7 +2584,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         if (!published)
           retireAbandonedInstalments(instalmentState);
         // After the retirement, which still needs the session bound to submit its own entry, and before the session is
-        // released, so no other session on this database can start from the diverged state first (issue #9555).
+        // released, so no other session on this database can start from the diverged state first (issue #9555). Cheap
+        // to do while the session is held: the quarantine is an in-memory mark plus one small file write, and the resync
+        // and the leadership hand-off it requests are both submitted to executors rather than run here.
         if (!published && instalmentState.refusal != null)
           quarantineUnpublishedChange("schema change", instalmentState.refusal);
         if (outerSchemaCommitThread == null)

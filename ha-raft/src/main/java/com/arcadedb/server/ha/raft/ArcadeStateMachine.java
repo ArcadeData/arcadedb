@@ -8611,7 +8611,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
           "The %s on database '%s' was applied locally but the entry publishing it was refused (%s). This node is the "
               + "only voter, so there is no peer to resync it from and it is NOT quarantined: the database now holds a "
               + "change the Raft log does not (issue #9555)",
-          session, dbName, refusal != null ? refusal.getMessage() : null);
+          session, dbName, describe(refusal));
       return false;
     }
 
@@ -8622,10 +8622,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
         "The %s on database '%s' was applied locally but the entry publishing it was refused (%s), so no other node "
             + "holds it: quarantining the database and resyncing it from the leader now rather than waiting for a "
             + "later entry to collide with it (issue #9555)",
-        session, dbName, refusal != null ? refusal.getMessage() : null);
+        session, dbName, describe(refusal));
     triggerDatabaseResync(dbName);
     handOffLeadershipIfLeader(dbName);
     return true;
+  }
+
+  /** The refusal's class and message, so an operator can tell a stale-session refusal from a lost quorum. */
+  private static String describe(final Throwable refusal) {
+    return refusal == null ? "no detail" : refusal.getClass().getSimpleName() + ": " + refusal.getMessage();
   }
 
   /**
