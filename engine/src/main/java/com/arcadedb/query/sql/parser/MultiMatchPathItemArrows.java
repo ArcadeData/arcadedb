@@ -23,5 +23,10 @@ package com.arcadedb.query.sql.parser;
 public class MultiMatchPathItemArrows extends MultiMatchPathItem {
   public MultiMatchPathItemArrows() {
   }
+
+  @Override
+  protected MatchPathItem newInstance() {
+    return new MultiMatchPathItemArrows();
+  }
 }
 /* JavaCC - OriginalChecksum=75506ca75aab9f66ab24c9f1b1cfe3ac (do not edit this line) */

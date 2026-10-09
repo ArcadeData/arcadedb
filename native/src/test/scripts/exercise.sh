@@ -121,6 +121,38 @@ grep -q '42' <<<"$OUT" || {
   exit 1
 }
 
+# Each of these copies an SQL AST node on its way to a plan (the WHERE-SELECT of UPDATE/DELETE, the LET sub-query,
+# CREATE VERTEX, the MATCH path items). Those copies used to instantiate themselves reflectively, which the native image
+# cannot do for classes outside its reachability metadata, so they all failed there and passed on the JVM (#9495).
+sql_expect() {
+  local label="$1" expected="$2" command="$3" out
+  out="$(req -X POST "http://$HOST:$HTTP/api/v1/command/$DB" -d "{\"language\":\"sql\",\"command\":\"$command\"}")" || true
+  grep -q "$expected" <<<"$out" || {
+    echo "[exercise] FAIL: SQL $label, got $out"
+    exit 1
+  }
+}
+
+echo "[exercise] SQL DML and AST copies"
+sql_expect "UPDATE" '"count":1' "UPDATE T SET n = 43 WHERE n = 42"
+sql_expect "LET sub-query" '43' "SELECT \$a AS a LET \$a = (SELECT n FROM T WHERE n = 43)"
+sql_expect "CREATE VERTEX TYPE" 'SmokeV' "CREATE VERTEX TYPE SmokeV"
+sql_expect "CREATE VERTEX" 'Grace' "CREATE VERTEX SmokeV SET name = 'Grace'"
+sql_expect "MATCH" 'Grace' "MATCH {type: SmokeV, as: p, where: (name = 'Grace')} RETURN p.name AS name"
+sql_expect "DELETE" '"count":1' "DELETE FROM T WHERE n = 43"
+# the math_* functions call java.lang.Math through Method.invoke, refused for unregistered methods (#9495)
+sql_expect "math_ function" '"r":5' "SELECT math_abs(-5) AS r"
+# a full-text index creates its analyzer by class name and Lucene creates its token attributes reflectively: neither is
+# in the GraalVM metadata repository for this Lucene version, so every FULL_TEXT index used to fail here (#9495)
+sql_expect "CREATE PROPERTY" 'name' "CREATE PROPERTY SmokeV.name STRING"
+sql_expect "FULL_TEXT index" 'SmokeV' "CREATE INDEX ON SmokeV (name) FULL_TEXT"
+sql_expect "FULL_TEXT search" 'Grace' "SELECT name FROM SmokeV WHERE SEARCH_INDEX('SmokeV[name]', 'grace') = true"
+sql_expect "CREATE TYPE" 'SmokeDoc' "CREATE DOCUMENT TYPE SmokeDoc"
+sql_expect "CREATE PROPERTY" 'body' "CREATE PROPERTY SmokeDoc.body STRING"
+sql_expect "FULL_TEXT analyzer" 'SmokeDoc' "CREATE INDEX ON SmokeDoc (body) FULL_TEXT METADATA {\\\"analyzer\\\": \\\"org.apache.lucene.analysis.en.EnglishAnalyzer\\\"}"
+sql_expect "FULL_TEXT insert" 'running' "INSERT INTO SmokeDoc SET body = 'running foxes'"
+sql_expect "FULL_TEXT stemmed" 'running' "SELECT body FROM SmokeDoc WHERE SEARCH_INDEX('SmokeDoc[body]', 'run') = true"
+
 echo "[exercise] Cypher round-trip"
 OUT="$(req -X POST "http://$HOST:$HTTP/api/v1/command/$DB" \
   -d '{"language":"cypher","command":"CREATE (a:Person {name:\"Ada\"}) RETURN a.name AS n"}')" || true

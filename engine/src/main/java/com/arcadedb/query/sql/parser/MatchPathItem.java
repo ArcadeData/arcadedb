@@ -23,7 +23,6 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
-import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.schema.DocumentType;
 
@@ -172,14 +171,18 @@ public class MatchPathItem extends SimpleNode {
     return result;
   }
 
+  /**
+   * Creates the empty instance {@link #copy()} fills in. A subclass that inherits {@code copy()} overrides it to keep the
+   * runtime type of the copy. It replaces a reflective lookup of the no-arg constructor, which fails in the GraalVM native
+   * image, where no parser constructor is registered for reflection (#9495).
+   */
+  protected MatchPathItem newInstance() {
+    return new MatchPathItem();
+  }
+
   @Override
   public MatchPathItem copy() {
-    final MatchPathItem result;
-    try {
-      result = getClass().getConstructor().newInstance();
-    } catch (final Exception e) {
-      throw new ArcadeDBException(e);
-    }
+    final MatchPathItem result = newInstance();
     result.method = method == null ? null : method.copy();
     result.filter = filter == null ? null : filter.copy();
     return result;

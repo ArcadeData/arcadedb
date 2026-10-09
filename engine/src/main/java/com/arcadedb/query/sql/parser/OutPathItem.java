@@ -46,5 +46,10 @@ public class OutPathItem extends MatchPathItem {
       filter.toString(params, builder);
     }
   }
+
+  @Override
+  protected MatchPathItem newInstance() {
+    return new OutPathItem();
+  }
 }
 /* JavaCC - OriginalChecksum=b9cd4c40325a129d9166b281866b7a34 (do not edit this line) */

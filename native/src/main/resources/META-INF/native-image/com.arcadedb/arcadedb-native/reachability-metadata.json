@@ -142,6 +142,15 @@
       ]
     },
     {
+      "type": "com.arcadedb.function.sql.graph.SQLFunctionCCHShortestPath",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
       "type": "com.arcadedb.function.sql.graph.SQLFunctionDijkstra",
       "methods": [
         {
@@ -1824,7 +1833,708 @@
       ]
     },
     {
-      "type": "java.lang.Math"
+      "type": "java.lang.Math",
+      "methods": [
+        {
+          "name": "IEEEremainder",
+          "parameterTypes": [
+            "double",
+            "double"
+          ]
+        },
+        {
+          "name": "abs",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "abs",
+          "parameterTypes": [
+            "float"
+          ]
+        },
+        {
+          "name": "abs",
+          "parameterTypes": [
+            "int"
+          ]
+        },
+        {
+          "name": "abs",
+          "parameterTypes": [
+            "long"
+          ]
+        },
+        {
+          "name": "absExact",
+          "parameterTypes": [
+            "int"
+          ]
+        },
+        {
+          "name": "absExact",
+          "parameterTypes": [
+            "long"
+          ]
+        },
+        {
+          "name": "acos",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "addExact",
+          "parameterTypes": [
+            "int",
+            "int"
+          ]
+        },
+        {
+          "name": "addExact",
+          "parameterTypes": [
+            "long",
+            "long"
+          ]
+        },
+        {
+          "name": "asin",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "atan",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "atan2",
+          "parameterTypes": [
+            "double",
+            "double"
+          ]
+        },
+        {
+          "name": "cbrt",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "ceil",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "ceilDiv",
+          "parameterTypes": [
+            "int",
+            "int"
+          ]
+        },
+        {
+          "name": "ceilDiv",
+          "parameterTypes": [
+            "long",
+            "int"
+          ]
+        },
+        {
+          "name": "ceilDiv",
+          "parameterTypes": [
+            "long",
+            "long"
+          ]
+        },
+        {
+          "name": "ceilDivExact",
+          "parameterTypes": [
+            "int",
+            "int"
+          ]
+        },
+        {
+          "name": "ceilDivExact",
+          "parameterTypes": [
+            "long",
+            "long"
+          ]
+        },
+        {
+          "name": "ceilMod",
+          "parameterTypes": [
+            "int",
+            "int"
+          ]
+        },
+        {
+          "name": "ceilMod",
+          "parameterTypes": [
+            "long",
+            "int"
+          ]
+        },
+        {
+          "name": "ceilMod",
+          "parameterTypes": [
+            "long",
+            "long"
+          ]
+        },
+        {
+          "name": "clamp",
+          "parameterTypes": [
+            "double",
+            "double",
+            "double"
+          ]
+        },
+        {
+          "name": "clamp",
+          "parameterTypes": [
+            "float",
+            "float",
+            "float"
+          ]
+        },
+        {
+          "name": "clamp",
+          "parameterTypes": [
+            "long",
+            "int",
+            "int"
+          ]
+        },
+        {
+          "name": "clamp",
+          "parameterTypes": [
+            "long",
+            "long",
+            "long"
+          ]
+        },
+        {
+          "name": "copySign",
+          "parameterTypes": [
+            "double",
+            "double"
+          ]
+        },
+        {
+          "name": "copySign",
+          "parameterTypes": [
+            "float",
+            "float"
+          ]
+        },
+        {
+          "name": "cos",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "cosh",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "decrementExact",
+          "parameterTypes": [
+            "int"
+          ]
+        },
+        {
+          "name": "decrementExact",
+          "parameterTypes": [
+            "long"
+          ]
+        },
+        {
+          "name": "divideExact",
+          "parameterTypes": [
+            "int",
+            "int"
+          ]
+        },
+        {
+          "name": "divideExact",
+          "parameterTypes": [
+            "long",
+            "long"
+          ]
+        },
+        {
+          "name": "exp",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "expm1",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "floor",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "floorDiv",
+          "parameterTypes": [
+            "int",
+            "int"
+          ]
+        },
+        {
+          "name": "floorDiv",
+          "parameterTypes": [
+            "long",
+            "int"
+          ]
+        },
+        {
+          "name": "floorDiv",
+          "parameterTypes": [
+            "long",
+            "long"
+          ]
+        },
+        {
+          "name": "floorDivExact",
+          "parameterTypes": [
+            "int",
+            "int"
+          ]
+        },
+        {
+          "name": "floorDivExact",
+          "parameterTypes": [
+            "long",
+            "long"
+          ]
+        },
+        {
+          "name": "floorMod",
+          "parameterTypes": [
+            "int",
+            "int"
+          ]
+        },
+        {
+          "name": "floorMod",
+          "parameterTypes": [
+            "long",
+            "int"
+          ]
+        },
+        {
+          "name": "floorMod",
+          "parameterTypes": [
+            "long",
+            "long"
+          ]
+        },
+        {
+          "name": "fma",
+          "parameterTypes": [
+            "double",
+            "double",
+            "double"
+          ]
+        },
+        {
+          "name": "fma",
+          "parameterTypes": [
+            "float",
+            "float",
+            "float"
+          ]
+        },
+        {
+          "name": "getExponent",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "getExponent",
+          "parameterTypes": [
+            "float"
+          ]
+        },
+        {
+          "name": "hypot",
+          "parameterTypes": [
+            "double",
+            "double"
+          ]
+        },
+        {
+          "name": "incrementExact",
+          "parameterTypes": [
+            "int"
+          ]
+        },
+        {
+          "name": "incrementExact",
+          "parameterTypes": [
+            "long"
+          ]
+        },
+        {
+          "name": "log",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "log10",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "log1p",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "max",
+          "parameterTypes": [
+            "double",
+            "double"
+          ]
+        },
+        {
+          "name": "max",
+          "parameterTypes": [
+            "float",
+            "float"
+          ]
+        },
+        {
+          "name": "max",
+          "parameterTypes": [
+            "int",
+            "int"
+          ]
+        },
+        {
+          "name": "max",
+          "parameterTypes": [
+            "long",
+            "long"
+          ]
+        },
+        {
+          "name": "min",
+          "parameterTypes": [
+            "double",
+            "double"
+          ]
+        },
+        {
+          "name": "min",
+          "parameterTypes": [
+            "float",
+            "float"
+          ]
+        },
+        {
+          "name": "min",
+          "parameterTypes": [
+            "int",
+            "int"
+          ]
+        },
+        {
+          "name": "min",
+          "parameterTypes": [
+            "long",
+            "long"
+          ]
+        },
+        {
+          "name": "multiplyExact",
+          "parameterTypes": [
+            "int",
+            "int"
+          ]
+        },
+        {
+          "name": "multiplyExact",
+          "parameterTypes": [
+            "long",
+            "int"
+          ]
+        },
+        {
+          "name": "multiplyExact",
+          "parameterTypes": [
+            "long",
+            "long"
+          ]
+        },
+        {
+          "name": "multiplyFull",
+          "parameterTypes": [
+            "int",
+            "int"
+          ]
+        },
+        {
+          "name": "multiplyHigh",
+          "parameterTypes": [
+            "long",
+            "long"
+          ]
+        },
+        {
+          "name": "negateExact",
+          "parameterTypes": [
+            "int"
+          ]
+        },
+        {
+          "name": "negateExact",
+          "parameterTypes": [
+            "long"
+          ]
+        },
+        {
+          "name": "nextAfter",
+          "parameterTypes": [
+            "double",
+            "double"
+          ]
+        },
+        {
+          "name": "nextAfter",
+          "parameterTypes": [
+            "float",
+            "double"
+          ]
+        },
+        {
+          "name": "nextDown",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "nextDown",
+          "parameterTypes": [
+            "float"
+          ]
+        },
+        {
+          "name": "nextUp",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "nextUp",
+          "parameterTypes": [
+            "float"
+          ]
+        },
+        {
+          "name": "pow",
+          "parameterTypes": [
+            "double",
+            "double"
+          ]
+        },
+        {
+          "name": "powExact",
+          "parameterTypes": [
+            "int",
+            "int"
+          ]
+        },
+        {
+          "name": "powExact",
+          "parameterTypes": [
+            "long",
+            "int"
+          ]
+        },
+        {
+          "name": "random",
+          "parameterTypes": []
+        },
+        {
+          "name": "rint",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "round",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "round",
+          "parameterTypes": [
+            "float"
+          ]
+        },
+        {
+          "name": "scalb",
+          "parameterTypes": [
+            "double",
+            "int"
+          ]
+        },
+        {
+          "name": "scalb",
+          "parameterTypes": [
+            "float",
+            "int"
+          ]
+        },
+        {
+          "name": "signum",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "signum",
+          "parameterTypes": [
+            "float"
+          ]
+        },
+        {
+          "name": "sin",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "sinh",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "sqrt",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "subtractExact",
+          "parameterTypes": [
+            "int",
+            "int"
+          ]
+        },
+        {
+          "name": "subtractExact",
+          "parameterTypes": [
+            "long",
+            "long"
+          ]
+        },
+        {
+          "name": "tan",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "tanh",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "toDegrees",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "toIntExact",
+          "parameterTypes": [
+            "long"
+          ]
+        },
+        {
+          "name": "toRadians",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "ulp",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "ulp",
+          "parameterTypes": [
+            "float"
+          ]
+        },
+        {
+          "name": "unsignedMultiplyExact",
+          "parameterTypes": [
+            "int",
+            "int"
+          ]
+        },
+        {
+          "name": "unsignedMultiplyExact",
+          "parameterTypes": [
+            "long",
+            "int"
+          ]
+        },
+        {
+          "name": "unsignedMultiplyExact",
+          "parameterTypes": [
+            "long",
+            "long"
+          ]
+        },
+        {
+          "name": "unsignedMultiplyHigh",
+          "parameterTypes": [
+            "long",
+            "long"
+          ]
+        },
+        {
+          "name": "unsignedPowExact",
+          "parameterTypes": [
+            "int",
+            "int"
+          ]
+        },
+        {
+          "name": "unsignedPowExact",
+          "parameterTypes": [
+            "long",
+            "int"
+          ]
+        }
+      ]
     },
     {
       "type": "java.lang.Module",
@@ -2419,6 +3129,612 @@
       "type": "org.apache.logging.log4j.Logger"
     },
     {
+      "type": "org.apache.lucene.analysis.ar.ArabicAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.bg.BulgarianAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.bn.BengaliAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.br.BrazilianAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.ca.CatalanAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.cjk.CJKAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.ckb.SoraniAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.classic.ClassicAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.core.KeywordAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.core.SimpleAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.core.StopAnalyzer"
+    },
+    {
+      "type": "org.apache.lucene.analysis.core.UnicodeWhitespaceAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.core.WhitespaceAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.custom.CustomAnalyzer"
+    },
+    {
+      "type": "org.apache.lucene.analysis.cz.CzechAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.da.DanishAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.de.GermanAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.el.GreekAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.email.UAX29URLEmailAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.en.EnglishAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.es.SpanishAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.et.EstonianAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.eu.BasqueAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.fa.PersianAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.fi.FinnishAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.fr.FrenchAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.ga.IrishAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.gl.GalicianAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.hi.HindiAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.hu.HungarianAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.hy.ArmenianAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.id.IndonesianAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.it.ItalianAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.lt.LithuanianAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.lv.LatvianAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.miscellaneous.ConcatenateGraphFilter$BytesRefBuilderTermAttributeImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.miscellaneous.LimitTokenCountAnalyzer"
+    },
+    {
+      "type": "org.apache.lucene.analysis.ne.NepaliAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.nl.DutchAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.no.NorwegianAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.pt.PortugueseAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.query.QueryAutoStopWordAnalyzer"
+    },
+    {
+      "type": "org.apache.lucene.analysis.ro.RomanianAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.ru.RussianAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.shingle.ShingleAnalyzerWrapper",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.sr.SerbianAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.standard.StandardAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.sv.SwedishAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.ta.TamilAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.te.TeluguAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.th.ThaiAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.tokenattributes.BytesTermAttributeImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.tokenattributes.CharTermAttributeImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.tokenattributes.FlagsAttributeImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.tokenattributes.KeywordAttributeImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.tokenattributes.OffsetAttributeImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.tokenattributes.PackedTokenAttributeImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.tokenattributes.PayloadAttributeImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.tokenattributes.PositionIncrementAttributeImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.tokenattributes.PositionLengthAttributeImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.tokenattributes.SentenceAttributeImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.tokenattributes.TermFrequencyAttributeImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.tokenattributes.TypeAttributeImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.analysis.tr.TurkishAnalyzer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.index.Term"
+    },
+    {
+      "type": "org.apache.lucene.internal.hppc.IntHashSet"
+    },
+    {
+      "type": "org.apache.lucene.search.BoostAttributeImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.search.MaxNonCompetitiveBoostAttributeImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.lucene.store.DataOutput"
+    },
+    {
+      "type": "org.apache.lucene.util.BitSet"
+    },
+    {
+      "type": "org.apache.lucene.util.ByteBlockPool"
+    },
+    {
+      "type": "org.apache.lucene.util.BytesRef"
+    },
+    {
+      "type": "org.apache.lucene.util.BytesRefBlockPool"
+    },
+    {
+      "type": "org.apache.lucene.util.BytesRefHash"
+    },
+    {
+      "type": "org.apache.lucene.util.SparseFixedBitSet"
+    },
+    {
+      "type": "org.apache.lucene.util.fst.FST"
+    },
+    {
+      "type": "org.apache.lucene.util.fst.FSTCompiler$Arc[]"
+    },
+    {
+      "type": "org.apache.lucene.util.fst.GrowableByteArrayDataOutput"
+    },
+    {
       "type": "org.apache.ratis.metrics.impl.MetricRegistriesImpl"
     },
     {
@@ -2830,6 +4146,53 @@
     },
     {
       "type": "org.slf4j.jul.JULServiceProvider"
+    },
+    {
+      "type": "org.tartarus.snowball.ext.FinnishStemmer",
+      "methods": [
+        {
+          "name": "r_LONG",
+          "parameterTypes": []
+        },
+        {
+          "name": "r_VI",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.tartarus.snowball.ext.HindiStemmer",
+      "methods": [
+        {
+          "name": "r_CONSONANT",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.tartarus.snowball.ext.IndonesianStemmer",
+      "methods": [
+        {
+          "name": "r_KER",
+          "parameterTypes": []
+        },
+        {
+          "name": "r_SUFFIX_AN_OK",
+          "parameterTypes": []
+        },
+        {
+          "name": "r_SUFFIX_I_OK",
+          "parameterTypes": []
+        },
+        {
+          "name": "r_SUFFIX_KAN_OK",
+          "parameterTypes": []
+        },
+        {
+          "name": "r_VOWEL",
+          "parameterTypes": []
+        }
+      ]
     },
     {
       "type": "org.xnio.Connection"

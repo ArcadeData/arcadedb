@@ -47,5 +47,10 @@ public class BothPathItem extends MatchPathItem {
     }
   }
 
+  @Override
+  protected MatchPathItem newInstance() {
+    return new BothPathItem();
+  }
+
 }
 /* JavaCC - OriginalChecksum=061ff26f18cfa0c561ce9b98ef919173 (do not edit this line) */
