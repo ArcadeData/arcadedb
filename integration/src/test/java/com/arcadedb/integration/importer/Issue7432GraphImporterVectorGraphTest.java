@@ -57,6 +57,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * follows every completed import cancelled it. The reporter lost a 20-minute build over 4.2M vectors five seconds
  * after "Import complete".
  * <p>
+ * Since issue #9575 an edge source is no longer read in that gap: it is streamed into its own edge batch, so the
+ * gap holds no source code at all. The importer's suspension still spans it, and the stall below, now inside the
+ * edge batch, sees both suspensions: the batch's and the importer's.
+ * <p>
  * The fixture is the reporter's shape at toy scale: a JSONL vertex file with an embedding per row, a tab-separated
  * edge file, a unique index on the id and an INT8 vector index storing its vectors in the graph.
  *
@@ -93,10 +97,11 @@ class Issue7432GraphImporterVectorGraphTest {
   }
 
   /**
-   * The edge source stalls for several inactivity windows before yielding its first row. In the importer that
-   * stall lands exactly between the vertex batch's close and the edge batch's open, which is the gap the rebuild
-   * used to fire in. One build for the whole load, run by the importer itself before {@code run()} returns, and
-   * a database closed the moment the import returns reopens with that graph on disk.
+   * The edge source stalls for several inactivity windows before yielding its first row. That stall used to land
+   * exactly between the vertex batch's close and the edge batch's open, the gap the rebuild used to fire in; since
+   * issue #9575 it lands inside the batch that streams the source. One build for the whole load, run by the
+   * importer itself before {@code run()} returns, and a database closed the moment the import returns reopens with
+   * that graph on disk.
    */
   @Test
   void theRebuildWaitsForTheWholeImportAndTheGraphIsBuiltBeforeRunReturns() throws Exception {
@@ -109,16 +114,17 @@ class Issue7432GraphImporterVectorGraphTest {
           v.floatArrayProperty("embedding", "embedding");
         })
         .edgeSource("CITE", new StallingSource(new CsvRowSource(DATA_DIR + "/edges.tsv", '\t', 0), TIMEOUT_MS * 6L, () -> {
-          // Observed from inside the gap, where the vertex batch is closed and no edge batch is open yet. Without
-          // the importer's own suspension the timer has fired by now and, on a graph this small, built
-          // synchronously on its own thread - which the count after run() cannot tell apart from the importer's
-          // build, because that one finds nothing pending and skips.
+          // Observed after the vertex batch closed, with the edge batch streaming this source open. Had the timer
+          // fired in between it would, on a graph this small, have built synchronously on its own thread - which
+          // the count after run() cannot tell apart from the importer's build, because that one finds nothing
+          // pending and skips.
           final Map<String, Long> midGap = index.getStats();
           assertThat(midGap.get("graphRebuildCount"))
               .as("no rebuild fires in the gap between the vertex pass and the edge pass (issue #7432)").isZero();
           assertThat(midGap.get("asyncRebuildInProgress")).as("nor is one running").isZero();
           assertThat(midGap.get("backgroundMaintenanceSuspensions"))
-              .as("the importer's suspension is what holds the timer off while no batch is open").isEqualTo(1L);
+              .as("the importer's suspension is held alongside the edge batch's: it is what spans the gap between "
+                  + "two batches").isEqualTo(2L);
         }), e -> {
           e.from("from_id", "WORK");
           e.to("to_id", "WORK");
@@ -260,7 +266,7 @@ class Issue7432GraphImporterVectorGraphTest {
 
   /**
    * Wraps a source so that its first row comes only after {@code stallMs} of running time: what an LSM compaction
-   * or a GC pause looks like from inside the vector index, placed where the importer has no batch open. Runs
+   * or a GC pause looks like from inside the vector index, placed after the vertex batch has closed. Runs
    * {@code afterStall} before the first row, which is where the test looks at what the stall did.
    */
   private static final class StallingSource implements GraphImporter.RecordSource {

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.integration.importer.graph;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
@@ -37,6 +38,8 @@ import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.FileUtils;
 
 import java.io.File;
+import java.lang.management.GarbageCollectorMXBean;
+import java.lang.management.ManagementFactory;
 import java.nio.file.Files;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -47,6 +50,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -60,14 +64,23 @@ import java.util.logging.Level;
 /**
  * High-performance, declarative graph importer using a CSR-first architecture:
  * <ol>
- *   <li><b>Pass 1</b> — Process each data source once: create vertices with full properties,
- *       collect graph topology as compressed int arrays (~300 MB for 8M vertices / 15M edges).</li>
- *   <li><b>Pass 2</b> — Create all edges from the in-memory topology, one batch per edge type
- *       with bidirectional=true for full IN+OUT traversal.</li>
+ *   <li><b>Pass 1</b> — Process each vertex source once: create vertices with full properties,
+ *       and collect the edges a vertex source declares as compressed int arrays.</li>
+ *   <li><b>Pass 2</b> — Create all edges, one batch per edge type with bidirectional=true for full
+ *       IN+OUT traversal: first the collected ones, then each edge source, streamed straight from its
+ *       file into its batch.</li>
  *   <li><b>Vector graphs</b> — Build the graph of every LSM vector index on a type the import wrote to,
  *       synchronously, so the index is queryable at index speed when {@link #run()} returns. Opt out with
  *       {@link Builder#withVectorGraphBuild(boolean)} to leave it to the index's own background rebuild.</li>
  * </ol>
+ * <p>
+ * <b>Memory.</b> What the import keeps grows with the vertex count, not with the edge count: per vertex,
+ * its RID (8 bytes) and its identity in a hash map (11 to 17 bytes, 17 to 26 for a key wider than an
+ * {@code int}), plus, while the edges are written, the head of its two edge lists in the edge
+ * {@link GraphBatch} (32 to 48 bytes). That is roughly 12 to 17 GB for 200M vertices, on top of the page
+ * cache ({@code arcadedb.maxPageRAM}, a quarter of the heap by default). A pass logs how far it has got
+ * every {@value #PROGRESS_INTERVAL_MS} ms, and warns when the JVM spends most of its time collecting
+ * garbage, which is what a heap too small for the load looks like (issue #9575).
  * <p>
  * The speculative background maintenance of the database's indexes (the vector index's inactivity rebuild) is
  * suspended for the whole of {@link #run()}, not only while one of its batches is open: the gap between the two
@@ -127,6 +140,28 @@ public class GraphImporter implements AutoCloseable {
    * why {@link #processVertexSource} reports the committed count rather than the count read.
    */
   private static final int COMMIT_EVERY_ROWS = 50_000;
+
+  /**
+   * How a vertex RID is packed into one {@code long} (issue #9575): the bucket id above, the position in the low
+   * {@value #RID_POSITION_BITS} bits - the layout {@code GraphBatch} already keys its vertices by.
+   */
+  static final int  RID_POSITION_BITS = 40;
+  static final long RID_POSITION_MASK = (1L << RID_POSITION_BITS) - 1;
+  private static final int MAX_PACKED_BUCKET_ID = (1 << (Long.SIZE - 1 - RID_POSITION_BITS)) - 1;
+
+  /** Rows between two looks at the clock while streaming edges: a power of two minus one, used as a mask. */
+  static final int  PROGRESS_ROW_MASK    = (1 << 16) - 1;
+  /** How often a pass that is still running says how far it has got. */
+  static final long PROGRESS_INTERVAL_MS = 30_000;
+  /**
+   * The share of a progress interval spent in garbage collection pauses above which the import warns that the heap
+   * is too small for it. A JVM that is short of heap rarely throws: it collects back to back and the load slows to a
+   * crawl, which from the outside looks like a hang (issue #9575).
+   */
+  static final int  GC_PRESSURE_PERCENT  = 50;
+
+  /** The largest array the JVM reliably allocates. */
+  static final int MAX_ARRAY_LENGTH = Integer.MAX_VALUE - 8;
 
   private final Database                            database;
   private final List<VertexSourceDef>               vertexSources;
@@ -1063,10 +1098,14 @@ public class GraphImporter implements AutoCloseable {
       // ── Pass 1: Create vertices + collect topology ──
       LogManager.instance().log(this, Level.INFO, "Pass 1: Vertices + Topology");
 
+      // No edge segment is pre-allocated. It used to be, one per vertex at the batch's fixed initial size of 2 KB, and
+      // the edges pass then filled a few dozen bytes of it: at 200M vertices that is ~400 GB written during the
+      // vertex pass for nothing (issue #9575). The edges pass creates each segment at the exact size its edges need,
+      // and writes the head pointers of a vertex once, both directions together, when its batch closes.
       try (final GraphBatch batch = database.batch()
           .withBidirectional(false)
           .withWAL(false)
-          .withPreAllocateEdgeChunks(true)
+          .withPreAllocateEdgeChunks(false)
           .withCommitEvery(0)
           .build()) {
 
@@ -1074,24 +1113,40 @@ public class GraphImporter implements AutoCloseable {
           processVertexSource(batch, vsd);
       }
 
-      // Process edge-only sources
-      for (int i = 0; i < edgeSources.size(); i++)
-        processEdgeSource(edgeSources.get(i), i);
-
-      // Free ID maps (edges now use internal indices)
-      for (final TypeState ts : typeStates.values()) {
-        ts.idToIdx = null;
-        ts.nameToIdx = null;
+      // Name keys resolve only the edges a vertex source declares, all of them collected by now. An id map is
+      // still needed by the edge sources that name its type, and only by them: the others go now, before the
+      // edge batches open, as all of them did when the edge sources were collected in this pass
+      final Set<String> streamedEndpoints = new HashSet<>();
+      for (final EdgeSourceDef esd : edgeSources) {
+        streamedEndpoints.add(esd.config.fromVertexType);
+        streamedEndpoints.add(esd.config.toVertexType);
+      }
+      for (final Map.Entry<String, TypeState> entry : typeStates.entrySet()) {
+        entry.getValue().nameToIdx = null;
+        if (!streamedEndpoints.contains(entry.getKey()))
+          entry.getValue().idToIdx = null;
       }
 
-      LogManager.instance().log(this, Level.INFO, "  Topology: %,d vertices, %,d edge refs", totalVertices,
-          countEdgeRefs());
+      LogManager.instance().log(this, Level.INFO, "  Topology: %,d vertices, %,d edge refs from the vertex sources",
+          totalVertices, countEdgeRefs());
 
       // ── Pass 2: Create edges from topology ──
       LogManager.instance().log(this, Level.INFO, "Pass 2: Edges (bidirectional)");
 
-      for (final EdgeCollector ec : edgeCollectors.values())
-        flushEdgeType(ec);
+      // Each collector is dropped as soon as its edges are written, so the next batch has its buffers back
+      for (final Iterator<EdgeCollector> it = edgeCollectors.values().iterator(); it.hasNext(); ) {
+        flushEdgeType(it.next());
+        it.remove();
+      }
+
+      // An edge source is streamed into its batch rather than collected first: its rows are the bulk of a large
+      // graph, and buffering them took 8 bytes an edge before the first one was written, in arrays that cannot
+      // hold more than 2^31 entries at all (issue #9575)
+      for (final EdgeSourceDef esd : edgeSources)
+        processEdgeSource(esd);
+
+      for (final TypeState ts : typeStates.values())
+        ts.idToIdx = null;
 
       // ── Vector graphs: the part of the index state the load leaves deferred, built before this returns ──
       // Still under the suspension: a build that ran here with the timer live could race an inactivity rebuild
@@ -1320,8 +1375,8 @@ public class GraphImporter implements AutoCloseable {
     final TypeState ts = new TypeState();
     typeStates.put(vc.typeName, ts);
 
-    final IntList bk = new IntList(100_000);
-    final LongList ps = new LongList(100_000);
+    final LongList rids = new LongList(100_000);
+    final ProgressLog progress = new ProgressLog(vc.typeName, "vertices");
     final List<Object> propBuf = new ArrayList<>(vc.properties.size() * 2 + 4);
 
     // Prepare edge collectors for this source's edge definitions
@@ -1408,8 +1463,7 @@ public class GraphImporter implements AutoCloseable {
         }
 
         final MutableVertex v = batch.createVertex(vc.typeName, propBuf.toArray());
-        bk.add(v.getIdentity().getBucketId());
-        ps.add(v.getIdentity().getPosition());
+        rids.add(packRID(v.getIdentity()));
 
         // Collect edges
         for (final EdgeDef ed : resolvedEdges)
@@ -1440,6 +1494,7 @@ public class GraphImporter implements AutoCloseable {
           committed[0] = count[0];
           database.begin();
           txOpen[0] = true;
+          progress.report(count[0]);
         }
       });
 
@@ -1480,13 +1535,15 @@ public class GraphImporter implements AutoCloseable {
       // most valuable precisely when the import failed, and leaving it at zero reads as "nothing was
       // written" for a source that committed hundreds of thousands of rows.
       //
-      // On the failure path the two arrays hold every row READ while ts.count names only the
-      // committed prefix, so the tail addresses records the rollback took away. Nothing reads them
-      // there: run() has no per-source catch, so the failure aborts the import before pass 2 and
-      // before the deferred self-edge resolution below, and close() clears typeStates. Give run() a
-      // continue-on-error mode and this has to become a trim to committed[0] on the failure path
-      ts.buckets = bk.trim();
-      ts.positions = ps.trim();
+      // On the failure path the list holds every row READ while ts.count names only the committed
+      // prefix, so the tail addresses records the rollback took away. Nothing reads them there:
+      // run() has no per-source catch, so the failure aborts the import before pass 2 and before
+      // the deferred self-edge resolution below, and close() clears typeStates. Give run() a
+      // continue-on-error mode and this has to stop at committed[0] on the failure path.
+      //
+      // The backing array is kept as it is rather than trimmed: a trim copies it, and at 200M
+      // vertices the copy is 1.6 GB allocated while the original is still alive (issue #9575)
+      ts.rids = rids.data;
       ts.count = committed[0];
       totalVertices += ts.count;
     }
@@ -1603,78 +1660,7 @@ public class GraphImporter implements AutoCloseable {
   }
 
   // ═══════════════════════════════════════════════════════════════════
-  //  Pass 1: Process edge-only sources
-  // ═══════════════════════════════════════════════════════════════════
-
-  private void processEdgeSource(final EdgeSourceDef esd, final int sourceIndex) throws Exception {
-    final long t = System.currentTimeMillis();
-    final EdgeSourceConfig cfg = esd.config;
-    final TypeState fromTs = typeStates.get(cfg.fromVertexType);
-    final TypeState toTs = typeStates.get(cfg.toVertexType);
-
-    // Own collector per edge source, never the one vertex-derived edges of the same type and
-    // endpoints share. A collector's property buffers are indexed by the collector-wide edge index,
-    // and only an edge source contributes properties: sharing would start its buffers at index 0
-    // against a srcIdx that already holds the vertex-derived rows, silently assigning this source's
-    // values to those edges and then running off the end of the buffer. Two edge sources declaring
-    // the same edge type with different property sets would collide the same way
-    final EdgeCollector ec = getOrCreateEdgeCollector(cfg.edgeType, cfg.fromVertexType, cfg.toVertexType,
-        "src" + sourceIndex);
-    final int[] count = {0};
-    final long unresolvedBefore = unresolvedEdges;
-
-    esd.source.forEach(record -> {
-      if (limit > 0 && count[0] >= limit)
-        return;
-      final int si = fromTs.idToIdx.get(identity(record, cfg.fromAttribute));
-      final int di = toTs.idToIdx.get(identity(record, cfg.toAttribute));
-      if (si < 0 || di < 0)
-        unresolvedEdges++;
-      else {
-        ec.srcIdx.add(si);
-        ec.dstIdx.add(di);
-        for (final PropDef pd : cfg.properties) {
-          switch (pd.type) {
-          case INTEGER:
-            if (ec.intProps == null)
-              ec.intProps = new HashMap<>();
-            ec.intProps.computeIfAbsent(pd.name, k -> new IntList(BUFFER_INITIAL_CAPACITY)).add(readInt(record, pd));
-            break;
-          case LONG:
-            if (ec.longProps == null)
-              ec.longProps = new HashMap<>();
-            ec.longProps.computeIfAbsent(pd.name, k -> new ArrayList<>(BUFFER_INITIAL_CAPACITY)).add(readLong(record, pd));
-            break;
-          case DOUBLE:
-            if (ec.doubleProps == null)
-              ec.doubleProps = new HashMap<>();
-            ec.doubleProps.computeIfAbsent(pd.name, k -> new DoubleList(BUFFER_INITIAL_CAPACITY)).add(readDouble(record, pd));
-            break;
-          default:
-            // STRING, BOOLEAN, DATETIME, FLOAT_ARRAY and LIST all go through the same reader
-            // vertices use, so a spec means the same thing on an edge source as on a vertex
-            if (ec.objProps == null)
-              ec.objProps = new HashMap<>();
-            ec.objProps.computeIfAbsent(pd.name, k -> new ArrayList<>(BUFFER_INITIAL_CAPACITY)).add(readProperty(record, pd));
-            break;
-          }
-        }
-      }
-      count[0]++;
-    });
-
-    final long unresolved = unresolvedEdges - unresolvedBefore;
-    LogManager.instance().log(this, Level.INFO, "  %-12s %,d edges (%,d ms)",
-        cfg.edgeType, ec.srcIdx.size, System.currentTimeMillis() - t);
-    if (unresolved > 0)
-      LogManager.instance().log(this, Level.WARNING,
-          "  %-12s %,d rows name an identity no %s vertex carries: those edges were skipped",
-          cfg.edgeType, unresolved,
-          cfg.fromVertexType.equals(cfg.toVertexType) ? cfg.fromVertexType : cfg.fromVertexType + "/" + cfg.toVertexType);
-  }
-
-  // ═══════════════════════════════════════════════════════════════════
-  //  Pass 2: Create edges from topology
+  //  Pass 2: Create edges
   // ═══════════════════════════════════════════════════════════════════
 
   private void flushEdgeType(final EdgeCollector ec) {
@@ -1684,29 +1670,18 @@ public class GraphImporter implements AutoCloseable {
     final String edgeType = ec.edgeTypeName;
     final TypeState srcTs = typeStates.get(ec.srcType);
     final TypeState dstTs = typeStates.get(ec.dstType);
+    final ProgressLog progress = new ProgressLog(edgeType, "edges");
 
-    try (final GraphBatch batch = database.batch()
-        .withBatchSize(500_000)
-        .withBidirectional(true)
-        .withWAL(false)
-        .withParallelFlush(false)
-        .withCommitEvery(50_000)
-        .build()) {
+    try (final GraphBatch batch = newEdgeBatch()) {
+      final int[] sSrc = ec.srcIdx.data;
+      final int[] sDst = ec.dstIdx.data;
+      final int size = ec.srcIdx.size;
 
-      final int[] sSrc = ec.srcIdx.trim();
-      final int[] sDst = ec.dstIdx.trim();
-      final boolean hasProps = ec.hasProperties();
-
-      for (int i = 0; i < sSrc.length; i++) {
-        final RID src = new RID(srcTs.buckets[sSrc[i]], srcTs.positions[sSrc[i]]);
-        final RID dst = new RID(dstTs.buckets[sDst[i]], dstTs.positions[sDst[i]]);
-        if (hasProps) {
-          final List<Object> props = new ArrayList<>();
-          ec.appendProperties(props, i);
-          batch.newEdge(src, edgeType, dst, props.toArray());
-        } else {
-          batch.newEdge(src, edgeType, dst);
-        }
+      // A vertex-derived edge carries no properties: only an edge source declares any
+      for (int i = 0; i < size; i++) {
+        batch.newEdge(srcTs.rid(sSrc[i]), edgeType, dstTs.rid(sDst[i]));
+        if ((i & PROGRESS_ROW_MASK) == 0)
+          progress.report(i);
       }
     }
     totalEdges += ec.srcIdx.size;
@@ -1714,26 +1689,113 @@ public class GraphImporter implements AutoCloseable {
         edgeType, ec.srcIdx.size, ec.srcType, ec.dstType, System.currentTimeMillis() - t);
   }
 
+  /**
+   * Streams an edge-only source straight into a batch of its own: each row is resolved against the
+   * identity map of its endpoint types and handed to the batch, which buffers and sorts a bounded
+   * window of edges by itself. Nothing the source holds is kept, so the import's memory no longer
+   * grows with the edge count (issue #9575). It used to be collected first, 8 bytes an edge before
+   * the first one was written, into arrays that cannot hold more than 2^31 entries at all.
+   * <p>
+   * A row that fails (a value its declared type cannot read) aborts the import as it always did,
+   * but the edges of the rows before it are on the disk by then: the batch is closed rather than
+   * abandoned on the way out, because abandoning it would leave the edges its earlier commits wrote
+   * unreachable from their vertices. The warning logged says how many there are.
+   */
+  private void processEdgeSource(final EdgeSourceDef esd) throws Exception {
+    final long t = System.currentTimeMillis();
+    final EdgeSourceConfig cfg = esd.config;
+    final String edgeType = cfg.edgeType;
+    final TypeState fromTs = typeStates.get(cfg.fromVertexType);
+    final TypeState toTs = typeStates.get(cfg.toVertexType);
+    final List<PropDef> propDefs = cfg.properties;
+    final List<Object> props = new ArrayList<>(propDefs.size() * 2);
+    final long[] rows = {0};
+    final long[] created = {0};
+    final long unresolvedBefore = unresolvedEdges;
+    final ProgressLog progress = new ProgressLog(edgeType, "edge rows");
+
+    try (final GraphBatch batch = newEdgeBatch()) {
+      esd.source.forEach(record -> {
+        if (limit > 0 && rows[0] >= limit)
+          return;
+        rows[0]++;
+        if ((rows[0] & PROGRESS_ROW_MASK) == 0)
+          progress.report(rows[0]);
+
+        final int si = fromTs.idToIdx.get(identity(record, cfg.fromAttribute));
+        final int di = toTs.idToIdx.get(identity(record, cfg.toAttribute));
+        if (si < 0 || di < 0) {
+          unresolvedEdges++;
+          return;
+        }
+
+        props.clear();
+        for (final PropDef pd : propDefs) {
+          // INTEGER, LONG and DOUBLE always carry a value, 0 for a blank cell, as the typed accessors
+          // answer; everything else goes through the reader vertices use, so a spec means the same
+          // thing on an edge source as on a vertex, and a blank one sets nothing
+          final Object value = switch (pd.type) {
+            case INTEGER -> readInt(record, pd);
+            case LONG -> readLong(record, pd);
+            case DOUBLE -> readDouble(record, pd);
+            default -> readProperty(record, pd);
+          };
+          if (value != null) {
+            props.add(pd.name);
+            props.add(value);
+          }
+        }
+        if (props.isEmpty())
+          batch.newEdge(fromTs.rid(si), edgeType, toTs.rid(di));
+        else
+          batch.newEdge(fromTs.rid(si), edgeType, toTs.rid(di), props.toArray());
+        created[0]++;
+      });
+    } catch (final Exception | Error e) {
+      if (created[0] > 0)
+        LogManager.instance().log(this, Level.WARNING,
+            "  %-12s failed at row %,d: the import is PARTIAL - the %,d edges of the rows before it are on the disk",
+            edgeType, rows[0], created[0]);
+      throw e;
+    } finally {
+      totalEdges += created[0];
+    }
+
+    final long unresolved = unresolvedEdges - unresolvedBefore;
+    LogManager.instance().log(this, Level.INFO, "  %-12s %,8d (%s→%s, %,d ms)",
+        edgeType, created[0], cfg.fromVertexType, cfg.toVertexType, System.currentTimeMillis() - t);
+    if (unresolved > 0)
+      LogManager.instance().log(this, Level.WARNING,
+          "  %-12s %,d rows name an identity no %s vertex carries: those edges were skipped",
+          edgeType, unresolved,
+          cfg.fromVertexType.equals(cfg.toVertexType) ? cfg.fromVertexType : cfg.fromVertexType + "/" + cfg.toVertexType);
+  }
+
+  private GraphBatch newEdgeBatch() {
+    return database.batch()
+        .withBatchSize(500_000)
+        .withBidirectional(true)
+        .withWAL(false)
+        .withParallelFlush(false)
+        .withCommitEvery(50_000)
+        .build();
+  }
+
   // ═══════════════════════════════════════════════════════════════════
   //  Internal helpers
   // ═══════════════════════════════════════════════════════════════════
 
-  private EdgeCollector getOrCreateEdgeCollector(final String edgeType, final String srcType, final String dstType) {
-    return getOrCreateEdgeCollector(edgeType, srcType, dstType, "");
-  }
-
   /**
    * Key by (edgeType, srcType, dstType) — the same edge type can connect different vertex type pairs
-   * (e.g. POSTED: User→Question and POSTED: User→Answer) — plus a discriminator that keeps each edge
-   * source's rows in a collector of its own. Vertex-derived edges carry no properties, so they all
-   * share the empty discriminator.
+   * (e.g. POSTED: User→Question and POSTED: User→Answer). Only vertex sources collect edges, and
+   * theirs carry no properties, so every edge of one triple can share a collector; an edge source is
+   * streamed and never gets one.
    * <p>
    * The parts are joined with a pipe, which a schema type name cannot contain, so two different
    * triples cannot collide on one key.
    */
-  private EdgeCollector getOrCreateEdgeCollector(final String edgeType, final String srcType, final String dstType,
-                                                 final String discriminator) {
-    final String key = edgeType + "|" + srcType + "|" + dstType + (discriminator.isEmpty() ? "" : "|" + discriminator);
+  private EdgeCollector getOrCreateEdgeCollector(final String edgeType, final String srcType, final String dstType) {
+    final String key = edgeType + "|" + srcType + "|" + dstType;
     return edgeCollectors.computeIfAbsent(key, k -> new EdgeCollector(edgeType, srcType, dstType));
   }
 
@@ -1838,16 +1900,99 @@ public class GraphImporter implements AutoCloseable {
     return n;
   }
 
+  static long packRID(final RID rid) {
+    final int bucketId = rid.getBucketId();
+    final long position = rid.getPosition();
+    if (bucketId < 0 || bucketId > MAX_PACKED_BUCKET_ID || position < 0 || position > RID_POSITION_MASK)
+      throw new IllegalStateException("Vertex " + rid + " is beyond what the import can address: the bucket id must be within 0.."
+          + MAX_PACKED_BUCKET_ID + " and the position within 0.." + RID_POSITION_MASK);
+    return ((long) bucketId << RID_POSITION_BITS) | position;
+  }
+
+  /**
+   * The share of {@code elapsedMs} that {@code gcMs} of collection pauses took, in percent, capped at 100: a
+   * collector running on several threads can report more pause time than wall clock went by.
+   */
+  static int gcSharePercent(final long gcMs, final long elapsedMs) {
+    if (elapsedMs <= 0 || gcMs <= 0)
+      return 0;
+    return (int) Math.min(100, gcMs * 100 / elapsedMs);
+  }
+
+  /**
+   * Milliseconds the JVM has spent in collection pauses since it started. A concurrent collector's own bean ("G1
+   * Concurrent GC", "ZGC Cycles", ...) is left out: its time runs alongside the application rather than stopping it.
+   */
+  static long gcPauseMillis() {
+    long total = 0;
+    for (final GarbageCollectorMXBean gc : ManagementFactory.getGarbageCollectorMXBeans()) {
+      final String name = gc.getName();
+      if (name.contains("Concurrent") || name.contains("Cycles"))
+        continue;
+      final long time = gc.getCollectionTime();
+      if (time > 0)
+        total += time;
+    }
+    return total;
+  }
+
+  /**
+   * Says how far a pass has got every {@link #PROGRESS_INTERVAL_MS}, and warns when the JVM spends most of that time
+   * collecting garbage. A pass over a source of hundreds of millions of rows takes hours, and used to say nothing
+   * between its first line and its last: a load running fine and one stuck in a heap too small for it looked the same
+   * (issue #9575).
+   */
+  final class ProgressLog {
+    private final String label;
+    private final String unit;
+    private       long   lastMs;
+    private       long   lastCount;
+    private       long   lastGcMs;
+
+    ProgressLog(final String label, final String unit) {
+      this.label = label;
+      this.unit = unit;
+      this.lastMs = System.currentTimeMillis();
+      this.lastGcMs = gcPauseMillis();
+    }
+
+    /** Logs {@code count}, the rows done so far, if the interval has gone by since the last line. */
+    void report(final long count) {
+      final long now = System.currentTimeMillis();
+      final long elapsed = now - lastMs;
+      if (elapsed < PROGRESS_INTERVAL_MS)
+        return;
+
+      final long gcMs = gcPauseMillis();
+      final int gcShare = gcSharePercent(gcMs - lastGcMs, elapsed);
+      final Runtime runtime = Runtime.getRuntime();
+      final String used = FileUtils.getSizeAsString(runtime.totalMemory() - runtime.freeMemory());
+      final String max = FileUtils.getSizeAsString(runtime.maxMemory());
+
+      LogManager.instance().log(GraphImporter.this, Level.INFO, "  %-12s %,d %s so far (%,d/s, heap %s of %s, %d%% of the time in GC)",
+          label, count, unit, (count - lastCount) * 1000 / elapsed, used, max, gcShare);
+      if (gcShare >= GC_PRESSURE_PERCENT)
+        LogManager.instance().log(GraphImporter.this, Level.WARNING,
+            "  %-12s the JVM spent %d%% of the last %,d s collecting garbage with %s of %s heap in use: the import is short of "
+                + "heap and slows down to a crawl. Restart it with a larger -Xmx, or with a smaller page cache "
+                + "(arcadedb.maxPageRAM, %,d MB now)",
+            label, gcShare, elapsed / 1000, used, max, database.getConfiguration().getValueAsLong(GlobalConfiguration.MAX_PAGE_RAM));
+
+      lastMs = now;
+      lastCount = count;
+      lastGcMs = gcMs;
+    }
+  }
+
   // ═══════════════════════════════════════════════════════════════════
   //  Internal data structures
   // ═══════════════════════════════════════════════════════════════════
 
   /**
    * Two places dispatch on this: {@link #readProperty} materializes a value for a vertex, and
-   * {@code processEdgeSource} routes INTEGER, LONG and DOUBLE into the primitive buffers an edge
-   * collector keeps for them and everything else through {@code readProperty} into {@code objProps}.
-   * A new type added here needs a case in the first and, unless it belongs in a primitive buffer,
-   * nothing in the second - the default branch already carries it.
+   * {@code processEdgeSource} reads INTEGER, LONG and DOUBLE through the typed accessors and
+   * everything else through {@code readProperty}. A new type added here needs a case in the first
+   * and nothing in the second - its default branch already carries it.
    */
   enum PropType {STRING, INTEGER, LONG, DOUBLE, BOOLEAN, DATETIME, FLOAT_ARRAY, LIST}
 
@@ -1917,60 +2062,30 @@ public class GraphImporter implements AutoCloseable {
   static class TypeState {
     IdIndex idToIdx   = new IdIndex();
     IdIndex nameToIdx = new IdIndex();
-    int[]   buckets;
-    long[]  positions;
+    // The RID of the vertex at each index, packed by packRID(): one long a vertex instead of an int
+    // bucket and a long position kept apart (issue #9575)
+    long[]  rids;
     int     count;
+
+    RID rid(final int idx) {
+      final long packed = rids[idx];
+      return new RID((int) (packed >>> RID_POSITION_BITS), packed & RID_POSITION_MASK);
+    }
   }
 
+  /**
+   * The edges a vertex source declares (a foreign key or a split field of its rows), as pairs of
+   * vertex indexes, held until every vertex they can point at exists.
+   */
   static class EdgeCollector {
     final String edgeTypeName, srcType, dstType;
     final IntList srcIdx = new IntList(BUFFER_INITIAL_CAPACITY);
     final IntList dstIdx = new IntList(BUFFER_INITIAL_CAPACITY);
-    Map<String, IntList>      intProps;
-    Map<String, List<Long>>   longProps;
-    Map<String, DoubleList>   doubleProps;
-    // Everything the primitive lists above cannot hold without boxing it anyway: strings, booleans,
-    // datetimes, vectors and lists. A null entry keeps the index aligned with srcIdx for a row where
-    // the attribute was missing, and is skipped when the edge is created.
-    Map<String, List<Object>> objProps;
 
     EdgeCollector(final String edgeTypeName, final String src, final String dst) {
       this.edgeTypeName = edgeTypeName;
       this.srcType = src;
       this.dstType = dst;
-    }
-
-    boolean hasProperties() {
-      return (intProps != null && !intProps.isEmpty())
-          || (longProps != null && !longProps.isEmpty())
-          || (doubleProps != null && !doubleProps.isEmpty())
-          || (objProps != null && !objProps.isEmpty());
-    }
-
-    void appendProperties(final List<Object> props, final int i) {
-      if (intProps != null)
-        for (final Map.Entry<String, IntList> pe : intProps.entrySet()) {
-          props.add(pe.getKey());
-          props.add(pe.getValue().data[i]);
-        }
-      if (longProps != null)
-        for (final Map.Entry<String, List<Long>> pe : longProps.entrySet()) {
-          props.add(pe.getKey());
-          props.add(pe.getValue().get(i));
-        }
-      if (doubleProps != null)
-        for (final Map.Entry<String, DoubleList> pe : doubleProps.entrySet()) {
-          props.add(pe.getKey());
-          props.add(pe.getValue().data[i]);
-        }
-      if (objProps != null)
-        for (final Map.Entry<String, List<Object>> pe : objProps.entrySet()) {
-          final Object value = pe.getValue().get(i);
-          if (value != null) {
-            props.add(pe.getKey());
-            props.add(value);
-          }
-        }
     }
   }
 
@@ -2085,7 +2200,7 @@ public class GraphImporter implements AutoCloseable {
     private void putNumeric(final long key, final int idx) {
       if (longKeys == null && key >= INT_KEY_MIN && key <= Integer.MAX_VALUE) {
         if (intKeys == null)
-          // Sized like the edge buffers rather than for a large import: the map doubles on growth,
+          // Sized like the edge buffers rather than for a large import: the map grows by half,
           // so a big source reaches its size in a handful of rehashes, while a schema with many
           // small types no longer pays a multi-megabyte table per type for a few hundred keys
           intKeys = new IntIntMap(BUFFER_INITIAL_CAPACITY);
@@ -2172,30 +2287,30 @@ public class GraphImporter implements AutoCloseable {
   }
 
   /**
-   * Open-addressing long→int hash map with Fibonacci hashing, the widened twin of
-   * {@link IntIntMap}.
+   * Open-addressing long→int hash map, the widened twin of {@link IntIntMap}.
+   * <p>
+   * The table can be any size and grows by half (issue #9575). A power-of-two table doubles, so a
+   * load that lands just above a power of two pays for almost twice the slots it needs: 209M keys
+   * took 2^29 slots, 6.4 GB, and 9.6 GB while the old table was being copied.
    */
   static final class LongIntMap {
     private static final long   EMPTY = Long.MIN_VALUE;
     private              long[] keys;
     private              int[]  values;
-    private int mask;
-    private int shift;
+    private int capacity;
     private int size;
     private int threshold;
 
     LongIntMap(final int expected) {
-      final int cap = Integer.highestOneBit(Math.max(16, (int) (expected / 0.7))) << 1;
-      keys = new long[cap];
-      values = new int[cap];
-      capacity(cap);
-      Arrays.fill(keys, EMPTY);
+      allocate(initialCapacity(expected));
     }
 
-    private void capacity(final int cap) {
-      mask = cap - 1;
-      shift = Long.SIZE - Integer.numberOfTrailingZeros(cap);
-      threshold = (int) (cap * 0.7);
+    private void allocate(final int cap) {
+      capacity = cap;
+      threshold = thresholdOf(cap);
+      keys = new long[cap];
+      values = new int[cap];
+      Arrays.fill(keys, EMPTY);
     }
 
     void put(final long key, final int value) {
@@ -2203,7 +2318,8 @@ public class GraphImporter implements AutoCloseable {
         resize();
       int i = hash(key);
       while (keys[i] != EMPTY && keys[i] != key)
-        i = (i + 1) & mask;
+        if (++i == capacity)
+          i = 0;
       if (keys[i] == EMPTY)
         size++;
       keys[i] = key;
@@ -2215,36 +2331,38 @@ public class GraphImporter implements AutoCloseable {
       while (keys[i] != EMPTY) {
         if (keys[i] == key)
           return values[i];
-        i = (i + 1) & mask;
+        if (++i == capacity)
+          i = 0;
       }
       return def;
     }
 
+    int capacity() {
+      return capacity;
+    }
+
     /**
-     * Fibonacci hashing: the top {@code log2(capacity)} bits of the product, which every bit of the
-     * key influences. Any lower window is a trap, because a key can zero it. Masking the low bits
-     * of {@code key * odd} makes the slot a function of the key's low bits alone; a fixed
-     * {@code >>> 32} reads better but still leaves a key with 45 trailing zeros zeroing bits 32
-     * through 44 of the product, sending every such key to slot 0. Ids allocated in blocks or
-     * carrying a fixed stride are ordinary, and either way the map degrades to a linear scan.
+     * Fibonacci hashing: the high 32 bits of the product, which every bit of the key influences,
+     * scaled onto the table by a multiply-shift. Any lower window is a trap, because a key can zero
+     * it. Masking the low bits of {@code key * odd} makes the slot a function of the key's low bits
+     * alone, and a key with 45 trailing zeros zeroes bits 32 through 44 of the product, sending every
+     * such key to slot 0. Ids allocated in blocks or carrying a fixed stride are ordinary, and either
+     * way the map degrades to a linear scan.
      */
     int hash(final long key) {
-      return (int) ((key * 0x9E3779B97F4A7C15L) >>> shift);
+      return (int) ((((key * 0x9E3779B97F4A7C15L) >>> 32) * capacity) >>> 32);
     }
 
     private void resize() {
-      final int newCap = keys.length << 1;
       final long[] ok = keys;
       final int[] ov = values;
-      keys = new long[newCap];
-      values = new int[newCap];
-      capacity(newCap);
-      Arrays.fill(keys, EMPTY);
+      allocate(grownTableCapacity(capacity));
       for (int i = 0; i < ok.length; i++)
         if (ok[i] != EMPTY) {
           int j = hash(ok[i]);
           while (keys[j] != EMPTY)
-            j = (j + 1) & mask;
+            if (++j == capacity)
+              j = 0;
           keys[j] = ok[i];
           values[j] = ov[i];
         }
@@ -2252,30 +2370,40 @@ public class GraphImporter implements AutoCloseable {
   }
 
   /**
-   * Open-addressing int→int hash map with Fibonacci hashing.
+   * Open-addressing int→int hash map with Fibonacci hashing, on a table of any size that grows by
+   * half, like {@link LongIntMap}.
    */
   static final class IntIntMap {
     // see LongIntMap.hash(): the same scramble, and the same reason for taking the high bits
     private static final int   EMPTY = Integer.MIN_VALUE;
     private              int[] keys;
     private              int[] values;
-    private int mask;
-    private int shift;
+    private int capacity;
     private int size;
     private int threshold;
 
-    int hash(final int key) {
-      return (int) ((key * 0x9E3779B97F4A7C15L) >>> shift);
+    IntIntMap(final int expected) {
+      allocate(initialCapacity(expected));
     }
 
-    private void capacity(final int cap) {
-      mask = cap - 1;
-      shift = Long.SIZE - Integer.numberOfTrailingZeros(cap);
-      threshold = (int) (cap * 0.7);
+    private void allocate(final int cap) {
+      capacity = cap;
+      threshold = thresholdOf(cap);
+      keys = new int[cap];
+      values = new int[cap];
+      Arrays.fill(keys, EMPTY);
+    }
+
+    int hash(final int key) {
+      return (int) ((((key * 0x9E3779B97F4A7C15L) >>> 32) * capacity) >>> 32);
     }
 
     int size() {
       return size;
+    }
+
+    int capacity() {
+      return capacity;
     }
 
     /** Rehashes every entry into {@code target}, for {@link IdIndex}'s one-shot widening. */
@@ -2285,20 +2413,13 @@ public class GraphImporter implements AutoCloseable {
           target.put(keys[i], values[i]);
     }
 
-    IntIntMap(final int expected) {
-      final int cap = Integer.highestOneBit(Math.max(16, (int) (expected / 0.7))) << 1;
-      keys = new int[cap];
-      values = new int[cap];
-      capacity(cap);
-      Arrays.fill(keys, EMPTY);
-    }
-
     void put(final int key, final int value) {
       if (size >= threshold)
         resize();
       int i = hash(key);
       while (keys[i] != EMPTY && keys[i] != key)
-        i = (i + 1) & mask;
+        if (++i == capacity)
+          i = 0;
       if (keys[i] == EMPTY)
         size++;
       keys[i] = key;
@@ -2310,36 +2431,67 @@ public class GraphImporter implements AutoCloseable {
       while (keys[i] != EMPTY) {
         if (keys[i] == key)
           return values[i];
-        i = (i + 1) & mask;
+        if (++i == capacity)
+          i = 0;
       }
       return def;
     }
 
     private void resize() {
-      final int newCap = keys.length << 1;
       final int[] ok = keys, ov = values;
-      keys = new int[newCap];
-      values = new int[newCap];
-      capacity(newCap);
-      Arrays.fill(keys, EMPTY);
+      allocate(grownTableCapacity(capacity));
       for (int i = 0; i < ok.length; i++)
         if (ok[i] != EMPTY) {
           int j = hash(ok[i]);
           while (keys[j] != EMPTY)
-            j = (j + 1) & mask;
+            if (++j == capacity)
+              j = 0;
           keys[j] = ok[i];
           values[j] = ov[i];
         }
     }
   }
 
+  /** Load factor of the identity maps: linear probing expects ~6 probes for a miss at 0.7. */
+  private static final double MAX_TABLE_LOAD = 0.7;
+
+  private static int initialCapacity(final int expected) {
+    return (int) Math.min(MAX_ARRAY_LENGTH, Math.max(16L, (long) (expected / MAX_TABLE_LOAD) + 1));
+  }
+
+  private static int thresholdOf(final int capacity) {
+    return (int) (capacity * MAX_TABLE_LOAD);
+  }
+
+  /** Half as much again, which brings the load down to just under 0.47 after a resize. */
+  static int grownTableCapacity(final int capacity) {
+    if (capacity >= MAX_ARRAY_LENGTH)
+      throw new IllegalStateException("The import cannot map more than " + thresholdOf(MAX_ARRAY_LENGTH) + " identities of one vertex type");
+    return (int) Math.min(MAX_ARRAY_LENGTH, (long) capacity + (capacity >> 1) + 1);
+  }
+
   /**
-   * Initial capacity of an {@link EdgeCollector}'s buffers. Each edge source gets a collector of its
-   * own, so a file with several small sources of the same edge type holds several sets of these.
-   * Every list here doubles on growth: a large source reaches its size in a handful of copies, and
-   * a small one no longer sits on a buffer it will never fill.
+   * Initial capacity of an {@link EdgeCollector}'s buffers, and of the identity maps. A schema with
+   * many small types holds several sets of these. Every list here grows by half: a large source
+   * reaches its size in a few dozen copies, and a small one no longer sits on a buffer it will never
+   * fill.
    */
   static final int BUFFER_INITIAL_CAPACITY = 4_096;
+
+  /**
+   * The capacity a full list grows to: half as much again, not twice as much. On the lists that grow
+   * with the vertex count that is the difference between 1.6 GB and 3.2 GB of capacity for 200M
+   * vertices, most of it never used (issue #9575). Past {@link #MAX_ARRAY_LENGTH} there is nowhere to
+   * grow, and saying so beats the {@code NegativeArraySizeException} that doubling a length past
+   * {@code 2^30} used to end the import with.
+   */
+  static int grownCapacity(final int length) {
+    if (length >= MAX_ARRAY_LENGTH)
+      throw new IllegalStateException("The import cannot hold more than " + MAX_ARRAY_LENGTH
+          + " vertices of one type, or edges of one type declared by vertex sources: declare that many edges in an edge source, "
+          + "which is streamed rather than held");
+    return (int) Math.min(MAX_ARRAY_LENGTH, (long) length + (length >> 1) + 16);
+  }
 
   /**
    * Growable int array.
@@ -2354,29 +2506,7 @@ public class GraphImporter implements AutoCloseable {
 
     void add(final int v) {
       if (size == data.length)
-        data = Arrays.copyOf(data, size * 2);
-      data[size++] = v;
-    }
-
-    int[] trim() {
-      return size == data.length ? data : Arrays.copyOf(data, size);
-    }
-  }
-
-  /**
-   * Growable double array.
-   */
-  static final class DoubleList {
-    double[] data;
-    int      size;
-
-    DoubleList(final int cap) {
-      data = new double[cap];
-    }
-
-    void add(final double v) {
-      if (size == data.length)
-        data = Arrays.copyOf(data, size * 2);
+        data = Arrays.copyOf(data, grownCapacity(size));
       data[size++] = v;
     }
   }
@@ -2394,12 +2524,8 @@ public class GraphImporter implements AutoCloseable {
 
     void add(final long v) {
       if (size == data.length)
-        data = Arrays.copyOf(data, size * 2);
+        data = Arrays.copyOf(data, grownCapacity(size));
       data[size++] = v;
-    }
-
-    long[] trim() {
-      return size == data.length ? data : Arrays.copyOf(data, size);
     }
   }
 }
