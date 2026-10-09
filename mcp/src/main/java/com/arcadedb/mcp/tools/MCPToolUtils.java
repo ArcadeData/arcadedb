@@ -25,6 +25,7 @@ import java.util.function.Consumer;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.mcp.MCPToolArgumentException;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.JsonSerializer;
@@ -70,7 +71,7 @@ public class MCPToolUtils {
       installed.removeIf(db -> requireRead
           ? !canReadDatabase(user, config, db)
           : !canAccessDatabase(user, config, db));
-      throw new IllegalArgumentException(
+      throw new MCPToolArgumentException(
           "Database '" + databaseName + "' does not exist. Available databases: " + installed
               + ". Use one of these names or call list_databases to refresh the list.");
     }
@@ -158,9 +159,9 @@ public class MCPToolUtils {
    */
   public static String quoteIdentifier(final String kind, final String raw) {
     if (raw == null || raw.isBlank())
-      throw new IllegalArgumentException("The " + kind + " must not be null or blank");
+      throw new MCPToolArgumentException("The " + kind + " must not be null or blank");
     if (raw.indexOf('`') >= 0 || raw.indexOf('\\') >= 0)
-      throw new IllegalArgumentException("The " + kind + " contains a backtick or backslash, which is not supported");
+      throw new MCPToolArgumentException("The " + kind + " contains a backtick or backslash, which is not supported");
     return "`" + raw + "`";
   }
 
@@ -172,7 +173,7 @@ public class MCPToolUtils {
   public static String requireString(final JSONObject args, final String field) {
     final String value = args.getString(field, null);
     if (value == null || value.isBlank())
-      throw new IllegalArgumentException("'" + field + "' is required");
+      throw new MCPToolArgumentException("'" + field + "' is required");
     return value;
   }
 
@@ -183,7 +184,7 @@ public class MCPToolUtils {
   public static JSONObject requireNonEmptyObject(final JSONObject args, final String field) {
     final JSONObject value = args.getJSONObject(field, null);
     if (value == null || value.length() == 0)
-      throw new IllegalArgumentException("'" + field + "' is required and must contain at least one property");
+      throw new MCPToolArgumentException("'" + field + "' is required and must contain at least one property");
     return value;
   }
 

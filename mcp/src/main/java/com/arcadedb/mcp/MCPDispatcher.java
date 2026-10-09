@@ -277,8 +277,7 @@ public class MCPDispatcher {
     try {
       return result(id, MCPResources.list(server, user, config));
     } catch (final Exception e) {
-      LogManager.instance().log(this, Level.WARNING, "MCP[%s] resources/list -> error: %s", transport, e.getMessage());
-      return error(id, -32603, "Internal error: " + clientMessage(e.getMessage(), e), 200);
+      return error(id, -32603, "Internal error: " + failureMessage("resources/list", e), 200);
     }
   }
 
@@ -305,8 +304,7 @@ public class MCPDispatcher {
     } catch (final MCPResourceNotFoundException e) {
       return error(id, -32002, e.getMessage(), 200);
     } catch (final Exception e) {
-      LogManager.instance().log(this, Level.WARNING, "MCP[%s] resources/read -> error: %s", transport, e.getMessage());
-      return error(id, -32603, "Internal error: " + clientMessage(e.getMessage(), e), 200);
+      return error(id, -32603, "Internal error: " + failureMessage("resources/read", e), 200);
     }
   }
 
@@ -314,8 +312,7 @@ public class MCPDispatcher {
     try {
       return result(id, MCPPrompts.list(config, toolAllowed));
     } catch (final Exception e) {
-      LogManager.instance().log(this, Level.WARNING, "MCP[%s] prompts/list -> error: %s", transport, e.getMessage());
-      return error(id, -32603, "Internal error: " + clientMessage(e.getMessage(), e), 200);
+      return error(id, -32603, "Internal error: " + failureMessage("prompts/list", e), 200);
     }
   }
 
@@ -337,8 +334,7 @@ public class MCPDispatcher {
     } catch (final IllegalArgumentException | IllegalStateException | UnsupportedOperationException | JSONException e) {
       return error(id, -32602, "Invalid params: " + e.getMessage(), 200);
     } catch (final Exception e) {
-      LogManager.instance().log(this, Level.WARNING, "MCP[%s] prompts/get -> error: %s", transport, e.getMessage());
-      return error(id, -32603, "Internal error: " + clientMessage(e.getMessage(), e), 200);
+      return error(id, -32603, "Internal error: " + failureMessage("prompts/get", e), 200);
     }
   }
 
@@ -367,7 +363,7 @@ public class MCPDispatcher {
 
     try {
       if (!REGISTERED_TOOL_NAMES.contains(toolName))
-        throw new IllegalArgumentException("Unknown tool: " + toolName);
+        throw new MCPToolArgumentException("Unknown tool: " + toolName);
       if (!profile.allows(toolName))
         throw new SecurityException(
             "Tool '" + toolName + "' is not available in " + profile.description());
@@ -393,7 +389,7 @@ public class MCPDispatcher {
           case "profiler_status" -> ProfilerStatusTool.execute(server, user, args, config);
           case "get_server_settings" -> GetServerSettingsTool.execute(server, user, args, config);
           case "set_server_setting" -> SetServerSettingTool.execute(server, user, args, config);
-          default -> throw new IllegalArgumentException("Unknown tool: " + toolName);
+          default -> throw new MCPToolArgumentException("Unknown tool: " + toolName);
         };
       }
 
@@ -413,16 +409,15 @@ public class MCPDispatcher {
       LogManager.instance()
           .log(this, Level.INFO, "MCP[%s] tools/call '%s' -> permission denied: %s", transport, toolName, e.getMessage());
       return toolError(id, e.getMessage());
-    } catch (final IllegalArgumentException e) {
+    } catch (final MCPToolArgumentException e) {
       // The tools' own argument validation ("'database' is required", "Unknown tool"): text this server words about the
-      // request, which the caller needs to correct it, so it is kept in every mode
+      // request, which the caller needs to correct it, so it is kept in every mode. An IllegalArgumentException of any
+      // other origin - the engine's - is engine text, and goes through the concealment below (issue #8749)
       LogManager.instance()
           .log(this, Level.WARNING, "MCP[%s] tools/call '%s' -> error: %s", transport, toolName, e.getMessage());
       return toolError(id, e.getMessage());
     } catch (final Exception e) {
-      LogManager.instance()
-          .log(this, Level.WARNING, "MCP[%s] tools/call '%s' -> error: %s", transport, toolName, e.getMessage());
-      return toolError(id, clientMessage(e.getMessage(), e));
+      return toolError(id, failureMessage("tools/call '" + toolName + "'", e));
     }
   }
 
@@ -434,6 +429,18 @@ public class MCPDispatcher {
    */
   private String clientMessage(final String message, final Throwable cause) {
     return ErrorConcealment.clientMessage(ErrorConcealment.isConcealing(server), this, "MCP[" + transport + "]", message, cause);
+  }
+
+  /**
+   * The text an error answer carries for a failed {@code operation}, logged once: in production mode the concealment
+   * logs the detail itself (on one line, a server fault with its stack trace), otherwise the message goes out and is
+   * logged as a warning, as it always was.
+   */
+  private String failureMessage(final String operation, final Exception e) {
+    if (ErrorConcealment.isConcealing(server))
+      return clientMessage(operation + " -> " + e.getMessage(), e);
+    LogManager.instance().log(this, Level.WARNING, "MCP[%s] %s -> error: %s", transport, operation, e.getMessage());
+    return e.getMessage();
   }
 
   private EffectiveToolProfile effectiveProfile(final ServerSecurityUser user) {
