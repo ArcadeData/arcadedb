@@ -218,16 +218,16 @@ public class ArcadeGremlin extends ArcadeQuery {
 
     // THE TOKENS TAKE THEIR RESERVED NAMES FIRST, SO NOTHING ELSE CAN DISPLACE THEM
     final Set<String> shared = new HashSet<>();
-    shared.add(RID_KEY);
-    shared.add(TYPE_KEY);
     final Set<String> seen = new HashSet<>(originalMap.size());
     for (final Map.Entry<Object, Object> entry : originalMap.entrySet()) {
       final Object originalKey = entry.getKey();
-      if (originalKey == T.id)
+      if (originalKey == T.id) {
         result.put(RID_KEY, entry.getValue());
-      else if (originalKey == T.label)
+        shared.add(RID_KEY);
+      } else if (originalKey == T.label) {
         result.put(TYPE_KEY, entry.getValue());
-      else if (!seen.add(String.valueOf(originalKey)))
+        shared.add(TYPE_KEY);
+      } else if (!seen.add(String.valueOf(originalKey)))
         shared.add(String.valueOf(originalKey));
     }
     // A NAME PRINTED BY SEVERAL KEYS (OR BY A RESERVED ONE) IS GIVEN TO NONE OF THEM BARE, SO THE NAME OF A KEY DOES NOT DEPEND ON

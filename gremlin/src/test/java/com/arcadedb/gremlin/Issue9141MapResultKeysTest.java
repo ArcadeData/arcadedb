@@ -152,6 +152,24 @@ class Issue9141MapResultKeysTest {
   }
 
   @Test
+  void aUserKeyNamedLikeATokenOrASuffixedNameLosesNothing() {
+    final Map<Object, Object> map = new LinkedHashMap<>();
+    map.put("@rid", "user");
+    map.put("1:Long", "real");
+    map.put(1L, "long");
+    map.put("1", "string");
+    final Result noToken = ArcadeGremlin.mapToResult(map);
+    assertThat(noToken.<String>getProperty("@rid")).isEqualTo("user");
+    assertThat(noToken.getPropertyNames()).hasSize(4).contains("1:Long", "1:Long2", "1:String");
+
+    map.put(T.id, "#1:0");
+    final Result withToken = ArcadeGremlin.mapToResult(map);
+    assertThat(withToken.<String>getProperty("@rid")).isEqualTo("#1:0");
+    assertThat(withToken.<String>getProperty("@rid:String")).isEqualTo("user");
+    assertThat(withToken.getPropertyNames()).hasSize(5);
+  }
+
+  @Test
   void aNullKeyIsAnswered() {
     final List<Result> results = run("g.V().hasLabel('person').group().by(constant(null)).by(count())");
     assertThat(results).hasSize(1);
