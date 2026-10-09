@@ -120,6 +120,22 @@ class Issue9070RepeatableReadNeighbourPinnedHeadTest extends BucketPageLayoutTes
     }
   }
 
+  /** READ_COMMITTED pins nothing: the same sequence reads the complete new version, at every read. */
+  @Test
+  void readCommittedReadsTheNewVersionWhole() {
+    final RID[] rids = createSmallAndLarge();
+
+    database.begin(Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED);
+    try {
+      assertThat(database.lookupByRID(rids[0], true).asDocument().getInteger("v")).isEqualTo(0);
+      rewriteLarge(rids[1], NEW_SIZE, 'y');
+      assertThat(readLarge(rids[1])).isEqualTo("v=1 s=" + NEW_SIZE + "y");
+      assertThat(readLarge(rids[1])).isEqualTo("v=1 s=" + NEW_SIZE + "y");
+    } finally {
+      database.rollback();
+    }
+  }
+
   /**
    * The transaction's own update of a record it read before is what it reads afterwards, not the snapshot of the chain.
    */
