@@ -3541,9 +3541,18 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   // @VisibleForTesting
   DatabaseInternal databaseFor(final String databaseName) {
+    return (DatabaseInternal) serverDatabaseFor(databaseName);
+  }
+
+  /**
+   * The {@link ServerDatabase} behind {@link #databaseFor}: serves an open database, and reopens a closed one only while
+   * the node is not shutting down (issue #9550). Also what the bootstrap verification reads its local copy through
+   * (issue #9568), so a {@code BOOTSTRAP_FINGERPRINT_ENTRY} applied during a shutdown cannot reopen a closed database.
+   */
+  private ServerDatabase serverDatabaseFor(final String databaseName) {
     try {
       // An open database is served as before: the server's lock-free fast path, and no load.
-      return (DatabaseInternal) server.getDatabase(databaseName, false, false);
+      return server.getDatabase(databaseName, false, false);
     } catch (final DatabaseNotAvailableException notOpen) {
       // Not open here (closed, or not loaded yet). Never reopened while the node is shutting down (issue #9550): the
       // close may still be unwinding, in which case the open fails with "Found active instance ... already in use", and
@@ -3552,7 +3561,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
         throw new DatabaseIsClosedException(
             "Database '" + databaseName + "' is closed and this node is shutting down, so it is not reopened to apply a "
                 + "Raft entry; the entry is left for the replay on restart");
-      return (DatabaseInternal) server.getDatabase(databaseName);
+      return server.getDatabase(databaseName);
     }
   }
 
@@ -4936,6 +4945,18 @@ public class ArcadeStateMachine extends BaseStateMachine {
       return;
     }
 
+    // Issue #9568: a node shutting down does not verify the baseline against a database that is not open here. Every arm
+    // below would act on the closed copy wrongly: reading the local state reopened it, a failed read fell back to a leader
+    // install, and a database the shutdown already deregistered read as "not here" - either reinstalled from the leader
+    // or recorded as a late joiner, which advances this database's applied index past the entry so the verification
+    // never runs again. The entry is left for the replay on restart instead, like every entry #9550 covers. After the
+    // replay-skip above, which touches no database, and asked in this order so a running node pays the shutdown probe
+    // only for a database it does not have open.
+    if (!isDatabaseOpenHere(dbName) && isNodeShuttingDown())
+      throw leaveForReplay(index, dbName, new DatabaseIsClosedException(
+          "Database '" + dbName + "' is not open and this node is shutting down, so the bootstrap baseline is not "
+              + "verified against it"));
+
     if (!registeredLocally) {
       if (persistedApplied >= index) {
         // The database WAS here - a previous session applied this very entry against it - and is not here now.
@@ -4969,6 +4990,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
     try {
       local = readLocalBootstrapState(dbName);
     } catch (final Exception e) {
+      // Closed under the apply thread after the check above (issue #9568): a closed copy on a node going away is not a
+      // reason to download the leader's one. Left for the replay on restart, which verifies it then.
+      if (isClosedUnderShutdown(dbName, e))
+        throw leaveForReplay(index, dbName, e);
       LogManager.instance().log(this, Level.WARNING,
           "Could not read local bootstrap state for '%s': %s; falling back to leader-shipped full snapshot",
           dbName, e.getMessage());
@@ -5100,6 +5125,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
         // close, so a download failure never touches the live files and leaves the DB open. It guards against
         // unexpected future changes (or a failure in a later install phase) that could leave it deregistered.
         if (!server.existsDatabase(dbName)) {
+          // Not reopened while the node is shutting down (issue #9568), for the reason databaseFor() gives: the apply
+          // fails with a closed database instead, and applyWithRetry leaves the entry for the replay on restart.
+          if (isNodeShuttingDown())
+            throw new DatabaseIsClosedException("Database '" + dbName + "' was left deregistered by a failed bootstrap "
+                + "install and this node is shutting down, so it is not reopened; the entry is left for the replay on "
+                + "restart");
           try {
             server.getDatabase(dbName);
           } catch (final Exception reopenEx) {
@@ -6524,7 +6555,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
   /** {@link #readLocalBootstrapState(String)} with an explicit flush-settle bound - see {@link #settleBudget}. */
   BootstrapBaseline readLocalBootstrapState(final String dbName, final long maxSettleMillis) throws Exception {
-    return localBootstrapState(server.getDatabase(dbName), maxSettleMillis);
+    // Never reopens a closed database while the node is shutting down (issue #9568)
+    return localBootstrapState(serverDatabaseFor(dbName), maxSettleMillis);
   }
 
   /**
