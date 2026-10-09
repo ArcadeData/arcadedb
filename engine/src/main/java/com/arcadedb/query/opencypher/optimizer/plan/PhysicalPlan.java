@@ -41,6 +41,10 @@ public class PhysicalPlan {
   private final double totalEstimatedCost;
   private final long totalEstimatedCardinality;
   private final boolean indexOrdered;
+  // The views the planner passed over because they were not ready, see passesOverAReadyView()
+  private GraphTraversalProvider[] viewsPassedOver = NO_VIEWS;
+
+  private static final GraphTraversalProvider[] NO_VIEWS = new GraphTraversalProvider[0];
 
   public PhysicalPlan(final LogicalPlan logicalPlan, final AnchorSelection anchor,
                      final double totalEstimatedCost, final long totalEstimatedCardinality) {
@@ -141,6 +145,27 @@ public class PhysicalPlan {
     if (operator instanceof ValueHashJoin join && readsAnUnavailableView(join.getRight()))
       return true;
     return readsAnUnavailableView(operator.getChild());
+  }
+
+  /**
+   * Records the Graph Analytical Views the planner would have read but passed over because they were not ready, as recorded by
+   * {@link com.arcadedb.graph.GraphTraversalProviderRegistry#recordViewsPassedOver()} while this plan was built.
+   */
+  public void setViewsPassedOver(final GraphTraversalProvider[] views) {
+    this.viewsPassedOver = views != null ? views : NO_VIEWS;
+  }
+
+  /**
+   * Whether a Graph Analytical View this plan passed over because it was not ready (restoring after a reopen, building, stale
+   * and not to be used stale) can serve it now. The mirror of {@link #readsAnUnavailableView()}: a plan that walks the records
+   * never picks the view up by itself, so a cached plan would keep running at the speed of no view at all while the view
+   * reports READY (issue #9587); the caller plans again instead.
+   */
+  public boolean passesOverAReadyView() {
+    for (final GraphTraversalProvider view : viewsPassedOver)
+      if (view.isReady())
+        return true;
+    return false;
   }
 
   public String explain() {
