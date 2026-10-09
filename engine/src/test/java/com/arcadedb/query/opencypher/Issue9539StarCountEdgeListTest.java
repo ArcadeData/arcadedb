@@ -342,6 +342,17 @@ class Issue9539StarCountEdgeListTest extends TestHelper {
       });
       assertThat(countMatch(Q4)).isEqualTo(200L);
       assertStarMatchesPipeline(Q4);
+
+      // an undirected arm over the striped list: two parallel self loops of the hub sit in its classic OUT list and in
+      // the stripes of its IN list, and each is matched once
+      database.transaction(() -> {
+        final MutableVertex hubVertex = hub[0].asVertex().modify();
+        hubVertex.newLightEdge("LIKES", hubVertex);
+        hubVertex.newEdge("LIKES", hubVertex);
+      });
+      final String undirected = "MATCH (other)-[:LIKES]-(message:Message), (message)-[:HAS_CREATOR]->(creator:Person)";
+      assertThat(countMatch(undirected)).isEqualTo(300L + 2L);
+      assertStarMatchesPipeline(undirected);
     } finally {
       GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.setValue(savedThreshold);
     }
