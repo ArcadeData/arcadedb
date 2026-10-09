@@ -1457,7 +1457,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       final String innerText = getOriginalText(parenExpr.expression()).trim();
       // true/false/null are literals, not variables: "(true)" is a parenthesized boolean (issue #8994).
       if (innerText.matches("^[a-zA-Z_`][a-zA-Z0-9_`]*$") && !isBooleanOrNullKeyword(innerText)) {
-        final NodePattern nodePattern = new NodePattern(innerText.replace("`", ""), null, null);
+        final NodePattern nodePattern = new NodePattern(stripBackticks(innerText), null, null);
         final PathPattern singleNodePath = new PathPattern(List.of(nodePattern), List.of(), null);
         return new PatternPredicateExpression(singleNodePath, false);
       }
