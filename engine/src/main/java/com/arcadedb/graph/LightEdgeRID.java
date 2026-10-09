@@ -97,7 +97,7 @@ public class LightEdgeRID extends DatabaseRID {
    * Remembers the list entry this identity was read from, so that {@link #getOccurrence()} can tell it from a twin.
    * Called once, by the iterator that built it, before the edge is handed out.
    */
-  public LightEdgeRID readFrom(final RID segment, final int position, final Vertex.DIRECTION direction) {
+  LightEdgeRID readFrom(final RID segment, final int position, final Vertex.DIRECTION direction) {
     this.originSegment = segment;
     this.originPosition = position;
     this.originDirection = direction;
