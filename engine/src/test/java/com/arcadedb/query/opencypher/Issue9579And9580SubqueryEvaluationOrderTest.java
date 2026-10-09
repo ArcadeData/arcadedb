@@ -229,6 +229,38 @@ class Issue9579And9580SubqueryEvaluationOrderTest {
     assertThat(((Number) rows.get(0).getProperty("c0")).longValue()).isEqualTo(1L);
   }
 
+  @Test
+  void coalesceDoesNotEvaluateAnArgumentAfterTheFirstNonNullOne() {
+    final List<Result> rows = collect("RETURN coalesce(1, 1 / 0) AS c0");
+
+    assertThat(rows).hasSize(1);
+    assertThat(((Number) rows.get(0).getProperty("c0")).longValue()).isEqualTo(1L);
+  }
+
+  @Test
+  void nestedLogicalChainKeepsTheCheapOperandsFirst() {
+    // (costly AND cheap-false) OR cheap-false: the COUNT must never run for anchor 1, which fails both cheap operands
+    final List<Result> rows = collect("""
+        MATCH (u:Anchor)
+        WHERE ((COUNT { MATCH (u)-[:EXPAND]->(l:Leaf) WHERE (l.mark = false AND l.uid / 0 > 0) OR l.mark = true } > 0
+                AND u.keep = true) OR u.uid = 99)
+        RETURN u.uid AS c0""");
+
+    assertThat(rows).hasSize(1);
+    assertThat(((Number) rows.get(0).getProperty("c0")).longValue()).isEqualTo(2L);
+  }
+
+  @Test
+  void notOverACostlyOperandStillEvaluatesIt() {
+    final List<Result> rows = collect("""
+        MATCH (u:Anchor)
+        WHERE NOT (COUNT { MATCH (u)-[:EXPAND]->(l:Leaf) WHERE l.mark = true } > 0) AND u.uid = 1
+        RETURN u.uid AS c0""");
+
+    assertThat(rows).hasSize(1);
+    assertThat(((Number) rows.get(0).getProperty("c0")).longValue()).isEqualTo(1L);
+  }
+
   private List<Result> collect(final String query) {
     final List<Result> rows = new ArrayList<>();
     try (final ResultSet rs = database.query("opencypher", query)) {

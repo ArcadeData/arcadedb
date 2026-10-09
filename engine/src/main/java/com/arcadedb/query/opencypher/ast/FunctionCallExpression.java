@@ -46,6 +46,9 @@ public class FunctionCallExpression implements Expression {
    */
   private transient volatile StatelessFunction cachedFunction;
 
+  /** Set once {@link #finishCoalesce} has checked the argument count, which is a property of the call site. */
+  private transient volatile boolean arityValidated;
+
   public FunctionCallExpression(final String functionName, final List<Expression> arguments, final boolean distinct) {
     this.originalFunctionName = functionName;
     // Cypher functions are case-insensitive. Locale.ROOT and not the default locale: under a Turkish default,
@@ -72,8 +75,12 @@ public class FunctionCallExpression implements Expression {
       if (resolver != null) {
         final StatelessFunction function = resolver.apply(functionName);
         if (function != null) {
-          if (function instanceof CoalesceFunction)
-            return evaluateCoalesce(function, arg -> arg.evaluate(result, context), result, context);
+          if (function instanceof CoalesceFunction) {
+            Object value = null;
+            for (int i = 0; i < arguments.size() && value == null; i++)
+              value = arguments.get(i).evaluate(result, context);
+            return finishCoalesce(function, value, result, context);
+          }
           final Object[] args = new Object[arguments.size()];
           for (int i = 0; i < args.length; i++)
             args[i] = arguments.get(i).evaluate(result, context);
@@ -88,17 +95,22 @@ public class FunctionCallExpression implements Expression {
    * Evaluates {@code coalesce()} one argument at a time and stops at the first non-null one, as the openCypher
    * reference does: an argument after it is never evaluated, so {@code coalesce(null, 0, COUNT { ... })} does not run the
    * COUNT (issue #9580), and {@code coalesce(1, 1/0)} does not raise. Every other function takes all of its arguments
-   * evaluated up front. {@code evaluator} resolves one argument, which is how the two evaluation paths - the AST's own and
-   * the {@code ExpressionEvaluator}'s, with its aggregation overrides - share this rule instead of each carrying a copy.
+   * evaluated up front. The two evaluation paths - the AST's own and the {@code ExpressionEvaluator}'s, with its
+   * aggregation overrides - each loop over {@link #getArguments()} resolving one argument at a time, and call this once
+   * they have the value, so the arity check and the row-scoped state publication live in one place and the hot path
+   * allocates nothing.
+   * <p>
+   * This bypasses {@code CoalesceFunction.execute()}, which stays the contract for callers that already hold evaluated
+   * arguments; a change to what coalesce means has to be made in both.
+   *
+   * @param value the first non-null argument, or {@code null} when every argument was null
    */
-  public Object evaluateCoalesce(final StatelessFunction function, final Function<Expression, Object> evaluator,
-      final Result result, final CommandContext context) {
-    validateArity(function);
-    Object value = null;
-    for (final Expression argument : arguments) {
-      value = evaluator.apply(argument);
-      if (value != null)
-        break;
+  public Object finishCoalesce(final StatelessFunction function, final Object value, final Result result,
+      final CommandContext context) {
+    // The argument count is fixed by the call site, so it is checked on the first row only
+    if (!arityValidated) {
+      validateArity(function);
+      arityValidated = true;
     }
     LoadCSVRowContext.bind(result, context);
     return value;
