@@ -416,9 +416,9 @@ public class OpenCypherQueryEngine implements QueryEngine {
     if (!explain && !profile && !GraphTraversalProviderRegistry.isWithheld(execDb)) {
       // Only use plan cache for normal execution (not explain/profile)
       final PhysicalPlan physicalPlan = database.getCypherPlanCache().get(queryString);
-      // A cached plan that reads a view no longer usable (gone stale, dropped) is planned again, and the new plan
-      // replaces it in the cache
-      if (physicalPlan != null && !physicalPlan.readsAnUnavailableView()) {
+      // A cached plan that reads a view no longer usable (gone stale, dropped), or that walks the records because a view was
+      // not ready when it was planned and now is (issue #9587), is planned again, and the new plan replaces it in the cache
+      if (physicalPlan != null && !physicalPlan.readsAnUnavailableView() && !physicalPlan.passesOverAReadyView()) {
         // Reuse cached physical plan (avoids expensive statistics collection and optimization)
         plan = new CypherExecutionPlan(
             execDb, statement, parameters, configuration, physicalPlan, EXPRESSION_EVALUATOR);
@@ -429,11 +429,15 @@ public class OpenCypherQueryEngine implements QueryEngine {
         final long planningEpoch = database.getCypherPlanCache().getInvalidationEpoch();
         final CypherExecutionPlanner planner = new CypherExecutionPlanner(execDb, statement, parameters,
             EXPRESSION_EVALUATOR);
-        plan = planner.createExecutionPlan(configuration);
+        try (final GraphTraversalProviderRegistry.ViewsPassedOver passedOver = GraphTraversalProviderRegistry.recordViewsPassedOver()) {
+          plan = planner.createExecutionPlan(configuration);
 
-        // Cache the physical plan for future use
-        if (plan.getPhysicalPlan() != null)
-          database.getCypherPlanCache().put(queryString, plan.getPhysicalPlan(), planningEpoch);
+          // Cache the physical plan for future use, with the views it passed over so it is planned again once one is ready
+          if (plan.getPhysicalPlan() != null) {
+            plan.getPhysicalPlan().setViewsPassedOver(passedOver.getViews());
+            database.getCypherPlanCache().put(queryString, plan.getPhysicalPlan(), planningEpoch);
+          }
+        }
       }
     } else {
       // explain/profile mode, or views withheld: always create new plan without caching
