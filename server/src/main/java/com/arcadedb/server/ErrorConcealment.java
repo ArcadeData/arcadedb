@@ -75,13 +75,22 @@ public final class ErrorConcealment {
       final Throwable cause, final Level clientCausedLevel) {
     if (!conceal)
       return message;
+    // THE TEXT CAN CARRY CLIENT DATA (A DUPLICATED KEY'S VALUES): ONE LINE, SO IT CANNOT FORGE ENTRIES IN A LINE-ORIENTED LOG
+    final String logged = singleLine(message);
     if (ErrorCategory.of(cause) == ErrorCategory.SERVER)
       LogManager.instance().log(requester, Level.SEVERE, "%s: %s (concealed from the client in production mode)", cause, surface,
-          message);
+          logged);
     else
       LogManager.instance().log(requester, clientCausedLevel, "%s: %s (concealed from the client in production mode)", null, surface,
-          message);
+          logged);
     return ArcadeDBServer.CONCEALED_ERROR_MESSAGE;
+  }
+
+  /** {@code text} with its line breaks replaced by spaces; the same instance when it has none. */
+  static String singleLine(final String text) {
+    if (text == null || (text.indexOf('\n') < 0 && text.indexOf('\r') < 0))
+      return text;
+    return text.replace("\r\n", " ").replace('\r', ' ').replace('\n', ' ');
   }
 
   /**

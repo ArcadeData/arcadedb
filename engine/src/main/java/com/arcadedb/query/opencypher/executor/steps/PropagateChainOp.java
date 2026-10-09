@@ -442,8 +442,7 @@ public final class PropagateChainOp implements CountOp {
       return 0;
     // THE CLOSING VERTEX STANDS AT POSITIONS 0 AND 3 AT ONCE, SO IT CARRIES BOTH LABELS: A VERTEX THE DENSE COUNT NEVER
     // STARTED FROM, OR NEVER ENDED AT, CLOSES NO PATH IT COUNTED
-    final IntHashSet pos0Buckets = validBuckets[0];
-    final IntHashSet pos3Buckets = validBuckets[3];
+    final boolean[] closing = closingVertices(provider, nodeIdUpperBound, validBuckets[0], validBuckets[3], bucketIds);
 
     long selfLoop = 0;
     // AN UNDIRECTED HOP'S MERGED RANGE HOLDS EACH SELF LOOP TWICE: THE RANGE OF b HOLDS b TWICE FOR ONE RELATIONSHIP
@@ -491,7 +490,7 @@ public final class PropagateChainOp implements CountOp {
 
         // Count |setA ∩ setC| via sorted merge (both CSR ranges are sorted)
         selfLoop += sortedIntersectionCount(aNbrs, aStart, aEnd, undirectedA ? b : -1, cNbrs, cStart, cEnd,
-            undirectedC ? c : -1, pos0Buckets, pos3Buckets, bucketIds);
+            undirectedC ? c : -1, closing);
       }
     }
     return selfLoop;
@@ -504,12 +503,11 @@ public final class PropagateChainOp implements CountOp {
    * self-loop subtraction short on a graph with parallel edges, so the inequality count came out too high.
    * {@code aSelf} and {@code bSelf} name the node a range belongs to when it is the merged range of an undirected hop
    * (-1 otherwise): there a self loop is two entries and one relationship, so the run of that value is halved
-   * (issues #8750, #9540). A value outside {@code aBuckets} or {@code bBuckets} (null: any), the labels of the two
-   * ranges' own positions, closes no counted path. O(|a| + |b|) time, O(1) space.
+   * (issues #8750, #9540). A value {@code closing} refuses (null: none) closes no counted path. O(|a| + |b|) time,
+   * O(1) space.
    */
   private static long sortedIntersectionCount(final int[] a, int aStart, final int aEnd, final int aSelf,
-      final int[] b, int bStart, final int bEnd, final int bSelf, final IntHashSet aBuckets, final IntHashSet bBuckets,
-      final int[] bucketIds) {
+      final int[] b, int bStart, final int bEnd, final int bSelf, final boolean[] closing) {
     long count = 0;
     while (aStart < aEnd && bStart < bEnd) {
       final int av = a[aStart], bv = b[bStart];
@@ -526,7 +524,7 @@ public final class PropagateChainOp implements CountOp {
           bRun++;
           bStart++;
         }
-        if ((aBuckets != null && !aBuckets.contains(bucketIds[av])) || (bBuckets != null && !bBuckets.contains(bucketIds[av])))
+        if (closing != null && !closing[av])
           continue;
         if (av == aSelf)
           aRun /= 2;
@@ -536,6 +534,21 @@ public final class PropagateChainOp implements CountOp {
       }
     }
     return count;
+  }
+
+  /**
+   * The vertices that may close a path of the 3-hop scan, which stand at positions 0 and 3 at once and so carry both
+   * labels: null when neither position is labelled, so every vertex may.
+   */
+  private static boolean[] closingVertices(final GraphTraversalProvider provider, final int nodeIdUpperBound,
+      final IntHashSet firstBuckets, final IntHashSet lastBuckets, final int[] bucketIds) {
+    if (firstBuckets == null && lastBuckets == null)
+      return null;
+    final boolean[] closing = new boolean[nodeIdUpperBound];
+    for (int v = 0; v < nodeIdUpperBound; v++)
+      closing[v] = provider.isNodeLive(v) && (firstBuckets == null || firstBuckets.contains(bucketIds[v]))
+          && (lastBuckets == null || lastBuckets.contains(bucketIds[v]));
+    return closing;
   }
 
   private static Vertex.DIRECTION reverseDir(final Vertex.DIRECTION dir) {

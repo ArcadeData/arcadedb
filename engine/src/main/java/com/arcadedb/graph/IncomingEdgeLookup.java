@@ -229,14 +229,20 @@ public final class IncomingEdgeLookup {
     return count;
   }
 
-  /** {@link Vertex#countEdges} in both directions, a self loop counted once. */
+  /**
+   * {@link Vertex#countEdges} in both directions, a self loop counted once. Every vertex the engine hands a query is a
+   * {@link VertexInternal}, answered off its edge lists in one walk each; another implementation of the interface is
+   * answered through the API alone, its self loops told apart on the identities of its outgoing neighbors (no
+   * neighbor record is loaded).
+   */
   private static long countUndirectedEdges(final Vertex vertex, final String[] edgeTypes) {
     if (vertex instanceof VertexInternal internal)
       return ((DatabaseInternal) vertex.getDatabase()).getGraphEngine().countUndirectedEdges(internal, edgeTypes);
 
+    final RID identity = vertex.getIdentity();
     long selfLoops = 0;
-    for (final Vertex neighbor : vertex.getVertices(Vertex.DIRECTION.OUT, edgeTypes))
-      if (neighbor.getIdentity().equals(vertex.getIdentity()))
+    for (final RID neighbor : vertex.getConnectedVertexRIDs(Vertex.DIRECTION.OUT, edgeTypes))
+      if (identity.equals(neighbor))
         ++selfLoops;
     return vertex.countEdges(Vertex.DIRECTION.BOTH, edgeTypes) - selfLoops;
   }
