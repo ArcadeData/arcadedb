@@ -148,6 +148,23 @@ class Issue9561BoundedRatisServerCloseTest {
   }
 
   @Test
+  void stopAfterARestartCloseTimedOutWaitsForThatCloseInsteadOfClosingAgain() throws Exception {
+    final RaftHAServer raft = detachedServer();
+    final HangingServer old = new HangingServer();
+    setField(raft, "raftServer", old.proxy());
+    raft.restartRatisIfNeeded();
+    assertThat(old.closes.get()).isEqualTo(1);
+
+    // A second close() on a CLOSING Ratis server is a no-op that still interrupts the close in flight (#8900).
+    final StallAwareStopwatch watch = StallAwareStopwatch.start();
+    raft.stop();
+    watch.assertGaveUpWithin(GAVE_UP_BOUND_MS, "a bounded wait on stop() for a close that never returns");
+
+    assertThat(old.closes.get()).as("stop() must not close a server another thread is closing").isEqualTo(1);
+    assertThat(getField(raft, "raftServer")).isNull();
+  }
+
+  @Test
   void aRestartWhoseOldServerCloseHangsFailsAndKeepsFailingWhileItRuns() throws Exception {
     final RaftHAServer raft = detachedServer();
     final HangingServer old = new HangingServer();

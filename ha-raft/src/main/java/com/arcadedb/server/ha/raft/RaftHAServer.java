@@ -458,7 +458,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private volatile int                       restartFailureCount   = 0;
   // The thread still running a Ratis server close that outlived arcadedb.ha.ratisCloseTimeoutMs (issue #9561). While it
   // is alive the old server's storage lock and gRPC ports may still be held, so the in-place restart refuses to start a
-  // second server beside it. Written under recoveryLock.
+  // second server beside it. Written under recoveryLock, and by stop(), which does not take it.
   private volatile Thread                    stuckRatisClose;
   // Completed in-place restarts, by kind (issue #8900): a RECOVER restart keeps the Raft log, a FORMAT restart (the
   // divergence reformat) throws it away. Read by tests that must tell a recovery from a reformat.
@@ -2506,8 +2506,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
           restartFailureCount++;
           LogManager.instance().log(this, Level.SEVERE,
               "HealthMonitor recovery failed (attempt %d/%d): the close of the old Ratis server is still running on thread "
-                  + "%s; not starting a new server beside it. Stuck at:%n%s", restartFailureCount, maxRetries,
-              stillClosing.getName(), RatisServerCloser.stackOf(stillClosing));
+                  + "%s (its stack was logged when it timed out); not starting a new server beside it", restartFailureCount,
+              maxRetries, stillClosing.getName());
           return;
         }
         // The late close finished. this.raftServer may still be that old, now CLOSED server: closing it again below is
@@ -2588,10 +2588,13 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
       try {
         if (closeStillRunning != null) {
-          // Issue #9561: remembered so the next attempts fail too while it runs, instead of closing it a second time.
+          // Issue #9561: remembered so the next attempts fail too while it runs, instead of closing it a second time. The
+          // closer also returns early when this thread was interrupted: the catch below then sees the restart as
+          // abandoned and does not count it, and the interrupt flag stays set for the health monitor to see.
           stuckRatisClose = closeStillRunning;
           throw new IOException("The old Ratis server did not close within " + ratisCloseTimeoutMs()
-              + "ms; not starting a new server beside one whose storage lock and gRPC ports may still be held");
+              + "ms (or the wait was interrupted); not starting a new server beside one whose storage lock and gRPC ports "
+              + "may still be held");
         }
         if (oldServer != null)
           verifyOldServerTerminated(oldServer, oldDivision, abandoned);
@@ -2683,6 +2686,44 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
             configuration.getValueAsInteger(GlobalConfiguration.HA_RATIS_RESTART_MAX_RETRIES),
             t.getMessage());
       }
+    }
+  }
+
+  /**
+   * The Ratis server close of {@link #stop()}, bounded (issue #9561). A server already CLOSING is being closed by another
+   * thread: an in-place restart (stop() does not take recoveryLock), a restart close that timed out earlier, or Ratis's
+   * own JVM-pause monitor. Calling close() again would be a no-op that still interrupts that close
+   * ({@code pauseMonitor.stop()}, issue #8900), so stop() waits for it instead, with the same bound. Either way a close
+   * that does not finish in time is logged at SEVERE and left running on its thread: the shutdown goes on rather than hang
+   * the JVM shutdown hook behind it.
+   */
+  private void closeRatisServerOnStop(final RaftServer server) throws IOException {
+    final long timeoutMs = ratisCloseTimeoutMs();
+    LifeCycle.State state = null;
+    try {
+      state = server.getLifeCycleState();
+    } catch (final Throwable t) {
+      // unreadable: close it below, which is what stop() always did
+    }
+    if (state == LifeCycle.State.CLOSING) {
+      // 0 or negative means no bound; a year stands in for it without overflowing the deadline arithmetic
+      final long waitMs = timeoutMs > 0 ? timeoutMs : TimeUnit.DAYS.toMillis(365);
+      if (OldRatisServerTermination.awaitCloseInProgress(server::getLifeCycleState, waitMs, () -> false)
+          == LifeCycle.State.CLOSING) {
+        final Thread stuck = stuckRatisClose;
+        LogManager.instance().log(this, Level.SEVERE,
+            "Ratis HA service stopped while another thread%s was still closing its Ratis server after %dms; the storage "
+                + "lock and gRPC ports may stay held until that close finishes (issue #9561)",
+            stuck != null && stuck.isAlive() ? " (" + stuck.getName() + ")" : "", timeoutMs);
+      }
+      return;
+    }
+    final Thread stillClosing = RatisServerCloser.close(server, timeoutMs);
+    if (stillClosing != null) {
+      stuckRatisClose = stillClosing;
+      LogManager.instance().log(this, Level.SEVERE,
+          "Ratis HA service stopped without its Ratis server closing (thread %s); the storage lock and gRPC ports may "
+              + "stay held until that close finishes", stillClosing.getName());
     }
   }
 
@@ -2864,14 +2905,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         raftClient = null;
       }
       if (raftServer != null) {
-        // Issue #9556 (the cache-eviction stop runs inside) and #9561 (the close is bounded). A close that does not
-        // finish in time is logged at SEVERE with its stack and left running on its daemon thread: the shutdown goes on
-        // rather than hang the JVM shutdown hook behind it.
-        final Thread stillClosing = RatisServerCloser.close(raftServer, ratisCloseTimeoutMs());
-        if (stillClosing != null)
-          LogManager.instance().log(this, Level.SEVERE,
-              "Ratis HA service stopped without its Ratis server closing (thread %s); the storage lock and gRPC ports may "
-                  + "stay held until that close finishes", stillClosing.getName());
+        closeRatisServerOnStop(raftServer);
         raftServer = null;
       }
     } catch (final IOException e) {
