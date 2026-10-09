@@ -130,6 +130,7 @@ public final class OptionalMatchAntiJoinRewriter {
 
   private static SimpleCypherStatement rewriteFirst(final SimpleCypherStatement statement) {
     final List<ClauseEntry> clauses = statement.getClausesInOrder();
+    // from 1: an OPTIONAL MATCH that opens the query has no rows before it to filter, and is followed by a WITH at least
     for (int i = 1; i + 1 < clauses.size(); i++) {
       final ClauseEntry entry = clauses.get(i);
       if (entry.getType() == ClauseEntry.ClauseType.MATCH && ((MatchClause) entry.getTypedClause()).isOptional()) {
@@ -145,8 +146,8 @@ public final class OptionalMatchAntiJoinRewriter {
   private static SimpleCypherStatement rewriteAt(final SimpleCypherStatement statement, final int index) {
     final List<ClauseEntry> clauses = statement.getClausesInOrder();
 
-    // THE SCOPE BEFORE IT: MATCH CLAUSES ONLY, SO EVERY NAME THEY WRITE IS IN SCOPE, AND ONE A NON-OPTIONAL MATCH WRITES IS
-    // NEVER NULL
+    // The scope before it: MATCH clauses only, so every name they write is in scope, and one a non-optional MATCH writes is
+    // never null
     final Set<String> inScope = new HashSet<>();
     final Set<String> neverNull = new HashSet<>();
     for (int i = 0; i < index; i++) {
@@ -166,7 +167,7 @@ public final class OptionalMatchAntiJoinRewriter {
     if (pattern == null)
       return null;
 
-    // THE NAMES IT INTRODUCES, EACH WRITTEN ONCE SO THAT IT CAN BECOME ANONYMOUS; A SHARED ONE MUST BE A NEVER-NULL NODE
+    // The names it introduces, each written once so that it can become anonymous; a shared one must be a never-null node
     final Set<String> introduced = new HashSet<>();
     for (final NodePattern node : pattern.getNodes()) {
       final String name = node.getVariable();
@@ -188,7 +189,7 @@ public final class OptionalMatchAntiJoinRewriter {
     if (introduced.isEmpty())
       return null;
 
-    // THE WITH RIGHT AFTER IT, WHOSE WHERE TESTS ONE OF THEM FOR NULL
+    // The WITH right after it, whose WHERE tests one of them for null
     if (clauses.get(index + 1).getType() != ClauseEntry.ClauseType.WITH)
       return null;
     final WithClause with = clauses.get(index + 1).getTypedClause();
@@ -242,12 +243,13 @@ public final class OptionalMatchAntiJoinRewriter {
             render(anonymized(pattern, introduced, inScope))));
     final BooleanExpression rest = and(remaining);
 
-    // THE NEGATED PATTERN JOINS THE WHERE OF THE NON-OPTIONAL MATCH BEFORE IT, OR FILTERS IN THE OPTIONAL MATCH'S PLACE
+    // The negated pattern joins the WHERE of the non-optional MATCH before it, or filters in the OPTIONAL MATCH's place
     final List<ClauseEntry> rewritten = new ArrayList<>(clauses.size());
     for (int i = 0; i < index - 1; i++)
       rewritten.add(clauses.get(i));
 
     final MatchClause before = clauses.get(index - 1).getTypedClause();
+    // DISTINCT keeps its meaning without the removed names: every row the test keeps holds null in all of them
     final WithClause carrier = new WithClause(items, with.isDistinct(), rest != null ? new WhereClause(rest) : null, null, null,
         null);
     if (before.isOptional()) {

@@ -178,6 +178,36 @@ class Issue9600EdgeCountPushDownTest extends TestHelper {
       });
       assertThat(view.hasPendingChanges()).isTrue();
       assertAllEdgeCounts();
+
+      // and edges deleted after the build: a regular one, a sub-type one and a self loop
+      database.transaction(() -> {
+        final List<Record> edges = new ArrayList<>();
+        for (final Iterator<Record> it = database.iterateType("KNOWS", true); it.hasNext() && edges.size() < 6; )
+          edges.add(it.next());
+        for (final Record edge : edges)
+          edge.asEdge().delete();
+      });
+      assertAllEdgeCounts();
+    } finally {
+      view.drop();
+    }
+  }
+
+  /**
+   * A view that leaves a vertex type out does not hold the edges that reach it: the count is not read off it, and the walk of
+   * the edge lists answers instead.
+   */
+  @Test
+  void aViewOverSomeVertexTypesIsNotUsedForTheCount() {
+    buildGraph(37, 200);
+    final GraphAnalyticalView view = GraphAnalyticalView.builder(database).withName("people").withVertexTypes("Person", "Student")
+        .build();
+    try {
+      assertThat(view.isReady()).isTrue();
+      assertThat(view.coversVertexType(null)).isFalse();
+      // LIVES_IN reaches the cities, which the view does not map
+      assertEdgeCount("MATCH ()-[e:LIVES_IN]->() RETURN count(e) AS n", "LIVES_IN", Vertex.DIRECTION.OUT);
+      assertAllEdgeCounts();
     } finally {
       view.drop();
     }
@@ -200,6 +230,10 @@ class Issue9600EdgeCountPushDownTest extends TestHelper {
     assertEdgeCount("MATCH ()-[e:LIKES]->() RETURN count(e) AS n", "LIKES", Vertex.DIRECTION.OUT);
     assertEdgeCount("MATCH ()-[e]->() RETURN count(e) AS n", null, Vertex.DIRECTION.OUT);
     assertEdgeCount("MATCH ()-[e]-() RETURN count(e) AS n", null, Vertex.DIRECTION.BOTH);
+    // a sub-type alone, and listed with its super-type, which already counts it
+    assertEdgeCount("MATCH ()-[e:KNOWS_WELL]-() RETURN count(e) AS n", "KNOWS_WELL", Vertex.DIRECTION.BOTH);
+    assertEdgeCount("MATCH ()-[e:KNOWS|KNOWS_WELL]-() RETURN count(e) AS n", "KNOWS", Vertex.DIRECTION.BOTH);
+    assertEdgeCount("MATCH ()-[e:KNOWS_WELL|KNOWS]->() RETURN count(e) AS n", "KNOWS", Vertex.DIRECTION.OUT);
   }
 
   /**
