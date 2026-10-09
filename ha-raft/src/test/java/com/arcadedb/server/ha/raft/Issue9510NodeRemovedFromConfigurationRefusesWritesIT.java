@@ -162,7 +162,8 @@ class Issue9510NodeRemovedFromConfigurationRefusesWritesIT extends BaseRaftHATes
     final RaftHAServer raft = getRaftPlugin(index).getRaftHAServer();
     final String peerId = raft.getLocalPeerId().toString();
     raft.leaveCluster(false);
-    Awaitility.await().atMost(60, TimeUnit.SECONDS).pollInterval(100, TimeUnit.MILLISECONDS)
+    Awaitility.await("server " + index + " sees its own removal from the Raft configuration and is not the leader")
+        .atMost(60, TimeUnit.SECONDS).pollInterval(100, TimeUnit.MILLISECONDS)
         .until(() -> !containsPeer(raft.getCommittedPeersOrNull(), peerId) && !raft.isLeader());
   }
 
