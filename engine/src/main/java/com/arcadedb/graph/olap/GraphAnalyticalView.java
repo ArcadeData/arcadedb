@@ -261,8 +261,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   // live on every isReady() so an ALTER DATABASE reaches views already built (and restored ones) - see #7875.
   private volatile Boolean useWhenStale;
   // coversVertexType(null) input with the schema version it was computed at: the own buckets of the vertex types the view
-  // does not list. Asked once per vertex by the SQL traversal functions, so the type list is not walked on every call;
-  // one immutable holder behind one reference, so a reader never pairs a version with another thread's buckets
+  // does not list, null when one of them is not a LocalBucket and so cannot be proven empty. Asked once per vertex by the
+  // SQL traversal functions, so the type list is not walked on every call; one immutable holder behind one reference, so
+  // a reader never pairs a version with another thread's buckets
   private record VertexCoverage(long schemaVersion, LocalBucket[] unlistedBuckets) {
   }
 
@@ -982,21 +983,16 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       final long version = database.getSchema().getEmbedded().getVersion();
       VertexCoverage cached = allVertexTypesCovered;
       if (cached == null || cached.schemaVersion() != version) {
-        final List<LocalBucket> unlisted = new ArrayList<>();
-        for (final DocumentType dt : database.getSchema().getTypes())
-          if (dt instanceof VertexType && !containsType(vertexTypes, dt.getName()))
-            for (final Bucket bucket : dt.getBuckets(false)) {
-              if (!(bucket instanceof LocalBucket localBucket))
-                return false;
-              unlisted.add(localBucket);
-            }
-        cached = new VertexCoverage(version, unlisted.toArray(new LocalBucket[0]));
+        cached = new VertexCoverage(version, unlistedVertexBuckets());
         allVertexTypesCovered = cached;
       }
+      if (cached.unlistedBuckets() == null)
+        return false;
       // An unlisted vertex type breaks coverage only once it holds a vertex: no walk can reach a type that has none. The
       // common case is an abstract parent whose records all live in listed sub-types (LSQB's Message over Post and
       // Comment), which made the view unusable for every walk (#9301 follow-up). Read per call, not cached, because a
-      // record created in such a type changes the answer without changing the schema
+      // record created in such a type changes the answer without changing the schema. Committed records only: a caller
+      // whose transaction holds changes is refused the view by the registry (GraphTraversalProviderRegistry.isWithheld)
       for (final LocalBucket bucket : cached.unlistedBuckets())
         if (!isCommittedEmpty(bucket))
           return false;
@@ -1007,10 +1003,25 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     return containsType(vertexTypes, typeName);
   }
 
+  /** The own buckets of the vertex types this view does not list, or null when one of them is not a {@link LocalBucket}. */
+  private LocalBucket[] unlistedVertexBuckets() {
+    final List<LocalBucket> unlisted = new ArrayList<>();
+    for (final DocumentType dt : database.getSchema().getTypes())
+      if (dt instanceof VertexType && !containsType(vertexTypes, dt.getName()))
+        for (final Bucket bucket : dt.getBuckets(false)) {
+          if (!(bucket instanceof LocalBucket localBucket))
+            return null;
+          unlisted.add(localBucket);
+        }
+    return unlisted.toArray(new LocalBucket[0]);
+  }
+
   /**
    * Whether {@code bucket} holds no committed record, with no scan and none of the per-user permission check of
    * {@link LocalBucket#count()}: the committed counter, or, while that is not known yet (a fresh open with no statistics,
-   * an unclean shutdown), a bucket with no page written. A bucket that cannot be proven empty counts as holding a record.
+   * an unclean shutdown), a bucket with no page written. A bucket that cannot be proven empty counts as holding a record:
+   * one that was emptied but whose counter reads -1 keeps the view partial until the counter is known again (the next
+   * {@code count(*)} on the type recounts it).
    */
   private static boolean isCommittedEmpty(final LocalBucket bucket) {
     final long count = bucket.getCachedRecordCount();
