@@ -175,7 +175,10 @@ public class HashIndexBucket extends PaginatedComponent {
   // the next page sits where a bucket page keeps its overflow page. The owner is the hash of the key the list belongs to:
   // a freed page is reused by another key, so a lookup, which runs outside the commit lock, can follow a pointer read just
   // before the page changed hands, and the owner is how it finds out and starts again instead of returning the RIDs of
-  // another key.
+  // another key. Its limits: a page given back to the SAME key is not told apart (the RIDs read are that key's, from a
+  // newer state, as a read across the pages of an overflow chain can mix two states), and neither is a page given to a
+  // different key with the same 64-bit hash, which needs that collision and the race at once. Writers run under the commit
+  // lock and never meet a torn list, so for them a wrong owner is corruption.
   static final int RID_LIST_PAGE_MARKER   = 0x4000;
   static final int RID_PAGE_MARKER        = 0;                       // short (2)
   static final int RID_PAGE_COUNT         = 2;                       // short (2): RIDs on this page
@@ -2204,6 +2207,10 @@ public class HashIndexBucket extends PaginatedComponent {
           continue;
         }
 
+        // Everything this removal may touch is checked before the first write: the previous page was walked already, the next one
+        // is validated here, so a damaged list fails without leaving half a change in the transaction
+        final BasePage nextPage = next != NO_OVERFLOW_PAGE ? ridListPage(next, hash) : null;
+
         final MutablePage page = tx.getPageToModify(new PageId(database, fileId, current), pageSize, false);
         page.move(offset + ridSize, offset, dataEnd - offset - ridSize);
         final int newDataEnd = dataEnd - ridSize;
@@ -2224,9 +2231,8 @@ public class HashIndexBucket extends PaginatedComponent {
               entryPage.writeInt(valueOffset + 1 + Binary.INT_SERIALIZED_SIZE, previous);
           }
           freeRidListPages(current, page);
-        } else if (next != NO_OVERFLOW_PAGE) {
+        } else if (nextPage != null) {
           // Merge the next page in this one when its RIDs fit, so deletions do not leave a chain of half empty pages
-          final BasePage nextPage = ridListPage(next, hash);
           final int nextLength = (nextPage.readShort(RID_PAGE_DATA_END) & 0xFFFF) - RID_PAGE_CONTENT_START;
           if (nextLength <= ridListPageEnd() - newDataEnd) {
             final byte[] rids = new byte[nextLength];

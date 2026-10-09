@@ -119,6 +119,79 @@ class Issue9228HashHotKeyRidListTest extends TestHelper {
   }
 
   @Test
+  void deletionsMergeThePagesOfAListUpToItsLastOne() throws IOException {
+    createType(1_024);
+    final HashIndexBucket bucket = bucket();
+    // about 250 RIDs of 4 bytes per page: a list of 5 pages
+    final List<RID> rids = new ArrayList<>();
+    for (int i = 0; i < 1_200; i++)
+      rids.add(new RID(1_000, 5_000 + i));
+    putAll(bucket, 9L, rids);
+
+    // removed in the order they were added: the first page keeps shrinking and takes in the next one, the last one included
+    putOrRemoveAll(bucket, 9L, rids.subList(0, 1_000), false);
+    assertThat(bucket.checkMetadataIntegrity()).isEmpty();
+    assertThat(lookupInBucket(bucket, 9L)).containsExactlyInAnyOrderElementsOf(rids.subList(1_000, 1_200));
+
+    // the last page the entry names is the right one: new RIDs land after the survivors
+    final List<RID> more = new ArrayList<>();
+    for (int i = 0; i < 600; i++)
+      more.add(new RID(1_000, 20_000 + i));
+    putAll(bucket, 9L, more);
+    assertThat(bucket.checkMetadataIntegrity()).isEmpty();
+    final Set<RID> expected = new HashSet<>(rids.subList(1_000, 1_200));
+    expected.addAll(more);
+    assertThat(lookupInBucket(bucket, 9L)).containsExactlyInAnyOrderElementsOf(expected);
+
+    putOrRemoveAll(bucket, 9L, new ArrayList<>(expected), false);
+    assertThat(lookupInBucket(bucket, 9L)).isEmpty();
+    assertThat(bucket.checkMetadataIntegrity()).isEmpty();
+  }
+
+  @Test
+  void anEntryOfFewRIDsThatCannotGrowOnAFullUnsplittablePageMovesToARidList() throws IOException {
+    // 256-byte pages and keys whose hashes share the first bit: the bucket can never split, so it overflows
+    createType(256);
+    final HashIndexBucket bucket = bucket();
+    final List<Long> keys = new ArrayList<>();
+    for (long k = 0; keys.size() < 120; k++)
+      if (bucket.hashKeys(new Object[] { k }) >>> 63 == 0)
+        keys.add(k);
+
+    database.transaction(() -> {
+      try {
+        for (final long key : keys)
+          bucket.put(new Object[] { key }, new RID(1_000, key));
+      } catch (final IOException e) {
+        throw new DatabaseOperationException("Cannot load the keys", e);
+      }
+    });
+    assertThat(bucket.getGlobalDepth()).as("the bucket never split").isZero();
+    assertThat(countRidListPages()).isZero();
+
+    // The first key sits on the full head page with one RID: its second RID cannot grow the entry there, the bucket cannot
+    // split, and the value (one RID) is shorter than the pointer that replaces it, so the entry is written again elsewhere
+    final long first = keys.getFirst();
+    putAll(bucket, first, List.of(new RID(1_001, first)));
+    assertThat(countRidListPages()).isEqualTo(1);
+    assertThat(lookupInBucket(bucket, first)).containsExactlyInAnyOrder(new RID(1_000, first), new RID(1_001, first));
+    for (final long key : keys.subList(1, keys.size()))
+      assertThat(lookupInBucket(bucket, key)).containsExactly(new RID(1_000, key));
+    assertThat(bucket.checkMetadataIntegrity()).isEmpty();
+
+    database.transaction(() -> {
+      try {
+        bucket.remove(new Object[] { first }, new RID(1_001, first));
+        for (final long key : keys)
+          bucket.remove(new Object[] { key }, new RID(1_000, key));
+      } catch (final IOException e) {
+        throw new DatabaseOperationException("Cannot remove the keys", e);
+      }
+    });
+    assertThat(subIndex().countEntries()).isZero();
+  }
+
+  @Test
   void lookupsDeletionsAndReinsertsStayConsistent() {
     // a small page: lists of many pages, merges and splits of the buckets around them
     createType(1_024);
@@ -266,6 +339,31 @@ class Issue9228HashHotKeyRidListTest extends TestHelper {
   }
 
   // ─── HELPERS ───
+
+  private void putAll(final HashIndexBucket bucket, final long key, final List<RID> rids) {
+    putOrRemoveAll(bucket, key, rids, true);
+  }
+
+  private void putOrRemoveAll(final HashIndexBucket bucket, final long key, final List<RID> rids, final boolean put) {
+    database.transaction(() -> {
+      try {
+        for (final RID rid : rids)
+          if (put)
+            bucket.put(new Object[] { key }, rid);
+          else
+            bucket.remove(new Object[] { key }, rid);
+      } catch (final IOException e) {
+        throw new DatabaseOperationException("Cannot update key " + key, e);
+      }
+    });
+  }
+
+  private static Set<RID> lookupInBucket(final HashIndexBucket bucket, final long key) throws IOException {
+    final List<RID> rids = bucket.get(new Object[] { key }, -1);
+    final Set<RID> result = new HashSet<>(rids);
+    assertThat(result).as("RIDs of key " + key + " are distinct").hasSize(rids.size());
+    return result;
+  }
 
   private void createType(final int pageSize) {
     database.transaction(() -> {
