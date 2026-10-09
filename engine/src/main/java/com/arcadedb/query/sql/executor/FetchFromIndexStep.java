@@ -68,7 +68,9 @@ import java.util.logging.Level;
  * Created by luigidellaquila on 23/07/16.
  */
 public class FetchFromIndexStep extends AbstractExecutionStep {
-  private static final byte FLOATING_KEYS_UNKNOWN = 0, FLOATING_KEYS_VERIFIABLE = 1, FLOATING_KEYS_NOT_APPLICABLE = 2;
+  private static final byte FLOATING_KEYS_UNKNOWN        = 0;
+  private static final byte FLOATING_KEYS_VERIFIABLE     = 1;
+  private static final byte FLOATING_KEYS_NOT_APPLICABLE = 2;
 
   protected final String                                         indexName;
   /** Package-private so a test can observe that a restart released them instead of only dropping the references. */

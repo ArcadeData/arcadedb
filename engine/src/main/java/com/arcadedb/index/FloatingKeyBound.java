@@ -74,7 +74,8 @@ public final class FloatingKeyBound {
     if (bound instanceof BigDecimal value) {
       final double rounded = isDouble ? value.doubleValue() : value.floatValue();
       // an overflow to an infinity holds no exact value either
-      return Double.isInfinite(rounded) || new BigDecimal(rounded).compareTo(value) != 0;
+      // the exact binary expansion of the key is the point here, not its shortest decimal reading: BigDecimal.valueOf would be wrong
+      return Double.isInfinite(rounded) || new BigDecimal(rounded).compareTo(value) != 0; // NOPMD
     }
     return false;
   }
