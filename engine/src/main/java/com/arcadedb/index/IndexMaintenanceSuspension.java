@@ -39,9 +39,9 @@ import java.util.logging.Level;
  * Suspensions compose: {@link IndexInternal#suspendBackgroundMaintenance()} is reference-counted, so a loader
  * that opens several batches in a row holds one of these around the whole load and each batch nests its own
  * inside it, and the index stays quiet across the gaps between the batches as well as during them. That is the
- * shape {@code GraphImporter} has - a vertex batch, a topology pass with no batch open at all, then one edge
- * batch per edge type - and the gap between its two batches is exactly where a 4.2M-vector load saw the rebuild
- * fire and then run alongside the whole edge pass (issue #7432).
+ * shape {@code GraphImporter} has - a vertex batch, then one edge batch per edge type - and the gap between its
+ * two batches, then filled by a topology pass with no batch open at all, is exactly where a 4.2M-vector load saw
+ * the rebuild fire and then run alongside the whole edge pass (issue #7432).
  * <p>
  * The list is a snapshot taken at {@link #suspend(Database, String)}, and {@link #close()} lifts exactly those:
  * an index dropped mid-load must still have its suspension lifted, and looking the list up again would silently
