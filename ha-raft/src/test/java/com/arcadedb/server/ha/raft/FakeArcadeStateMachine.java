@@ -47,6 +47,7 @@ public class FakeArcadeStateMachine extends ArcadeStateMachine {
   private volatile boolean   resyncInProgress;
   private volatile boolean   haltedAfterCriticalError;
   private volatile TermIndex lastAppliedTermIndex;
+  private volatile boolean   closed;
 
   private static final Set<String> RECORDED = Set.of("hasLeaderServiceGap", "isBootstrapInstallInFlight",
       "handOffLeadershipWhileReplacingDatabase", "resyncDatabaseFromLeader");
@@ -140,6 +141,12 @@ public class FakeArcadeStateMachine extends ArcadeStateMachine {
     return this;
   }
 
+  /** A state machine whose {@code close()} ran - as one a Ratis restart replaced - without closing anything. */
+  public FakeArcadeStateMachine closed(final boolean closed) {
+    this.closed = closed;
+    return this;
+  }
+
   public FakeArcadeStateMachine lastAppliedTermIndex(final TermIndex lastAppliedTermIndex) {
     this.lastAppliedTermIndex = lastAppliedTermIndex;
     return this;
@@ -163,6 +170,11 @@ public class FakeArcadeStateMachine extends ArcadeStateMachine {
   @Override
   boolean isHaltedAfterCriticalError() {
     return haltedAfterCriticalError;
+  }
+
+  @Override
+  boolean isClosed() {
+    return closed || super.isClosed();
   }
 
   @Override
