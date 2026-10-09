@@ -53,6 +53,8 @@ public class PatternPredicateExpression implements BooleanExpression {
   private final PathPattern pathPattern;
   private final boolean isNegated;
   private final String patternText;
+  // THE PATTERN NEVER CHANGES, SO WHETHER IT IS A PARENTHESIZED VARIABLE IS DECIDED ONCE
+  private final boolean parenthesizedVariable;
 
   public PatternPredicateExpression(final PathPattern pathPattern, final boolean isNegated) {
     this(pathPattern, isNegated, null);
@@ -62,15 +64,54 @@ public class PatternPredicateExpression implements BooleanExpression {
     this.pathPattern = pathPattern;
     this.isNegated = isNegated;
     this.patternText = patternText;
+    this.parenthesizedVariable = computeParenthesizedVariable(pathPattern);
+  }
+
+  @Override
+  public Object evaluateTernary(final Result result, final CommandContext context) {
+    if (parenthesizedVariable) {
+      final Boolean value = evaluateParenthesizedVariable(result);
+      if (value == null)
+        return null;
+      return isNegated ? !value : value;
+    }
+    return evaluate(result, context);
   }
 
   @Override
   public boolean evaluate(final Result result, final CommandContext context) {
+    if (parenthesizedVariable)
+      return Boolean.TRUE.equals(evaluateTernary(result, context));
+
     // Pattern predicates check if a pattern exists
     // For example: WHERE (n)-[:KNOWS]->() checks if n has any KNOWS relationship
 
     final boolean patternExists = evaluatePattern(result, context);
     return isNegated ? !patternExists : patternExists;
+  }
+
+  /**
+   * {@code (name)} with no relationship cannot be told apart from a parenthesized variable by the grammar: whether
+   * {@code name} is a graph entity (not a predicate) or a value (a parenthesized expression) is known only from what
+   * the row binds it to (issue #9542). The semantic validator already refused the cases it can prove are entities.
+   */
+  private static boolean computeParenthesizedVariable(final PathPattern pathPattern) {
+    if (pathPattern == null || !pathPattern.isSingleNode())
+      return false;
+    // (n:Label) and (n {prop: 1}) say something about a node: they are patterns, never a parenthesized variable
+    final NodePattern node = pathPattern.getFirstNode();
+    return node.getVariable() != null && !node.hasLabels() && !node.hasProperties();
+  }
+
+  private Boolean evaluateParenthesizedVariable(final Result result) {
+    final String variable = pathPattern.getFirstNode().getVariable();
+    final Object value = result.getProperty(variable);
+    if (value == null)
+      return null;
+    if (value instanceof Boolean bool)
+      return bool;
+    throw new CommandExecutionException(
+        "InvalidArgumentType: Expected Boolean but '" + variable + "' is " + value.getClass().getSimpleName());
   }
 
   private boolean evaluatePattern(final Result result, final CommandContext context) {

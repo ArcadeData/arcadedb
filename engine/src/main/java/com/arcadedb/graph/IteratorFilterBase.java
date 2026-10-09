@@ -39,6 +39,13 @@ public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
     validBuckets = EdgeBucketMask.of(database, edgeTypes);
   }
 
+  /**
+   * The byte position in {@link #currentContainer} of the entry the last {@code hasNext()} stopped on.
+   */
+  protected int getEntryPosition() {
+    return lastElementPosition;
+  }
+
   protected boolean hasNext(final boolean edge) {
     if (next != null)
       return true;

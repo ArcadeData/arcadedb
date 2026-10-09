@@ -49,6 +49,17 @@ public class ImmutableLightEdge extends ImmutableDocument implements LightEdge {
     this.in = in;
   }
 
+  /**
+   * Builds the edge as it is read off the edge list of {@code direction} at {@code position} of {@code segment}, so
+   * that its identity can tell it from a twin of the same triple (see {@link LightEdgeRID#getOccurrence()}).
+   */
+  public ImmutableLightEdge(final Database graph, final DocumentType type, final int edgeTypeBucketId, final RID out,
+                            final RID in, final RID segment, final int position, final Vertex.DIRECTION direction) {
+    this(graph, type, edgeTypeBucketId, out, in);
+    // THE PRIMARY CONSTRUCTOR ALWAYS BUILDS A LightEdgeRID
+    ((LightEdgeRID) getIdentity()).readFrom(segment, position, direction);
+  }
+
   @Override
   public Object get(final String propertyName) {
     return null;
