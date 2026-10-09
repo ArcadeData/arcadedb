@@ -258,7 +258,7 @@ final class MongoFilter {
    * (stored before the property was declared) to being missed.
    */
   private static boolean leadsAnIndex(final DocumentType type, final String field) {
-    for (final TypeIndex index : type.getAllIndexes(true))
+    for (final TypeIndex index : TypeIndex.filterReadyForQueries(type.getAllIndexes(true)))
       if (field.equals(index.getPropertyNames().getFirst()))
         return true;
     return false;

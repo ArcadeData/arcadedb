@@ -451,6 +451,24 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     return getFirstUnderlyingIndex().isUnique();
   }
 
+  /**
+   * {@link #isUnique()} for a caller that walks the indexes of a type while a concurrent DDL runs (issue #8859): an index being
+   * created has no sub-index yet and one being dropped is invalid, and both make {@link #isUnique()} throw. Such an index has no
+   * uniqueness to enforce for the caller, so the answer is false. Never throws.
+   */
+  public boolean isUniqueIfPresent() {
+    if (!valid)
+      return false;
+    final IndexInternal first = firstOrNull();
+    if (first == null)
+      return false;
+    try {
+      return first.isUnique();
+    } catch (final IndexException e) {
+      return false;
+    }
+  }
+
   @Override
   public boolean supportsOrderedIterations() {
     checkIsValid();

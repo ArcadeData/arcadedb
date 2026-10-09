@@ -699,7 +699,7 @@ public class TransactionIndexContext {
         if (typeName != null) {
           final DocumentType type = schema.getType(typeName);
           for (final TypeIndex typeIndex : type.getAllIndexes(true))
-            if (typeIndex.isUnique())
+            if (typeIndex.isUniqueIfPresent())
               for (final IndexInternal idx : typeIndex.getIndexesOnBuckets())
                 modifiedFiles.add(idx.getFileId());
         }
