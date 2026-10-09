@@ -827,7 +827,7 @@ public class RedisQueryEngine implements QueryEngine {
   }
 
   /**
-   * HDEL command: Deletes documents from the database, answering like the RESP wire path (#9161).
+   * HDEL command: Deletes documents from the database. The forms both surfaces serve answer as on the RESP wire path (#9161).
    * Syntax: HDEL <index> <key> [key ...]
    *         HDEL <rid> [rid ...]
    * Every RID is parsed before anything is deleted, a record that is not there is skipped and not counted, and any other

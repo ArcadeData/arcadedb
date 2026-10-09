@@ -97,6 +97,9 @@ class Issue9162MongoFilterIndexPrefilterTest extends BaseMongoServerTest {
     db.command("sql", "CREATE PROPERTY products.tags LIST");
     db.command("sql", "CREATE INDEX ON products (sku) UNIQUE");
     db.command("sql", "CREATE INDEX ON products (qty) NOTUNIQUE");
+    db.command("sql", "CREATE INDEX ON products (big) NOTUNIQUE");
+    db.command("sql", "CREATE INDEX ON products (price) NOTUNIQUE");
+    db.command("sql", "CREATE INDEX ON products (active) NOTUNIQUE");
   }
 
   private static Document parse(final String json) {
@@ -170,6 +173,19 @@ class Issue9162MongoFilterIndexPrefilterTest extends BaseMongoServerTest {
     try (final ResultSet rs = db().query("sql", "EXPLAIN " + sql, params)) {
       assertThat(rs.next().<String>getProperty("executionPlanAsString")).contains("FETCH FROM INDEX");
     }
+  }
+
+  @Test
+  void aDeclaredFieldWithoutAnIndexIsNotNarrowed() {
+    declareProducts();
+    db().command("sql", "CREATE PROPERTY products.note STRING");
+    assertThat(candidateWhere("products", "{note: 'x'}")).isEmpty();
+    // a field that only a later position of a compound index covers does not count either
+    db().command("sql", "CREATE PROPERTY products.a STRING");
+    db().command("sql", "CREATE PROPERTY products.b STRING");
+    db().command("sql", "CREATE INDEX ON products (a, b) NOTUNIQUE");
+    assertThat(candidateWhere("products", "{b: 'x'}")).isEmpty();
+    assertThat(candidateWhere("products", "{a: 'x'}")).contains("WHERE");
   }
 
   @Test
