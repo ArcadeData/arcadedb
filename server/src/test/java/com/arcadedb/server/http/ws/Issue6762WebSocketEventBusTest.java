@@ -25,7 +25,8 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.server.FakeArcadeDBServer;
-import com.arcadedb.server.security.ServerSecurity;
+import com.arcadedb.server.FakeServerSecurity;
+import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.websockets.core.WebSocketChannel;
@@ -34,6 +35,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -263,12 +265,10 @@ class Issue6762WebSocketEventBusTest {
   void aSubscriberWhoseAccessWasRevokedStopsReceivingEvents() throws Exception {
     final String db = record.getDatabase().getName();
 
-    final ServerSecurityUser revoked = mock(ServerSecurityUser.class);
-    when(revoked.getName()).thenReturn("someone");
-    when(revoked.canAccessToDatabase(db)).thenReturn(false);
+    final ServerSecurityUser revoked = TestServerHelper.securityUser("someone");
 
-    final ServerSecurity security = mock(ServerSecurity.class);
-    when(security.revalidate(revoked)).thenReturn(revoked);
+    final FakeServerSecurity security = FakeServerSecurity.create();
+    security.on("revalidate", args -> Objects.equals(args[0], revoked) ? revoked : null);
 
     final FakeArcadeDBServer server = FakeArcadeDBServer.create();
     server.returns("getConfiguration", new ContextConfiguration());
@@ -296,12 +296,10 @@ class Issue6762WebSocketEventBusTest {
   void aSubscriberWhoStillHasAccessKeepsReceivingEvents() throws Exception {
     final String db = record.getDatabase().getName();
 
-    final ServerSecurityUser allowed = mock(ServerSecurityUser.class);
-    when(allowed.getName()).thenReturn("someone");
-    when(allowed.canAccessToDatabase(db)).thenReturn(true);
+    final ServerSecurityUser allowed = TestServerHelper.securityUser("someone", db);
 
-    final ServerSecurity security = mock(ServerSecurity.class);
-    when(security.revalidate(allowed)).thenReturn(allowed);
+    final FakeServerSecurity security = FakeServerSecurity.create();
+    security.on("revalidate", args -> Objects.equals(args[0], allowed) ? allowed : null);
 
     final FakeArcadeDBServer server = FakeArcadeDBServer.create();
     server.returns("getConfiguration", new ContextConfiguration());
@@ -330,12 +328,14 @@ class Issue6762WebSocketEventBusTest {
   void aSubscriberWhoseUserWasDroppedStopsReceivingEvents() throws Exception {
     final String db = record.getDatabase().getName();
 
-    final ServerSecurityUser captured = mock(ServerSecurityUser.class);
-    when(captured.getName()).thenReturn("gone");
-    when(captured.canAccessToDatabase(db)).thenReturn(true); // the stale snapshot still says yes
+    final ServerSecurityUser captured = TestServerHelper.securityUser("gone", db); // the stale snapshot still says yes
 
-    final ServerSecurity security = mock(ServerSecurity.class);
-    when(security.revalidate(captured)).thenThrow(new ServerSecurityException("User 'gone' no longer exists")); // ...but the principal no longer exists
+    final FakeServerSecurity security = FakeServerSecurity.create();
+    security.on("revalidate", args -> {
+      if (Objects.equals(args[0], captured))
+        throw new ServerSecurityException("User 'gone' no longer exists");
+      return null;
+    }); // ...but the principal no longer exists
 
     final FakeArcadeDBServer server = FakeArcadeDBServer.create();
     server.returns("getConfiguration", new ContextConfiguration());

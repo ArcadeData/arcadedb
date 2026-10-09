@@ -20,8 +20,8 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.serializer.json.JSONException;
-import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.FakeArcadeDBServer;
+import com.arcadedb.server.FakeServerSecurity;
 import com.arcadedb.server.security.ReplicatedUsersPersistenceException;
 import com.arcadedb.server.security.ServerSecurity;
 import org.apache.ratis.proto.RaftProtos.LogEntryProto;
@@ -36,9 +36,6 @@ import java.util.concurrent.CompletableFuture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.doThrow;
-import static org.mockito.Mockito.mock;
 
 /**
  * Regression test for issue #7137: a local {@link IOException} writing {@code server-users.jsonl} while
@@ -80,9 +77,9 @@ class Issue7137SecurityEntryWriteFailureTest {
 
   /** A server whose security layer cannot persist the replicated users file: the full/read-only volume. */
   private static FakeArcadeDBServer serverThatCannotPersistUsers() {
-    final ServerSecurity security = mock(ServerSecurity.class);
-    doThrow(new ReplicatedUsersPersistenceException("Replicated users applied in memory but could NOT be persisted",
-        new IOException("No space left on device"))).when(security).applyReplicatedUsers(anyString());
+    final FakeServerSecurity security = FakeServerSecurity.create();
+    security.fails("applyReplicatedUsers", new ReplicatedUsersPersistenceException("Replicated users applied in memory but could NOT be persisted",
+        new IOException("No space left on device")));
 
     final FakeArcadeDBServer server = FakeArcadeDBServer.create();
     server.security(security);
@@ -129,11 +126,11 @@ class Issue7137SecurityEntryWriteFailureTest {
    */
   @Test
   void aPayloadThisNodeCannotReadStillHaltsTheNode() {
-    final ServerSecurity security = mock(ServerSecurity.class);
+    final FakeServerSecurity security = FakeServerSecurity.create();
     // What a user entry missing "name" actually produces: JSONObject.getString throws JSONException, a plain
     // RuntimeException. (An IllegalArgumentException would not do here - applyTransaction has had its own
     // non-halting arm for those since long before this PR, and the point is what the SECURITY catch does.)
-    doThrow(new JSONException("no 'name' in user entry")).when(security).applyReplicatedUsers(anyString());
+    security.fails("applyReplicatedUsers", new JSONException("no 'name' in user entry"));
     final FakeArcadeDBServer server = FakeArcadeDBServer.create();
     server.security(security);
     server.returns("getConfiguration", new ContextConfiguration());

@@ -29,6 +29,7 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.StaticBaseServerTest;
+import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.server.http.handler.ExecutionResponse;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.sun.net.httpserver.HttpServer;
@@ -475,8 +476,7 @@ class Issue8606UnverifiedClosedCopyReverifyTest {
     when(httpServer.getServer()).thenReturn(server);
     final RaftHAPlugin plugin = mock(RaftHAPlugin.class);
     when(plugin.getRaftHAServer()).thenReturn(raft);
-    final ServerSecurityUser root = mock(ServerSecurityUser.class);
-    when(root.getName()).thenReturn("root");
+    final ServerSecurityUser root = TestServerHelper.securityUser("root");
     final ExecutionResponse response = new PostBootstrapStateHandler(httpServer, plugin).execute(null, root,
         new JSONObject().put(UnverifiedClosedCopyCheck.COPY_OF, name));
     assertThat(response.getCode()).isEqualTo(200);

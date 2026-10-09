@@ -20,6 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.server.FakeArcadeDBServer;
+import com.arcadedb.server.FakeServerSecurity;
 import com.arcadedb.server.security.ServerSecurity;
 import org.apache.ratis.proto.RaftProtos.LogEntryProto;
 import org.apache.ratis.proto.RaftProtos.StateMachineLogEntryProto;
@@ -28,13 +29,10 @@ import org.apache.ratis.statemachine.TransactionContext;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import org.junit.jupiter.api.Test;
 
+import java.util.Arrays;
 import java.util.concurrent.CompletableFuture;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
 /**
  * Issue #7509, the half a {@code ServerSecurity} test cannot reach: what the state machine ANSWERS for a
@@ -73,8 +71,8 @@ class Issue7509SupersededSecurityEntryReplyTest {
 
   @Test
   void anInstalledUsersEntryAnswersSomethingElse() {
-    final ServerSecurity security = mock(ServerSecurity.class);
-    when(security.applyReplicatedUsers(anyString(), anyString())).thenReturn(true);
+    final FakeServerSecurity security = FakeServerSecurity.create();
+    security.returns("applyReplicatedUsers", true);
     final ArcadeStateMachine sm = stateMachine(security);
 
     final CompletableFuture<Message> future = sm.applyTransaction(
@@ -86,8 +84,8 @@ class Issue7509SupersededSecurityEntryReplyTest {
 
   @Test
   void aRefusedGroupsEntryAnswersTheSupersededMarker() {
-    final ServerSecurity security = mock(ServerSecurity.class);
-    when(security.applyReplicatedGroups(anyString(), anyString())).thenReturn(false);
+    final FakeServerSecurity security = FakeServerSecurity.create();
+    security.returns("applyReplicatedGroups", false);
     final ArcadeStateMachine sm = stateMachine(security);
 
     final CompletableFuture<Message> future = sm.applyTransaction(entry(sm, 5L,
@@ -99,8 +97,8 @@ class Issue7509SupersededSecurityEntryReplyTest {
 
   @Test
   void aRefusedApiTokensEntryAnswersTheSupersededMarker() {
-    final ServerSecurity security = mock(ServerSecurity.class);
-    when(security.applyReplicatedApiTokens(anyString(), anyString())).thenReturn(false);
+    final FakeServerSecurity security = FakeServerSecurity.create();
+    security.returns("applyReplicatedApiTokens", false);
     final ArcadeStateMachine sm = stateMachine(security);
 
     final CompletableFuture<Message> future = sm.applyTransaction(entry(sm, 5L,
@@ -116,20 +114,20 @@ class Issue7509SupersededSecurityEntryReplyTest {
    */
   @Test
   void anEntryWithoutAPreconditionTakesTheUnconditionalApply() {
-    final ServerSecurity security = mock(ServerSecurity.class);
+    final FakeServerSecurity security = FakeServerSecurity.create();
     final ArcadeStateMachine sm = stateMachine(security);
 
     final CompletableFuture<Message> future = sm.applyTransaction(
         entry(sm, 5L, RaftLogEntryCodec.encodeSecurityUsersEntry(USERS_JSON)));
 
-    verify(security).applyReplicatedUsers(USERS_JSON);
+    assertThat(security.calls("applyReplicatedUsers")).containsOnlyOnce(Arrays.asList(USERS_JSON));
     assertThat(future.join().getContent().toStringUtf8())
         .isNotEqualTo(ArcadeStateMachine.SECURITY_ENTRY_SUPERSEDED_REPLY);
   }
 
   private static ServerSecurity securityThatRefuses() {
-    final ServerSecurity security = mock(ServerSecurity.class);
-    when(security.applyReplicatedUsers(anyString(), anyString())).thenReturn(false);
+    final FakeServerSecurity security = FakeServerSecurity.create();
+    security.returns("applyReplicatedUsers", false);
     return security;
   }
 

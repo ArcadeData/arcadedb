@@ -23,6 +23,7 @@ import com.arcadedb.engine.OperationProgressRegistry;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.FakeArcadeDBServer;
+import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 
@@ -33,11 +34,9 @@ import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -79,11 +78,7 @@ class GetProgressHandlerTest {
   }
 
   private ServerSecurityUser userAuthorizedOn(final String... databases) {
-    final ServerSecurityUser user = mock(ServerSecurityUser.class);
-    final Set<String> authorized = Set.of(databases);
-    when(user.canAccessToDatabase(anyString()))
-        .thenAnswer(invocation -> authorized.contains("*") || authorized.contains((String) invocation.getArgument(0)));
-    return user;
+    return TestServerHelper.securityUser("user", databases);
   }
 
   @Test

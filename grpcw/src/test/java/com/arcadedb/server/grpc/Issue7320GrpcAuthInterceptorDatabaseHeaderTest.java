@@ -18,6 +18,8 @@
  */
 package com.arcadedb.server.grpc;
 
+import com.arcadedb.server.FakeServerSecurity;
+import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -30,6 +32,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
+import java.util.Arrays;
 import java.util.Collections;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -59,7 +62,7 @@ class Issue7320GrpcAuthInterceptorDatabaseHeaderTest {
   private static final Metadata.Key<String> DATABASE_HEADER =
       Metadata.Key.of("x-arcade-database", Metadata.ASCII_STRING_MARSHALLER);
 
-  private ServerSecurity                    security;
+  private FakeServerSecurity                    security;
   private ServerSecurityUser                scopedUser;
   private GrpcAuthInterceptor               interceptor;
   private ServerCall<Object, Object>        call;
@@ -68,8 +71,8 @@ class Issue7320GrpcAuthInterceptorDatabaseHeaderTest {
   @BeforeEach
   @SuppressWarnings("unchecked")
   void setUp() {
-    security = mock(ServerSecurity.class);
-    scopedUser = mock(ServerSecurityUser.class);
+    security = FakeServerSecurity.create();
+    scopedUser = TestServerHelper.securityUser("scoped", "graph7320");
     call = mock(ServerCall.class);
     handler = mock(ServerCallHandler.class);
 
@@ -78,9 +81,20 @@ class Issue7320GrpcAuthInterceptorDatabaseHeaderTest {
     when(method.getFullMethodName()).thenReturn("com.arcadedb.grpc.ArcadeDbService/ExecuteQuery");
 
     // Security is enabled: at least one principal is configured.
-    when(security.getUsers()).thenReturn(Collections.singleton("scoped"));
+    security.returns("getUsers", Collections.singleton("scoped"));
+    security.on("authenticate", args -> authenticateScoped((String) args[2]));
 
     interceptor = new GrpcAuthInterceptor(security);
+  }
+
+  /**
+   * The configured principal with the right password: granted {@code graph7320} and nothing else, refused on any other
+   * database exactly as the real security refuses it, and accepted at server level when no database is named.
+   */
+  private ServerSecurityUser authenticateScoped(final String database) {
+    if (database != null && !"graph7320".equals(database))
+      throw new ServerSecurityException("User has not access to database '" + database + "'");
+    return scopedUser;
   }
 
   private Metadata basicAuthHeaders(final String database) {
@@ -99,13 +113,10 @@ class Issue7320GrpcAuthInterceptorDatabaseHeaderTest {
    */
   @Test
   void absentHeaderAuthenticatesAtServerLevel() {
-    when(security.authenticate("scoped", "scopedpassword", null)).thenReturn(scopedUser);
-    when(security.authenticate("scoped", "scopedpassword", "default"))
-        .thenThrow(new ServerSecurityException("User has not access to database 'default'"));
 
     interceptor.interceptCall(call, basicAuthHeaders(null), handler);
 
-    verify(security).authenticate("scoped", "scopedpassword", null);
+    assertThat(security.calls("authenticate")).containsOnlyOnce(Arrays.asList("scoped", "scopedpassword", null));
     verify(handler).startCall(any(), any());
     verify(call, never()).close(any(), any());
   }
@@ -116,11 +127,10 @@ class Issue7320GrpcAuthInterceptorDatabaseHeaderTest {
    */
   @Test
   void emptyHeaderAuthenticatesAtServerLevel() {
-    when(security.authenticate("scoped", "scopedpassword", null)).thenReturn(scopedUser);
 
     interceptor.interceptCall(call, basicAuthHeaders(""), handler);
 
-    verify(security).authenticate("scoped", "scopedpassword", null);
+    assertThat(security.calls("authenticate")).containsOnlyOnce(Arrays.asList("scoped", "scopedpassword", null));
     verify(handler).startCall(any(), any());
     verify(call, never()).close(any(), any());
   }
@@ -131,11 +141,10 @@ class Issue7320GrpcAuthInterceptorDatabaseHeaderTest {
    */
   @Test
   void presentHeaderStillAuthenticatesAgainstThatDatabase() {
-    when(security.authenticate("scoped", "scopedpassword", "graph7320")).thenReturn(scopedUser);
 
     interceptor.interceptCall(call, basicAuthHeaders("graph7320"), handler);
 
-    verify(security).authenticate("scoped", "scopedpassword", "graph7320");
+    assertThat(security.calls("authenticate")).containsOnlyOnce(Arrays.asList("scoped", "scopedpassword", "graph7320"));
     verify(handler).startCall(any(), any());
     verify(call, never()).close(any(), any());
   }
@@ -146,8 +155,6 @@ class Issue7320GrpcAuthInterceptorDatabaseHeaderTest {
    */
   @Test
   void refusalNamesTheDatabaseThatWasChecked() {
-    when(security.authenticate("scoped", "scopedpassword", "forbidden7320"))
-        .thenThrow(new ServerSecurityException("User has not access to database 'forbidden7320'"));
 
     interceptor.interceptCall(call, basicAuthHeaders("forbidden7320"), handler);
 
@@ -164,8 +171,7 @@ class Issue7320GrpcAuthInterceptorDatabaseHeaderTest {
    */
   @Test
   void wrongPasswordIsStillRefused() {
-    when(security.authenticate("scoped", "scopedpassword", null))
-        .thenThrow(new ServerSecurityException("User/Password not valid"));
+    security.fails("authenticate", new ServerSecurityException("User/Password not valid"));
 
     interceptor.interceptCall(call, basicAuthHeaders(null), handler);
 

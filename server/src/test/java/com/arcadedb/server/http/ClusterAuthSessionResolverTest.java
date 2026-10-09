@@ -19,9 +19,9 @@
 package com.arcadedb.server.http;
 
 import com.arcadedb.server.FakeArcadeDBServer;
+import com.arcadedb.server.FakeServerSecurity;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.TestServerHelper;
-import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityUser;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -83,9 +83,8 @@ class ClusterAuthSessionResolverTest {
     sessions = new HttpAuthSessionManager(30_000L, 0L, 0, 0, "node-b", () -> fakeNow);
     peer = new ScriptedPeer();
     alice = TestServerHelper.securityUser("alice");
-    final ServerSecurity security = mock(ServerSecurity.class);
-    when(security.getUser(anyString())).thenReturn(null);
-    when(security.getUser("alice")).thenReturn(alice);
+    final FakeServerSecurity security = FakeServerSecurity.create();
+    security.on("getUser", args -> "alice".equals(args[0]) ? alice : null);
     // Built before the stubbing below opens: a mock created inside thenReturn(...) is a nested stubbing.
     final HAServerPlugin plugin = peer.asPlugin();
     server = FakeArcadeDBServer.create().security(security);

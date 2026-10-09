@@ -387,8 +387,7 @@ class Issue8490StaleForcedResyncTest {
     private ExecutionResponse post(final PostResyncDatabaseHandler handler, final JSONObject body) {
       final HttpServerExchange exchange = new HttpServerExchange(null);
       exchange.setRelativePath("/" + DB);
-      final ServerSecurityUser root = mock(ServerSecurityUser.class);
-      when(root.getName()).thenReturn("root");
+      final ServerSecurityUser root = TestServerHelper.securityUser("root");
       return handler.execute(exchange, root, body);
     }
 

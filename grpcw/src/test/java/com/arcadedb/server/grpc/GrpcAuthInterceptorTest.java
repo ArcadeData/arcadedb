@@ -18,9 +18,10 @@
  */
 package com.arcadedb.server.grpc;
 
+import com.arcadedb.server.FakeServerSecurity;
+import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.server.http.HttpAuthSession;
 import com.arcadedb.server.http.HttpAuthSessionManager;
-import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.grpc.Metadata;
 import io.grpc.MethodDescriptor;
@@ -40,7 +41,7 @@ import static org.mockito.Mockito.when;
 
 class GrpcAuthInterceptorTest {
 
-  private ServerSecurity mockSecurity;
+  private FakeServerSecurity mockSecurity;
   private HttpAuthSessionManager mockSessionManager;
   private GrpcAuthInterceptor interceptor;
   private ServerCall<Object, Object> mockCall;
@@ -51,7 +52,7 @@ class GrpcAuthInterceptorTest {
   @BeforeEach
   @SuppressWarnings("unchecked")
   void setUp() {
-    mockSecurity = mock(ServerSecurity.class);
+    mockSecurity = FakeServerSecurity.create();
     mockSessionManager = mock(HttpAuthSessionManager.class);
     interceptor = new GrpcAuthInterceptor(mockSecurity);
     mockCall = mock(ServerCall.class);
@@ -112,16 +113,15 @@ class GrpcAuthInterceptorTest {
   @Test
   void validateTokenReturnsTrueForValidSession() {
     HttpAuthSession mockSession = mock(HttpAuthSession.class);
-    ServerSecurityUser mockUser = mock(ServerSecurityUser.class);
+    final ServerSecurityUser mockUser = TestServerHelper.securityUser("testuser");
     when(mockSession.getUser()).thenReturn(mockUser);
-    when(mockUser.getName()).thenReturn("testuser");
     when(mockSessionManager.getSessionByToken("valid-token")).thenReturn(mockSession);
 
     // getUsers() returns Set<String> - need at least one user for security to be enabled
-    when(mockSecurity.getUsers()).thenReturn(Collections.singleton("testuser"));
+    mockSecurity.returns("getUsers", Collections.singleton("testuser"));
     // The interceptor re-resolves the session's principal against the live users map on every call, so a
     // session alone is not enough to be accepted: the principal has to still exist (see #6808).
-    when(mockSecurity.getUser("testuser")).thenReturn(mockUser);
+    mockSecurity.on("getUser", args -> "testuser".equals(args[0]) ? mockUser : null);
 
     GrpcAuthInterceptor interceptorWithSession = new GrpcAuthInterceptor(mockSecurity, mockSessionManager);
 
@@ -146,14 +146,13 @@ class GrpcAuthInterceptorTest {
     // until the session idle-expires, so the interceptor re-checks the name against the live users map and
     // drops the now-orphaned session.
     final HttpAuthSession mockSession = mock(HttpAuthSession.class);
-    final ServerSecurityUser mockUser = mock(ServerSecurityUser.class);
+    final ServerSecurityUser mockUser = TestServerHelper.securityUser("droppeduser");
     when(mockSession.getUser()).thenReturn(mockUser);
-    when(mockUser.getName()).thenReturn("droppeduser");
     when(mockSessionManager.getSessionByToken("orphan-token")).thenReturn(mockSession);
 
     // Security is enabled and still holds other principals, but not the one this token was minted for.
-    when(mockSecurity.getUsers()).thenReturn(Collections.singleton("testuser"));
-    when(mockSecurity.getUser("droppeduser")).thenReturn(null);
+    mockSecurity.returns("getUsers", Collections.singleton("testuser"));
+    // A real security holding no "droppeduser": the live lookup answers null on its own.
 
     final GrpcAuthInterceptor interceptorWithSession = new GrpcAuthInterceptor(mockSecurity, mockSessionManager);
 
@@ -175,7 +174,7 @@ class GrpcAuthInterceptorTest {
   void validateTokenReturnsFalseForInvalidSession() {
     when(mockSessionManager.getSessionByToken("invalid-token")).thenReturn(null);
     // getUsers() returns Set<String> - need at least one user for security to be enabled
-    when(mockSecurity.getUsers()).thenReturn(Collections.singleton("testuser"));
+    mockSecurity.returns("getUsers", Collections.singleton("testuser"));
 
     GrpcAuthInterceptor interceptorWithSession = new GrpcAuthInterceptor(mockSecurity, mockSessionManager);
 
@@ -196,7 +195,7 @@ class GrpcAuthInterceptorTest {
   @Test
   void validateTokenReturnsFalseWhenSessionManagerIsNull() {
     // getUsers() returns Set<String> - need at least one user for security to be enabled
-    when(mockSecurity.getUsers()).thenReturn(Collections.singleton("testuser"));
+    mockSecurity.returns("getUsers", Collections.singleton("testuser"));
 
     GrpcAuthInterceptor interceptorWithoutSession = new GrpcAuthInterceptor(mockSecurity, null);
 
