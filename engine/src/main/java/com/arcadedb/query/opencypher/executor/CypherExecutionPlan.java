@@ -6930,32 +6930,34 @@ public class CypherExecutionPlan {
       return null;
 
     final Schema schema = db.getSchema();
-    // With several super-types an edge type belongs to two families at once, and a sum over families would count it twice
-    for (final DocumentType type : schema.getTypes())
-      if (type instanceof EdgeType && type.getSuperTypes().size() > 1)
-        return null;
-
     // An undirected hop over a unidirectional type never gets here: tryOptimizeCountStar declines it, its incoming side is
     // not stored
     final boolean undirected = rel.getDirection() == Direction.BOTH;
     if (!rel.hasTypes())
       return new EdgeCountOp(null, undirected);
 
-    // The edge types of the alternatives, each family once: a type whose super-type is listed too is already counted by it
-    final List<String> types = new ArrayList<>(rel.getTypes().size());
+    // The edge types of the alternatives, each family once: a type whose super-type is listed too is already counted by it.
+    // Only for the plan's sake: the provider and the edge lists count a union of the types, so an edge whose type reaches
+    // two listed families (an edge type may have several super-types) is counted once either way
+    final List<String> declared = new ArrayList<>(rel.getTypes().size());
     for (final String name : rel.getTypes())
-      if (schema.getTypeOrNull(name) instanceof EdgeType && !types.contains(name))
+      if (schema.getTypeOrNull(name) instanceof EdgeType && !declared.contains(name))
+        declared.add(name);
+    final List<String> types = new ArrayList<>(declared.size());
+    for (final String name : declared)
+      if (!isSubTypeOfAnother(schema, name, declared))
         types.add(name);
-    types.removeIf(name -> {
-      for (final String other : types)
-        if (!other.equals(name) && schema.getType(name).isSubTypeOf(other))
-          return true;
-      return false;
-    });
     // A name that is no edge type matches nothing; with none left the row pipeline answers its 0
     if (types.isEmpty())
       return null;
     return new EdgeCountOp(types.toArray(new String[0]), undirected);
+  }
+
+  private static boolean isSubTypeOfAnother(final Schema schema, final String name, final List<String> names) {
+    for (final String other : names)
+      if (!other.equals(name) && schema.getType(name).isSubTypeOf(other))
+        return true;
+    return false;
   }
 
   /** A node position that admits every vertex: no label, no property map, no dynamic label, no inline predicate. */
@@ -6974,8 +6976,9 @@ public class CypherExecutionPlan {
    * The chain and anti-join chain operators read one path pattern, so a chain cut into comma-separated parts -
    * {@code (t:Tag)<-[:HAS_TAG]-(m:Message), (m)<-[:REPLY_OF]-(c:Comment)} - reached neither, however it was ordered
    * (issue #9599). Asked only once every detector has declined the statement as written, so a plan that works today is not
-   * changed: the parts are joined into the one chain they describe, read from either end, and the operator with the
-   * smaller description is kept so that the order the parts were written in does not decide between two that both apply.
+   * changed: the parts are joined into the one chain they describe and read from either end. Both ends count the same
+   * paths; the walk starts from the end whose label has fewer vertices, the anchors it enumerates, and a tie falls to the
+   * operator's description, so the order the parts were written in decides nothing.
    */
   private CountOp tryDetectJoinedChainCountStar(final Database db, final SeedCorrelation correlation,
       final boolean unidirectional) {
@@ -6989,7 +6992,9 @@ public class CypherExecutionPlan {
       return null;
 
     CountOp best = null;
+    long bestAnchors = 0;
     String bestDescription = null;
+    final PairJoinStatistics statistics = new PairJoinStatistics(database);
     for (final PathPattern chain : graph.pathOrientations()) {
       // the gate in tryOptimizeCountStar let a unidirectional type through only for outgoing hops, as written: read from
       // the other end they would walk the incoming side, which is not stored
@@ -7002,9 +7007,12 @@ public class CypherExecutionPlan {
         op = tryDetectAntiJoinChainCountStar(joined);
       if (op == null)
         continue;
+      final NodePattern start = chain.getFirstNode();
+      final long anchors = statistics.vertices(start.hasLabels() ? start.getLabels().get(0) : null);
       final String description = op.describe(0, 0);
-      if (best == null || description.compareTo(bestDescription) < 0) {
+      if (best == null || anchors < bestAnchors || (anchors == bestAnchors && description.compareTo(bestDescription) < 0)) {
         best = op;
+        bestAnchors = anchors;
         bestDescription = description;
       }
     }
@@ -7732,7 +7740,9 @@ public class CypherExecutionPlan {
    * The fan-out is measured on a sample of the label's vertices rather than derived from the edge type's size: a type's
    * edges leave several labels, and LSQB's HAS_CREATOR divided by the posts makes a post look like it has two creators
    * because the comments have one each too. Reading the edge lists of a few vertices is the price of telling the splits of a
-   * cycle apart by what they cost, and it is bounded by the sample. An unlabelled position, which has no set to sample from,
+   * cycle apart by what they cost, and it is bounded by the sample. A sample is an estimate: on a skewed label (a few
+   * supernodes among many small vertices) it can pick the costlier split, which changes the time and never the count. An
+   * unlabelled position, which has no set to sample from,
    * falls back to the type's edges over every vertex, off a ready provider when one holds the type (it counts light edges,
    * which keep no record) and off the type's record counter otherwise.
    */

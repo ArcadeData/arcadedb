@@ -219,10 +219,72 @@ class Issue9600EdgeCountPushDownTest extends TestHelper {
     }
   }
 
+  /** An edge type with two super-types belongs to two families, and an edge of it is still one relationship. */
+  @Test
+  void anEdgeTypeWithTwoSuperTypesIsCountedOnce() {
+    database.command("sql", "CREATE EDGE TYPE MENTORS");
+    database.command("sql", "CREATE EDGE TYPE COACHES EXTENDS KNOWS, MENTORS");
+    buildGraph(41, 120);
+    database.transaction(() -> {
+      final List<Vertex> people = new ArrayList<>();
+      for (final Iterator<Record> it = database.iterateType("Person", true); it.hasNext(); )
+        people.add(it.next().asVertex());
+      for (int i = 0; i + 1 < people.size(); i += 3) {
+        people.get(i).modify().newEdge("COACHES", people.get(i + 1));
+        people.get(i + 1).modify().newEdge("MENTORS", people.get(i));
+      }
+    });
+    final long knows = byHand("KNOWS", Vertex.DIRECTION.OUT);
+    final long mentors = byHand("MENTORS", Vertex.DIRECTION.OUT);
+    final long coaches = byHand("COACHES", Vertex.DIRECTION.OUT);
+    assertThat(coaches).isPositive();
+    assertThat(pushedDown("MATCH ()-[e:KNOWS|MENTORS]->() RETURN count(e) AS n")).isEqualTo(knows + mentors - coaches);
+    assertEdgeCount("MATCH ()-[e]->() RETURN count(e) AS n", null, Vertex.DIRECTION.OUT);
+    assertEdgeCount("MATCH ()-[e]-() RETURN count(e) AS n", null, Vertex.DIRECTION.BOTH);
+
+    final GraphAnalyticalView view = GraphAnalyticalView.builder(database).withName("coaching").build();
+    try {
+      assertThat(pushedDown("MATCH ()-[e:KNOWS|MENTORS]->() RETURN count(e) AS n")).isEqualTo(knows + mentors - coaches);
+      assertThat(pushedDown("MATCH ()-[e:KNOWS|MENTORS]-() RETURN count(e) AS n"))
+          .isEqualTo(count("MATCH ()-[e:KNOWS|MENTORS]-() RETURN sum(1) AS n"));
+      assertEdgeCount("MATCH ()-[e]->() RETURN count(e) AS n", null, Vertex.DIRECTION.OUT);
+    } finally {
+      view.drop();
+    }
+  }
+
+  /** A name a non-optional MATCH binds is never null, even when an OPTIONAL MATCH writes it again. */
+  @Test
+  void aNameBoundByTheMandatoryMatchCountsEveryRow() {
+    buildGraph(43, 150);
+    final String query = "MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(q:Person) OPTIONAL MATCH (q)-[:KNOWS]->(p) RETURN count(p) AS n";
+    assertThat(count(query)).isEqualTo(count(pipeline(query)));
+    assertThat(count(query.replace("count(p)", "count(q)"))).isEqualTo(count(pipeline(query.replace("count(p)", "count(q)"))));
+  }
+
   /** {@code MATCH (n)}: a subtype's vertices are a supertype's too, and are counted once. */
   @Test
   void anUnlabelledNodeCountsEveryVertexOnce() {
     buildGraph(29, 150);
+    // documents and edges are records too, and no node
+    database.command("sql", "CREATE DOCUMENT TYPE Note");
+    database.transaction(() -> {
+      for (int i = 0; i < 10; i++)
+        database.newDocument("Note").save();
+    });
+    assertVertexCount();
+
+    // created and deleted in the current transaction
+    database.transaction(() -> {
+      database.newVertex("Student").save();
+      database.newVertex("City").save();
+      final List<Record> doomed = new ArrayList<>();
+      for (final Iterator<Record> it = database.iterateType("Person", true); it.hasNext() && doomed.size() < 3; )
+        doomed.add(it.next());
+      for (final Record vertex : doomed)
+        vertex.asVertex().delete();
+      assertVertexCount();
+    });
     assertVertexCount();
     // with WHERE, a property map or a dynamic label it is a filter, not a count of the types
     assertThat(plan("MATCH (n) WHERE n.age > 3 RETURN count(n) AS n")).doesNotContain("TYPE COUNT");
