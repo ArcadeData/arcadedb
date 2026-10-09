@@ -264,6 +264,23 @@ class Issue9162MongoFilterIndexPrefilterTest extends BaseMongoServerTest {
   }
 
   @Test
+  void aCaseInsensitiveIndexNarrowsWiderButTheMatcherKeepsMongoDBCase() {
+    final Database db = db();
+    db.command("sql", "CREATE DOCUMENT TYPE names");
+    db.command("sql", "CREATE PROPERTY names.name STRING");
+    db.command("sql", "CREATE INDEX ON names (name COLLATE CI) NOTUNIQUE");
+    final MongoCollection<Document> c = client.getDatabase(getDatabaseName()).getCollection("names");
+    c.insertMany(List.of(parse("{_id: 1, name: 'Beta'}"), parse("{_id: 2, name: 'beta'}"), parse("{_id: 3, name: 'alpha'}")));
+
+    assertThat(ids(c, "{name: 'beta'}")).containsExactly(2);
+    assertThat(ids(c, "{name: 'Beta'}")).containsExactly(1);
+    assertThat(ids(c, "{name: {$in: ['BETA', 'alpha']}}")).containsExactly(3);
+    assertThat(c.deleteOne(parse("{name: 'BETA'}")).getDeletedCount()).isZero();
+    assertThat(c.updateOne(parse("{name: 'beta'}"), parse("{$set: {hit: 1}}")).getModifiedCount()).isEqualTo(1);
+    assertThat(ids(c, "{hit: 1}")).containsExactly(2);
+  }
+
+  @Test
   void aListInADeclaredListFieldStillMatchesThroughItsElements() {
     declareProducts();
     final MongoCollection<Document> c = client.getDatabase(getDatabaseName()).getCollection("products");
