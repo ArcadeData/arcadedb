@@ -447,6 +447,8 @@ public final class DegreeProductOp implements CountOp {
     private final EdgeBucketMask[][] lastHopEdgeMasks;
     private final EdgeBucketMask[][] lastHopNeighborMasks;
     private final long[]             lastHopCount = new long[1];
+    private       WorkGuard          guard;
+    private       int                neighborsVisited;
 
     private EdgeListDegreeCounter(final DatabaseInternal database) {
       this.database = database;
@@ -540,6 +542,7 @@ public final class DegreeProductOp implements CountOp {
     }
 
     private long count(final WorkGuard guard) {
+      this.guard = guard;
       for (int a = 0; a < arms.length; a++)
         if (matchesNothing[a] && !arms[a].optional)
           return 0;
@@ -629,6 +632,8 @@ public final class DegreeProductOp implements CountOp {
       final RID self = vertex.getIdentity();
       long count = 0;
       for (final RID neighbor : graphEngine.getConnectedVertexRIDs(vertex, direction, arms[a].edgeTypes[hop])) {
+        // a multi-hop arm out of one super-node can walk a large part of the graph: keep it interruptible
+        guard.checkPeriodically(neighborsVisited++);
         // the label is checked on the RID, so a neighbor it rejects is never looked up
         if ((reached != null && !reached.matches(neighbor.getBucketId())) || (skipSelfLoops && neighbor.equals(self)))
           continue;

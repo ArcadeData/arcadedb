@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import java.util.SplittableRandom;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression tests for the varint encode/decode fast paths in {@link Binary}. Focuses on boundary values where one path transitions to the next (127 vs 128,
@@ -57,6 +58,37 @@ class BinaryVarIntTest {
     buf.position(0);
     for (final long expected : values)
       assertThat(buf.getUnsignedNumber()).isEqualTo(expected);
+  }
+
+  /** skipNumber() lands where getNumber() would, whatever the length, and refuses an over-long number (issue #9539). */
+  @Test
+  void skipNumberStepsOverEveryByteLength() {
+    final long[] values = { 0, 1, -1, 63, -64, 64, 8191, -8192, 1L << 30, -(1L << 40), Long.MAX_VALUE, Long.MIN_VALUE };
+    final Binary buf = new Binary(values.length * 10 + 1);
+    for (final long v : values)
+      buf.putNumber(v);
+    buf.putByte((byte) 42);
+
+    buf.position(0);
+    final int[] endsDecoding = new int[values.length];
+    for (int i = 0; i < values.length; i++) {
+      buf.getNumber();
+      endsDecoding[i] = buf.position();
+    }
+
+    buf.position(0);
+    for (int i = 0; i < values.length; i++) {
+      buf.skipNumber();
+      assertThat(buf.position()).isEqualTo(endsDecoding[i]);
+    }
+    assertThat(buf.getByte()).isEqualTo((byte) 42);
+
+    final Binary overLong = new Binary(12);
+    for (int i = 0; i < 11; i++)
+      overLong.putByte((byte) 0x80);
+    overLong.putByte((byte) 0x01);
+    overLong.position(0);
+    assertThatThrownBy(overLong::skipNumber).isInstanceOf(IllegalArgumentException.class);
   }
 
   @Test
