@@ -115,6 +115,12 @@ class Issue9596CountCartesianProductTest extends TestHelper {
     }
     // in two MATCH clauses they can
     assertProductMatchesPipeline("MATCH (a)-[:KNOWS]->(b) MATCH (c)-[:KNOWS]->(d)");
+    // a sub-type and a type of another hierarchy cannot be the same edge, so one clause multiplies them
+    assertProductMatchesPipeline("MATCH (a:Person)-[:CLOSE_TO]->(b), (c:Person)-[:HAS_INTEREST]->(t:Tag)");
+    // the parent type matches the sub-type's edges too: refused in either order
+    final String parentAndChild = "MATCH (a)-[:CLOSE_TO]->(b), (c)-[:KNOWS]->(d)";
+    assertThat(plan(parentAndChild + " RETURN count(*) AS n")).doesNotContain(PRODUCT);
+    assertThat(count(parentAndChild + " RETURN count(*) AS n")).isEqualTo(count(parentAndChild + " RETURN sum(1) AS n"));
   }
 
   @Test

@@ -88,19 +88,10 @@ public final class VertexPredicate {
     this.context = context;
   }
 
-  /** Whether the vertex passes every inline entry and the {@code WHERE} conjuncts. */
-  public boolean test(final Document vertex) {
-    for (int i = 0; i < keys.length; i++)
-      if (!InlineProperties.matchesResolvedValue(vertex.get(keys[i]), values[i]))
-        return false;
-    if (where == null)
-      return true;
-    final ResultInternal row = new ResultInternal(context.getDatabase());
-    row.setProperty(variable, vertex);
-    return where.evaluate(row, context);
-  }
-
-  /** A fresh evaluation, with its own memo, for one run of an operator. */
+  /**
+   * A fresh evaluation, with its own memo, for one run of an operator. It must not outlive that run: the answers it
+   * keeps are those of one execution's parameters and one snapshot of the graph.
+   */
   public Evaluation evaluation(final Database database, final GraphTraversalProvider provider) {
     return new Evaluation(database, provider);
   }
@@ -151,12 +142,16 @@ public final class VertexPredicate {
    * RID otherwise. Every array a count operator propagates over a provider is indexed by node id, so the memo is a byte
    * per node, allocated the first time a node id is asked about; a run that only asks by RID - the edge-list walk, or a
    * walk seeded from one bound vertex - never pays for it.
+   * <p>
+   * Not thread-safe, and not meant to be: one operator run asks from one thread, which is also what lets the
+   * {@code WHERE} row be reused from vertex to vertex. Never cache one across executions.
    */
   public final class Evaluation {
     private final Database               database;
     private final GraphTraversalProvider provider;
     private       byte[]                 byNodeId;
     private       RidLongHashMap         byRid;
+    private       ResultInternal         row;
 
     private Evaluation(final Database database, final GraphTraversalProvider provider) {
       this.database = database;
@@ -209,6 +204,19 @@ public final class VertexPredicate {
       for (int v = 0; v < counts.length; v++)
         if (counts[v] != 0 && ((continuation != null && continuation.degree(v) == 0) || !acceptsNode(v)))
           counts[v] = 0;
+    }
+
+    /** Whether the vertex passes every inline entry and the {@code WHERE} conjuncts. */
+    private boolean test(final Document vertex) {
+      for (int i = 0; i < keys.length; i++)
+        if (!InlineProperties.matchesResolvedValue(vertex.get(keys[i]), values[i]))
+          return false;
+      if (where == null)
+        return true;
+      if (row == null)
+        row = new ResultInternal(context.getDatabase());
+      row.setProperty(variable, vertex);
+      return where.evaluate(row, context);
     }
 
     private boolean evaluate(final RID rid) {
