@@ -62,12 +62,12 @@ class Issue6965LocalCommitHandshakeTest {
 
   private final String dbPath = "issue6965-local-commit-handshake-" + UUID.randomUUID();
 
-  private LocalDatabase          proxied;
-  private FakeRaftHAServer           raftServer;
-  private TransactionContext     tx;
-  private ArcadeStateMachine     stateMachine;
-  private FakeRaftTransactionBroker  broker;
-  private RaftReplicatedDatabase database;
+  private LocalDatabase             proxied;
+  private FakeRaftHAServer          raftServer;
+  private TransactionContext        tx;
+  private ArcadeStateMachine        stateMachine;
+  private FakeRaftTransactionBroker broker;
+  private RaftReplicatedDatabase    database;
   private RaftReplicatedDatabase.ReplicationPayload payload;
 
   @BeforeEach
@@ -491,8 +491,13 @@ class Issue6965LocalCommitHandshakeTest {
     return buf.array();
   }
 
-  /** The (database, index) of every wait for the local apply: the fake records the canonical three-argument form. */
+  /**
+   * The (database, index) of every wait for the local apply. The fake records the canonical (database, index,
+   * throwOnTimeout) form the two-argument one delegates to; a recording of any other shape fails here by name.
+   */
   private List<List<Object>> waitedFor() {
-    return raftServer.calls("waitForAppliedIndex").stream().map(args -> args.subList(0, 2)).toList();
+    final List<List<Object>> calls = raftServer.calls("waitForAppliedIndex");
+    assertThat(calls).as("waitForAppliedIndex recorded as (database, index, throwOnTimeout)").allSatisfy(args -> assertThat(args).hasSize(3));
+    return calls.stream().map(args -> args.subList(0, 2)).toList();
   }
 }

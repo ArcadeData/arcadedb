@@ -54,12 +54,12 @@ class Issue8784ReplicatedCommitFiresAfterCommitCallbacksTest {
   @TempDir
   Path tempDir;
 
-  private LocalDatabase          proxied;
-  private FakeRaftHAServer           raftServer;
-  private FakeRaftTransactionBroker  broker;
-  private RaftReplicatedDatabase database;
-  private ThreadLocal<Boolean>   schemaCommitThread;
-  private final AtomicInteger    fired = new AtomicInteger();
+  private LocalDatabase             proxied;
+  private FakeRaftHAServer          raftServer;
+  private FakeRaftTransactionBroker broker;
+  private RaftReplicatedDatabase    database;
+  private ThreadLocal<Boolean>      schemaCommitThread;
+  private final AtomicInteger       fired = new AtomicInteger();
 
   @BeforeEach
   void setUp() throws Exception {
