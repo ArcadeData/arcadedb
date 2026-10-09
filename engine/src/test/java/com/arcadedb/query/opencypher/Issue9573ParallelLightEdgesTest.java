@@ -112,8 +112,8 @@ class Issue9573ParallelLightEdgesTest extends TestHelper {
       a.newLightEdge("K", a);
       a.newLightEdge("K", a);
     });
-    assertThat(count("MATCH (a:P)-[r:K]-(b:P) WITH * RETURN count(*) AS n")).isEqualTo(2L);
-    assertThat(count("MATCH (a:P)-[r:K]->(b:P) WITH * RETURN count(*) AS n")).isEqualTo(2L);
+    assertThat(count("MATCH (a:P)-[r:K]-(b:P) WITH * RETURN count(r) AS n")).isEqualTo(2L);
+    assertThat(count("MATCH (a:P)-[r:K]->(b:P) WITH * RETURN count(r) AS n")).isEqualTo(2L);
   }
 
   @Test
