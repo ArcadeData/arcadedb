@@ -155,6 +155,47 @@ class DeferredHeadChunksTest {
       assertThat(heads.getOut(k)).isNull();
   }
 
+  /**
+   * Growing holds the old table and the new one at the same time, which at bulk-load scale is the costliest moment of
+   * the batch: a table sized for the vertices it will see must never grow, and neither must overwriting a head that is
+   * already there - the undo logs restore heads that way.
+   */
+  @Test
+  void aTableSizedUpFrontNeverGrows() {
+    final int vertices = 100_000;
+    final DeferredHeadChunks heads = new DeferredHeadChunks(vertices);
+    final int capacity = heads.capacity();
+    for (int i = 0; i < vertices; i++) {
+      heads.putOut(key(1, i), new RID(5, i));
+      heads.putIn(key(1, i), new RID(6, i));
+    }
+    assertThat(heads.capacity()).isEqualTo(capacity);
+    assertThat(heads.size()).isEqualTo(vertices);
+
+    // n = how many new keys a default table takes before the next one grows it
+    final DeferredHeadChunks probe = new DeferredHeadChunks();
+    final int initial = probe.capacity();
+    int n = 0;
+    while (true) {
+      probe.putOut(key(2, n), new RID(5, n));
+      if (probe.capacity() != initial)
+        break;
+      n++;
+    }
+    final int full = probe.capacity();
+
+    // a default table holding exactly those n keys, at its threshold, then overwritten: same slots, same table
+    final DeferredHeadChunks atThreshold = new DeferredHeadChunks();
+    for (int i = 0; i < n; i++)
+      atThreshold.putOut(key(2, i), new RID(5, i));
+    final int thresholdCapacity = atThreshold.capacity();
+    for (int i = 0; i < n; i++)
+      atThreshold.putOut(key(2, i), new RID(7, i));
+    assertThat(atThreshold.capacity()).isEqualTo(thresholdCapacity);
+    assertThat(atThreshold.getOut(key(2, 0))).isEqualTo(new RID(7, 0));
+    assertThat(full).isGreaterThan(thresholdCapacity);
+  }
+
   private static void assertSame(final DeferredHeadChunks heads, final Map<Long, RID> out, final Map<Long, RID> in,
       final long[] universe) {
     for (final long k : universe) {

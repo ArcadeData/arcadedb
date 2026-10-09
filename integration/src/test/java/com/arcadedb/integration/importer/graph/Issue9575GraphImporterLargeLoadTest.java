@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -208,6 +209,47 @@ class Issue9575GraphImporterLargeLoadTest {
     try (final ResultSet rs = database.query("sql", "SELECT sum(weight) AS total FROM CITE")) {
       assertThat(rs.next().<Number>getProperty("total").intValue()).isEqualTo(30);
     }
+  }
+
+  /**
+   * A streamed edge source reads its properties as the collected one did: INTEGER, LONG and DOUBLE always carry a
+   * value, 0 for a blank cell, as the typed accessors answer; any other type left blank is not set at all.
+   */
+  @Test
+  void aStreamedEdgeKeepsTheTypedPropertiesOfItsRow() throws Exception {
+    write("works.csv", "id", "1", "2", "3");
+    write("cites.csv", "from_id,to_id,count,big,weight,label", "1,2,7,9000000000,0.5,strong", "2,3,,,,");
+
+    try (final GraphImporter importer = GraphImporter.builder(database)
+        .vertex("WORK", CsvRowSource.from(BASE_DIR, "works.csv"), v -> {
+          v.id("id");
+          v.longProperty("id", "id");
+        })
+        .edgeSource("CITE", CsvRowSource.from(BASE_DIR, "cites.csv"), e -> {
+          e.from("from_id", "WORK");
+          e.to("to_id", "WORK");
+          e.intProperty("count", "count");
+          e.longProperty("big", "big");
+          e.doubleProperty("weight", "weight");
+          e.property("label", "label");
+        })
+        .build()) {
+      importer.run();
+      assertThat(importer.getEdgeCount()).isEqualTo(2);
+    }
+
+    final Map<Long, VertexInternal> works = loadWorks();
+    final Edge full = works.get(1L).getEdges(Vertex.DIRECTION.OUT, "CITE").iterator().next();
+    assertThat(full.getInteger("count")).isEqualTo(7);
+    assertThat(full.getLong("big")).isEqualTo(9_000_000_000L);
+    assertThat(full.getDouble("weight")).isEqualTo(0.5);
+    assertThat(full.getString("label")).isEqualTo("strong");
+
+    final Edge blank = works.get(2L).getEdges(Vertex.DIRECTION.OUT, "CITE").iterator().next();
+    assertThat(blank.getInteger("count")).isZero();
+    assertThat(blank.getLong("big")).isZero();
+    assertThat(blank.getDouble("weight")).isZero();
+    assertThat(blank.has("label")).isFalse();
   }
 
   /**
