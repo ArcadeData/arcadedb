@@ -149,6 +149,41 @@ class Issue9228HashHotKeyRidListTest extends TestHelper {
   }
 
   @Test
+  void aRolledBackTransactionLeavesTheListAsItWas() throws IOException {
+    createType(1_024);
+    final HashIndexBucket bucket = bucket();
+    final List<RID> committed = new ArrayList<>();
+    for (int i = 0; i < 600; i++)
+      committed.add(new RID(1_000, i));
+    putAll(bucket, 6L, committed);
+
+    // chains new last pages, takes pages from the free list... and is thrown away
+    database.begin();
+    for (int i = 0; i < 800; i++)
+      bucket.put(new Object[] { 6L }, new RID(1_000, 100_000 + i));
+    for (int i = 0; i < 300; i++)
+      bucket.remove(new Object[] { 6L }, committed.get(i));
+    database.rollback();
+
+    assertThat(lookupInBucket(bucket, 6L)).containsExactlyInAnyOrderElementsOf(committed);
+    assertThat(subIndex().countEntries()).isEqualTo(committed.size());
+    assertThat(bucket.checkMetadataIntegrity()).isEmpty();
+
+    // and the list keeps working from the state that was committed
+    final List<RID> more = new ArrayList<>();
+    for (int i = 0; i < 400; i++)
+      more.add(new RID(1_000, 200_000 + i));
+    putAll(bucket, 6L, more);
+    final Set<RID> expected = new HashSet<>(committed);
+    expected.addAll(more);
+    assertThat(lookupInBucket(bucket, 6L)).containsExactlyInAnyOrderElementsOf(expected);
+    assertThat(bucket.checkMetadataIntegrity()).isEmpty();
+
+    putOrRemoveAll(bucket, 6L, new ArrayList<>(expected), false);
+    assertThat(subIndex().countEntries()).isZero();
+  }
+
+  @Test
   void anEntryOfFewRIDsThatCannotGrowOnAFullUnsplittablePageMovesToARidList() throws IOException {
     // 256-byte pages and keys whose hashes share the first bit: the bucket can never split, so it overflows
     createType(256);
