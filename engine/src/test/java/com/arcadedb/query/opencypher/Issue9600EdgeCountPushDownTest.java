@@ -150,6 +150,12 @@ class Issue9600EdgeCountPushDownTest extends TestHelper {
       a.newEdge("KNOWS", a);
       a.newLightEdge("KNOWS", b);
       a.newLightEdge("LIKES", b);
+      // and edges deleted in the same transaction
+      final List<Record> doomed = new ArrayList<>();
+      for (final Iterator<Record> it = database.iterateType("KNOWS", true); it.hasNext() && doomed.size() < 4; )
+        doomed.add(it.next());
+      for (final Record edge : doomed)
+        edge.asEdge().delete();
       assertEdgeCount("MATCH ()-[e:KNOWS]->() RETURN count(e) AS n", "KNOWS", Vertex.DIRECTION.OUT);
       assertEdgeCount("MATCH ()-[e:KNOWS]-() RETURN count(e) AS n", "KNOWS", Vertex.DIRECTION.BOTH);
       assertEdgeCount("MATCH ()-[e]->() RETURN count(e) AS n", null, Vertex.DIRECTION.OUT);
