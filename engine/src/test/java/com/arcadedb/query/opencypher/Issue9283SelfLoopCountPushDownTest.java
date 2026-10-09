@@ -274,6 +274,20 @@ class Issue9283SelfLoopCountPushDownTest extends TestHelper {
 
     final NeighborView noLoops = new NeighborView(2, new int[] { 0, 1, 2 }, new int[] { 1, 0 });
     assertThat(noLoops.withSelfLoopsOnce()).isSameAs(noLoops);
+
+    // one entry of itself on each of two nodes is no pair to drop, though the two add up to one
+    final NeighborView oddOnTwoNodes = new NeighborView(2, new int[] { 0, 1, 2 }, new int[] { 0, 1 });
+    assertThat(oddOnTwoNodes.withSelfLoopsOnce()).isSameAs(oddOnTwoNodes);
+    final NeighborView oddAndPair = new NeighborView(3, new int[] { 0, 1, 2, 4 }, new int[] { 0, 1, 2, 2 });
+    final NeighborView oddAndPairOnce = oddAndPair.withSelfLoopsOnce();
+    assertThat(oddAndPairOnce.degree(0)).isEqualTo(1);
+    assertThat(oddAndPairOnce.degree(1)).isEqualTo(1);
+    assertThat(oddAndPairOnce.degree(2)).isEqualTo(1);
+    assertThat(oddAndPairOnce.edgeCount()).isEqualTo(3);
+
+    // a zero-copy view over a larger buffer: the copy holds the ranges, not the buffer's tail
+    final NeighborView overBuffer = new NeighborView(1, new int[] { 0, 2 }, new int[] { 0, 0, 7, 7, 7 });
+    assertThat(overBuffer.withSelfLoopsOnce().edgeCount()).isEqualTo(1);
   }
 
   /** Self loops added after the view was built are served from its overlay, not from its CSR. */
