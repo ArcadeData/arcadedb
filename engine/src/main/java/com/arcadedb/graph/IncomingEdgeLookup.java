@@ -382,7 +382,7 @@ public final class IncomingEdgeLookup {
    * when there is none. A caller that builds the adjacency of a whole vertex set reads them to answer their incoming
    * side from the outgoing lists of that same set, with no scan (issue #8629). The array is shared: do not modify it.
    */
-  public static String[] getUnidirectionalTypes(final Schema schema, final String... edgeTypes) {
+  static String[] getUnidirectionalTypes(final Schema schema, final String... edgeTypes) {
     return schema.hasUnidirectionalEdgeTypes() ? cachedClosure(schema, edgeTypes).unidirectional : Closure.NONE.unidirectional;
   }
 
