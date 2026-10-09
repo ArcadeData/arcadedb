@@ -96,7 +96,8 @@ public class GraphEngine {
     }
   };
 
-  // THE ONE-FILTER ARGUMENTS OF countUndirectedEdges(): ANY FAR END, AND THE SELF LOOPS LEFT OUT OF THE INCOMING LIST
+  // THE ONE-FILTER ARGUMENTS OF countUndirectedEdges(): ANY FAR END, AND THE SELF LOOPS LEFT OUT OF THE INCOMING LIST.
+  // SHARED: countInto() ONLY READS ITS FILTER ARRAYS, IT WRITES THE COUNTS ALONE
   private static final EdgeBucketMask[] NO_NEIGHBOR_MASK = new EdgeBucketMask[1];
   private static final boolean[]        SKIP_SELF_LOOPS  = { true };
 

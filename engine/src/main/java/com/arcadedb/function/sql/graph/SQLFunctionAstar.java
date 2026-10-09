@@ -62,6 +62,8 @@ import java.util.Set;
  * @author Saeed Tabrizi (saeed a_t  nowcando.com)
  */
 public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
+  // NO EDGE TYPE NAMED: EVERY TYPE. SHARED, AS THE OLTP EXPANSION ASKS FOR IT ONCE PER NODE
+  private static final String[] ANY_EDGE_TYPE = new String[0];
   public static final String NAME = "astar";
 
   private static final Set<String> OPTIONS = Set.of(PARAM_DIRECTION, PARAM_EDGE_TYPE_NAMES, PARAM_VERTEX_AXIS_NAMES,
@@ -307,7 +309,7 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
     // OLTP fallback. A path search asks about the graph, not about what a vertex stores: the incoming side of a
     // unidirectional edge type comes from the edges that end in the node, as the view above answers it (issue #8629)
     for (final Iterator<Edge> edges = IncomingEdgeLookup.getEdges(ctx, node, paramDirection,
-        paramEdgeTypeNames != null ? paramEdgeTypeNames : new String[0]); edges.hasNext(); ) {
+        paramEdgeTypeNames != null ? paramEdgeTypeNames : ANY_EDGE_TYPE); edges.hasNext(); ) {
       final Edge edge = edges.next();
       try {
         final double weight = getDistance(edge);
