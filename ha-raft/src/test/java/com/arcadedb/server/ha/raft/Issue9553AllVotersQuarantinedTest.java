@@ -24,13 +24,20 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerControlPlane;
+import com.sun.net.httpserver.HttpServer;
 import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
+import java.io.OutputStream;
 import java.lang.reflect.Field;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
@@ -58,6 +65,8 @@ class Issue9553AllVotersQuarantinedTest {
 
   @TempDir
   Path root;
+
+  private final List<HttpServer> stubs = new ArrayList<>();
 
   // -- the wire: a node says what it holds quarantined --------------------------------------------------------------
 
@@ -229,6 +238,8 @@ class Issue9553AllVotersQuarantinedTest {
     try {
       sm.markStateDiverged(DB, DivergenceCause.APPLY_ERROR);
       final FakeRaftHAServer raft = clusterOf(sm, registryWhere(Set.of(DB), Set.of(DB)));
+      answers(raft, B, false);
+      answers(raft, C, false);
 
       final JSONObject result = pluginOf(raft, server).acceptDivergedDatabase(DB, "user 'root'");
 
@@ -251,6 +262,50 @@ class Issue9553AllVotersQuarantinedTest {
       assertThatThrownBy(() -> pluginOf(raft, server).acceptDivergedDatabase(DB, "user 'root'"))
           .isInstanceOf(ServerControlPlane.OperationNotAvailableException.class)
           .hasMessageContaining("not every voter");
+      assertThat(sm.isDatabaseDiverged(DB)).isTrue();
+    } finally {
+      sm.close();
+    }
+  }
+
+  /**
+   * Review on PR #9567: the registry can be one poll behind, so a voter that has just accepted its own copy still reads
+   * as quarantined there. The override asks every voter now, and a voter that serves the database keeps it closed - so
+   * two nodes cannot each accept a different copy.
+   */
+  @Test
+  void theOverrideAsksEveryVoterNowAndStaysClosedWhenOneServesACopy() throws Exception {
+    final ArcadeDBServer server = newServer();
+    final ArcadeStateMachine sm = newStateMachine(server);
+    try {
+      sm.markStateDiverged(DB, DivergenceCause.APPLY_ERROR);
+      final FakeRaftHAServer raft = clusterOf(sm, registryWhere(Set.of(DB), Set.of(DB)));
+      answers(raft, B, false);
+      answers(raft, C, true); // C accepted its copy since its last capability answer
+
+      assertThatThrownBy(() -> pluginOf(raft, server).acceptDivergedDatabase(DB, "user 'root'"))
+          .isInstanceOf(ServerControlPlane.OperationNotAvailableException.class)
+          .hasMessageContaining("voter '" + C + "' serves a copy");
+      assertThat(sm.isDatabaseDiverged(DB)).as("nothing lifted").isTrue();
+    } finally {
+      sm.close();
+    }
+  }
+
+  /** A voter that cannot be asked is not a "no": the override stays closed. */
+  @Test
+  void theOverrideStaysClosedWhenAVoterCannotBeAsked() throws Exception {
+    final ArcadeDBServer server = newServer();
+    final ArcadeStateMachine sm = newStateMachine(server);
+    try {
+      sm.markStateDiverged(DB, DivergenceCause.APPLY_ERROR);
+      final FakeRaftHAServer raft = clusterOf(sm, registryWhere(Set.of(DB), Set.of(DB)));
+      answers(raft, B, false);
+      // C has no address this node may dial
+
+      assertThatThrownBy(() -> pluginOf(raft, server).acceptDivergedDatabase(DB, "user 'root'"))
+          .isInstanceOf(ServerControlPlane.OperationNotAvailableException.class)
+          .hasMessageContaining("voter '" + C + "' could not be asked");
       assertThat(sm.isDatabaseDiverged(DB)).isTrue();
     } finally {
       sm.close();
@@ -302,13 +357,42 @@ class Issue9553AllVotersQuarantinedTest {
     return registry;
   }
 
-  private static FakeRaftHAServer clusterOf(final ArcadeStateMachine sm, final PeerCapabilityRegistry registry) {
+  private FakeRaftHAServer clusterOf(final ArcadeStateMachine sm, final PeerCapabilityRegistry registry) {
     final FakeRaftHAServer raft = FakeRaftHAServer.detached();
     raft.localPeerId(SELF);
+    raft.localHttpAddress("local-host:2480");
+    raft.clusterToken(null);
     raft.livePeers(voters());
     raft.stateMachine(sm);
     raft.peerCapabilityRegistry(registry);
     return raft;
+  }
+
+  /**
+   * Starts a stand-in for {@code peer}'s bootstrap-state endpoint answering the {@code copyOf} question with
+   * {@code serves}, and points {@code raft} at it.
+   */
+  private void answers(final FakeRaftHAServer raft, final RaftPeerId peer, final boolean serves) throws IOException {
+    final HttpServer stub = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
+    stub.createContext("/", exchange -> {
+      final byte[] body = new JSONObject().put("peerId", peer.toString()).put(UnverifiedClosedCopyCheck.SERVES, serves)
+          .toString().getBytes(StandardCharsets.UTF_8);
+      exchange.getResponseHeaders().add("Content-Type", "application/json");
+      exchange.sendResponseHeaders(200, body.length);
+      try (final OutputStream out = exchange.getResponseBody()) {
+        out.write(body);
+      }
+    });
+    stub.start();
+    stubs.add(stub);
+    raft.peerHttpAddress(peer, "localhost:" + stub.getAddress().getPort());
+  }
+
+  @AfterEach
+  void stopStubs() {
+    for (final HttpServer stub : stubs)
+      stub.stop(0);
+    stubs.clear();
   }
 
   /** The plugin the HTTP route and the gRPC RPC both end at, wired to the fake cluster. */

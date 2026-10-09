@@ -8170,7 +8170,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // Only a quarantine outstanding: leave out the databases the leader holds quarantined too (issue #9553). Their only
     // possible source refuses to serve them, so a resync of them cannot succeed until an operator acts - the
     // all-voters-quarantined alert says which action - or leadership moves to a node with a usable copy. Checked
-    // BEFORE the throttle slot is taken, so a leader whose quarantine lifts is retried on the very next tick.
+    // BEFORE the throttle slot is taken, so once the leader's next capability answer (every few seconds) no longer
+    // reports the quarantine, the following tick retries.
     final RaftPeerId leaderId = raftHA.getLeaderId();
     final Set<String> toResync = floor < 0 && staleDatabaseAppliedFloors.isEmpty() ?
         resyncableFromLeader(quarantined, leaderId != null ? leaderId.toString() : null,

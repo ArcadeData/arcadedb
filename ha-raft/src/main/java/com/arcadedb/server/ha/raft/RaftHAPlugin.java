@@ -598,8 +598,18 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
       throw new ServerControlPlane.OperationNotAvailableException("The HA layer of this server has not started yet");
     // A sole voter has no peer to resync from (issue #9449); nor has a node whose every peer holds the same database
     // quarantined (issue #9553): there, accepting one copy is the way out the all-voters-quarantined alert names.
-    return acceptDivergedDatabase(sm, s.isSoleVoter() || s.isQuarantinedOnEveryVoter(databaseName),
-        server.getServerName(), databaseName, acceptedBy);
+    boolean noResyncSource = s.isSoleVoter();
+    if (!noResyncSource && s.isQuarantinedOnEveryVoter(databaseName)) {
+      // The registry can be one poll behind: confirm with every voter now, so a copy another node has just accepted
+      // cannot be overridden by a second accept here (review on PR #9567)
+      final String refusal = s.refuseUnlessNoOtherVoterServesNow(databaseName);
+      if (refusal != null)
+        throw new ServerControlPlane.OperationNotAvailableException("Database '" + databaseName + "': every voter was "
+            + "last reported holding it quarantined, but asked now, " + refusal + ". Nothing was lifted: if a voter "
+            + "serves it, this node resyncs from it once it leads; otherwise retry once every voter answers");
+      noResyncSource = true;
+    }
+    return acceptDivergedDatabase(sm, noResyncSource, server.getServerName(), databaseName, acceptedBy);
   }
 
   /**

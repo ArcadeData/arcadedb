@@ -104,7 +104,9 @@ import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
@@ -4020,6 +4022,68 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       return false;
     return !quarantinedOnEveryVoter(Set.of(databaseName), getLivePeers(), getLocalPeerId(), getPeerCapabilityRegistry())
         .isEmpty();
+  }
+
+  /**
+   * Asks every other voter, now, whether it would serve {@code databaseName}'s snapshot (the {@code copyOf} form of the
+   * bootstrap-state RPC, {@link UnverifiedClosedCopyCheck#SERVES}: registered there and not quarantined), and returns
+   * {@code null} only when every one of them answered "no" (issue #9553). Otherwise it returns why not: a voter that
+   * serves it, one that could not be dialled, or one that did not answer within
+   * {@link UnverifiedClosedCopyCheck#ROUND_TIMEOUT_MS}.
+   * <p>
+   * The live confirmation behind the accept-diverged override off a sole voter. {@link #isQuarantinedOnEveryVoter} reads
+   * the capability registry, which can be one poll behind: a peer that has just accepted its own copy would still read as
+   * quarantined there, and a second accept elsewhere in that window would choose a second copy (review on PR #9567).
+   * The questions go out in parallel and share one deadline, so the request costs one round however many voters there are.
+   */
+  public String refuseUnlessNoOtherVoterServesNow(final String databaseName) {
+    final ArcadeDBServer localServer = getServer();
+    final boolean useSSL = localServer != null
+        && localServer.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
+    final RaftPeerId self = getLocalPeerId();
+    final String clusterToken = getClusterToken();
+
+    final Map<String, CompletableFuture<Boolean>> answers = new LinkedHashMap<>();
+    try {
+      for (final RaftPeer voter : getLivePeers()) {
+        final RaftPeerId peerId = voter.getId();
+        if (peerId.equals(self))
+          continue;
+        final PeerDialAddress dial = PeerDialAddress.resolve(this, peerId, "peer");
+        if (dial.refused())
+          return "voter '" + peerId + "' could not be asked: " + dial.refusal();
+        final String url = BootstrapElection.chooseUrl(dial.httpAddress(), dial.httpsAddress(), useSSL);
+        if (url == null)
+          return "voter '" + peerId + "' has no address this node may dial";
+        final HttpClient client;
+        try {
+          client = url.startsWith("https://") ? getHttpsClients().clientFor(localServer) : BootstrapElection.HTTP;
+        } catch (final IOException e) {
+          return "voter '" + peerId + "' could not be asked over HTTPS: " + e.getMessage();
+        }
+        answers.put(peerId.toString(),
+            UnverifiedClosedCopyCheck.askWhetherServed(client, peerId.toString(), url, databaseName, clusterToken));
+      }
+
+      final long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(UnverifiedClosedCopyCheck.ROUND_TIMEOUT_MS);
+      for (final Map.Entry<String, CompletableFuture<Boolean>> answer : answers.entrySet()) {
+        try {
+          if (answer.getValue().get(Math.max(0L, deadline - System.nanoTime()), TimeUnit.NANOSECONDS))
+            return "voter '" + answer.getKey() + "' serves a copy of it now";
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+          return "interrupted while asking voter '" + answer.getKey() + "'";
+        } catch (final Exception e) {
+          final Throwable cause = e instanceof ExecutionException && e.getCause() != null ? e.getCause() : e;
+          return "voter '" + answer.getKey() + "' did not answer (" + (cause.getMessage() != null ?
+              cause.getMessage() : cause.getClass().getSimpleName()) + ")";
+        }
+      }
+      return null;
+    } finally {
+      for (final CompletableFuture<Boolean> answer : answers.values())
+        answer.cancel(true);
+    }
   }
 
   /**
