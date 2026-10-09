@@ -8167,6 +8167,21 @@ public class ArcadeStateMachine extends BaseStateMachine {
     if (leaderHttpAddr == null || raftHA.isOwnHttpAddress(leaderHttpAddr))
       return; // nowhere to download from yet; notifyLeaderChanged() drives the first attempt
 
+    // Only a quarantine outstanding: leave out the databases the leader holds quarantined too (issue #9553). Their only
+    // possible source refuses to serve them, so a resync of them cannot succeed until an operator acts - the
+    // all-voters-quarantined alert says which action - or leadership moves to a node with a usable copy. Checked
+    // BEFORE the throttle slot is taken, so a leader whose quarantine lifts is retried on the very next tick.
+    final RaftPeerId leaderId = raftHA.getLeaderId();
+    final Set<String> toResync = floor < 0 && staleDatabaseAppliedFloors.isEmpty() ?
+        resyncableFromLeader(quarantined, leaderId != null ? leaderId.toString() : null,
+            raftHA.getPeerCapabilityRegistry()) : quarantined;
+    if (floor < 0 && staleDatabaseAppliedFloors.isEmpty() && toResync.isEmpty()) {
+      HALog.log(this, HALog.BASIC,
+          "Not retrying the targeted resync of %s: the leader holds each of them quarantined too and cannot serve them "
+              + "(issue #9553)", quarantined);
+      return;
+    }
+
     final long now = System.currentTimeMillis();
     final long retryIntervalMs = computeSnapshotWatchdogTimeoutMs();
     final long previous = lastStaleSnapshotRetryMs.get();
@@ -8182,8 +8197,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // itself is ahead of what was applied.
       LogManager.instance().log(this, Level.WARNING,
           "Database(s) %s are still quarantined from the committed Raft log with no download in flight: retrying "
-              + "the targeted resync from the leader (issue #7735)", quarantined);
-      for (final String dbName : quarantined)
+              + "the targeted resync from the leader (issue #7735)", toResync);
+      if (toResync.size() < quarantined.size())
+        LogManager.instance().log(this, Level.WARNING,
+            "Not retrying the targeted resync of %s: the leader holds them quarantined too and cannot serve them "
+                + "(issue #9553)", quarantined.stream().filter(db -> !toResync.contains(db)).sorted().toList());
+      for (final String dbName : toResync)
         triggerDatabaseResync(dbName);
       return;
     }
@@ -8686,6 +8705,40 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // A quarantine restored from disk must be visible to the first caller after a restart (issue #7735)
     ensureAppliedIndexLoaded();
     return divergedDatabases.get(dbName);
+  }
+
+  /**
+   * The databases this node holds quarantined, as a snapshot (issue #9553): what this node advertises to its peers'
+   * capability poll so each of them can tell whether any voter still holds a copy a resync could be served from.
+   * Allocation-free when nothing is quarantined, which is every poll of a healthy node.
+   */
+  Set<String> getQuarantinedDatabaseNames() {
+    ensureAppliedIndexLoaded();
+    return divergedDatabases.isEmpty() ? Set.of() : Set.copyOf(divergedDatabases.keySet());
+  }
+
+  /**
+   * The quarantined databases a targeted resync from the current leader could actually restore (issue #9553): those the
+   * leader's last fresh capability answer does NOT report quarantined too. A resync of one it does report can only fail
+   * - the leader refuses to serve a quarantined database as a snapshot (issue #8468) - so retrying it on every tick
+   * reads as recovery in progress while nothing can progress. Unknown is not "quarantined": a leader with no fresh
+   * answer, or on a build that predates the field, leaves every database in, which is the behaviour before this.
+   * <p>
+   * Package-private and static so the filter can be tested without a cluster.
+   */
+  // @VisibleForTesting
+  static Set<String> resyncableFromLeader(final Set<String> quarantined, final String leaderId,
+      final PeerCapabilityRegistry registry) {
+    if (quarantined.isEmpty() || leaderId == null || registry == null)
+      return quarantined;
+    Set<String> resyncable = null;
+    for (final String dbName : quarantined)
+      if (registry.reportsQuarantined(leaderId, dbName)) {
+        if (resyncable == null)
+          resyncable = new HashSet<>(quarantined);
+        resyncable.remove(dbName);
+      }
+    return resyncable == null ? quarantined : resyncable;
   }
 
   // @VisibleForTesting

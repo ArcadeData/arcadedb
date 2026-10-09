@@ -270,6 +270,10 @@ public class ClusterAlerts {
       if (raftHA != null && raftHA.getUnverifiedClosedCopyCheck() != null)
         addUnverifiedClosedCopyRefusedAlert(raftHA.getUnverifiedClosedCopyCheck().getRefusals(), visibleDatabases,
             nodeStatus.detailedDiagnostics(), alerts);
+      // A database every voter holds quarantined (issue #9553): no node serves a copy a resync could restore it from, so
+      // every node's local-resync alert below waits on something that cannot happen. Said once, with the way out.
+      if (raftHA != null)
+        addNoHealthyCopyAlert(raftHA.getDatabasesQuarantinedOnEveryVoter(), visibleDatabases, alerts);
       // The local node's own resync state (issue #7136). Everything above describes the cluster or the
       // databases; this is the only check that answers "is THIS node serving traffic", which is exactly what
       // an operator is asking when they poll the node readiness has taken out of the Service.
@@ -692,6 +696,46 @@ public class ClusterAlerts {
             .put("divergenceCauses", causesObject(state, visibleDatabases))
             .put("snapshotAppliedFloor", state.snapshotAppliedFloor())
             .put("databaseAppliedFloors", visibleFloors(state.databaseAppliedFloors(), visibleDatabases))));
+  }
+
+  /**
+   * Pure alert builder (package-private for unit testing): appends the no-healthy-copy alert iff this node and every
+   * other voter of the Raft configuration hold at least one visible database quarantined (issue #9553).
+   * <p>
+   * {@code critical}: a quarantine is lifted only by a resync from the leader, and a node refuses to serve a quarantined
+   * database as a snapshot (issue #8468), so with every copy quarantined no resync can succeed and nothing clears by
+   * itself. Before this alert each node reported only its own {@code local-resync-in-progress}, whose recommendation is
+   * to wait or to force a resync - both of which wait forever here - and the hand-off of a quarantined leader moved
+   * leadership from one quarantined node to the next.
+   * <p>
+   * Database-scoped: a caller authorized on none of the databases has nothing to read, so the alert fires on the visible
+   * names only. The set it is built from comes from each peer's own capability answer, and a peer that did not answer,
+   * or runs a build that does not report its quarantines, keeps a database out of it.
+   */
+  static void addNoHealthyCopyAlert(final List<String> quarantinedOnEveryVoter, final Set<String> visibleDatabases,
+      final JSONArray alerts) {
+    final List<String> names = visible(quarantinedOnEveryVoter, visibleDatabases);
+    if (names == null || names.isEmpty())
+      return;
+
+    alerts.put(new JSONObject()
+        .put("id", "no-healthy-copy-on-any-voter")
+        .put("severity", SEVERITY_CRITICAL)
+        .put("title", "Every voter holds the same database(s) quarantined: no copy is left to resync from")
+        .put("message", "Every voter of the Raft configuration reports database(s) " + names + " quarantined. A "
+            + "quarantine is lifted only by a resync from the leader, and no node serves a quarantined database as a "
+            + "snapshot, so no resync can succeed and this does not clear by itself: each node stays out of the ready "
+            + "set, its Raft log is not checkpointed, and handing leadership to another node only moves the problem. "
+            + "Followers stop retrying a resync from a leader that holds the same database quarantined.")
+        .put("recommendation", "Pick the copy to keep - typically the node that applied the most entries for the "
+            + "database, checked with CHECK DATABASE - and lift its quarantine there with POST "
+            + PostAcceptDivergedHandler.ROUTE + "{database} (root only, logged): the entries its quarantine skipped are "
+            + "NOT replayed. Once one node has accepted, this alert clears and every other node refuses the override, so "
+            + "only one copy can be chosen. Then make that node the leader if it is not already (POST "
+            + "/api/v1/cluster/leader on the current leader, with {\"peerId\": \"<its peer id>\"}): the other nodes "
+            + "resync from it on their next health tick. If no copy can be trusted, restore the database from a "
+            + "backup instead.")
+        .put("details", new JSONObject().put("databases", namesArray(names))));
   }
 
   /**

@@ -3995,6 +3995,62 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     return voters.size() == 1 && voters.iterator().next().getId().equals(localPeerId);
   }
 
+  /**
+   * The databases this node holds quarantined that every other voter of the live Raft configuration reports quarantined
+   * too, sorted (issue #9553): the state in which no node holds a copy a resync could be served from, so every
+   * quarantine waits on a resync that cannot succeed until an operator acts. Empty on a sole voter, whose own alert
+   * already says there is no peer to resync from.
+   * <p>
+   * Read from memory alone - this node's quarantine map and the capability registry every node fills from its peers -
+   * so it is cheap enough for every status poll.
+   */
+  public List<String> getDatabasesQuarantinedOnEveryVoter() {
+    // Through the getters, not the fields, so a test double of this class answers the same way production does
+    final ArcadeStateMachine sm = getStateMachine();
+    if (sm == null)
+      return List.of();
+    return quarantinedOnEveryVoter(sm.getQuarantinedDatabaseNames(), getLivePeers(), getLocalPeerId(),
+        getPeerCapabilityRegistry());
+  }
+
+  /** Whether {@code databaseName} is in {@link #getDatabasesQuarantinedOnEveryVoter()} (issue #9553). */
+  public boolean isQuarantinedOnEveryVoter(final String databaseName) {
+    final ArcadeStateMachine sm = getStateMachine();
+    if (sm == null || databaseName == null || sm.quarantineCause(databaseName) == null)
+      return false;
+    return !quarantinedOnEveryVoter(Set.of(databaseName), getLivePeers(), getLocalPeerId(), getPeerCapabilityRegistry())
+        .isEmpty();
+  }
+
+  /**
+   * The pure core of {@link #getDatabasesQuarantinedOnEveryVoter()}: of {@code localQuarantined}, the databases every
+   * voter other than {@code localPeerId} reports quarantined in its last fresh capability answer. A voter with no fresh
+   * answer - down, unreachable, or on a build that predates the field - is not counted as quarantined, so it keeps the
+   * database out: what this answers is "every voter SAID so", never "no voter said otherwise". Needs at least one other
+   * voter. Package-private and static so it can be tested without a cluster.
+   */
+  // @VisibleForTesting
+  static List<String> quarantinedOnEveryVoter(final Set<String> localQuarantined, final Collection<RaftPeer> voters,
+      final RaftPeerId localPeerId, final PeerCapabilityRegistry registry) {
+    if (localQuarantined.isEmpty() || registry == null || voters == null || voters.size() < 2)
+      return List.of();
+    List<String> result = null;
+    for (final String dbName : new TreeSet<>(localQuarantined)) {
+      boolean everyVoter = true;
+      for (final RaftPeer voter : voters)
+        if (!voter.getId().equals(localPeerId) && !registry.reportsQuarantined(voter.getId().toString(), dbName)) {
+          everyVoter = false;
+          break;
+        }
+      if (everyVoter) {
+        if (result == null)
+          result = new ArrayList<>();
+        result.add(dbName);
+      }
+    }
+    return result == null ? List.of() : result;
+  }
+
   public Collection<RaftPeer> getLivePeers() {
     final Collection<RaftPeer> live = getCommittedPeersOrNull();
     return live != null ? live : raftGroup.getPeers();
@@ -6690,7 +6746,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private void recordPeerCapabilities(final long generation, final String peerId,
       final PeerCapabilityQuery.Advertisement advertisement) {
     if (peerCapabilities.record(generation, peerId, advertisement.capabilities(), advertisement.version(),
-        advertisement.serviceGap()))
+        advertisement.serviceGap(), advertisement.quarantined()))
       LogManager.instance().log(this, Level.INFO,
           "Peer '%s' (version %s) advertises the cluster capabilities %s", peerId, advertisement.version(),
           new TreeSet<>(advertisement.capabilities()));

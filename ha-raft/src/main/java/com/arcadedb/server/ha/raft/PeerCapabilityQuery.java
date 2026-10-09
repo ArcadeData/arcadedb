@@ -78,10 +78,26 @@ public final class PeerCapabilityQuery {
    * peer's state, not its build - and it rides on this poll only because the leader already asks every peer this
    * question every few seconds, over an authenticated route that binds the answer to its author. A peer that predates
    * the field omits it, which reads as no gap: the pre-#8665 behaviour, where a peer's gap was invisible.
+   * <p>
+   * {@code quarantined} is the set of databases the peer holds quarantined (issue #9553), carried for the same reason:
+   * a node that has quarantined a database can then tell whether any voter still holds a copy it could resync from.
+   * A peer that predates the field omits it, which reads as "nothing quarantined" - so the all-voters-quarantined
+   * alert never fires on its account, the safe side for an alert that tells the operator to force-accept a copy.
    */
-  public record Advertisement(String peerId, String version, Set<String> capabilities, boolean serviceGap) {
+  public record Advertisement(String peerId, String version, Set<String> capabilities, boolean serviceGap,
+      Set<String> quarantined) {
+    public Advertisement {
+      if (quarantined == null)
+        quarantined = Set.of();
+    }
+
     public Advertisement(final String peerId, final String version, final Set<String> capabilities) {
-      this(peerId, version, capabilities, false);
+      this(peerId, version, capabilities, false, Set.of());
+    }
+
+    public Advertisement(final String peerId, final String version, final Set<String> capabilities,
+        final boolean serviceGap) {
+      this(peerId, version, capabilities, serviceGap, Set.of());
     }
   }
 
@@ -238,7 +254,16 @@ public final class PeerCapabilityQuery {
     for (int i = 0; i < array.length(); i++)
       capabilities.add(array.getString(i));
 
+    final JSONArray quarantinedArray = json.has(PostCapabilitiesHandler.QUARANTINED) ?
+        json.getJSONArray(PostCapabilitiesHandler.QUARANTINED) : null;
+    Set<String> quarantined = Set.of();
+    if (quarantinedArray != null && quarantinedArray.length() > 0) {
+      quarantined = new LinkedHashSet<>();
+      for (int i = 0; i < quarantinedArray.length(); i++)
+        quarantined.add(quarantinedArray.getString(i));
+    }
+
     return new Advertisement(peerId, json.getString("version", ""), capabilities,
-        json.getBoolean(PostCapabilitiesHandler.SERVICE_GAP, false));
+        json.getBoolean(PostCapabilitiesHandler.SERVICE_GAP, false), quarantined);
   }
 }

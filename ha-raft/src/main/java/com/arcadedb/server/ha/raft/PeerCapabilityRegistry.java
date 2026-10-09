@@ -83,9 +83,20 @@ public final class PeerCapabilityRegistry {
   static final long ADVERTISEMENT_TTL_MS = 4 * REFRESH_PERIOD_MS;
 
   /** One peer's last successful answer. */
-  public record Advertisement(Set<String> capabilities, String version, long observedAtMs, boolean serviceGap) {
+  public record Advertisement(Set<String> capabilities, String version, long observedAtMs, boolean serviceGap,
+      Set<String> quarantined) {
+    public Advertisement {
+      if (quarantined == null)
+        quarantined = Set.of();
+    }
+
     public Advertisement(final Set<String> capabilities, final String version, final long observedAtMs) {
-      this(capabilities, version, observedAtMs, false);
+      this(capabilities, version, observedAtMs, false, Set.of());
+    }
+
+    public Advertisement(final Set<String> capabilities, final String version, final long observedAtMs,
+        final boolean serviceGap) {
+      this(capabilities, version, observedAtMs, serviceGap, Set.of());
     }
   }
 
@@ -200,11 +211,22 @@ public final class PeerCapabilityRegistry {
    */
   public boolean record(final long generation, final String peerId, final Set<String> capabilities,
       final String version, final boolean serviceGap) {
+    return record(generation, peerId, capabilities, version, serviceGap, Set.of());
+  }
+
+  /**
+   * As {@link #record(long, String, Set, String, boolean)}, also holding the databases the peer reported quarantined
+   * (issue #9553). Like the service gap, a change of that set alone is not a transition to report here: it moves with
+   * the peer's state, and the alert that reads it is what says so.
+   */
+  public boolean record(final long generation, final String peerId, final Set<String> capabilities,
+      final String version, final boolean serviceGap, final Set<String> quarantined) {
     final Set<String> frozen = Set.copyOf(capabilities);
+    final Set<String> frozenQuarantined = quarantined == null || quarantined.isEmpty() ? Set.of() : Set.copyOf(quarantined);
     synchronized (writeLock) {
       if (generation != this.generation)
         return false;
-      advertisements.put(peerId, new Advertisement(frozen, version, clock.getAsLong(), serviceGap));
+      advertisements.put(peerId, new Advertisement(frozen, version, clock.getAsLong(), serviceGap, frozenQuarantined));
       unknownReasons.remove(peerId);
       return !frozen.equals(lastReported.put(peerId, frozen));
     }
@@ -400,6 +422,16 @@ public final class PeerCapabilityRegistry {
       }
     }
     return gapped == null ? Collections.emptySet() : gapped;
+  }
+
+  /**
+   * Whether {@code peerId}'s last fresh answer says it holds {@code databaseName} quarantined (issue #9553). A peer with
+   * no fresh answer, or one on a build that predates the field, is NOT counted: "unknown" must never read as "this peer
+   * has no usable copy either", because the alert built on it tells the operator to force-accept a copy.
+   */
+  public boolean reportsQuarantined(final String peerId, final String databaseName) {
+    final Advertisement advertisement = freshAdvertisementOf(peerId);
+    return advertisement != null && advertisement.quarantined().contains(databaseName);
   }
 
   /**

@@ -973,7 +973,7 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
    * adapter over {@code HAServerPlugin.acceptDivergedDatabase}, the method the HTTP route calls too, so the two transports
    * cannot drift on what the override does. Root-only, as {@code checkRootUser} makes the HTTP route, and not
    * leader-routed: the quarantine is this node's own. The refusals map through {@link #toStatus}: nothing standing is
-   * {@code NOT_FOUND}, a node that is not the sole voter (or runs without HA) is {@code FAILED_PRECONDITION}, a malformed
+   * {@code NOT_FOUND}, a node a peer could resync (or one running without HA) is {@code FAILED_PRECONDITION}, a malformed
    * name is {@code INVALID_ARGUMENT}.
    */
   @Override
