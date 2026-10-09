@@ -556,40 +556,37 @@ jobs:
             "${TAG_ARGS[@]}" \
             --load ctx
 
-      - name: Smoke the container
+      # The container is validated with the same Java e2e battery mvn-test.yml runs against the JVM image (e2e module,
+      # Testcontainers): the image is its only parameter, so every protocol, query language and SQL feature the JVM image
+      # is held to - plus the native-specific regressions (reflective SQL paths, every Lucene analyzer, math_*, #9495) -
+      # is asserted against the packaged native image. The suite ends with ServerLogIT, which fails on a
+      # ClassNotFoundException / MissingReflectionRegistrationError / log-handler failure anywhere in the server log.
+      - name: Set up JDK 21
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: "temurin"
+          java-version: 21
+          cache: "maven"
+
+      - name: E2E tests against the native image
         shell: bash
+        env:
+          ARCADEDB_DOCKER_IMAGE: ${{ steps.build.outputs.tag }}
         run: |
           set -euo pipefail
-          docker run -d --name native-smoke -p 2480:2480 \
-            "${{ steps.build.outputs.tag }}" \
-            -Darcadedb.server.rootPassword=PlayWithData123!
-          # Validate the PACKAGED IMAGE end-to-end, not just first readiness: run the same
-          # exercise.sh hard-asserts (HTTP/Studio/SQL/Cypher/JS) against the running container so
-          # image-packaging regressions (missing /tmp, bad config copy, volume permissions) that
-          # still let the process reach "ready" are caught. exercise.sh waits for HTTP readiness
-          # itself. Wire protocols warn-skip here (their ports are not published and the default
-          # entrypoint enables no wire plugin); the build-job smoke already asserts them with
-          # WIRE_STRICT=1 on the two Linux legs.
-          rc=0
-          native/src/test/scripts/exercise.sh || rc=$?
-          LOGS="$(docker logs native-smoke 2>&1)"
-          echo "$LOGS"
-          docker rm -f native-smoke
-          if [ "$rc" -ne 0 ]; then
-            echo "::error::container exercise.sh failed (rc=$rc)"
-            exit 1
-          fi
-          # exercise.sh can stay green through a NON-FATAL startup failure - e.g. a class that JUL
-          # loads reflectively from arcadedb-log.properties (FileHandler) being absent from the
-          # native image throws ClassNotFoundException at boot but only degrades logging. Scan the
-          # container's own startup output and fail on those, so a missing-reflection-metadata
-          # regression can't slip through behind a passing functional smoke.
-          if grep -qiE "ClassNotFoundException|Can't load log handler" <<<"$LOGS"; then
-            echo "::error::container startup logged a ClassNotFoundException / log-handler load failure"
-            exit 1
-          fi
+          # the e2e module's client dependencies (network, grpc-client) come from this tree, not from a published snapshot
+          ./mvnw -B -q install -DskipTests -pl e2e -am
+          ./mvnw -B verify -Pintegration -pl e2e -Darcadedb.test.native=true
 
-      # Runs only after the smoke above passed against this exact local image. Pushes the per-arch
+      - name: Upload native E2E test reports
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-e2e-test-reports-${{ matrix.arch }}
+          path: e2e/target/failsafe-reports/
+          if-no-files-found: ignore
+
+      # Runs only after the e2e battery above passed against this exact local image. Pushes the per-arch
       # tag of every channel the build step chose; an empty list (ordinary dispatch) skips the step.
       - name: Push per-arch image
         if: ${{ steps.build.outputs.channels != '' }}
