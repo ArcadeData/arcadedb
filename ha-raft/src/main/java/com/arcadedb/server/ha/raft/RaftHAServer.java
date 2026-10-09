@@ -456,6 +456,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private          long                      lastLagCheckAppliedIndex = -1;
   private          ClusterTokenProvider      tokenProvider;
   private volatile int                       restartFailureCount   = 0;
+  // The thread still running a Ratis server close that outlived arcadedb.ha.ratisCloseTimeoutMs (issue #9561). While it
+  // is alive the old server's storage lock and gRPC ports may still be held, so the in-place restart refuses to start a
+  // second server beside it. Written under recoveryLock.
+  private volatile Thread                    stuckRatisClose;
   // Completed in-place restarts, by kind (issue #8900): a RECOVER restart keeps the Raft log, a FORMAT restart (the
   // divergence reformat) throws it away. Read by tests that must tell a recovery from a reformat.
   private final    AtomicInteger             recoverRestartCount   = new AtomicInteger();
@@ -2493,6 +2497,22 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         return;
       }
 
+      // Issue #9561: a close of the old server that outlived its bound on an earlier attempt may still hold the storage
+      // lock and the gRPC ports. Starting a second server beside it is not an option, so this attempt fails as well and
+      // counts toward the budget above, which stops the node once it is spent.
+      final Thread stillClosing = stuckRatisClose;
+      if (stillClosing != null) {
+        if (stillClosing.isAlive()) {
+          restartFailureCount++;
+          LogManager.instance().log(this, Level.SEVERE,
+              "HealthMonitor recovery failed (attempt %d/%d): the close of the old Ratis server is still running on thread "
+                  + "%s; not starting a new server beside it. Stuck at:%n%s", restartFailureCount, maxRetries,
+              stillClosing.getName(), RatisServerCloser.stackOf(stillClosing));
+          return;
+        }
+        stuckRatisClose = null;
+      }
+
       final RaftClient oldClient = this.raftClient;
       final RaftServer oldServer = this.raftServer;
       final RaftTransactionBroker oldBroker = this.transactionBroker;
@@ -2541,20 +2561,21 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       } catch (final Throwable t) {
         LogManager.instance().log(this, Level.FINE, "Error closing old client: %s", t, t.getMessage());
       }
+      Thread closeStillRunning = null;
       try {
         if (oldServer != null) {
           if (beforeClose == LifeCycle.State.CLOSING)
             LogManager.instance().log(this, Level.WARNING,
                 "Old Ratis server is still CLOSING after %dms; closing it from the restart, which interrupts that close",
                 OldRatisServerTermination.CLOSE_IN_PROGRESS_WAIT_MS);
-          // Issue #9556: Ratis 3.3.1 SegmentedRaftLog.close() deadlocks with an in-flight cache eviction
-          RaftLogCacheEviction.stopBeforeClose(oldServer);
-          oldServer.close();
+          // Issue #9556 (the cache-eviction stop runs inside) and #9561 (the close is bounded): a close that never
+          // returns would hold recoveryLock for good, and the health monitor could never retry.
+          closeStillRunning = RatisServerCloser.close(oldServer, ratisCloseTimeoutMs());
           // Issue #8898: a close that returns with the server not CLOSED means a second server is about to start
           // beside one that may still answer the leader. A close Ratis already performed itself, or a gRPC shutdown
           // close() swallowed, reports CLOSED here: the gRPC check in the try block below covers those.
-          final LifeCycle.State afterClose = oldServer.getLifeCycleState();
-          if (afterClose != LifeCycle.State.CLOSED)
+          final LifeCycle.State afterClose = closeStillRunning != null ? null : oldServer.getLifeCycleState();
+          if (afterClose != null && afterClose != LifeCycle.State.CLOSED)
             LogManager.instance().log(this, Level.WARNING,
                 "Old Ratis server is %s after close(); restart proceeds anyway",
                 afterClose);
@@ -2564,6 +2585,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       }
 
       try {
+        if (closeStillRunning != null) {
+          // Issue #9561: remembered so the next attempts fail too while it runs, instead of closing it a second time.
+          stuckRatisClose = closeStillRunning;
+          throw new IOException("The old Ratis server did not close within " + ratisCloseTimeoutMs()
+              + "ms; not starting a new server beside one whose storage lock and gRPC ports may still be held");
+        }
         if (oldServer != null)
           verifyOldServerTerminated(oldServer, oldDivision, abandoned);
         // The waits above can take seconds, and stop() does not take recoveryLock: do not start a server it will not stop.
@@ -2613,8 +2640,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         if (shutdownRequested) {
           // stop() may have read the old server before this one was published: close the new one here, a second close
           // from stop() is a no-op.
-          RaftLogCacheEviction.stopBeforeClose(this.raftServer); // issue #9556
-          this.raftServer.close();
+          // Issues #9556 and #9561. A close that outlives its bound is logged at SEVERE and left to stop() to report.
+          RatisServerCloser.close(this.raftServer, ratisCloseTimeoutMs());
           HALog.log(this, HALog.BASIC, "Recovery abandoned: shutdown requested while the new Ratis server was starting");
           return;
         }
@@ -2652,6 +2679,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
             t.getMessage());
       }
     }
+  }
+
+  /** How long a Ratis server close may take before the caller stops waiting for it (issue #9561). */
+  private long ratisCloseTimeoutMs() {
+    return configuration.getValueAsLong(GlobalConfiguration.HA_RATIS_CLOSE_TIMEOUT_MS);
   }
 
   /**
@@ -2827,9 +2859,13 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         raftClient = null;
       }
       if (raftServer != null) {
-        // Issue #9556: Ratis 3.3.1 SegmentedRaftLog.close() deadlocks with an in-flight cache eviction
-        RaftLogCacheEviction.stopBeforeClose(raftServer);
-        raftServer.close();
+        // Issue #9556 (the cache-eviction stop runs inside) and #9561 (the close is bounded). A close that does not
+        // finish in time is logged at SEVERE with its stack and left running on its daemon thread: the shutdown goes on
+        // rather than hang the JVM shutdown hook behind it.
+        if (RatisServerCloser.close(raftServer, ratisCloseTimeoutMs()) != null)
+          LogManager.instance().log(this, Level.SEVERE,
+              "Ratis HA service stopped without its Ratis server closing; the storage lock and gRPC ports may stay held "
+                  + "until that close finishes");
         raftServer = null;
       }
     } catch (final IOException e) {
