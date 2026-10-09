@@ -38,10 +38,29 @@ public class LogicalExpression implements BooleanExpression {
   private final BooleanExpression left;
   private final BooleanExpression right; // null for NOT
 
+  /**
+   * Whether an operand runs a subquery or pattern match per row (see {@link ExpressionCost}). Fixed at construction: the
+   * tree is immutable, and the answer decides the operand order on every evaluation of every row.
+   */
+  private final boolean leftCostly;
+  private final boolean rightCostly;
+
+  /**
+   * AND and OR are commutative, nulls included, so the operand order is free: the one that cannot run a subquery goes
+   * first and may make the other unnecessary (issue #9579).
+   */
+  private final BooleanExpression first;
+  private final BooleanExpression second;
+
   public LogicalExpression(final Operator operator, final BooleanExpression left, final BooleanExpression right) {
     this.operator = operator;
     this.left = left;
     this.right = right;
+    this.leftCostly = ExpressionCost.isCostly(left);
+    this.rightCostly = ExpressionCost.isCostly(right);
+    final boolean swap = leftCostly && !rightCostly;
+    this.first = swap ? right : left;
+    this.second = swap ? left : right;
   }
 
   public LogicalExpression(final Operator operator, final BooleanExpression operand) {
@@ -64,14 +83,21 @@ public class LogicalExpression implements BooleanExpression {
     };
   }
 
-  private Object evaluateAnd(final Result result, final CommandContext context) {
-    final Boolean leftBool = toBoolean(left.evaluateTernary(result, context));
+  /**
+   * True when this node evaluates a traversal-running operand, so an enclosing {@code AND}/{@code OR} knows to put it last.
+   */
+  boolean isCostly() {
+    return leftCostly || rightCostly;
+  }
 
-    // false AND anything = false: the right operand is result-irrelevant, do not evaluate it.
+  private Object evaluateAnd(final Result result, final CommandContext context) {
+    final Boolean leftBool = toBoolean(first.evaluateTernary(result, context));
+
+    // false AND anything = false: the other operand is result-irrelevant, do not evaluate it.
     if (Boolean.FALSE.equals(leftBool))
       return false;
 
-    final Boolean rightBool = toBoolean(right.evaluateTernary(result, context));
+    final Boolean rightBool = toBoolean(second.evaluateTernary(result, context));
     if (Boolean.FALSE.equals(rightBool))
       return false;
     if (leftBool == null || rightBool == null)
@@ -80,13 +106,13 @@ public class LogicalExpression implements BooleanExpression {
   }
 
   private Object evaluateOr(final Result result, final CommandContext context) {
-    final Boolean leftBool = toBoolean(left.evaluateTernary(result, context));
+    final Boolean leftBool = toBoolean(first.evaluateTernary(result, context));
 
-    // true OR anything = true: the right operand is result-irrelevant, do not evaluate it.
+    // true OR anything = true: the other operand is result-irrelevant, do not evaluate it.
     if (Boolean.TRUE.equals(leftBool))
       return true;
 
-    final Boolean rightBool = toBoolean(right.evaluateTernary(result, context));
+    final Boolean rightBool = toBoolean(second.evaluateTernary(result, context));
     if (Boolean.TRUE.equals(rightBool))
       return true;
     if (leftBool == null || rightBool == null)

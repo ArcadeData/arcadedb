@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.executor;
 
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.misc.CoalesceFunction;
 import com.arcadedb.query.opencypher.ast.ArithmeticExpression;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.BooleanWrapperExpression;
@@ -141,6 +142,15 @@ public class ExpressionEvaluator {
     if (function == null) {
       function = functionFactory.getFunctionExecutor(expression.getFunctionName());
       expression.setCachedFunction(function);
+    }
+
+    // coalesce() stops at its first non-null argument (issue #9580)
+    if (function instanceof CoalesceFunction) {
+      final List<Expression> arguments = expression.getArguments();
+      Object value = null;
+      for (int i = 0; i < arguments.size() && value == null; i++)
+        value = evaluate(arguments.get(i), result, context);
+      return expression.finishCoalesce(function, value, result, context);
     }
 
     // Evaluate arguments
