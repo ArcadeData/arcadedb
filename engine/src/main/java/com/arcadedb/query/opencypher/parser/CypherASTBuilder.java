@@ -1448,7 +1448,8 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         && getOriginalText(parenExpr).trim().length() >= getOriginalText(expr6).trim().length();
     if (parenExpr != null && compCtx == null && parenSpansWholeExpression) {
       // Check if the parenthesized expression contains just a bare variable (e.g., WHERE (n)).
-      // A single-node pattern without relationships is invalid as a boolean predicate.
+      // It is kept as a single-node pattern because the grammar cannot tell a node from a Boolean variable: the
+      // validator refuses it when the variable is a graph entity, and the predicate reads the value otherwise (#9542).
       // Use getOriginalText (whitespace-preserving) rather than getText(): getText() strips all
       // whitespace, so a genuine predicate such as (friend IN inactive_nodes) collapses to
       // "friendINinactive_nodes" and spuriously matches the bare-identifier regex, getting
@@ -1456,7 +1457,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       final String innerText = getOriginalText(parenExpr.expression()).trim();
       // true/false/null are literals, not variables: "(true)" is a parenthesized boolean (issue #8994).
       if (innerText.matches("^[a-zA-Z_`][a-zA-Z0-9_`]*$") && !isBooleanOrNullKeyword(innerText)) {
-        final NodePattern nodePattern = new NodePattern(innerText, null, null);
+        final NodePattern nodePattern = new NodePattern(innerText.replace("`", ""), null, null);
         final PathPattern singleNodePath = new PathPattern(List.of(nodePattern), List.of(), null);
         return new PatternPredicateExpression(singleNodePath, false);
       }

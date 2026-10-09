@@ -65,12 +65,46 @@ public class PatternPredicateExpression implements BooleanExpression {
   }
 
   @Override
+  public Object evaluateTernary(final Result result, final CommandContext context) {
+    if (isParenthesizedVariable()) {
+      final Boolean value = evaluateParenthesizedVariable(result);
+      if (value == null)
+        return null;
+      return isNegated ? !value : value;
+    }
+    return evaluate(result, context);
+  }
+
+  @Override
   public boolean evaluate(final Result result, final CommandContext context) {
+    if (isParenthesizedVariable())
+      return Boolean.TRUE.equals(evaluateTernary(result, context));
+
     // Pattern predicates check if a pattern exists
     // For example: WHERE (n)-[:KNOWS]->() checks if n has any KNOWS relationship
 
     final boolean patternExists = evaluatePattern(result, context);
     return isNegated ? !patternExists : patternExists;
+  }
+
+  /**
+   * {@code (name)} with no relationship cannot be told apart from a parenthesized variable by the grammar: whether
+   * {@code name} is a graph entity (not a predicate) or a value (a parenthesized expression) is known only from what
+   * the row binds it to (issue #9542). The semantic validator already refused the cases it can prove are entities.
+   */
+  private boolean isParenthesizedVariable() {
+    return pathPattern != null && pathPattern.isSingleNode() && pathPattern.getFirstNode().getVariable() != null;
+  }
+
+  private Boolean evaluateParenthesizedVariable(final Result result) {
+    final String variable = pathPattern.getFirstNode().getVariable();
+    final Object value = result.getProperty(variable);
+    if (value == null)
+      return null;
+    if (value instanceof Boolean bool)
+      return bool;
+    throw new CommandExecutionException(
+        "InvalidArgumentType: Expected Boolean but '" + variable + "' is " + value.getClass().getSimpleName());
   }
 
   private boolean evaluatePattern(final Result result, final CommandContext context) {

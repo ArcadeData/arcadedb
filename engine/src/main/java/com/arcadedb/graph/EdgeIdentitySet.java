@@ -21,7 +21,9 @@ package com.arcadedb.graph;
 import com.arcadedb.database.RID;
 import com.arcadedb.utility.RidHashSet;
 
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -40,8 +42,8 @@ import java.util.Set;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class EdgeIdentitySet {
-  private final RidHashSet recordBacked = new RidHashSet();
-  private       Set<RID>   recordLess;
+  private final RidHashSet           recordBacked = new RidHashSet();
+  private       Map<RID, LightUsage> recordLess;
 
   /**
    * @return true if the set did not already contain the edge
@@ -51,19 +53,31 @@ public class EdgeIdentitySet {
       return recordBacked.add(edgeRID);
 
     if (recordLess == null)
-      recordLess = new HashSet<>();
-    return recordLess.add(edgeRID);
+      recordLess = new HashMap<>();
+    final LightUsage usage = recordLess.get(edgeRID);
+    if (usage == null) {
+      recordLess.put(edgeRID, new LightUsage(edgeRID));
+      return true;
+    }
+    return usage.add(edgeRID);
   }
 
   public boolean contains(final RID edgeRID) {
     if (edgeRID.getPosition() >= 0)
       return recordBacked.contains(edgeRID);
 
-    return recordLess != null && recordLess.contains(edgeRID);
+    if (recordLess == null)
+      return false;
+    final LightUsage usage = recordLess.get(edgeRID);
+    return usage != null && usage.contains(edgeRID);
   }
 
   public int size() {
-    return recordBacked.size() + (recordLess != null ? recordLess.size() : 0);
+    int size = recordBacked.size();
+    if (recordLess != null)
+      for (final LightUsage usage : recordLess.values())
+        size += usage.size();
+    return size;
   }
 
   public boolean isEmpty() {
@@ -74,5 +88,41 @@ public class EdgeIdentitySet {
     recordBacked.clear();
     if (recordLess != null)
       recordLess.clear();
+  }
+
+  private static int occurrenceOf(final RID edgeRID) {
+    return edgeRID instanceof LightEdgeRID light ? light.getOccurrence() : 0;
+  }
+
+  /**
+   * The lightweight edges of one (type, out, in) triple that the set holds. The common case is one edge, kept as the
+   * RID it came with and resolved to nothing: only when a second edge with the same triple arrives is it asked which
+   * of the entries of the triple each one is (issue #9573), and only then does the set learn about their numbers.
+   */
+  private static final class LightUsage {
+    private final RID          first;
+    private       Set<Integer> occurrences;
+
+    private LightUsage(final RID first) {
+      this.first = first;
+    }
+
+    private boolean add(final RID edgeRID) {
+      if (occurrences == null) {
+        if (LightEdgeRID.isSameEdge(first, edgeRID))
+          return false;
+        occurrences = new HashSet<>();
+        occurrences.add(occurrenceOf(first));
+      }
+      return occurrences.add(occurrenceOf(edgeRID));
+    }
+
+    private boolean contains(final RID edgeRID) {
+      return occurrences == null ? LightEdgeRID.isSameEdge(first, edgeRID) : occurrences.contains(occurrenceOf(edgeRID));
+    }
+
+    private int size() {
+      return occurrences == null ? 1 : occurrences.size();
+    }
   }
 }

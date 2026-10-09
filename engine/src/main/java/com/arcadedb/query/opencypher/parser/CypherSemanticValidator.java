@@ -1159,9 +1159,9 @@ public class CypherSemanticValidator {
       // Pattern predicates in WHERE must not introduce new variables
       final PathPattern path = ((PatternPredicateExpression) boolExpr).getPathPattern();
       if (path != null) {
-        // A single-node pattern in WHERE is invalid: WHERE (n) is not a valid predicate
-        if (path.isSingleNode())
-          throw new CommandParsingException("InvalidArgumentType: Single node pattern is not a valid predicate in WHERE");
+        // A single-node pattern in WHERE is no predicate: WHERE (n) with n a node is refused by
+        // FunctionArgumentChecks, which knows the kind of n at that point. WHERE (flag) with flag bound to a value
+        // is a parenthesized expression, resolved at runtime (issue #9542).
         checkPatternPredicateVariables(path, scope);
       }
     } else if (boolExpr instanceof IsNullExpression) {
@@ -2286,11 +2286,26 @@ public class CypherSemanticValidator {
     public void visitPattern(final PathPattern path) {
       if (declaringPatterns.contains(path))
         return;
+      if (path.isSingleNode())
+        checkSingleNodePredicate(path.getFirstNode().getVariable());
       for (final NodePattern node : path.getNodes())
         checkUsedAs(node.getVariable(), VarType.NODE);
       for (final RelationshipPattern rel : path.getRelationships())
         if (!(rel instanceof QuantifiedPathPattern))
           checkUsedAs(rel.getVariable(), VarType.RELATIONSHIP);
+    }
+
+    /**
+     * {@code WHERE (name)} is a parenthesized variable, not a pattern, unless {@code name} is a graph entity: a node,
+     * a relationship or a path is no Boolean, and a lone node pattern is no predicate. A name of unknown kind (a
+     * {@code WITH}, an {@code UNWIND}, a parameter) is left to the runtime check, which sees the value (issue #9542).
+     */
+    private void checkSingleNodePredicate(final String name) {
+      if (name == null)
+        return;
+      final VarType declared = scope.get(name);
+      if (declared == VarType.NODE || declared == VarType.RELATIONSHIP || declared == VarType.PATH)
+        throw new CommandParsingException("InvalidArgumentType: Single node pattern is not a valid predicate in WHERE");
     }
 
     /**

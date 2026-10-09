@@ -870,14 +870,37 @@ public final class IncomingEdgeLookup {
     private Edge edgeAt(final int i) {
       final RID source = database.newRID(sourceBuckets[i], sourcePositions[i]);
       final RID target = database.newRID(targetBuckets[i], targetPositions[i]);
-      if (edgePositions[i] == LIGHTWEIGHT_POSITION)
-        return new ImmutableLightEdge(database, database.getSchema().getTypeByBucketId(edgeBuckets[i]), edgeBuckets[i], source,
-            target);
+      if (edgePositions[i] == LIGHTWEIGHT_POSITION) {
+        final ImmutableLightEdge light = new ImmutableLightEdge(database, database.getSchema().getTypeByBucketId(edgeBuckets[i]),
+            edgeBuckets[i], source, target);
+        numberTwins(i, (LightEdgeRID) light.getIdentity());
+        return light;
+      }
 
       final Edge edge = (Edge) database.lookupByRID(database.newRID(edgeBuckets[i], edgePositions[i]), false);
       if (edge instanceof ImmutableEdge immutable)
         immutable.setEndpointsFromEdgeList(source, target);
       return edge;
+    }
+
+    /**
+     * Twins - lightweight edges of one type over one ordered pair - sort next to each other (the sort key is the whole
+     * triple), so which of them {@code i} is, and how many there are, is read off its run (issue #9573).
+     */
+    private void numberTwins(final int i, final LightEdgeRID identity) {
+      int first = i;
+      while (first > 0 && sameTriple(first - 1, i))
+        --first;
+      int last = i;
+      while (last + 1 < size && sameTriple(last + 1, i))
+        ++last;
+      identity.numbered(i - first, last - first + 1);
+    }
+
+    private boolean sameTriple(final int a, final int b) {
+      return edgePositions[a] == edgePositions[b] && edgeBuckets[a] == edgeBuckets[b] && targetBuckets[a] == targetBuckets[b]
+          && targetPositions[a] == targetPositions[b] && sourceBuckets[a] == sourceBuckets[b]
+          && sourcePositions[a] == sourcePositions[b];
     }
 
     private boolean isTarget(final int i, final RID target) {
