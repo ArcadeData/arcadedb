@@ -2720,10 +2720,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * {@link ArcadeStateMachine#quarantineUnpublishedSchemaChange}. Never throws: it runs on the failure path of the
    * session, whose own exception is the one the caller must see.
    * <p>
-   * A compaction that failed DETERMINISTICALLY - anything but a {@link NeedRetryException}, which the broker raises only
-   * for a transient refusal - is also held off on this node (issue #9558): the resync brings back the state the compaction
-   * started from, and the next schedule would otherwise run it again, fail again and quarantine again. A DDL is not: it
-   * runs once per request, and the caller who sees it fail is the one who decides whether to send it again.
+   * A compaction that failed DETERMINISTICALLY ({@link #isDeterministicPublishFailure}) is also held off on this node
+   * (issue #9558): the resync brings back the state the compaction started from, and the next schedule would otherwise
+   * run it again, fail again and quarantine again. Only then: a retryable refusal, an interrupt, an I/O error or an
+   * {@link Error} leaves the change just as unpublished - so it is still quarantined - but says nothing about the next
+   * run, and holding compactions off for up to hours on its account would cost more than the one resync it might
+   * repeat. A DDL is never held off: it runs once per request, and the caller who sees it fail decides whether to send
+   * it again.
    *
    * @param compaction whether the session was a compaction, which a scheduler re-runs on its own
    */
@@ -2734,7 +2737,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         stateMachine.quarantineUnpublishedSchemaChange(getName(), session, failure);
         // Beside the quarantine, not instead of it, and recorded whether or not the quarantine took (the only voter is
         // not quarantined): either way the next schedule would hit the same wall
-        if (compaction && !(failure instanceof NeedRetryException))
+        if (compaction && isDeterministicPublishFailure(failure))
           stateMachine.deferCompactionAfterUnpublishableChange(getName());
       } else
         LogManager.instance().log(this, Level.SEVERE,
@@ -2759,6 +2762,20 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   static boolean isIndeterminatePublishFailure(final Throwable failure) {
     for (Throwable t = failure; t != null; t = t.getCause() == t ? null : t.getCause())
       if (t instanceof ReplicationDispatchedTimeoutException || t instanceof MajorityCommittedAllFailedException)
+        return true;
+    return false;
+  }
+
+  /**
+   * Whether {@code failure} would recur, identically, on the next attempt at the same change (issue #9558): an entry too
+   * large to replicate ({@link ReplicatedEntryTooLargeException}), which is a function of the payload and the configured
+   * entry cap and of nothing that changes by itself. The cause chain is walked for the reason
+   * {@link #isIndeterminatePublishFailure} gives. Deliberately narrow: what is not provably deterministic is not held off.
+   */
+  // @VisibleForTesting
+  static boolean isDeterministicPublishFailure(final Throwable failure) {
+    for (Throwable t = failure; t != null; t = t.getCause() == t ? null : t.getCause())
+      if (t instanceof ReplicatedEntryTooLargeException)
         return true;
     return false;
   }
@@ -3725,7 +3742,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         sealedBlobs, finalSealedChunks);
     // Published: nothing below may send the caller into a quarantine for a change every node now holds.
     published[0] = true;
-    // And whatever held this database's compactions off is over (issue #9558)
+    // And whatever held this database's compactions off is over (issue #9558). Only HERE, not on the early return of a
+    // compaction that had nothing to publish: that one proves nothing about the payload that was too large to ship.
     final ArcadeStateMachine stateMachine = stateMachineOrNull();
     if (stateMachine != null)
       stateMachine.compactionPublished(getName());

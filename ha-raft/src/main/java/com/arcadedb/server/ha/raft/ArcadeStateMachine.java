@@ -8830,7 +8830,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * Why this is needed beside the quarantine: the resync the quarantine starts brings back the very state the
    * compaction started from, so the next schedule would run the same compaction, fail the same way and quarantine
    * again - a resync loop on a node that keeps leading, and a leadership ping-pong when it hands off and leadership
-   * comes back. A retryable refusal (issue #9555) is not held off: it is transient by construction.
+   * comes back. Only a failure that provably recurs is held off ({@code RaftReplicatedDatabase.isDeterministicPublishFailure}):
+   * a retryable refusal (issue #9555), an interrupt or an I/O error is quarantined all the same, but not held off.
    * <p>
    * The window doubles with every failure in a row, from {@link #COMPACTION_BACK_OFF_BASE_MS} up to
    * {@link #COMPACTION_BACK_OFF_MAX_MS}, and is forgotten by {@link #compactionPublished} the first time a compaction of

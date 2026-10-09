@@ -299,6 +299,49 @@ class Issue9558UnpublishableSchemaChangeTest {
     assertThat(stateMachine.quarantineCause(db.getName())).isEqualTo(DivergenceCause.UNPUBLISHED_SCHEMA_CHANGE);
   }
 
+  /**
+   * An interrupt (shutdown, a cancelled scheduler) after a commit was applied here leaves those pages just as
+   * unpublished, so the node is quarantined - but it says nothing about the next run, so compactions are NOT held off
+   * (code review on PR #9586).
+   */
+  @Test
+  void aCompactionInterruptedAfterACommitAppliedHereIsQuarantinedButNotHeldOff() {
+    db.getSchema().createDocumentType("Filled", 1);
+    final RaftReplicatedDatabase replicated = replicated(leader(new FakeRaftTransactionBroker()));
+
+    assertThatThrownBy(() -> replicated.runWithCompactionReplication(() -> {
+      replicated.transaction(() -> replicated.newDocument("Filled").set("value", 1L).save());
+      throw new InterruptedException("scheduler cancelled");
+    })).isInstanceOf(InterruptedException.class);
+
+    assertThat(stateMachine.quarantineCause(db.getName())).isEqualTo(DivergenceCause.UNPUBLISHED_SCHEMA_CHANGE);
+    assertThat(stateMachine.isCompactionHeldOff(db.getName())).isFalse();
+  }
+
+  /** A failure that is not provably deterministic - an error of the transport, an I/O error - is not held off either. */
+  @Test
+  void aCompactionWhosePublishingEntryFailsForANonDeterministicReasonIsNotHeldOff() {
+    final RaftReplicatedDatabase replicated = replicated(leader(new FakeRaftTransactionBroker().fails("replicateSchema",
+        new IllegalStateException("transport failed"))));
+
+    assertThatThrownBy(() -> replicated.runWithCompactionReplication(() -> {
+      db.getSchema().createDocumentType("Compacted", 1);
+      return true;
+    })).isInstanceOf(IllegalStateException.class);
+
+    assertThat(stateMachine.quarantineCause(db.getName())).isEqualTo(DivergenceCause.UNPUBLISHED_SCHEMA_CHANGE);
+    assertThat(stateMachine.isCompactionHeldOff(db.getName())).isFalse();
+  }
+
+  @Test
+  void onlyAnEntryTooLargeIsADeterministicFailure() {
+    assertThat(RaftReplicatedDatabase.isDeterministicPublishFailure(new TransactionException("wrapped",
+        new ReplicatedEntryTooLargeException("too large")))).isTrue();
+    assertThat(RaftReplicatedDatabase.isDeterministicPublishFailure(new NeedRetryException("refused"))).isFalse();
+    assertThat(RaftReplicatedDatabase.isDeterministicPublishFailure(new InterruptedException("stop"))).isFalse();
+    assertThat(RaftReplicatedDatabase.isDeterministicPublishFailure(new OutOfMemoryError("heap"))).isFalse();
+  }
+
   // ---------------------------------------------------------------------------------------------------------------
   // DDL (recordFileChanges)
   // ---------------------------------------------------------------------------------------------------------------
