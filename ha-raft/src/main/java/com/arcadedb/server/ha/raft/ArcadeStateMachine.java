@@ -576,6 +576,24 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   private final ConcurrentHashMap<String, Long> schemaSessionTerms = new ConcurrentHashMap<>();
 
+  /** The window of {@link #deferCompactionAfterUnpublishableChange} after the first failure (issue #9558). */
+  static final long COMPACTION_BACK_OFF_BASE_MS     = 10 * 60_000L;
+  /** The widest window {@link #deferCompactionAfterUnpublishableChange} grows to. */
+  static final long COMPACTION_BACK_OFF_MAX_MS      = 6 * 60 * 60_000L;
+  /** Doublings past the base after which the window stops growing; keeps the shift well clear of overflow. */
+  private static final int COMPACTION_BACK_OFF_MAX_DOUBLINGS = 16;
+
+  /** Until when, and after how many failures in a row, the compactions of a database are held off (issue #9558). */
+  private record CompactionBackOff(long untilMs, int failures) {
+  }
+
+  // Keyed by database name and empty on every healthy node, so the check a compaction makes is one isEmpty() (issue #9558)
+  private final ConcurrentHashMap<String, CompactionBackOff> compactionBackOffs = new ConcurrentHashMap<>();
+  // Clock of the compaction back-off, in milliseconds. Monotonic, because it only ever measures an interval: a wall clock
+  // stepped back would stretch a hold-off, one stepped forward would end it early. Package-private and mutable only so
+  // tests can drive the window without sleeping.
+  LongSupplier compactionBackOffClock = () -> System.nanoTime() / 1_000_000L;
+
   // Wall-clock of the END of the last leadership hand-off attempted by handOffLeadershipWhileReplacingDatabase(); 0 =
   // none yet. Throttles the retry of a hand-off that failed, so a cluster with no eligible peer is not put through an
   // election on every health tick. Measured from the end, not the start (issue #8556): an attempt can outlast the
@@ -7004,6 +7022,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // persisted applied index above), and a database recreated under the same name starts from a clean ledger.
     pageVersions.clear(databaseName);
     lastSchemaChangeIndex.remove(databaseName);
+    // Nor a compaction hold-off (issue #9558): it described a payload of the database being dropped
+    clearCompactionHoldOff(databaseName);
     // The copy the served index described is going away with it (issue #8579): a database recreated under the same
     // name must not inherit it.
     final InstallApplyGate installGate = installApplyGates.get(databaseName);
@@ -8804,6 +8824,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * Only for a DEFINITE refusal. An indeterminate one ({@link ReplicationDispatchedTimeoutException}) may still commit,
    * and then the local change is exactly what the log says; the caller must not get here for it.
    * <p>
+   * Since issue #9558 also for a change that could not be published at all - an entry too large to replicate, a session
+   * whose callback failed after its buffered commits were applied here. Such a failure is usually DETERMINISTIC: the
+   * same compaction on the next schedule fails the same way. The quarantine is still right, because the divergence is
+   * just as real, but what keeps it from looping is {@link #deferCompactionAfterUnpublishableChange}, which the caller
+   * records beside it.
+   * <p>
    * The same three steps as {@link #handleUnexpectedApplyError}: quarantine, targeted resync, and - when this node is
    * the leader, which a resync cannot use as its own source - a leadership hand-off. And the same exception: a node that
    * is the only voter has no peer to resync from, so the quarantine could never be lifted; it is reported instead.
@@ -8814,9 +8840,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
     final RaftHAServer raftHA = this.raftHAServer;
     if (raftHA != null && !isDatabaseDiverged(dbName) && raftHA.isSoleVoter()) {
       LogManager.instance().log(this, Level.SEVERE,
-          "The %s on database '%s' was applied locally but the entry publishing it was refused (%s). This node is the "
-              + "only voter, so there is no peer to resync it from and it is NOT quarantined: the database now holds a "
-              + "change the Raft log does not (issue #9555)",
+          "The %s on database '%s' was applied locally but the entry publishing it was refused or could not be built "
+              + "(%s). This node is the only voter, so there is no peer to resync it from and it is NOT quarantined: the "
+              + "database now holds a change the Raft log does not (issues #9555, #9558)",
           session, dbName, describe(refusal));
       return false;
     }
@@ -8825,13 +8851,66 @@ public class ArcadeStateMachine extends BaseStateMachine {
       return false;
 
     LogManager.instance().log(this, Level.SEVERE,
-        "The %s on database '%s' was applied locally but the entry publishing it was refused (%s), so no other node "
-            + "holds it: quarantining the database and resyncing it from the leader now rather than waiting for a "
-            + "later entry to collide with it (issue #9555)",
+        "The %s on database '%s' was applied locally but the entry publishing it was refused or could not be built "
+            + "(%s), so no other node holds it: quarantining the database and resyncing it from the leader now rather "
+            + "than waiting for a later entry to collide with it (issues #9555, #9558)",
         session, dbName, describe(refusal));
     triggerDatabaseResync(dbName);
     handOffLeadershipIfLeader(dbName);
     return true;
+  }
+
+  /**
+   * Holds off the compactions of {@code dbName} on this node after one of them changed the database locally and then
+   * failed DETERMINISTICALLY on its way to the log (issue #9558) - an entry too large to replicate, say - and returns how
+   * long for.
+   * <p>
+   * Why this is needed beside the quarantine: the resync the quarantine starts brings back the very state the
+   * compaction started from, so the next schedule would run the same compaction, fail the same way and quarantine
+   * again - a resync loop on a node that keeps leading, and a leadership ping-pong when it hands off and leadership
+   * comes back. Only a failure that provably recurs is held off ({@code RaftReplicatedDatabase.isDeterministicPublishFailure}):
+   * a retryable refusal (issue #9555), an interrupt or an I/O error is quarantined all the same, but not held off.
+   * <p>
+   * The window doubles with every failure in a row, from {@link #COMPACTION_BACK_OFF_BASE_MS} up to
+   * {@link #COMPACTION_BACK_OFF_MAX_MS}, and is forgotten by {@link #clearCompactionHoldOff} the first time a compaction of
+   * the database publishes. Per node and in memory, the way {@code leaderHandOffsMovedWhileGapPersisted} is: it bounds,
+   * not stops, a cluster where every node shares the cause - each of them fails at most once per window - and a restart,
+   * which is how a raised {@code arcadedb.ha.appendBufferSize} takes effect, starts afresh.
+   */
+  long deferCompactionAfterUnpublishableChange(final String dbName) {
+    if (dbName == null)
+      return 0L;
+    final long now = compactionBackOffClock.getAsLong();
+    final CompactionBackOff next = compactionBackOffs.compute(dbName, (name, previous) -> {
+      final int failures = previous == null ? 1 : Math.min(previous.failures() + 1, COMPACTION_BACK_OFF_MAX_DOUBLINGS + 1);
+      final long window = Math.min(COMPACTION_BACK_OFF_MAX_MS, COMPACTION_BACK_OFF_BASE_MS << (failures - 1));
+      return new CompactionBackOff(now + window, failures);
+    });
+    final long window = next.untilMs() - now;
+    LogManager.instance().log(this, Level.SEVERE,
+        "Compactions of database '%s' are held off on this node for %d s (failure %d in a row): the last one could not "
+            + "be published for a reason that does not go away by itself, and running it again would only repeat the "
+            + "quarantine and resync it caused. Fix the cause the previous message names - typically raise "
+            + "arcadedb.ha.appendBufferSize - and restart this node to retry at once (issue #9558)",
+        dbName, window / 1000, next.failures());
+    return window;
+  }
+
+  /** Whether the compactions of {@code dbName} are held off on this node now, see {@link #deferCompactionAfterUnpublishableChange}. */
+  boolean isCompactionHeldOff(final String dbName) {
+    if (dbName == null || compactionBackOffs.isEmpty())
+      return false;
+    final CompactionBackOff backOff = compactionBackOffs.get(dbName);
+    return backOff != null && compactionBackOffClock.getAsLong() < backOff.untilMs();
+  }
+
+  /**
+   * Forgets the compaction hold-off of {@code dbName}: a compaction of it was published, so the failures in a row are
+   * over, or it was dropped, so a database recreated under the name starts clean. Allocation-free when there is none.
+   */
+  void clearCompactionHoldOff(final String dbName) {
+    if (dbName != null && !compactionBackOffs.isEmpty())
+      compactionBackOffs.remove(dbName);
   }
 
   /** The refusal's class and message, so an operator can tell a stale-session refusal from a lost quorum. */
