@@ -271,6 +271,11 @@ public class ArcadeDBServer {
    * hook itself and will never release the lock, so the hook does not wait for it at all.
    */
   private volatile    Thread                                lifecycleOwner;
+  /** The JVM shutdown hook this server registered (issue #9548). Assigned once, in {@code init()}. */
+  private volatile    Thread                                shutdownHook;
+  /** Whether {@link #shutdownHook} is currently added to the runtime; guarded by {@link #shutdownHookLock}. */
+  private             boolean                               shutdownHookInstalled;
+  private final       Object                                shutdownHookLock                     = new Object();
   private final       List<ReplicationCallback>             testEventListeners                   = new ArrayList<>();
   private volatile    STATUS                                status                               = STATUS.OFFLINE;
   /**
@@ -463,6 +468,8 @@ public class ArcadeDBServer {
     lifecycleLock.lock();
     try {
       recordLifecycleOwner();
+      // Back after a stop() of this same instance took it away (issue #9548)
+      installShutdownHook();
       startInternal();
     } catch (final RuntimeException | Error e) {
       // A start that fails after the metrics install (a plugin, the HTTP service, the databases) does not
@@ -843,9 +850,68 @@ public class ArcadeDBServer {
     try {
       recordLifecycleOwner();
       stopInternal();
+      // Only after a stop that completed: the databases are closed, so the hook has nothing left to order (issue #9548).
+      // A stopInternal() that throws skips this on purpose and leaves the hook in place: whatever it failed to close is
+      // still the hook's to close at the JVM exit, in its order.
+      removeShutdownHook();
     } finally {
       clearLifecycleOwner();
       lifecycleLock.unlock();
+    }
+  }
+
+  /** The JVM shutdown hook this server registered, which the engine's own hook waits for (issue #9548). */
+  // @VisibleForTesting
+  Thread getShutdownHook() {
+    return shutdownHook;
+  }
+
+  /**
+   * Adds this server's JVM shutdown hook, and registers it as the owner of the server's databases (issue #9548): the
+   * engine's own hook closes every open database, and the JVM runs it concurrently with this one. {@link #stopInternal()}
+   * stops the plugins - the Raft HA service, whose apply thread writes into the databases - BEFORE it closes the
+   * databases, and the engine's hook used to close them in between: a leader committing across the shutdown then failed
+   * to publish an entry the cluster had committed and quarantined its own database. Registered, this hook is waited for,
+   * and the engine's hook closes only what is still open after it.
+   * <p>
+   * Called at construction and again by {@link #start()}, so a server stopped and started again in the same JVM gets its
+   * hook back after {@link #removeShutdownHook()} took it away. A no-op once the JVM is shutting down.
+   */
+  // @VisibleForTesting
+  void installShutdownHook() {
+    synchronized (shutdownHookLock) {
+      if (shutdownHookInstalled)
+        return;
+      try {
+        Runtime.getRuntime().addShutdownHook(shutdownHook);
+      } catch (final IllegalStateException e) {
+        // The JVM is already shutting down: hooks can no longer be added, and this server is not going to run anyway
+        return;
+      }
+      DatabaseFactory.registerOwningShutdownHook(shutdownHook);
+      shutdownHookInstalled = true;
+    }
+  }
+
+  /**
+   * Takes the shutdown hook away once a {@link #stop()} has closed the databases (issue #9548): the hook has
+   * nothing left to do, and an embedder or a test suite that creates and stops many servers would otherwise keep one
+   * hook - and the whole server it captures - per instance for the life of the JVM. Once the JVM is shutting down the
+   * runtime refuses the removal, and the hook stays registered with the engine too: a stop running on another thread
+   * then (an emergency stop, a {@code System.exit()} from a Ratis thread) is exactly the ordering the engine's hook has
+   * to keep waiting for.
+   */
+  private void removeShutdownHook() {
+    synchronized (shutdownHookLock) {
+      if (!shutdownHookInstalled)
+        return;
+      try {
+        Runtime.getRuntime().removeShutdownHook(shutdownHook);
+      } catch (final IllegalStateException e) {
+        return;
+      }
+      DatabaseFactory.unregisterOwningShutdownHook(shutdownHook);
+      shutdownHookInstalled = false;
     }
   }
 
@@ -2476,7 +2542,7 @@ public class ArcadeDBServer {
     configuration.getValueAsString(GlobalConfiguration.SERVER_PLUGINS);
     pluginManager = new PluginManager(this, configuration);
 
-    Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+    final Thread hook = new Thread(() -> {
       // Mark logger as shutting down to prevent NPE when handlers are closed (issue #2813)
       DefaultLogger.setShuttingDown(true);
       try {
@@ -2502,7 +2568,9 @@ public class ArcadeDBServer {
           // the logger may already be closing down
         }
       }
-    }, "arcadedb-shutdown-hook"));
+    }, "arcadedb-shutdown-hook");
+    shutdownHook = hook;
+    installShutdownHook();
 
     hostAddress = assignHostAddress();
   }
