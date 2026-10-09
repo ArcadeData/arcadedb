@@ -218,11 +218,16 @@ public final class IncomingEdgeLookup {
 
     final RID identity = vertex.getIdentity();
     long count = vertex.countEdges(Vertex.DIRECTION.OUT, edgeTypes);
-    if (involved.closure.anyBidirectional)
-      for (final Iterator<Edge> it = new StoredIncomingEdges(vertex.getEdges(Vertex.DIRECTION.IN, edgeTypes).iterator(),
-          involved.schema); it.hasNext(); )
+    if (involved.closure.anyBidirectional) {
+      // THE SELF LOOPS ARE TOLD APART ON THE FAR END THE LIST ENTRY CARRIES: NO EDGE RECORD IS LOADED FOR IT, AND A GHOST
+      // ENTRY DOES NOT FAIL THE COUNT
+      final Iterator<Edge> stored = vertex instanceof VertexInternal internal ?
+          ((DatabaseInternal) vertex.getDatabase()).getGraphEngine().getEdgesKnowingEndpoints(internal, Vertex.DIRECTION.IN, edgeTypes) :
+          vertex.getEdges(Vertex.DIRECTION.IN, edgeTypes).iterator();
+      for (final Iterator<Edge> it = new StoredIncomingEdges(stored, involved.schema); it.hasNext(); )
         if (!identity.equals(it.next().getOut()))
           ++count;
+    }
     // A SELF LOOP OF A UNIDIRECTIONAL TYPE IS IN THE OUTGOING LIST, COUNTED ABOVE: THE SCAN ANSWERS THE OTHER EDGES ONLY
     for (final Snapshot snapshot : involved.snapshots)
       count += snapshot.count(identity, true);

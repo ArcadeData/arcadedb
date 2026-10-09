@@ -741,6 +741,8 @@ public class GraphEngine {
    * one telling the self loops apart on the far-end position its entries carry.
    */
   public long countUndirectedEdges(final VertexInternal vertex, final String... edgeTypes) {
+    // THE HEADS ARE READ FROM THE TRANSACTION'S INSTANCE: A HANDLE TAKEN BEFORE AN APPEND WOULD HIDE THE NEWEST EDGES
+    final VertexInternal source = getMostUpdatedVertex(vertex);
     final EdgeBucketMask mask;
     if (edgeTypes != null && edgeTypes.length > 0) {
       mask = EdgeBucketMask.of(database, edgeTypes);
@@ -750,10 +752,10 @@ public class GraphEngine {
       mask = null;
 
     final long[] counts = new long[1];
-    final EdgeLinkedList outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
+    final EdgeLinkedList outEdges = getEdgeHeadChunk(source, Vertex.DIRECTION.OUT);
     if (outEdges != null)
       outEdges.countInto(new EdgeBucketMask[] { mask }, NO_NEIGHBOR_MASK, null, counts);
-    final EdgeLinkedList inEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.IN);
+    final EdgeLinkedList inEdges = getEdgeHeadChunk(source, Vertex.DIRECTION.IN);
     if (inEdges != null)
       inEdges.countInto(new EdgeBucketMask[] { mask }, NO_NEIGHBOR_MASK, SKIP_SELF_LOOPS, counts);
     return counts[0];
