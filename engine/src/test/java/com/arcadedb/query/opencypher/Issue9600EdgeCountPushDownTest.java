@@ -166,6 +166,12 @@ class Issue9600EdgeCountPushDownTest extends TestHelper {
       assertThat(view.hasPendingChanges()).isFalse();
       assertAllEdgeCounts();
 
+      // the totals themselves: an unknown type holds nothing, a sub-type listed with its super-type is counted once
+      assertThat(view.countAllEdges("NOT_A_TYPE")).isZero();
+      assertThat(view.countAllEdges("KNOWS", "KNOWS_WELL")).isEqualTo(view.countAllEdges("KNOWS"));
+      assertThat(view.countAllEdges("KNOWS")).isEqualTo(byHand("KNOWS", Vertex.DIRECTION.OUT));
+      assertThat(view.countAllEdges()).isEqualTo(byHand(null, Vertex.DIRECTION.OUT));
+
       // committed after the build: the totals of the slices are no longer the graph, the per-node counts are. Record edges
       // only: a light edge created after the build never reaches the overlay, whatever reads the view (issue #9572)
       database.transaction(() -> {

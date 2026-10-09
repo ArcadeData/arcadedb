@@ -154,6 +154,13 @@ class Issue9598OptionalMatchAntiJoinTest extends TestHelper {
         "MATCH (c:Comment), (p:Post) OPTIONAL MATCH (c)-[h:REPLY_OF*1..3]->(p) WITH c, p, h WHERE h IS NULL RETURN count(*) AS n",
         // the pattern starting at the new node and ending at the bound one
         "MATCH (t:Tag) OPTIONAL MATCH (c:Comment)-[h:HAS_TAG]->(t) WITH t, h WHERE h IS NULL RETURN count(*) AS n",
+        // variable-length hops inside a longer pattern, which runs from its rendered text: the bounds must survive it
+        "MATCH (c:Comment)-[:HAS_TAG]->(t:Tag) OPTIONAL MATCH (c)-[:REPLY_OF*2]->(:Message)-[h:HAS_TAG]->(t) "
+            + "WITH c, t, h WHERE h IS NULL RETURN count(*) AS n",
+        "MATCH (c:Comment)-[:HAS_TAG]->(t:Tag) OPTIONAL MATCH (c)-[:REPLY_OF*..3]->(:Message)-[h:HAS_TAG]->(t) "
+            + "WITH c, t, h WHERE h IS NULL RETURN count(*) AS n",
+        "MATCH (c:Comment)-[:HAS_TAG]->(t:Tag) OPTIONAL MATCH (c)-[:REPLY_OF*]->(:Message)-[h:HAS_TAG]->(t) "
+            + "WITH c, t, h WHERE h IS NULL RETURN count(*) AS n",
         // one relationship type twice: the predicate binds two different relationships, as the OPTIONAL MATCH does
         "MATCH (c:Comment), (p:Post) OPTIONAL MATCH (c)-[:REPLY_OF]->(:Message)-[h:REPLY_OF]->(p) "
             + "WITH c, p, h WHERE h IS NULL RETURN count(*) AS n" }) {
