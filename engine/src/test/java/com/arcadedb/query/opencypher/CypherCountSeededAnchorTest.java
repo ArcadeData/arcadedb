@@ -103,7 +103,9 @@ class CypherCountSeededAnchorTest {
   @ParameterizedTest
   @ValueSource(strings = {
       "(n)-[:L]->()", "(n)<-[:L]-()", "(n)-[:L]->(:Q)", "(n)<-[:L]-(:P)", "(n)-[:L]->(:Nope)",
-      "(n:Q)-[:L]->()", "(n)-[:L]->()-[:M]->()", "(n)<-[:L]-(:P)<-[:M]-()", "()-[:L]->(n)", "(:Q)-[:M]->()-[:L]->(n)" })
+      "(n:Q)-[:L]->()", "(n)-[:L]->()-[:M]->()", "(n)<-[:L]-(:P)<-[:M]-()", "()-[:L]->(n)", "(:Q)-[:M]->()-[:L]->(n)",
+      // undirected: the self loop on 7 is one relationship (issue #8750)
+      "(n)-[:L]-()", "(n)-[:L]-()-[:M]->()", "(n)<-[:M]-()-[:L]-()" })
   void pushDownAgreesWithThePipeline(final String body) {
     final Map<Integer, Long> pushed = counts(body, false);
     final long total = pushed.values().stream().mapToLong(Long::longValue).sum();
@@ -115,14 +117,18 @@ class CypherCountSeededAnchorTest {
   }
 
   @Test
-  void undirectedCountsWhatThePushDownCountedBefore() {
-    // (n)-[:L]-() reads both lists, so the self-loop on 7 is one entry in each; that is the push-down's answer
-    // with or without a loaded anchor, and it must not change here.
+  void undirectedCountsASelfLoopOnce() {
+    // (n)-[:L]-() reads both lists, and a self-loop (7, and the multiples of 10) is one entry in each; the pattern
+    // matches that relationship once, as the row pipeline, Neo4j and the openCypher TCK do (issue #8750), with or
+    // without a loaded anchor
     final Map<Integer, Long> both = counts("(n)-[:L]-()", false);
     final Map<Integer, Long> out = counts("(n)-[:L]->()", false);
     final Map<Integer, Long> in = counts("(n)<-[:L]-()", false);
+    final Map<Integer, Long> selfLoops = counts("(n)-[:L]->(n)", true);
+    assertThat(selfLoops.get(7)).isEqualTo(1L);
     for (final Integer id : both.keySet())
-      assertThat(both.get(id)).as("id %d", id).isEqualTo(out.get(id) + in.get(id));
+      assertThat(both.get(id)).as("id %d", id).isEqualTo(out.get(id) + in.get(id) - selfLoops.get(id));
+    assertThat(both).isEqualTo(counts("(n)-[:L]-()", true));
   }
 
   @Test
