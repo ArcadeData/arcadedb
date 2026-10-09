@@ -43,7 +43,7 @@ public class FieldMatchPathItem extends MatchPathItem {
   }
 
   @Override
-  protected MatchPathItem newInstance() {
+  protected FieldMatchPathItem newInstance() {
     return new FieldMatchPathItem();
   }
 
@@ -99,7 +99,7 @@ public class FieldMatchPathItem extends MatchPathItem {
 
   @Override
   public MatchPathItem copy() {
-    final FieldMatchPathItem result = (FieldMatchPathItem) newInstance();
+    final FieldMatchPathItem result = newInstance();
     result.field = field == null ? null : field.copy();
     result.method = method == null ? null : method.copy();
     result.filter = filter == null ? null : filter.copy();

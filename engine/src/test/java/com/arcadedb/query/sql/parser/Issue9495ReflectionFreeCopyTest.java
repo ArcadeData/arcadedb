@@ -169,6 +169,8 @@ class Issue9495ReflectionFreeCopyTest extends TestHelper {
   }
 
   private static List<Path> javaSources() throws IOException {
+    assertThat(Files.isDirectory(SQL_SOURCES)).as(SQL_SOURCES.toAbsolutePath()
+        + " not found: run this test with the engine module as working directory, as Maven Surefire does").isTrue();
     try (final Stream<Path> files = Files.walk(SQL_SOURCES)) {
       return files.filter(p -> p.toString().endsWith(".java")).sorted().toList();
     }
