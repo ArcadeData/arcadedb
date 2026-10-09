@@ -94,9 +94,9 @@ class Issue7641DropInReplicasWaitsForLocalApplyTest {
 
     databaseWith(raft).dropInReplicas();
 
-    // Relative order only: other recorded calls (the #9510 membership check) may come before the two that matter here.
-    assertThat(log.methods()).containsSubsequence("replicateDropDatabase", "waitForAppliedIndex")
-        .containsOnlyOnce("replicateDropDatabase", "waitForAppliedIndex");
+    // Only the two calls that matter here: other recorded calls (the #9510 membership check) are not this test's subject.
+    assertThat(log.methods().stream().filter(m -> m.equals("replicateDropDatabase") || m.equals("waitForAppliedIndex")))
+        .containsExactly("replicateDropDatabase", "waitForAppliedIndex");
     assertThat(raft.calls("waitForAppliedIndex")).containsExactly(List.of(DB_NAME, COMMITTED_LOG_INDEX, true));
   }
 

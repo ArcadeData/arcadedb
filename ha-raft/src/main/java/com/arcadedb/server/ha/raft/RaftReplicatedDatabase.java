@@ -2308,7 +2308,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
           raftHAServer.waitForAppliedIndex(getName(), ctx.readAfterIndex());
           // Removed while waiting: the wait gave up short of the bookmark, and serving now would hand back data missing
           // the write the bookmark names, from a node that will never catch up. A member that timed out keeps the
-          // documented degrade-to-EVENTUAL contract.
+          // documented degrade-to-EVENTUAL contract. The applied index is read again on purpose: the one above predates the
+          // wait, so deduplicating the two reads would refuse every read that caught up.
           if (raftHAServer.getTrustedAppliedIndex(getName()) < ctx.readAfterIndex())
             refuseReadWhileRemovedFromConfiguration(consistency);
         }
