@@ -33,6 +33,7 @@ import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.server.protocol.TermIndex;
 import org.apache.ratis.server.storage.RaftStorage;
+import org.apache.ratis.statemachine.TransactionContext;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -60,8 +61,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * reopens a closed database, so a test can tell a reopen attempt from a lookup.
  */
 class Issue9568BootstrapFingerprintApplyDuringShutdownTest {
-  private static final String DB_NAME            = "db9568";
-  private static final long   ENTRY_INDEX        = 7L;
+  private static final String DB_NAME              = "db9568";
+  private static final long   ENTRY_INDEX          = 7L;
   /** All-zero hex: never the fingerprint of a real database, so the verification reads it as a mismatch. */
   private static final String NO_MATCH_FINGERPRINT = "0".repeat(64);
 
@@ -274,7 +275,7 @@ class Issue9568BootstrapFingerprintApplyDuringShutdownTest {
   }
 
   private void apply(final LogEntryProto entry) throws Exception {
-    sm.applyTransaction(org.apache.ratis.statemachine.TransactionContext.newBuilder().setStateMachine(sm)
+    sm.applyTransaction(TransactionContext.newBuilder().setStateMachine(sm)
         .setLogEntry(entry).build()).get();
   }
 

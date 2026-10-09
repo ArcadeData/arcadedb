@@ -4951,7 +4951,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // or recorded as a late joiner, which advances this database's applied index past the entry so the verification
     // never runs again. The entry is left for the replay on restart instead, like every entry #9550 covers. After the
     // replay-skip above, which touches no database, and asked in this order so a running node pays the shutdown probe
-    // only for a database it does not have open.
+    // only for a database it does not have open. isDatabaseOpenHere() answers "open" when it cannot tell, which skips
+    // this check; the catch around readLocalBootstrapState() below still classifies a failed read the same way.
     if (!isDatabaseOpenHere(dbName) && isNodeShuttingDown())
       throw leaveForReplay(index, dbName, new DatabaseIsClosedException(
           "Database '" + dbName + "' is not open and this node is shutting down, so the bootstrap baseline is not "
