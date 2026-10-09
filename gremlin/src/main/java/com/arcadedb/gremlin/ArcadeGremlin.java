@@ -213,6 +213,7 @@ public class ArcadeGremlin extends ArcadeQuery {
    * their type, {@code 1:Integer} and {@code 1:Long} (whatever the order of the entries), so no entry is lost</li>
    * </ul>
    */
+  // PACKAGE-PRIVATE FOR THE UNIT TESTS
   static ResultInternal mapToResult(final Map<Object, Object> originalMap) {
     // FAST PATH, THE COMMON CASE: NO TWO KEYS SHARE A NAME, SO ONE PASS AND NO EXTRA ALLOCATION
     final Map<String, Object> flat = new LinkedHashMap<>(originalMap.size());
@@ -239,8 +240,11 @@ public class ArcadeGremlin extends ArcadeQuery {
       } else if (originalKey == T.label) {
         result.put(TYPE_KEY, entry.getValue());
         shared.add(TYPE_KEY);
-      } else if (!seen.add(String.valueOf(originalKey)))
-        shared.add(String.valueOf(originalKey));
+      } else {
+        final String name = String.valueOf(originalKey);
+        if (!seen.add(name))
+          shared.add(name);
+      }
     }
     // A NAME PRINTED BY SEVERAL KEYS (OR BY A RESERVED ONE) IS GIVEN TO NONE OF THEM BARE, SO THE NAME OF A KEY DOES NOT DEPEND ON
     // THE ORDER OF THE ENTRIES: 1 AND 1L ARE ALWAYS "1:Integer" AND "1:Long"
@@ -250,7 +254,8 @@ public class ArcadeGremlin extends ArcadeQuery {
         continue;
 
       String key = String.valueOf(originalKey);
-      if (shared.contains(key)) {
+      // ALSO A NAME ALREADY TAKEN BY A GENERATED ONE (A REAL KEY CALLED "1:Long") IS TYPED, SO NO ENTRY OVERWRITES ANOTHER
+      if (shared.contains(key) || result.containsKey(key)) {
         final String base = key + ":" + (originalKey == null ? "null" : originalKey.getClass().getSimpleName());
         key = base;
         for (int i = 2; result.containsKey(key); i++)

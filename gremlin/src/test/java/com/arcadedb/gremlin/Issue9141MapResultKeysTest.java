@@ -170,6 +170,19 @@ class Issue9141MapResultKeysTest {
   }
 
   @Test
+  void aRealKeyNamedLikeAGeneratedOneNeverOverwritesIt() {
+    final Map<Object, Object> map = new LinkedHashMap<>();
+    map.put(1L, "a");
+    map.put(1, "b");
+    map.put("1:Long", "c");
+    final Result result = ArcadeGremlin.mapToResult(map);
+    assertThat(result.getPropertyNames()).hasSize(3);
+    assertThat(result.<String>getProperty("1:Long")).isEqualTo("a");
+    assertThat(result.<String>getProperty("1:Integer")).isEqualTo("b");
+    assertThat(result.<String>getProperty("1:Long:String")).isEqualTo("c");
+  }
+
+  @Test
   void aNullKeyThatCollidesIsKept() {
     final Map<Object, Object> map = new LinkedHashMap<>();
     map.put(null, "nothing");
