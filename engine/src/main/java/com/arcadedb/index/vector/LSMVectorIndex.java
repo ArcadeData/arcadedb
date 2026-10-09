@@ -10989,14 +10989,34 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // commit leaves the transaction unusable and every later record failing for the same reason
     final AtomicReference<RuntimeException> chunkCommitFailure = new AtomicReference<>();
 
+    // A build over an index that already holds entries (a direct build() call: every schema path builds a fresh, empty
+    // index) must REPLACE a record's vector, not add a second one beside it (issue #9506). A dense vector index keeps one
+    // live vector per RID - remove() tombstones every id the RID resolves to - and the duplicates broke that: they
+    // doubled countEntries(), a delete then tombstoned two ids per record, and a search, whose graph is keyed by RID,
+    // kept one of them and disagreed with the count. Captured once: an index that starts the build empty pays nothing.
+    final VectorLocationIndex existingLocations = vectorIndex();
+    final ComparableVector supersedeKey = existingLocations.size() > 0 ? buildSupersedeKey() : null;
+
     // Scan the bucket and index all documents
     db.scanBucket(db.getSchema().getBucketById(metadata.associatedBucketId).getName(), record -> {
+      final RID rid = record.getIdentity();
+      if (supersedeKey != null && existingLocations.getVectorIdsForRid(rid).length > 0)
+        // Queued on this transaction like the ADD below, and therefore committed in the same chunk: the commit replays
+        // every REMOVE before any ADD, so the record's committed ids are tombstoned and the ADD writes its one fresh id.
+        // Not charged to the chunk on its own: a tombstone is a page entry of at most 21 bytes (three varints and two
+        // flag bytes), and the per-record estimate below (dimensions * 4 + 32) covers an unquantized vector entry and its
+        // tombstone together - measured, such an entry is ~9 bytes. A quantized index of very few dimensions can exceed
+        // it by a few bytes a record, which the half of the replicated entry cap held back as headroom absorbs (see
+        // getBulkLoadChunkSizeBytes, issue #8905)
+        db.getTransaction().addIndexOperation(this, TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE,
+            new Object[] { supersedeKey }, rid);
+
       // Add to index
       // !chunkedCommitAllowed IS "this build shares a transaction it did not open": the two are exact inverses on
       // every path into this method, and a build that owns its transaction has nothing for that transaction to
       // correct.
       final Document source = IndexInternal.buildSourceRecord(db, record, !chunkedCommitAllowed);
-      db.getIndexer().addToIndex(LSMVectorIndex.this, record.getIdentity(), source);
+      db.getIndexer().addToIndex(LSMVectorIndex.this, rid, source);
       total.incrementAndGet();
 
       // Estimate bytes written (rough approximation)
@@ -11049,6 +11069,21 @@ public class LSMVectorIndex implements Index, IndexInternal {
         indexName, total.get(), elapsed, total.get() / (elapsed / 1000.0));
 
     return total.get();
+  }
+
+  /**
+   * The key a build queues its supersede {@code REMOVE} under (issue #9506): a vector no {@code ADD} can carry.
+   * <p>
+   * The transaction keeps one entry per (key, RID), so a {@code REMOVE} queued under the same key as the {@code ADD} that
+   * follows it is displaced by that {@code ADD} and never reaches the index. The record's own vector is therefore the
+   * wrong key, and so is {@link #removalKey}'s all-zero placeholder: an all-zero vector is a valid embedding under
+   * EUCLIDEAN (issue #8962). NaN components are refused by {@code put()} before anything is queued, so no {@code ADD}
+   * key can equal this one. The key is otherwise unused: {@code remove()} resolves what to tombstone by RID alone.
+   */
+  private ComparableVector buildSupersedeKey() {
+    final float[] key = new float[metadata.dimensions];
+    Arrays.fill(key, Float.NaN);
+    return new ComparableVector(key);
   }
 
   /**

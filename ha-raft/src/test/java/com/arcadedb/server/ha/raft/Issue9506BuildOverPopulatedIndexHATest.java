@@ -19,6 +19,7 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.RID;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.vector.LSMVectorIndex;
@@ -26,16 +27,18 @@ import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
 import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Issue #9428: on a 3-node cluster, a transaction committed on a FOLLOWER that inserts vertices into a type with an
- * LSM_VECTOR index replicated the records but not their index entries, on every node including the one that wrote
- * them. The follower minted vector ids its own allocator had not moved past: a replicated page added its entries to
- * the location index without advancing the allocator, so the follower's ids superseded the leader's. The same gap left
- * the leader behind ids a build on a follower allocated, and its next insert superseded one of them.
+ * Issue #9506, end to end on a 3-node cluster: a build on a follower over a populated LSM_VECTOR index appended a second
+ * entry per record, and the nodes then disagreed on {@code countEntries()} - the node that searched kept one entry per
+ * record, and a delete tombstoned two ids on a node holding the duplicates and one on a node that had dropped them. The
+ * build now replaces each record's vector, so every node agrees after a search and after a delete.
  */
-class Issue9428FollowerVectorInsertHATest extends BaseRaftHATest {
+class Issue9506BuildOverPopulatedIndexHATest extends BaseRaftHATest {
 
   private static final String TYPE_NAME  = "Probe";
   private static final int    DIMENSIONS = 2;
@@ -51,49 +54,33 @@ class Issue9428FollowerVectorInsertHATest extends BaseRaftHATest {
   }
 
   @Test
-  void vectorsInsertedOnAFollowerReachTheIndexOnEveryNode() throws Exception {
+  void everyNodeAgreesOnTheEntriesAfterAFollowerBuildASearchAndADelete() throws Exception {
     final int leaderIndex = findLeaderIndex();
     assertThat(leaderIndex).as("a Raft leader must be elected").isGreaterThanOrEqualTo(0);
     final Database leader = getServerDatabase(leaderIndex, getDatabaseName());
-
     final TypeIndex index = createVectorIndex(leader);
 
-    insert(leader, 0, BATCH);
+    final List<RID> rids = new ArrayList<>();
+    leader.transaction(() -> {
+      for (int i = 0; i < BATCH; i++)
+        rids.add(leader.newVertex(TYPE_NAME).set("vector", new float[] { (i + 1) / 11f, (BATCH - i) / 11f }).save()
+            .getIdentity());
+    });
     assertIndexOnEveryServer(index.getName(), BATCH);
 
     final int followerIndex = (leaderIndex + 1) % getServerCount();
     final Database follower = getServerDatabase(followerIndex, getDatabaseName());
-    insert(follower, BATCH, BATCH);
-    assertIndexOnEveryServer(index.getName(), 2L * BATCH);
-
-    insert(leader, 2 * BATCH, 1);
-    assertIndexOnEveryServer(index.getName(), 2L * BATCH + 1);
-  }
-
-  /**
-   * A build run on a follower allocates vector ids too, and the leader learns of them only from the replicated pages.
-   * The build replaces every record's vector id with a fresh one, so the leader has to have moved past those too.
-   */
-  @Test
-  void anInsertOnTheLeaderAfterABuildOnAFollowerGetsAFreshVectorId() throws Exception {
-    final int leaderIndex = findLeaderIndex();
-    assertThat(leaderIndex).as("a Raft leader must be elected").isGreaterThanOrEqualTo(0);
-    final Database leader = getServerDatabase(leaderIndex, getDatabaseName());
-    final TypeIndex index = createVectorIndex(leader);
-
-    insert(leader, 0, BATCH);
-    assertIndexOnEveryServer(index.getName(), BATCH, BATCH);
-
-    final int followerIndex = (leaderIndex + 1) % getServerCount();
-    final Database follower = getServerDatabase(followerIndex, getDatabaseName());
-    final LSMVectorIndex bucketIndex =
+    final LSMVectorIndex followerBucketIndex =
         (LSMVectorIndex) ((TypeIndex) follower.getSchema().getIndexByName(index.getName())).getIndexesOnBuckets()[0];
-    bucketIndex.build(null, null);
-    // ONE ENTRY PER RECORD: THE BUILD REPLACES THE RECORDS' VECTORS RATHER THAN ADDING A SECOND ONE (ISSUE #9506)
+    followerBucketIndex.build(null, null);
     assertIndexOnEveryServer(index.getName(), BATCH);
 
-    insert(leader, BATCH, 1);
-    assertIndexOnEveryServer(index.getName(), BATCH + 1);
+    // A search on ONE node builds that node's graph from its pages, keyed by RID
+    assertThat(followerBucketIndex.findNeighborsFromVector(new float[] { 0.5f, 0.5f }, BATCH * 3)).hasSize(BATCH);
+    assertIndexOnEveryServer(index.getName(), BATCH);
+
+    leader.transaction(() -> rids.getFirst().asVertex().delete());
+    assertIndexOnEveryServer(index.getName(), BATCH - 1);
   }
 
   private static TypeIndex createVectorIndex(final Database leader) {
@@ -105,26 +92,15 @@ class Issue9428FollowerVectorInsertHATest extends BaseRaftHATest {
     return builder.create();
   }
 
-  private static void insert(final Database database, final int from, final int count) {
-    database.transaction(() -> {
-      for (int i = from; i < from + count; i++)
-        database.newVertex(TYPE_NAME).set("vector", new float[] { (i % 97 + 1) / 97f, (i * 7 % 89 + 1) / 89f }).save();
-    });
-  }
-
   private void assertIndexOnEveryServer(final String indexName, final long expected) throws Exception {
-    assertIndexOnEveryServer(indexName, expected, expected);
-  }
-
-  private void assertIndexOnEveryServer(final String indexName, final long records, final long entries) throws Exception {
     for (int i = 0; i < getServerCount(); i++)
       waitForReplicationIsCompleted(i);
 
     testEachServer(serverIndex -> {
       final Database database = getServerDatabase(serverIndex, getDatabaseName());
-      assertThat(database.countType(TYPE_NAME, false)).as("records on server %d", serverIndex).isEqualTo(records);
+      assertThat(database.countType(TYPE_NAME, false)).as("records on server %d", serverIndex).isEqualTo(expected);
       final Index index = database.getSchema().getIndexByName(indexName);
-      assertThat(index.countEntries()).as("vector index entries on server %d", serverIndex).isEqualTo(entries);
+      assertThat(index.countEntries()).as("vector index entries on server %d", serverIndex).isEqualTo(expected);
     });
   }
 }
