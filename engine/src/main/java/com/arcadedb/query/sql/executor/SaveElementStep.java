@@ -29,6 +29,7 @@ import com.arcadedb.engine.timeseries.TimeSeriesGateway;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.IndexCursor;
+import com.arcadedb.index.IndexException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
@@ -141,7 +142,7 @@ public class SaveElementStep extends AbstractExecutionStep {
           if (skipDuplicateKey) {
             if (!docType.getName().equals(cachedTypeName)) {
               cachedTypeName = docType.getName();
-              cachedUniqueIndexes = docType.getAllIndexes(true).stream().filter(TypeIndex::isUnique).toList();
+              cachedUniqueIndexes = docType.getAllIndexes(true).stream().filter(TypeIndex::isUniqueIfPresent).toList();
             }
             final DuplicateKeyConflict conflict = findDuplicateKeyConflict(modifiableDoc, cachedUniqueIndexes);
             if (conflict != null)
@@ -181,20 +182,41 @@ public class SaveElementStep extends AbstractExecutionStep {
    */
   private static DuplicateKeyConflict findDuplicateKeyConflict(final MutableDocument doc, final List<TypeIndex> uniqueIndexes) {
     for (final TypeIndex index : uniqueIndexes) {
-      final List<String> keyProperties = index.getPropertyNames();
-      final Object[] keyValues = new Object[keyProperties.size()];
-      for (int i = 0; i < keyProperties.size(); i++)
-        keyValues[i] = doc.get(keyProperties.get(i));
-
-      if (LSMTreeIndexAbstract.isKeyNull(keyValues))
+      // A concurrent CREATE/DROP INDEX (issue #8859): an index still being populated holds only part of the keys, and one
+      // dropped since the list was built is gone. Neither can tell a duplicate, the commit-time check still enforces uniqueness
+      if (!index.isReadyForQueries())
         continue;
 
-      try (final IndexCursor existing = index.get(keyValues, 1)) {
-        if (existing.hasNext())
-          return new DuplicateKeyConflict(index.getName(), keyValues, existing.next().getIdentity());
+      try {
+        final List<String> keyProperties = index.getPropertyNames();
+        final Object[] keyValues = new Object[keyProperties.size()];
+        for (int i = 0; i < keyProperties.size(); i++)
+          keyValues[i] = doc.get(keyProperties.get(i));
+
+        if (LSMTreeIndexAbstract.isKeyNull(keyValues))
+          continue;
+
+        try (final IndexCursor existing = index.get(keyValues, 1)) {
+          if (existing.hasNext())
+            return new DuplicateKeyConflict(index.getName(), keyValues, existing.next().getIdentity());
+        }
+      } catch (final IndexException e) {
+        // Going away: TypeIndex#drop drops the sub-indexes before it flags the wrapper invalid, so for a moment the index is
+        // valid and has lost some of them. The probe is a shortcut, the commit-time check still enforces uniqueness
+        logSkippedIndex(index, e);
+      } catch (final IllegalArgumentException e) {
+        // the page manager's answer for the file of an index dropped under the probe
+        if (!TypeIndex.isFileNotFound(e))
+          throw e;
+        logSkippedIndex(index, e);
       }
     }
     return null;
+  }
+
+  private static void logSkippedIndex(final TypeIndex index, final Exception e) {
+    LogManager.instance().log(SaveElementStep.class, Level.FINE, "Index '%s' skipped by the duplicate key probe: %s", null,
+        index.getName(), e.getMessage());
   }
 
   private record DuplicateKeyConflict(String indexName, Object[] keys, RID existingRID) {
