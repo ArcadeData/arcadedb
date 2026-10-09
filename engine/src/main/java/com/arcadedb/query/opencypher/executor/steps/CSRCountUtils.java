@@ -284,43 +284,17 @@ public final class CSRCountUtils {
   /**
    * The {@link NeighborView} of one pattern hop over a whole graph. A directed hop is the provider's own view. The merged
    * view of an undirected hop holds every self loop twice, once per list it sits in, and the pattern matches it once
-   * (issues #8750, #9540): the view is returned as it is when it holds no self loop, which one sequential pass tells and
-   * is the common case, and otherwise as a copy keeping one entry of each pair. Meant for the operators that run once
-   * per query; a per-row caller reads the provider's view and drops the copies itself ({@link #appendHopNeighbors}).
+   * (issues #8750, #9283, #9540): {@link NeighborView#withSelfLoopsOnce()} keeps one entry of each pair, built once per
+   * view and memoized on it, so the operators that run once per query reuse the copy for as long as the provider keeps
+   * the view. A per-row caller reads the provider's view and drops the copies itself ({@link #appendHopNeighbors}),
+   * rather than paying for a copy of the whole graph to read the few nodes a row reaches.
    *
    * @return null when the provider has no view for the hop
    */
   public static NeighborView patternView(final GraphTraversalProvider provider, final Vertex.DIRECTION direction,
       final String... edgeTypes) {
     final NeighborView view = provider.getNeighborView(direction, edgeTypes);
-    if (view == null || direction != Vertex.DIRECTION.BOTH)
-      return view;
-
-    final int nodeCount = view.nodeCount();
-    final int[] nbrs = view.neighbors();
-    int selfEntries = 0;
-    int entries = 0;
-    for (int v = 0; v < nodeCount; v++) {
-      final int from = view.offset(v);
-      final int end = view.offsetEnd(v);
-      entries += end - from;
-      for (int j = from; j < end; j++)
-        if (nbrs[j] == v)
-          ++selfEntries;
-    }
-    if (selfEntries == 0)
-      return view;
-
-    // SIZED ON THE RANGES, NOT ON THE ARRAY: A ZERO-COPY VIEW MAY BE BACKED BY A LARGER BUFFER
-    final int[] offsets = new int[nodeCount + 1];
-    final int[] neighbors = new int[entries - selfEntries / 2];
-    int pos = 0;
-    for (int v = 0; v < nodeCount; v++) {
-      offsets[v] = pos;
-      pos = appendHopNeighbors(view, v, true, neighbors, pos);
-    }
-    offsets[nodeCount] = pos;
-    return new NeighborView(nodeCount, offsets, pos == neighbors.length ? neighbors : Arrays.copyOf(neighbors, pos));
+    return view != null && direction == Vertex.DIRECTION.BOTH ? view.withSelfLoopsOnce() : view;
   }
 
   /**
@@ -330,25 +304,13 @@ public final class CSRCountUtils {
    * @return the position after the last entry copied
    */
   public static int appendHopNeighbors(final NeighborView view, final int node, final boolean undirected,
-      final int[] target, int pos) {
-    final int[] nbrs = view.neighbors();
+      final int[] target, final int pos) {
+    if (undirected)
+      return view.copyNeighborsWithSelfLoopsOnce(node, target, pos);
     final int from = view.offset(node);
-    final int end = view.offsetEnd(node);
-    if (!undirected) {
-      System.arraycopy(nbrs, from, target, pos, end - from);
-      return pos + end - from;
-    }
-    boolean skip = false;
-    for (int j = from; j < end; j++) {
-      final int neighbor = nbrs[j];
-      if (neighbor == node) {
-        skip = !skip;
-        if (!skip)
-          continue;
-      }
-      target[pos++] = neighbor;
-    }
-    return pos;
+    final int length = view.offsetEnd(node) - from;
+    System.arraycopy(view.neighbors(), from, target, pos, length);
+    return pos + length;
   }
 
   /**
