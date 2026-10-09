@@ -188,4 +188,79 @@ class RaftPropertiesBuilderTest {
     final RaftProperties props = RaftPropertiesBuilder.build(config);
     assertThat(RaftServerConfigKeys.closeThreshold(props).toLong(TimeUnit.MILLISECONDS)).isEqualTo(90_000L);
   }
+
+  /**
+   * Issue #9549: with the Ratis defaults a restarted 1GB node loaded six closed 64MB segments plus the open one (448MB)
+   * into the heap before catching up. The default budget is now an eighth of the heap, and the closed-segment count
+   * follows it, so the same node loads the open segment and one closed segment.
+   */
+  @Test
+  void logCacheFollowsTheHeapByDefault() {
+    final long oneGb = 1024L * 1024 * 1024;
+    final RaftProperties props = RaftPropertiesBuilder.build(new ContextConfiguration(), oneGb);
+    assertThat(RaftServerConfigKeys.Log.segmentCacheSizeMax(props).getSize()).isEqualTo(oneGb / 8);
+    assertThat(RaftServerConfigKeys.Log.segmentCacheNumMax(props)).isEqualTo(1);
+  }
+
+  @Test
+  void defaultLogCacheNeverExceedsTheRatisDefaultOnALargeHeap() {
+    final RaftProperties props = RaftPropertiesBuilder.build(new ContextConfiguration(), 64L * 1024 * 1024 * 1024);
+    assertThat(RaftServerConfigKeys.Log.segmentCacheSizeMax(props).getSize())
+        .isEqualTo(RaftServerConfigKeys.Log.SEGMENT_CACHE_SIZE_MAX_DEFAULT.getSize());
+    // 200MB of 64MB segments: the open one and two closed ones
+    assertThat(RaftServerConfigKeys.Log.segmentCacheNumMax(props)).isEqualTo(2);
+  }
+
+  @Test
+  void explicitLogCacheSizeDecidesTheCachedSegmentCount() {
+    final ContextConfiguration config = new ContextConfiguration();
+    config.setValue(GlobalConfiguration.HA_LOG_CACHE_SIZE, "512MB");
+    config.setValue(GlobalConfiguration.HA_LOG_SEGMENT_SIZE, "32MB");
+    final RaftProperties props = RaftPropertiesBuilder.build(config, 1024L * 1024 * 1024);
+    assertThat(RaftServerConfigKeys.Log.segmentCacheSizeMax(props).getSize()).isEqualTo(512L * 1024 * 1024);
+    assertThat(RaftServerConfigKeys.Log.segmentCacheNumMax(props)).isEqualTo(15);
+  }
+
+  @Test
+  void logCacheSmallerThanTwoSegmentsStillCachesOneClosedSegment() {
+    final ContextConfiguration config = new ContextConfiguration();
+    config.setValue(GlobalConfiguration.HA_LOG_CACHE_SIZE, "16MB");
+    final RaftProperties props = RaftPropertiesBuilder.build(config, 1024L * 1024 * 1024);
+    assertThat(RaftServerConfigKeys.Log.segmentCacheNumMax(props)).isEqualTo(1);
+  }
+
+  @Test
+  void nonPositiveLogCacheSizeIsRejected() {
+    final ContextConfiguration config = new ContextConfiguration();
+    config.setValue(GlobalConfiguration.HA_LOG_CACHE_SIZE, "0MB");
+    assertThatThrownBy(() -> RaftPropertiesBuilder.build(config, 1024L * 1024 * 1024))
+        .isInstanceOf(ConfigurationException.class)
+        .hasMessageContaining("arcadedb.ha.logCacheSize");
+  }
+
+  @Test
+  void blankLogCacheSizeFallsBackToTheHeapDefault() {
+    final ContextConfiguration config = new ContextConfiguration();
+    config.setValue(GlobalConfiguration.HA_LOG_CACHE_SIZE, "  ");
+    final RaftProperties props = RaftPropertiesBuilder.build(config, 1024L * 1024 * 1024);
+    assertThat(RaftServerConfigKeys.Log.segmentCacheSizeMax(props).getSize()).isEqualTo(128L * 1024 * 1024);
+  }
+
+  @Test
+  void malformedLogCacheSizeIsRejectedAsAConfigurationError() {
+    final ContextConfiguration config = new ContextConfiguration();
+    config.setValue(GlobalConfiguration.HA_LOG_CACHE_SIZE, "abc");
+    assertThatThrownBy(() -> RaftPropertiesBuilder.build(config, 1024L * 1024 * 1024))
+        .isInstanceOf(ConfigurationException.class)
+        .hasMessageContaining("arcadedb.ha.logCacheSize");
+  }
+
+  @Test
+  void malformedLogSegmentSizeIsRejectedAsAConfigurationError() {
+    final ContextConfiguration config = new ContextConfiguration();
+    config.setValue(GlobalConfiguration.HA_LOG_SEGMENT_SIZE, "big");
+    assertThatThrownBy(() -> RaftPropertiesBuilder.build(config, 1024L * 1024 * 1024))
+        .isInstanceOf(ConfigurationException.class)
+        .hasMessageContaining("arcadedb.ha.logSegmentSize");
+  }
 }

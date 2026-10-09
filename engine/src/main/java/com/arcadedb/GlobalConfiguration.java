@@ -2187,6 +2187,18 @@ public enum GlobalConfiguration {
   HA_LOG_SEGMENT_SIZE("arcadedb.ha.logSegmentSize", SCOPE.SERVER,
       "Maximum Raft log segment size (e.g. '64MB', '128MB')", String.class, "64MB"),
 
+  HA_LOG_CACHE_SIZE("arcadedb.ha.logCacheSize", SCOPE.SERVER,
+      """
+      Heap budget for the Raft log entries each server keeps decoded in memory (e.g. '128MB'). Empty (the default) \
+      means an eighth of the maximum JVM heap, capped at 200MB. The budget also decides how many closed log \
+      segments are cached: the open segment plus as many closed ones as fit (at least one), each of up to \
+      arcadedb.ha.logSegmentSize bytes. That count is what a restarted server loads into the heap before it starts \
+      catching up, so on a small heap keep arcadedb.ha.logSegmentSize at no more than half of this value. \
+      Entries outside the cache are read back from disk when needed (issue #9549), so a leader serving a follower \
+      that lags by more than the cached segments reads them from disk: raise this value, not only the heap, to keep \
+      more of the log tail decoded in memory.""",
+      String.class, ""),
+
   HA_APPEND_BUFFER_SIZE("arcadedb.ha.appendBufferSize", SCOPE.SERVER,
       """
       AppendEntries batch byte limit for replication (e.g. '32MB'). Ratis applies this limit per ENTRY as \
