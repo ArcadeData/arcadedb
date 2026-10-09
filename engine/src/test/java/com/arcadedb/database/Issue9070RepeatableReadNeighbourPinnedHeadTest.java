@@ -19,6 +19,7 @@
 package com.arcadedb.database;
 
 import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.engine.PageId;
 import com.arcadedb.exception.ConcurrentModificationException;
 import org.junit.jupiter.api.Test;
 
@@ -44,13 +45,19 @@ class Issue9070RepeatableReadNeighbourPinnedHeadTest extends BucketPageLayoutTes
   /** The reported case: the other transaction rewrites both the head chunk and the continuation chunks. */
   @Test
   void headPinnedByNeighbourReadIsNeverTorn() {
-    assertNeighbourPinnedHeadReadsConsistently(NEW_SIZE, 'y');
+    assertNeighbourPinnedHeadReadIsRefused(OLD_SIZE, NEW_SIZE, 'y');
   }
 
   /** Only the head chunk changes (same length, same filler): the continuation chunks are byte-identical. */
   @Test
   void headOnlyChangePinnedByNeighbourReadIsNeverTorn() {
-    assertNeighbourPinnedHeadReadsConsistently(OLD_SIZE, 'x');
+    assertNeighbourPinnedHeadReadIsRefused(OLD_SIZE, OLD_SIZE, 'x');
+  }
+
+  /** The same with a chain of several continuation chunks, on several pages. */
+  @Test
+  void longChainPinnedByNeighbourReadIsNeverTorn() {
+    assertNeighbourPinnedHeadReadIsRefused(250_000, 250_001, 'y');
   }
 
   /**
@@ -80,9 +87,10 @@ class Issue9070RepeatableReadNeighbourPinnedHeadTest extends BucketPageLayoutTes
       // pins page 1, with the new continuation chunk, after the commit
       assertThat(database.lookupByRID(onTailPage[0], true).asDocument().getString("s")).isEqualTo("tail page");
 
-      final String first = readConsistentOrRefusal(rids[1]);
-      assertThat(first).isIn("v=0 s=" + OLD_SIZE + "x", "v=1 s=" + OLD_SIZE + "y", "CME");
-      assertThat(readConsistentOrRefusal(rids[1])).as("a second read must answer as the first").isEqualTo(first);
+      // the old head cannot be completed (its tail chunk is gone) and the transaction holds no newer head: refused
+      assertThat(readConsistentOrRefusal(rids[1])).isEqualTo("CME");
+      assertThat(isPinned(bucket, 1)).as("a pin taken by an earlier read is not released by the failed one").isTrue();
+      assertThat(readConsistentOrRefusal(rids[1])).as("a second read must answer as the first").isEqualTo("CME");
     } finally {
       database.rollback();
     }
@@ -154,8 +162,15 @@ class Issue9070RepeatableReadNeighbourPinnedHeadTest extends BucketPageLayoutTes
     assertThat(writerFailure.get()).as("the writer thread must not have failed").isNull();
   }
 
-  private void assertNeighbourPinnedHeadReadsConsistently(final int newSize, final char newFiller) {
-    final RID[] rids = createSmallAndLarge();
+  /**
+   * The head page is pinned by the read of the neighbour, the continuation pages are not pinned at all. Once the large
+   * record is rewritten its old version cannot be completed (the old tail chunks are gone) and the transaction holds no
+   * newer head, so every read in the transaction is refused, and the failed reads leave no pin behind.
+   */
+  private void assertNeighbourPinnedHeadReadIsRefused(final int oldSize, final int newSize, final char newFiller) {
+    final RID[] rids = createSmallAndLarge(oldSize);
+    final LocalBucket bucket = bucketOf("Doc");
+    final int pages = bucket.getTotalPages();
 
     database.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
     try {
@@ -163,9 +178,10 @@ class Issue9070RepeatableReadNeighbourPinnedHeadTest extends BucketPageLayoutTes
 
       rewriteLarge(rids[1], newSize, newFiller);
 
-      final String first = readConsistentOrRefusal(rids[1]);
-      assertThat(first).isIn("v=0 s=" + OLD_SIZE + "x", "v=1 s=" + newSize + newFiller, "CME");
-      assertThat(readConsistentOrRefusal(rids[1])).as("a second read must answer as the first").isEqualTo(first);
+      assertThat(readConsistentOrRefusal(rids[1])).isEqualTo("CME");
+      for (int page = 1; page < pages; page++)
+        assertThat(isPinned(bucket, page)).as("page " + page + " pinned by the failed read only").isFalse();
+      assertThat(readConsistentOrRefusal(rids[1])).as("a second read must answer as the first").isEqualTo("CME");
       assertThat(database.lookupByRID(rids[0], true).asDocument().getInteger("v")).isEqualTo(0);
     } finally {
       database.rollback();
@@ -180,8 +196,16 @@ class Issue9070RepeatableReadNeighbourPinnedHeadTest extends BucketPageLayoutTes
     }
   }
 
-  /** A small record and a large one whose head chunk shares page 0 with it, its continuation chunks elsewhere. */
+  private boolean isPinned(final LocalBucket bucket, final int pageNumber) {
+    return ((DatabaseInternal) database).getTransaction().getPinnedPage(new PageId(database, bucket.getFileId(), pageNumber)) != null;
+  }
+
   private RID[] createSmallAndLarge() {
+    return createSmallAndLarge(OLD_SIZE);
+  }
+
+  /** A small record and a large one whose head chunk shares page 0 with it, its continuation chunks elsewhere. */
+  private RID[] createSmallAndLarge(final int size) {
     database.transaction(() -> database.getSchema().createDocumentType("Doc", 1));
     final RID[] rids = new RID[2];
     database.transaction(() -> {
@@ -189,7 +213,7 @@ class Issue9070RepeatableReadNeighbourPinnedHeadTest extends BucketPageLayoutTes
       rids[1] = database.newDocument("Doc").set("v", 0).set("s", "x").save().getIdentity();
     });
     // grown in place, so it keeps its slot on page 0 and spills into a chunk chain on the pages that follow
-    database.transaction(() -> rids[1].asDocument(true).modify().set("s", "x".repeat(OLD_SIZE)).save());
+    database.transaction(() -> rids[1].asDocument(true).modify().set("s", "x".repeat(size)).save());
     assertThat(rids[1].getPosition()).as("both records on page 0").isEqualTo(rids[0].getPosition() + 1);
     assertThat((Long) bucketStats("Doc").get("totalMultiPageRecords")).isEqualTo(1L);
     return rids;
