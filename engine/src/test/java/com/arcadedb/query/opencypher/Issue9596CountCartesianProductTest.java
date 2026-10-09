@@ -91,6 +91,12 @@ class Issue9596CountCartesianProductTest extends TestHelper {
     assertProductMatchesPipeline("MATCH (a:Person), (b:Person), (t:Tag) WHERE a.id = b.id + 1");
     // a star next to a lone node: the star count used to skip the lone node's pattern and leave its count out
     assertProductMatchesPipeline("MATCH (a:Person)-[:KNOWS]->(b), (a)-[:HAS_INTEREST]->(t), (x:Tag)");
+    // an inline WHERE on a relationship that reads the other part joins the two
+    final String relationshipWhere = "MATCH (a:Person), (c:Person)-[r:HAS_INTEREST WHERE c.id < a.id]->(t:Tag)";
+    assertThat(plan(relationshipWhere + " RETURN count(*) AS n")).doesNotContain(PRODUCT);
+    assertThat(count(relationshipWhere + " RETURN count(*) AS n"))
+        .isEqualTo(count(relationshipWhere + " RETURN sum(1) AS n"));
+    assertProductMatchesPipeline("MATCH (a:Person), (c:Person)-[r:HAS_INTEREST WHERE c.id < 20]->(t:Tag)");
     // a conjunct of a later clause that reads an earlier part only
     assertThat(count("MATCH (a:Person) MATCH (t:Tag) WHERE a.id > 30 RETURN count(*) AS n"))
         .isEqualTo(count("MATCH (a:Person) MATCH (t:Tag) WHERE a.id > 30 RETURN sum(1) AS n"));
