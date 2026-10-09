@@ -166,6 +166,28 @@ class GavQueryRestoreAwaitTest {
   }
 
   @Test
+  void aZeroBudgetStillSelectsALaterViewThatIsReady() {
+    database.getConfiguration().setValue(GlobalConfiguration.GAV_QUERY_RESTORE_AWAIT_TIMEOUT, 0L);
+    // built directly after the reopen: ready, while the persisted one is still a deferred restore
+    final GraphAnalyticalView ready = GraphAnalyticalView.builder(database)
+        .withName("ready-view")
+        .withVertexTypes("Node")
+        .withEdgeTypes("EDGE")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.OFF)
+        .build();
+
+    final GraphTraversalProvider provider;
+    GraphAnalyticalView.acquireAllBuildPermitsForTest();
+    try {
+      provider = GraphTraversalProviderRegistry.findProvider(database, "EDGE");
+    } finally {
+      GraphAnalyticalView.releaseAllBuildPermitsForTest();
+    }
+
+    assertThat(provider).as("the restoring view is skipped, the ready one answers").isSameAs(ready);
+  }
+
+  @Test
   void aViewThatDoesNotCoverTheRequestIsNotWaitedFor() {
     database.getConfiguration().setValue(GlobalConfiguration.GAV_QUERY_RESTORE_AWAIT_TIMEOUT, 600_000L);
 
