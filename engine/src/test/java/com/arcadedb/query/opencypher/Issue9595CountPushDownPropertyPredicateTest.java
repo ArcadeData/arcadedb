@@ -80,6 +80,9 @@ class Issue9595CountPushDownPropertyPredicateTest extends TestHelper {
     assertPushedDownAndExact("MATCH (p:Message)<-[:REPLY_OF]-(c:Message) WHERE p.kind = 'Post' AND c.kind = 'Comment'");
     assertPushedDownAndExact("MATCH (p:Message)<-[:REPLY_OF]-(c:Message) WHERE c.kind = 'Comment' AND p.cid > 20");
     assertPushedDownAndExact("MATCH (p:Message)<-[:REPLY_OF]-(c:Message) WHERE c.kind IS NULL");
+    // a missing property makes <> null, which filters the row out like = does
+    assertPushedDownAndExact("MATCH (p:Message)<-[:REPLY_OF]-(c:Message) WHERE c.kind <> 'Post'");
+    assertPushedDownAndExact("MATCH (p:Message)<-[:REPLY_OF]-(c:Message) WHERE NOT (c.kind = 'Post') AND p.kind IS NOT NULL");
     assertPushedDownAndExact("MATCH (p:Message)<-[:REPLY_OF]-(c:Message) WHERE p.kind STARTS WITH 'Po' OR p.cid < 10");
     assertPushedDownAndExact(
         "MATCH (:TagClass)<-[:HAS_TYPE]-(:Tag)<-[:HAS_TAG]-(c:Message)-[:REPLY_OF]->(p:Message)<-[:CONTAINER_OF]-(:Forum) "
@@ -200,6 +203,23 @@ class Issue9595CountPushDownPropertyPredicateTest extends TestHelper {
       assertThat(((Number) counted.next().getProperty("n")).longValue())
           .isEqualTo(((Number) summed.next().getProperty("n")).longValue());
     }
+  }
+
+  @Test
+  void aSelfLoopOnAnUndirectedHopIsCountedOnceUnderAPredicate() throws InterruptedException {
+    database.transaction(() -> {
+      final MutableVertex loop = database.newVertex("Message").set("cid", 1000).set("kind", "Comment").save();
+      loop.newEdge("REPLY_OF", loop);
+    });
+    final String[] matches = { "MATCH (a:Message {kind: 'Comment'})-[:REPLY_OF]-(b:Message)",
+        "MATCH (a:Message)-[:REPLY_OF]-(b:Message) WHERE a.kind = 'Comment' AND b.cid >= 1000",
+        "MATCH (:Tag)<-[:HAS_TAG]-(a:Message)-[:REPLY_OF]-(b:Message {kind: 'Comment'})" };
+    for (final String match : matches)
+      assertPushedDownAndExact(match);
+    withView(() -> {
+      for (final String match : matches)
+        assertPushedDownAndExact(match);
+    });
   }
 
   @Test

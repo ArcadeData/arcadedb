@@ -99,6 +99,9 @@ final class DisconnectedCountParts {
     if (unitOf.size() < 2)
       return null;
 
+    // Union-find over the units: two units with the same root are one part. Units are only ever joined, never split,
+    // so every check below reads the roots after all the joins that could affect it - the parts are computed once
+    // the WHERE conjuncts have been read, and the uniqueness check after that
     final int[] parent = new int[unitOf.size()];
     for (int i = 0; i < parent.length; i++)
       parent[i] = i;
