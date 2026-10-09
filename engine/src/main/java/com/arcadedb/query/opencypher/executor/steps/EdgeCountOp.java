@@ -84,6 +84,7 @@ public final class EdgeCountOp implements CountOp {
       if (view != null)
         return view.edgeCount();
     } else {
+      // what the view holds: like every query it serves, it misses a light edge created after its build (issue #9572)
       final long total = provider.countAllEdges(edgeTypes);
       if (total >= 0)
         return total;

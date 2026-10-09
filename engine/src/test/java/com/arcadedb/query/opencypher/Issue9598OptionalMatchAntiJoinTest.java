@@ -161,6 +161,10 @@ class Issue9598OptionalMatchAntiJoinTest extends TestHelper {
             + "WITH c, t, h WHERE h IS NULL RETURN count(*) AS n",
         "MATCH (c:Comment)-[:HAS_TAG]->(t:Tag) OPTIONAL MATCH (c)-[:REPLY_OF*]->(:Message)-[h:HAS_TAG]->(t) "
             + "WITH c, t, h WHERE h IS NULL RETURN count(*) AS n",
+        // an undirected optional pattern, and a WITH that renames a shared variable it carries on
+        "MATCH (c:Comment), (p:Post) OPTIONAL MATCH (c)-[h:REPLY_OF]-(p) WITH c, p, h WHERE h IS NULL RETURN count(*) AS n",
+        "MATCH (c:Comment)-[:HAS_TAG]->(t:Tag) OPTIONAL MATCH (c)-[:REPLY_OF]->(:Message)-[h:HAS_TAG]->(t) "
+            + "WITH c AS comment, t.name AS tag, h WHERE h IS NULL RETURN count(*) AS n",
         // one relationship type twice: the predicate binds two different relationships, as the OPTIONAL MATCH does
         "MATCH (c:Comment), (p:Post) OPTIONAL MATCH (c)-[:REPLY_OF]->(:Message)-[h:REPLY_OF]->(p) "
             + "WITH c, p, h WHERE h IS NULL RETURN count(*) AS n" }) {
