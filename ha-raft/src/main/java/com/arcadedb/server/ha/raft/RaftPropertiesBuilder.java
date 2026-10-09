@@ -193,6 +193,8 @@ class RaftPropertiesBuilder {
    * slower failover. Lowering both is how a shorter timeout is asked for.
    */
   private static final Set<Long> WARNED_ELECTION_WINDOWS = ConcurrentHashMap.newKeySet();
+  /** Log cache warnings already logged in this JVM: {@link #build} runs again on every in-place restart. */
+  private static final Set<String> WARNED_LOG_CACHE_SHAPES = ConcurrentHashMap.newKeySet();
 
   static int effectiveElectionTimeoutMaxMs(final int minMs, final int maxMs) {
     final int effective = electionTimeoutMaxFor(minMs, maxMs);
@@ -323,7 +325,12 @@ class RaftPropertiesBuilder {
 
     // Log segment size
     final String logSegmentSize = configuration.getValueAsString(GlobalConfiguration.HA_LOG_SEGMENT_SIZE);
-    final SizeInBytes segmentSize = SizeInBytes.valueOf(logSegmentSize);
+    final SizeInBytes segmentSize;
+    try {
+      segmentSize = SizeInBytes.valueOf(logSegmentSize.trim());
+    } catch (final IllegalArgumentException e) {
+      throw new ConfigurationException("arcadedb.ha.logSegmentSize (" + logSegmentSize + ") is not a size such as '64MB'", e);
+    }
     RaftServerConfigKeys.Log.setSegmentSizeMax(properties, segmentSize);
 
     // Issue #9549: bound the decoded log entries Ratis keeps on the heap to a share of it. See cachedClosedSegmentsMax
@@ -332,12 +339,18 @@ class RaftPropertiesBuilder {
     final int cachedClosedSegments = cachedClosedSegmentsMax(logCacheBytes, segmentSize.getSize());
     RaftServerConfigKeys.Log.setSegmentCacheSizeMax(properties, SizeInBytes.valueOf(logCacheBytes));
     RaftServerConfigKeys.Log.setSegmentCacheNumMax(properties, cachedClosedSegments);
-    if ((cachedClosedSegments + 1L) * segmentSize.getSize() > logCacheBytes)
+    final long cachedBytesFloor = (cachedClosedSegments + 1L) * segmentSize.getSize();
+    if (cachedBytesFloor > logCacheBytes && WARNED_LOG_CACHE_SHAPES.add(logCacheBytes + ":" + segmentSize.getSize()))
       LogManager.instance().log(RaftPropertiesBuilder.class, Level.WARNING,
-          "Raft log cache of %d bytes holds less than two log segments of %d bytes (arcadedb.ha.logSegmentSize): a "
-              + "restarted server still loads the open segment and one closed segment into the heap, %d bytes in all. "
-              + "Lower arcadedb.ha.logSegmentSize to at most half of arcadedb.ha.logCacheSize to keep it within budget",
-          logCacheBytes, segmentSize.getSize(), (cachedClosedSegments + 1L) * segmentSize.getSize());
+          "Raft log cache of %d bytes holds less than two log segments of %d bytes (arcadedb.ha.logSegmentSize): the "
+              + "cache still keeps the open segment and one closed segment on the heap, %d bytes in all. Lower "
+              + "arcadedb.ha.logSegmentSize to at most half of arcadedb.ha.logCacheSize to keep it within budget",
+          logCacheBytes, segmentSize.getSize(), cachedBytesFloor);
+    else if (logCacheBytes > maxHeapBytes / 2 && WARNED_LOG_CACHE_SHAPES.add("heap:" + logCacheBytes + ":" + maxHeapBytes))
+      LogManager.instance().log(RaftPropertiesBuilder.class, Level.WARNING,
+          "arcadedb.ha.logCacheSize=%d bytes is more than half of the maximum heap (%d bytes): the Raft log cache "
+              + "competes with the page cache and the catch-up itself for the heap (issue #9549)",
+          logCacheBytes, maxHeapBytes);
 
     // Write buffer: must be >= appendBufferSize + 8 bytes (Ratis internal framing)
     final SizeInBytes writeBuffer = SizeInBytes.valueOf(

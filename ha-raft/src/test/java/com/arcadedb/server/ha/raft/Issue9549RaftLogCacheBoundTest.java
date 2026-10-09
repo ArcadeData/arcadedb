@@ -59,6 +59,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * that came back already decoded in the heap: reading the first entry of each, newest first, a cached segment answers
  * from the cache and an uncached one is a cache miss. Reading newest first keeps the eviction thread out of the count,
  * since only a miss wakes it and every cached segment has been read before the first miss.
+ * <p>
+ * Written against Apache Ratis 3.3.1: the cache-miss metric, the {@code log_<start>-<end>} file name of a closed segment
+ * and the load-time caching rule are Ratis internals. If an upgrade turns the control case red, re-check
+ * {@code SegmentedRaftLog.loadLogSegments} before touching {@link RaftPropertiesBuilder#cachedClosedSegmentsMax}.
  */
 class Issue9549RaftLogCacheBoundTest {
   private static final Pattern CLOSED_SEGMENT = Pattern.compile("log_(\\d+)-(\\d+)");
@@ -124,6 +128,7 @@ class Issue9549RaftLogCacheBoundTest {
             .build();
         log.appendEntry(entry).get(30, TimeUnit.SECONDS);
       }
+      awaitCacheEvictionIdle(log.getName()); // every segment roll wakes it too
     }
   }
 
@@ -138,8 +143,39 @@ class Issue9549RaftLogCacheBoundTest {
       final long missesBefore = misses.getCount();
       for (int i = closed.size() - 1; i >= 0; i--)
         assertThat(log.get(closed.get(i)[0])).isNotNull();
-      return (int) (closed.size() - (misses.getCount() - missesBefore));
+      final int cached = (int) (closed.size() - (misses.getCount() - missesBefore));
+      awaitCacheEvictionIdle(log.getName());
+      return cached;
     }
+  }
+
+  /**
+   * Every cache miss and every segment roll wakes the log's cache-eviction thread, and Ratis 3.3.1 {@code SegmentedRaftLog.close()} holds the
+   * log's write lock while it joins that thread, which may itself be waiting for the write lock to evict: closing with
+   * an eviction in flight hangs forever. Wait until the thread is back to waiting for a signal, and stays there.
+   */
+  private static void awaitCacheEvictionIdle(final String logName) throws InterruptedException {
+    final String prefix = logName.substring(0, logName.lastIndexOf('-')) + "-cacheEviction";
+    int idleObservations = 0;
+    for (int attempt = 0; attempt < 600 && idleObservations < 5; attempt++) {
+      boolean idle = true;
+      for (final var thread : Thread.getAllStackTraces().entrySet())
+        if (thread.getKey().getName().startsWith(prefix) && !waitsForSignal(thread.getValue()))
+          idle = false;
+      idleObservations = idle ? idleObservations + 1 : 0;
+      Thread.sleep(50);
+    }
+    assertThat(idleObservations).as("cache eviction thread of %s never went idle", logName).isEqualTo(5);
+  }
+
+  private static boolean waitsForSignal(final StackTraceElement[] stack) {
+    for (final StackTraceElement frame : stack) {
+      if (frame.getMethodName().equals("checkAndEvictCache"))
+        return false;
+      if (frame.getClassName().endsWith("AwaitForSignal"))
+        return true;
+    }
+    return false;
   }
 
   private RaftStorageImpl newStorage(final RaftStorage.StartupOption option) throws Exception {

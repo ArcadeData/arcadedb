@@ -254,4 +254,13 @@ class RaftPropertiesBuilderTest {
         .isInstanceOf(ConfigurationException.class)
         .hasMessageContaining("arcadedb.ha.logCacheSize");
   }
+
+  @Test
+  void malformedLogSegmentSizeIsRejectedAsAConfigurationError() {
+    final ContextConfiguration config = new ContextConfiguration();
+    config.setValue(GlobalConfiguration.HA_LOG_SEGMENT_SIZE, "big");
+    assertThatThrownBy(() -> RaftPropertiesBuilder.build(config, 1024L * 1024 * 1024))
+        .isInstanceOf(ConfigurationException.class)
+        .hasMessageContaining("arcadedb.ha.logSegmentSize");
+  }
 }
