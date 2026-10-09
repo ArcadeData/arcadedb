@@ -4164,6 +4164,37 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
+   * True only when this server's own division holds a Raft configuration that lists peers and this server is not among
+   * them: it was removed from the group ({@code leaveCluster()}, {@code DELETE /api/v1/cluster/peer/{id}}) and is still
+   * running (issue #9510).
+   * <p>
+   * Ratis does not close the division of a removed peer. Its state machine stays open and simply stops receiving
+   * appends, while its Raft client still reaches the leader, which accepts a request from a non-member: an entry this
+   * server submits commits cluster-wide and is never applied here. Writers ask this before submitting anything.
+   * <p>
+   * The <em>current</em> configuration is read, as {@link #isReadyForTraffic} reads it: during a joint-consensus change
+   * that is the new configuration, so a leaving node answers true from the moment it has seen its own removal appended.
+   * Every unknown answers false - no Raft server, a requested shutdown, a configuration that cannot be read during an
+   * in-place restart (issue #5271), an empty one - so this never refuses on missing information; the callers' other
+   * guards (a closed state machine, {@code requireRaftServer()}) cover those states. Read on every commit, so it does
+   * not log: a configuration that cannot be read is already reported by the membership readers.
+   */
+  public boolean isRemovedFromConfiguration() {
+    final RaftServer server = raftServer;
+    if (server == null || shutdownRequested)
+      return false;
+    try {
+      final var conf = server.getDivision(raftGroup.getGroupId()).getRaftConf();
+      if (conf == null)
+        return false;
+      final Collection<RaftPeer> peers = conf.getCurrentPeers();
+      return !peers.isEmpty() && !isPeerInConfig(peers, localPeerId);
+    } catch (final Exception e) {
+      return false;
+    }
+  }
+
+  /**
    * Records the HTTP address another node declared for a peer it admitted, so this node's probes of that peer dial the
    * listener the operator named rather than a derived guess (issue #8689).
    * <p>
