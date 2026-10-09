@@ -36,6 +36,7 @@ import com.arcadedb.engine.timeseries.TimeSeriesSealedInstallLock;
 import com.arcadedb.engine.timeseries.TimeSeriesSealedStore;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseIsClosedException;
+import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.WALVersionGapException;
@@ -216,6 +217,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
   private final    SimpleStateMachineStorage storage          = new SimpleStateMachineStorage();
   private final    AtomicLong                lastAppliedIndex = new AtomicLong(-1);
   private final    AtomicLong                electionCount    = new AtomicLong(0);
+  // The lowest index of a committed entry left for the replay on restart because its database was closed under the
+  // apply thread while the node is shutting down (issue #9550); Long.MAX_VALUE while there is none. Later entries of
+  // other databases still advance lastAppliedIndex past it, so takeSnapshot() clamps its checkpoint below it: the replay
+  // position comes only from the snapshot marker (see ha-raft/CLAUDE.md). Never raised back: the node is going away, and
+  // neither a restart nor RaftHAServer.restartRatis() reuses this instance (both go through createStateMachine()).
+  private final    AtomicLong                replayFloor      = new AtomicLong(Long.MAX_VALUE);
+  // Set once isNodeShuttingDown() has seen the JVM running its shutdown hooks (issue #9550); never cleared.
+  private volatile boolean                   jvmShutdownSeen;
   // The highest index a leader-driven Raft install covered (issues #8577, #8651): a replayed entry at or below it is
   // stale whatever it names, so it is the one boundary every apply path can consult, including the ones that name no
   // database (which have no install gate) and Ratis's own metadata entries (which never reach applyTransaction).
@@ -1920,7 +1929,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // gap, or applyWithRetry's quarantine path) has already logged it loudly at the source. Don't
       // also dump a full stack trace here per entry (the field-observed flood). Genuine replication
       // errors on a database that is NOT diverged still log loudly with the cause.
-      if (targetDatabase == null || !isDatabaseDiverged(targetDatabase))
+      // An entry left for the replay on restart (issue #9550) was already logged, once, at WARNING where it was decided.
+      if (!(e instanceof EntryLeftForReplayException) && (targetDatabase == null || !isDatabaseDiverged(targetDatabase)))
         LogManager.instance().log(this, Level.SEVERE, "Replication error at index %d: %s", e, index, e.getMessage());
       return CompletableFuture.failedFuture(e);
     } catch (final IllegalArgumentException e) {
@@ -2093,6 +2103,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
         // recoverable resync condition - leaving them uncaught lets them propagate unchanged to
         // applyTransaction's fatal halt path so the node stops loudly rather than masking a corrupt
         // runtime.
+        //
+        // A database closed under the apply thread while the node is shutting down (issue #9550) is not a divergence:
+        // the entry is left for the replay on restart instead of quarantining the database, and charges nothing to the
+        // swallow budget below. Checked first, and only here on the failure path, so a healthy apply pays nothing for it.
+        if (isClosedUnderShutdown(databaseName, t))
+          throw leaveForReplay(index, databaseName, t);
         try {
           handleUnexpectedApplyError(index, databaseName, t);
         } catch (final RaftLogEntryDecodeException escalated) {
@@ -2238,10 +2254,23 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * <b>Refused while any database is quarantined (issue #7735):</b> a quarantine skips a committed entry on
    * purpose and lets later entries advance the applied index past it, so checkpointing that index would let
    * Ratis purge the one entry a restart still has to replay.
+   * <p>
+   * <b>Clamped below an entry left for replay (issue #9550):</b> an entry whose database was closed under the apply
+   * thread while the node is shutting down is not applied and not quarantined either; the checkpoint stops at the index
+   * right before it, for the same reason.
    */
   @Override
   public long takeSnapshot() {
-    final long currentIndex = lastAppliedIndex.get();
+    // An entry left for the replay on restart (issue #9550) did not advance lastAppliedIndex, but a later entry of
+    // another database did. The checkpoint stops right before it, so the restart replays it; every entry below the floor
+    // was applied, quarantined (refused below) or left for replay itself (a lower floor). The shutdown snapshot Ratis
+    // takes in StateMachineUpdater.stop() is the one this mostly applies to.
+    // The applied index is read BEFORE the floor: the apply thread raises the floor before any later entry advances the
+    // index, so an index that already covers a later entry is always read together with the floor below it. Read the
+    // other way round, a checkpoint racing the apply thread could pair the old floor with the advanced index.
+    final long appliedIndex = lastAppliedIndex.get();
+    final long floor = replayFloor.get();
+    final long currentIndex = floor == Long.MAX_VALUE ? appliedIndex : Math.min(appliedIndex, floor - 1);
     if (currentIndex < 0)
       return RaftLog.INVALID_LOG_INDEX;
 
@@ -3512,7 +3541,129 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   // @VisibleForTesting
   DatabaseInternal databaseFor(final String databaseName) {
-    return (DatabaseInternal) server.getDatabase(databaseName);
+    try {
+      // An open database is served as before: the server's lock-free fast path, and no load.
+      return (DatabaseInternal) server.getDatabase(databaseName, false, false);
+    } catch (final DatabaseNotAvailableException notOpen) {
+      // Not open here (closed, or not loaded yet). Never reopened while the node is shutting down (issue #9550): the
+      // close may still be unwinding, in which case the open fails with "Found active instance ... already in use", and
+      // a database opened now would be left open by a server that already closed its own.
+      if (isNodeShuttingDown())
+        throw new DatabaseIsClosedException(
+            "Database '" + databaseName + "' is closed and this node is shutting down, so it is not reopened to apply a "
+                + "Raft entry; the entry is left for the replay on restart");
+      return (DatabaseInternal) server.getDatabase(databaseName);
+    }
+  }
+
+  /**
+   * Whether this node is shutting down (issue #9550): the Raft HA service was asked to stop, the server is stopping, or
+   * the JVM is running its shutdown hooks. The last one is what covers the server's own hook giving up on the lifecycle
+   * lock and returning without stopping Raft, while the engine's hook goes on to close every database under the live
+   * apply thread. Each signal is one-way: none of them is withdrawn once raised.
+   */
+  // @VisibleForTesting
+  boolean isNodeShuttingDown() {
+    final RaftHAServer raftHA = this.raftHAServer;
+    if (raftHA != null && raftHA.isShutdownRequested())
+      return true;
+    final ArcadeDBServer srv = this.server;
+    if (srv != null && srv.getStatus() == ArcadeDBServer.STATUS.SHUTTING_DOWN)
+      return true;
+    // Cached once seen: a JVM shutdown is never withdrawn, and a burst of failing entries would otherwise probe per entry
+    if (jvmShutdownSeen)
+      return true;
+    if (!isJvmShuttingDown())
+      return false;
+    jvmShutdownSeen = true;
+    return true;
+  }
+
+  /**
+   * Whether the JVM has started running its shutdown hooks. The runtime refuses a new hook from then on, which is the
+   * only public signal it gives, so this probe registers a throwaway hook and takes it back; deliberately indirect. Costs a thread object and two synchronized calls, so it is read only on the failure
+   * paths of an apply, never per entry.
+   */
+  static boolean isJvmShuttingDown() {
+    final Thread probe = new Thread(() -> {
+    }, "arcadedb-shutdown-probe");
+    try {
+      Runtime.getRuntime().addShutdownHook(probe);
+    } catch (final IllegalStateException shuttingDown) {
+      return true;
+    } catch (final RuntimeException cannotTell) {
+      // A runtime that refuses hooks for another reason (a security policy) says nothing about a shutdown: answer "no",
+      // which keeps the disposition this node had before issue #9550
+      return false;
+    }
+    try {
+      Runtime.getRuntime().removeShutdownHook(probe);
+    } catch (final IllegalStateException shuttingDown) {
+      // The shutdown started between the two calls; the probe is an empty runnable, so running it costs nothing.
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Whether an apply failure on {@code databaseName} is the database having been closed under the apply thread while
+   * the node is shutting down (issue #9550). Then nothing diverged and the entry is still in the Raft log, so it is left
+   * for the replay on restart rather than quarantining the database. A failure on a database that is still open, or on
+   * a node that keeps running, is not this: it keeps the quarantine.
+   */
+  private boolean isClosedUnderShutdown(final String databaseName, final Throwable failure) {
+    if (databaseName == null || databaseName.isEmpty() || !isNodeShuttingDown())
+      return false;
+    // Deliberately broad on the second arm: once the database is closed under a shutting-down node, whatever the apply
+    // raised is taken as caused by the close, since the entry's pages cannot be written either way. A genuine fault that
+    // happens to coincide with the close is therefore deferred, not quarantined, and meets the same fault again when the
+    // entry is replayed on restart, where the quarantine still applies.
+    return causedByClosedDatabase(failure, 0) || !isDatabaseOpenHere(databaseName);
+  }
+
+  /** Whether {@code t}, its causes or its suppressed exceptions include a {@link DatabaseIsClosedException}. */
+  private static boolean causedByClosedDatabase(final Throwable t, final int depth) {
+    if (t == null || depth > 16)
+      return false;
+    if (t instanceof DatabaseIsClosedException)
+      return true;
+    for (final Throwable suppressed : t.getSuppressed())
+      if (causedByClosedDatabase(suppressed, depth + 1))
+        return true;
+    return t.getCause() != t && causedByClosedDatabase(t.getCause(), depth + 1);
+  }
+
+  /** Whether {@code databaseName} is registered and open on this server. Never opens it. */
+  private boolean isDatabaseOpenHere(final String databaseName) {
+    final ArcadeDBServer srv = this.server;
+    if (srv == null)
+      return true;
+    try {
+      return srv.getDatabase(databaseName, false, false).isOpen();
+    } catch (final DatabaseNotAvailableException e) {
+      return false;
+    } catch (final RuntimeException e) {
+      // Cannot tell: answer "open", which keeps the quarantine, the disposition this node had before issue #9550.
+      return true;
+    }
+  }
+
+  /**
+   * Leaves the entry at {@code index} for the replay on restart (issue #9550): records the replay floor
+   * {@link #takeSnapshot()} clamps its checkpoint to, and returns the exception the apply fails with. The applied index
+   * does not move over the entry, since the apply fails.
+   */
+  private EntryLeftForReplayException leaveForReplay(final long index, final String databaseName, final Throwable failure) {
+    // WARNING once, for the first entry left: every entry still in flight for a closed database follows it, and the
+    // first one is the one that says why. The rest are FINE, so a burst at shutdown does not flood the log.
+    final boolean first = replayFloor.getAndAccumulate(index, Math::min) == Long.MAX_VALUE;
+    LogManager.instance().log(this, first ? Level.WARNING : Level.FINE,
+        "Raft entry at index %d for database '%s' was not applied: the database was closed while this node is shutting "
+            + "down. It is left in the Raft log for the replay on restart, and no snapshot checkpoint will cover it "
+            + "(issue #9550): %s", index, databaseName, failure.getMessage());
+    return new EntryLeftForReplayException(
+        "Raft entry at index " + index + " for database '" + databaseName + "' left for the replay on restart: the "
+            + "database was closed while this node is shutting down", failure);
   }
 
   /**
@@ -6894,8 +7045,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
       if (server.existsDatabase(databaseName)) {
         // Resolved inside the lock: getDatabase reopens a database that is registered-but-closed, so resolving
         // it outside would let another holder of this lock deregister it between the lookup and the close, and
-        // this thread would reopen the directory from disk only to close it again.
-        final DatabaseInternal embedded = ((DatabaseInternal) server.getDatabase(databaseName)).getEmbedded();
+        // this thread would reopen the directory from disk only to close it again. Through databaseFor, which does not
+        // reopen it while the node is shutting down (issue #9550): the drop is then left for the replay on restart.
+        final DatabaseInternal embedded = databaseFor(databaseName).getEmbedded();
         databaseDirectory = Path.of(embedded.getDatabasePath());
         embedded.closeForDrop();
         server.removeDatabase(databaseName);
