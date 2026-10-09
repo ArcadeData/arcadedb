@@ -6508,6 +6508,9 @@ public class CypherExecutionPlan {
    * nothing. A count push-down reads the statement only once {@link #isMatchReturnOnlyStatement()} and a count-only RETURN
    * have settled that nothing else reads it, so a variable written once is as good as anonymous; one written twice is the
    * same relationship at two positions, a join the operators do not express.
+   * <p>
+   * It reads the statement's MATCH clauses, not the clause a detector was handed: a clause joined from the statement's own
+   * parts holds the same relationships under the same names, and a name written in another clause is a join all the same.
    */
   private boolean isNamedOnce(final String name) {
     int occurrences = 0;
@@ -6998,7 +7001,7 @@ public class CypherExecutionPlan {
     CountOp best = null;
     long bestAnchors = 0;
     String bestDescription = null;
-    final PairJoinStatistics statistics = new PairJoinStatistics(database);
+    final PairJoinStatistics statistics = new PairJoinStatistics(db);
     for (final PathPattern chain : graph.pathOrientations()) {
       // the gate in tryOptimizeCountStar let a unidirectional type through only for outgoing hops, as written: read from
       // the other end they would walk the incoming side, which is not stored
