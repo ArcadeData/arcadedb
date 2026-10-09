@@ -2763,11 +2763,20 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    */
   // @VisibleForTesting
   static boolean isIndeterminatePublishFailure(final Throwable failure) {
-    // Bounded, so a cause chain that loops back on itself further down cannot spin forever
+    return causeChainContains(failure, ReplicationDispatchedTimeoutException.class,
+        MajorityCommittedAllFailedException.class);
+  }
+
+  /**
+   * Whether {@code failure} or one of its causes is an instance of one of {@code types}. Bounded, so a cause chain that
+   * loops back on itself further down cannot spin forever.
+   */
+  private static boolean causeChainContains(final Throwable failure, final Class<?>... types) {
     Throwable t = failure;
     for (int depth = 0; t != null && depth < MAX_CAUSE_DEPTH; t = t.getCause() == t ? null : t.getCause(), depth++)
-      if (t instanceof ReplicationDispatchedTimeoutException || t instanceof MajorityCommittedAllFailedException)
-        return true;
+      for (final Class<?> type : types)
+        if (type.isInstance(t))
+          return true;
     return false;
   }
 
@@ -2779,12 +2788,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    */
   // @VisibleForTesting
   static boolean isDeterministicPublishFailure(final Throwable failure) {
-    // Bounded, so a cause chain that loops back on itself further down cannot spin forever
-    Throwable t = failure;
-    for (int depth = 0; t != null && depth < MAX_CAUSE_DEPTH; t = t.getCause() == t ? null : t.getCause(), depth++)
-      if (t instanceof ReplicatedEntryTooLargeException)
-        return true;
-    return false;
+    return causeChainContains(failure, ReplicatedEntryTooLargeException.class);
   }
 
   /** Records an instalment's failure on its session, see {@link SchemaInstalmentState#refusal} (issues #9555, #9558). */
@@ -2812,6 +2816,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    */
   private Throwable unpublishedSchemaChange(final SchemaInstalmentState state, final Throwable sessionFailure,
       final boolean callbackReturned) {
+    // Ahead of the indeterminate test on purpose: an instalment with an unknown outcome earlier in the session does not
+    // make a REFUSED one any less refused, and the pages that one carried are committed here and nowhere else
     if (state.refusal != null)
       return state.refusal;
     if (sessionFailure == null || state.indeterminate || isIndeterminatePublishFailure(sessionFailure))
@@ -3148,6 +3154,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     try {
       broker.replicateSchemaInstalment(getName(), newFiles, walEntries, bucketDeltas);
     } catch (final RuntimeException e) {
+      // RuntimeException is all the broker raises - its submit path declares no checked exception - and an Error is no
+      // replication outcome to record: it unwinds the session, whose own failure the finally block then classifies.
       // The pages this instalment carried are already committed here (issue #9555): see SchemaInstalmentState.refusal.
       // Any failure but an indeterminate one, since issue #9558: an instalment too large to split is just as unpublished.
       recordInstalmentFailure(state, e);
@@ -3753,7 +3761,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // compaction that had nothing to publish: that one proves nothing about the payload that was too large to ship.
     final ArcadeStateMachine stateMachine = stateMachineOrNull();
     if (stateMachine != null)
-      stateMachine.compactionPublished(getName());
+      stateMachine.clearCompactionHoldOff(getName());
 
     // A compaction entry always carries the whole document - its size is what the sealed payload was budgeted
     // against, so there is nothing to gain from a delta here - but it still MOVES the followers, so the base a

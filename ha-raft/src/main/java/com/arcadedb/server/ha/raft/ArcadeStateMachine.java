@@ -6987,7 +6987,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     pageVersions.clear(databaseName);
     lastSchemaChangeIndex.remove(databaseName);
     // Nor a compaction hold-off (issue #9558): it described a payload of the database being dropped
-    compactionPublished(databaseName);
+    clearCompactionHoldOff(databaseName);
     // The copy the served index described is going away with it (issue #8579): a database recreated under the same
     // name must not inherit it.
     final InstallApplyGate installGate = installApplyGates.get(databaseName);
@@ -8836,7 +8836,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * a retryable refusal (issue #9555), an interrupt or an I/O error is quarantined all the same, but not held off.
    * <p>
    * The window doubles with every failure in a row, from {@link #COMPACTION_BACK_OFF_BASE_MS} up to
-   * {@link #COMPACTION_BACK_OFF_MAX_MS}, and is forgotten by {@link #compactionPublished} the first time a compaction of
+   * {@link #COMPACTION_BACK_OFF_MAX_MS}, and is forgotten by {@link #clearCompactionHoldOff} the first time a compaction of
    * the database publishes. Per node and in memory, the way {@code leaderHandOffsMovedWhileGapPersisted} is: it bounds,
    * not stops, a cluster where every node shares the cause - each of them fails at most once per window - and a restart,
    * which is how a raised {@code arcadedb.ha.appendBufferSize} takes effect, starts afresh.
@@ -8868,8 +8868,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
     return backOff != null && compactionBackOffClock.getAsLong() < backOff.untilMs();
   }
 
-  /** A compaction of {@code dbName} was published: the failures in a row are over. Allocation-free when there were none. */
-  void compactionPublished(final String dbName) {
+  /**
+   * Forgets the compaction hold-off of {@code dbName}: a compaction of it was published, so the failures in a row are
+   * over, or it was dropped, so a database recreated under the name starts clean. Allocation-free when there is none.
+   */
+  void clearCompactionHoldOff(final String dbName) {
     if (dbName != null && !compactionBackOffs.isEmpty())
       compactionBackOffs.remove(dbName);
   }
