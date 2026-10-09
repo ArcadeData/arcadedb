@@ -47,7 +47,7 @@ public class FunctionCallExpression implements Expression {
   private transient volatile StatelessFunction cachedFunction;
 
   /** Set once {@link #finishCoalesce} has checked the argument count, which is a property of the call site. */
-  private transient volatile boolean arityValidated;
+  private transient boolean arityValidated; // plain on purpose: the check is idempotent, so a racing second run is harmless
 
   public FunctionCallExpression(final String functionName, final List<Expression> arguments, final boolean distinct) {
     this.originalFunctionName = functionName;
