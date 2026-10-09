@@ -35,16 +35,17 @@ import com.arcadedb.query.opencypher.executor.operators.ValueHashJoin;
  * The plan is a tree of physical operators that will be converted to execution steps.
  */
 public class PhysicalPlan {
+  private static final GraphTraversalProvider[] NO_VIEWS = new GraphTraversalProvider[0];
+
   private final LogicalPlan logicalPlan;
   private final AnchorSelection anchor;
   private final PhysicalOperator rootOperator;
   private final double totalEstimatedCost;
   private final long totalEstimatedCardinality;
   private final boolean indexOrdered;
-  // The views the planner passed over because they were not ready, see passesOverAReadyView()
+  // The views the planner passed over because they were not ready, see passesOverAReadyView(). Set once, before the plan is put
+  // in the plan cache, whose synchronized map publishes it to every thread that gets the plan from there
   private GraphTraversalProvider[] viewsPassedOver = NO_VIEWS;
-
-  private static final GraphTraversalProvider[] NO_VIEWS = new GraphTraversalProvider[0];
 
   public PhysicalPlan(final LogicalPlan logicalPlan, final AnchorSelection anchor,
                      final double totalEstimatedCost, final long totalEstimatedCardinality) {
@@ -160,6 +161,10 @@ public class PhysicalPlan {
    * and not to be used stale) can serve it now. The mirror of {@link #readsAnUnavailableView()}: a plan that walks the records
    * never picks the view up by itself, so a cached plan would keep running at the speed of no view at all while the view
    * reports READY (issue #9587); the caller plans again instead.
+   * <p>
+   * Asks {@link GraphTraversalProvider#isReady()} on purpose, not a side-effect-free status read: the planner's own lookup asks it
+   * too, and for a view whose deferred restore is pending that call is what dispatches it. A view dropped since is no concern:
+   * dropping one is a schema change, which empties the plan cache.
    */
   public boolean passesOverAReadyView() {
     for (final GraphTraversalProvider view : viewsPassedOver)
