@@ -191,6 +191,8 @@ public class HashIndexBucket extends PaginatedComponent {
   // the free list, whose pages can hold RIDs the key no longer has
   static final int RID_FREE_PAGE_MARKER   = 0x4001;
   static final int RID_PAGE_MARKER        = 0;                       // short (2)
+  // The two 16-bit fields hold at most 65535: MAX_PAGE_SIZE (64 KB, enforced at creation) bounds DATA_END below that, and
+  // COUNT to about 32K, since a compressed RID takes at least 2 bytes
   static final int RID_PAGE_COUNT         = 2;                       // short (2): RIDs on this page
   static final int RID_PAGE_NEXT          = 4;                       // int (4): next page of the list, or of the free list
   static final int RID_PAGE_DATA_END      = 8;                       // short (2): offset past the last RID
@@ -2297,20 +2299,25 @@ public class HashIndexBucket extends PaginatedComponent {
     final int maxChainPages = getTotalPages();
     int chainSteps = 0;
     int last = NO_OVERFLOW_PAGE;
-    MutablePage lastPage = null;
+    // read-only first: a damaged list fails before any page is changed
     for (int current = headPage; current != NO_OVERFLOW_PAGE; ) {
       if (++chainSteps > maxChainPages)
         throw corruptedRidList(current, "the list is cyclic");
-      final MutablePage page = ridListPageToModify(current, hash);
+      final BasePage page = ridListPage(current, hash);
       ridCount += page.readShort(RID_PAGE_COUNT) & 0xFFFF;
-      page.writeShort(RID_PAGE_MARKER, (short) RID_FREE_PAGE_MARKER);
       last = current;
-      lastPage = page;
       current = page.readInt(RID_PAGE_NEXT);
     }
     if (last != tailPage)
       // freeing from the head to a wrong last page would put on the free list pages still in use, or lose some
       throw corruptedRidList(tailPage, "the entry names it as the last page of the list, which ends at page " + last);
+
+    MutablePage lastPage = null;
+    for (int current = headPage; current != NO_OVERFLOW_PAGE; ) {
+      lastPage = database.getTransaction().getPageToModify(new PageId(database, fileId, current), pageSize, false);
+      lastPage.writeShort(RID_PAGE_MARKER, (short) RID_FREE_PAGE_MARKER);
+      current = lastPage.readInt(RID_PAGE_NEXT);
+    }
     // the pages of the list are already chained: the whole list goes on top of the free list at once
     pushOnFreeList(headPage, lastPage);
     return ridCount;
