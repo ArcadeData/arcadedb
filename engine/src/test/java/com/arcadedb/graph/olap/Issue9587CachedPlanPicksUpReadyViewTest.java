@@ -23,6 +23,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.GraphTraversalProviderRegistry.ViewsPassedOver;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -291,8 +292,8 @@ class Issue9587CachedPlanPicksUpReadyViewTest {
     database.transaction(() -> database.newVertex("P").set("pid", 6).save());
     assertThat(view.isReady()).isFalse();
 
-    try (final GraphTraversalProviderRegistry.ViewsPassedOver outer = GraphTraversalProviderRegistry.recordViewsPassedOver()) {
-      try (final GraphTraversalProviderRegistry.ViewsPassedOver inner = GraphTraversalProviderRegistry.recordViewsPassedOver()) {
+    try (final ViewsPassedOver outer = GraphTraversalProviderRegistry.recordViewsPassedOver()) {
+      try (final ViewsPassedOver inner = GraphTraversalProviderRegistry.recordViewsPassedOver()) {
         assertThat(GraphTraversalProviderRegistry.findProvider(database, "K")).isNull();
         assertThat(GraphTraversalProviderRegistry.findProvider(database, "K")).isNull();
         assertThat(inner.getViews()).as("recorded once however often it is passed over").containsExactly(view);
@@ -302,7 +303,7 @@ class Issue9587CachedPlanPicksUpReadyViewTest {
     }
 
     // no recording open any more: a lookup records nowhere
-    try (final GraphTraversalProviderRegistry.ViewsPassedOver later = GraphTraversalProviderRegistry.recordViewsPassedOver()) {
+    try (final ViewsPassedOver later = GraphTraversalProviderRegistry.recordViewsPassedOver()) {
       assertThat(later.getViews()).isEmpty();
     }
   }

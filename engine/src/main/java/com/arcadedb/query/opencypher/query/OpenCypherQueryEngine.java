@@ -32,6 +32,7 @@ import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.GraphTraversalProviderRegistry.ViewsPassedOver;
 import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.QuerySession;
@@ -429,7 +430,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
         final long planningEpoch = database.getCypherPlanCache().getInvalidationEpoch();
         final CypherExecutionPlanner planner = new CypherExecutionPlanner(execDb, statement, parameters,
             EXPRESSION_EVALUATOR);
-        try (final GraphTraversalProviderRegistry.ViewsPassedOver passedOver = GraphTraversalProviderRegistry.recordViewsPassedOver()) {
+        try (final ViewsPassedOver passedOver = GraphTraversalProviderRegistry.recordViewsPassedOver()) {
           plan = planner.createExecutionPlan(configuration);
 
           // Cache the physical plan for future use, with the views it passed over so it is planned again once one is ready
