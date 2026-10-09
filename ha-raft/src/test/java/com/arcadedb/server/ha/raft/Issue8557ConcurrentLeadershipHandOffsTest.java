@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.CallLog;
 import com.arcadedb.server.TestServerHelper;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.client.api.AdminApi;
@@ -53,7 +54,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
-import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -79,21 +79,21 @@ class Issue8557ConcurrentLeadershipHandOffsTest {
   private static final RaftPeerId B    = RaftPeerId.valueOf("peer-b_2435");
   private static final RaftPeerId C    = RaftPeerId.valueOf("peer-c_2436");
 
-  private RaftHAServer raft;
+  private FakeRaftHAServer raft;
   private AdminApi     admin;
 
   @BeforeEach
   void setUp() {
-    raft = mock(RaftHAServer.class);
+    raft = FakeRaftHAServer.detached();
     admin = mock(AdminApi.class);
     final RaftClient client = mock(RaftClient.class);
     when(client.admin()).thenReturn(admin);
-    when(raft.getClient()).thenReturn(client);
-    when(raft.getLocalPeerId()).thenReturn(SELF);
-    when(raft.isLeader()).thenReturn(true);
-    when(raft.getLivePeers()).thenReturn(List.of(peer(SELF), peer(B), peer(C)));
+    raft.returns("getClient", client);
+    raft.localPeerId(SELF);
+    raft.leader(true);
+    raft.returns("getLivePeers", List.of(peer(SELF), peer(B), peer(C)));
     // Every peer answers (issue #8556): these tests are about concurrent hand-offs, not reachability.
-    when(raft.handoffReachablePeers()).thenReturn(Set.of(B.toString(), C.toString()));
+    raft.returns("handoffReachablePeers", Set.of(B.toString(), C.toString()));
   }
 
   // ---- the refusal is classified -------------------------------------------------------------------------------
@@ -114,7 +114,7 @@ class Issue8557ConcurrentLeadershipHandOffsTest {
   void theTargetedTransferReportsAPendingRefusalWithoutRetrying() throws Exception {
     final RaftClientReply refused = refusedReply(C);
     when(admin.transferLeadership(eq(C), anyLong())).thenReturn(refused);
-    when(raft.getLeaderId()).thenReturn(SELF);
+    raft.leaderId(SELF);
 
     assertThatThrownBy(() -> manager().transferLeadership(C.toString(), 10_000))
         .isInstanceOf(LeadershipTransferInProgressException.class)
@@ -135,7 +135,7 @@ class Issue8557ConcurrentLeadershipHandOffsTest {
     final RaftClientReply refused = refusedReply(B);
     when(admin.transferLeadership(eq(B), anyLong())).thenReturn(refused);
     // this node is still leader when the refusal comes back; the other caller's transfer lands shortly after
-    when(raft.getLeaderId()).thenReturn(SELF, SELF, SELF, C);
+    raft.on("getLeaderId", CallLog.inOrder(SELF, SELF, SELF, C));
 
     assertThat(manager().transferLeadership(10_000)).as("the other caller's hand-off landed").isTrue();
 
@@ -149,7 +149,7 @@ class Issue8557ConcurrentLeadershipHandOffsTest {
   void aPendingRefusalThatNeverLandsReportsFalseWithoutTheBareStepDown() throws Exception {
     final RaftClientReply refused = refusedReply(B);
     when(admin.transferLeadership(eq(B), anyLong())).thenReturn(refused);
-    when(raft.getLeaderId()).thenReturn(SELF);
+    raft.leaderId(SELF);
 
     assertThat(manager().transferLeadership(200)).isFalse();
 
@@ -166,7 +166,7 @@ class Issue8557ConcurrentLeadershipHandOffsTest {
     final RaftClientReply refused = refusedReply(B);
     when(admin.transferLeadership(eq(B), anyLong())).thenThrow(new IOException("client-1 is already CLOSED"))
         .thenReturn(refused);
-    when(raft.getLeaderId()).thenReturn(SELF);
+    raft.leaderId(SELF);
 
     assertThat(manager().transferLeadership(300)).isFalse();
 
@@ -191,7 +191,7 @@ class Issue8557ConcurrentLeadershipHandOffsTest {
       release.await(10, TimeUnit.SECONDS);
       return ok;
     });
-    when(raft.getLeaderId()).thenReturn(SELF);
+    raft.leaderId(SELF);
 
     final RaftClusterManager manager = manager();
     final CompletableFuture<Void> targeted = CompletableFuture.runAsync(() -> manager.transferLeadership(B.toString(), 10_000));
@@ -223,7 +223,7 @@ class Issue8557ConcurrentLeadershipHandOffsTest {
       release.await(10, TimeUnit.SECONDS);
       return ok;
     });
-    when(raft.getLeaderId()).thenReturn(SELF);
+    raft.leaderId(SELF);
 
     final RaftClusterManager manager = manager();
     final CompletableFuture<Boolean> bare = CompletableFuture.supplyAsync(() -> manager.stepDownWithoutTarget(300));
@@ -257,7 +257,7 @@ class Issue8557ConcurrentLeadershipHandOffsTest {
     });
     when(admin.transferLeadership(eq(C), anyLong())).thenReturn(ok);
     // the first leader-view read comes from the backed-off step-down's wait: the B transfer is blocked in its RPC
-    when(raft.getLeaderId()).thenAnswer(invocation -> {
+    raft.on("getLeaderId", args -> {
       waiting.countDown();
       return SELF;
     });
@@ -320,23 +320,28 @@ class Issue8557ConcurrentLeadershipHandOffsTest {
         return true;
       }
     };
-    final ArcadeStateMachine sm = mock(ArcadeStateMachine.class);
-    when(sm.hasLeaderServiceGap()).thenReturn(true);
+    final FakeArcadeStateMachine sm = new FakeArcadeStateMachine();
+    sm.returns("hasLeaderServiceGap", true);
     final CountDownLatch started = new CountDownLatch(1);
     final CountDownLatch release = new CountDownLatch(1);
     final AtomicReference<String> ranOn = new AtomicReference<>();
     final AtomicInteger runs = new AtomicInteger();
     final CountDownLatch duplicateRun = new CountDownLatch(1);
-    doAnswer(invocation -> {
+    sm.on("handOffLeadershipWhileReplacingDatabase", args -> {
       if (runs.incrementAndGet() > 1) {
         duplicateRun.countDown();
         return false;
       }
       ranOn.set(Thread.currentThread().getName());
       started.countDown();
-      release.await(10, TimeUnit.SECONDS);
+      try {
+        release.await(10, TimeUnit.SECONDS);
+      } catch (final InterruptedException e) {
+        // An answer cannot throw a checked exception: keep the interrupt for the caller to see
+        Thread.currentThread().interrupt();
+      }
       return false;
-    }).when(sm).handOffLeadershipWhileReplacingDatabase();
+    });
     // queueReplacingDatabaseHandOff runs a queued hand-off only for the CURRENT state machine
     setStateMachine(server, sm);
 
@@ -365,15 +370,15 @@ class Issue8557ConcurrentLeadershipHandOffsTest {
         return true;
       }
     };
-    final ArcadeStateMachine stale = mock(ArcadeStateMachine.class);
-    when(stale.hasLeaderServiceGap()).thenReturn(true);
-    final ArcadeStateMachine current = mock(ArcadeStateMachine.class);
+    final FakeArcadeStateMachine stale = new FakeArcadeStateMachine();
+    stale.returns("hasLeaderServiceGap", true);
+    final FakeArcadeStateMachine current = new FakeArcadeStateMachine();
     setStateMachine(server, current);
     final CountDownLatch ran = new CountDownLatch(1);
-    doAnswer(invocation -> {
+    stale.on("handOffLeadershipWhileReplacingDatabase", args -> {
       ran.countDown();
       return false;
-    }).when(stale).handOffLeadershipWhileReplacingDatabase();
+    });
 
     server.queueReplacingDatabaseHandOff(stale);
 
@@ -414,13 +419,13 @@ class Issue8557ConcurrentLeadershipHandOffsTest {
         return true;
       }
     };
-    final ArcadeStateMachine sm = mock(ArcadeStateMachine.class);
-    when(sm.hasLeaderServiceGap()).thenReturn(false);
+    final FakeArcadeStateMachine sm = new FakeArcadeStateMachine();
+    sm.returns("hasLeaderServiceGap", false);
 
     server.queueReplacingDatabaseHandOff(sm);
     Thread.sleep(100);
 
-    verify(sm, never()).handOffLeadershipWhileReplacingDatabase();
+    assertThat(sm.calls("handOffLeadershipWhileReplacingDatabase")).isEmpty();
   }
 
   // ---- helpers --------------------------------------------------------------------------------------------------

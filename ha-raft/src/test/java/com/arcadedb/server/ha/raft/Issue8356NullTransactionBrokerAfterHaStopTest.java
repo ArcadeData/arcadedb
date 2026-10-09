@@ -64,7 +64,7 @@ class Issue8356NullTransactionBrokerAfterHaStopTest {
   private final String dbPath = "issue8356-null-transaction-broker-" + UUID.randomUUID();
 
   private LocalDatabase          proxied;
-  private RaftHAServer           raftServer;
+  private FakeRaftHAServer           raftServer;
   private TransactionContext     tx;
   private ArcadeStateMachine     stateMachine;
   private RaftReplicatedDatabase database;
@@ -82,11 +82,11 @@ class Issue8356NullTransactionBrokerAfterHaStopTest {
     // The race this issue is about: RaftHAServer.stop() has already cleared the broker, but this
     // RaftReplicatedDatabase's own (final) reference to the RaftHAServer instance is still non-null, so
     // requireRaftServer() alone would not catch the window.
-    raftServer = mock(RaftHAServer.class, RETURNS_DEEP_STUBS);
-    when(raftServer.isLeader()).thenReturn(true);
-    when(raftServer.getTransactionBroker()).thenReturn(null);
+    raftServer = FakeRaftHAServer.detached();
+    raftServer.leader(true);
+    raftServer.transactionBroker(null);
     stateMachine = new ArcadeStateMachine();
-    when(raftServer.getStateMachine()).thenReturn(stateMachine);
+    raftServer.stateMachine(stateMachine);
 
     tx = mock(TransactionContext.class);
     DatabaseContext.INSTANCE.init(proxied, tx);

@@ -37,7 +37,6 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.lang.reflect.Proxy;
 import java.nio.file.Path;
-import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
@@ -46,8 +45,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Regression test for issue #8182 (reported as #8143 and #7969).
@@ -120,21 +117,22 @@ class Issue8182StateMachineCloseAwaitsLifecycleTasksTest {
    * A follower's view of a leader whose address resolution - the first thing a leader-initiated install does on the
    * snapshot-install thread - runs {@code onInstallThread}.
    */
-  private static RaftHAServer raftHAWhoseInstallRuns(final Runnable onInstallThread) {
-    final RaftHAServer raftHA = mock(RaftHAServer.class);
-    when(raftHA.isLeader()).thenReturn(false);
-    when(raftHA.getLocalPeerId()).thenReturn(LOCAL);
-    when(raftHA.getLeaderId()).thenReturn(LEADER);
-    when(raftHA.getClusterToken()).thenReturn("cluster-token");
-    when(raftHA.getUnambiguousPeerHttpAddress(LEADER)).thenAnswer(invocation -> {
+  private static FakeRaftHAServer raftHAWhoseInstallRuns(final Runnable onInstallThread) {
+    final FakeRaftHAServer raftHA = FakeRaftHAServer.detached();
+    raftHA.leader(false);
+    raftHA.localPeerId(LOCAL);
+    raftHA.leaderId(LEADER);
+    raftHA.clusterToken("cluster-token");
+    raftHA.on("getUnambiguousPeerHttpAddress", args -> {
+      if (!LEADER.equals(args[0]))
+        return null;
       // Only there: the bootstrap install resolves the leader through the same accessor, on other threads.
       if (Thread.currentThread().getName().equals(ArcadeStateMachine.SNAPSHOT_INSTALL_THREAD_NAME))
         onInstallThread.run();
       return "leader-host:2480";
     });
-    when(raftHA.getLocalHttpAddress()).thenReturn("local-host:2480");
-    when(raftHA.getUnambiguousPeerHttpsAddress(LEADER)).thenReturn(null);
-    when(raftHA.getLocalHttpsAddress()).thenReturn(null);
+    raftHA.localHttpAddress("local-host:2480");
+    raftHA.peerHttpsAddress(LEADER, null);
     return raftHA;
   }
 

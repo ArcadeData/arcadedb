@@ -145,4 +145,20 @@ class FakeRaftHAServerTest {
     assertThat(FakeRaftHAServer.followerOf("peer-b", "peer-b:2480").leaderHttpAddress("other:2480").getLeaderHttpAddress())
         .isEqualTo("other:2480");
   }
+
+  @Test
+  void theTrustedAppliedIndexIsRecordedAndAnswerable() {
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    // Read once unanswered, for the value the detached server reports on its own; that read is recorded too
+    final long unanswered = raft.getTrustedAppliedIndex("db");
+
+    raft.on("getTrustedAppliedIndex", args -> "db".equals(args[0]) ? 42L : unanswered);
+
+    assertThat(raft.getTrustedAppliedIndex("db")).isEqualTo(42L);
+    assertThat(raft.getTrustedAppliedIndex("other")).isEqualTo(unanswered);
+    assertThat(raft.calls("getTrustedAppliedIndex")).as("the unanswered read, then the two answered ones")
+        .containsExactly(List.of("db"), List.of("db"), List.of("other"));
+    assertThatThrownBy(() -> raft.returns("getTrustedAppliedIndex", null).getTrustedAppliedIndex("db"))
+        .isInstanceOf(IllegalStateException.class).hasMessageContaining("getTrustedAppliedIndex");
+  }
 }
