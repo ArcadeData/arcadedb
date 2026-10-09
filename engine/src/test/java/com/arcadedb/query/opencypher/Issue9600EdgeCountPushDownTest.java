@@ -130,6 +130,7 @@ class Issue9600EdgeCountPushDownTest extends TestHelper {
     // a relationship counted DISTINCT, or bound by an OPTIONAL MATCH where it can be null, is not count(*)
     assertPipelineOnly("MATCH ()-[e:KNOWS]->() RETURN count(DISTINCT e) AS n", null);
     assertPipelineOnly("MATCH (p:Person) OPTIONAL MATCH (p)-[e:KNOWS]->() RETURN count(e) AS n", null);
+    assertPipelineOnly("OPTIONAL MATCH (n:Student {age: 99}) RETURN count(n) AS n", 0L);
     // a property filter on the relationship, as a map or as an inline WHERE that naming it allows
     assertPipelineOnly("MATCH ()-[e:KNOWS {since: 3}]->() RETURN count(e) AS n", null);
     assertPipelineOnly("MATCH ()-[e:KNOWS WHERE e.since = 3]->() RETURN count(e) AS n", null);
