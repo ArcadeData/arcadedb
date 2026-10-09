@@ -70,6 +70,11 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   // Read by concurrent HTTP worker threads (e.g. the readiness probe via getReadinessSignal) while it is
   // (re)assigned by the server startup/shutdown thread, so the reference must be published with volatile.
   private volatile RaftHAServer         raftHAServer;
+  // The cluster token of the Raft server this plugin stopped, kept so the node goes on recognising its peers for the
+  // rest of its shutdown (issue #9554): ArcadeDBServer stops HA before the HTTP listener, and a forward still reaching
+  // the node in between must get the retryable "not the leader" answer, not 401 "Invalid cluster token". The token
+  // never changes for the life of the process, so the kept value cannot go stale.
+  private volatile String               stoppedClusterToken;
 
   // Databases already warned about single-bucket types, so the diagnostic is logged once per
   // database per plugin lifetime instead of on every (re)wrap.
@@ -218,6 +223,9 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   @Override
   public void stopService() {
     if (raftHAServer != null) {
+      final String clusterToken = raftHAServer.getClusterToken();
+      if (clusterToken != null)
+        stoppedClusterToken = clusterToken;
       // Never issue leaveCluster() on shutdown: the K8s auto-leave (formerly in RaftHAServer.stop())
       // silently shrank the committed Raft membership on every pod recreation and the node was never
       // re-added (issue #5275); a duplicate leave here also caused redundant reconfig work and a
@@ -894,7 +902,8 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
 
   @Override
   public String getClusterToken() {
-    return raftHAServer != null ? raftHAServer.getClusterToken() : null;
+    final RaftHAServer s = raftHAServer;
+    return s != null ? s.getClusterToken() : stoppedClusterToken;
   }
 
   @Override

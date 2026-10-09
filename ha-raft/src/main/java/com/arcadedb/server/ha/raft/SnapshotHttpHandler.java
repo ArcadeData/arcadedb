@@ -37,6 +37,7 @@ import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpHandler;
@@ -770,9 +771,10 @@ public class SnapshotHttpHandler implements HttpHandler {
     final HeaderValues clusterTokenHeader = exchange.getRequestHeaders().get("X-ArcadeDB-Cluster-Token");
     if (clusterTokenHeader != null && !clusterTokenHeader.isEmpty()) {
       final var server = httpServer.getServer();
-      final RaftHAPlugin haPlugin = server.getHA() instanceof RaftHAPlugin rp ? rp : null;
-      final RaftHAServer raftHAServer = haPlugin != null ? haPlugin.getRaftHAServer() : null;
-      final String expectedToken = raftHAServer != null ? raftHAServer.getClusterToken() : null;
+      // The helper every other cluster-token check uses (issue #9554): read through server.getHA() alone, the token was
+      // missing while the HA plugin was still starting - after Ratis could already be elected leader and asked for a
+      // snapshot - and once it had stopped, so a peer's correctly authenticated download was refused.
+      final String expectedToken = HAServerPlugin.effectiveClusterToken(server);
       if (expectedToken != null && !expectedToken.isEmpty()
           && MessageDigest.isEqual(
           expectedToken.getBytes(), clusterTokenHeader.getFirst().getBytes())) {

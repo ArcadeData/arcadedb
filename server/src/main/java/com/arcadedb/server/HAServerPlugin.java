@@ -436,16 +436,36 @@ public interface HAServerPlugin extends ServerPlugin {
    * receiver checked the derived token, so on a default-configured cluster the forward carried no usable
    * credentials at all.
    *
+   * <p>
+   * The plugin is looked up among the server's registered plugins as well when {@link ArcadeDBServer#getHA()} names
+   * none yet (issue #9554). An HA plugin registers itself there only at the end of its start, but the HTTP listener is
+   * up before it begins, and the replication layer it starts can be elected leader - so its peers forward to it - well
+   * before it returns. Falling back to the raw setting in that window answered every correct forward
+   * 401 "Invalid cluster token" on a cluster whose token is derived.
+   *
    * @return the effective token, or null/blank when this server has none
    */
   static String effectiveClusterToken(final ArcadeDBServer server) {
     if (server == null)
       return null;
-    final HAServerPlugin ha = server.getHA();
+    HAServerPlugin ha = server.getHA();
+    if (ha == null)
+      ha = registeredHAPlugin(server);
     final String fromPlugin = ha != null ? ha.getClusterToken() : null;
     if (fromPlugin != null && !fromPlugin.isBlank())
       return fromPlugin;
     return server.getConfiguration().getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN);
+  }
+
+  /**
+   * The HA plugin registered with {@code server}'s plugin manager, whether or not it has registered itself as the
+   * server's HA implementation yet, or null when there is none.
+   */
+  private static HAServerPlugin registeredHAPlugin(final ArcadeDBServer server) {
+    for (final ServerPlugin plugin : server.getPlugins())
+      if (plugin instanceof final HAServerPlugin ha)
+        return ha;
+    return null;
   }
 
   /**
