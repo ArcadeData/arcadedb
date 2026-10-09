@@ -297,6 +297,7 @@ public final class OptionalMatchAntiJoinRewriter {
       rewritten.add(new ClauseEntry(ClauseEntry.ClauseType.WITH, filter(notPattern), 0));
       rewritten.add(new ClauseEntry(ClauseEntry.ClauseType.WITH, carrier, 0));
     } else {
+      // a parsed MatchClause is its patterns, its OPTIONAL flag and its WHERE: rebuilding it from them loses nothing
       final MatchClause before = beforeEntry.getTypedClause();
       final BooleanExpression beforeWhere = before.hasWhereClause() ? before.getWhereClause().getConditionExpression() : null;
       final boolean fold = isPassThrough(carrier) && index + 3 == clauses.size()
@@ -464,7 +465,9 @@ public final class OptionalMatchAntiJoinRewriter {
 
   /**
    * The path with the introduced names dropped, read from a shared end when it has one: the predicate probes a single hop
-   * from a bound start node directly and hands any other shape to an EXISTS subquery.
+   * from a bound start node directly and hands any other shape to an EXISTS subquery. The relationships are rebuilt from
+   * their types, direction and bounds alone, which is all {@link #singlePlainPath} lets through: relaxing it to admit
+   * properties or an inline WHERE has to carry them here, and to {@link #render}, too.
    */
   private static PathPattern anonymized(final PathPattern path, final Set<String> introduced, final Set<String> inScope) {
     final List<NodePattern> nodes = new ArrayList<>(path.getNodes().size());
@@ -541,6 +544,10 @@ public final class OptionalMatchAntiJoinRewriter {
     return names;
   }
 
+  /**
+   * The statement over the new clause list. Only MATCH, WITH, UNWIND and RETURN reach here ({@link #hasModelledClausesOnly}),
+   * so the write clauses and their flags the constructor takes are null and false by construction, not dropped.
+   */
   private static SimpleCypherStatement rebuild(final SimpleCypherStatement statement, final List<ClauseEntry> entries) {
     final List<ClauseEntry> clauses = new ArrayList<>(entries.size());
     final List<MatchClause> matches = new ArrayList<>();
