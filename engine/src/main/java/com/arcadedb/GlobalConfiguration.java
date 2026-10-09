@@ -2731,6 +2731,16 @@ public enum GlobalConfiguration {
       up with a SEVERE alert) instead of restarting forever (issue #5291).""",
       Integer.class, 10),
 
+  HA_RATIS_CLOSE_TIMEOUT_MS("arcadedb.ha.ratisCloseTimeoutMs", SCOPE.SERVER,
+      """
+      Maximum time in milliseconds the server waits for the Ratis server to close, on shutdown and before an \
+      in-place Ratis restart. A close normally takes milliseconds; one that does not finish in time is logged \
+      at SEVERE with the stack it is stuck in and left running on its own thread. A shutdown then proceeds, \
+      and an in-place restart fails (counting toward arcadedb.ha.ratisRestartMaxRetries) for as long as that \
+      close is still running, because its storage lock and gRPC ports may still be held (issue #9561). \
+      0 or a negative value waits without a bound, the behavior before this setting existed.""",
+      Long.class, 30_000L),
+
   HA_JVM_PAUSE_CLOSE_THRESHOLD_MS("arcadedb.ha.jvmPauseCloseThresholdMs", SCOPE.SERVER,
       """
       JVM-pause length in milliseconds above which Ratis closes this node's Raft division (Ratis default: \
