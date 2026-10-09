@@ -127,7 +127,7 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
     }
 
     // Fall back to OLTP path
-    return executeWithOLTP(db, dampingFactor, maxIterations, tolerance, weightProperty, direction, guard);
+    return executeWithOLTP(db, dampingFactor, maxIterations, tolerance, weightProperty, direction, guard, context);
   }
 
   /**
@@ -184,7 +184,7 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
 
   private Stream<Result> executeWithOLTP(final Database db, final double dampingFactor,
       final int maxIterations, final double tolerance, final String weightProperty,
-      final Vertex.DIRECTION direction, final WorkGuard guard) {
+      final Vertex.DIRECTION direction, final WorkGuard guard, final CommandContext context) {
     final List<Vertex> vertices = loadVertices(db, null, newMemoryBudget(db));
     if (vertices.isEmpty())
       return Stream.empty();
@@ -214,7 +214,8 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
       int count = 0;
 
       for (final Vertex.DIRECTION walk : walks) {
-        for (final Edge edge : v.getEdges(walk)) {
+        // the incoming side of a unidirectional edge type is on the other end only (issue #8629)
+        for (final Edge edge : edgesOf(context, v, walk)) {
           // This build walks and deserialises every edge in the graph and had no checkpoint at all: the first
           // one a call reached was the iteration loop below, so a deadline could not be seen until the whole
           // adjacency was already materialised. Throttled by EDGE rather than by vertex for the reason

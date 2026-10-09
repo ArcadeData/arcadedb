@@ -104,7 +104,7 @@ public class SQLFunctionCCHShortestPath extends SQLFunctionMathAbstract {
     }
 
     final ShortestPathFinder.Result result = ShortestPathFinder.find(context.getDatabase(), source, destination,
-        weightProperty, direction, edgeTypes, WorkGuard.forCommand(context, getName() + "()"));
+        weightProperty, direction, edgeTypes, WorkGuard.forCommand(context, getName() + "()"), context);
     return result == null ? new ArrayList<>() : new ArrayList<>(result.vertices());
   }
 

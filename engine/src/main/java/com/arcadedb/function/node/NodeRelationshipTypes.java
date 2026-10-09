@@ -19,11 +19,13 @@
 package com.arcadedb.function.node;
 
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.Set;
 
@@ -65,9 +67,9 @@ public class NodeRelationshipTypes extends AbstractNodeFunction {
 
     final Set<String> types = new LinkedHashSet<>();
 
-    for (final Edge edge : vertex.getEdges(direction)) {
-      types.add(edge.getTypeName());
-    }
+    // The incoming side of a unidirectional edge type is read from the edges that end in the node (issue #8629)
+    for (final Iterator<Edge> edges = IncomingEdgeLookup.getEdges(context, vertex, direction); edges.hasNext(); )
+      types.add(edges.next().getTypeName());
 
     return new ArrayList<>(types);
   }

@@ -29,6 +29,7 @@ import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.NodeEdgeWeights;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -150,8 +151,10 @@ public class SQLFunctionBellmanFord extends SQLFunctionMathAbstract {
         }
       }
 
-      // OLTP fallback
-      for (final Edge edge : v.getEdges(dir)) {
+      // OLTP fallback, completed with the incoming side of the unidirectional edge types as the view above answers it
+      // (issue #8629)
+      for (final Iterator<Edge> edges = IncomingEdgeLookup.getEdges(context, v, dir); edges.hasNext(); ) {
+        final Edge edge = edges.next();
         try {
           final Vertex neighbor;
           if (dir == Vertex.DIRECTION.OUT)

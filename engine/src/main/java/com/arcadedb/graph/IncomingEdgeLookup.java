@@ -372,6 +372,15 @@ public final class IncomingEdgeLookup {
   }
 
   /**
+   * The edge types declared unidirectional among {@code edgeTypes} (all when empty) and their subtypes, sorted; empty
+   * when there is none. A caller that builds the adjacency of a whole vertex set reads them to answer their incoming
+   * side from the outgoing lists of that same set, with no scan (issue #8629). The array is shared: do not modify it.
+   */
+  public static String[] getUnidirectionalTypes(final Schema schema, final String... edgeTypes) {
+    return schema.hasUnidirectionalEdgeTypes() ? cachedClosure(schema, edgeTypes).unidirectional : Closure.NONE.unidirectional;
+  }
+
+  /**
    * Runs {@code walk} as the evaluation of a pattern (on the calling thread: the SQL MATCH traversers and Cypher's
    * shortestPath() run the SQL graph functions there, never on a parallel worker): the SQL graph functions it calls ({@code in()}, {@code inE()},
    * {@code both()}, {@code bothE()}, {@code shortestPath()}) answer the incoming side of the unidirectional types.
@@ -382,6 +391,11 @@ public final class IncomingEdgeLookup {
    * {@code GraphTraversalProvider} (an analytical view) only accelerates them: its reverse index holds the incoming
    * side, so a function called on its own does not use it for that side and answers the same rows with and without a
    * view (issue #8939), while a pattern walk answers the incoming side either way.
+   * <p>
+   * The rule is the move functions' and {@code shortestPath()}'s, which name a hop of a vertex. A graph algorithm, a
+   * path-finding function ({@code dijkstra()}, {@code astar()}, {@code bellmanFord()}, {@code cchShortestPath()},
+   * {@code duanSSSP()}) and the {@code algo.*}, {@code path.*}, {@code node.*} and {@code refactor.*} procedures ask about
+   * the graph, as an analytical view answers them, and always answer the incoming side (issue #8629).
    */
   public static <T> T walkingPattern(final Supplier<T> walk) {
     final int[] depth = PATTERN_WALKS.get();

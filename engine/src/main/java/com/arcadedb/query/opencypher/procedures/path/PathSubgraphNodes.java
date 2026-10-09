@@ -90,7 +90,7 @@ public class PathSubgraphNodes extends AbstractPathProcedure {
 
     // Only the nodes are ever yielded here, so the walk never materialises an edge (issue #7976)
     final List<Vertex> reachableNodes = new ArrayList<>();
-    collectReachableComponent(startNode, relTypes, labelFilter, maxLevel, reachableNodes, null);
+    collectReachableComponent(startNode, relTypes, labelFilter, maxLevel, reachableNodes, null, context);
 
     return reachableNodes.stream().map(node -> {
       final ResultInternal result = new ResultInternal();

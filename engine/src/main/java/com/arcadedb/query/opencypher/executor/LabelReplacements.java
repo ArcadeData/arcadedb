@@ -20,12 +20,14 @@ package com.arcadedb.query.opencypher.executor;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
@@ -33,6 +35,7 @@ import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.schema.EdgeType;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -366,12 +369,23 @@ public final class LabelReplacements {
       track(edge, newVertex.newEdge(edge.getTypeName(), target, propertiesOf(edge)));
       ++migratedEdges;
     }
+    final boolean anyUnidirectional = database.getSchema().hasUnidirectionalEdgeTypes();
     for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.IN)) {
-      if (originalRid.equals(edge.getOut()))
+      // A pointer a bulk load stored for a unidirectional type is migrated with the edges below, which answer for it
+      if (originalRid.equals(edge.getOut()) || (anyUnidirectional && isUnidirectional(database, edge)))
         continue;
       track(edge, edge.getVertex(Vertex.DIRECTION.OUT).newEdge(edge.getTypeName(), newVertex, propertiesOf(edge)));
       ++migratedEdges;
     }
+    // The edges of a unidirectional type that end in the vertex are stored on their source only: the delete below would
+    // drop them, so they are migrated like the others (issue #8629). The same edges the delete finds.
+    if (anyUnidirectional)
+      for (final Edge edge : IncomingEdgeLookup.getIncomingUnidirectionalEdges((DatabaseInternal) database, originalRid)) {
+        if (originalRid.equals(edge.getOut()))
+          continue;
+        track(edge, edge.getVertex(Vertex.DIRECTION.OUT).newEdge(edge.getTypeName(), newVertex, propertiesOf(edge)));
+        ++migratedEdges;
+      }
 
     vertex.delete();
     vertices.put(originalRid, newVertex);
@@ -401,10 +415,27 @@ public final class LabelReplacements {
    */
   private static long countEdgesToMigrate(final Vertex vertex, final RID originalRid) {
     long count = vertex.countEdges(Vertex.DIRECTION.OUT);
-    for (final RID neighbour : vertex.getConnectedVertexRIDs(Vertex.DIRECTION.IN))
-      if (!originalRid.equals(neighbour))
+    final Database database = vertex.getDatabase();
+    if (!database.getSchema().hasUnidirectionalEdgeTypes()) {
+      for (final RID neighbour : vertex.getConnectedVertexRIDs(Vertex.DIRECTION.IN))
+        if (!originalRid.equals(neighbour))
+          ++count;
+      return count;
+    }
+    // The incoming edges of a unidirectional type are counted from the edges that end in the vertex, and a pointer a
+    // bulk load stored for one is left out of the stored ones, as the migration does (issue #8629)
+    for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.IN))
+      if (!originalRid.equals(edge.getOut()) && !isUnidirectional(database, edge))
+        ++count;
+    for (final Edge edge : IncomingEdgeLookup.getIncomingUnidirectionalEdges((DatabaseInternal) database, originalRid))
+      if (!originalRid.equals(edge.getOut()))
         ++count;
     return count;
+  }
+
+  private static boolean isUnidirectional(final Database database, final Edge edge) {
+    return database.getSchema().getTypeByBucketId(edge.getIdentity().getBucketId()) instanceof EdgeType type
+        && !type.isBidirectional();
   }
 
   private void track(final Edge original, final Edge replacement) {

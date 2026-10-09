@@ -149,7 +149,7 @@ public class PathExpand extends AbstractPathProcedure {
       final List<Object> currentPath, final Set<RID> visited, final RidHashSet ghostNodes,
       final List<List<Object>> allPaths, final CommandContext context, final Vertex.DIRECTION direction) {
 
-    final Iterable<Edge> edges = current.getEdges(direction, relTypes != null ? relTypes : NO_TYPES);
+    final Iterable<Edge> edges = edgesOf(context, current, direction, relTypes);
 
     for (final Edge edge : edges) {
       try {

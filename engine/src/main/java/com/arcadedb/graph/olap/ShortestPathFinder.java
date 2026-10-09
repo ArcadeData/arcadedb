@@ -26,14 +26,18 @@ import com.arcadedb.graph.EdgeWeight;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.NodeEdgeWeights;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.utility.IntIntHashMap;
 
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
@@ -76,6 +80,20 @@ public final class ShortestPathFinder {
    */
   public static Result find(final Database database, final RID source, final RID target, final String weightProperty,
       final Vertex.DIRECTION direction, final String[] edgeTypes, final WorkGuard guard) {
+    return find(database, source, target, weightProperty, direction, edgeTypes, guard, null);
+  }
+
+  /**
+   * {@link #find(Database, RID, RID, String, Vertex.DIRECTION, String[], WorkGuard)} within a command: the search of
+   * the edge records reads the incoming side of the unidirectional edge types through the command's
+   * {@link IncomingEdgeLookup}, so its scans are shared with the rest of the query (issue #8629). Without a command the
+   * search takes a lookup of its own: a path is a question about the graph, and the backward half of the search walks
+   * the incoming side even when the path follows the edges forward.
+   *
+   * @param context the command the search runs in; null for none
+   */
+  public static Result find(final Database database, final RID source, final RID target, final String weightProperty,
+      final Vertex.DIRECTION direction, final String[] edgeTypes, final WorkGuard guard, final CommandContext context) {
     final String[] types = edgeTypes == null || edgeTypes.length == 0 ? null : edgeTypes;
     if (source.equals(target))
       return new Result(List.of(source), 0, Engine.RECORDS);
@@ -121,7 +139,15 @@ public final class ShortestPathFinder {
       }
     }
 
-    final RecordGraph graph = new RecordGraph(weightProperty, direction, types);
+    final CommandContext lookupContext;
+    if (context != null)
+      lookupContext = context;
+    else {
+      final BasicCommandContext own = new BasicCommandContext();
+      own.setDatabase(database);
+      lookupContext = own;
+    }
+    final RecordGraph graph = new RecordGraph(weightProperty, direction, types, lookupContext);
     final Search search = new Search(graph, searchGuard);
     final int s = graph.intern(source);
     final int t = graph.intern(target);
@@ -202,14 +228,17 @@ public final class ShortestPathFinder {
     private final Vertex.DIRECTION forward;
     private final Vertex.DIRECTION backward;
     private final String[]         edgeTypes;
+    private final CommandContext   context;
     private final Map<RID, Integer> ids  = new HashMap<>();
     final         List<RID>        rids = new ArrayList<>();
 
-    RecordGraph(final String weightProperty, final Vertex.DIRECTION direction, final String[] edgeTypes) {
+    RecordGraph(final String weightProperty, final Vertex.DIRECTION direction, final String[] edgeTypes,
+        final CommandContext context) {
       this.weightProperty = weightProperty;
       this.forward = direction;
       this.backward = reverse(direction);
-      this.edgeTypes = edgeTypes;
+      this.edgeTypes = edgeTypes != null ? edgeTypes : new String[0];
+      this.context = context;
     }
 
     int intern(final RID rid) {
@@ -232,7 +261,9 @@ public final class ShortestPathFinder {
         return true; // a vertex deleted under the search has no arcs
       }
       final Vertex.DIRECTION direction = isForward ? forward : backward;
-      for (final Edge edge : edgeTypes != null ? vertex.getEdges(direction, edgeTypes) : vertex.getEdges(direction)) {
+      // THE INCOMING SIDE OF A UNIDIRECTIONAL EDGE TYPE IS ON THE OTHER END ONLY (ISSUE #8629)
+      for (final Iterator<Edge> edges = IncomingEdgeLookup.getEdges(context, vertex, direction, edgeTypes); edges.hasNext(); ) {
+        final Edge edge = edges.next();
         try {
           final RID out = edge.getOut();
           final RID other = out.equals(rid) ? edge.getIn() : out;

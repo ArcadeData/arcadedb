@@ -18,6 +18,7 @@
  */
 package com.arcadedb.function.node;
 
+import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 
@@ -60,13 +61,14 @@ public class NodeDegree extends AbstractNodeFunction {
         ? parseDirection(args[2].toString())
         : Vertex.DIRECTION.BOTH;
 
+    // The incoming side of a unidirectional edge type is counted from the edges that end in the node (issue #8629)
     long count = 0;
     if (relTypes != null && relTypes.length > 0) {
       for (final String relType : relTypes) {
-        count += vertex.countEdges(direction, relType);
+        count += IncomingEdgeLookup.countEdges(context, vertex, direction, relType);
       }
     } else {
-      count = vertex.countEdges(direction);
+      count = IncomingEdgeLookup.countEdges(context, vertex, direction);
     }
 
     return count;
