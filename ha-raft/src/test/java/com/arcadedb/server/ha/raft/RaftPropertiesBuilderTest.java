@@ -237,4 +237,21 @@ class RaftPropertiesBuilderTest {
         .isInstanceOf(ConfigurationException.class)
         .hasMessageContaining("arcadedb.ha.logCacheSize");
   }
+
+  @Test
+  void blankLogCacheSizeFallsBackToTheHeapDefault() {
+    final ContextConfiguration config = new ContextConfiguration();
+    config.setValue(GlobalConfiguration.HA_LOG_CACHE_SIZE, "  ");
+    final RaftProperties props = RaftPropertiesBuilder.build(config, 1024L * 1024 * 1024);
+    assertThat(RaftServerConfigKeys.Log.segmentCacheSizeMax(props).getSize()).isEqualTo(128L * 1024 * 1024);
+  }
+
+  @Test
+  void malformedLogCacheSizeIsRejectedAsAConfigurationError() {
+    final ContextConfiguration config = new ContextConfiguration();
+    config.setValue(GlobalConfiguration.HA_LOG_CACHE_SIZE, "abc");
+    assertThatThrownBy(() -> RaftPropertiesBuilder.build(config, 1024L * 1024 * 1024))
+        .isInstanceOf(ConfigurationException.class)
+        .hasMessageContaining("arcadedb.ha.logCacheSize");
+  }
 }

@@ -222,7 +222,12 @@ class RaftPropertiesBuilder {
     final String value = configuration.getValueAsString(GlobalConfiguration.HA_LOG_CACHE_SIZE);
     if (value == null || value.isBlank())
       return Math.max(1L, Math.min(RaftServerConfigKeys.Log.SEGMENT_CACHE_SIZE_MAX_DEFAULT.getSize(), maxHeapBytes / 8));
-    final long bytes = SizeInBytes.valueOf(value.trim()).getSize();
+    final long bytes;
+    try {
+      bytes = SizeInBytes.valueOf(value.trim()).getSize();
+    } catch (final IllegalArgumentException e) {
+      throw new ConfigurationException("arcadedb.ha.logCacheSize (" + value + ") is not a size such as '128MB'", e);
+    }
     if (bytes < 1)
       throw new ConfigurationException("arcadedb.ha.logCacheSize (" + value + ") must be a positive size, or empty for the default");
     return bytes;
