@@ -109,7 +109,7 @@ class NativeImageReflectionMetadataTest {
     assertThat(required).contains("abs(int)", "sqrt(double)");
 
     final Set<String> registered = new HashSet<>();
-    final JSONArray reflection = new JSONObject(Files.readString(METADATA, StandardCharsets.UTF_8)).getJSONArray("reflection");
+    final JSONArray reflection = readMetadata().getJSONArray("reflection");
     for (int i = 0; i < reflection.length(); i++) {
       final JSONObject entry = reflection.getJSONObject(i);
       if (!"java.lang.Math".equals(typeOf(entry)))
@@ -142,11 +142,19 @@ class NativeImageReflectionMetadataTest {
   /**
    * A Snowball stemmer whose {@link Among} table names a method resolves it with {@code MethodHandles.findVirtual} in its
    * static initializer, so a stemmer missing from the metadata cannot even be loaded in the native image
-   * ({@code FinnishAnalyzer} failed with "Could not initialize class FinnishStemmer", #9495).
+   * ({@code FinnishAnalyzer} failed with "Could not initialize class FinnishStemmer", #9495). {@code Among} keeps only the
+   * resolved handle, not the name; the Snowball generator makes exactly the {@code r_*} routines an {@code Among} names
+   * public and the others private, so every public {@code boolean r_*()} of such a stemmer must be registered by name.
    */
   @Test
   void everySnowballStemmerThatLooksUpMethodsIsInTheNativeMetadata() throws Exception {
-    final Field methodField = Among.class.getDeclaredField("method");
+    final Field methodField;
+    try {
+      methodField = Among.class.getDeclaredField("method");
+    } catch (final NoSuchFieldException e) {
+      throw new AssertionError("Lucene's Snowball Among no longer has a 'method' field: re-check how its tables resolve stemmer "
+          + "methods (MethodHandles.findVirtual in 10.x) and adapt this test to the new shape", e);
+    }
     methodField.setAccessible(true);
 
     final Set<String> required = new TreeSet<>();
@@ -158,13 +166,16 @@ class NativeImageReflectionMetadataTest {
           field.setAccessible(true);
           for (final Among among : (Among[]) field.get(null))
             if (methodField.get(among) != null)
-              required.add(clazz.getName());
+              for (final Method method : clazz.getDeclaredMethods())
+                if (method.getName().startsWith("r_") && Modifier.isPublic(method.getModifiers())
+                    && method.getParameterCount() == 0 && method.getReturnType() == boolean.class)
+                  required.add(clazz.getName() + "#" + method.getName());
         }
     }
-    assertThat(required).contains("org.tartarus.snowball.ext.FinnishStemmer");
+    assertThat(required).contains("org.tartarus.snowball.ext.FinnishStemmer#r_LONG", "org.tartarus.snowball.ext.FinnishStemmer#r_VI");
 
     final Set<String> missing = new TreeSet<>(required);
-    missing.removeAll(typesWithMethodsInMetadata());
+    missing.removeAll(methodsInMetadata());
 
     assertThat(missing).as("register the methods its Among tables name, in " + METADATA).isEmpty();
   }
@@ -204,19 +215,28 @@ class NativeImageReflectionMetadataTest {
         classes.add(clazz.getName());
   }
 
-  private static Set<String> typesWithMethodsInMetadata() throws IOException {
-    final JSONArray reflection = new JSONObject(Files.readString(METADATA, StandardCharsets.UTF_8)).getJSONArray("reflection");
+  /** Every registered method as {@code <type>#<name>}. */
+  private static Set<String> methodsInMetadata() throws IOException {
+    final JSONArray reflection = readMetadata().getJSONArray("reflection");
     final Set<String> result = new HashSet<>();
     for (int i = 0; i < reflection.length(); i++) {
       final JSONObject entry = reflection.getJSONObject(i);
-      if (!entry.getJSONArray("methods", new JSONArray()).isEmpty())
-        result.add(typeOf(entry));
+      final JSONArray methods = entry.getJSONArray("methods", new JSONArray());
+      for (int m = 0; m < methods.length(); m++)
+        result.add(typeOf(entry) + "#" + methods.getJSONObject(m).getString("name", ""));
     }
     return result;
   }
 
+  /** The metadata lives in the native module: the path assumes Surefire's working directory, the engine module. */
+  private static JSONObject readMetadata() throws IOException {
+    assertThat(Files.isRegularFile(METADATA)).as(METADATA.toAbsolutePath()
+        + " not found: run this test with the engine module as working directory, as Maven Surefire does").isTrue();
+    return new JSONObject(Files.readString(METADATA, StandardCharsets.UTF_8));
+  }
+
   private static Set<String> noArgConstructorsInMetadata() throws IOException {
-    final JSONArray reflection = new JSONObject(Files.readString(METADATA, StandardCharsets.UTF_8)).getJSONArray("reflection");
+    final JSONArray reflection = readMetadata().getJSONArray("reflection");
     final Set<String> result = new HashSet<>();
     for (int i = 0; i < reflection.length(); i++) {
       final JSONObject entry = reflection.getJSONObject(i);
