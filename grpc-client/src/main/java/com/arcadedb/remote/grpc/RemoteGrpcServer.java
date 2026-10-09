@@ -25,6 +25,8 @@ import com.arcadedb.remote.RemoteException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.grpc.AcceptDivergedDatabaseRequest;
 import com.arcadedb.server.grpc.AcceptDivergedDatabaseResponse;
+import com.arcadedb.server.grpc.AcceptStaleSnapshotRequest;
+import com.arcadedb.server.grpc.AcceptStaleSnapshotResponse;
 import com.arcadedb.server.grpc.AlignDatabaseRequest;
 import com.arcadedb.server.grpc.ApiTokenInfo;
 import com.arcadedb.server.grpc.ArcadeDbAdminServiceGrpc;
@@ -828,6 +830,20 @@ public class RemoteGrpcServer implements AutoCloseable {
   public AcceptDivergedDatabaseResponse acceptDivergedDatabase(final String database) {
     return callWrite("accept diverged database", stub -> stub.acceptDivergedDatabase(
         AcceptDivergedDatabaseRequest.newBuilder().setCredentials(buildCredentials()).setDatabase(database).build()));
+  }
+
+  /**
+   * Lifts the node-wide stale-snapshot read floor of the server this client is connected to, accepting its databases as
+   * they are WITHOUT a resync (issue #9498), the twin of {@code POST /api/v1/cluster/accept-stale-snapshot}. Only allowed
+   * on a server that is the sole voter of its cluster; the entries between the floor and the snapshot marker are not
+   * replayed. Root only.
+   * <p>
+   * A server with no floor standing raises the client's not-found error, a server that is not the sole voter (or runs
+   * without HA) its failed-precondition error, through {@code GrpcClientErrorMapper}.
+   */
+  public AcceptStaleSnapshotResponse acceptStaleSnapshot() {
+    return callWrite("accept stale snapshot", stub -> stub.acceptStaleSnapshot(
+        AcceptStaleSnapshotRequest.newBuilder().setCredentials(buildCredentials()).build()));
   }
 
   /**
