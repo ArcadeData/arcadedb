@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -199,6 +200,74 @@ class Issue9587CachedPlanPicksUpReadyViewTest {
 
     assertThat(count()).isEqualTo(EXPECTED);
     assertThat(cachedPlan()).as("nothing changed for the view, so the plan is not built again").isSameAs(cached);
+  }
+
+  @Test
+  void aPlanBuiltInsideAWriteTransactionIsNotCached() {
+    final GraphAnalyticalView view = GraphAnalyticalView.builder(database)
+        .withName(VIEW_NAME)
+        .withVertexTypes("P")
+        .withEdgeTypes("K")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .build();
+    assertThat(view.isReady()).isTrue();
+
+    // the view is withheld from a transaction holding uncommitted changes: its plan walks the records and must not be cached
+    database.transaction(() -> {
+      database.newVertex("P").set("pid", 6).save();
+      assertThat(count()).isEqualTo(EXPECTED);
+      assertThat(cachedPlan()).isNull();
+    });
+
+    assertThat(count()).isEqualTo(EXPECTED);
+    assertThat(cachedPlanReadsTheView()).as("the first plan after the commit reads the view").isTrue();
+  }
+
+  @Test
+  void droppingAViewAPlanPassedOverEmptiesTheCache() {
+    database.getConfiguration().setValue(GlobalConfiguration.GAV_USE_WHEN_STALE, false);
+    final GraphAnalyticalView view = GraphAnalyticalView.builder(database)
+        .withName(VIEW_NAME)
+        .withVertexTypes("P")
+        .withEdgeTypes("K")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.OFF)
+        .build();
+    database.transaction(() -> database.newVertex("P").set("pid", 6).save());
+    assertThat(count()).isEqualTo(EXPECTED);
+    assertThat(cachedPlan()).isNotNull();
+
+    // the plan holds the view it passed over: the drop, a schema change, must not leave it reachable from the cache
+    view.drop();
+
+    assertThat(cachedPlan()).isNull();
+  }
+
+  @Test
+  void aNestedRecordingHandsWhatItSawToTheEnclosingOne() {
+    database.getConfiguration().setValue(GlobalConfiguration.GAV_USE_WHEN_STALE, false);
+    final GraphAnalyticalView view = GraphAnalyticalView.builder(database)
+        .withName(VIEW_NAME)
+        .withVertexTypes("P")
+        .withEdgeTypes("K")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.OFF)
+        .build();
+    database.transaction(() -> database.newVertex("P").set("pid", 6).save());
+    assertThat(view.isReady()).isFalse();
+
+    try (final GraphTraversalProviderRegistry.ViewsPassedOver outer = GraphTraversalProviderRegistry.recordViewsPassedOver()) {
+      try (final GraphTraversalProviderRegistry.ViewsPassedOver inner = GraphTraversalProviderRegistry.recordViewsPassedOver()) {
+        assertThat(GraphTraversalProviderRegistry.findProvider(database, "K")).isNull();
+        assertThat(GraphTraversalProviderRegistry.findProvider(database, "K")).isNull();
+        assertThat(inner.getViews()).as("recorded once however often it is passed over").containsExactly(view);
+        assertThat(outer.getViews()).isEmpty();
+      }
+      assertThat(outer.getViews()).as("handed over when the inner recording closes").containsExactly(view);
+    }
+
+    // no recording open any more: a lookup records nowhere
+    try (final GraphTraversalProviderRegistry.ViewsPassedOver later = GraphTraversalProviderRegistry.recordViewsPassedOver()) {
+      assertThat(later.getViews()).isEmpty();
+    }
   }
 
   private long count() {
