@@ -17,6 +17,8 @@ The persisted `.raft/applied-index` JSON is read in `reinitialize()` but **never
 
 **`takeSnapshot()` therefore refuses while any database is quarantined** (#7735). A quarantine skips a committed entry on purpose and lets every later entry advance `lastAppliedIndex` past it, so checkpointing that index authorises Ratis to purge the one entry a restart still has to replay - which is how a per-database quarantine used to turn into permanent silent divergence. The trade is a log that keeps growing while a database is quarantined; that is deliberate, because no `DivergenceCause` heals without a resync and the node is out of the ready set the whole time.
 
+**It also clamps below an entry left for replay** (#9550). An apply that fails because its database was closed under the apply thread while the node is shutting down (Raft stop requested, server `SHUTTING_DOWN`, or the JVM running its shutdown hooks) is neither applied nor quarantined: it raises `EntryLeftForReplayException`, records `replayFloor`, and `takeSnapshot()` checkpoints at most `replayFloor - 1`. While shutting down, `databaseFor()` also refuses to reopen a closed database. Any new apply path that resolves a database should go through `databaseFor()` so it inherits both.
+
 Note that `globalAppliedIndex` and `lastAppliedIndex` track the same value on the apply path but are seeded independently, so they can briefly differ right after `reinitialize()`. Do not assert equality across that window.
 
 ## `RaftHAServer.getLastAppliedIndex()` does not read ArcadeDB's counter
