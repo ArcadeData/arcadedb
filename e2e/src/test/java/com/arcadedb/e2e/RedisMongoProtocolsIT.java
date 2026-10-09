@@ -38,8 +38,13 @@ class RedisMongoProtocolsIT extends ArcadeContainerTemplate {
     try (final Jedis jedis = new Jedis(host, redisPort)) {
       jedis.auth("root", "playwithdata");
       assertThat(jedis.ping()).isEqualTo("PONG");
-      jedis.set("e2eKey", "e2eValue");
-      assertThat(jedis.get("e2eKey")).isEqualTo("e2eValue");
+      try {
+        jedis.set("e2eKey", "e2eValue");
+        assertThat(jedis.get("e2eKey")).isEqualTo("e2eValue");
+      } finally {
+        // the container is shared by the whole battery; ArcadeDB's Redis wrapper has GETDEL but no DEL
+        jedis.getDel("e2eKey");
+      }
     }
   }
 

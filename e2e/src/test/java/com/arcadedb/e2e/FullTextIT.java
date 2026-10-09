@@ -27,7 +27,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 
-import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -157,9 +156,7 @@ class FullTextIT extends ArcadeContainerTemplate {
 
   private static long search(final String type, final String text) {
     try (final ResultSet rs = database.query("sql", "SELECT FROM " + type + " WHERE SEARCH_INDEX('" + type + "[txt]', ?) = true", text)) {
-      final List<Object> rows = new ArrayList<>();
-      rs.stream().forEach(rows::add);
-      return rows.size();
+      return rs.stream().count();
     }
   }
 }

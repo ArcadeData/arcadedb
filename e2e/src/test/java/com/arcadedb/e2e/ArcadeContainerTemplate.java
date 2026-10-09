@@ -48,11 +48,12 @@ public abstract class ArcadeContainerTemplate {
   static final String             IMAGE  = System.getProperty("arcadedb.test.image",
       System.getenv().getOrDefault("ARCADEDB_DOCKER_IMAGE", "arcadedata/arcadedb:latest"));
   /**
-   * Whether the image runs the native binary: {@code -Darcadedb.test.native=true|false}, else guessed from the tag
-   * ({@code latest-native}, {@code <version>-native-<arch>}). The native image does not bundle Gremlin.
+   * Whether the image runs the native binary: {@code -Darcadedb.test.native=true|false}, else guessed from the TAG only
+   * ({@code latest-native}, {@code <version>-native-<arch>}), so a registry or repository name containing "-native" does
+   * not count. The native image does not bundle Gremlin.
    */
   static final boolean            NATIVE = Boolean.parseBoolean(
-      System.getProperty("arcadedb.test.native", String.valueOf(IMAGE.contains("-native"))));
+      System.getProperty("arcadedb.test.native", String.valueOf(tagOf(IMAGE).contains("native"))));
   static final GenericContainer<?> ARCADE;
 
   static {
@@ -79,6 +80,8 @@ public abstract class ArcadeContainerTemplate {
             "beer[root]{import:https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz}",
             "arcadedb.server.plugins", plugins.toString()))
         .waitingFor(Wait.forHttp("/api/v1/ready").forPort(2480).forStatusCode(204));
+    // deliberate output, not debug: which image a CI run tested must be visible in its log. Not a logger: in this module
+    // slf4j-api resolves to 1.7.x through Testcontainers, which finds no binding and logs nothing
     System.out.println("ArcadeDB e2e image: " + IMAGE + (NATIVE ? " (native)" : ""));
     ARCADE.start();
   }
@@ -90,6 +93,12 @@ public abstract class ArcadeContainerTemplate {
   protected int    mongoPort = ARCADE.getMappedPort(27017);
   protected int    grpcPort  = ARCADE.getMappedPort(50051);
   protected int    boltPort  = ARCADE.getMappedPort(7687);
+
+  /** The tag of an image reference: what follows the last ':' after the last '/', or "" when there is none. */
+  static String tagOf(final String image) {
+    final int colon = image.lastIndexOf(':');
+    return colon > image.lastIndexOf('/') ? image.substring(colon + 1) : "";
+  }
 
   /** Gremlin is bundled in the JVM image only. */
   protected static void assumeGremlin() {

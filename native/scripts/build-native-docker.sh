@@ -401,6 +401,9 @@ log "image built: $TAG ($(docker image inspect "$TAG" --format '{{.Size}}' | awk
 # in the server log, which replaces the startup-log grep the shell smoke used to make.
 # ---------------------------------------------------------------------------
 if [ "$RUN_E2E" = "1" ]; then
+  # unlike the binary build, the battery runs on the HOST: it needs a JDK there, and network access for the dataset the
+  # container imports at startup. The image was built --load for linux/$ARCH only, so Testcontainers runs that platform
+  command -v java >/dev/null 2>&1 || fail "the e2e battery needs a JDK 21+ on the host (java not found); use --no-e2e to only build the image"
   log "running the e2e battery against $TAG"
   (cd "$REPO_ROOT" && ./mvnw -B -q install -DskipTests -pl e2e -am) || fail "could not build the e2e module"
   (cd "$REPO_ROOT" && ./mvnw -B verify -Pintegration -pl e2e -Darcadedb.test.image="$TAG" -Darcadedb.test.native=true) ||
