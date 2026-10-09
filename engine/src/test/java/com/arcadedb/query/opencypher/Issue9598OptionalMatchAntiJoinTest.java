@@ -165,6 +165,9 @@ class Issue9598OptionalMatchAntiJoinTest extends TestHelper {
         "MATCH (c:Comment), (p:Post) OPTIONAL MATCH (c)-[h:REPLY_OF]-(p) WITH c, p, h WHERE h IS NULL RETURN count(*) AS n",
         "MATCH (c:Comment)-[:HAS_TAG]->(t:Tag) OPTIONAL MATCH (c)-[:REPLY_OF]->(:Message)-[h:HAS_TAG]->(t) "
             + "WITH c AS comment, t.name AS tag, h WHERE h IS NULL RETURN count(*) AS n",
+        // a WITH that renames what the RETURN reads is not a pass-through: it stays, without the removed name
+        CHAIN + "OPTIONAL MATCH (comment)-[h:HAS_TAG]->(tag1) WITH tag1 AS first, tag2, h WHERE first <> tag2 AND h IS NULL "
+            + "RETURN count(first) AS n",
         // one relationship type twice: the predicate binds two different relationships, as the OPTIONAL MATCH does
         "MATCH (c:Comment), (p:Post) OPTIONAL MATCH (c)-[:REPLY_OF]->(:Message)-[h:REPLY_OF]->(p) "
             + "WITH c, p, h WHERE h IS NULL RETURN count(*) AS n" }) {
@@ -218,6 +221,10 @@ class Issue9598OptionalMatchAntiJoinTest extends TestHelper {
         CHAIN + "OPTIONAL MATCH (comment)-[h:HAS_TAG]->(tag1) WITH tag1, tag2, h LIMIT 1000000 WHERE h IS NULL RETURN count(*) AS n",
         CHAIN + "OPTIONAL MATCH (comment)-[h:HAS_TAG]->(tag1) WHERE tag1 <> tag2 WITH tag1, tag2, h WHERE h IS NULL RETURN count(*) AS n",
         CHAIN + "OPTIONAL MATCH (comment)-[h:HAS_TAG]->(tag1) WITH tag1, tag2, h WHERE h IS NOT NULL RETURN count(*) AS n",
+        // the test only inside another expression: not a conjunct of its own
+        CHAIN + "OPTIONAL MATCH (comment)-[h:HAS_TAG]->(tag1) WITH tag1, tag2, h WHERE h IS NULL OR tag1 = tag2 RETURN count(*) AS n",
+        CHAIN + "OPTIONAL MATCH (comment)-[h:HAS_TAG]->(tag1) WITH tag1, tag2, h WHERE NOT (h IS NOT NULL) RETURN count(*) AS n",
+        CHAIN + "OPTIONAL MATCH (comment)-[h:HAS_TAG]->(tag1) WITH tag1, tag2, h WHERE coalesce(h, 0) = 0 RETURN count(*) AS n",
         // p is null for a comment that replies to a comment: OPTIONAL MATCH from a null node matches nothing
         "MATCH (c:Comment) OPTIONAL MATCH (c)-[:REPLY_OF]->(p:Post) OPTIONAL MATCH (p)-[h:HAS_TAG]->(:Tag) "
             + "WITH c, h WHERE h IS NULL RETURN count(*) AS n" }) {
