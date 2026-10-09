@@ -79,6 +79,14 @@ public final class FloatingKeyBound {
     return false;
   }
 
+  /** The key {@code bound} rounds to, in the key type: what the index stores, and what a lookup of an unordered index reports back. */
+  public static Number rounded(final byte keyType, final Object bound) {
+    final Number number = (Number) bound;
+    if (keyType == BinaryTypes.TYPE_DOUBLE)
+      return number.doubleValue();
+    return number.floatValue();
+  }
+
   /** The key one step below the one {@code bound} rounds to: the lower end of a seek that holds every key the bound can select. */
   public static Number below(final byte keyType, final Object bound) {
     final Number number = (Number) bound;

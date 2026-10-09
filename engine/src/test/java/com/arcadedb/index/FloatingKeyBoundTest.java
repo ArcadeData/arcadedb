@@ -48,6 +48,9 @@ class FloatingKeyBoundTest {
     assertThat(FloatingKeyBound.isLossy(BinaryTypes.TYPE_DOUBLE, TWO_53 + 1)).isTrue();
     assertThat(FloatingKeyBound.isLossy(BinaryTypes.TYPE_DOUBLE, -TWO_53 - 1)).isTrue();
     assertThat(FloatingKeyBound.isLossy(BinaryTypes.TYPE_DOUBLE, Integer.MAX_VALUE)).isFalse();
+    assertThat(FloatingKeyBound.isLossy(BinaryTypes.TYPE_DOUBLE, Long.MIN_VALUE)).isTrue();
+    assertThat(FloatingKeyBound.isLossy(BinaryTypes.TYPE_DOUBLE, Long.MAX_VALUE)).isTrue();
+    assertThat(FloatingKeyBound.isLossy(BinaryTypes.TYPE_DOUBLE, BigInteger.valueOf(TWO_53))).isFalse();
     assertThat(FloatingKeyBound.isLossy(BinaryTypes.TYPE_DOUBLE, BigInteger.valueOf(TWO_53 + 1))).isTrue();
     assertThat(FloatingKeyBound.isLossy(BinaryTypes.TYPE_DOUBLE, BigInteger.TWO.pow(70))).isTrue();
     assertThat(FloatingKeyBound.isLossy(BinaryTypes.TYPE_FLOAT, TWO_24)).isFalse();
@@ -73,6 +76,13 @@ class FloatingKeyBoundTest {
     assertThat(FloatingKeyBound.isLossy(BinaryTypes.TYPE_DOUBLE, "text")).isFalse();
     assertThat(FloatingKeyBound.isLossy(BinaryTypes.TYPE_DOUBLE, null)).isFalse();
     assertThat(FloatingKeyBound.isLossy(BinaryTypes.TYPE_LONG, TWO_53 + 1)).isFalse();
+  }
+
+  @Test
+  void theRoundedKeyIsTheOneTheKeyTypeStores() {
+    assertThat(FloatingKeyBound.rounded(BinaryTypes.TYPE_DOUBLE, TWO_53 + 1)).isEqualTo((double) TWO_53).isInstanceOf(Double.class);
+    assertThat(FloatingKeyBound.rounded(BinaryTypes.TYPE_DOUBLE, new BigDecimal("0.1"))).isEqualTo(0.1d);
+    assertThat(FloatingKeyBound.rounded(BinaryTypes.TYPE_FLOAT, TWO_24 + 1)).isEqualTo((float) TWO_24).isInstanceOf(Float.class);
   }
 
   @Test

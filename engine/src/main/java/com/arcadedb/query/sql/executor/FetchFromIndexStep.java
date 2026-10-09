@@ -774,16 +774,18 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
         if (!FloatingKeyBound.isLossy(keyTypes[i], key[i]))
           continue;
         lossy = true;
-        if (!ordered)
-          continue;
         if (widened == null)
           // a copy: the array can be the one the other side, or another seek, holds
           widened = key.clone();
-        widened[i] = side == 0 ? FloatingKeyBound.below(keyTypes[i], key[i]) : FloatingKeyBound.above(keyTypes[i], key[i]);
+        // An unordered index is read at the rounded key, which it reports back as the key of its entries: the check needs the key
+        // as stored, not the bound as written
+        widened[i] = !ordered ? FloatingKeyBound.rounded(keyTypes[i], key[i])
+            : side == 0 ? FloatingKeyBound.below(keyTypes[i], key[i]) : FloatingKeyBound.above(keyTypes[i], key[i]);
       }
       if (widened != null) {
         seek[side] = widened;
-        seek[2][side] = Boolean.TRUE;
+        if (ordered)
+          seek[2][side] = Boolean.TRUE;
       }
     }
     return lossy;

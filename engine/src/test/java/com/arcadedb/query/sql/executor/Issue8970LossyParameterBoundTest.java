@@ -52,6 +52,16 @@ class Issue8970LossyParameterBoundTest extends TestHelper {
       database.command("sql", "CREATE INDEX ON I (d) NOTUNIQUE");
       database.command("sql", "CREATE INDEX ON I (f) NOTUNIQUE");
       database.command("sql", "CREATE INDEX ON I (d, id) NOTUNIQUE");
+      for (final String type : new String[] { "H", "HN" }) {
+        database.command("sql", "CREATE VERTEX TYPE " + type);
+        database.command("sql", "CREATE PROPERTY " + type + ".id INTEGER");
+        database.command("sql", "CREATE PROPERTY " + type + ".d DOUBLE");
+      }
+      database.command("sql", "CREATE INDEX ON H (d) NOTUNIQUE_HASH");
+      for (final String type : new String[] { "H", "HN" }) {
+        database.command("sql", "INSERT INTO " + type + " SET id = 1, d = 9007199254740992.0");
+        database.command("sql", "INSERT INTO " + type + " SET id = 2, d = 0.1");
+      }
       for (final String type : new String[] { "I", "N" }) {
         database.command("sql", "INSERT INTO " + type + " SET id = 1, d = 5.0, f = 5.0");
         database.command("sql", "INSERT INTO " + type + " SET id = 2, d = 9007199254740992.0, f = 16777216.0");
@@ -82,6 +92,24 @@ class Issue8970LossyParameterBoundTest extends TestHelper {
     for (final Object bound : bounds)
       for (final String operator : new String[] { "=", "<", "<=", ">", ">=", "<>" })
         assertSameAsScan("d " + operator + " ?", bound);
+  }
+
+  @Test
+  void aBoundOnAHashIndexAgreesWithTheUnindexedType() {
+    // a hash index cannot be widened: the rounded key is read and the entries are checked against the exact bound
+    for (final Object bound : new Object[] { TWO_53 + 1, TWO_53, new BigDecimal("0.1"), new BigDecimal("0.100000000000000006") }) {
+      assertThat(sql("H", "d = ?", bound)).as("hash d = %s", bound).isEqualTo(sql("HN", "d = ?", bound));
+      assertThat(sql("H", "d IN [?, ?]", bound, 5L)).as("hash d IN %s", bound).isEqualTo(sql("HN", "d IN [?, ?]", bound, 5L));
+    }
+    assertThat(sql("H", "d = ?", TWO_53 + 1)).isEmpty();
+    assertThat(sql("H", "d = ?", TWO_53)).containsExactly(1);
+  }
+
+  @Test
+  void aCompositeIndexWithAnExtraNonIndexedPredicateAgreesWithTheUnindexedType() {
+    assertSameAsScan("d = ? AND id > ? AND f > ?", TWO_53 + 1, 0, 1.0d);
+    assertSameAsScan("d >= ? AND f < ?", TWO_53 + 1, 16777220.0d);
+    assertSameAsScan("d = ? AND f = ?", new BigDecimal("0.1"), 0.1d);
   }
 
   @Test

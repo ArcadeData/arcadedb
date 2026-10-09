@@ -3273,7 +3273,8 @@ public enum GlobalConfiguration {
       restore finishes, and it applies only to a view that covers the request: a view that is only rebuilding after a \
       commit is never waited for. 0 does not wait: the call takes the record path, as it did before this setting \
       existed (a ready view that follows a restoring one is still used). The wait is not tied to the command timeout of the \
-      query (the lookup has no command to ask), only a thread interrupt ends it early, so keep it small. The default of 5 seconds suits a persisted CSR, which restores much faster than the record-by-record \
+      query (the lookup has no command to ask), only a thread interrupt ends it early, so keep it small. The default of \
+      5 seconds suits a persisted CSR, which restores much faster than the record-by-record \
       read it replaces""",
       Long.class, 5_000L),
 
