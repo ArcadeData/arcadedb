@@ -30,10 +30,13 @@ import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.NodeEdgeWeights;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.utility.NumberUtils;
@@ -266,6 +269,9 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
    * the right order of magnitude - so there is nothing to "correct" here short of measuring a specific JVM.
    */
   protected static final long MATRIX_ROW_OVERHEAD_BYTES = 32L;
+
+  /** The edge types of a walk over every type. */
+  protected static final String[] NO_EDGE_TYPES = new String[0];
 
   /**
    * Entry-count checkpoint interval for the CSR-adjacency fallback branch of {@link GraphData#adjacency}, taken
@@ -725,10 +731,34 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
         // and then remember to skip the holes in it, and every procedure written before overlays existed is
         // correct in front of one (issue #6792). wrap() is a no-op for a compact id space.
         final GraphTraversalProvider dense = DenseNodeIdProvider.wrap(provider);
-        return new GraphData(dense, dense.getNodeIdUpperBound(), memory);
+        return new GraphData(dense, dense.getNodeIdUpperBound(), memory, incomingSideContext(db, context));
       }
     }
-    return new GraphData(loadVertices(db, nodeLabels, memory), memory);
+    return new GraphData(loadVertices(db, nodeLabels, memory), memory, incomingSideContext(db, context));
+  }
+
+  /**
+   * The context a walk of the records reads the incoming side of the unidirectional edge types through (issue #8629):
+   * the call's own, so its scans are shared with the rest of the query, or a context of its own for a caller that has
+   * none.
+   */
+  protected static CommandContext incomingSideContext(final Database db, final CommandContext context) {
+    if (context != null)
+      return context;
+    final BasicCommandContext own = new BasicCommandContext();
+    own.setDatabase(db);
+    return own;
+  }
+
+  /**
+   * The edges of {@code vertex} in {@code direction} over {@code edgeTypes} (all when null or empty), completed with the
+   * incoming edges of the unidirectional types among them (issue #8629): an algorithm asks about the graph, not about
+   * what a vertex happens to store, and answers the same whichever way an edge type is stored.
+   */
+  protected static Iterable<Edge> edgesOf(final CommandContext context, final Vertex vertex, final Vertex.DIRECTION direction,
+      final String... edgeTypes) {
+    final String[] types = edgeTypes != null ? edgeTypes : NO_EDGE_TYPES;
+    return () -> IncomingEdgeLookup.getEdges(context, vertex, direction, types);
   }
 
   /**
@@ -748,25 +778,26 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     private final List<Vertex>           vertices;
     private final Map<RID, Integer>      ridToIdx;
     private final MemoryBudget           memory;
+    // WHAT THE RECORD WALKS READ THE INCOMING SIDE OF THE UNIDIRECTIONAL EDGE TYPES THROUGH (ISSUE #8629)
+    private final CommandContext         context;
 
-    private GraphData(final GraphTraversalProvider provider, final int nodeCount, final MemoryBudget memory) {
+    private GraphData(final GraphTraversalProvider provider, final int nodeCount, final MemoryBudget memory,
+        final CommandContext context) {
       this.provider = provider;
       this.vertices = null;
       this.ridToIdx = null;
       this.nodeCount = nodeCount;
       this.memory = memory;
+      this.context = context;
     }
 
-    private GraphData(final List<Vertex> vertices, final MemoryBudget memory) {
-      this(vertices, GraphEngine.buildRidIndex(vertices), memory);
-    }
-
-    private GraphData(final List<Vertex> vertices, final Map<RID, Integer> ridToIdx, final MemoryBudget memory) {
+    private GraphData(final List<Vertex> vertices, final MemoryBudget memory, final CommandContext context) {
       this.provider = null;
       this.vertices = vertices;
-      this.ridToIdx = ridToIdx;
+      this.ridToIdx = GraphEngine.buildRidIndex(vertices);
       this.nodeCount = vertices.size();
       this.memory = memory;
+      this.context = context;
     }
 
     /**
@@ -894,8 +925,11 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
       // OLTP fallback matches that contract rather than carrying a long a single degree() consumer would need.
       // A vertex with more than Integer.MAX_VALUE edges in one direction would already be precluded by the
       // engine's other structural limits well before this cast could matter.
+      // The incoming side of a unidirectional edge type is counted from the edges that end in the vertex, as a view
+      // counts it (issue #8629); the lookup answers the vertex API's count when no such type is involved
+      final String[] types = relTypes != null ? relTypes : NO_EDGE_TYPES;
       for (int i = 0; i < nodeCount; i++)
-        degrees[i] = (int) vertices.get(i).countEdges(dir, relTypes);
+        degrees[i] = (int) IncomingEdgeLookup.countEdges(context, vertices.get(i), dir, types);
       return degrees;
     }
 
@@ -1155,9 +1189,7 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
           return new NodeEdgeWeights(EMPTY_NEIGHBORS, EMPTY_WEIGHTS);
 
         final RID vertexRid = vertex.getIdentity();
-        final Iterable<Edge> edges = relTypes != null && relTypes.length > 0 ?
-            vertex.getEdges(dir, relTypes) :
-            vertex.getEdges(dir);
+        final Iterable<Edge> edges = edgesOf(context, vertex, dir, relTypes);
         int degree = 0;
         for (final Edge edge : edges) {
           // Throttled by EDGE rather than by vertex: one supernode can hold millions of them, and the walk
@@ -1235,7 +1267,11 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
 
       Edge bestEdge = null;
       double bestWeight = Double.POSITIVE_INFINITY;
-      for (final Edge edge : edgeTypeFilter != null ? from.getEdges(dir, edgeTypeFilter) : from.getEdges(dir)) {
+      // The edges joining the two, found from the end that stores each of them: the incoming side of a unidirectional
+      // edge type is on the other end only (issue #8629), and no edge that does not reach the next vertex is loaded
+      for (final Iterator<Edge> edges = IncomingEdgeLookup.getEdgesConnectedTo((VertexInternal) from, dir, toRid,
+          edgeTypeFilter != null ? edgeTypeFilter : NO_EDGE_TYPES); edges.hasNext(); ) {
+        final Edge edge = edges.next();
         try {
           final RID otherRid = edge.getOut().equals(from.getIdentity()) ? edge.getIn() : edge.getOut();
           if (!toRid.equals(otherRid))

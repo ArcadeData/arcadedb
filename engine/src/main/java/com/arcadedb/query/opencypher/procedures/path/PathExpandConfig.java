@@ -154,7 +154,7 @@ public class PathExpandConfig extends AbstractPathProcedure {
 
         if (currentLevel < maxLevel) {
           final Vertex lastNode = (Vertex) path.getLast();
-          expandFromNode(lastNode, relTypes, labelFilter, path, visited, ghostNodes, nextFrontier);
+          expandFromNode(lastNode, relTypes, labelFilter, path, visited, ghostNodes, nextFrontier, context);
         }
       }
 
@@ -166,11 +166,11 @@ public class PathExpandConfig extends AbstractPathProcedure {
 
   private void expandFromNode(final Vertex node, final String[] relTypes, final String[] labelFilter,
       final List<Object> currentPath, final RidHashSet visited, final RidHashSet ghostNodes,
-      final List<List<Object>> nextFrontier) {
+      final List<List<Object>> nextFrontier, final CommandContext context) {
 
     // Expand in both directions
     for (final Vertex.DIRECTION direction : new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN }) {
-      final Iterable<Edge> edges = node.getEdges(direction, relTypes != null ? relTypes : NO_TYPES);
+      final Iterable<Edge> edges = edgesOf(context, node, direction, relTypes);
 
       for (final Edge edge : edges) {
         try {
@@ -219,7 +219,7 @@ public class PathExpandConfig extends AbstractPathProcedure {
     }
 
     for (final Vertex.DIRECTION direction : new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN }) {
-      final Iterable<Edge> edges = current.getEdges(direction, relTypes != null ? relTypes : NO_TYPES);
+      final Iterable<Edge> edges = edgesOf(context, current, direction, relTypes);
 
       for (final Edge edge : edges) {
         if (allPaths.size() >= limit) {

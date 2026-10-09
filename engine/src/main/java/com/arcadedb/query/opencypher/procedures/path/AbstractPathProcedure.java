@@ -25,8 +25,10 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.EdgeIdentitySet;
 import com.arcadedb.graph.GhostEdgeReporter;
+import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
+import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.RidHashSet;
 
@@ -45,6 +47,19 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
    * stray write could reach.
    */
   protected static final String[] NO_TYPES = new String[0];
+
+  /**
+   * The edges of {@code vertex} in {@code direction} over {@code relTypes} (all when null or empty), completed with the
+   * incoming edges of the unidirectional types among them (issue #8629): a path procedure walks the graph, not what a
+   * vertex happens to store, and answers the same whichever way an edge type is stored.
+   */
+  protected static Iterable<Edge> edgesOf(final CommandContext context, final Vertex vertex, final Vertex.DIRECTION direction,
+      final String[] relTypes) {
+    final String[] types = relTypes != null ? relTypes : NO_TYPES;
+    if (direction == Vertex.DIRECTION.OUT)
+      return vertex.getEdges(direction, types);
+    return () -> IncomingEdgeLookup.getEdges(context, vertex, direction, types);
+  }
 
   // Private, not protected: `final` on an array fixes the reference and nothing else, so a shared array with
   // elements in it, handed to subclasses, is one stray write away from corrupting every caller of every path walk
@@ -180,10 +195,13 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
    * @param reachableEdges collects the traversed edges, or {@code null} to skip building them entirely
    */
   protected void collectReachableComponent(final Vertex startNode, final String[] relTypes, final String[] labelFilter,
-      final int maxLevel, final List<Vertex> reachableNodes, final List<Edge> reachableEdges) {
+      final int maxLevel, final List<Vertex> reachableNodes, final List<Edge> reachableEdges, final CommandContext context) {
     final Database database = startNode.getDatabase();
     final String[] edgeTypes = relTypes != null ? relTypes : NO_TYPES;
     final boolean collectEdges = reachableEdges != null;
+    // THE INCOMING SIDE OF A UNIDIRECTIONAL EDGE TYPE IS ON THE OTHER END ONLY (ISSUE #8629): READ FROM THE EDGES THAT END IN
+    // THE VERTEX, AND THE ADJACENCY ENTRIES ARE WALKED ONLY WHEN NO SUCH TYPE IS INVOLVED
+    final boolean incomingSideMissing = IncomingEdgeLookup.isNeeded(context, database, Vertex.DIRECTION.IN, edgeTypes);
 
     final RidHashSet visitedNodes = new RidHashSet();
     final RidHashSet ghostNodes = new RidHashSet(16);
@@ -203,7 +221,7 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
           // The edges are part of the answer: materialise them, but still take the neighbour from the edge's RID
           // rather than from its record, so an already-visited neighbour costs nothing
           for (final Vertex.DIRECTION direction : BOTH_DIRECTIONS) {
-            for (final Edge edge : current.getEdges(direction, edgeTypes)) {
+            for (final Edge edge : edgesOf(context, current, direction, edgeTypes)) {
               try {
                 // Reading the endpoint is what forces a lazily loaded edge, so a ghost edge record surfaces here
                 final RID neighborId = direction == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut();
@@ -221,8 +239,19 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
           }
         } else {
           // Only the nodes are asked for: walk the adjacency entries without loading a single edge record
-          for (final RID neighborId : current.getConnectedVertexRIDs(Vertex.DIRECTION.BOTH, edgeTypes))
-            visitNeighbor(database, neighborId, labelFilter, visitedNodes, ghostNodes, reachableNodes, nextFrontier);
+          if (incomingSideMissing) {
+            for (final RID neighborId : current.getConnectedVertexRIDs(Vertex.DIRECTION.OUT, edgeTypes))
+              visitNeighbor(database, neighborId, labelFilter, visitedNodes, ghostNodes, reachableNodes, nextFrontier);
+            for (final Edge edge : edgesOf(context, current, Vertex.DIRECTION.IN, edgeTypes)) {
+              try {
+                visitNeighbor(database, edge.getOut(), labelFilter, visitedNodes, ghostNodes, reachableNodes, nextFrontier);
+              } catch (final RecordNotFoundException e) {
+                GhostEdgeReporter.reportSkipped(e);
+              }
+            }
+          } else
+            for (final RID neighborId : current.getConnectedVertexRIDs(Vertex.DIRECTION.BOTH, edgeTypes))
+              visitNeighbor(database, neighborId, labelFilter, visitedNodes, ghostNodes, reachableNodes, nextFrontier);
         }
       }
 

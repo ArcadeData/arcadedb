@@ -122,7 +122,7 @@ public class PathSpanningTree extends AbstractPathProcedure {
 
       // Expand in both directions
       for (final Vertex.DIRECTION direction : new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN }) {
-        final Iterable<Edge> edges = current.vertex.getEdges(direction, relTypes != null ? relTypes : NO_TYPES);
+        final Iterable<Edge> edges = edgesOf(context, current.vertex, direction, relTypes);
 
         for (final Edge edge : edges) {
           try {

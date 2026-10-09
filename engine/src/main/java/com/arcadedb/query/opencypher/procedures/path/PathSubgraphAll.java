@@ -107,7 +107,7 @@ public class PathSubgraphAll extends AbstractPathProcedure {
     final List<Vertex> reachableNodes = new ArrayList<>();
     final List<Edge> reachableEdges = withRelationships ? new ArrayList<>() : null;
 
-    collectReachableComponent(startNode, relTypes, labelFilter, maxLevel, reachableNodes, reachableEdges);
+    collectReachableComponent(startNode, relTypes, labelFilter, maxLevel, reachableNodes, reachableEdges, context);
 
     final ResultInternal result = new ResultInternal();
     result.setProperty("nodes", reachableNodes);

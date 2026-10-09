@@ -217,9 +217,8 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
       }
     }
 
-    final Iterable<Edge> inEdges = relTypes != null && relTypes.length > 0
-        ? current.getEdges(Vertex.DIRECTION.IN, relTypes)
-        : current.getEdges(Vertex.DIRECTION.IN);
+    // the incoming side of a unidirectional edge type is on the other end only (issue #8629)
+    final Iterable<Edge> inEdges = edgesOf(context, current, Vertex.DIRECTION.IN, relTypes);
 
     for (final Edge edge : inEdges) {
       if (!skipRelTypes.isEmpty() && skipRelTypes.contains(edge.getTypeName()))

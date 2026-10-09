@@ -132,7 +132,7 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
     }
 
     // Fall back to OLTP path
-    return executeWithOLTP(db, startNode, relTypes, weightProperty, dir);
+    return executeWithOLTP(db, startNode, relTypes, weightProperty, dir, context);
   }
 
   private Stream<Result> executeWithCSR(final GraphAnalyticalView gav, final RID startRid,
@@ -169,7 +169,7 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
   }
 
   private Stream<Result> executeWithOLTP(final Database db, final Vertex startNode,
-      final String[] relTypes, final String weightProperty, final Vertex.DIRECTION dir) {
+      final String[] relTypes, final String weightProperty, final Vertex.DIRECTION dir, final CommandContext context) {
     final List<Vertex> vertices = loadVertices(db, null, newMemoryBudget(db));
 
     final int n = vertices.size();
@@ -190,7 +190,8 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
       final Vertex v = vertices.get(i);
       final List<int[]> nbrs = new ArrayList<>();
       final List<Double> wts = new ArrayList<>();
-      for (final Edge edge : v.getEdges(dir)) {
+      // the incoming side of a unidirectional edge type is on the other end only (issue #8629)
+      for (final Edge edge : edgesOf(context, v, dir, relTypes)) {
         if (relTypeSet != null && !relTypeSet.contains(edge.getTypeName()))
           continue;
         final RID neighborRid = neighborRid(edge, v.getIdentity(), dir);

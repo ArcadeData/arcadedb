@@ -2562,6 +2562,13 @@ public class GraphEngine {
   public static int[][] buildAdjacencyList(final List<Vertex> vertices, final Map<RID, Integer> ridToIdx,
       final Vertex.DIRECTION dir, final String[] relTypes, final LongConsumer entryCount) {
     final int n = vertices.size();
+    if (dir != Vertex.DIRECTION.OUT && n > 0) {
+      final String[] unidirectional = IncomingEdgeLookup.getUnidirectionalTypes(vertices.getFirst().getDatabase().getSchema(),
+          relTypes);
+      if (unidirectional.length > 0)
+        return buildTransposedAdjacencyList(vertices, ridToIdx, dir, relTypes, unidirectional, entryCount);
+    }
+
     final int[] counts = new int[n];
     for (int i = 0; i < n; i++) {
       final Vertex v = vertices.get(i);
@@ -2610,6 +2617,89 @@ public class GraphEngine {
       }
     }
     return adj;
+  }
+
+  /**
+   * {@link #buildAdjacencyList(List, Map, Vertex.DIRECTION, String[], LongConsumer)} over edge types some of which are
+   * declared unidirectional (issue #8629). Such a type writes the outgoing pointer only, so the incoming side of a
+   * vertex holds no trace of its edges; but the rows only ever list vertices of the set, and every edge between two of
+   * them sits in the outgoing list of its source, so the incoming rows are the transpose of the outgoing lists of the
+   * same vertices - what a Graph Analytical View derives its backward CSR from. No scan and no index are needed, and the
+   * algorithms answer the same with and without a view. The incoming list of a vertex is still read for the
+   * bidirectional types, leaving out any pointer a bulk load stored for a unidirectional one, which the transpose already
+   * answers for.
+   * <p>
+   * Two passes as for the other types, the first counting and the second filling, over the same edges in the same
+   * order: a row gets its entries from its own lists and from the transposed edges of the vertices before and after it,
+   * in the order the walk meets them both times.
+   */
+  private static int[][] buildTransposedAdjacencyList(final List<Vertex> vertices, final Map<RID, Integer> ridToIdx,
+      final Vertex.DIRECTION dir, final String[] relTypes, final String[] unidirectional, final LongConsumer entryCount) {
+    final int n = vertices.size();
+    final EdgeBucketMask unidirectionalBuckets = EdgeBucketMask.of((DatabaseInternal) vertices.getFirst().getDatabase(),
+        unidirectional);
+    final int[] counts = new int[n];
+    walkTransposedAdjacency(vertices, ridToIdx, dir, relTypes, unidirectional, unidirectionalBuckets, counts, null);
+    if (entryCount != null) {
+      long total = 0;
+      for (int i = 0; i < n; i++)
+        total += counts[i];
+      entryCount.accept(total);
+    }
+    final int[][] adj = new int[n][];
+    for (int i = 0; i < n; i++)
+      adj[i] = new int[counts[i]];
+    // THE SECOND PASS RE-COUNTS INTO A ZEROED ARRAY, USED AS THE FILL POSITION OF EACH ROW
+    walkTransposedAdjacency(vertices, ridToIdx, dir, relTypes, unidirectional, unidirectionalBuckets, new int[n], adj);
+    return adj;
+  }
+
+  /**
+   * One pass of {@link #buildTransposedAdjacencyList}: counts the entries of each row into {@code sizes}, and also writes
+   * them into {@code adj} when it is not null. A ghost edge (a pointer to a record that is gone) is skipped in both passes
+   * alike, so the fill never exceeds the count.
+   */
+  private static void walkTransposedAdjacency(final List<Vertex> vertices, final Map<RID, Integer> ridToIdx,
+      final Vertex.DIRECTION dir, final String[] relTypes, final String[] unidirectional,
+      final EdgeBucketMask unidirectionalBuckets, final int[] sizes, final int[][] adj) {
+    final boolean both = dir == Vertex.DIRECTION.BOTH;
+    final boolean typed = relTypes != null && relTypes.length > 0;
+    for (int i = 0; i < vertices.size(); i++) {
+      final Vertex v = vertices.get(i);
+      // BOTH: THE OUTGOING ROW OF EVERY TYPE. IN: ONLY THE UNIDIRECTIONAL EDGES, WHICH ARE TRANSPOSED INTO THEIR TARGET'S ROW
+      final Iterable<Edge> outgoing = both ? (typed ? v.getEdges(Vertex.DIRECTION.OUT, relTypes) : v.getEdges(Vertex.DIRECTION.OUT)) :
+          v.getEdges(Vertex.DIRECTION.OUT, unidirectional);
+      for (final Edge e : outgoing) {
+        try {
+          final Integer j = ridToIdx.get(e.getIn());
+          if (j == null)
+            continue;
+          if (both)
+            addAdjacencyEntry(sizes, adj, i, j);
+          if (unidirectionalBuckets != null && unidirectionalBuckets.matches(e.getIdentity().getBucketId()))
+            addAdjacencyEntry(sizes, adj, j, i);
+        } catch (final RecordNotFoundException rnf) {
+          GhostEdgeReporter.reportSkipped(rnf);
+        }
+      }
+      for (final Edge e : typed ? v.getEdges(Vertex.DIRECTION.IN, relTypes) : v.getEdges(Vertex.DIRECTION.IN)) {
+        try {
+          if (unidirectionalBuckets != null && unidirectionalBuckets.matches(e.getIdentity().getBucketId()))
+            continue;
+          final Integer j = ridToIdx.get(e.getOut());
+          if (j != null)
+            addAdjacencyEntry(sizes, adj, i, j);
+        } catch (final RecordNotFoundException rnf) {
+          GhostEdgeReporter.reportSkipped(rnf);
+        }
+      }
+    }
+  }
+
+  private static void addAdjacencyEntry(final int[] sizes, final int[][] adj, final int row, final int neighbor) {
+    if (adj != null)
+      adj[row][sizes[row]] = neighbor;
+    ++sizes[row];
   }
 
   protected RID moveToType(final Vertex vertex, final String typeName) {

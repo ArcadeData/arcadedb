@@ -88,7 +88,7 @@ public class AlgoCCHShortestPath extends AbstractAlgoProcedure {
         parseDirection(extractString(args[4], "direction")) : Vertex.DIRECTION.BOTH;
 
     final ShortestPathFinder.Result found = ShortestPathFinder.find(context.getDatabase(), startNode.getIdentity(),
-        endNode.getIdentity(), weightProperty, direction, relTypes, newWorkGuard(context));
+        endNode.getIdentity(), weightProperty, direction, relTypes, newWorkGuard(context), context);
     if (found == null)
       return Stream.empty();
     if (found.engine() == ShortestPathFinder.Engine.CONTRACTION_HIERARCHY)
