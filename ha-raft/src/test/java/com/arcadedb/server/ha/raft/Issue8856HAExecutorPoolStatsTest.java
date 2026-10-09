@@ -37,9 +37,6 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.doAnswer;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Issue #8856: what each of the HA layer's per-instance executor rows reads, driven through the pools themselves.
@@ -95,14 +92,19 @@ class Issue8856HAExecutorPoolStatsTest {
         return true;
       }
     };
-    final ArcadeStateMachine sm = mock(ArcadeStateMachine.class);
-    when(sm.hasLeaderServiceGap()).thenReturn(true);
+    final FakeArcadeStateMachine sm = new FakeArcadeStateMachine();
+    sm.returns("hasLeaderServiceGap", true);
     final CountDownLatch started = new CountDownLatch(1);
-    doAnswer(invocation -> {
+    sm.on("handOffLeadershipWhileReplacingDatabase", args -> {
       started.countDown();
-      release.await(AWAIT_SECONDS, TimeUnit.SECONDS);
+      try {
+        release.await(AWAIT_SECONDS, TimeUnit.SECONDS);
+      } catch (final InterruptedException e) {
+        // An answer cannot throw a checked exception: keep the interrupt for the caller to see
+        Thread.currentThread().interrupt();
+      }
       return false;
-    }).when(sm).handOffLeadershipWhileReplacingDatabase();
+    });
     final Field field = RaftHAServer.class.getDeclaredField("stateMachine");
     field.setAccessible(true);
     field.set(server, sm);

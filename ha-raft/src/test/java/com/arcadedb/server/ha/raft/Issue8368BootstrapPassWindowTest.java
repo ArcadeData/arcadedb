@@ -26,7 +26,6 @@ import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.FakeArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.utility.FileUtils;
@@ -55,10 +54,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
-import static org.mockito.Mockito.doThrow;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
-import static org.mockito.Mockito.when;
 
 /**
  * Regression tests for issue #8368: a follower had no local signal that a first-formation bootstrap pass was under
@@ -268,9 +264,9 @@ class Issue8368BootstrapPassWindowTest {
   @Test
   void aClientIsRefusedWhileThePassDecidesAndServedOnceItHas() throws Exception {
     final ArcadeStateMachine sm = stateMachine();
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.isLeader()).thenReturn(true);
-    when(raft.getStateMachine()).thenReturn(sm);
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.leader(true);
+    raft.stateMachine(sm);
     final FakeArcadeDBServer server = FakeArcadeDBServer.create();
     server.returns("getConfiguration", configuration());
     final RaftReplicatedDatabase replicated = new RaftReplicatedDatabase(server, localDb, raft);
@@ -311,14 +307,16 @@ class Issue8368BootstrapPassWindowTest {
   @Test
   void aLeaderThatTransfersHoldsItsOwnCopyThroughTheTransfer() {
     final ArcadeStateMachine sm = stateMachine();
-    final RaftHAServer ha = leaderOfAPassThatElects(sm);
+    final FakeRaftHAServer ha = leaderOfAPassThatElects(sm);
     final BootstrapElection election = electionWhereTheRemotePeerIsFresher(ha);
 
     final boolean[] heldAtTheTransfer = new boolean[1];
-    doAnswer(invocation -> {
-      heldAtTheTransfer[0] = sm.isBootstrapPassPending(DB_NAME);
-      return null;
-    }).when(ha).transferLeadership(anyString(), anyLong());
+    ha.on("transferLeadership", args -> {
+      // The targeted form (peer, timeout) is the one the election asks for; the others answer as unanswered
+      if (args[0] instanceof String)
+        heldAtTheTransfer[0] = sm.isBootstrapPassPending(DB_NAME);
+      return false;
+    });
 
     assertThat(election.runIfEligible()).isEqualTo(BootstrapElection.Outcome.TRANSFERRED);
     assertThat(heldAtTheTransfer[0]).as("held from the decision, before leadership moves").isTrue();
@@ -332,9 +330,9 @@ class Issue8368BootstrapPassWindowTest {
   @Test
   void aFailedTransferReleasesTheLeadersOwnHold() {
     final ArcadeStateMachine sm = stateMachine();
-    final RaftHAServer ha = leaderOfAPassThatElects(sm);
+    final FakeRaftHAServer ha = leaderOfAPassThatElects(sm);
     final BootstrapElection election = electionWhereTheRemotePeerIsFresher(ha);
-    doThrow(new IllegalStateException("transfer timed out")).when(ha).transferLeadership(anyString(), anyLong());
+    ha.fails("transferLeadership", new IllegalStateException("transfer timed out"));
 
     assertThat(election.runIfEligible()).isEqualTo(BootstrapElection.Outcome.FAILED);
     assertThat(sm.isBootstrapPassPending(DB_NAME)).isFalse();
@@ -348,7 +346,7 @@ class Issue8368BootstrapPassWindowTest {
   @Test
   void aLeaderHoldsItsOwnCopyWhileItCollects() {
     final ArcadeStateMachine sm = stateMachine();
-    final RaftHAServer ha = leaderOfAPassThatElects(sm);
+    final FakeRaftHAServer ha = leaderOfAPassThatElects(sm);
     final BootstrapElection election = electionWhereTheRemotePeerIsFresher(ha);
     final boolean[] heldWhileCollecting = new boolean[1];
     final String[] reasonWhileCollecting = new String[1];
@@ -371,8 +369,8 @@ class Issue8368BootstrapPassWindowTest {
   @Test
   void aLeaderThatIsTheSourceIsReleasedByItsOwnBaseline() throws Exception {
     final ArcadeStateMachine sm = stateMachine();
-    final RaftHAServer ha = leaderOfAPassThatElects(sm);
-    when(ha.getTransactionBroker()).thenReturn(mock(RaftTransactionBroker.class));
+    final FakeRaftHAServer ha = leaderOfAPassThatElects(sm);
+    ha.transactionBroker(new FakeRaftTransactionBroker());
     final BootstrapElection election = spy(new BootstrapElection(ha, passServer));
     election.probeRetryBackoffMs = 0L;
     final boolean[] heldWhileCollecting = new boolean[1];
@@ -401,7 +399,7 @@ class Issue8368BootstrapPassWindowTest {
   @Tag("slow")
   void theLeadersHoldCannotLapseWhileItsPassIsStillCollecting() {
     final ArcadeStateMachine sm = stateMachine();
-    final RaftHAServer ha = leaderOfAPassThatElects(sm);
+    final FakeRaftHAServer ha = leaderOfAPassThatElects(sm);
     final BootstrapElection election = electionWhereTheRemotePeerIsFresher(ha);
     final boolean[] heldAfterTheOldDeadline = new boolean[1];
     doAnswer(invocation -> {
@@ -443,7 +441,7 @@ class Issue8368BootstrapPassWindowTest {
   @Test
   void aTransferBoundsEveryDatabaseThePassHolds() {
     final ArcadeStateMachine sm = spy(stateMachine());
-    final RaftHAServer ha = leaderOfAPassThatElects(sm);
+    final FakeRaftHAServer ha = leaderOfAPassThatElects(sm);
     // Listed when the pass starts, gone by the time the local states are computed: no peer reports it.
     passServer.returns("getDatabaseNames", Set.of(DB_NAME, "gone-8477"));
     final BootstrapElection election = electionWhereTheRemotePeerIsFresher(ha);
@@ -462,7 +460,7 @@ class Issue8368BootstrapPassWindowTest {
   @Test
   void aPassThatFailsWhileCollectingReleasesTheLeadersHold() {
     final ArcadeStateMachine sm = stateMachine();
-    final RaftHAServer ha = leaderOfAPassThatElects(sm);
+    final FakeRaftHAServer ha = leaderOfAPassThatElects(sm);
     final BootstrapElection election = spy(new BootstrapElection(ha, passServer));
     election.probeRetryBackoffMs = 0L;
     final boolean[] heldWhileCollecting = new boolean[1];
@@ -482,7 +480,7 @@ class Issue8368BootstrapPassWindowTest {
   private static final RaftPeerId REMOTE_PEER = RaftPeerId.valueOf("remote-8368");
 
   /** A first-formation leader over {@code sm}, with one remote peer whose HTTP port refuses at once. */
-  private RaftHAServer leaderOfAPassThatElects(final ArcadeStateMachine sm) {
+  private FakeRaftHAServer leaderOfAPassThatElects(final ArcadeStateMachine sm) {
     final ContextConfiguration config = configuration();
     config.setValue(GlobalConfiguration.HA_BOOTSTRAP_FROM_LOCAL_DATABASE, true);
     config.setValue(GlobalConfiguration.HA_BOOTSTRAP_TIMEOUT_MS, 1_000L);
@@ -492,19 +490,19 @@ class Issue8368BootstrapPassWindowTest {
     sm.setServer(server);
     passServer = server;
 
-    final RaftHAServer ha = mock(RaftHAServer.class);
-    when(ha.isLeader()).thenReturn(true);
-    when(ha.getCommitIndex()).thenReturn(0L);
-    when(ha.getStateMachine()).thenReturn(sm);
-    when(ha.getLocalPeerId()).thenReturn(LOCAL_PEER);
-    when(ha.getLivePeers()).thenReturn(List.of(RaftPeer.newBuilder().setId(LOCAL_PEER).build(),
+    final FakeRaftHAServer ha = FakeRaftHAServer.detached();
+    ha.leader(true);
+    ha.commitIndex(0L);
+    ha.stateMachine(sm);
+    ha.localPeerId(LOCAL_PEER);
+    ha.returns("getLivePeers", List.of(RaftPeer.newBuilder().setId(LOCAL_PEER).build(),
         RaftPeer.newBuilder().setId(REMOTE_PEER).build()));
     // Port 1 refuses at once: the conclusion the failed pass sends it is best effort and must not delay the test.
-    when(ha.getHttpAddresses()).thenReturn(Map.of(REMOTE_PEER, "localhost:1"));
+    ha.httpAddresses(Map.of(REMOTE_PEER, "localhost:1"));
     // The elected source has answered this leader recently, which the transfer to it requires (issue #8714).
-    when(ha.followerContactPeers()).thenReturn(Set.of(REMOTE_PEER.toString()));
+    ha.returns("followerContactPeers", Set.of(REMOTE_PEER.toString()));
     // The election dials a declared endpoint only when it identifies the peer alone (issue #8033).
-    when(ha.getUnambiguousPeerHttpAddress(REMOTE_PEER)).thenReturn("localhost:1");
+    ha.peerHttpAddress(REMOTE_PEER, "localhost:1");
     return ha;
   }
 

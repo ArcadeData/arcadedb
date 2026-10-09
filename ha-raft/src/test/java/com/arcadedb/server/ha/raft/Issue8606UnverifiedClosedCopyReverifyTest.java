@@ -100,7 +100,7 @@ class Issue8606UnverifiedClosedCopyReverifyTest {
 
   private       ArcadeDBServer     server;
   private       ArcadeStateMachine sm;
-  private       RaftHAServer       raft;
+  private       FakeRaftHAServer       raft;
   private       HttpServer         leader;
   private       String             leaderAddress;
   // What the fake leader answers about each database: absent = it would not serve it.
@@ -142,14 +142,14 @@ class Issue8606UnverifiedClosedCopyReverifyTest {
     leader.start();
     leaderAddress = "localhost:" + leader.getAddress().getPort();
 
-    raft = mock(RaftHAServer.class);
-    when(raft.isLeader()).thenReturn(false);
-    when(raft.getLocalPeerId()).thenReturn(LOCAL);
-    when(raft.getLocalHttpAddress()).thenReturn("local-host:2480");
-    when(raft.getClusterToken()).thenReturn(null);
-    when(raft.getLeaderId()).thenReturn(LEADER);
-    when(raft.getUnambiguousPeerHttpAddress(LEADER)).thenReturn(leaderAddress);
-    when(raft.getUnambiguousPeerHttpAddress(NEW_LEADER)).thenReturn(leaderAddress);
+    raft = FakeRaftHAServer.detached();
+    raft.leader(false);
+    raft.localPeerId(LOCAL);
+    raft.localHttpAddress("local-host:2480");
+    raft.clusterToken(null);
+    raft.leaderId(LEADER);
+    raft.peerHttpAddress(LEADER, leaderAddress);
+    raft.peerHttpAddress(NEW_LEADER, leaderAddress);
 
     sm = new ArcadeStateMachine();
     sm.setServer(server);
@@ -312,7 +312,12 @@ class Issue8606UnverifiedClosedCopyReverifyTest {
   @Test
   void aRoundThatThrowsIsCountedAndReleasesTheGuard() throws Exception {
     // The tick reads the leader once, the round once more: the round's read throws.
-    when(raft.getLeaderId()).thenReturn(LEADER).thenThrow(new IllegalStateException("boom")).thenReturn(LEADER);
+    final AtomicInteger leaderReads = new AtomicInteger();
+    raft.on("getLeaderId", args -> {
+      if (leaderReads.incrementAndGet() == 2)
+        throw new IllegalStateException("boom");
+      return LEADER;
+    });
 
     reverifyRound();
 
@@ -330,7 +335,7 @@ class Issue8606UnverifiedClosedCopyReverifyTest {
 
     leaderServesSnapshot();
     leaderHolds.add(DB_NAME);
-    when(raft.getLeaderId()).thenReturn(NEW_LEADER);
+    raft.leaderId(NEW_LEADER);
     sm.reverifyUnverifiedClosedCopies();
     sm.awaitLifecycleTasksForTesting(60_000);
 
@@ -352,7 +357,7 @@ class Issue8606UnverifiedClosedCopyReverifyTest {
     final Field field = RaftHAPlugin.class.getDeclaredField("raftHAServer");
     field.setAccessible(true);
     field.set(plugin, raft);
-    when(raft.getStateMachine()).thenReturn(sm);
+    raft.stateMachine(sm);
     server.setHA(plugin);
     try {
       assertRefusedOnThisFollower();
@@ -368,7 +373,7 @@ class Issue8606UnverifiedClosedCopyReverifyTest {
   /** The leader reopens a marked copy on demand after asking its peers (issue #8605): its tick does nothing. */
   @Test
   void theLeaderDoesNotReverify() throws Exception {
-    when(raft.isLeader()).thenReturn(true);
+    raft.leader(true);
 
     reverifyRound();
 
@@ -393,7 +398,7 @@ class Issue8606UnverifiedClosedCopyReverifyTest {
   /** The leader's side of the probe: what its snapshot route serves - registered there, and not quarantined (#8468). */
   @Test
   void theLeadersHandlerReportsWhetherItServesTheDatabase() throws Exception {
-    when(raft.getStateMachine()).thenReturn(sm);
+    raft.stateMachine(sm);
     final ServerDatabase other = server.getOrCreateDatabase("db8606other");
     try {
       assertThat(handlerAnswer("db8606other").getBoolean(UnverifiedClosedCopyCheck.SERVES, false)).isTrue();

@@ -33,11 +33,6 @@ import java.util.stream.Collectors;
 import static com.arcadedb.utility.SubclassMocks.mock;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.doThrow;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
 /**
  * Regression test for the retry half of issue #7134.
@@ -73,10 +68,10 @@ class Issue7134StepDownRetryStopsOnRefusalTest {
 
   @Test
   void aRefusalStopsTheRetryLoopImmediatelyAndNeverStopsTheServer() throws Exception {
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.isLeader()).thenReturn(true); // true when recovery starts, then leadership moves
-    doThrow(new NotTheLeaderRefusalException("Refusing to step down",
-        RaftPeerId.valueOf(NEW_LEADER))).when(raft).stepDown();
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.leader(true); // true when recovery starts, then leadership moves
+    raft.fails("stepDown", new NotTheLeaderRefusalException("Refusing to step down",
+        RaftPeerId.valueOf(NEW_LEADER)));
 
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_STOP_SERVER_ON_REPLICATION_FAILURE, true);
@@ -85,7 +80,7 @@ class Issue7134StepDownRetryStopsOnRefusalTest {
 
     recover(databaseWith(raft, server));
 
-    verify(raft, times(1)).stepDown();
+    assertThat(raft.calls("stepDown")).hasSize(1);
     assertThat(server.calls("stop")).isEmpty();
   }
 
@@ -95,9 +90,9 @@ class Issue7134StepDownRetryStopsOnRefusalTest {
    */
   @Test
   void anOrdinaryStepDownFailureIsStillRetried() throws Exception {
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.isLeader()).thenReturn(true);
-    doThrow(new IllegalStateException("transfer timed out")).when(raft).stepDown();
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.leader(true);
+    raft.fails("stepDown", new IllegalStateException("transfer timed out"));
 
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_STOP_SERVER_ON_REPLICATION_FAILURE, false);
@@ -106,7 +101,7 @@ class Issue7134StepDownRetryStopsOnRefusalTest {
 
     recover(databaseWith(raft, server));
 
-    verify(raft, times(3)).stepDown();
+    assertThat(raft.calls("stepDown")).hasSize(3);
   }
 
   /**
@@ -155,13 +150,13 @@ class Issue7134StepDownRetryStopsOnRefusalTest {
   /** And a node that is not the leader when recovery starts never attempts a step-down at all. */
   @Test
   void aNonLeaderNeverAttemptsAStepDown() throws Exception {
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.isLeader()).thenReturn(false);
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.leader(false);
 
     final FakeArcadeDBServer server = FakeArcadeDBServer.create();
 
     recover(databaseWith(raft, server));
 
-    verify(raft, never()).stepDown();
+    assertThat(raft.calls("stepDown")).isEmpty();
   }
 }

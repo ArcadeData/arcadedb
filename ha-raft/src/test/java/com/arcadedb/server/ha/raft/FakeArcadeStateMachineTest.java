@@ -21,7 +21,11 @@ package com.arcadedb.server.ha.raft;
 import org.apache.ratis.server.protocol.TermIndex;
 import org.junit.jupiter.api.Test;
 
+import java.util.Arrays;
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #9464: the defaults {@link FakeArcadeStateMachine} starts from are those of a fresh {@link ArcadeStateMachine} -
@@ -52,5 +56,42 @@ class FakeArcadeStateMachineTest {
     assertThat(sm.isResyncInProgress()).isTrue();
     assertThat(sm.isHaltedAfterCriticalError()).isTrue();
     assertThat(sm.getLastAppliedTermIndex()).isEqualTo(TermIndex.valueOf(8, 228_631));
+  }
+
+  @Test
+  void unansweredQueriesAnswerForRealAndActionsOnlyRecord() {
+    final FakeArcadeStateMachine sm = new FakeArcadeStateMachine();
+
+    assertThat(sm.hasLeaderServiceGap()).as("a fresh state machine holds no gap").isFalse();
+    assertThat(sm.isBootstrapInstallInFlight("db")).isFalse();
+    assertThat(sm.handOffLeadershipWhileReplacingDatabase()).as("wired to no Raft server, nothing is handed off").isFalse();
+    sm.resyncDatabaseFromLeader("db");
+
+    assertThat(sm.calls("handOffLeadershipWhileReplacingDatabase")).hasSize(1);
+    assertThat(sm.calls("resyncDatabaseFromLeader")).as("the one-argument form is recorded once, with no order")
+        .containsExactly(Arrays.asList("db", null));
+  }
+
+  @Test
+  void callsAreAnsweredAndFailuresInjected() {
+    final StalledResyncOrder order = new StalledResyncOrder(3, 10, 20);
+    final FakeArcadeStateMachine sm = new FakeArcadeStateMachine()
+        .returns("hasLeaderServiceGap", true)
+        .on("isBootstrapInstallInFlight", args -> "replaced".equals(args[0]))
+        .fails("resyncDatabaseFromLeader", new StaleResyncOrderException("not behind"));
+
+    assertThat(sm.hasLeaderServiceGap()).isTrue();
+    assertThat(sm.isBootstrapInstallInFlight("replaced")).isTrue();
+    assertThat(sm.isBootstrapInstallInFlight("other")).isFalse();
+    assertThatThrownBy(() -> sm.resyncDatabaseFromLeader("db", order)).isInstanceOf(StaleResyncOrderException.class);
+    assertThat(sm.calls("resyncDatabaseFromLeader")).containsExactly(List.of("db", order));
+  }
+
+  @Test
+  void aNonBooleanAnswerIsRefusedByName() {
+    final FakeArcadeStateMachine sm = new FakeArcadeStateMachine().returns("hasLeaderServiceGap", null);
+
+    assertThatThrownBy(sm::hasLeaderServiceGap).isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("hasLeaderServiceGap");
   }
 }

@@ -215,13 +215,13 @@ class Issue6760PartialSnapshotInstallTest {
     replaceReconciler(sm, new StubReconciler(Set.of(STALE_DB)));
 
     final AtomicLong floorSeenByAWokenWaiter = new AtomicLong(Long.MIN_VALUE);
-    final RaftHAServer raft = followerRaft();
+    final FakeRaftHAServer raft = followerRaft();
     // Stands in for the woken waiter: notifyApplied() is the moment it can re-check, so whatever the floor reads
     // here is exactly what that waiter would have based its decision on.
-    org.mockito.Mockito.doAnswer(inv -> {
+    raft.on("notifyApplied", args -> {
       floorSeenByAWokenWaiter.set(sm.getDatabaseAppliedFloor(STALE_DB));
       return null;
-    }).when(raft).notifyApplied();
+    });
     sm.setRaftHAServer(raft);
 
     try {
@@ -327,12 +327,12 @@ class Issue6760PartialSnapshotInstallTest {
     }
   }
 
-  private static RaftHAServer followerRaft() {
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.isLeader()).thenReturn(false);
-    when(raft.getLeaderId()).thenReturn(RaftPeerId.valueOf(LEADER_PEER_ID));
-    when(raft.getUnambiguousPeerHttpAddress(RaftPeerId.valueOf(LEADER_PEER_ID))).thenReturn("peer-b:2480");
-    when(raft.getLocalHttpAddress()).thenReturn(LOCAL_HTTP);
+  private static FakeRaftHAServer followerRaft() {
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.leader(false);
+    raft.leaderId(RaftPeerId.valueOf(LEADER_PEER_ID));
+    raft.peerHttpAddress(RaftPeerId.valueOf(LEADER_PEER_ID), "peer-b:2480");
+    raft.localHttpAddress(LOCAL_HTTP);
     return raft;
   }
 
