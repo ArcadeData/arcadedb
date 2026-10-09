@@ -476,6 +476,19 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
     return temp ^ (raw & (1L << 63));
   }
 
+  /**
+   * Advances past one variable-length number without decoding it, for a reader that only needs to step over it. Bounded
+   * like {@link #getUnsignedNumber()}: a number longer than 10 bytes cannot be valid.
+   */
+  public void skipNumber() {
+    final int startPos = buffer.position();
+    int length = 1;
+    while ((getByte() & 0x80) != 0)
+      if (++length > 10)
+        throw new IllegalArgumentException(
+            "Variable length quantity is too long (must be <= 10 bytes) at position " + startPos + " in buffer of size " + size);
+  }
+
   @Override
   public long getUnsignedNumber() {
     final long b0 = getByte();

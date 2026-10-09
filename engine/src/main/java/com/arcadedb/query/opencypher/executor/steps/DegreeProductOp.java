@@ -19,10 +19,16 @@
 package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
+import com.arcadedb.graph.EdgeBucketMask;
+import com.arcadedb.graph.EdgeLinkedList;
+import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.utility.IntHashSet;
 
@@ -35,6 +41,9 @@ import java.util.Iterator;
  * OPTIONAL MATCH arms use {@code max(1, degree)}.
  */
 public final class DegreeProductOp implements CountOp {
+  /** The one-filter self-loop flag of an undirected last hop read off the IN list. Shared, so never written. */
+  private static final boolean[] SKIP_SELF_LOOP = { true };
+
   private final String centralLabel;
   private final Arm[] arms;
   private final String[] allEdgeTypes;
@@ -141,13 +150,20 @@ public final class DegreeProductOp implements CountOp {
     boolean anyFiltered = false;
     if (!needsPerNode)
       for (int a = 0; a < arms.length; a++) {
-        if (armBuckets[a] == null || armBuckets[a][0] == null)
+        if (arms[a].edgeTypes.length != 1)
           continue;
-        final IntHashSet far = armBuckets[a][0];
+        final IntHashSet far = armBuckets[a] == null ? null : armBuckets[a][0];
+        final boolean undirected = arms[a].directions[0] == Vertex.DIRECTION.BOTH;
+        // An undirected view holds a self loop twice, so its plain degree over-counts and the arm pays for a filtered
+        // degree array even without a label (#9539)
+        if (far == null && !undirected)
+          continue;
         final NeighborView view = provider.getNeighborView(arms[a].directions[0], arms[a].edgeTypes[0]);
-        if (endpointLabelIsImplied(provider, arms[a], view, far, bucketIds, nodeIdUpperBound, guard))
+        if (view == null)
           continue;
-        filteredDegrees[a] = filteredDegrees(provider, view, far, bucketIds, nodeIdUpperBound, guard);
+        if (far != null && endpointLabelIsImplied(provider, arms[a], view, far, bucketIds, nodeIdUpperBound, guard))
+          continue;
+        filteredDegrees[a] = filteredDegrees(provider, view, far, bucketIds, undirected, nodeIdUpperBound, guard);
         anyFiltered = true;
       }
 
@@ -202,9 +218,14 @@ public final class DegreeProductOp implements CountOp {
     return endingInLabel == view.edgeCount();
   }
 
-  /** The degree of every node counting only the neighbors whose bucket is in {@code farBuckets}. */
+  /**
+   * The degree of every node counting only the neighbors whose bucket is in {@code farBuckets}, all of them when it is
+   * null. An undirected view holds each self loop twice, once per adjacency list of its vertex, and the relationship
+   * pattern matches it once: one of the two copies is left out (#9539).
+   */
   private static int[] filteredDegrees(final GraphTraversalProvider provider, final NeighborView view,
-      final IntHashSet farBuckets, final int[] bucketIds, final int nodeIdUpperBound, final WorkGuard guard) {
+      final IntHashSet farBuckets, final int[] bucketIds, final boolean undirected, final int nodeIdUpperBound,
+      final WorkGuard guard) {
     final int[] degrees = new int[nodeIdUpperBound];
     final int[] neighbors = view.neighbors();
     for (int v = 0; v < nodeIdUpperBound; v++) {
@@ -212,10 +233,16 @@ public final class DegreeProductOp implements CountOp {
       if (!provider.isNodeLive(v))
         continue;
       int count = 0;
-      for (int j = view.offset(v), end = view.offsetEnd(v); j < end; j++)
-        if (farBuckets.contains(bucketIds[neighbors[j]]))
+      int selfCopies = 0;
+      for (int j = view.offset(v), end = view.offsetEnd(v); j < end; j++) {
+        final int neighbor = neighbors[j];
+        if (farBuckets == null || farBuckets.contains(bucketIds[neighbor])) {
           count++;
-      degrees[v] = count;
+          if (neighbor == v)
+            selfCopies++;
+        }
+      }
+      degrees[v] = undirected ? count - selfCopies / 2 : count;
     }
     return degrees;
   }
@@ -310,7 +337,7 @@ public final class DegreeProductOp implements CountOp {
           if (!provider.isNodeLive(v))
             continue;
           int count = 0;
-          for (final int neighbor : provider.getNeighborIds(v, arms[a].directions[0], arms[a].edgeTypes[0]))
+          for (final int neighbor : CSRCountUtils.hopNeighborIds(provider, v, arms[a].directions[0], arms[a].edgeTypes[0]))
             if (far.contains(bucketIds[neighbor]))
               count++;
           degrees[v] = count;
@@ -323,8 +350,9 @@ public final class DegreeProductOp implements CountOp {
             continue;
           degrees[v] = CSRCountUtils.walkArm(provider, v, arms[a].edgeTypes, arms[a].directions, armBuckets[a]).length;
         }
-      } else if (arms[a].edgeTypes.length == 1) {
-        // Bulk degree computation — single pass over CSR offset arrays
+      } else if (arms[a].edgeTypes.length == 1 && arms[a].directions[0] != Vertex.DIRECTION.BOTH) {
+        // Bulk degree computation — single pass over CSR offset arrays. Not for an undirected arm, whose bulk degree
+        // counts a self loop twice: that one walks its neighbors below, which keep one copy of it (#9539)
         provider.getDegrees(degrees, arms[a].directions[0], arms[a].edgeTypes[0]);
       } else {
         for (int v = 0; v < nodeIdUpperBound; v++) {
@@ -377,8 +405,11 @@ public final class DegreeProductOp implements CountOp {
   public long executeOLTP(final Database db, final WorkGuard guard) {
     // The degree of each arm is read from the edge lists of the central vertices, never from the records of the edge
     // type: an edge may keep no record at all (light edges, declared LIGHTWEIGHT or not, alone or mixed with record
-    // edges in one type), and a degree built by iterating the type's records answers 0 for them (#9484).
-    return executeOLTPPerVertex(db, guard);
+    // edges in one type), and a degree built by iterating the type's records answers 0 for them (#9484). The walk is
+    // kept as cheap as the record scan it replaced by reading each edge list once for every arm leaving in its
+    // direction, and by checking the far-end label on the bucket the entry already carries instead of looking up the
+    // neighbor (#9539).
+    return new EdgeListDegreeCounter((DatabaseInternal) db).count(guard);
   }
 
   private boolean hasMandatoryArm() {
@@ -389,59 +420,250 @@ public final class DegreeProductOp implements CountOp {
   }
 
   /**
-   * Per-vertex iteration: every arm is counted on the edge lists of the central vertex, so light edges and record edges
-   * weigh the same.
+   * The out-of-view count over the edge lists of the central vertices. Built per execution, because the operator itself
+   * may be shared by concurrent executions of a cached plan and this holds the per-vertex scratch counters.
+   * <p>
+   * The single-hop arms, which is every arm of the LSQB star shapes, are counted on raw edge-list entries: one walk of
+   * the OUT list and one of the IN list per central vertex, each answering every arm in that direction at once through
+   * {@link EdgeLinkedList#countInto}. No edge record and no neighbor record is read: the edge type is the entry's edge
+   * bucket and the far-end label is the entry's vertex bucket. A multi-hop arm has to load the vertices it passes
+   * through to reach their edge lists, but only those its intermediate labels accept, and its last hop is counted on
+   * raw entries too.
    */
-  private long executeOLTPPerVertex(final Database db, final WorkGuard guard) {
-    final IntHashSet[][] armBuckets = new IntHashSet[arms.length][];
-    for (int a = 0; a < arms.length; a++)
-      armBuckets[a] = arms[a].endpointBuckets(db);
+  private final class EdgeListDegreeCounter {
+    private final DatabaseInternal   database;
+    private final GraphEngine        graphEngine;
+    /** [arm][hop]: the buckets of the hop's edge type, null when the type holds no edge at all. */
+    private final EdgeBucketMask[][] edgeMasks;
+    /** [arm][hop]: the buckets of the hop's endpoint label, null when the hop has no label. */
+    private final EdgeBucketMask[][] reachedMasks;
+    /** True for an arm that cannot match any edge: an undeclared edge type, or an endpoint label with no bucket. */
+    private final boolean[]          matchesNothing;
+    private final DirectionGroup     outGroup;
+    private final DirectionGroup     inGroup;
+    private final int[]              multiHopArms;
+    private final long[]             armCounts;
+    /** [arm]: the one-filter arguments the last hop of a multi-hop arm counts with, built once instead of per call. */
+    private final EdgeBucketMask[][] lastHopEdgeMasks;
+    private final EdgeBucketMask[][] lastHopNeighborMasks;
+    private final long[]             lastHopCount = new long[1];
+    private       WorkGuard          guard;
+    private       int                neighborsVisited;
 
-    long total = 0;
-    for (final Iterator<? extends Identifiable> it = db.iterateType(centralLabel, true); it.hasNext(); ) {
-      guard.check();
-      final Vertex v = it.next().asVertex();
-      long product = 1;
+    private EdgeListDegreeCounter(final DatabaseInternal database) {
+      this.database = database;
+      this.graphEngine = database.getGraphEngine();
+      this.edgeMasks = new EdgeBucketMask[arms.length][];
+      this.reachedMasks = new EdgeBucketMask[arms.length][];
+      this.matchesNothing = new boolean[arms.length];
+      this.armCounts = new long[arms.length];
+
+      int multiHop = 0;
       for (int a = 0; a < arms.length; a++) {
         final Arm arm = arms[a];
-        long armCount;
-        if (arm.edgeTypes.length == 1 && armBuckets[a] == null)
-          armCount = v.countEdges(arm.directions[0], arm.edgeTypes[0]);
-        else
-          armCount = countArmOLTP(v, arm, armBuckets[a], 0);
+        final IntHashSet[] endpointBuckets = arm.endpointBuckets(database);
+        edgeMasks[a] = new EdgeBucketMask[arm.edgeTypes.length];
+        reachedMasks[a] = new EdgeBucketMask[arm.edgeTypes.length];
+        for (int h = 0; h < arm.edgeTypes.length; h++) {
+          // An undeclared edge type has no edges: an OPTIONAL arm over it contributes 1 per central vertex instead of
+          // failing the query, and a mandatory one makes the whole count 0 (#5790)
+          edgeMasks[a][h] = EdgeBucketMask.of(database, new String[] { arm.edgeTypes[h] });
+          if (edgeMasks[a][h] == null)
+            matchesNothing[a] = true;
+          if (endpointBuckets != null && endpointBuckets[h] != null) {
+            reachedMasks[a][h] = EdgeBucketMask.ofBucketIds(endpointBuckets[h].toArray());
+            // A label the schema does not know, or one without buckets, is reached by nothing (#6337)
+            if (reachedMasks[a][h] == null)
+              matchesNothing[a] = true;
+          }
+        }
+        if (arm.edgeTypes.length > 1 && !matchesNothing[a])
+          ++multiHop;
+      }
 
-        if (arm.optional)
-          product *= Math.max(1, armCount);
-        else {
-          if (armCount == 0) {
-            product = 0;
+      this.multiHopArms = new int[multiHop];
+      this.lastHopEdgeMasks = new EdgeBucketMask[arms.length][];
+      this.lastHopNeighborMasks = new EdgeBucketMask[arms.length][];
+      multiHop = 0;
+      for (int a = 0; a < arms.length; a++)
+        if (arms[a].edgeTypes.length > 1 && !matchesNothing[a]) {
+          multiHopArms[multiHop++] = a;
+          final int lastHop = arms[a].edgeTypes.length - 1;
+          lastHopEdgeMasks[a] = new EdgeBucketMask[] { edgeMasks[a][lastHop] };
+          lastHopNeighborMasks[a] = new EdgeBucketMask[] { reachedMasks[a][lastHop] };
+        }
+
+      // OUT is walked first, so only an OUT arm is settled by it; a BOTH arm is settled once the IN list is walked too,
+      // where it leaves out the self loops the OUT list already gave it
+      this.outGroup = buildGroup(Vertex.DIRECTION.OUT, Vertex.DIRECTION.OUT);
+      this.inGroup = buildGroup(Vertex.DIRECTION.IN, null);
+    }
+
+    /**
+     * The single-hop arms that read the edge list of the given direction: those going that way and the BOTH ones.
+     * {@code settledDirection} names the arms whose count is complete after this list, null for all of them.
+     */
+    private DirectionGroup buildGroup(final Vertex.DIRECTION direction, final Vertex.DIRECTION settledDirection) {
+      int size = 0;
+      int settled = 0;
+      for (int a = 0; a < arms.length; a++)
+        if (readsList(a, direction)) {
+          ++size;
+          if (settles(a, settledDirection))
+            ++settled;
+        }
+      if (size == 0)
+        return null;
+
+      final DirectionGroup group = new DirectionGroup(direction, size, settled);
+      size = 0;
+      settled = 0;
+      for (int a = 0; a < arms.length; a++)
+        if (readsList(a, direction)) {
+          group.arms[size] = a;
+          group.edgeMasks[size] = edgeMasks[a][0];
+          group.neighborMasks[size] = reachedMasks[a][0];
+          group.skipSelfLoops[size] = direction == Vertex.DIRECTION.IN && arms[a].directions[0] == Vertex.DIRECTION.BOTH;
+          ++size;
+          if (settles(a, settledDirection))
+            group.settledMandatoryArms[settled++] = a;
+        }
+      return group;
+    }
+
+    private boolean readsList(final int a, final Vertex.DIRECTION direction) {
+      final Arm arm = arms[a];
+      return arm.edgeTypes.length == 1 && !matchesNothing[a]
+          && (arm.directions[0] == direction || arm.directions[0] == Vertex.DIRECTION.BOTH);
+    }
+
+    private boolean settles(final int a, final Vertex.DIRECTION settledDirection) {
+      return !arms[a].optional && (settledDirection == null || arms[a].directions[0] == settledDirection);
+    }
+
+    private long count(final WorkGuard guard) {
+      this.guard = guard;
+      for (int a = 0; a < arms.length; a++)
+        if (matchesNothing[a] && !arms[a].optional)
+          return 0;
+
+      long total = 0;
+      for (final Iterator<? extends Identifiable> it = database.iterateType(centralLabel, true); it.hasNext(); ) {
+        guard.check();
+        final VertexInternal vertex = (VertexInternal) it.next().asVertex();
+        Arrays.fill(armCounts, 0);
+        if (!countList(vertex, outGroup) || !countList(vertex, inGroup))
+          continue;
+
+        boolean skip = false;
+        for (final int a : multiHopArms) {
+          armCounts[a] = countPath(vertex, a, 0);
+          if (armCounts[a] == 0 && !arms[a].optional) {
+            skip = true;
             break;
           }
-          product *= armCount;
         }
+        if (skip)
+          continue;
+
+        // a mandatory arm at 0 never gets here: its direction group or the multi-hop loop skipped the vertex
+        long product = 1;
+        for (int a = 0; a < arms.length; a++)
+          product *= arms[a].optional ? Math.max(1, armCounts[a]) : armCounts[a];
+        total += product;
       }
-      total += product;
+      return total;
     }
-    return total;
+
+    /** Adds the counts of the group's arms read off one edge list; false when a mandatory arm it settles is at 0. */
+    private boolean countList(final VertexInternal vertex, final DirectionGroup group) {
+      if (group == null)
+        return true;
+      final EdgeLinkedList list = graphEngine.getEdgeHeadChunk(vertex, group.direction);
+      if (list != null) {
+        Arrays.fill(group.counts, 0);
+        list.countInto(group.edgeMasks, group.neighborMasks, group.skipSelfLoops, group.counts);
+        for (int i = 0; i < group.arms.length; i++)
+          armCounts[group.arms[i]] += group.counts[i];
+      }
+      for (final int a : group.settledMandatoryArms)
+        if (armCounts[a] == 0)
+          return false;
+      return true;
+    }
+
+    /**
+     * The paths of a multi-hop arm from {@code vertex}, starting at {@code hop}. An undirected hop reads both lists of the
+     * vertex and takes a self loop from the OUT one only, as the single-hop arms do.
+     */
+    private long countPath(final VertexInternal vertex, final int a, final int hop) {
+      final Arm arm = arms[a];
+      final Vertex.DIRECTION direction = arm.directions[hop];
+      final boolean undirected = direction == Vertex.DIRECTION.BOTH;
+      if (hop == arm.edgeTypes.length - 1) {
+        // THE LAST HOP IS COUNTED ON RAW ENTRIES, ITS LABEL ON THE ENTRY'S VERTEX BUCKET
+        final EdgeBucketMask[] edgeMask = lastHopEdgeMasks[a];
+        final EdgeBucketMask[] neighborMask = lastHopNeighborMasks[a];
+        lastHopCount[0] = 0;
+        if (direction != Vertex.DIRECTION.IN) {
+          final EdgeLinkedList list = graphEngine.getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
+          if (list != null)
+            list.countInto(edgeMask, neighborMask, null, lastHopCount);
+        }
+        if (direction != Vertex.DIRECTION.OUT) {
+          final EdgeLinkedList list = graphEngine.getEdgeHeadChunk(vertex, Vertex.DIRECTION.IN);
+          if (list != null)
+            list.countInto(edgeMask, neighborMask, undirected ? SKIP_SELF_LOOP : null, lastHopCount);
+        }
+        return lastHopCount[0];
+      }
+
+      long count = 0;
+      if (direction != Vertex.DIRECTION.IN)
+        count += countNextHop(vertex, a, hop, Vertex.DIRECTION.OUT, false);
+      if (direction != Vertex.DIRECTION.OUT)
+        count += countNextHop(vertex, a, hop, Vertex.DIRECTION.IN, undirected);
+      return count;
+    }
+
+    private long countNextHop(final VertexInternal vertex, final int a, final int hop, final Vertex.DIRECTION direction,
+        final boolean skipSelfLoops) {
+      final EdgeBucketMask reached = reachedMasks[a][hop];
+      final RID self = vertex.getIdentity();
+      long count = 0;
+      for (final RID neighbor : graphEngine.getConnectedVertexRIDs(vertex, direction, arms[a].edgeTypes[hop])) {
+        // a multi-hop arm out of one super-node can walk a large part of the graph: keep it interruptible
+        guard.checkPeriodically(neighborsVisited++);
+        // the label is checked on the RID, so a neighbor it rejects is never looked up
+        if ((reached != null && !reached.matches(neighbor.getBucketId())) || (skipSelfLoops && neighbor.equals(self)))
+          continue;
+        count += countPath((VertexInternal) database.lookupByRID(neighbor, false), a, hop + 1);
+      }
+      return count;
+    }
   }
 
-  private long countArmOLTP(final Vertex vertex, final Arm arm, final IntHashSet[] buckets, final int hopIndex) {
-    if (hopIndex >= arm.edgeTypes.length)
-      return 1;
-    final IntHashSet reached = buckets == null ? null : buckets[hopIndex];
-    // Tail optimization: at the last hop with nothing to check on the endpoint, use countEdges instead of loading all
-    // neighbor vertices
-    if (hopIndex == arm.edgeTypes.length - 1 && reached == null)
-      return vertex.countEdges(arm.directions[hopIndex], arm.edgeTypes[hopIndex]);
-    long count = 0;
-    final Iterator<Vertex> neighbors = vertex.getVertices(arm.directions[hopIndex], arm.edgeTypes[hopIndex]).iterator();
-    while (neighbors.hasNext()) {
-      final Vertex next = neighbors.next();
-      if (reached != null && !reached.contains(next.getIdentity().getBucketId()))
-        continue;
-      count += countArmOLTP(next, arm, buckets, hopIndex + 1);
+  /** The single-hop arms answered by one walk of the edge list of one direction. */
+  private static final class DirectionGroup {
+    private final Vertex.DIRECTION direction;
+    private final int[]            arms;
+    private final EdgeBucketMask[] edgeMasks;
+    private final EdgeBucketMask[] neighborMasks;
+    /** True for an undirected arm read off the IN list: its self loops were already counted on the OUT list. */
+    private final boolean[]        skipSelfLoops;
+    private final long[]           counts;
+    /** The mandatory arms whose count is complete after this list: one at 0 ends the vertex. */
+    private final int[]            settledMandatoryArms;
+
+    private DirectionGroup(final Vertex.DIRECTION direction, final int size, final int settled) {
+      this.direction = direction;
+      this.arms = new int[size];
+      this.edgeMasks = new EdgeBucketMask[size];
+      this.neighborMasks = new EdgeBucketMask[size];
+      this.skipSelfLoops = new boolean[size];
+      this.counts = new long[size];
+      this.settledMandatoryArms = new int[settled];
     }
-    return count;
   }
 
   @Override
