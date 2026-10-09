@@ -304,6 +304,23 @@ class Issue9598OptionalMatchAntiJoinTest extends TestHelper {
     assertThat(values).containsExactlyInAnyOrder(expected, expected + 1);
   }
 
+  /** A parameterised query is parsed and rewritten once, and each execution binds its own values. */
+  @Test
+  void aCachedRewriteBindsEachExecutionsParameters() {
+    populate(41, 120);
+    final String query = "MATCH (c:Comment)-[:HAS_TAG]->(t:Tag) WHERE t.name = $tag OPTIONAL MATCH (c)-[:REPLY_OF]->(m:Message) "
+        + "OPTIONAL MATCH (m)-[h:HAS_TAG]->(t) WITH c, h WHERE h IS NULL RETURN count(*) AS n";
+    for (final String tag : new String[] { "t0", "t3", "t7", "t0" }) {
+      final long rewritten;
+      try (final ResultSet rs = database.query("opencypher", query, "tag", tag)) {
+        rewritten = ((Number) rs.next().getProperty("n")).longValue();
+      }
+      try (final ResultSet rs = database.query("opencypher", query.replace(" AS n", " AS n, count(h) AS tested"), "tag", tag)) {
+        assertThat(rewritten).as("tag %s", tag).isEqualTo(((Number) rs.next().getProperty("n")).longValue());
+      }
+    }
+  }
+
   /** Two OPTIONAL MATCHes each tested for absence are both rewritten. */
   @Test
   void twoAbsenceTestsInOneQueryAreBothRewritten() {
