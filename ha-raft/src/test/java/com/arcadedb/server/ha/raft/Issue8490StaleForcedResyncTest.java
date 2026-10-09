@@ -19,14 +19,15 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.TestServerHelper;
+import com.arcadedb.server.UnstartedHttpServers;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.ExecutionResponse;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -59,6 +60,8 @@ import static org.mockito.Mockito.when;
  * </ul>
  */
 class Issue8490StaleForcedResyncTest {
+  @RegisterExtension
+  static final UnstartedHttpServers HTTP_SERVERS = new UnstartedHttpServers();
 
   private static final long   LAG_THRESHOLD      = 1_000L;
   private static final long   RESYNC_DURATION_MS = 60_000L;
@@ -376,11 +379,10 @@ class Issue8490StaleForcedResyncTest {
       when(raft.getLeaderHttpAddress()).thenReturn("leader:2480");
       when(raft.getStateMachine()).thenReturn(stateMachine);
 
-      final RaftHAPlugin plugin = mock(RaftHAPlugin.class);
-      when(plugin.getRaftHAServer()).thenReturn(raft);
-      final HttpServer httpServer = mock(HttpServer.class);
-      final ArcadeDBServer server = TestServerHelper.unstartedServer("arcadedb-1");
-      when(httpServer.getServer()).thenReturn(server);
+      final RaftHAPlugin plugin = new RaftHAPlugin();
+
+      plugin.setRaftHAServer(raft);
+      final HttpServer httpServer = HTTP_SERVERS.of(TestServerHelper.unstartedServer("arcadedb-1"));
       return new PostResyncDatabaseHandler(httpServer, plugin);
     }
 

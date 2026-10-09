@@ -23,7 +23,9 @@ import com.arcadedb.engine.MaintenanceCoordinator.Operation;
 import com.arcadedb.server.backup.BackupCoordinator;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
+import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -52,6 +54,8 @@ import static org.mockito.Mockito.when;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue7641DropDatabaseSlotTest {
+  @RegisterExtension
+  static final ServedDatabases SERVED = new ServedDatabases();
 
   private static final String DB_NAME = "drop7641db";
 
@@ -141,20 +145,19 @@ class Issue7641DropDatabaseSlotTest {
   void dropDatabaseSucceedsAndReleasesItsSlotAfterwards() {
     final BackupCoordinator coordinator = new BackupCoordinator();
     final FakeArcadeDBServer server = FakeArcadeDBServer.create();
-    final ServerDatabase database = mock(ServerDatabase.class);
-    final DatabaseInternal embedded = mock(DatabaseInternal.class);
+    // A real database, NOT AN HAReplicatedDatabase, SO dropDatabaseClusterWide TAKES THE NON-HA, LOCAL-DELETE BRANCH
+    final ServerDatabase database = SERVED.open(DB_NAME);
+    final File directory = new File(database.getDatabasePath());
 
     server.on("existsDatabase", args -> Objects.equals(args[0], DB_NAME));
     server.returns("getBackupCoordinator", coordinator);
     server.on("getDatabase", args -> Objects.equals(args[0], DB_NAME) ? database : null);
-    // NOT AN HAReplicatedDatabase, SO dropDatabaseClusterWide TAKES THE NON-HA, LOCAL-DELETE BRANCH
-    when(database.getWrappedDatabaseInstance()).thenReturn(embedded);
-    when(database.getEmbedded()).thenReturn(embedded);
 
     final ServerControlPlane controlPlane = new ServerControlPlane(server);
     controlPlane.dropDatabase(DB_NAME);
 
-    verify(embedded).drop();
+    assertThat(database.isOpen()).isFalse();
+    assertThat(directory).as("the drop deleted the database's files").doesNotExist();
     assertThat(server.calls("removeDatabase")).containsOnlyOnce(List.of(DB_NAME));
 
     // THE SLOT WAS RELEASED: A FRESH RESERVATION OF ANY KIND IS ADMITTED RIGHT AFTER
@@ -171,14 +174,14 @@ class Issue7641DropDatabaseSlotTest {
   void aFailedDropStillReleasesItsSlot() {
     final BackupCoordinator coordinator = new BackupCoordinator();
     final FakeArcadeDBServer server = FakeArcadeDBServer.create();
-    final ServerDatabase database = mock(ServerDatabase.class);
+    // The drop itself is scripted on the embedded database; the server-side handle around it is the real one
     final DatabaseInternal embedded = mock(DatabaseInternal.class);
+    when(embedded.getEmbedded()).thenReturn(embedded);
+    final ServerDatabase database = new ServerDatabase(null, embedded);
 
     server.on("existsDatabase", args -> Objects.equals(args[0], DB_NAME));
     server.returns("getBackupCoordinator", coordinator);
     server.on("getDatabase", args -> Objects.equals(args[0], DB_NAME) ? database : null);
-    when(database.getWrappedDatabaseInstance()).thenReturn(embedded);
-    when(database.getEmbedded()).thenReturn(embedded);
     doThrow(new RuntimeException("boom")).when(embedded).drop();
 
     final ServerControlPlane controlPlane = new ServerControlPlane(server);
@@ -212,16 +215,16 @@ class Issue7641DropDatabaseSlotTest {
   void twoConcurrentDropDatabaseCallsDeleteItExactlyOnce() throws Exception {
     final BackupCoordinator coordinator = new BackupCoordinator();
     final FakeArcadeDBServer server = FakeArcadeDBServer.create();
-    final ServerDatabase database = mock(ServerDatabase.class);
+    // The drop itself is scripted on the embedded database; the server-side handle around it is the real one
     final DatabaseInternal embedded = mock(DatabaseInternal.class);
+    when(embedded.getEmbedded()).thenReturn(embedded);
+    final ServerDatabase database = new ServerDatabase(null, embedded);
 
     // THE DATABASE STOPS EXISTING THE MOMENT IT IS DROPPED, WHICH IS WHAT THE LOSER MUST BE ABLE TO OBSERVE
     final AtomicBoolean exists = new AtomicBoolean(true);
     server.on("existsDatabase", args -> Objects.equals(args[0], DB_NAME) ? exists.get() : false);
     server.returns("getBackupCoordinator", coordinator);
     server.on("getDatabase", args -> Objects.equals(args[0], DB_NAME) ? database : null);
-    when(database.getWrappedDatabaseInstance()).thenReturn(embedded);
-    when(database.getEmbedded()).thenReturn(embedded);
     doAnswer(invocation -> {
       assertThat(exists.getAndSet(false)).as("the directory was deleted twice").isTrue();
       return null;
