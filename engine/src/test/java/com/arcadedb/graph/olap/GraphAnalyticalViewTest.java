@@ -2821,6 +2821,9 @@ class GraphAnalyticalViewTest extends TestHelper {
     // small the whole background chain can resolve inside that window and hand back a legitimately READY
     // view. Parking the dispatched task on BUILD_PERMITS - which it acquires before it reads anything -
     // pins the observation to the instant the gate is actually being asked about, instead of racing it.
+    // The lookup does not wait for the restore (arcadedb.gavQueryRestoreAwaitTimeout, issue #9240): this test is about the
+    // answer of a lookup that does not.
+    database.getConfiguration().setValue(GlobalConfiguration.GAV_QUERY_RESTORE_AWAIT_TIMEOUT, 0L);
     GraphAnalyticalView.acquireAllBuildPermitsForTest();
     try {
       assertThat(restored.isReady())
@@ -2894,6 +2897,7 @@ class GraphAnalyticalViewTest extends TestHelper {
 
     // Permits are saturated for exactly these two assertions - see the sibling commit-variant test above
     // for why isReady() would otherwise race the background chain it dispatches itself.
+    database.getConfiguration().setValue(GlobalConfiguration.GAV_QUERY_RESTORE_AWAIT_TIMEOUT, 0L);
     GraphAnalyticalView.acquireAllBuildPermitsForTest();
     try {
       assertThat(restored.isReady())

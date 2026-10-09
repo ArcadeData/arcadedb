@@ -125,7 +125,7 @@ public class SQLFunctionSearchFieldsMore extends SQLFunctionAbstract {
 
       // Find full-text index matching the fields
       TypeIndex matchingIndex = null;
-      for (final TypeIndex typeIndex : type.getAllIndexes(true)) {
+      for (final TypeIndex typeIndex : TypeIndex.filterReadyForQueries(type.getAllIndexes(true))) {
         if (typeIndex.getType() == Schema.INDEX_TYPE.FULL_TEXT) {
           final List<String> indexFields = typeIndex.getPropertyNames();
           if (indexFields.containsAll(fieldNames)) {

@@ -24,6 +24,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.index.FloatingKeyBound;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexException;
@@ -67,6 +68,10 @@ import java.util.logging.Level;
  * Created by luigidellaquila on 23/07/16.
  */
 public class FetchFromIndexStep extends AbstractExecutionStep {
+  private static final byte FLOATING_KEYS_UNKNOWN        = 0;
+  private static final byte FLOATING_KEYS_VERIFIABLE     = 1;
+  private static final byte FLOATING_KEYS_NOT_APPLICABLE = 2;
+
   protected final String                                         indexName;
   /** Package-private so a test can observe that a restart released them instead of only dropping the references. */
   final           List<IndexCursor>                              nextCursors = new ArrayList<>();
@@ -86,6 +91,16 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   private final boolean         orderAsc;
   private       long            count       = 0;
   private         boolean                                        inited      = false;
+  /**
+   * Set when a bound the key type of the index cannot hold widened a seek (issue #8970): the entries it returns are then checked
+   * against the condition, as a scan evaluates it, before they are handed on.
+   */
+  private         boolean                                        verifyKeys  = false;
+  /** Whether {@link #widenLossyFloatingBounds} can apply to this index, see {@link #FLOATING_KEYS_UNKNOWN}. */
+  private         byte                                           floatingKeys = FLOATING_KEYS_UNKNOWN;
+  /** The row {@link #keysSatisfyCondition} fills for each entry, one per run, and the property names it is filled with. */
+  private         ResultInternal                                 keyRow;
+  private         List<String>                                   keyPropertyNames;
   /** Package-private for the same reason as {@link #nextCursors}. */
   IndexCursor                                                    cursor;
   private         MultiIterator<Map.Entry<Object, Identifiable>> customIterator;
@@ -299,9 +314,12 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
         cursor = nextCursors.removeFirst();
       }
       try {
-        if (cursor.hasNext()) {
+        while (cursor.hasNext()) {
           final Object value = cursor.next();
-          nextEntry = new Pair(cursor.getKeys(), value);
+          final Object[] keys = cursor.getKeys();
+          if (verifyKeys && !keysSatisfyCondition(keys))
+            continue;
+          nextEntry = new Pair(keys, value);
           nextEntryScore = cursor.getFloatScore();
           count++;
           return;
@@ -669,6 +687,11 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       if (!mapInexactIntegralBounds(seek, rangeKeySize))
         continue;
 
+      // A bound a DOUBLE or FLOAT key cannot hold is rounded by the index: the seek covers the keys around it and the entries are
+      // checked afterwards (#8970). Decided per run, as the plan is reused with other parameter values
+      if (widenLossyFloatingBounds(seek))
+        verifyKeys = true;
+
       if (!valuesConvertToIndexKeyTypes(seek[0]) || !valuesConvertToIndexKeyTypes(seek[1]))
         // This combination's bound has no defined ordering against the index's declared key type: it matches no
         // indexed row, consistent with the row-scan operators (#5900). Skip it rather than aborting the whole scan.
@@ -720,6 +743,99 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       cursor = nextCursors.removeFirst();
       fetchNextEntry();
     }
+  }
+
+  /**
+   * Widens the bounds of one seek that a DOUBLE or FLOAT key cannot hold (issue #8970), see {@link FloatingKeyBound}: the index
+   * rounds such a bound to the nearest key, which is not the bound a scan compares with. The lower side becomes the key below the
+   * rounded one and the upper side the key above it, both inclusive, so the seek holds every key the exact comparison can select;
+   * {@link #keysSatisfyCondition} drops the others. An index with no key order (a hash one) cannot be widened, it keeps the rounded
+   * key and its entries are checked all the same.
+   *
+   * @return true when a bound is one the key type cannot hold, and so the entries of the seek have to be checked
+   */
+  private boolean widenLossyFloatingBounds(final Object[][] seek) {
+    if (!(index instanceof IndexInternal internalIndex))
+      return false;
+    final byte[] keyTypes = internalIndex.getBinaryKeyTypes();
+    if (keyTypes == null)
+      return false;
+    // Answered once per run: the seeks of an IN list of thousands of values all ask it
+    if (floatingKeys == FLOATING_KEYS_UNKNOWN)
+      floatingKeys = hasFloatingKeyType(keyTypes) && canVerifyKeys() ? FLOATING_KEYS_VERIFIABLE : FLOATING_KEYS_NOT_APPLICABLE;
+    if (floatingKeys != FLOATING_KEYS_VERIFIABLE)
+      return false;
+    final boolean ordered = index.supportsOrderedIterations();
+    boolean lossy = false;
+    for (int side = 0; side < 2; side++) {
+      final Object[] key = seek[side];
+      if (key == null)
+        continue;
+      Object[] widened = null;
+      for (int i = 0; i < key.length && i < keyTypes.length; i++) {
+        if (!FloatingKeyBound.isLossy(keyTypes[i], key[i]))
+          continue;
+        lossy = true;
+        if (widened == null)
+          // a copy: the array can be the one the other side, or another seek, holds
+          widened = key.clone();
+        // An unordered index is read at the rounded key, which it reports back as the key of its entries: the check needs the key
+        // as stored, not the bound as written
+        widened[i] = !ordered ? FloatingKeyBound.rounded(keyTypes[i], key[i])
+            : side == 0 ? FloatingKeyBound.below(keyTypes[i], key[i]) : FloatingKeyBound.above(keyTypes[i], key[i]);
+      }
+      if (widened != null) {
+        seek[side] = widened;
+        if (ordered)
+          seek[2][side] = Boolean.TRUE;
+      }
+    }
+    return lossy;
+  }
+
+  private static boolean hasFloatingKeyType(final byte[] keyTypes) {
+    for (final byte keyType : keyTypes)
+      if (FloatingKeyBound.isFloating(keyType))
+        return true;
+    return false;
+  }
+
+  /**
+   * Whether the entries of this index can be checked against the condition on their keys alone: every property is read as a
+   * plain value (not an item or a key of a collection) and none is case-insensitive, which stores a folded key where the record
+   * holds the original.
+   */
+  private boolean canVerifyKeys() {
+    // The AndBlock is the shape the SQL planner builds for a property index. The other shapes (a lone condition on the pseudo
+    // field `key`, for a query on the index itself) are not about the values of a type's property and keep the index's rounding
+    if (!(condition instanceof AndBlock))
+      return false;
+    final IndexMetadata metadata = index instanceof IndexInternal internalIndex ? internalIndex.getMetadata() : null;
+    final List<String> propertyNames = index.getPropertyNames();
+    for (int i = 0; i < propertyNames.size(); i++) {
+      if (!propertyNames.get(i).equals(Index.basePropertyName(propertyNames.get(i))))
+        return false;
+      if (metadata != null && metadata.isCaseInsensitive(i))
+        return false;
+    }
+    return true;
+  }
+
+  /**
+   * Evaluates the condition of the step on the key of an entry, the way a scan evaluates it on the record that holds that key
+   * (issue #8970). Only for the entries of a seek widened by {@link #widenLossyFloatingBounds}.
+   */
+  private boolean keysSatisfyCondition(final Object[] keys) {
+    if (keyRow == null) {
+      keyPropertyNames = index.getPropertyNames();
+      keyRow = new ResultInternal(context.getDatabase());
+    }
+    // One row for the whole run: a key shorter than the index (a prefix) must not leave the values of the previous entry behind
+    for (int i = 0; i < keyPropertyNames.size(); i++)
+      keyRow.setProperty(keyPropertyNames.get(i), i < keys.length ? keys[i] : null);
+    if (!Boolean.TRUE.equals(condition.evaluate((Result) keyRow, context)))
+      return false;
+    return additionalRangeCondition == null || Boolean.TRUE.equals(additionalRangeCondition.evaluate((Result) keyRow, context));
   }
 
   /**
@@ -1351,6 +1467,10 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     count = 0;
 
     inited = false;
+    verifyKeys = false;
+    floatingKeys = FLOATING_KEYS_UNKNOWN;
+    keyRow = null;
+    keyPropertyNames = null;
     pointLookup = null;
     customIterator = null;
     nextEntry = null;

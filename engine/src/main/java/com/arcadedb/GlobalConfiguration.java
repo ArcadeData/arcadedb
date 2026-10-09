@@ -3263,6 +3263,20 @@ public enum GlobalConfiguration {
       not block)""",
       Long.class, 60_000L),
 
+  GAV_QUERY_RESTORE_AWAIT_TIMEOUT("arcadedb.gavQueryRestoreAwaitTimeout", SCOPE.DATABASE,
+      """
+      Milliseconds a query waits, while it is planned or starts, for a Graph Analytical View (GAV/CSR) whose deferred \
+      restore from disk is still in flight, so the first count push-down, MATCH, shortest path or other graph function \
+      after a database reopen runs on the restored view instead of reading every record. This covers every caller that \
+      looks a view up (the SQL and OpenCypher planners and their push-down steps, and the SQL graph functions); the \
+      algo.* procedures have their own budget (arcadedb.gavAlgoRestoreAwaitTimeout). The wait ends early when the \
+      restore finishes, and it applies only to a view that covers the request: a view that is only rebuilding after a \
+      commit is never waited for. 0 does not wait: the call takes the record path, as it did before this setting \
+      existed (a ready view that follows a restoring one is still used). The wait is not tied to the command timeout of the \
+      query (the lookup has no command to ask), only a thread interrupt ends it early, so keep it small. The default of \
+      5 seconds suits a persisted CSR, which restores much faster than the record-by-record read it replaces""",
+      Long.class, 5_000L),
+
   GAV_PERSIST_CSR("arcadedb.gavPersistCsr", SCOPE.DATABASE,
       """
       When true (default), a Graph Analytical View (GAV/CSR) that is READY (with no pending overlay changes) when \

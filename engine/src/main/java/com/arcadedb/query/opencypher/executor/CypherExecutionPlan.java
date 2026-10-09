@@ -8146,8 +8146,8 @@ public class CypherExecutionPlan {
       return false;
     // any unique index on exactly this property. getAllIndexes(true) walks UP: the type's own indexes and its ancestors', which span
     // (and enforce uniqueness across) the type's buckets, never an index that only a sub type has
-    for (final TypeIndex index : type.getAllIndexes(true))
-      if (index.isUnique() && index.getPropertyNames().size() == 1 && index.getPropertyNames().get(0).equals(property))
+    for (final TypeIndex index : TypeIndex.filterReadyForQueries(type.getAllIndexes(true)))
+      if (index.isUniqueIfPresent() && index.getPropertyNames().size() == 1 && index.getPropertyNames().get(0).equals(property))
         return true;
     return false;
   }

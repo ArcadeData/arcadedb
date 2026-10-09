@@ -649,7 +649,8 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
 
   private GraphTraversalProvider findReadyProvider(final Database db, final String[] relTypes) {
     // Try exact match first (covers all requested types)
-    final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(db, relTypes);
+    // Without the registry's own wait: this caller waits for the restore with the command's abort check, within its own budget
+    final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProviderWithoutWaiting(db, relTypes);
     if (provider != null && provider.coversVertexType(null))
       return provider;
 

@@ -123,7 +123,7 @@ public abstract class SQLFunctionGeoPredicate extends SQLFunctionAbstract implem
     final DocumentType docType = schema.getType(typeName);
 
     // Look for a GEOSPATIAL index on the field
-    for (final TypeIndex typeIndex : docType.getAllIndexes(true)) {
+    for (final TypeIndex typeIndex : TypeIndex.filterReadyForQueries(docType.getAllIndexes(true))) {
       if (typeIndex.getType() == Schema.INDEX_TYPE.GEOSPATIAL) {
         final List<String> props = typeIndex.getPropertyNames();
         if (props != null && props.contains(fieldName))
@@ -162,7 +162,7 @@ public abstract class SQLFunctionGeoPredicate extends SQLFunctionAbstract implem
 
     // Resolve the GEOSPATIAL index on this field
     TypeIndex geoTypeIndex = null;
-    for (final TypeIndex typeIndex : docType.getAllIndexes(true)) {
+    for (final TypeIndex typeIndex : TypeIndex.filterReadyForQueries(docType.getAllIndexes(true))) {
       if (typeIndex.getType() == Schema.INDEX_TYPE.GEOSPATIAL) {
         final List<String> props = typeIndex.getPropertyNames();
         if (props != null && props.contains(fieldName)) {
