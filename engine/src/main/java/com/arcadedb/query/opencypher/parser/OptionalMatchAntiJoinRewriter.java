@@ -64,8 +64,9 @@ import java.util.Set;
  * whose uniqueness scope is, like the optional match's, the pattern alone. It holds when:
  * <ul>
  *   <li>the variables the pattern shares with the rows are never null there: a null endpoint matches nothing in the
- *   OPTIONAL MATCH, while a pattern predicate would read it as unbound and look for any vertex. Only clauses made of MATCH
- *   come before it, so the scope is known, and every shared name is bound by a non-optional one;</li>
+ *   OPTIONAL MATCH, while a pattern predicate would read it as unbound and look for any vertex. MATCH, WITH and UNWIND are
+ *   followed to know the scope: every shared name is bound by a non-optional MATCH, or carried on as it is by a WITH, and
+ *   the pattern shares at least one;</li>
  *   <li>the variables it introduces are read by nothing but the {@code IS NULL} test and the projection that carries them
  *   to it - removing them from the scope then changes no answer. A name read anywhere later keeps the query as written, and
  *   so does any read the collector cannot prove absent ({@link CypherReferencedVariables} answers "unknown");</li>
@@ -73,7 +74,7 @@ import java.util.Set;
  *   orders nor pages, so filtering before its projection is filtering after it.</li>
  * </ul>
  * The negated pattern joins the WHERE of the non-optional MATCH right before, or becomes a {@code WITH * WHERE} filter in
- * the optional match's place. The {@code WITH} keeps what it projected minus the removed variables; when that leaves a plain
+ * the optional match's place after any other clause. The {@code WITH} keeps what it projected minus the removed variables; when that leaves a plain
  * pass-through right before the RETURN, it is folded into the same WHERE too, which is what hands the count push-downs the
  * single MATCH they read. A pass-through {@code WITH} written by the user is left alone: it is how a query fences a MATCH off
  * the push-downs, and the shape tests use it as their row-by-row oracle.
@@ -120,6 +121,7 @@ public final class OptionalMatchAntiJoinRewriter {
     for (final ClauseEntry entry : clauses)
       switch (entry.getType()) {
       case MATCH, WITH, UNWIND, RETURN -> {
+        // modelled
       }
       default -> {
         return false;
@@ -146,19 +148,47 @@ public final class OptionalMatchAntiJoinRewriter {
   private static SimpleCypherStatement rewriteAt(final SimpleCypherStatement statement, final int index) {
     final List<ClauseEntry> clauses = statement.getClausesInOrder();
 
-    // The scope before it: MATCH clauses only, so every name they write is in scope, and one a non-optional MATCH writes is
-    // never null
-    final Set<String> inScope = new HashSet<>();
-    final Set<String> neverNull = new HashSet<>();
+    // The scope before it, and the names in it that are never null: a non-optional MATCH binds them, or a WITH carries one
+    // on as it is. A name an OPTIONAL MATCH, an UNWIND or a computed projection binds may be null
+    Set<String> inScope = new HashSet<>();
+    Set<String> neverNull = new HashSet<>();
     for (int i = 0; i < index; i++) {
-      if (clauses.get(i).getType() != ClauseEntry.ClauseType.MATCH)
+      final ClauseEntry entry = clauses.get(i);
+      switch (entry.getType()) {
+      case MATCH -> {
+        final MatchClause match = entry.getTypedClause();
+        for (final PathPattern path : match.getPathPatterns()) {
+          final Set<String> names = patternNames(path);
+          inScope.addAll(names);
+          if (!match.isOptional())
+            neverNull.addAll(names);
+        }
+      }
+      case WITH -> {
+        final Set<String> projected = new HashSet<>();
+        final Set<String> projectedNeverNull = new HashSet<>();
+        for (final ReturnClause.ReturnItem item : ((WithClause) entry.getTypedClause()).getItems()) {
+          if (item.isStar()) {
+            projected.addAll(inScope);
+            projectedNeverNull.addAll(neverNull);
+          } else {
+            projected.add(item.getOutputName());
+            if (item.getExpression() instanceof VariableExpression variable && neverNull.contains(variable.getVariableName())
+                && !item.getExpression().containsAggregation())
+              projectedNeverNull.add(item.getOutputName());
+          }
+        }
+        inScope = projected;
+        neverNull = projectedNeverNull;
+      }
+      case UNWIND -> {
+        final String alias = ((UnwindClause) entry.getTypedClause()).getVariable();
+        inScope.add(alias);
+        neverNull.remove(alias);
+      }
+      default -> {
         return null;
-      final MatchClause match = clauses.get(i).getTypedClause();
-      for (final PathPattern path : match.getPathPatterns()) {
-        final Set<String> names = patternNames(path);
-        inScope.addAll(names);
-        if (!match.isOptional())
-          neverNull.addAll(names);
+      }
       }
     }
 
@@ -187,6 +217,14 @@ public final class OptionalMatchAntiJoinRewriter {
         return null;
     }
     if (introduced.isEmpty())
+      return null;
+    // sharing no node with the rows, the predicate would ask "does such a pattern exist anywhere" again for every row: the
+    // same search the OPTIONAL MATCH makes, so there is nothing to gain
+    boolean sharesANode = false;
+    for (final NodePattern node : pattern.getNodes())
+      if (node.getVariable() != null && inScope.contains(node.getVariable()))
+        sharesANode = true;
+    if (!sharesANode)
       return null;
 
     // The WITH right after it, whose WHERE tests one of them for null
@@ -248,15 +286,17 @@ public final class OptionalMatchAntiJoinRewriter {
     for (int i = 0; i < index - 1; i++)
       rewritten.add(clauses.get(i));
 
-    final MatchClause before = clauses.get(index - 1).getTypedClause();
+    final ClauseEntry beforeEntry = clauses.get(index - 1);
     // DISTINCT keeps its meaning without the removed names: every row the test keeps holds null in all of them
     final WithClause carrier = new WithClause(items, with.isDistinct(), rest != null ? new WhereClause(rest) : null, null, null,
         null);
-    if (before.isOptional()) {
-      rewritten.add(new ClauseEntry(ClauseEntry.ClauseType.MATCH, before, 0));
+    if (beforeEntry.getType() != ClauseEntry.ClauseType.MATCH || ((MatchClause) beforeEntry.getTypedClause()).isOptional()) {
+      // the WHERE of an OPTIONAL MATCH is part of it, and a WITH or an UNWIND has no MATCH to join: a filter of its own
+      rewritten.add(beforeEntry);
       rewritten.add(new ClauseEntry(ClauseEntry.ClauseType.WITH, filter(notPattern), 0));
       rewritten.add(new ClauseEntry(ClauseEntry.ClauseType.WITH, carrier, 0));
     } else {
+      final MatchClause before = beforeEntry.getTypedClause();
       final BooleanExpression beforeWhere = before.hasWhereClause() ? before.getWhereClause().getConditionExpression() : null;
       final boolean fold = isPassThrough(carrier) && index + 3 == clauses.size()
           && clauses.get(index + 2).getType() == ClauseEntry.ClauseType.RETURN && !returnsStar(statement);
@@ -512,6 +552,7 @@ public final class OptionalMatchAntiJoinRewriter {
       case WITH -> withs.add(entry.getTypedClause());
       case UNWIND -> unwinds.add(entry.getTypedClause());
       default -> {
+        // RETURN is the statement's own field, and nothing else is rewritten
       }
       }
     }

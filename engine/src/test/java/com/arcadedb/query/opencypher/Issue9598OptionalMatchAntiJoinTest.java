@@ -168,6 +168,12 @@ class Issue9598OptionalMatchAntiJoinTest extends TestHelper {
         // a WITH that renames what the RETURN reads is not a pass-through: it stays, without the removed name
         CHAIN + "OPTIONAL MATCH (comment)-[h:HAS_TAG]->(tag1) WITH tag1 AS first, tag2, h WHERE first <> tag2 AND h IS NULL "
             + "RETURN count(first) AS n",
+        // the bound node in the middle of the pattern: neither end is bound, so it runs as a correlated EXISTS
+        "MATCH (m:Message) OPTIONAL MATCH (:Comment)-[h:REPLY_OF]->(m)-[:HAS_TAG]->(:Tag) WITH m, h WHERE h IS NULL "
+            + "RETURN count(*) AS n",
+        // an open upper bound, rendered and parsed again
+        "MATCH (c:Comment)-[:HAS_TAG]->(t:Tag) OPTIONAL MATCH (c)-[:REPLY_OF*2..]->(:Message)-[h:HAS_TAG]->(t) "
+            + "WITH c, t, h WHERE h IS NULL RETURN count(*) AS n",
         // one relationship type twice: the predicate binds two different relationships, as the OPTIONAL MATCH does
         "MATCH (c:Comment), (p:Post) OPTIONAL MATCH (c)-[:REPLY_OF]->(:Message)-[h:REPLY_OF]->(p) "
             + "WITH c, p, h WHERE h IS NULL RETURN count(*) AS n" }) {
@@ -227,6 +233,9 @@ class Issue9598OptionalMatchAntiJoinTest extends TestHelper {
         CHAIN + "OPTIONAL MATCH (comment)-[h:HAS_TAG]->(tag1) WITH tag1, tag2, h WHERE h IS NULL OR tag1 = tag2 RETURN count(*) AS n",
         CHAIN + "OPTIONAL MATCH (comment)-[h:HAS_TAG]->(tag1) WITH tag1, tag2, h WHERE NOT (h IS NOT NULL) RETURN count(*) AS n",
         CHAIN + "OPTIONAL MATCH (comment)-[h:HAS_TAG]->(tag1) WITH tag1, tag2, h WHERE coalesce(h, 0) = 0 RETURN count(*) AS n",
+        // carried by a WITH from what an OPTIONAL MATCH bound, so still possibly null
+        "MATCH (c:Comment) OPTIONAL MATCH (c)-[:REPLY_OF]->(p:Post) WITH c, p AS post OPTIONAL MATCH (post)-[h:HAS_TAG]->(:Tag) "
+            + "WITH c, h WHERE h IS NULL RETURN count(*) AS n",
         // p is null for a comment that replies to a comment: OPTIONAL MATCH from a null node matches nothing
         "MATCH (c:Comment) OPTIONAL MATCH (c)-[:REPLY_OF]->(p:Post) OPTIONAL MATCH (p)-[h:HAS_TAG]->(:Tag) "
             + "WITH c, h WHERE h IS NULL RETURN count(*) AS n" }) {
@@ -293,6 +302,44 @@ class Issue9598OptionalMatchAntiJoinTest extends TestHelper {
     }
     final long expected = count(Q8);
     assertThat(values).containsExactlyInAnyOrder(expected, expected + 1);
+  }
+
+  /** Two OPTIONAL MATCHes each tested for absence are both rewritten. */
+  @Test
+  void twoAbsenceTestsInOneQueryAreBothRewritten() {
+    populate(37, 120);
+    final String query = "MATCH (c:Comment)-[:REPLY_OF]->(m:Message) OPTIONAL MATCH (c)-[h:HAS_TAG]->(:Tag) WITH c, m, h WHERE h IS NULL "
+        + "OPTIONAL MATCH (m)-[k:HAS_TAG]->(:Tag) WITH c, k WHERE k IS NULL RETURN count(*) AS n";
+    assertThat(plan(query)).doesNotContain("OPTIONAL MATCH");
+    assertThat(count(query)).isEqualTo(
+        count("MATCH (c:Comment)-[:REPLY_OF]->(m:Message) WHERE NOT (c)-[:HAS_TAG]->(:Tag) AND NOT (m)-[:HAS_TAG]->(:Tag) RETURN sum(1) AS n"));
+  }
+
+  /** A rewritten query profiles as it runs, and a pattern sharing no node with the rows is left as written. */
+  @Test
+  void profileAndAPatternSharingNoNode() {
+    populate(31, 80);
+    try (final ResultSet rs = database.query("opencypher", "PROFILE " + Q8_OPTIONAL)) {
+      assertThat(((Number) rs.next().getProperty("n")).longValue()).isEqualTo(count(Q8));
+      assertThat(rs.getExecutionPlan().map(p -> p.prettyPrint(0, 2)).orElse("")).doesNotContain("OPTIONAL MATCH");
+    }
+
+    final String unrelated = "MATCH (c:Comment) OPTIONAL MATCH (x:Post)-[h:HAS_TAG]->(:Tag) WITH c, h WHERE h IS NULL "
+        + "RETURN count(*) AS n";
+    assertThat(plan(unrelated)).contains("OPTIONAL MATCH");
+    assertAgreesWithTheOptionalMatch(unrelated, "h");
+
+    // a UNION whose second branch reads the variable again: the first is rewritten, the second is not
+    final String second = CHAIN + "OPTIONAL MATCH (comment)-[h:HAS_TAG]->(tag1) WITH tag1, tag2, h WHERE h IS NULL "
+        + "RETURN count(h) + count(*) AS n";
+    final String plan = plan(Q8_OPTIONAL + " UNION ALL " + second);
+    assertThat(plan.indexOf("OPTIONAL MATCH")).isEqualTo(plan.lastIndexOf("OPTIONAL MATCH")).isNotNegative();
+    final List<Long> values = new ArrayList<>();
+    try (final ResultSet rs = database.query("opencypher", Q8_OPTIONAL + " UNION ALL " + second)) {
+      while (rs.hasNext())
+        values.add(((Number) rs.next().getProperty("n")).longValue());
+    }
+    assertThat(values).containsExactlyInAnyOrder(count(Q8), count(second));
   }
 
   /** A statement that writes is left as written: its clauses are not the ones the rewrite models. */
