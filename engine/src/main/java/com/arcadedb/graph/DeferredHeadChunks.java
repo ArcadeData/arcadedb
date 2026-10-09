@@ -152,7 +152,10 @@ final class DeferredHeadChunks {
     return capacity;
   }
 
-  /** The keys of every vertex with a deferred head, in no particular order. */
+  /**
+   * The keys of every vertex with a deferred head, in no particular order. A new array of 8 bytes a vertex, alive
+   * alongside the table while the caller sorts and walks it: at 200M vertices another 1.6 GB at close.
+   */
   long[] keys() {
     final long[] result = new long[size];
     int n = 0;
@@ -253,7 +256,8 @@ final class DeferredHeadChunks {
 
   private void grow() {
     if (capacity >= MAX_CAPACITY)
-      throw new IllegalStateException("GraphBatch cannot track the edge list heads of more than " + size + " vertices in one batch");
+      throw new IllegalStateException("GraphBatch cannot track the edge list heads of more than " + (int) (MAX_CAPACITY * MAX_LOAD)
+          + " vertices in one batch");
     // Past the bound only when the caller's bound was wrong: the table keeps working, it just grows as if unbounded
     final long limit = capacity < maxCapacity ? maxCapacity : MAX_CAPACITY;
     final long[] oldKeys = keys;
