@@ -964,8 +964,21 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // AFTER the wait above, so a callback that reads what was committed (a materialized-view refresh) finds it applied.
     // Only a timed-out wait, warned about above, lets one run before the local apply.
     payload.tx().concludeCommitWithoutPublishing();
-    final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());
-    ctx.popIfNotLastTransaction();
+    popCommittingTransaction();
+  }
+
+  /**
+   * Pops the committing thread's transaction at the end of a commit tail that ran after the entry left this node (issue
+   * #9548). A close of the database on another thread - the engine's JVM shutdown hook, say - removes the context of
+   * EVERY thread ({@code DatabaseContext.removeAllContexts}), this one's included, while it is waiting for the quorum or
+   * for the publication. Requiring the context here then replaced the outcome the caller is owed (committed, or committed
+   * cluster-wide but not applied here) with "Transaction context not found on current thread". With no context left
+   * there is nothing to pop: the close has already discarded it.
+   */
+  private void popCommittingTransaction() {
+    final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContextIfExists(proxied.getDatabasePath());
+    if (current != null)
+      current.popIfNotLastTransaction();
   }
 
   /**
@@ -1142,7 +1155,6 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     final LocalCommit.Outcome outcome = awaitPublication(local);
 
     proxied.executeInReadLock(() -> {
-      final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());
       try {
         // #5064: from here the transaction is durably committed CLUSTER-WIDE - a local failure below releases resources
         // without rolling back user-held record identities (a retry would insert duplicates of records the cluster
@@ -1171,7 +1183,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         payload.tx().concludeFailedPhase2(failure);
         throw committedRemotelyButNotApplied(payload, failure, local.reconciled());
       } finally {
-        current.popIfNotLastTransaction();
+        popCommittingTransaction();
       }
     });
   }
@@ -1234,7 +1246,6 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    */
   private void commitLocallyWithoutStateMachine(final ReplicationPayload payload) {
     proxied.executeInReadLock(() -> {
-      final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());
       try {
         payload.tx().setRemotelyCommitted(true);
 
@@ -1253,7 +1264,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         // re-applies the same absolute bytes (idempotent), a lower-version one is skipped.
         throw committedRemotelyButNotApplied(payload, e, reconcileLeaderPagesAfterPhase2Failure(payload));
       } finally {
-        current.popIfNotLastTransaction();
+        popCommittingTransaction();
       }
       return null;
     });
