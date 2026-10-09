@@ -210,19 +210,28 @@ public class ArcadeGremlin extends ArcadeQuery {
    * everywhere else, so a property called {@code id} or {@code label} can never overwrite them (#9141)</li>
    * <li>any other key is its printed form (a null key is named "null")</li>
    * <li>keys that still print alike (the Integer 1 and the Long 1 of a {@code groupCount()}) are told apart by the simple name of
-   * their type, {@code 1} and {@code 1:Long}, so no entry is lost</li>
+   * their type, {@code 1:Integer} and {@code 1:Long} (whatever the order of the entries), so no entry is lost</li>
    * </ul>
    */
-  private static ResultInternal mapToResult(final Map<Object, Object> originalMap) {
+  static ResultInternal mapToResult(final Map<Object, Object> originalMap) {
     final Map<String, Object> result = new LinkedHashMap<>(originalMap.size());
 
     // THE TOKENS TAKE THEIR RESERVED NAMES FIRST, SO NOTHING ELSE CAN DISPLACE THEM
+    final Set<String> shared = new HashSet<>();
+    shared.add(RID_KEY);
+    shared.add(TYPE_KEY);
+    final Set<String> seen = new HashSet<>(originalMap.size());
     for (final Map.Entry<Object, Object> entry : originalMap.entrySet()) {
-      if (entry.getKey() == T.id)
+      final Object originalKey = entry.getKey();
+      if (originalKey == T.id)
         result.put(RID_KEY, entry.getValue());
-      else if (entry.getKey() == T.label)
+      else if (originalKey == T.label)
         result.put(TYPE_KEY, entry.getValue());
+      else if (!seen.add(String.valueOf(originalKey)))
+        shared.add(String.valueOf(originalKey));
     }
+    // A NAME PRINTED BY SEVERAL KEYS (OR BY A RESERVED ONE) IS GIVEN TO NONE OF THEM BARE, SO THE NAME OF A KEY DOES NOT DEPEND ON
+    // THE ORDER OF THE ENTRIES: 1 AND 1L ARE ALWAYS "1:Integer" AND "1:Long"
 
     for (final Map.Entry<Object, Object> entry : originalMap.entrySet()) {
       final Object originalKey = entry.getKey();
@@ -230,7 +239,7 @@ public class ArcadeGremlin extends ArcadeQuery {
         continue;
 
       String key = String.valueOf(originalKey);
-      if (result.containsKey(key)) {
+      if (shared.contains(key)) {
         final String base = key + ":" + (originalKey == null ? "null" : originalKey.getClass().getSimpleName());
         key = base;
         for (int i = 2; result.containsKey(key); i++)
