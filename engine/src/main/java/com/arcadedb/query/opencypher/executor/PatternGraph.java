@@ -52,11 +52,11 @@ import java.util.Map;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 final class PatternGraph {
-  private final List<NodePattern> nodes;
-  private final int[]             edgeFrom;
-  private final int[]             edgeTo;
+  private final List<NodePattern>     nodes;
+  private final int[]                 edgeFrom;
+  private final int[]                 edgeTo;
   private final RelationshipPattern[] edges;
-  private final int[][]           incident;
+  private final int[][]               incident;
 
   private PatternGraph(final List<NodePattern> nodes, final int[] edgeFrom, final int[] edgeTo,
       final RelationshipPattern[] edges) {
