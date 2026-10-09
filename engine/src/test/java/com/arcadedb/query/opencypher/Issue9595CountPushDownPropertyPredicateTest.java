@@ -223,6 +223,40 @@ class Issue9595CountPushDownPropertyPredicateTest extends TestHelper {
   }
 
   @Test
+  void numbersCompareByValueAcrossTypes() {
+    // cid is stored as an Integer: an inline Long, a Double and a parameter of another type all compare by value
+    assertPushedDownAndExact("MATCH (:Tag)<-[:HAS_TAG]-(m:Message {cid: 3})");
+    assertPushedDownAndExact("MATCH (:Tag)<-[:HAS_TAG]-(m:Message {cid: 3.0})");
+    assertPushedDownAndExact("MATCH (:Tag)<-[:HAS_TAG]-(m:Message) WHERE m.cid = 3.0");
+    for (final Object cid : new Object[] { 3, 3L, 3.0d, 3.0f, "3" }) {
+      final String match = "MATCH (:Tag)<-[:HAS_TAG]-(m:Message {cid: $cid})";
+      assertThat(count(match + " RETURN count(*) AS n", Map.of("cid", cid))).as("cid %s (%s)", cid, cid.getClass().getSimpleName())
+          .isEqualTo(count(match + " RETURN sum(1) AS n", Map.of("cid", cid)));
+    }
+  }
+
+  @Test
+  void uncommittedChangesOfTheTransactionAreSeen() throws InterruptedException {
+    // a transaction with changes of its own does not use the view, and the records it reads carry those changes
+    final String match = "MATCH (:Tag)<-[:HAS_TAG]-(m:Message {kind: 'Post'})-[:REPLY_OF]->(:Message)";
+    final Runnable check = () -> {
+      database.begin();
+      try {
+        final long before = count(match + " RETURN count(*) AS n", Map.of());
+        database.command("opencypher", "MATCH (m:Message {kind: 'Post'}) SET m.kind = 'Moved'");
+        assertThat(count(match + " RETURN count(*) AS n", Map.of())).isZero()
+            .isEqualTo(count(match + " RETURN sum(1) AS n", Map.of()));
+        database.command("opencypher", "MATCH (m:Message {kind: 'Moved'}) SET m.kind = 'Post'");
+        assertThat(count(match + " RETURN count(*) AS n", Map.of())).isEqualTo(before).isPositive();
+      } finally {
+        database.rollback();
+      }
+    };
+    check.run();
+    withView(check);
+  }
+
+  @Test
   void anInlineNullMatchesNothing() {
     // {kind: null} means kind = null, which is never true, not "kind is missing"
     assertPushedDownAndExact("MATCH (:Tag)<-[:HAS_TAG]-(m:Message {kind: null})");
