@@ -28,7 +28,6 @@ import org.junit.jupiter.api.Test;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -75,27 +74,41 @@ class Issue9141MapResultKeysTest {
     final List<Result> results = run("g.V().has('name','b').elementMap('name')");
     assertThat(results).hasSize(1);
     assertThat(results.get(0).<String>getProperty("name")).isEqualTo("b");
-    assertThat(results.get(0).<String>getProperty("label")).isEqualTo("person");
+    assertThat(results.get(0).<String>getProperty("@type")).isEqualTo("person");
+    assertThat(results.get(0).<Object>getProperty("@rid")).isNotNull();
+  }
+
+  // #9584, #9576: THE SHAPE IS CHOSEN BY THE QUERY, NEVER BY THE DATA. T.id / T.label ARE ALWAYS @rid / @type
+  @Test
+  void elementMapKeepsTheIdAndLabelBesideTheProperties() {
+    final Result colliding = run("g.V().has('name','a').elementMap()").get(0);
+    assertThat(colliding.<Object>getProperty("result")).isNull();
+    assertThat(colliding.getPropertyNames()).containsExactlyInAnyOrder("@rid", "@type", "name", "id", "label", "val");
+    assertThat(colliding.<String>getProperty("id")).isEqualTo("user-42");
+    assertThat(colliding.<String>getProperty("label")).isEqualTo("VIP");
+    assertThat(colliding.<String>getProperty("@type")).isEqualTo("person");
+
+    final Result plain = run("g.V().has('name','b').elementMap()").get(0);
+    assertThat(plain.getPropertyNames()).containsExactlyInAnyOrder("@rid", "@type", "name", "val");
   }
 
   @Test
-  void elementMapKeepsTheIdAndLabelBesideTheProperties() {
-    final List<Result> results = run("g.V().has('name','a').elementMap()");
-    assertThat(results).hasSize(1);
-    final List<Map<String, Object>> entries = results.get(0).getProperty("result");
-    assertThat(entries).hasSize(6);
-    assertThat(entries).extracting(e -> e.get("key") + "=" + e.get("value")).contains("id=user-42", "label=VIP", "label=person");
-    assertThat(entries).filteredOn(e -> e.get("key") == T.id).hasSize(1);
-    assertThat(entries).filteredOn(e -> e.get("key") == T.label).extracting(e -> e.get("value")).containsExactly("person");
+  void valueMapWithTokensIsAFlatMapToo() {
+    final Result result = run("g.V().has('name','a').valueMap(true)").get(0);
+    assertThat(result.<Object>getProperty("result")).isNull();
+    assertThat(result.<String>getProperty("@type")).isEqualTo("person");
+    assertThat(result.<Object>getProperty("@rid")).isNotNull();
   }
 
   @Test
   void groupCountKeepsKeysThatDifferOnlyByType() {
     final List<Result> results = run("g.V().hasLabel('person').groupCount().by('val')");
     assertThat(results).hasSize(1);
-    final List<Map<String, Object>> entries = results.get(0).getProperty("result");
-    assertThat(entries).hasSize(6);
-    assertThat(entries).extracting(e -> e.get("value")).containsOnly(1L);
+    final Result result = results.get(0);
+    assertThat(result.<Object>getProperty("result")).isNull();
+    assertThat(result.getPropertyNames()).hasSize(6);
+    for (final String name : result.getPropertyNames())
+      assertThat(result.<Long>getProperty(name)).isEqualTo(1L);
   }
 
   @Test
