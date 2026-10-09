@@ -26,6 +26,7 @@ import com.mongodb.MongoClient;
 import com.mongodb.MongoClientOptions;
 import com.mongodb.MongoCredential;
 import com.mongodb.ServerAddress;
+import com.mongodb.bulk.BulkWriteResult;
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.model.IndexOptions;
 import com.mongodb.client.model.UpdateOneModel;
@@ -243,6 +244,24 @@ class Issue9162MongoFilterIndexPrefilterTest extends BaseMongoServerTest {
   }
 
   @Test
+  void aNegativeZeroAndTheIdBoundTogetherStillMatch() {
+    declareProducts();
+    final MongoCollection<Document> c = client.getDatabase(getDatabaseName()).getCollection("products");
+    c.insertMany(List.of(parse("{_id: 1, sku: 'a', price: -0.0}"), parse("{_id: 2, sku: 'b', price: 0.0}"),
+        parse("{_id: 3, sku: 'c', price: 1.0}")));
+
+    assertThat(ids(c, "{price: 0}")).containsExactly(1, 2);
+    assertThat(ids(c, "{price: 0.0}")).containsExactly(1, 2);
+    assertThat(ids(c, "{price: -0.0}")).containsExactly(1, 2);
+    assertThat(ids(c, "{price: {$in: [0, 5]}}")).containsExactly(1, 2);
+    // both parts bind their own parameters: the _id $in and the field $in must not overwrite each other
+    assertThat(ids(c, "{_id: {$in: [1, 3]}, sku: {$in: ['a', 'b']}}")).containsExactly(1);
+    assertThat(ids(c, "{_id: {$in: [1, 2, 3]}, sku: 'c', price: {$in: [1]}}")).containsExactly(3);
+    assertThat(c.updateOne(parse("{_id: 2, sku: 'b'}"), parse("{$set: {hit: 1}}")).getModifiedCount()).isEqualTo(1);
+    assertThat(c.updateOne(parse("{_id: 2, sku: 'a'}"), parse("{$set: {hit: 2}}")).getModifiedCount()).isZero();
+  }
+
+  @Test
   void aListInADeclaredListFieldStillMatchesThroughItsElements() {
     declareProducts();
     final MongoCollection<Document> c = client.getDatabase(getDatabaseName()).getCollection("products");
@@ -296,7 +315,7 @@ class Issue9162MongoFilterIndexPrefilterTest extends BaseMongoServerTest {
     for (int i = 0; i < total; i++)
       second.add(new UpdateOneModel<>(new Document("sku", "s" + i), new Document("$set", new Document("qty", i + 1000)),
           new UpdateOptions().upsert(true)));
-    final com.mongodb.bulk.BulkWriteResult result = c.bulkWrite(second);
+    final BulkWriteResult result = c.bulkWrite(second);
     assertThat(result.getUpserts()).isEmpty();
     assertThat(result.getMatchedCount()).isEqualTo(total);
     assertThat(c.count()).isEqualTo(total);

@@ -61,11 +61,14 @@ import java.util.regex.PatternSyntaxException;
  * answer a document whose {@code _id} is the string {@code "1"}. Only an empty filter is answered by SQL alone.
  * <p>
  * A field other than the {@code _id} narrows the candidates too, but only where SQL provably cannot answer narrower than the matcher
- * (issue #9162): a field whose declared type is a scalar, so that no array is ever stored in it, compared with an operand of that
+ * (issue #9162): a field whose declared type is a scalar, so that no array is stored in it, compared with an operand of that
  * kind by equality, {@code $in} or (for an integer field) a range. SQL then only coerces more values to equal, and a secondary index
  * on the field answers the lookup, which keeps a bulk upsert by a unique key from being O(n^2). A field the schema does not declare
  * is never narrowed, whatever index it has: an array stored in it is invisible to the index and to a SQL comparison, and an index
- * created by the MongoDB {@code createIndexes} command on such a field does not keep arrays out. The matcher always tests the whole
+ * created by the MongoDB {@code createIndexes} command on such a field does not keep arrays out. The declared type is relied upon as a
+ * contract of the schema: the engine converts what it writes to the type, but a record stored BEFORE the property was declared is not
+ * converted, so an array or a value of another kind left in such a record by a late {@code CREATE PROPERTY} is not found through the
+ * narrowed lookup (rebuild or rewrite the records when declaring a property on a type that holds data). The matcher always tests the whole
  * filter on the candidates, so a conjunct that is not narrowed here is still applied.
  * <p>
  * Every other filter reads the whole type.
