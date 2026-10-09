@@ -64,9 +64,9 @@ import java.util.logging.Level;
 /**
  * High-performance, declarative graph importer using a CSR-first architecture:
  * <ol>
- *   <li><b>Pass 1</b> — Process each vertex source once: create vertices with full properties,
+ *   <li><b>Pass 1</b> - Process each vertex source once: create vertices with full properties,
  *       and collect the edges a vertex source declares as compressed int arrays.</li>
- *   <li><b>Pass 2</b> — Create all edges, one batch per edge type with bidirectional=true for full
+ *   <li><b>Pass 2</b> - Create all edges, one batch per edge type with bidirectional=true for full
  *       IN+OUT traversal: first the collected ones, then each edge source, streamed straight from its
  *       file into its batch.</li>
  *   <li><b>Vector graphs</b> — Build the graph of every LSM vector index on a type the import wrote to,
