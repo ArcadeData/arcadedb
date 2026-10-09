@@ -19,6 +19,7 @@
 package com.arcadedb.index.hash;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
@@ -145,6 +146,45 @@ class Issue9228HashHotKeyRidListTest extends TestHelper {
 
     putOrRemoveAll(bucket, 9L, new ArrayList<>(expected), false);
     assertThat(lookupInBucket(bucket, 9L)).isEmpty();
+    assertThat(bucket.checkMetadataIntegrity()).isEmpty();
+  }
+
+  @Test
+  void aRepeatableReadLookupReadsAgainThePagesItKeptWhenTheListChangedHands() throws Exception {
+    createType(1_024);
+    final HashIndexBucket bucket = bucket();
+    final List<RID> zero = new ArrayList<>();
+    final List<RID> one = new ArrayList<>();
+    for (int i = 0; i < 2_000; i++) {
+      zero.add(new RID(1_000, i));
+      one.add(new RID(1_001, i));
+    }
+    putAll(bucket, 0L, zero);
+
+    database.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+    try {
+      // the transaction keeps the bucket page and the first page of the list, not the others
+      assertThat(bucket.get(new Object[] { 0L }, 1)).hasSize(1);
+
+      // another thread frees the list of key 0 and gives its pages to key 1
+      final Thread writer = new Thread(() -> {
+        putOrRemoveAll(bucket, 0L, zero, false);
+        putAll(bucket, 1L, one);
+      });
+      writer.start();
+      writer.join();
+
+      // the kept pages lead into pages key 1 owns now: the retry must read the kept ones again, or it fails every time
+      final List<RID> found = bucket.get(new Object[] { 0L }, -1);
+      for (final RID rid : found)
+        assertThat(rid.getBucketId()).as("RID " + rid + " of key 0").isEqualTo(1_000);
+    } finally {
+      database.rollback();
+    }
+
+    assertThat(lookupInBucket(bucket, 0L)).isEmpty();
+    assertThat(lookupInBucket(bucket, 1L)).containsExactlyInAnyOrderElementsOf(one);
+    putOrRemoveAll(bucket, 1L, one, false);
     assertThat(bucket.checkMetadataIntegrity()).isEmpty();
   }
 
@@ -330,10 +370,16 @@ class Issue9228HashHotKeyRidListTest extends TestHelper {
     // recognized without loading anything (a deleted record's position can be recycled for a record of the other key)
     final Thread reader = new Thread(() -> {
       try {
-        while (!done.get())
-          for (final RID rid : bucket.get(new Object[] { 0L }, -1))
+        while (!done.get()) {
+          final List<RID> found = bucket.get(new Object[] { 0L }, -1);
+          for (final RID rid : found)
             if (rid.getBucketId() != 1_000)
               throw new AssertionError("Lookup of key 0 returned " + rid + ", a RID of key " + (rid.getBucketId() - 1_000));
+          // a lookup that followed a freed page into the free list would read again RIDs the key held before
+          if (new HashSet<>(found).size() != found.size())
+            throw new AssertionError("Lookup of key 0 returned the same RID twice: " + found.size() + " RIDs, "
+                + new HashSet<>(found).size() + " distinct");
+        }
       } catch (final Throwable t) {
         failure.set(t);
       }
@@ -477,7 +523,7 @@ class Issue9228HashHotKeyRidListTest extends TestHelper {
     final HashIndexBucket bucket = bucket();
     final DatabaseInternal db = (DatabaseInternal) database;
     for (int p = 2; p < bucket.getTotalPages(); p++)
-      if (HashIndexBucket.isRidListPage(readPage(db, bucket, p)))
+      if (HashIndexBucket.isRidListPage(readPage(db, bucket, p)) && !HashIndexBucket.isFreeRidListPage(readPage(db, bucket, p)))
         return p;
     throw new AssertionError("No RID list page");
   }
