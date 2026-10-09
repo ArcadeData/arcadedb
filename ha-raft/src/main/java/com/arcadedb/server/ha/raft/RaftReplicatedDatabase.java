@@ -2355,6 +2355,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     if (proxied.getFileManager().isRecordingChangesOnCurrentThread())
       return proxied.recordFileChanges(callback);
 
+    // Issue #9547: a freshly elected leader is a few applies away from ready. Wait for that here, BEFORE claiming the
+    // recording session, so the wait does not hold off every other DDL and compaction on this database. The binding
+    // itself happens under the session below, which is what makes it exclusive per database, and re-checks readiness
+    // without waiting.
+    awaitLeaderReady();
+
     // On the leader, record file changes and send them via Raft immediately
     // (like the legacy HA system) so replicas have the files before WAL pages arrive
     acquireRecordingSession();
@@ -2405,11 +2411,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     long sessionTerm = NOT_A_READY_LEADER;
 
     try {
-      // Before the callback allocates a single file id (issue #9547): see bindSchemaSessionToTerm. A freshly elected
-      // leader is a few applies away from ready, so the DDL waits for it up to the quorum timeout rather than failing at
-      // once. Inside the try, like the exclusive window below, so whatever follows the binding unwinds through the
-      // finally that ends it - a binding left behind would vouch for a later resend in the same term.
-      sessionTerm = bindSchemaSessionToTerm(true);
+      // Before the callback allocates a single file id (issue #9547): see bindSchemaSessionToTerm. The wait for
+      // readiness already happened above, outside the session. Inside the try, like the exclusive window below, so
+      // whatever follows the binding unwinds through the finally that ends it - a binding left behind would vouch for a
+      // later resend in the same term.
+      sessionTerm = bindSchemaSessionToTerm();
       if (sessionTerm == NOT_A_READY_LEADER) {
         if (!isLeader())
           throw schemaChangesNeedTheLeader();
@@ -2569,14 +2575,35 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     }
   }
 
-  /** Returned by {@link #bindSchemaSessionToTerm} when this node is not a leader that may allocate file ids now. */
+  /**
+   * Returned by {@link #bindSchemaSessionToTerm} when this node is not a leader that may allocate file ids now. Kept apart
+   * from the {@code -1} of an unreadable term, which lets the session run (unbound); both are below zero, which is all
+   * {@link #unbindSchemaSession} tests.
+   */
   private static final long NOT_A_READY_LEADER = Long.MIN_VALUE;
+
+  /**
+   * Waits, up to the quorum timeout, for this leader to become ready (issue #9547). Called before the recording session
+   * is claimed; {@link #bindSchemaSessionToTerm} then decides under the session, so giving up here is not a refusal.
+   */
+  private void awaitLeaderReady() {
+    final RaftHAServer raft = raftHAServer;
+    if (raft == null || raft.isLeaderReady())
+      return;
+    try {
+      raft.awaitApplied(raft::isLeaderReady, raft.getQuorumTimeout());
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
+  }
 
   /**
    * Binds the schema session this thread has just claimed to the current Raft term, so the leader refuses to append its
    * entries once that term is over (issue #9547, see {@code ArcadeStateMachine.staleSchemaProposalRefusal}). Called once
    * the file recording session is held, which makes the binding exclusive per database, and before the session
-   * allocates any file id.
+   * allocates any file id. A session nested on the same database never gets here - {@code recordFileChanges} delegates
+   * to the frame already recording on this thread - so the outer frame's binding is the only one and stays in place.
+   * Never waits: a caller that can afford to wait for readiness does so before claiming the session.
    * <p>
    * Requires the leader to be READY, which Ratis reports only once it has applied the first entry of its own term, and
    * with it every entry committed before that term. That is what makes the ids this node's file manager hands out
@@ -2585,26 +2612,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * each node would hold one of the two files. Readiness is re-checked after the term is read, so a session that saw a
    * later term become ready is bound to the earlier one and refused at append, never the other way around.
    *
-   * @param waitForReady whether to wait, up to the quorum timeout, for a leader that is not ready yet
-   *
    * @return the term the session is bound to, {@code -1} when the term cannot be read (the session runs unbound and the
    * leader refuses its entries), or {@link #NOT_A_READY_LEADER}
    */
-  private long bindSchemaSessionToTerm(final boolean waitForReady) {
+  private long bindSchemaSessionToTerm() {
     final RaftHAServer raft = raftHAServer;
-    if (raft == null)
+    if (raft == null || !raft.isLeaderReady())
       return NOT_A_READY_LEADER;
-    if (!raft.isLeaderReady()) {
-      if (!waitForReady)
-        return NOT_A_READY_LEADER;
-      try {
-        if (!raft.awaitApplied(raft::isLeaderReady, raft.getQuorumTimeout()))
-          return NOT_A_READY_LEADER;
-      } catch (final InterruptedException e) {
-        Thread.currentThread().interrupt();
-        return NOT_A_READY_LEADER;
-      }
-    }
 
     final long term = raft.getCurrentTerm();
     if (!raft.isLeaderReady())
@@ -3333,7 +3347,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // start before every entry committed ahead of this term has been applied here, and its entries must not be
       // appended in any other term. Deferred rather than waited for: it runs again on the next schedule. Bound inside
       // the try so the finally always ends the binding.
-      sessionTerm = bindSchemaSessionToTerm(false);
+      sessionTerm = bindSchemaSessionToTerm();
       if (sessionTerm == NOT_A_READY_LEADER) {
         HALog.log(this, HALog.DETAILED,
             "Skipping compaction for database '%s' because this node is not a ready leader; will retry on next schedule",

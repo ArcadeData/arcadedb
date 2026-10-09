@@ -248,6 +248,26 @@ class Issue9547StaleSchemaProposalRefusedTest {
     assertThat(duringSession.get().getMessage()).contains("could not read its Raft term");
   }
 
+  /**
+   * Schema DDL nests routinely (a type creates its buckets). The nested frame delegates to the recording one, so it binds
+   * nothing and ends nothing: the outer session's entries are still accepted after it returns.
+   */
+  @Test
+  void aNestedSchemaChangeKeepsTheOuterSessionBound() {
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached().stateMachine(stateMachine).leader(true).currentTerm(7L)
+        .transactionBroker(new FakeRaftTransactionBroker());
+    final RaftReplicatedDatabase replicated = new RaftReplicatedDatabase(TestServerHelper.unstartedServer(), db, raft);
+    final AtomicReference<NeedRetryException> afterNested = new AtomicReference<>(new NeedRetryException("not run"));
+
+    replicated.recordFileChanges(() -> {
+      replicated.recordFileChanges(() -> null);
+      afterNested.set(stateMachine.staleSchemaProposalRefusal(db.getName(), true));
+      return null;
+    });
+
+    assertThat(afterNested.get()).isNull();
+  }
+
   /** A compaction that the leader defers leaves no binding behind for a later resend in the same term to hide behind. */
   @Test
   void aDeferredCompactionLeavesNoBindingBehind() throws Exception {
