@@ -450,6 +450,13 @@ public class StripedEdgeList extends EdgeLinkedList {
   }
 
   @Override
+  public void countInto(final EdgeBucketMask[] edgeMasks, final EdgeBucketMask[] neighborMasks, final boolean[] skipSelfLoops,
+      final long[] counts) {
+    for (final EdgeLinkedList chain : allChains(false))
+      chain.countInto(edgeMasks, neighborMasks, skipSelfLoops, counts);
+  }
+
+  @Override
   public JSONArray toJSON() {
     final JSONArray array = new JSONArray();
     for (final EdgeLinkedList chain : allChains(false)) {

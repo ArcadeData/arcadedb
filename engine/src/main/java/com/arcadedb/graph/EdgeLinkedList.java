@@ -33,7 +33,6 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.SerializationException;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.Pair;
@@ -363,30 +362,44 @@ public class EdgeLinkedList {
    *                  {@code MultiValue.getSize} - do not see a {@code SchemaException}.
    */
   public long count(final String... edgeTypes) {
-    long total = 0;
-
-    final Set<Integer> fileIdToFilter;
     if (edgeTypes != null && edgeTypes.length > 0) {
-      fileIdToFilter = new HashSet<>();
-      final Schema schema = vertex.getDatabase().getSchema();
-      for (final String edgeType : edgeTypes) {
-        if (!schema.existsType(edgeType))
-          continue;
-        fileIdToFilter.addAll(schema.getType(edgeType).getBucketIds(true));
-      }
-      if (fileIdToFilter.isEmpty())
+      // THE SAME PRIMITIVE BUCKET MASK THE FILTERED ITERATORS USE (#8417): NO BOXED SET BUILT AND PROBED PER CALL (#9539)
+      final EdgeBucketMask mask = EdgeBucketMask.of((DatabaseInternal) vertex.getDatabase(), edgeTypes);
+      if (mask == null)
         return 0;
-    } else
-      fileIdToFilter = null;
+      final long[] total = new long[1];
+      countInto(new EdgeBucketMask[] { mask }, new EdgeBucketMask[1], null, total);
+      return total[0];
+    }
 
+    long total = 0;
     EdgeSegment current = lastSegment;
     final ChainCycleGuard guard = newCycleGuard();
     while (current != null) {
-      total += current.count(fileIdToFilter);
+      total += current.count(null);
       current = previousOf(current, guard);
     }
 
     return total;
+  }
+
+  /**
+   * Counts the entries of the list against several filters in one walk of the chain: {@code counts[i]} is incremented
+   * for every entry whose edge bucket {@code edgeMasks[i]} accepts and whose far-end vertex bucket
+   * {@code neighborMasks[i]} accepts (null for any), leaving out the self loops of the filters {@code skipSelfLoops}
+   * flags (null for none). Neither the edge nor the neighbor record is loaded, so a light edge counts like a regular
+   * one and a label on the far end is checked on the bucket the entry already carries (issue #9539). See
+   * {@link EdgeSegment#countInto}.
+   */
+  public void countInto(final EdgeBucketMask[] edgeMasks, final EdgeBucketMask[] neighborMasks, final boolean[] skipSelfLoops,
+      final long[] counts) {
+    final RID owner = skipSelfLoops != null ? vertex.getIdentity() : null;
+    EdgeSegment current = lastSegment;
+    final ChainCycleGuard guard = newCycleGuard();
+    while (current != null) {
+      current.countInto(edgeMasks, neighborMasks, skipSelfLoops, owner, counts);
+      current = previousOf(current, guard);
+    }
   }
 
   public void add(final RID edgeRID, final RID vertexRID) {
