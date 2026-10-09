@@ -115,8 +115,9 @@ public interface HAServerPlugin extends ServerPlugin {
    * {@code POST /api/v1/cluster/accept-diverged/{database}} and the gRPC {@code AcceptDivergedDatabase} RPC, so the two
    * transports cannot drift on what the override does. The caller authorizes (root only); this method does not.
    * <p>
-   * Only a node that is the sole voter of its cluster may do it: anywhere else the quarantine is lifted by a resync from
-   * a peer, and lifting it by hand would leave this copy silently different from the others.
+   * Only where no peer can serve a resync may it be done: on the sole voter of its cluster, or on a node whose every
+   * voter holds the same database quarantined (issue #9553). Anywhere else the quarantine is lifted by a resync from a
+   * peer, and lifting it by hand would leave this copy silently different from the others.
    *
    * @param acceptedBy who asked, for the audit line in the server log
    *
@@ -124,7 +125,7 @@ public interface HAServerPlugin extends ServerPlugin {
    * and {@code readFloor} when they stood
    *
    * @throws ServerControlPlane.NotFoundException              when no quarantine and no read floor stands on the database
-   * @throws ServerControlPlane.OperationNotAvailableException when this node is not the sole voter, or the HA
+   * @throws ServerControlPlane.OperationNotAvailableException when a peer can serve a resync, or the HA
    *                                                           implementation has no such override
    * @throws IOException                                       when the change could not be persisted; nothing is lifted
    */

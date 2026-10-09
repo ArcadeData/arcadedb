@@ -1078,9 +1078,10 @@ service ArcadeDbAdminService {
   rpc ConnectCluster    (ConnectClusterRequest)    returns (ConnectClusterResponse);
   // The operator's override of issue #9449, the RPC twin of POST /api/v1/cluster/accept-diverged/{database}:
   // lifts the quarantine (and its read floor) standing on one database of a node that is the only voter of
-  // its cluster, accepting its copy as it is WITHOUT a resync. Root only. NOT_FOUND when nothing stands on
-  // the database, FAILED_PRECONDITION on a node that is not the sole voter (a resync from a peer is the way
-  // out there) or without HA, INVALID_ARGUMENT on a malformed database name.
+  // its cluster, or whose every voter holds the same database quarantined (issue #9553), accepting its copy
+  // as it is WITHOUT a resync. Root only. NOT_FOUND when nothing stands on the database, FAILED_PRECONDITION
+  // on a node a peer could still resync (a resync from a peer is the way out there) or without HA,
+  // INVALID_ARGUMENT on a malformed database name.
   rpc AcceptDivergedDatabase (AcceptDivergedDatabaseRequest) returns (AcceptDivergedDatabaseResponse);
 
   // Read-only administrative view of the server's open HTTP authentication sessions. gRPC has no
