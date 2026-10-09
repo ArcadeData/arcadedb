@@ -99,10 +99,12 @@ class Issue8905VectorBuildHATest extends BaseRaftHATest {
     assertThat(leader.isTransactionActive()).as("the build must own its transaction").isFalse();
     assertThat(bucketIndex.build(null, null)).isEqualTo(CAPPED_RECORDS);
 
-    assertVectorIndexOnEveryServer(index.getName(), index.countEntries());
+    // ONE ENTRY PER RECORD: THE BUILD REPLACES THE RECORDS' VECTORS, AND ITS TOMBSTONES TRAVEL IN THE SAME CAPPED CHUNKS
+    // (ISSUE #9506)
+    assertVectorIndexOnEveryServer(index.getName(), CAPPED_RECORDS);
 
     leader.transaction(() -> leader.newVertex("Issue8905Capped").set("vector", new float[] { 0.5f, 0.5f }).save());
-    assertVectorIndexOnEveryServer(index.getName(), index.countEntries());
+    assertVectorIndexOnEveryServer(index.getName(), CAPPED_RECORDS + 1);
   }
 
   private Database leaderDatabase() {
