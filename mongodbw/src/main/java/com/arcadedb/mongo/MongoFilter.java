@@ -182,7 +182,8 @@ final class MongoFilter {
    * @param type the type of the collection, or {@code null} when it is not known: only the {@code _id} then narrows
    */
   void appendCandidateWhere(final StringBuilder sqlText, final Map<String, Object> params, final DocumentType type) {
-    final Document fields = type != null && !empty ? narrowingPart(filter, type) : null;
+    // a type with subtypes also reads them, and a subtype may redeclare a property with another type: not narrowed
+    final Document fields = type != null && !empty && type.getSubTypes().isEmpty() ? narrowingPart(filter, type) : null;
     if (idPart == null && fields == null)
       return;
 

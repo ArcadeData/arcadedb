@@ -161,6 +161,26 @@ class Issue9162MongoFilterIndexPrefilterTest extends BaseMongoServerTest {
   }
 
   @Test
+  void anOrOfIndexedEqualitiesReadsTheIndexToo() {
+    declareProducts();
+    final Map<String, Object> params = new HashMap<>();
+    final StringBuilder sql = new StringBuilder("select from products");
+    new MongoFilter(db(), toMongo("{$or: [{sku: 'x'}, {sku: 'y'}]}")).appendCandidateWhere(sql, params,
+        db().getSchema().getType("products"));
+    try (final ResultSet rs = db().query("sql", "EXPLAIN " + sql, params)) {
+      assertThat(rs.next().<String>getProperty("executionPlanAsString")).contains("FETCH FROM INDEX");
+    }
+  }
+
+  @Test
+  void aTypeWithSubtypesIsNeverNarrowed() {
+    declareProducts();
+    assertThat(candidateWhere("products", "{sku: 'x'}")).contains("WHERE");
+    db().command("sql", "CREATE DOCUMENT TYPE special_products EXTENDS products");
+    assertThat(candidateWhere("products", "{sku: 'x'}")).isEmpty();
+  }
+
+  @Test
   void whatMayNeverNarrowTheCandidates() {
     declareProducts();
     // an array can hold the value: MongoDB matches through the elements, SQL compares the list as a whole
