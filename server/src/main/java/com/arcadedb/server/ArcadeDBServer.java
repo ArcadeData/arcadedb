@@ -271,8 +271,8 @@ public class ArcadeDBServer {
    * hook itself and will never release the lock, so the hook does not wait for it at all.
    */
   private volatile    Thread                                lifecycleOwner;
-  /** The JVM shutdown hook this server registered (issue #9548). */
-  private             Thread                                shutdownHook;
+  /** The JVM shutdown hook this server registered (issue #9548). Assigned once, in {@code init()}. */
+  private volatile    Thread                                shutdownHook;
   /** Whether {@link #shutdownHook} is currently added to the runtime; guarded by {@link #shutdownHookLock}. */
   private             boolean                               shutdownHookInstalled;
   private final       Object                                shutdownHookLock                     = new Object();

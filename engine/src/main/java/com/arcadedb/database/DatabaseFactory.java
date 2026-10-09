@@ -331,6 +331,8 @@ public class DatabaseFactory implements AutoCloseable {
               break;
             Thread.sleep(10);
           } else
+            // Unbounded on purpose: the JVM cannot exit before this hook returns either, and giving up early would close
+            // the owner's databases under it again, which is the race this wait exists for (see the javadoc)
             hook.join();
         }
       }
