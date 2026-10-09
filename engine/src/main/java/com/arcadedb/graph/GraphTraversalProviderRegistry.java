@@ -227,6 +227,10 @@ public class GraphTraversalProviderRegistry {
         parkWhileRestoring(List.of(provider), deadlineNanos, null);
         if (provider.isReady())
           found = provider;
+        else
+          LogManager.instance().log(GraphTraversalProviderRegistry.class, Level.FINE,
+              "GraphTraversalProvider '%s' is still restoring after the wait (arcadedb.gavQueryRestoreAwaitTimeout): the query takes the record path",
+              provider.getName());
       }
     }
     if (found != null && found.isStale())
