@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.MutableVertex;
 import org.junit.jupiter.api.Test;
@@ -172,6 +173,57 @@ class Issue9301PartialVertexCoverageViewTest extends TestHelper {
       assertThat(view.coversVertexType(null)).as("unknown counter, pages written").isFalse();
       assertThat(count("sql", "SELECT count(*) AS n FROM M")).as("C's vertices, polymorphic").isEqualTo(2);
       assertThat(view.coversVertexType(null)).as("recounted").isTrue();
+    } finally {
+      database.command("sql", "DROP GRAPH ANALYTICAL VIEW g9301");
+    }
+  }
+
+  /**
+   * The coverage check trusts the committed record counter of the unlisted buckets: every way of creating a vertex has to
+   * move it, or the view would read as full while a vertex it does not hold exists, and the wrong answers of #9301 would
+   * be back. One unlisted type per path, so no path can hide behind another's vertex.
+   */
+  @Test
+  void everyVertexCreatePathMakesTheViewPartial() throws Exception {
+    final String[] paths = { "SqlInsert", "SqlCreateVertex", "CypherCreate", "ApiAsync", "GraphBatch", "GraphBatchProps" };
+    for (final String type : paths)
+      database.getSchema().createVertexType(type);
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW g9301 VERTEX TYPES (A, B, C) EDGE TYPES (E) UPDATE MODE OFF");
+    try {
+      final GraphAnalyticalView view = GraphAnalyticalViewRegistry.get(database, "g9301");
+      assertThat(view.awaitReady(60, TimeUnit.SECONDS)).isTrue();
+
+      final Runnable[] creates = {
+          () -> database.command("sql", "INSERT INTO SqlInsert SET id = 51"),
+          () -> database.command("sql", "CREATE VERTEX SqlCreateVertex SET id = 52"),
+          () -> database.command("opencypher", "CREATE (:CypherCreate {id: 53})"),
+          () -> {
+            database.async().createRecord(database.newVertex("ApiAsync").set("id", 54), null);
+            database.async().waitCompletion();
+          },
+          () -> {
+            try (final GraphBatch batch = database.batch().build()) {
+              batch.createVertices("GraphBatch", 2);
+            }
+          },
+          () -> {
+            try (final GraphBatch batch = database.batch().build()) {
+              batch.createVertices("GraphBatchProps", new Object[][] { { "id", 56 } });
+            }
+          } };
+
+      for (int i = 0; i < paths.length; i++) {
+        assertThat(view.coversVertexType(null)).as("before " + paths[i]).isTrue();
+        if (paths[i].startsWith("Sql") || paths[i].startsWith("Cypher"))
+          database.transaction(creates[i]::run);
+        else
+          creates[i].run();
+        assertThat(count("sql", "SELECT count(@rid) AS n FROM " + paths[i])).as(paths[i] + " created").isGreaterThan(0);
+        assertThat(view.coversVertexType(null)).as("after " + paths[i]).isFalse();
+        final String emptied = paths[i];
+        database.transaction(() -> database.command("sql", "DELETE FROM " + emptied));
+      }
+      assertThat(view.coversVertexType(null)).as("all emptied again").isTrue();
     } finally {
       database.command("sql", "DROP GRAPH ANALYTICAL VIEW g9301");
     }
