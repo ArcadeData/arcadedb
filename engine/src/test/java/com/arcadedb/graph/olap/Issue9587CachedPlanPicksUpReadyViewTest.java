@@ -203,6 +203,43 @@ class Issue9587CachedPlanPicksUpReadyViewTest {
   }
 
   @Test
+  void aViewThatTurnsReadyIsPlannedAgainOnceNotOnEveryExecution() {
+    database.getConfiguration().setValue(GlobalConfiguration.GAV_USE_WHEN_STALE, false);
+    // registered first, so the lookup prefers it once it is ready
+    final GraphAnalyticalView first = GraphAnalyticalView.builder(database)
+        .withName("first")
+        .withVertexTypes("P")
+        .withEdgeTypes("K")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.OFF)
+        .build();
+    database.transaction(() -> database.newVertex("P").set("pid", 6).save());
+    assertThat(first.isReady()).isFalse();
+    // built after the commit: ready, while the first one is stale
+    GraphAnalyticalView.builder(database)
+        .withName("second")
+        .withVertexTypes("P")
+        .withEdgeTypes("K")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.OFF)
+        .build();
+
+    assertThat(count()).isEqualTo(EXPECTED);
+    final PhysicalPlan readsTheSecond = cachedPlan();
+    assertThat(readsTheSecond.getRootOperator().explain(0)).contains("provider=second");
+    assertThat(count()).isEqualTo(EXPECTED);
+    assertThat(cachedPlan()).as("the first view is still stale: the plan is kept").isSameAs(readsTheSecond);
+
+    first.build();
+
+    assertThat(count()).isEqualTo(EXPECTED);
+    final PhysicalPlan readsTheFirst = cachedPlan();
+    assertThat(readsTheFirst).isNotSameAs(readsTheSecond);
+    assertThat(readsTheFirst.getRootOperator().explain(0)).as("planned again, onto the view the lookup prefers")
+        .contains("provider=first");
+    assertThat(count()).isEqualTo(EXPECTED);
+    assertThat(cachedPlan()).as("a ready view is selected, never recorded: no re-plan on every execution").isSameAs(readsTheFirst);
+  }
+
+  @Test
   void aPlanBuiltInsideAWriteTransactionIsNotCached() {
     final GraphAnalyticalView view = GraphAnalyticalView.builder(database)
         .withName(VIEW_NAME)
