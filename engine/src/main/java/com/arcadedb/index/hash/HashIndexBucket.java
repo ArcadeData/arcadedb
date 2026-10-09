@@ -40,6 +40,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.locks.LockSupport;
 import java.util.logging.Level;
 
 /**
@@ -419,11 +420,16 @@ public class HashIndexBucket extends PaginatedComponent {
         if (result != null)
           return result;
 
-        // let the commit that is reusing the pages finish before reading the list again
-        Thread.yield();
         if (attempt >= MAX_RID_LIST_LOOKUP_RETRIES)
           throw new IndexException("The RID list of a key of hash index '" + getName() + "' (fileId=" + fileId
-              + ") reaches a page that does not belong to it. The index is corrupted, please rebuild it (DROP and recreate it).");
+              + ") kept reaching a page that does not belong to it after " + attempt + " attempts. Run CHECK DATABASE: if it "
+              + "reports the index as corrupted, rebuild it (REBUILD INDEX, or DROP and recreate it); if not, the key was changing "
+              + "too fast for the lookup and the lookup can be retried.");
+        // let the commit that is reusing the pages finish before reading the list again: yield first, then back off
+        if (attempt < 8)
+          Thread.yield();
+        else
+          LockSupport.parkNanos(Math.min(attempt, 32) * 50_000L);
 
       } else if (attempt >= MAX_LOOKUP_RETRIES)
         throw new IndexException(
@@ -494,17 +500,20 @@ public class HashIndexBucket extends PaginatedComponent {
         } else {
           offset += varIntSize(header);
           // the header is the bytes the RIDs take from version 3, and their number up to version 2
-          if (ridLists)
-            for (final int end = offset + header; offset < end; offset += compressedRIDSizeFromPage(page, offset)) {
+          if (ridLists) {
+            final int end = offset + header;
+            while (offset < end) {
               result.add(readCompressedRID(page, offset));
               if (limit > 0 && result.size() >= limit)
                 return true;
+              offset += compressedRIDSizeFromPage(page, offset);
             }
-          else
-            for (int r = 0; r < header; r++, offset += compressedRIDSizeFromPage(page, offset)) {
+          } else
+            for (int r = 0; r < header; r++) {
               result.add(readCompressedRID(page, offset));
               if (limit > 0 && result.size() >= limit)
                 return true;
+              offset += compressedRIDSizeFromPage(page, offset);
             }
         }
         if (limit > 0 && result.size() >= limit)
@@ -2089,9 +2098,10 @@ public class HashIndexBucket extends PaginatedComponent {
 
   /** Number of compressed RIDs in the {@code length} bytes from {@code offset}. */
   private static int countRids(final BasePage page, final int offset, final int length) {
+    final int end = offset + length;
     int count = 0;
-    for (int end = offset + length, current = offset; current < end; current += compressedRIDSizeFromPage(page, current))
-      count++;
+    for (int current = offset; current < end; count++)
+      current += compressedRIDSizeFromPage(page, current);
     return count;
   }
 
