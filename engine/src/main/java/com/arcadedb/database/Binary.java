@@ -486,7 +486,7 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
     while ((getByte() & 0x80) != 0)
       if (++length > 10)
         throw new IllegalArgumentException(
-            "Variable length quantity is too long (must be <= 63) at position " + startPos + " in buffer of size " + size);
+            "Variable length quantity is too long (must be <= 10 bytes) at position " + startPos + " in buffer of size " + size);
   }
 
   @Override

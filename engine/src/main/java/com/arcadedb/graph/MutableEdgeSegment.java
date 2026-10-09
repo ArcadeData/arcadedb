@@ -460,13 +460,13 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
   @Override
   public void countInto(final EdgeBucketMask[] edgeMasks, final EdgeBucketMask[] neighborMasks, final boolean[] skipSelfLoops,
       final RID owner, final long[] counts) {
-    final int used = getUsed();
-    if (used <= CONTENT_START_POSITION)
-      return;
-
     // A FLAG WITHOUT ITS OWNER WOULD SILENTLY COUNT THE SELF LOOPS IT ASKS TO LEAVE OUT
     if (skipSelfLoops != null && owner == null)
       throw new IllegalArgumentException("Self loops cannot be left out of the count without the vertex owning the list");
+
+    final int used = getUsed();
+    if (used <= CONTENT_START_POSITION)
+      return;
 
     final int filters = edgeMasks.length;
     // THE POSITION OF THE FAR END IS DECODED ONLY WHEN A FILTER HAS TO TELL A SELF LOOP APART
